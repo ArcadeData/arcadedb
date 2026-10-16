@@ -19,6 +19,8 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -193,6 +195,41 @@ class Issue10164CommitUnknownSessionIT extends BaseGraphServerTest {
       // The first answer may have been lost on the way back: the retry must not tell the client its work is gone
       assertThat(post(serverIndex, "commit", rootAuth(), sessionId)).as("retried commit").isEqualTo(204);
       assertThat(countPersons(serverIndex, "committed10164")).isEqualTo(1L);
+    });
+  }
+
+  @Test
+  void retryOfAFailedCommitAnswers404() throws Exception {
+    testEachServer(serverIndex -> {
+      final Database database = getServerDatabase(serverIndex, DATABASE_NAME);
+      if (!database.getSchema().existsType("Unique10164")) {
+        database.getSchema().createDocumentType("Unique10164").createProperty("k", Type.INTEGER);
+        database.getSchema().getType("Unique10164").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+      }
+      database.transaction(() -> database.newDocument("Unique10164").set("k", serverIndex).save());
+
+      final String sessionId = begin(serverIndex, rootAuth());
+      final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl(serverIndex) + "/command/" + DATABASE_NAME).openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization", rootAuth());
+      connection.setRequestProperty(HttpSessionManager.ARCADEDB_SESSION_ID, sessionId);
+      formatPayload(connection, "sql", "INSERT INTO Unique10164 SET k = " + serverIndex, null, new HashMap<>());
+      connection.connect();
+      try {
+        // The unique key is checked when the transaction commits, so the insert itself may be accepted
+        if (connection.getResponseCode() == 200)
+          readResponse(connection);
+        else
+          readError(connection);
+      } finally {
+        connection.disconnect();
+      }
+
+      final int first = post(serverIndex, "commit", rootAuth(), sessionId);
+      assertThat(first).as("the commit breaks the unique key, or the session was already refused").isGreaterThanOrEqualTo(400);
+
+      // A failed commit is not remembered as one: its retry must not answer 204
+      assertThat(post(serverIndex, "commit", rootAuth(), sessionId)).as("retry of a failed commit").isEqualTo(404);
     });
   }
 

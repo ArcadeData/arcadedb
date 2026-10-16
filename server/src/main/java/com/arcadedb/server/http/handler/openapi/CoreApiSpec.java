@@ -132,8 +132,11 @@ public class CoreApiSpec implements OpenApiContributor {
       Session id returned by 'beginTransaction', identifying the transaction to commit. Omitting it commits \
       nothing and answers 204. An id that no longer resolves to an open transaction of the caller - never \
       issued, rolled back, ended by 'terminate transaction', expired, or another user's - answers 404: nothing \
-      was committed. The exception is a retry of a commit that did end this session, within the session \
-      timeout: it answers 204 again, so a client whose first answer was lost is not told its work is gone.""";
+      was committed. The exception is a retry of a commit that did end this session, sent to the same server \
+      within the session timeout ('arcadedb.server.httpSessionExpireTimeout'): it answers 204 again, so a client whose \
+      first answer was lost is not told its work is gone. The server remembers this in memory only: a retry sent \
+      to another server of a cluster, after a restart, past the timeout, or while the first commit is still \
+      running answers 404 although the first commit may have landed.""";
   private static final String COMMIT_404_DESCRIPTION = """
       Database not found, or the session id header names a transaction that no longer resolves \
       ("Remote transaction session not found or expired"): it was rolled back, terminated, expired or never \
