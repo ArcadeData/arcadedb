@@ -295,7 +295,8 @@ public class HttpSession implements QuerySession {
         // RE-VALIDATE UNDER THE LOCK: THE IDLE-TIMEOUT SWEEP (OR A commit/rollback/close) COULD HAVE ROLLED BACK
         // AND REMOVED THIS SESSION IN THE GAP BETWEEN THE MANAGER LOOKUP AND ACQUIRING THIS LOCK. RUNNING THE
         // CALLBACK NOW WOULD OPERATE ON A ROLLED-BACK TRANSACTION AND LEAK A FRESH ONE (NOTHING WOULD EVER
-        // COMMIT/ROLL IT BACK, SINCE THE SESSION IS ALREADY UNTRACKED)
+        // COMMIT/ROLL IT BACK, SINCE THE SESSION IS ALREADY UNTRACKED). THE SAME HOLDS FOR A REQUEST THAT WAITED ON ANOTHER ONE ENDING
+        // THE SESSION, SUCH AS A RETRIED /commit WAITING ON THE FIRST: THE ROUTE DECIDES WHAT TO ANSWER (issue #10171)
         if (!manager.isSessionRegistered(id))
           // A route that ends the session can still have an answer for it (a retried /commit of a session that committed, issue #10171)
           throw new HttpSessionEndedException(id);
