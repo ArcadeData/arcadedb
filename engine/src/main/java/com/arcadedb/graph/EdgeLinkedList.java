@@ -235,6 +235,14 @@ public class EdgeLinkedList {
   }
 
   public Iterator<RID> ridIterator(final String... edgeTypes) {
+    return entryRidIterator(edgeTypes);
+  }
+
+  /**
+   * {@link #ridIterator}, with the RID of the edge each entry names available on request: no record is read, and the edge pointer
+   * is decoded only if it is asked for (issue #10148, see {@link EdgeEntryRIDIterator}).
+   */
+  public EdgeEntryRIDIterator entryRidIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
       return new RIDIterator(lastSegment);
     return new RIDIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
