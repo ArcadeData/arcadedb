@@ -256,7 +256,7 @@ jobs:
             dynamic)       ARGS="" ;;
             *)              echo "::error::unknown matrix.linkmode '${{ matrix.linkmode }}'"; exit 1 ;;
           esac
-          mvn -B -ntp -Pnative -pl native -am -DskipTests $ARGS package
+          ./mvnw -B -ntp -Pnative -pl native -am -DskipTests $ARGS package
 
       # native-maven-plugin names the executable via os-maven-plugin's os.detected.name/arch
       # (e.g. osx-aarch_64, linux-x86_64, windows-x86_64), which does NOT match this matrix's
