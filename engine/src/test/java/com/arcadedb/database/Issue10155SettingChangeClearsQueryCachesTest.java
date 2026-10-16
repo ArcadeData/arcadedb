@@ -113,6 +113,14 @@ class Issue10155SettingChangeClearsQueryCachesTest extends TestHelper {
     assertThat(db.getExecutionPlanCache().contains("select v as c from S")).isTrue();
     assertThat(db.getExecutionPlanCache().contains("select v as a from S")).as("evicted by a cache of one").isFalse();
     assertThat(db.getStatementCache().contains("select v as a from S")).as("evicted by a cache of one").isFalse();
+
+    // a size of 0 caches nothing, and every query still answers
+    database.command("sql", "ALTER DATABASE `arcadedb.sqlStatementCache` 0").close();
+    database.query("sql", "select v as zero from S").close();
+    assertThat(db.getExecutionPlanCache().contains("select v as zero from S")).isFalse();
+    try (final ResultSet rs = database.query("sql", "select count(*) as c from S")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(60L);
+    }
   }
 
   /**

@@ -3283,6 +3283,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // ALL FOUR QUERY CACHES, NOT ONLY THE TWO PARSE CACHES (issue #10155): A PLAN IS WHAT A SETTING READ AT PLANNING TIME IS
     // BAKED INTO (arcadedb.queryIndexMaxSelectivity, FOR ONE), AND THE PLAN CACHE IS ASKED BEFORE ANYTHING IS RE-PARSED. EACH IS
     // RE-SIZED FROM ITS OWN SETTING TOO, WHICH THE CONSTRUCTOR USED TO BE THE ONLY ONE TO READ
+    // ONE SETTING SIZES BOTH SQL CACHES, AS IN THE CONSTRUCTOR: A PLAN IS CACHED PER STATEMENT
     statementCache.resize(configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
     executionPlanCache.resize(configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
     cypherStatementCache.resize(configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
