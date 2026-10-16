@@ -110,12 +110,13 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
-  void authenticationFailureReturns403() throws Throwable {
+  void authenticationFailureReturns401() throws Throwable {
+    // Wrong Basic credentials answer 401, as on every other route (#10180)
     execute(() ->
       assertThatThrownBy(() -> {
         new WebSocketClientHelper(getServerWsUrl("/ws"), "root", "bad");
       }).isInstanceOf(UpgradeFailedException.class)
-          .hasMessageContaining("403"), "authenticationFailureReturns403");
+          .hasMessageContaining("401"), "authenticationFailureReturns401");
   }
 
   @Test
