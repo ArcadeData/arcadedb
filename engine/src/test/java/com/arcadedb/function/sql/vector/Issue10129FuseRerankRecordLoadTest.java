@@ -27,6 +27,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -137,6 +138,61 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
         new Object[] { rows, new float[] { 1.0f, 0.0f, 0.1f }, "embedding", 3 }, newContext());
     assertThat(readRecords() - before).isZero();
     assertThat(out).hasSize(3);
+  }
+
+  @Test
+  void rerankReusesTheRecordOfAProjectionRow() {
+    final List<RID> rids = seed(6);
+
+    final List<Object> rows = new ArrayList<>();
+    database.transaction(() -> {
+      for (final RID rid : rids) {
+        // a projection row (not an element) that carries the record under `record`
+        final LinkedHashMap<String, Object> content = new LinkedHashMap<>();
+        content.put("@rid", rid);
+        content.put("record", database.lookupByRID(rid, true));
+        final Result row = new ResultInternal(content);
+        assertThat(row.isElement()).isFalse();
+        rows.add(row);
+      }
+    });
+
+    final long before = readRecords();
+    @SuppressWarnings("unchecked")
+    final List<Object> out = (List<Object>) new SQLFunctionVectorRerank().execute(null, null, null,
+        new Object[] { rows, new float[] { 1.0f, 0.0f, 0.1f }, "embedding", 3 }, newContext());
+    assertThat(readRecords() - before).isZero();
+    assertThat(out).hasSize(3);
+  }
+
+  @Test
+  void lazyRowMatchesTheEagerCopyForARecordPropertyAndANullValue() {
+    seed(0);
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument(TYPE);
+      d.set("name", "shadowed");
+      d.set("record", "a property named like the record key");
+      d.set("nullable", null);
+      d.save();
+
+      final LinkedHashMap<String, Object> eager = new LinkedHashMap<>();
+      eager.put("record", d);
+      for (final String prop : d.getPropertyNames())
+        eager.put(prop, d.get(prop));
+      eager.put("@rid", d.getIdentity());
+      eager.put("@type", d.getTypeName());
+      eager.put("score", 0.5f);
+
+      final ScoredRecordRow lazy = new ScoredRecordRow(d, "score", 0.5f);
+      // the record property overwrote the `record` key in the eager copy, and does so in the lazy row
+      assertThat(lazy.get("record")).isEqualTo("a property named like the record key");
+      assertThat(lazy.getRecord()).isSameAs(d);
+      for (final String key : List.of("record", "name", "nullable", "missing"))
+        assertThat(lazy.containsKey(key)).as(key).isEqualTo(eager.containsKey(key));
+      for (final String key : eager.keySet())
+        assertThat(lazy.get(key)).as(key).isEqualTo(eager.get(key));
+      assertThat(lazy.keySet()).containsExactlyElementsOf(eager.keySet());
+    });
   }
 
   @Test

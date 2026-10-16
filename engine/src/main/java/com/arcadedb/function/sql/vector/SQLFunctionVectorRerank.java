@@ -68,6 +68,15 @@ import java.util.PriorityQueue;
 public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.rerank";
 
+  /**
+   * Ascending order of preference: lower score first and, among equal scores, the later candidate first.
+   */
+  private static final Comparator<Scored> EVICTION_ORDER = (a, b) -> {
+    final int byScore = Float.compare(a.score(), b.score());
+    return byScore != 0 ? byScore : Integer.compare(b.sequence(), a.sequence());
+  };
+  private static final Comparator<Scored> RANK_ORDER     = EVICTION_ORDER.reversed();
+
   public SQLFunctionVectorRerank() {
     super(NAME);
   }
@@ -145,7 +154,7 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     }
 
     final Scored[] ranked = best.toArray(new Scored[0]);
-    Arrays.sort(ranked, EVICTION_ORDER.reversed());
+    Arrays.sort(ranked, RANK_ORDER);
     final ArrayList<Object> out = new ArrayList<>(ranked.length);
     for (final Scored s : ranked)
       out.add(new ScoredRecordRow(s.record(), "score", s.score()));
@@ -174,14 +183,6 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
   public String getSyntax() {
     return NAME + "(<source>, <queryVector>, <embeddingProperty>, <k>)";
   }
-
-  /**
-   * Ascending order of preference: lower score first and, among equal scores, the later candidate first.
-   */
-  private static final Comparator<Scored> EVICTION_ORDER = (a, b) -> {
-    final int byScore = Float.compare(a.score(), b.score());
-    return byScore != 0 ? byScore : Integer.compare(b.sequence(), a.sequence());
-  };
 
   private record Scored(Document record, float score, int sequence) {}
 }
