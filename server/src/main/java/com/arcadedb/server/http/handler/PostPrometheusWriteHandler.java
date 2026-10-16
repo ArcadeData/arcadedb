@@ -83,7 +83,8 @@ import java.util.Set;
  * {@code TimeSeriesEngine}'s javadoc.
  * <p>
  * <b>A database that does not exist is answered 404 before the body is looked at, and that is the contract</b>
- * (issues #7751, #7831). Before #7681 this handler resolved the database itself, after its empty-body 400 and
+ * (decided by issue #7831 / PR #8762, written down here for issue #7751, which asked for the decision to be recorded
+ * where the next refactor would see it). Before #7681 this handler resolved the database itself, after its empty-body 400 and
  * zero-series 204, and a review had defended that order; moving onto {@link DatabaseAbstractHandler} removed it, which
  * is how the question was decided. 404 is the better answer, not only the inherited one: it is what every other
  * {@code /api/v1/ts/{database}} route answers, and on a fan-in endpoint it is the answer that reaches the operator. A
