@@ -22,6 +22,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.vector.VectorUtils;
@@ -109,11 +110,16 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
       // SELECT) is scored on that record: loading it again is the second load issue #10129 is about.
       Document rec = carriedRecord(row, rid);
       if (rec == null) {
+        final Record loaded;
         try {
-          rec = (Document) db.lookupByRID(rid, true);
+          loaded = db.lookupByRID(rid, true);
         } catch (final RecordNotFoundException e) {
           continue;
         }
+        // a RID of an internal record (an edge segment, ...) has no properties to score: skip it like a missing one
+        if (!(loaded instanceof Document document))
+          continue;
+        rec = document;
       }
       final Object raw = rec.get(embeddingProperty);
       if (raw == null)
