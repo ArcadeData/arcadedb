@@ -29,7 +29,6 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -54,15 +53,9 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   public MutableEdge save() {
     dirty = true;
-    if (rid != null)
-      // THE SAME UPDATE THE DOCUMENT AND THE VERTEX SEND, SO A VETOED OR A MISSING EDGE IS REPORTED, AND COUNTED, AS THEIRS ARE
-      // (issue #10161): A BARE "UPDATE" COMMAND ANSWERED BOTH AS A SUCCESS
-      remoteDatabase.saveRecord(this);
-    else {
-      final JSONObject json = toJSON();
-      json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
-      remoteDatabase.command("sql", "insert into " + Identifier.quote(getTypeName()) + " content " + json);
-    }
+    // THE SAME WRITE THE DOCUMENT AND THE VERTEX SEND, SO A VETOED OR A MISSING EDGE IS REPORTED, AND COUNTED, AS THEIRS ARE
+    // (issue #10161): A BARE "UPDATE" OR "INSERT" COMMAND ANSWERED BOTH AS A SUCCESS, AND THE INSERT NEVER LEARNT ITS RID
+    rid = remoteDatabase.saveRecord(this);
     dirty = false;
     return this;
   }
@@ -70,12 +63,7 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   public MutableEdge save(final String bucketName) {
     dirty = true;
-    if (rid != null)
-      throw new IllegalStateException("Cannot update a record in a custom bucket");
-    final JSONObject json = toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
-    remoteDatabase.command("sql",
-        "insert into " + Identifier.quote(getTypeName()) + " bucket " + Identifier.quote(bucketName) + " content " + json);
+    rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
   }
@@ -86,22 +74,12 @@ public class RemoteMutableEdge extends MutableEdge {
    */
   @Override
   public boolean saveReportingVeto() {
-    try {
-      save();
-      return true;
-    } catch (final RecordVetoedException e) {
-      return false;
-    }
+    return RemoteDatabase.savedUnlessVetoed(this::save);
   }
 
   @Override
   public boolean saveReportingVeto(final String bucketName) {
-    try {
-      save(bucketName);
-      return true;
-    } catch (final RecordVetoedException e) {
-      return false;
-    }
+    return RemoteDatabase.savedUnlessVetoed(() -> save(bucketName));
   }
 
   @Override
