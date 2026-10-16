@@ -135,7 +135,8 @@ public class CoreApiSpec implements OpenApiContributor {
       was committed. The exception is a retry of a commit that did end this session, sent to the same server \
       within the session timeout ('arcadedb.server.httpSessionExpireTimeout'): it answers 204 again, so a client whose \
       first answer was lost is not told its work is gone. A retry sent while the first commit is still running \
-      waits for it and answers the same. The server remembers this in memory only: a retry sent to another server \
+      waits for it, up to 5 seconds: it answers 204 when that commit succeeded, 404 when it failed, and a lock \
+      timeout error when the commit outlasts the wait. The server remembers this in memory only: a retry sent to another server \
       of a cluster, after a restart or past the timeout answers 404 although the first commit may have landed.""";
   private static final String COMMIT_404_DESCRIPTION = """
       Database not found, or the session id header names a transaction that no longer resolves \
