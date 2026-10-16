@@ -27,6 +27,7 @@ import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -398,8 +399,9 @@ final class SecurityCatchUp implements AutoCloseable {
     if (marker == null)
       return;
     try {
-      if (!Files.exists(marker))
-        Files.createFile(marker);
+      Files.createFile(marker);
+    } catch (final FileAlreadyExistsException alreadyPending) {
+      // Pending already: the marker records THAT a seed is owed, not how many
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not record the pending security re-seed in '%s'; it is still made, but a restart before it commits "
