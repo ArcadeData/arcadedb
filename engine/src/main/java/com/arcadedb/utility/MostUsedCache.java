@@ -90,7 +90,10 @@ public class MostUsedCache<K, V> extends AbstractMap<K, V> {
     cache.clear();
   }
 
-  /** Empties the cache and bounds it to {@code maxSize} entries from now on (issue #10155). Less than 1 means unlimited. */
+  /**
+   * Empties the cache and bounds it to {@code maxSize} entries from now on (issue #10155). Less than 1 means unlimited. Not thread
+   * safe, like the rest of this class: call it under the lock the other accesses take.
+   */
   public void resize(final int maxSize) {
     cache.clear();
     this.maxSize = maxSize;
