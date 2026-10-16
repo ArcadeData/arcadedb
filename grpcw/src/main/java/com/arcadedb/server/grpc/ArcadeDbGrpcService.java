@@ -50,6 +50,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.WriteReport;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.QueryTerminatedException;
@@ -3271,9 +3272,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * {@link #insertError} puts the address beside it), and {@code COMMIT_FAILED} otherwise. Shared by the mid-stream onNext
    * failure path (Issue #4806) and the deferred whole-stream commit path (Issue #4198) so the two stay
    * in sync.
+   * <p>
+   * The duplicated key is found along the cause chain, like the leader refusal, because a commit failure reaches here
+   * as the engine wrapped it (issue #10158). The contract rejection is not: it is the stream's OWN refusal, raised as
+   * itself, and an {@link IllegalArgumentException} buried under a commit failure is that commit failing.
    */
-  private static String commitErrorCode(final Exception e) {
-    if (e instanceof DuplicatedKeyException)
+  // @VisibleForTesting
+  static String commitErrorCode(final Exception e) {
+    if (CauseChain.contains(e, DuplicatedKeyException.class))
       return "CONFLICT";
     if (ServerIsNotTheLeaderException.redirectIn(e) != null)
       return "NOT_LEADER";
@@ -6104,9 +6110,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // ServerSecurityException does NOT extend java.lang.SecurityException (see GrpcErrorMapper), so it needs
     // its own arm here; everything else - including IllegalArgumentException, which ErrorCategory's
     // VALIDATION category already maps to INVALID_ARGUMENT - falls through to the same classification
-    // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL.
-    if (e instanceof ServerSecurityException)
-      return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
+    // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL. Found along the cause chain:
+    // ErrorCategory reads a ServerSecurityException as a SERVER fault, so this arm is all that stands between a
+    // wrapped refusal and an INTERNAL that tells the client the server broke (issue #10158)
+    final ServerSecurityException refusal = CauseChain.find(e, ServerSecurityException.class);
+    if (refusal != null)
+      return Status.PERMISSION_DENIED.withDescription(operation + ": " + refusal.getMessage()).asException();
     // THE MAPPER CONCEALS ENGINE TEXT - A SCHEMA NAME, A FILE PATH, AN INDEX - IN PRODUCTION LIKE EVERY OTHER FREE-FORM
     // DESCRIPTION, AND LOGS IT. THE ARM ABOVE IS NOT CONCEALED: A SECURITY REFUSAL IS A SENTENCE THIS SERVER WROTE
     // ABOUT THE REQUEST, WHICH IS WHAT MAKES IT ACTIONABLE (PR #7755 REVIEW)
