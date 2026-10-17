@@ -22,28 +22,38 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.FileUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class MethodCall extends SimpleNode {
 
+  // A vertex-to-edge step reverses into the edge-to-vertex step that leads back, and vice versa: bothE() from a vertex is undone by
+  // bothV() from the edge, not by another bothE(), which an edge cannot answer (issue #10215)
   static final Map<String, String> bidirectionalMethods = Map.of(//
       "out", "in",//
       "in", "out", //
       "both", "both", //
       "oute", "outv", //
       "ine", "inv", //
-      "bothe", "bothe", //
-      "bothv", "bothv", //
+      "bothe", "bothv", //
+      "bothv", "bothe", //
       "outv", "oute", //
       "inv", "ine");
+
+  /** The steps from a vertex to its edges, whose parameters are edge types. */
+  private static final Set<String> VERTEX_TO_EDGE_METHODS = Set.of("oute", "ine", "bothe");
 
   public Identifier       methodName;
   public List<Expression> params = new ArrayList<Expression>();
@@ -159,10 +169,35 @@ public class MethodCall extends SimpleNode {
     final String straightName = methodName.getStringValue().toLowerCase(Locale.ENGLISH);
     final String inverseMethodName = bidirectionalMethods.get(straightName);
 
-    if (inverseMethodName != null)
-      return execute(targetObjects, context, inverseMethodName, params, null);
+    if (inverseMethodName == null)
+      throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
 
-    throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
+    if (VERTEX_TO_EDGE_METHODS.contains(straightName)) {
+      // outE(T...) reversed starts from the EDGE it reached: the edge types it names select that edge, and outV() takes no edge
+      // type at all (it ignored them), so no step checked the edge bound to the alias was a T (issue #10215)
+      if (!params.isEmpty() && !isEdgeOfTypes(targetObjects, context))
+        return null;
+      return execute(targetObjects, context, inverseMethodName, List.of(), null);
+    }
+    return execute(targetObjects, context, inverseMethodName, params, null);
+  }
+
+  /**
+   * Whether {@code target} is an edge of one of the types this call's parameters name, polymorphically, as the forward
+   * {@code outE(T...)} selects it.
+   */
+  private boolean isEdgeOfTypes(final Object target, final CommandContext context) {
+    if (!(target instanceof Identifiable identifiable) || !(identifiable.getRecord() instanceof Edge edge))
+      return false;
+    final Schema schema = context.getDatabase().getSchema();
+    final DocumentType edgeType = edge.getType();
+    for (final Expression param : params) {
+      final String[] types = MultiValue.array(param.execute(identifiable, context), String.class, FileUtils::getStringContent);
+      for (final String type : types)
+        if (type != null && schema.existsType(type) && edgeType.instanceOf(schema.getType(type).getName()))
+          return true;
+    }
+    return false;
   }
 
   public MethodCall copy() {
