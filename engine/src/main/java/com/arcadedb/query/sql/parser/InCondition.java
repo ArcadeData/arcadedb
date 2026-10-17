@@ -62,6 +62,9 @@ public class InCondition extends BooleanExpression {
    */
   private static final AtomicLong MEMO_KEY_SEQUENCE         = new AtomicLong();
 
+  /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
+  private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
+
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
 
@@ -262,9 +265,6 @@ public class InCondition extends BooleanExpression {
     }
     return item;
   }
-
-  /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
-  private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
 
   /**
    * The value of a sub-query row's only property (null included), or {@link #NOT_A_SINGLE_VALUE_ROW}. A plain
