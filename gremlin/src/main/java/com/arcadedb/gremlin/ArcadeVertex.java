@@ -106,8 +106,9 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
       typeName = label;
     }
 
+    // getOrCreate: two traversals adding the first edge of a label concurrently both end with the type (issue #10145)
     if (!this.graph.getDatabase().getSchema().existsType(typeName))
-      this.graph.getDatabase().getSchema().createEdgeType(typeName);
+      this.graph.getDatabase().getSchema().getOrCreateEdgeType(typeName);
     else if (!(this.graph.getDatabase().getSchema().getType(typeName) instanceof EdgeType))
       throw new IllegalArgumentException("Type '" + typeName + "' is not a edge");
 

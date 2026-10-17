@@ -476,14 +476,9 @@ public class EdgeLinkedList {
       // createRecord poisons the new chunk's page for the append-merge (a new chunk cannot be rebased).
       database.createRecord(newChunk, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
-      if (direction == Vertex.DIRECTION.OUT)
-        modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
-      else
-        modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
-
       lastSegment = newChunk;
 
-      modifiableV.save();
+      GraphEngine.writeEdgeListHead(database, modifiableV, direction, newChunk.getIdentity());
     }
   }
 
@@ -523,6 +518,8 @@ public class EdgeLinkedList {
         }
         currentVertex = modifiableV;
 
+        // The pointer is written with the batch below, without events: the edits the instance carries are not (issue #10207)
+        GraphEngine.saveUnannouncedEdits(database, modifiableV);
         if (direction == Vertex.DIRECTION.OUT)
           modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
         else
@@ -538,7 +535,11 @@ public class EdgeLinkedList {
     // edge page from the append-merge so a concurrent-append rebase can never lose these edges.
     final TransactionContext tx = database.getTransactionIfExists();
     for (final Record r : recordsToUpdate) {
-      database.updateRecord(r);
+      // A vertex is in the set for its head pointer only: its own bookkeeping, which no listener hears (issue #10207)
+      if (r instanceof MutableVertex)
+        database.updateRecordWithoutEvents(r);
+      else
+        database.updateRecord(r);
       if (tx != null && r instanceof MutableEdgeSegment segment)
         tx.poisonEdgeAppendPage(segment.getIdentity());
     }
@@ -741,11 +742,7 @@ public class EdgeLinkedList {
     }
     database.createRecord(directory, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
-    if (direction == Vertex.DIRECTION.OUT)
-      modifiableV.setOutEdgesHeadChunk(directory.getIdentity());
-    else
-      modifiableV.setInEdgesHeadChunk(directory.getIdentity());
-    modifiableV.save();
+    GraphEngine.writeEdgeListHead(database, modifiableV, direction, directory.getIdentity());
 
     // APPEND THE PENDING EDGE THROUGH THE STRIPED LAYOUT (ALLOCATES ITS STRIPE'S FIRST CHUNK LAZILY)
     new StripedEdgeList(modifiableV, direction, directory).add(edgeRID, vertexRID);
