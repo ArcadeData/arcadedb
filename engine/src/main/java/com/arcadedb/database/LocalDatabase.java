@@ -2242,8 +2242,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     // #10135: how many transaction levels belong to the CALLER. On failure only the levels above it are rolled back.
     // Sampled once: every failed attempt rolls back to exactly this depth, so it is the same before each attempt
-    final boolean callerTxActive = wrappedDatabaseInstance.isTransactionActive();
-    final int callerLevels = callerTxActive ? wrappedDatabaseInstance.getNestedTransactions() : 0;
+    final int callerLevels = activeTransactionLevels();
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
@@ -2257,7 +2256,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       long commitCountAtStart = 0;
 
       try {
-        if (joinCurrentTx && callerTxActive)
+        if (joinCurrentTx && callerLevels > 0)
           createdNewTx = false;
         else
           wrappedDatabaseInstance.begin();
