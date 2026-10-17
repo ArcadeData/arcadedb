@@ -449,19 +449,30 @@ public final class CypherFunctionHelper {
    * read as; -1 for any other value.
    */
   public static int temporalTypeRank(final Object value) {
-    return switch (value) {
-      case CypherDateTime ignored -> 0;
-      case CypherLocalDateTime ignored -> 1;
-      case CypherDate ignored -> 2;
-      case CypherTime ignored -> 3;
-      case CypherLocalTime ignored -> 4;
-      case CypherDuration ignored -> 5;
-      case Duration ignored -> 5;
-      case Period ignored -> 5;
-      case null, default -> TemporalUtil.isNativeTemporal(value) && TemporalUtil.fromCoreJavaType(value) instanceof CypherTemporalValue t ?
-          temporalTypeRank(t) :
-          -1;
-    };
+    switch (value) {
+    case CypherDateTime ignored:
+      return 0;
+    case CypherLocalDateTime ignored:
+      return 1;
+    case CypherDate ignored:
+      return 2;
+    case CypherTime ignored:
+      return 3;
+    case CypherLocalTime ignored:
+      return 4;
+    case CypherDuration ignored:
+      return 5;
+    case Duration ignored:
+      return 5;
+    case Period ignored:
+      return 5;
+    case null, default:
+      break;
+    }
+    if (!TemporalUtil.isNativeTemporal(value))
+      return -1;
+    // A native java.time / java.util.Date value ranks as the Cypher type it is wrapped in
+    return TemporalUtil.fromCoreJavaType(value) instanceof CypherTemporalValue wrapped ? temporalTypeRank(wrapped) : -1;
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })

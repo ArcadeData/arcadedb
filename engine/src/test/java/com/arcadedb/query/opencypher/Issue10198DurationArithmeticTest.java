@@ -280,6 +280,14 @@ class Issue10198DurationArithmeticTest extends TestHelper {
     final SQLFunctionSum durations = new SQLFunctionSum();
     durations.execute(null, null, null, new Object[] { CypherDuration.parse("P1D") }, null);
     assertThatThrownBy(() -> numbers.mergePartial(durations)).hasMessageContaining("cannot mix numbers and durations");
+    // The unboxed per-row path refuses a number after a duration, and a duration after a number, the same way
+    final SQLFunctionSum durationFirst = new SQLFunctionSum();
+    durationFirst.aggregate(null, new Object[] { CypherDuration.parse("P1D") }, null);
+    assertThatThrownBy(() -> durationFirst.aggregate(null, new Object[] { 5 }, null)).hasMessageContaining("cannot mix numbers and durations");
+    final SQLFunctionSum numberFirst = new SQLFunctionSum();
+    numberFirst.aggregate(null, new Object[] { 5L }, null);
+    assertThatThrownBy(() -> numberFirst.aggregate(null, new Object[] { CypherDuration.parse("P1D") }, null))
+        .hasMessageContaining("cannot mix numbers and durations");
 
     final CypherAvgFunction avgA = new CypherAvgFunction();
     final CypherAvgFunction avgB = new CypherAvgFunction();
