@@ -1390,5 +1390,6 @@ function copyInstanceId(button) {
     icon.removeClass("fa-copy").addClass("fa-check");
     setTimeout(function () { icon.removeClass("fa-check").addClass("fa-copy"); }, 1500);
   };
+  // last resort is a prompt, not a toast: the id is a value the user may want to copy by hand
   copyTextToClipboard(id).then(done, function () { window.prompt("Instance ID", id); });
 }

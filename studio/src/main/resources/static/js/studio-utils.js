@@ -294,8 +294,9 @@ function copyTextToClipboard(text) {
       const area = document.createElement("textarea");
       area.value = value;
       area.setAttribute("readonly", "");
-      area.setAttribute("aria-hidden", "true");
+      // no aria-hidden: the textarea takes focus, and Chrome warns about a focused aria-hidden element
       area.style.position = "fixed";
+      area.style.fontSize = "16px"; // iOS Safari zooms the page on focusing anything smaller
       area.style.top = "0";
       area.style.left = "-9999px";
       area.style.opacity = "0";

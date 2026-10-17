@@ -62,7 +62,7 @@ function blockFrom(src, start) {
 
 // A just-enough DOM: records what the fallback appends, selects and copies, and what is left behind afterwards.
 function fakeDom({ execCopy = "ok", modals = 0 } = {}) {
-  const log = { copied: null, execCalls: 0, selected: false, focusRestored: false };
+  const log = { copied: null, execCalls: 0, selected: false, focusRestored: false, areas: [] };
   const makeHost = () => ({
     children: [],
     appendChild(el) {
@@ -98,6 +98,7 @@ function fakeDom({ execCopy = "ok", modals = 0 } = {}) {
         },
         setSelectionRange() {},
       };
+      log.areas.push(el);
       return el;
     },
     execCommand(cmd) {
@@ -224,6 +225,19 @@ test("with stacked modals the textarea goes into the one on top (the last open)"
   assert.equal(dom.log.copied, "settings");
   assert.deepEqual(hosts, [dom.modalEls[1]], "only the topmost modal may host the textarea");
   assert.equal(dom.body.children.length, 0);
+});
+
+test("the temporary textarea is not aria-hidden (it takes focus) and has a 16px font (no iOS zoom on focus)", async () => {
+  const dom = fakeDom();
+  const copy = loadHelper({ navigator: {}, document: dom.document });
+
+  await copy("hello");
+
+  assert.equal(dom.log.areas.length, 1);
+  const area = dom.log.areas[0];
+  assert.equal(area.attrs["aria-hidden"], undefined, "Chrome warns about a focused aria-hidden element");
+  assert.equal(area.attrs.readonly, "", "readonly keeps the on-screen keyboard away on mobile");
+  assert.equal(area.style.fontSize, "16px");
 });
 
 test("copies an empty or missing value as an empty string instead of throwing", async () => {
