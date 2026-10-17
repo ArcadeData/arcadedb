@@ -246,7 +246,9 @@ class Issue10208ViewVertexSubtypesTest {
           .until(() -> view.getStatus() == GraphAnalyticalView.Status.STALE);
       database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW g");
     }
-    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    // the incremental modes dispatch the rebuild off the query thread: until it starts, the view still reads READY
+    Awaitility.await("the rebuild read Y").atMost(30, TimeUnit.SECONDS)
+        .until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.getNodeCount() == 7);
     assertThat(view.getNodeCount()).as("the rebuild read Y").isEqualTo(7);
     assertThat(view.coversVertexType("Y")).isTrue();
     assertServedByTheViewAndRight();
