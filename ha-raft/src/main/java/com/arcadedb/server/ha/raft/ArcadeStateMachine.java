@@ -7542,6 +7542,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * put a value on disk the cluster may refuse and hide the change from the difference between memory and file that
    * {@code RaftReplicatedDatabase} submits. On the apply thread, like every other write of a replicated configuration, so
    * no apply of the same database can interleave with it.
+   * <p>
+   * Driven by applied entries, as {@link SecurityDurabilityFloor#retryIfDue} is: on a cluster that applies nothing the hold
+   * waits for the next entry, which costs nothing, since an entry applied is also the only thing that grows the Raft log.
    */
   private void retryHeldConfigurationsIfDue() {
     if (heldConfigurations.isEmpty())
@@ -7552,6 +7555,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     nextConfigurationRetryNanos = now + TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
 
+    final List<String> failed = new ArrayList<>(0);
     String lastFailure = null;
     for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet()) {
       final String databaseName = entry.getKey();
@@ -7565,6 +7569,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               LocalDatabase.CONFIGURATION_FILE_NAME);
       } catch (final IOException | RuntimeException e) {
         // Runs inside applyTransaction, whose catch-all halts the node: a retry that cannot run is a retry for later
+        failed.add(databaseName);
         lastFailure = databaseName + ": " + e;
         LogManager.instance().log(this, Level.FINE, "Could not write the held configuration of database '%s' again: %s",
             databaseName, e.getMessage());
@@ -7576,8 +7581,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING,
           "Replicated database configurations are still not written to disk on this node after %d retries (%s): the Raft "
               + "log is not compacted past the lowest held entry, and grows until the database directory takes the write "
-              + "again (issue #10124). Last failure: %s", failedConfigurationRetries, heldConfigurations.keySet(),
-          lastFailure);
+              + "again (issue #10124). Last failure: %s", failedConfigurationRetries, failed, lastFailure);
   }
 
   /** Paces {@link #retryHeldConfigurationsIfDue} on {@code clock} instead of {@link System#nanoTime()}, for a test. */
