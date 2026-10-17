@@ -2606,7 +2606,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // where no listener is active and a committing tx's delta is lost.
     final DeltaCollector oldCollector = this.deltaCollector;
     this.updateMode = newMode;
-    // Leaving ASYNCHRONOUS: what it queued is merged now, so a SYNCHRONOUS view has no stale window to begin with
+    // Leaving ASYNCHRONOUS: what it queued is merged now, so a SYNCHRONOUS view has no stale window to begin with. On the
+    // caller's thread, under the monitor: the backlog is bounded by the queue's cap, and a mode switch is a rare admin call
     mergeQueuedAsyncDeltas();
     if (snapshot != null || buildWatch != null)
       registerChangeListeners();
