@@ -234,6 +234,57 @@ class Issue10189AsyncViewServesWhileUpdatingTest {
   }
 
   @Test
+  void aQueueTheMergeCannotKeepUpWithRebuildsTheView() {
+    final GraphAnalyticalView view = createView();
+    view.setMaxQueuedAsyncDeltasForTest(2);
+
+    // the merge waits on the view's monitor, so the third commit finds the queue full
+    synchronized (view) {
+      for (int i = 0; i < 3; i++)
+        addEdge(i, (i + 9) % VERTICES);
+      assertThat(view.getStatus()).as("the queue was dropped for a rebuild").isEqualTo(GraphAnalyticalView.Status.BUILDING);
+    }
+
+    final long expected = countOnRecords();
+    Awaitility.await("the rebuilt view answers").atMost(30, TimeUnit.SECONDS).ignoreExceptionsInstanceOf(NeedRetryException.class)
+        .until(() -> view.awaitReady(1, TimeUnit.SECONDS) && plan().contains("GAV") && count() == expected);
+  }
+
+  @Test
+  void commitsRacingFullRebuildsAllReachTheView() throws Exception {
+    final GraphAnalyticalView view = createView();
+
+    final ExecutorService pool = Executors.newFixedThreadPool(3);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < 2; t++) {
+        final int offset = t;
+        futures.add(pool.submit(() -> {
+          for (int i = 0; i < 40; i++) {
+            final int from = (offset * 40 + i) % VERTICES;
+            database.transaction(() -> rids[from].asVertex().modify().newEdge("K", rids[(from + 5) % VERTICES].asVertex()),
+                false, 10);
+          }
+        }));
+      }
+      futures.add(pool.submit(() -> {
+        for (int i = 0; i < 5; i++)
+          view.buildAsync();
+      }));
+      for (final Future<?> future : futures)
+        future.get(60, TimeUnit.SECONDS);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    final long expected = countOnRecords();
+    Awaitility.await("the view answers what the records hold").atMost(30, TimeUnit.SECONDS)
+        .ignoreExceptionsInstanceOf(NeedRetryException.class)
+        .until(() -> view.awaitReady(1, TimeUnit.SECONDS) && count() == expected);
+    assertThat(plan()).contains("GAV");
+  }
+
+  @Test
   void aViewClosedRightAfterACommitReopensWithIt() {
     createView();
     addEdge(0, 10);

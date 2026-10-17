@@ -364,9 +364,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
   // How many queued changes one merge task merges under this instance's monitor before letting other callers in
   private static final int                        ASYNC_MERGE_BATCH = 1024;
+  // Past this many changes waiting, the queue is dropped for a rebuild. Only lowered by setMaxQueuedAsyncDeltasForTest()
+  private volatile int                            maxQueuedAsyncDeltas = MAX_PENDING_DELTAS;
+  // Bumped by every publication of a full build or a restore, before the build's watch is cleared: a queued change that
+  // was not buffered in a watch, and whose commit callback saw an older count, committed before that build's scan
+  // started, so the base it would be merged into already holds it (issue #10189)
+  private volatile long                           baseReplacements;
 
-  /** A committed change waiting for the asynchronous merge, with the base it was buffered against (see {@link #applyDelta}). */
-  private record QueuedDelta(TxDelta delta, Map<String, CSRAdjacencyIndex> bufferedAgainst) {
+  /**
+   * A committed change waiting for the asynchronous merge, with the base it was buffered against (see {@link #applyDelta})
+   * and, for one buffered against none, the {@link #baseReplacements} its commit callback saw.
+   */
+  private record QueuedDelta(TxDelta delta, Map<String, CSRAdjacencyIndex> bufferedAgainst, long baseReplacementsSeen) {
   }
 
   // SYNCHRONOUS and ASYNCHRONOUS: the graph changed in a way no build dispatched since has scanned and no delta can bring
@@ -670,6 +679,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   private void publishBuild(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
       final String[] builtVertexTypes, final String[] builtEdgeTypes, final BuildWatch watch) {
+    // Before the watch is cleared: a commit callback that finds no watch then sees this publication counted
+    ++baseReplacements;
     final List<TxDelta> buffered = watch.close();
     if (buildWatch == watch)
       buildWatch = null;
@@ -880,6 +891,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * If the view is still a deferred restore-from-disk (see #6632), this is one of the two ways — the
    * other being a real query, via {@link #checkBuilt()} — that dispatches it: an explicit status wait is
    * a legitimate signal that the caller wants the view actually resolved, not just optimistically READY.
+   *
+   * An {@code ASYNCHRONOUS} view also waits for the commits not merged yet (issue #10189).
    *
    * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
@@ -3348,6 +3361,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return true;
     }
 
+    ++baseReplacements;
     this.snapshot = restored;
     baseWatch = null;
     // The restored CSR is as of the last commit: a change still queued is in it
@@ -3615,23 +3629,26 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     // Counted before it is queued: from here on the view reports STALE, so the committing thread's next query does not
     // read a snapshot without its own change, unless the view is allowed to serve stale (issue #10189)
-    if (asyncDeltaLag.incrementAndGet() > MAX_PENDING_DELTAS) {
+    if (asyncDeltaLag.incrementAndGet() > maxQueuedAsyncDeltas) {
       asyncDeltaLag.decrementAndGet();
       onAsyncDeltaQueueOverflow();
       return;
     }
-    asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst));
+    // Read after onCommittedDelta() read the build watch, so a build whose watch was not open then is counted only if it
+    // publishes later: its scan started after this commit, and holds it
+    asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst, baseReplacements));
     scheduleAsyncMerge();
   }
 
   /**
    * More committed changes are waiting than {@link #MAX_PENDING_DELTAS}: the merge cannot keep up, and holding them all
    * would grow without bound. They are dropped for a rebuild, which reads them from the graph, as a build watch that
-   * overflows does; the view is STALE meanwhile.
+   * overflows does; the view is STALE meanwhile. Reached only when the merge falls a whole queue behind the commits, so
+   * it costs one warning and one rebuild per queue-full.
    */
   private synchronized void onAsyncDeltaQueueOverflow() {
     LogManager.instance().log(this, Level.WARNING,
-        "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, MAX_PENDING_DELTAS);
+        "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, maxQueuedAsyncDeltas);
     discardQueuedAsyncDeltas();
     followUpRebuildPending = true;
     status = Status.STALE;
@@ -3686,6 +3703,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     QueuedDelta queued;
     for (int merged = 0; merged < max && (queued = asyncDeltas.poll()) != null; ++merged) {
       try {
+        // Runs on a GAV worker, as the compaction's own applyDelta() does: the merge works on RIDs and the view's
+        // mappings and reads no record. A full build or a restore that published since the commit holds it already
+        if (queued.bufferedAgainst() == null && queued.baseReplacementsSeen() != baseReplacements)
+          continue;
         applyDelta(queued.delta(), queued.bufferedAgainst());
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
@@ -4380,6 +4401,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   static void acquireAllBuildPermitsForTest() {
     BUILD_PERMITS.acquireUninterruptibly(MAX_CONCURRENT_BUILDS);
+  }
+
+  /** Test-only hook: lowers the number of committed changes an ASYNCHRONOUS view queues before it rebuilds instead. */
+  void setMaxQueuedAsyncDeltasForTest(final int max) {
+    this.maxQueuedAsyncDeltas = max;
   }
 
   /** Test-only hook: releases the permits taken by {@link #acquireAllBuildPermitsForTest()}. */

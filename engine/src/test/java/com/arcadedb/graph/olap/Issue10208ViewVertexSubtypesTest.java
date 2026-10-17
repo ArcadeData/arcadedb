@@ -157,6 +157,38 @@ class Issue10208ViewVertexSubtypesTest {
     assertServedByTheViewAndRight();
   }
 
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aSubTypeCreatedAfterTheBuildSurvivesAReopen(final GraphAnalyticalView.UpdateMode mode) {
+    createView(mode);
+    database.getSchema().createVertexType("X").addSuperType("W");
+    database.transaction(() -> {
+      final MutableVertex x = database.newVertex("X").set("pid", 7).save();
+      final MutableVertex first = database.select().fromType("V").where().property("pid").eq().value(0).vertices().next()
+          .modify();
+      first.newEdge("F", x);
+      x.newEdge("F", first);
+    });
+    assertThat(GraphAnalyticalViewRegistry.get(database, "g").awaitReady(30, TimeUnit.SECONDS)).isTrue();
+
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+    final GraphAnalyticalView reopened = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(reopened.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(reopened.coversVertexType("X")).isTrue();
+    assertThat(reopened.getNodeCount()).isEqualTo(7);
+    assertServedByTheViewAndRight();
+
+    // closed again with nothing changed: this time the CSR is restored from disk, sub-type included
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(restored.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr()).isTrue();
+    assertThat(restored.getNodeCount()).isEqualTo(7);
+    assertServedByTheViewAndRight();
+  }
+
   private GraphAnalyticalView createView(final GraphAnalyticalView.UpdateMode mode) {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (V) EDGE TYPES (E) UPDATE MODE " + mode);
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g");
