@@ -362,13 +362,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final ConcurrentLinkedQueue<QueuedDelta> asyncDeltas      = new ConcurrentLinkedQueue<>();
   private final AtomicInteger                     asyncDeltaLag    = new AtomicInteger();
   private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
-  // How many queued changes one merge task merges under this instance's monitor before letting other callers in
-  private static final int                        ASYNC_MERGE_BATCH = 1024;
+  // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
+  // compaction swap or a build publication never waits behind a long backlog
+  private static final int                        ASYNC_MERGE_BATCH = 64;
   // Past this many changes waiting, the queue is dropped for a rebuild. Only lowered by setMaxQueuedAsyncDeltasForTest()
   private volatile int                            maxQueuedAsyncDeltas = MAX_PENDING_DELTAS;
   // Bumped by every publication of a full build or a restore, before the build's watch is cleared: a queued change that
   // was not buffered in a watch, and whose commit callback saw an older count, committed before that build's scan
-  // started, so the base it would be merged into already holds it (issue #10189)
+  // started, so the base it would be merged into already holds it (issue #10189). Written only under this instance's
+  // monitor, which is what makes the ++ safe; read without it
   private volatile long                           baseReplacements;
 
   /**
@@ -3667,7 +3669,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     try {
       getExecutor().execute(() -> {
         try {
-          mergeQueuedAsyncDeltas(ASYNC_MERGE_BATCH);
+          // One batch per hold of the monitor, until the queue is empty
+          while (!shutDown && mergeQueuedAsyncDeltas(ASYNC_MERGE_BATCH))
+            Thread.yield();
         } finally {
           asyncMergeQueued.set(false);
           taskCompleted();
@@ -3692,13 +3696,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     mergeQueuedAsyncDeltas(Integer.MAX_VALUE);
   }
 
+
   /**
    * Merges up to {@code max} queued deltas into the overlay, in the order they were queued, exactly as the SYNCHRONOUS
    * callback merges one (issue #10189), and wakes the callers of {@link #awaitReady} once none is left. A delta that cannot
    * be merged leaves the view STALE and rebuilds it: it is not in the overlay, and dropping it would serve a graph that
    * never existed.
+   *
+   * @return whether deltas are left in the queue
    */
-  private synchronized void mergeQueuedAsyncDeltas(final int max) {
+  private synchronized boolean mergeQueuedAsyncDeltas(final int max) {
     boolean failed = false;
     QueuedDelta queued;
     for (int merged = 0; merged < max && (queued = asyncDeltas.poll()) != null; ++merged) {
@@ -3722,7 +3729,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // discards its own result rather than publish a base without the change
       rebuildAfterPublication();
     }
-    notifyAll();
+    final boolean more = !asyncDeltas.isEmpty();
+    if (!more)
+      notifyAll();
+    return more;
   }
 
   /**
