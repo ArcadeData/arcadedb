@@ -391,6 +391,13 @@ public class GraphEngine {
       throw deletedEndpoint(toVertexRID, "destination");
   }
 
+  /** The destination half of {@link #checkEndpointsNotDeletedInTransaction}, for a batch whose source was checked once. */
+  private static void checkDestinationNotDeletedInTransaction(final DatabaseInternal database, final RID toVertexRID) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && toVertexRID != null && tx.isDeletedInTransaction(toVertexRID))
+      throw deletedEndpoint(toVertexRID, "destination");
+  }
+
   private static VertexNotFoundException deletedEndpoint(final RID vertexRID, final String side) {
     return new VertexNotFoundException(
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
@@ -516,6 +523,7 @@ public class GraphEngine {
       return Collections.emptyList();
 
     final RID sourceVertexRID = sourceVertex.getIdentity();
+    checkEndpointsNotDeletedInTransaction(database, sourceVertexRID, null);
 
     final List<Edge> edges = new ArrayList<>(connections.size());
     final List<Pair<Identifiable, Identifiable>> outEdgePairs = new ArrayList<>();
@@ -524,7 +532,7 @@ public class GraphEngine {
       final MutableEdge edge;
 
       final Identifiable destinationVertex = connection.destinationVertex;
-      checkEndpointsNotDeletedInTransaction(database, sourceVertexRID, destinationVertex.getIdentity());
+      checkDestinationNotDeletedInTransaction(database, destinationVertex.getIdentity());
 
       final EdgeType edgeType = getEdgeType(database, connection.edgeTypeName);
 

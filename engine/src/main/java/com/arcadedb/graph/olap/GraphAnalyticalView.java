@@ -1202,7 +1202,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
     if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
-      dispatchJoinedTypeRebuild("vertex", name);
+      dispatchJoinedTypeRebuild(true, name);
     return holds;
   }
 
@@ -1225,15 +1225,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type is already not
    * claimed.
    *
-   * @param kind "vertex" or "edge", for the log
+   * @param vertexType whether the type is a vertex type, or an edge type
    */
-  private void dispatchJoinedTypeRebuild(final String kind, final String typeName) {
+  private void dispatchJoinedTypeRebuild(final boolean vertexType, final String typeName) {
     inFlightTasks.incrementAndGet();
     try {
       getExecutor().execute(() -> {
         try {
           if (!shutDown)
-            onTypeJoinedWithRecords(kind, typeName);
+            onTypeJoinedWithRecords(vertexType, typeName);
         } finally {
           taskCompleted();
           DatabaseContext.INSTANCE.removeCurrentThreadContexts();
@@ -1249,9 +1249,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * A type holding records no scan read joined the listed family: see {@link #holdsJoinedVertexType} and
    * {@link #holdsJoinedEdgeTypes}.
    */
-  private synchronized void onTypeJoinedWithRecords(final String kind, final String typeName) {
+  private synchronized void onTypeJoinedWithRecords(final boolean vertexType, final String typeName) {
     LogManager.instance().log(this, Level.INFO,
-        "GraphAnalyticalView '%s': %s type '%s' joined the view's types with records its CSR does not hold; %s", name, kind,
+        "GraphAnalyticalView '%s': %s type '%s' joined the view's types with records its CSR does not hold; %s", name,
+        vertexType ? "vertex" : "edge",
         typeName, updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
     if (updateMode == UpdateMode.OFF) {
       status = Status.STALE;
@@ -1390,7 +1391,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     joinedEdgeCoverage = new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null);
     if (unheld != null)
-      dispatchJoinedTypeRebuild("edge", unheld);
+      dispatchJoinedTypeRebuild(false, unheld);
     return unheld == null;
   }
 

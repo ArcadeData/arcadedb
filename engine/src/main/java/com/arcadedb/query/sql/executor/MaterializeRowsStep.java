@@ -90,7 +90,7 @@ public class MaterializeRowsStep extends AbstractExecutionStep {
           }
         }
       }
-    } catch (final RuntimeException e) {
+    } catch (final RuntimeException | Error e) {
       // THE STATEMENT FAILS, POSSIBLY BEFORE ITS CALLER HOLDS A RESULT SET TO CLOSE: GIVE THE HEAP BACK NOW
       heapLimit.release();
       heapLimit = null;

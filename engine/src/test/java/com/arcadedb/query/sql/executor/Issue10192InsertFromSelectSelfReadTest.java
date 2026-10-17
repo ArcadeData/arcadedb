@@ -140,6 +140,38 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
   }
 
   @Test
+  void targetReadOnlyThroughASubQueryIsGuarded() {
+    createType("A", "");
+    createType("T", "");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO A SET id = 1, a = 3, b = 4").close();
+      database.command("sql", "INSERT INTO T SET id = 7, a = 3, b = 4").close();
+    });
+
+    // T IS READ ONLY BY THE SUBQUERY OF THE PROJECTION: EVERY COPY SEES T AS IT WAS, ONE ROW
+    try (final ResultSet rs = database.command("sql",
+        "EXPLAIN INSERT INTO T FROM SELECT id + 100 AS id, (SELECT count(*) AS c FROM T)[0].c AS a FROM A")) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("MATERIALIZE");
+    }
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, (SELECT count(*) AS c FROM T)[0].c AS a FROM A")).isEqualTo(1);
+    assertThat(ids("T")).containsExactly(7L, 101L);
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void orderByAndLimitSeeTheStartingState() {
+    createType("T", "");
+    database.command("sql", "CREATE INDEX ON T (id) NOTUNIQUE").close();
+    database.transaction(() -> {
+      for (int i = 4; i <= 6; i++)
+        database.command("sql", "INSERT INTO T SET id = ?, a = 1", i).close();
+    });
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a FROM T WHERE id >= 4 ORDER BY id DESC LIMIT 2")).isEqualTo(2);
+    assertThat(ids("T")).containsExactly(4L, 5L, 6L, 105L, 106L);
+  }
+
+  @Test
   void bucketTargetIsGuardedToo() {
     createType("T", "");
     database.transaction(() -> database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close());

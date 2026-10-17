@@ -30,8 +30,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.*;
-import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.IntHashSet;
+import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.ArrayList;

@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
@@ -108,10 +109,11 @@ class Issue10196EdgeOnDeletedVertexTest extends TestHelper {
 
   @Test
   void sqlCreateEdgeFromAVertexDeletedEarlierInTheTransactionIsRefused() {
+    // THE LOOKUP OF THE ENDPOINT BY RID ALREADY FINDS NOTHING
     database.begin();
     database.command("sql", "DELETE FROM " + v1).close();
     assertThatThrownBy(() -> database.command("sql", "CREATE EDGE E FROM " + v1 + " TO " + v2).close())
-        .isInstanceOf(Exception.class);
+        .isInstanceOf(RecordNotFoundException.class);
     database.rollback();
 
     assertThat(edges()).isZero();
@@ -122,7 +124,8 @@ class Issue10196EdgeOnDeletedVertexTest extends TestHelper {
   void cypherCreateFromANodeDeletedEarlierInTheStatementIsRefused() {
     // NEO4J REFUSES IT TOO: THE NODE WAS DELETED IN THIS TRANSACTION
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
-        "MATCH (a:N {uid: 1}), (b:N {uid: 2}) DETACH DELETE a CREATE (a)-[:E]->(b)").close())).isInstanceOf(Exception.class);
+        "MATCH (a:N {uid: 1}), (b:N {uid: 2}) DETACH DELETE a CREATE (a)-[:E]->(b)").close()))
+        .hasMessageContaining("node `a` was deleted in this transaction");
 
     assertThat(edges()).isZero();
     assertThat(database.existsRecord(v1)).isTrue();

@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Created by luigidellaquila on 08/08/16.
@@ -50,6 +51,8 @@ public class InsertExecutionPlanner {
   protected Projection      returnStatement;
   protected SelectStatement selectStatement;
   protected boolean         onDuplicateKeySkip;
+
+  private static final Pattern NESTED_STATEMENT = Pattern.compile("\\(\\s*(SELECT|MATCH|TRAVERSE)\\b", Pattern.CASE_INSENSITIVE);
 
   public InsertExecutionPlanner() {
   }
@@ -238,7 +241,7 @@ public class InsertExecutionPlanner {
 
     // #10192 (Halloween problem): a SELECT that can read a bucket the statement writes to would meet the rows it inserts -
     // a scan per OR branch copies a row twice, an index range scan never ends - so it is drained before the first insert
-    if (readsAny(subPlan, targetBucketIds(effectiveTargetType, context)))
+    if (hasExpressionSubQuery(selectStatement) || readsAny(subPlan, targetBucketIds(effectiveTargetType, context)))
       result.chain(new MaterializeRowsStep(context));
 
     if (effectiveTargetType != null)
@@ -248,11 +251,22 @@ public class InsertExecutionPlanner {
   }
 
   /**
+   * Whether the SELECT nests a statement that its plan does not show. The planner lifts most subqueries into LET steps, whose plans
+   * {@link #readsAny} walks, but one buried in an expression - {@code (SELECT ...)[0].c} in a projection - is run row by row by the
+   * expression itself, and would read the rows inserted before. The AST offers no complete walk of its nodes, so this asks the
+   * statement's text, conservatively: a false positive (a string literal that looks like a subquery) only costs the barrier.
+   */
+  private static boolean hasExpressionSubQuery(final SelectStatement statement) {
+    return NESTED_STATEMENT.matcher(statement.toString()).find();
+  }
+
+  /**
    * @return the buckets the statement can write to: the target bucket when one is named, otherwise every bucket of the target
    * type (its own, not its sub-types': a record inserted into a type is never stored in a sub-type's bucket), or null when
    * they cannot be told, which is read as "any"
    */
   private Set<Integer> targetBucketIds(final Identifier effectiveTargetType, final CommandContext context) {
+    // com.arcadedb.engine.Bucket is spelled out below, as in the rest of this class: the parser's Bucket is imported
     final Schema schema = context.getDatabase().getSchema();
     final Set<Integer> bucketIds = new HashSet<>();
     if (targetBucket != null) {
