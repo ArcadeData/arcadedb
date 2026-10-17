@@ -23,9 +23,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -100,6 +103,25 @@ class Issue10186SqlNullGapsTest extends TestHelper {
   }
 
   @Test
+  void notInOverAParameterSetOrArrayHoldingANullIsUnknown() {
+    final Set<Object> set = new HashSet<>(Arrays.asList(4, null));
+    for (final Object right : new Object[] { set, new Object[] { 4, null }, Arrays.asList(4, null) }) {
+      final Map<String, Object> params = new HashMap<>();
+      params.put("p", right);
+      try (final ResultSet rs = database.query("sql", "SELECT name FROM T WHERE i NOT IN :p", params)) {
+        assertThat(rs.hasNext()).as(right.getClass().getSimpleName()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void anUnknownLikeDoesNotHideATrueBranchOfAnOr() {
+    assertThat(names("s LIKE 'x%' OR name = 'null'")).containsExactly("null");
+    assertThat(names("s NOT LIKE 'x%' OR name = 'null'")).containsExactly("null", "three");
+    assertThat(names("NOT (s LIKE 'x%' AND name = 'null')")).containsExactly("missing", "three");
+  }
+
+  @Test
   void aNullPatternParameterIsUnknown() {
     final Map<String, Object> params = new HashMap<>();
     params.put("p", null);
@@ -152,23 +174,23 @@ class Issue10186SqlNullGapsTest extends TestHelper {
     for (final String expr : new String[] { "i + 1", "1 + i", "i - 1", "1 - i", "-i", "i + 1 + 2", "1 + 2 * i", "i * 2 + 1", "i ^ 1",
         "1 ^ i", "i | 1", "1 | i", "i & 1", "null + null", "null - null", "date('2026-10-17', 'yyyy-MM-dd') - i",
         "date('2026-10-17', 'yyyy-MM-dd') + i", "i - date('2026-10-17', 'yyyy-MM-dd')", "duration(1, 'hour') + i", "i + duration(1, 'hour')" })
-      assertThat(value(expr)).as(expr).isNull();
+      assertThat(this.<Object>value(expr)).as(expr).isNull();
 
     // the non-null forms are unchanged
-    assertThat(((Number) valueOf("three", "i + 1 + 2")).intValue()).isEqualTo(6);
-    assertThat(((Number) valueOf("three", "-i")).intValue()).isEqualTo(-3);
-    assertThat(((Number) valueOf("three", "i ^ 1")).intValue()).isEqualTo(2);
-    assertThat(((Number) valueOf("three", "i | 4")).intValue()).isEqualTo(7);
+    assertThat(this.<Number>valueOf("three", "i + 1 + 2").intValue()).isEqualTo(6);
+    assertThat(this.<Number>valueOf("three", "-i").intValue()).isEqualTo(-3);
+    assertThat(this.<Number>valueOf("three", "i ^ 1").intValue()).isEqualTo(2);
+    assertThat(this.<Number>valueOf("three", "i | 4").intValue()).isEqualTo(7);
   }
 
   @Test
   void concatenationKeepsTreatingANullAsAbsent() {
-    assertThat(value("'a' + s")).isEqualTo("a");
-    assertThat(value("s + 'a'")).isEqualTo("a");
-    assertThat(value("'a' + i")).isEqualTo("a");
-    assertThat((List<Object>) value("[1, 2] + i")).containsExactly(1, 2);
-    assertThat((List<Object>) value("[1, 2] - i")).containsExactly(1, 2);
-    assertThat((Map<String, Object>) value("{'a': 1} - i")).containsOnlyKeys("a");
+    assertThat(this.<String>value("'a' + s")).isEqualTo("a");
+    assertThat(this.<String>value("s + 'a'")).isEqualTo("a");
+    assertThat(this.<String>value("'a' + i")).isEqualTo("a");
+    assertThat(this.<List<Object>>value("[1, 2] + i")).containsExactly(1, 2);
+    assertThat(this.<List<Object>>value("[1, 2] - i")).containsExactly(1, 2);
+    assertThat(this.<Map<String, Object>>value("{'a': 1} - i")).containsOnlyKeys("a");
   }
 
   @Test
@@ -222,11 +244,11 @@ class Issue10186SqlNullGapsTest extends TestHelper {
     }
   }
 
-  private Object value(final String expression) {
+  private <T> T value(final String expression) {
     return valueOf("null", expression);
   }
 
-  private Object valueOf(final String name, final String expression) {
+  private <T> T valueOf(final String name, final String expression) {
     try (final ResultSet rs = database.query("sql", "SELECT " + expression + " AS v FROM T WHERE name = ?", name)) {
       return rs.next().getProperty("v");
     }
