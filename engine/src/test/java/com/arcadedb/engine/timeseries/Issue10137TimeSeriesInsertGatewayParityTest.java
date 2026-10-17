@@ -54,13 +54,9 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
   private record Pair(String columnType, Object value) {
   }
 
-  /** The outcome of one write: the stored value, or {@link #REFUSED}. */
-  private static final Object REFUSED = new Object() {
-    @Override
-    public String toString() {
-      return "REFUSED";
-    }
-  };
+  /** The outcome of a refused write, with the reason the surface gave. */
+  private record Refused(String reason) {
+  }
 
   @Test
   void theSqlInsertAndTheGatewayReachTheSameOutcomeForEveryPair() throws Exception {
@@ -85,19 +81,44 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
         new Pair("DATETIME", 0L), new Pair("DATETIME", "2023-11-14 22:13:20"));
 
     final List<String> disagreements = new ArrayList<>();
-    for (int i = 0; i < pairs.size(); i++) {
-      final Pair pair = pairs.get(i);
-      final String typeName = "P" + i;
-      database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts FIELDS (c " + pair.columnType() + ") SHARDS 1");
+    int typeIdx = 0;
+    for (final Pair pair : pairs) {
+      // every pair as a FIELD, and as a TAG for the kinds a tag takes, since the fix covers both roles. The line protocol carries a
+      // tag as text only, so a tag is held to the contract itself (storableValue on the declared column) rather than to the gateway
+      final boolean asTagToo = switch (pair.columnType()) {
+        case "BOOLEAN", "STRING", "INTEGER", "LONG" -> true;
+        default -> false;
+      };
+      for (final boolean asTag : asTagToo ? new boolean[] { false, true } : new boolean[] { false }) {
+        final String typeName = "P" + typeIdx++;
+        database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts " + (asTag ?
+            "TAGS (c " + pair.columnType() + ") FIELDS (v DOUBLE)" :
+            "FIELDS (c " + pair.columnType() + ")") + " SHARDS 1");
 
-      final Object viaSql = viaSql(typeName, pair.value());
-      final Object viaGateway = viaGateway(typeName, pair.value());
-      if (!sameOutcome(viaSql, viaGateway))
-        disagreements.add(pair.value() + " (" + pair.value().getClass().getSimpleName() + ") -> " + pair.columnType() + ": SQL="
-            + viaSql + " GATEWAY=" + viaGateway);
+        final Object viaSql = viaSql(typeName, asTag, pair.value());
+        final Object viaGateway = asTag ? viaContract(typeName, pair.value()) : viaGateway(typeName, pair.value());
+        if (!sameOutcome(viaSql, viaGateway))
+          disagreements.add(pair.value() + " (" + pair.value().getClass().getSimpleName() + ") -> " + pair.columnType() + (asTag ?
+              " tag" :
+              " field") + ": SQL=" + viaSql + " GATEWAY=" + viaGateway);
+      }
     }
 
     assertThat(disagreements).as("pairs where SQL INSERT and the gateway disagree").isEmpty();
+  }
+
+  /** A multi-row {@code VALUES} refuses at the row whose value the column cannot hold, as a single row does. */
+  @Test
+  void aMultiRowValuesIsRefusedAtTheRowWithANumberForABooleanColumn() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE MV TIMESTAMP ts FIELDS (bo BOOLEAN) SHARDS 1");
+
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO MV (ts, bo) VALUES (7000, true), (7001, 1)"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("'bo'");
+    final List<Object[]> rows = rows("MV");
+    assertThat(rows.size()).as("at most the row before the refused one (a time series append commits on its own)")
+        .isLessThanOrEqualTo(1);
+    for (final Object[] row : rows)
+      assertThat(row[1]).isEqualTo(Boolean.TRUE);
   }
 
   /** The issue's literal repro: the statement refuses the point the line protocol refuses, naming the column. */
@@ -160,22 +181,35 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
     assertThat(rows("R")).isEmpty();
   }
 
-  private Object viaSql(final String typeName, final Object value) throws Exception {
+  private Object viaSql(final String typeName, final boolean asTag, final Object value) throws Exception {
     try {
-      database.command("sql", "INSERT INTO " + typeName + " SET ts = ?, c = ?", SQL_TS, value);
+      database.command("sql", "INSERT INTO " + typeName + " SET ts = ?, c = ?" + (asTag ? ", v = 1.0" : ""), SQL_TS, value);
     } catch (final CommandExecutionException e) {
       // only the statement's refusal counts as one: any other exception (a typo in the statement, a bare conversion error from the
       // document layer) fails the test instead of matching a gateway refusal by accident
-      return REFUSED;
+      return new Refused(e.getMessage());
     }
     return storedAt(typeName, SQL_TS);
+  }
+
+  /** What {@code storableValue} makes of the value, appended through the engine as the gateway appends it, and read back. */
+  private Object viaContract(final String typeName, final Object value) throws Exception {
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType(typeName);
+    final Object storable;
+    try {
+      storable = type.getTsColumn("c").storableValue(database, value);
+    } catch (final IllegalArgumentException e) {
+      return new Refused(e.getMessage());
+    }
+    type.getEngine().appendSamples(new long[] { GATEWAY_TS }, new Object[][] { { storable }, { 1.0d } });
+    return storedAt(typeName, GATEWAY_TS);
   }
 
   private Object viaGateway(final String typeName, final Object value) throws Exception {
     final WriteReport report = TimeSeriesGateway.write((DatabaseInternal) database,
         new ArrayList<>(List.of(new Sample(typeName, Map.of(), Map.of("c", value), GATEWAY_TS))));
     if (report.written() == 0)
-      return REFUSED;
+      return new Refused(String.join("; ", report.unreadableValues()));
     return storedAt(typeName, GATEWAY_TS);
   }
 
@@ -186,9 +220,17 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
     throw new AssertionError("no sample at " + ts + " in " + typeName);
   }
 
-  private static boolean sameOutcome(final Object a, final Object b) {
-    if (a == REFUSED || b == REFUSED)
-      return a == b;
+  /**
+   * Both stored the same value, or both refused for the same reason: the gateway reports {@code <type>.c (field): <reason>}, the
+   * statement and the contract the bare reason.
+   */
+  private static boolean sameOutcome(final Object sql, final Object gateway) {
+    if (sql instanceof Refused(final String sqlReason) && gateway instanceof Refused(final String gatewayReason))
+      return gatewayReason.equals(sqlReason) || gatewayReason.endsWith(": " + sqlReason);
+    if (sql instanceof Refused || gateway instanceof Refused)
+      return false;
+    final Object a = sql;
+    final Object b = gateway;
     if (a instanceof Number x && b instanceof Number y)
       return Double.compare(x.doubleValue(), y.doubleValue()) == 0;
     return a == null ? b == null : a.equals(b);

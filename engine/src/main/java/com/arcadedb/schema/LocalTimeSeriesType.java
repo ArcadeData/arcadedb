@@ -357,7 +357,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    * <p>
    * The TIMESTAMP column and the DATE/DATETIME columns keep the document conversion: a number written by SQL into a datetime is
    * epoch MILLIS whatever the column's precision, the contract issues #9643 and #9724 pinned, where the other surfaces read it as a
-   * count in the column's own unit.
+   * count in the column's own unit. Every other type a column can have ({@code TimeSeriesTypeBuilder} accepts BOOLEAN, STRING and
+   * the numeric types) has its own rule in {@code storableValue}.
    */
   public boolean skipsDocumentConversion(final String propertyName) {
     final ColumnDefinition col = getTsColumn(propertyName);
