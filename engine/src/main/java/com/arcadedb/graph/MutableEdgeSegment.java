@@ -516,11 +516,17 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public void setPrevious(final EdgeSegment previous) {
-    final RID nextRID = previous.getIdentity();
-    if (nextRID == null)
-      throw new IllegalArgumentException("Next chunk is not persistent");
+    setPrevious(previous.getIdentity());
+  }
+
+  /**
+   * Links to the previous chunk by its RID alone, for a caller that knows it without having the chunk loaded (GraphBatch, #9575).
+   */
+  public void setPrevious(final RID previous) {
+    if (previous == null)
+      throw new IllegalArgumentException("Previous chunk is not persistent");
     buffer.position(Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE);
-    database.getSerializer().serializeValue(database, buffer, BinaryTypes.TYPE_RID, nextRID); // NEXT
+    database.getSerializer().serializeValue(database, buffer, BinaryTypes.TYPE_RID, previous); // PREVIOUS
   }
 
   @Override
