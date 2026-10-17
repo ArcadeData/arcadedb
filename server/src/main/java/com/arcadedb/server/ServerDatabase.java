@@ -468,6 +468,11 @@ public class ServerDatabase implements DatabaseInternal {
     return current().updateRecordReportingVeto(record);
   }
 
+  @Override
+  public void updateRecordWithoutEvents(final Record record) {
+    current().updateRecordWithoutEvents(record);
+  }
+
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     current().updateRecordNoLock(record, discardRecordAfter);
   }

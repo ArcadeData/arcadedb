@@ -1382,7 +1382,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (!events.onBeforeCreate(record))
       return false;
     if (record instanceof Document doc)
-      if (!((RecordEventsRegistry) doc.getType().getEvents()).onBeforeCreate(record))
+      if (!((LocalDocumentType) doc.getType()).fireBeforeCreate(record))
         return false;
 
     boolean success = false;
@@ -1456,7 +1456,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
       if (record instanceof Document doc)
-        ((RecordEventsRegistry) doc.getType().getEvents()).onAfterCreate(record);
+        ((LocalDocumentType) doc.getType()).fireAfterCreate(record);
 
     } finally {
       if (implicitTransaction) {
@@ -1604,7 +1604,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               "Cannot restore record at position " + position + " in bucket '" + bucket.getName()
                   + "': a database-level beforeCreate listener vetoed it");
         if (record instanceof Document doc)
-          if (!((RecordEventsRegistry) doc.getType().getEvents()).onBeforeCreate(record))
+          if (!((LocalDocumentType) doc.getType()).fireBeforeCreate(record))
             throw new DatabaseOperationException(
                 "Cannot restore record at position " + position + " in bucket '" + bucket.getName()
                     + "': a beforeCreate listener on type '" + doc.getTypeName() + "' vetoed it");
@@ -1616,7 +1616,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // INVOKE EVENT CALLBACKS - before the implicit commit, exactly where createRecordNoLock fires them.
         events.onAfterCreate(record);
         if (record instanceof Document doc)
-          ((RecordEventsRegistry) doc.getType().getEvents()).onAfterCreate(record);
+          ((LocalDocumentType) doc.getType()).fireAfterCreate(record);
 
         return restoredRid;
       } finally {
@@ -1696,12 +1696,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public boolean updateRecordReportingVeto(final Record record) {
-    return updateRecord(record, false, false);
+    return updateRecord(record, false, false, true);
+  }
+
+  @Override
+  public void updateRecordWithoutEvents(final Record record) {
+    updateRecord(record, false, false, false);
   }
 
   @Override
   public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
-    return updateRecord(record, true, discardRecordAfter);
+    return updateRecord(record, true, discardRecordAfter, true);
   }
 
   /**
@@ -1711,10 +1716,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * the events around the bare page write and miss the statistic, so the metrics endpoint undercounted every
    * asynchronous update (issue #9987).
    *
-   * @param writeNow true for the asynchronous worker: no database read lock, and the record is written to its page
-   *                 now, inside the caller's transaction, rather than queued for the commit
+   * @param writeNow   true for the asynchronous worker: no database read lock, and the record is written to its page
+   *                   now, inside the caller's transaction, rather than queued for the commit
+   * @param fireEvents false for the engine's own bookkeeping on a record, see {@link #updateRecordWithoutEvents(Record)}
    */
-  private boolean updateRecord(final Record record, final boolean writeNow, final boolean discardRecordAfter) {
+  private boolean updateRecord(final Record record, final boolean writeNow, final boolean discardRecordAfter,
+      final boolean fireEvents) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");
 
@@ -1725,21 +1732,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       document.validate();
 
     // INVOKE EVENT CALLBACKS
-    if (!events.onBeforeUpdate(record))
-      return false;
-    if (record instanceof Document document)
-      if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
+    if (fireEvents) {
+      if (!events.onBeforeUpdate(record))
         return false;
+      if (record instanceof Document document)
+        if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
+          return false;
+    }
 
     if (writeNow)
-      return applyUpdate(record, true, discardRecordAfter);
-    return executeInReadLock(() -> applyUpdate(record, false, false));
+      return applyUpdate(record, true, discardRecordAfter, fireEvents);
+    return executeInReadLock(() -> applyUpdate(record, false, false, fireEvents));
   }
 
   /**
-   * The write half of {@link #updateRecord(Record, boolean, boolean)}, after the before-update listeners let it through.
+   * The write half of {@link #updateRecord(Record, boolean, boolean, boolean)}, after the before-update listeners let it through.
    */
-  private boolean applyUpdate(final Record record, final boolean writeNow, final boolean discardRecordAfter) {
+  private boolean applyUpdate(final Record record, final boolean writeNow, final boolean discardRecordAfter,
+      final boolean fireEvents) {
     if (!writeNow && isTransactionActive()) {
       // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
       // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -1817,9 +1827,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
 
     // INVOKE EVENT CALLBACKS
-    events.onAfterUpdate(record);
-    if (record instanceof Document document)
-      ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
+    if (fireEvents) {
+      events.onAfterUpdate(record);
+      if (record instanceof Document document)
+        ((LocalDocumentType) document.getType()).fireAfterUpdate(record);
+    }
 
     return true;
   }
@@ -1977,7 +1989,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (!events.onBeforeDelete(record))
       return false;
     if (record instanceof Document document)
-      if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeDelete(record))
+      if (!((LocalDocumentType) document.getType()).fireBeforeDelete(record))
         return false;
 
     boolean success = false;
@@ -2088,7 +2100,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // INVOKE EVENT CALLBACKS
       events.onAfterDelete(record);
       if (record instanceof Document document)
-        ((RecordEventsRegistry) document.getType().getEvents()).onAfterDelete(record);
+        ((LocalDocumentType) document.getType()).fireAfterDelete(record);
 
       final TransactionContext transaction = getTransaction();
       if (record.getIdentity().getPosition() >= 0)
@@ -3528,8 +3540,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public Record invokeAfterReadEvents(Record record) {
-    final DocumentType recordType = record instanceof Document document ? document.getType() : null;
-    final RecordEventsRegistry typeEvents = recordType != null ? (RecordEventsRegistry) recordType.getEvents() : null;
+    // The type's own listeners and the triggers of its lineage, a trigger on a super type included (issue #10207)
+    final LocalDocumentType typeEvents = record instanceof Document document ? (LocalDocumentType) document.getType() : null;
 
     if (!events.hasAfterReadListeners() && (typeEvents == null || !typeEvents.hasAfterReadListeners()))
       return record;
@@ -3549,12 +3561,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
-  private Record dispatchAfterRead(Record record, final RecordEventsRegistry typeEvents) {
+  private Record dispatchAfterRead(Record record, final LocalDocumentType typeEvents) {
     // INVOKE EVENT CALLBACKS
     record = events.onAfterRead(record);
     if (record == null)
       return null;
-    return typeEvents != null ? typeEvents.onAfterRead(record) : record;
+    return typeEvents != null ? typeEvents.fireAfterRead(record) : record;
   }
 
   private void lockDatabase() {

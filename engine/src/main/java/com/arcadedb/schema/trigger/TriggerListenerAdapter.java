@@ -86,10 +86,10 @@ public class TriggerListenerAdapter implements
    * {@code AFTER READ}, which receives the materialised record.
    * <p>
    * No {@link #matchesType} call, and its absence is deliberate rather than an oversight: it is not skipped, it is
-   * ALREADY DONE. {@code LocalSchema.registerTriggerListener} registers this adapter on the TYPE's
-   * {@code RecordEventsRegistry}, and {@code getRecordInternal} resolves the type from the RID's bucket id and fires
-   * only that type's registry - so a listener never sees a RID from another type's bucket. Re-checking it here is
-   * what forced the record to be loaded in the first place.
+   * ALREADY DONE. {@code LocalSchema.registerTriggerListener} registers this adapter on the trigger registry of its TYPE,
+   * and {@code getRecordInternal} resolves the type from the RID's bucket id and fires the registries of that type's
+   * lineage only (the type and its super types, issue #10207) - so a listener never sees a RID of a record that is not an
+   * instance of its type. Re-checking it here is what forced the record to be loaded in the first place.
    */
   @Override
   public boolean onBeforeRead(final RID rid) {
@@ -161,13 +161,11 @@ public class TriggerListenerAdapter implements
   }
 
   /**
-   * Check if the record matches the trigger's type.
+   * Whether the record is an instance of the trigger's type: of the type itself or of any of its subtypes, the records
+   * {@code SELECT FROM <type>} returns (issue #10207). The dispatch already fires this adapter only for the records of its
+   * type's lineage, so this is the defensive check for a record that reached it some other way.
    */
   private boolean matchesType(final Record record) {
-    if (record instanceof Document) {
-      final String typeName = ((Document) record).getTypeName();
-      return typeName != null && typeName.equals(trigger.getTypeName());
-    }
-    return false;
+    return record instanceof Document document && document.getType().instanceOf(trigger.getTypeName());
   }
 }

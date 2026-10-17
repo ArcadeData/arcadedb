@@ -311,6 +311,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public void updateRecordWithoutEvents(Record record) {
+
+      }
+
+      @Override
       public void updateRecordNoLock(Record record, boolean discardRecordAfter) {
 
       }

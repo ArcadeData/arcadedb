@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.TransactionContext;
@@ -119,6 +121,12 @@ public class LocalDocumentType implements DocumentType {
   // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the
   // registry of every record's type (issue #9997)
   protected final RecordEventsRegistry              events;
+  // The triggers declared ON this type (issue #10207). Kept apart from the exact-type registry above because a trigger is
+  // polymorphic and a Java type listener is not: a record fires the triggers of its own type and of every super type,
+  // through the lineage below. Counted in the same BEFORE READ total as the registry above
+  protected final RecordEventsRegistry              triggerEvents;
+  // The trigger registries a record of this type fires, stamped with the schema's types serial they were computed at
+  private volatile TriggerLineage                   triggerLineage;
   // changed by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released: copy-on-write, an unmodifiable
   // map replaced as a whole, so neither a reader nor a schema reload ever sees it half changed (#9989)
   protected volatile Map<String, Object>            custom                       = Collections.emptyMap();
@@ -191,6 +199,7 @@ public class LocalDocumentType implements DocumentType {
     this.name = name;
     // NO SCHEMA ONLY FOR A TYPE BUILT DETACHED FROM ANY DATABASE (A TEST FIXTURE): NO READ OF A DATABASE REACHES IT
     this.events = schema != null ? schema.newTypeEventsRegistry() : new RecordEventsRegistry();
+    this.triggerEvents = schema != null ? schema.newTypeEventsRegistry() : new RecordEventsRegistry();
   }
 
   @Override
@@ -239,6 +248,157 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private record StoredStringConversions(long serial, boolean value) {
+  }
+
+  /**
+   * The registry the triggers declared on this type are registered on. Internal: {@link #getEvents()} is the one listeners
+   * registered from Java go to, and it keeps firing for records of this exact type only.
+   */
+  public RecordEventsRegistry getTriggerEvents() {
+    return triggerEvents;
+  }
+
+  /**
+   * Fires the BEFORE CREATE listeners of this type and the triggers a record of this type is subject to: see
+   * {@link #getTriggerLineage()}. False as soon as one vetoes the write.
+   */
+  public boolean fireBeforeCreate(final Record record) {
+    if (!events.onBeforeCreate(record))
+      return false;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (!registry.onBeforeCreate(record))
+          return false;
+    return true;
+  }
+
+  public void fireAfterCreate(final Record record) {
+    events.onAfterCreate(record);
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        registry.onAfterCreate(record);
+  }
+
+  public boolean fireBeforeUpdate(final Record record) {
+    if (!events.onBeforeUpdate(record))
+      return false;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (!registry.onBeforeUpdate(record))
+          return false;
+    return true;
+  }
+
+  public void fireAfterUpdate(final Record record) {
+    events.onAfterUpdate(record);
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        registry.onAfterUpdate(record);
+  }
+
+  public boolean fireBeforeDelete(final Record record) {
+    if (!events.onBeforeDelete(record))
+      return false;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (!registry.onBeforeDelete(record))
+          return false;
+    return true;
+  }
+
+  public void fireAfterDelete(final Record record) {
+    events.onAfterDelete(record);
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        registry.onAfterDelete(record);
+  }
+
+  public boolean hasBeforeReadListeners() {
+    if (events.hasBeforeReadListeners())
+      return true;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (registry.hasBeforeReadListeners())
+          return true;
+    return false;
+  }
+
+  public boolean fireBeforeRead(final RID rid) {
+    if (!events.onBeforeRead(rid))
+      return false;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (!registry.onBeforeRead(rid))
+          return false;
+    return true;
+  }
+
+  public boolean hasAfterReadListeners() {
+    if (events.hasAfterReadListeners())
+      return true;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (registry.hasAfterReadListeners())
+          return true;
+    return false;
+  }
+
+  /** As the registry's own {@code onAfterRead}: null as soon as a listener filters the record out. */
+  public Record fireAfterRead(Record record) {
+    record = events.onAfterRead(record);
+    if (record != null && hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage()) {
+        record = registry.onAfterRead(record);
+        if (record == null)
+          break;
+      }
+    return record;
+  }
+
+  /** One volatile read on a database without triggers, which is what keeps the walk below off every write path. */
+  private boolean hasTriggers() {
+    return schema != null && schema.hasTriggerListeners();
+  }
+
+  /**
+   * The trigger registries a record of this type fires (issue #10207): its own type's first, then every super type's,
+   * nearest first, so {@code ON TYPE P} covers a record of {@code S EXTENDS P} the way {@code SELECT FROM P} returns it, and
+   * an openCypher node labelled {@code :P:X} (type {@code P~X}) fires the triggers of both labels. A type reached through two
+   * paths - the labels of a composite type sharing a parent - is listed once, so its triggers fire once.
+   * <p>
+   * Computed once per change of the type graph, not per record: served only under the schema's types serial it was computed
+   * at, which every super type link and unlink moves. Read before the walk, so an answer computed while a link is landing
+   * carries the serial the link then moves, and is never served again.
+   */
+  private RecordEventsRegistry[] getTriggerLineage() {
+    final long serial = schema.getTypesChangeSerial();
+    final TriggerLineage cached = triggerLineage;
+    if (cached != null && cached.serial() == serial)
+      return cached.registries();
+
+    final List<LocalDocumentType> lineage = new ArrayList<>();
+    lineage.add(this);
+    for (int i = 0; i < lineage.size(); i++)
+      for (final LocalDocumentType superType : lineage.get(i).superTypes)
+        if (!containsInstance(lineage, superType))
+          lineage.add(superType);
+
+    final RecordEventsRegistry[] registries = new RecordEventsRegistry[lineage.size()];
+    for (int i = 0; i < registries.length; i++)
+      registries[i] = lineage.get(i).triggerEvents;
+    triggerLineage = new TriggerLineage(serial, registries);
+    return registries;
+  }
+
+  // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
+  private static boolean containsInstance(final List<LocalDocumentType> types, final LocalDocumentType type) {
+    for (final LocalDocumentType t : types)
+      if (t == type)
+        return true;
+    return false;
+  }
+
+  private record TriggerLineage(long serial, RecordEventsRegistry[] registries) {
   }
 
   @Override

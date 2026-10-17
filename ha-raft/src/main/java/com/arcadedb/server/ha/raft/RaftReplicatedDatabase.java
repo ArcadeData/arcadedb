@@ -1988,6 +1988,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public void updateRecordWithoutEvents(final Record record) {
+    proxied.updateRecordWithoutEvents(record);
+  }
+
+  @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     proxied.updateRecordNoLock(record, discardRecordAfter);
   }

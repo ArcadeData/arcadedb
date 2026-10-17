@@ -827,28 +827,18 @@ public final class Labels {
       schema.getOrCreateVertexType(label);
     }
 
-    if (!schema.existsType(compositeTypeName)) {
-      // Create composite type extending all labels
-      // Use the builder to add multiple supertypes
-      var builder = schema.buildVertexType()
-          .withName(compositeTypeName);
-
-      // Add each unique label as a supertype
-      for (final String label : uniqueLabels) {
+    // IF NOT EXISTS, whatever the schema looked like a moment ago: a type a statement needs implicitly is ensured, so another
+    // writer creating the same composite concurrently is never an error for either of them (issue #10145). The builder
+    // answers every case under the schema lock: missing (created extending every label), already complete (returned), and
+    // created by hand without inheritance (the missing super types linked, issue #3266). The lookup below only spares a label
+    // the existing type already inherits, directly or through another label, from being linked a second time (the builder
+    // knows direct super types only); it decides nothing, so a type created right after it is still answered by the builder
+    final DocumentType existing = schema.existsType(compositeTypeName) ? schema.getType(compositeTypeName) : null;
+    var builder = schema.buildVertexType().withName(compositeTypeName).withIgnoreIfExists(true);
+    for (final String label : uniqueLabels)
+      if (existing == null || !existing.instanceOf(label))
         builder = builder.withSuperType(label);
-      }
-
-      builder.create();
-    } else {
-      // Composite type already exists - ensure it has correct supertypes
-      // This handles the case where the type was created manually without inheritance
-      final var existingType = schema.getType(compositeTypeName);
-      for (final String label : uniqueLabels) {
-        if (!existingType.instanceOf(label)) {
-          existingType.addSuperType(label);
-        }
-      }
-    }
+    builder.create();
 
     return compositeTypeName;
   }
