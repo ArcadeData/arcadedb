@@ -229,11 +229,9 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
       return gatewayReason.equals(sqlReason) || gatewayReason.endsWith(": " + sqlReason);
     if (sql instanceof Refused || gateway instanceof Refused)
       return false;
-    final Object a = sql;
-    final Object b = gateway;
-    if (a instanceof Number x && b instanceof Number y)
+    if (sql instanceof Number x && gateway instanceof Number y)
       return Double.compare(x.doubleValue(), y.doubleValue()) == 0;
-    return a == null ? b == null : a.equals(b);
+    return sql == null ? gateway == null : sql.equals(gateway);
   }
 
   private List<Object[]> rows(final String typeName) throws Exception {
