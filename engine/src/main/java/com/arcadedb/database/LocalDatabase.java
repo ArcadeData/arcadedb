@@ -3225,6 +3225,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     for (int i = 0; i < removed.length(); i++)
       settingTokens.remove(tokenKey(GlobalConfiguration.PREFIX + removed.getString(i)));
 
+    writeConfigurationFile(changed, removed);
+  }
+
+  /**
+   * Writes a document {@link #pendingConfigurationChanges()} produced to {@code configuration.json} alone, leaving the
+   * configuration in memory as it is (issue #10124): for a replicated change already in force here whose write failed, so
+   * the file catches up with it once the volume takes the write again. Every setting the document does not name keeps the
+   * value the file holds, exactly as in {@link #applyConfigurationChanges(String)}, and for the same reason: memory may
+   * hold a change made on this node that is still on its way through the replication, which must not reach the file ahead
+   * of its own entry.
+   */
+  public void writeConfigurationChanges(final String changesJson) throws IOException {
+    final JSONObject changes = new JSONObject(changesJson);
+    synchronized (configurationApplyLock) {
+      writeConfigurationFile(changes.getJSONObject("configuration", new JSONObject()),
+          changes.getJSONArray("removed", new JSONArray()));
+    }
+  }
+
+  private void writeConfigurationFile(final JSONObject changed, final JSONArray removed) throws IOException {
     // Read-modify-write, so under the lock every writer of the file takes
     synchronized (configurationFileLock) {
       final JSONObject saved = readSavedConfiguration();
