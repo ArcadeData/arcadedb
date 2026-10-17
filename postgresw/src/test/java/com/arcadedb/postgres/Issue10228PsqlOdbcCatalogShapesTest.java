@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #10228: the catalog queries psql 17 ({@code \dt}, {@code \d "Person"}) and psqlodbc
@@ -554,10 +555,12 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     final String name = "x".repeat(40);
     database.transaction(() -> database.getSchema().createDocumentType(name));
 
-    // Declined rather than read as UNKNOWN, which the permissive filter would keep: a name filter that ran out of
-    // budget must not answer a row that does not match it.
-    assertThat(PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
-        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    // Refused rather than read as UNKNOWN, which the permissive filter would keep: a name filter that ran out of
+    // budget must not answer a row that does not match it, and an empty answer would look like an empty catalog.
+    assertThatThrownBy(() -> PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
+        database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
+    // A set operation naming no catalog relation is the SQL engine's to answer, budget or not.
+    assertThat(PostgresCatalog.resolve("select 1 union select 2", database, USER)).isNotNull();
     // The same pattern over names it is cheap on is answered: the conjunct before it excludes the long name first.
     assertThat(column(resolve("select relname from pg_class where relname <> '" + name + "' "
         + "and relname !~ '^(.*)(.*)(.*)(.*)(.*)Y$'"), "relname")).containsExactly("City", "Note", "Person");
@@ -599,8 +602,8 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         database.getSchema().createDocumentType("x".repeat(40) + i);
     });
 
-    assertThat(PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
-        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    assertThatThrownBy(() -> PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
+        database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
   }
 
   /** string_agg's delimiter is the one of the row whose value follows it, as in PostgreSQL. */
@@ -639,8 +642,9 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     for (int i = 0; i < 5_000; i++)
       exists.insert(0, "select 1 from pg_class where exists (").append(")");
     // Each level runs once per row of the one around it, so the depth bound alone would still leave 3^32
-    // evaluations: the work budget is what makes this return, and spending it declines the statement.
-    assertThat(PostgresCatalog.resolve(exists.toString(), database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    // evaluations: the work budget is what makes this return, and spending it refuses the statement.
+    assertThatThrownBy(() -> PostgresCatalog.resolve(exists.toString(), database, USER))
+        .isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
 
     final StringBuilder joins = new StringBuilder("pg_class c");
     for (int i = 0; i < 5_000; i++)

@@ -4168,6 +4168,8 @@ public class PostgresNetworkExecutor extends Thread {
       return copy.sqlState;
     if (error instanceof PostgresSessionSettings.SettingException setting)
       return setting.sqlState;
+    if (error instanceof PostgresCatalog.WorkLimitExceeded)
+      return PostgresCatalog.WorkLimitExceeded.SQLSTATE; // program_limit_exceeded (issue #10228)
     return switch (ErrorCategory.of(error)) {
       // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
       // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)

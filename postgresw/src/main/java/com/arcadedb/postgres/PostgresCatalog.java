@@ -112,6 +112,19 @@ public class PostgresCatalog {
    */
   private static final String PG_CATALOG_SCHEMA = "pg_catalog";
 
+  /**
+   * A catalog query that would spend more work than this server gives one statement - a client regular expression
+   * that backtracks, sub-selects correlated deep enough to multiply. The client is told so, with PostgreSQL's
+   * {@code program_limit_exceeded}, rather than handed an empty answer that would look like an empty catalog.
+   */
+  public static final class WorkLimitExceeded extends RuntimeException {
+    public static final String SQLSTATE = "54000";
+
+    WorkLimitExceeded() {
+      super("The catalog query needs more work than one statement may spend: simplify it");
+    }
+  }
+
   /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
   public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null, false);
 
@@ -359,13 +372,19 @@ public class PostgresCatalog {
     return resolveBounded(tokens, new Context(database, userName), false);
   }
 
-  /** Resolves a whole statement, declining it if it spends more work than it may (see {@link #WORK_BUDGET}). */
+  /**
+   * Resolves a whole statement. One that spends more work than it may (see {@link #WORK_BUDGET}) is refused with
+   * {@link WorkLimitExceeded} rather than declined: an empty answer would read as "no such relation", which is not
+   * what happened. A set operation naming no catalog relation is handed back to the SQL engine instead.
+   */
   private static Answer resolveBounded(final List<PostgresCatalogToken> tokens, final Context context,
       final boolean nested) {
     try {
       return resolveStatement(tokens, context, null, nested);
     } catch (final PostgresCatalogExpression.BudgetExceeded e) {
-      return DECLINED;
+      if (nested)
+        return null;
+      throw new WorkLimitExceeded();
     }
   }
 
@@ -543,7 +562,7 @@ public class PostgresCatalog {
    * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
    * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
    * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
-   * units; past the budget the statement is declined, as any shape this catalog will not answer is.
+   * units; past the budget the statement is refused with {@link WorkLimitExceeded}.
    */
   private static final long WORK_BUDGET = 5_000_000L;
 

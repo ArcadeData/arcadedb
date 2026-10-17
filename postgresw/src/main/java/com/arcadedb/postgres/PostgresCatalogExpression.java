@@ -663,7 +663,7 @@ abstract class PostgresCatalogExpression {
    * Thrown when a statement has spent the work it is allowed: a client regular expression's character reads, or
    * the catalog's statement budget. It is not an UNKNOWN operand: the permissive filter keeps a row an unreadable
    * predicate is evaluated on, and a name filter that ran out of budget would then answer rows that do not match.
-   * The catalog declines the whole statement instead. No stack trace: it is control flow, thrown on a hostile
+   * The catalog refuses the whole statement instead (see {@link PostgresCatalog.WorkLimitExceeded}). No stack trace: it is control flow, thrown on a hostile
    * query's hot path.
    */
   static final class BudgetExceeded extends RuntimeException {

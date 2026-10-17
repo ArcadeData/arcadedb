@@ -122,6 +122,30 @@ class Issue10228PsqlOdbcCatalogIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /**
+   * A catalog query that spends more work than one statement may is refused with PostgreSQL's
+   * program_limit_exceeded, over both protocols, rather than answered with an empty catalog - and the connection
+   * goes on working.
+   */
+  @Test
+  void aCatalogQueryOverItsWorkBudgetIsRefusedWithSqlState54000() throws Exception {
+    for (final String mode : List.of("extended", "simple")) {
+      try (final Connection connection = openJdbcConnection(mode)) {
+        try (final Statement statement = connection.createStatement()) {
+          statement.execute("CREATE DOCUMENT TYPE " + "x".repeat(40) + " IF NOT EXISTS");
+        }
+
+        assertThatThrownBy(() -> strings(connection,
+            "select relname from pg_catalog.pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'"))
+            .isInstanceOf(SQLException.class)
+            .satisfies(e -> assertThat(((SQLException) e).getSQLState()).as(mode).isEqualTo("54000"));
+
+        assertThat(strings(connection, "select relname from pg_catalog.pg_class where relname = 'Person10228'")).as(mode)
+            .isEmpty();
+      }
+    }
+  }
+
   /** A set operation over the user's own types is not a catalog query: the SQL engine still answers it. */
   @Test
   void aUnionOverAUserTypeIsStillTheSqlEnginesToAnswer() throws Exception {
@@ -157,8 +181,13 @@ class Issue10228PsqlOdbcCatalogIT extends PostgresWireProtocolTestBase {
   }
 
   private Connection openJdbcConnection() throws Exception {
+    return openJdbcConnection("extended");
+  }
+
+  private Connection openJdbcConnection(final String queryMode) throws Exception {
     Class.forName("org.postgresql.Driver");
     final Properties properties = new Properties();
+    properties.setProperty("preferQueryMode", queryMode);
     properties.setProperty("user", "root");
     properties.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     properties.setProperty("ssl", "false");
