@@ -121,13 +121,13 @@ class Issue9496GroupByAggregateTest extends TestHelper {
         final double price = row.getProperty("l_extendedprice");
         final Double discount = row.getProperty("l_discount");
         final Double tax = row.getProperty("l_tax");
-        // IN ARCADEDB SQL A NULL OPERAND OF + AND - IS IGNORED: 1 - null IS 1
-        final double discounted = discount == null ? 1 : 1 - discount;
-        final double taxed = tax == null ? 1 : 1 + tax;
+        // A NULL OPERAND OF THE ARITHMETIC MAKES THE PRODUCT NULL (#10186), AND sum() SKIPS IT
         acc[0] += quantity;
         acc[1] += price;
-        acc[2] += price * discounted;
-        acc[3] += price * discounted * taxed;
+        if (discount != null)
+          acc[2] += price * (1 - discount);
+        if (discount != null && tax != null)
+          acc[3] += price * (1 - discount) * (1 + tax);
         if (discount != null) {
           acc[6] += discount;
           acc[7]++;

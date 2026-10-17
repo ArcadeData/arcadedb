@@ -146,7 +146,8 @@ class Issue8666SqlLikePrefixIndexTest extends TestHelper {
   void whereTheIndexCannotHelpTheScanIsKept() {
     assertThat(count("s LIKE '%a'", Map.of())).isEqualTo(expected("", "a"));
     assertThat(plan("s LIKE '%a'", Map.of())).doesNotContain("FETCH FROM INDEX");
-    assertThat(count("NOT (s LIKE '0a%')", Map.of())).isEqualTo(VERTICES + EXTRAS.length + 1 - expected("0a", ""));
+    // the record without s is left out: NULL LIKE '0a%' is unknown and so is its negation (#10186)
+    assertThat(count("NOT (s LIKE '0a%')", Map.of())).isEqualTo(VERTICES + EXTRAS.length - expected("0a", ""));
     assertThat(plan("NOT (s LIKE '0a%')", Map.of())).doesNotContain("FETCH FROM INDEX D[s]");
     assertThat(count("u LIKE 'v12%'", Map.of())).isEqualTo(countU("v12"));
     assertThat(plan("u LIKE 'v12%'", Map.of())).doesNotContain("FETCH FROM INDEX");

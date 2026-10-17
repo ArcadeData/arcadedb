@@ -104,7 +104,8 @@ class Issue8303MapMinusNullTest {
       }
       try (final ResultSet rs = db.query("sql", "SELECT n - missing AS r, l - missing AS l2 FROM T")) {
         final var row = rs.next();
-        assertThat(row.<Object>getProperty("r")).isEqualTo(5);
+        // a NULL operand of numeric arithmetic is NULL (#10186); a list or a map minus NULL keeps the collection
+        assertThat(row.<Object>getProperty("r")).isNull();
         assertThat(row.<List<Object>>getProperty("l2")).containsExactly(1, 2, 3);
       }
     });

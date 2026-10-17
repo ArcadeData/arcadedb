@@ -92,6 +92,15 @@ public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
     return false;
   }
 
+  /**
+   * {@code NULL ILIKE 'x%'} is unknown, so {@code s NOT ILIKE 'x%'} leaves out a record without {@code s}, as {@code NOT (s = 'x')}
+   * does (#10186).
+   */
+  @Override
+  public boolean isUnknownOnNull() {
+    return true;
+  }
+
   @Override
   public boolean isLess() {
     return false;

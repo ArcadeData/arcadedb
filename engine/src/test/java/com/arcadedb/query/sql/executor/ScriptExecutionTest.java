@@ -220,7 +220,7 @@ class ScriptExecutionTest extends TestHelper {
 
     // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
     database.transaction(() ->
-      database.newDocument(typeName).set("id", 0).save());
+      database.newDocument(typeName).set("id", 0, "attempt", 0).save()); // attempt + 1 IS NULL ON A MISSING attempt (#10186)
 
     final int TOTAL = 1000;
     String script = """
@@ -276,7 +276,7 @@ class ScriptExecutionTest extends TestHelper {
 
     // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
     database.transaction(() ->
-      database.newDocument(typeName).set("id", 0).save());
+      database.newDocument(typeName).set("id", 0, "attempt", 0).save()); // attempt + 1 IS NULL ON A MISSING attempt (#10186)
 
     String script = """
         LET $retries = 0;

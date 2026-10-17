@@ -51,17 +51,20 @@ public class MatchesCondition extends BooleanExpression {
       if (val instanceof String string) {
         regex = string;
       } else {
-        return false;
+        return val == null ? null : false;
       }
     } else {
       final Object paramVal = rightParam.getValue(context.getInputParameters());
       if (paramVal instanceof String string) {
         regex = string;
       } else {
-        return false;
+        return paramVal == null ? null : false;
       }
     }
     final Object value = expression.execute(currentRecord, context);
+    // A NULL operand is unknown, so NOT (s MATCHES 'x.*') leaves out a record without s, like LIKE and = (#10186)
+    if (value == null)
+      return null;
 
     return matches(value, regex, context);
   }
@@ -114,17 +117,20 @@ public class MatchesCondition extends BooleanExpression {
       if (val instanceof String string) {
         regex = string;
       } else {
-        return false;
+        return val == null ? null : false;
       }
     } else {
       final Object paramVal = rightParam.getValue(context.getInputParameters());
       if (paramVal instanceof String string) {
         regex = string;
       } else {
-        return false;
+        return paramVal == null ? null : false;
       }
     }
     final Object value = expression.execute(currentRecord, context);
+    // A NULL operand is unknown, so NOT (s MATCHES 'x.*') leaves out a record without s, like LIKE and = (#10186)
+    if (value == null)
+      return null;
 
     return matches(value, regex, context);
   }
