@@ -36,6 +36,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAmount;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -43,6 +44,17 @@ public class MathExpression extends SimpleNode {
   private static final Object               NULL_VALUE       = new Object();
   public            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
   public final      List<Operator>       operators        = new ArrayList<>();
+
+  /**
+   * Whether a NULL on the other side of {@code +} or {@code -} makes the result NULL: SQL three-valued arithmetic for the scalar
+   * operands (a number, a date/time, a duration, or NULL itself), so {@code i - 4 < 6} is unknown for a NULL {@code i} as
+   * {@code i * 1 < 6} already was (#10186). A string, a list or a map keeps treating the NULL as absent, which is what
+   * concatenating into them needs. The list is deliberately the arithmetic types: any other value (a boolean, a binary, a
+   * record) is not added to anything by {@code +}, it is concatenated, so it keeps the concatenation behavior.
+   */
+  static boolean nullAbsorbing(final Object other) {
+    return other == null || other instanceof Number || other instanceof TemporalAmount || DateUtils.isDate(other);
+  }
 
   /**
    * Extracts a scalar value from a ResultSet for use in arithmetic operations.
@@ -60,7 +72,7 @@ public class MathExpression extends SimpleNode {
    * @param value the value to potentially extract from
    * @return the extracted scalar value, or the original value if extraction is not applicable
    */
-  private static Object extractScalarFromResultSet(Object value) {
+  static Object extractScalarFromResultSet(Object value) {
     if (value instanceof ResultSet resultSet && resultSet instanceof InternalResultSet internalResultSet) {
       // Check if we can extract a single scalar value
       if (internalResultSet.countEntries() == 1) {
@@ -329,13 +341,12 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Object apply(final Object left, final Object right) {
-        if (left == null && right == null)
-          return null;
-        else if (left == null)
-          return right;
-        else if (right == null)
-          return left;
-        else if (left instanceof Number && right instanceof Number)
+        if (left == null || right == null) {
+          // Arithmetic with a NULL is NULL, as `*`, `/` and `%` answer; concatenating a string, a list or a map keeps treating
+          // a NULL as absent (#10186)
+          final Object other = left == null ? right : left;
+          return nullAbsorbing(other) ? null : other;
+        } else if (left instanceof Number && right instanceof Number)
           return super.apply(left, right);
         else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
           final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
@@ -410,27 +421,20 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Object apply(final Object left, final Object right) {
+        // Arithmetic with a NULL is NULL, unary minus included (`-x` is `0 - x`), as `*`, `/` and `%` answer; `list - null` and
+        // `map - null` keep the collection (#10186, #8303)
+        if ((left == null || right == null) && nullAbsorbing(left == null ? right : left))
+          return null;
+
         Object result = null;
-        if (left == null && right == null) {
-          result = null;
-        } else if (left instanceof Number && right == null) {
-          result = left;
-        } else if (right instanceof Number number && left == null) {
-          result = apply(0, this, number);
-        } else if (left instanceof Number number && right instanceof Number number1) {
+        if (left instanceof Number number && right instanceof Number number1) {
           result = apply(number, this, number1);
         } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
-          if (left == null || right == null) {
-            // mirrors the Number branch above: `date - null` keeps the date (as `date + null` and `number - null`
-            // already do), and `null - date` has no meaningful negative of a date to fall back to, so it stays null
-            result = left;
-          } else {
-            final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
-            final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
-            final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
-            final Number r = apply(leftAsLong, rightAsLong);
-            result = Duration.of(r.longValue(), highestPrecision);
-          }
+          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+          final Number r = apply(leftAsLong, rightAsLong);
+          result = Duration.of(r.longValue(), highestPrecision);
         } else if (left instanceof Collection<?> leftColl) {
           final Collection<Object> coll = copyOf(leftColl);
           coll.remove(right);
@@ -439,7 +443,7 @@ public class MathExpression extends SimpleNode {
           final Map<Object, Object> mapLeft = copyOf(leftMap);
 
           // a null right operand (a null literal or a missing field) falls through every arm and answers the map
-          // unchanged, as `map + null`, `date - null`, `number - null` and `list - null` do (#8303)
+          // unchanged, as `map + null` and `list - null` do (#8303)
           if (right instanceof Map<?, ?> mapRight) {
             for (final Map.Entry<?, ?> entry : mapRight.entrySet()) {
               final Object key = entry.getKey();
@@ -631,16 +635,7 @@ public class MathExpression extends SimpleNode {
 
       @Override
       public Object apply(final Object left, final Object right) {
-        if (left == null && right == null) {
-          return null;
-        }
-        if (left instanceof Number number && right == null) {
-          return apply(number, this, 0);
-        }
-        if (right instanceof Number number && left == null) {
-          return apply(0, this, number);
-        }
-
+        // a NULL operand is NULL, as for `&` and the shifts, not a 0 (#10186)
         if (left instanceof Number number && right instanceof Number number1) {
           return apply(number, this, number1);
         }
@@ -677,10 +672,10 @@ public class MathExpression extends SimpleNode {
       }
 
       public Object apply(final Object left, final Object right) {
-        if (left == null && right == null) {
+        // a NULL operand is NULL, as for `&` and the shifts, not a 0 (#10186)
+        if (left == null || right == null)
           return null;
-        }
-        return super.apply(left == null ? 0 : left, right == null ? 0 : right);
+        return super.apply(left, right);
       }
 
     },
@@ -1044,7 +1039,9 @@ public class MathExpression extends SimpleNode {
         return null;
       }
       if (values.size() == 1) {
-        return values.getFirst();
+        // the stack holds NULL_VALUE for a null, which must not leak out as the result of `a + b * c` with a null operand
+        final Object result = values.getFirst();
+        return result == NULL_VALUE ? null : result;
       }
 
       final Deque valuesStack = new ArrayDeque<>();

@@ -150,16 +150,18 @@ public class UpdateItem extends SimpleNode {
         doc.setProperty(propName, newValue);
       break;
     case OPERATOR_MINUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.MINUS));
-      break;
     case OPERATOR_PLUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.PLUS));
+      // A NULL increment is nothing to add: the field is left as it is, absent included, and the record is not rewritten
+      if (MathExpression.extractScalarFromResultSet(rightValue) == null)
+        break;
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue,
+          operator == OPERATOR_PLUSASSIGN ? MathExpression.Operator.PLUS : MathExpression.Operator.MINUS));
       break;
     case OPERATOR_SLASHASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.SLASH));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH));
       break;
     case OPERATOR_STARASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.STAR));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.STAR));
       break;
     }
   }
@@ -228,16 +230,33 @@ public class UpdateItem extends SimpleNode {
     return value.stream().anyMatch(x -> x instanceof Result);
   }
 
-  private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final MathExpression.Operator explicitOperator) {
+  /**
+   * The new value of {@code x op= rightValue}. The right-hand side is the value {@link #applyUpdate} already computed, so a
+   * sub-query or a non-deterministic call on it runs once per record, not twice.
+   * <p>
+   * {@code +=} and {@code -=} increment a counter, so a NULL on either side counts as nothing: a missing or null field starts
+   * from it ({@code SET n += 1} sets 1, {@code SET n -= 1} sets -1) and a NULL increment never gets here, {@link #applyOperation}
+   * leaves the field as it is ({@code SET n += :unset} does not wipe {@code n}), while {@code n + 1} with a NULL {@code n} is
+   * NULL in an expression (#10186). {@code *=} and {@code /=} follow the expression: a NULL on either side gives NULL.
+   */
+  private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final Object rightValue,
+      final MathExpression.Operator explicitOperator) {
     final Expression leftEx = new Expression(left.copy());
     if (leftModifier != null)
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
 
-    final MathExpression mathExp = new MathExpression();
-    mathExp.getChildExpressions().add(leftEx.getMathExpression());
-    mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));
-    mathExp.getOperators().add(explicitOperator);
-    return mathExp.execute(doc, context);
+    final Object current = MathExpression.extractScalarFromResultSet(leftEx.execute(doc, context));
+    final Object operand = MathExpression.extractScalarFromResultSet(rightValue);
+    if (current == null) {
+      // nothing plus anything is that thing (a number, a string, a list); nothing minus a number is its negative, and
+      // nothing minus a string or a list has nothing to remove from, as `null - x` answers in MathExpression
+      if (explicitOperator == MathExpression.Operator.PLUS)
+        return operand;
+      if (explicitOperator == MathExpression.Operator.MINUS)
+        // (Object) picks the Object overload, which promotes 0 to the operand's numeric type
+        return operand instanceof Number ? explicitOperator.apply((Object) 0, operand) : null;
+    }
+    return explicitOperator.apply(current, operand);
   }
 
   public Identifier getLeft() {

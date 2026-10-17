@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
@@ -60,6 +61,9 @@ public class InCondition extends BooleanExpression {
    * sequence cannot.
    */
   private static final AtomicLong MEMO_KEY_SEQUENCE         = new AtomicLong();
+
+  /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
+  private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
 
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
@@ -254,15 +258,50 @@ public class InCondition extends BooleanExpression {
    * compared one way like {@code =} and the list forms (#8913). A row holding a collection keeps the IN-over-items behavior.
    */
   private static Object subQueryRowScalar(final Object item) {
-    if (item instanceof Result row && !row.isElement()) {
-      final Set<String> names = row.getPropertyNames();
-      if (names.size() == 1) {
-        final Object value = row.getProperty(names.iterator().next());
-        if (value != null && !MultiValue.isMultiValue(value))
-          return value;
-      }
+    if (item instanceof Result row) {
+      final Object value = singleRowValue(row);
+      if (value != NOT_A_SINGLE_VALUE_ROW && value != null && !MultiValue.isMultiValue(value))
+        return value;
     }
     return item;
+  }
+
+  /**
+   * The value of a sub-query row's only property (null included), or {@link #NOT_A_SINGLE_VALUE_ROW}. A plain
+   * {@link ResultInternal} answers without building its name set, which a {@code NOT IN (SELECT ...)} would otherwise pay
+   * for every sub-query row of every outer row; a subclass may resolve its properties differently, so it takes the
+   * general route.
+   */
+  private static Object singleRowValue(final Result row) {
+    if (row.getClass() == ResultInternal.class)
+      return ((ResultInternal) row).getSingleValue(NOT_A_SINGLE_VALUE_ROW);
+    if (row.isElement())
+      return NOT_A_SINGLE_VALUE_ROW;
+    final Set<String> names = row.getPropertyNames();
+    return names.size() == 1 ? row.getProperty(names.iterator().next()) : NOT_A_SINGLE_VALUE_ROW;
+  }
+
+  /**
+   * Whether the item is a sub-query row standing for a NULL ({@code SELECT k FROM U} over a record whose {@code k} is null). The
+   * planner hoists an {@code IN (SELECT ...)} into a LET, so the right-hand side arrives as a list of rows rather than of
+   * values, and the row itself is never null: without this, {@code 3 NOT IN (SELECT k ...)} over {@code 4, NULL} answered TRUE
+   * where the literal list {@code 3 NOT IN [4, null]} answers unknown (#10186). Only asked once the row did not match, so a
+   * matching row costs nothing extra. A row of several columns is a row, not a NULL, whatever it holds.
+   */
+  private static boolean isNullSubQueryRow(final Object item) {
+    return item instanceof Result row && singleRowValue(row) == null;
+  }
+
+  private static boolean containsNullItem(final Set<?> set) {
+    if (set.contains(null))
+      return true;
+    // A set of sub-query rows is homogeneous (every row comes from the same projection), so it is judged by its first item
+    // like the conversion probe above: a set of plain values, records or rows of several columns is never scanned
+    if (firstItem(set) instanceof Result first && singleRowValue(first) != NOT_A_SINGLE_VALUE_ROW)
+      for (final Object o : set)
+        if (isNullSubQueryRow(o))
+          return true;
+    return false;
   }
 
   // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
@@ -306,7 +345,7 @@ public class InCondition extends BooleanExpression {
             if (o != null && equalsEitherWay(iLeft, o, true))
               return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
-        return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
+        return iLeft == null || containsNullItem(set) ? null : Boolean.FALSE;
       }
 
       boolean sawNull = false;
@@ -319,6 +358,10 @@ public class InCondition extends BooleanExpression {
         }
         if (equalsEitherWay(iLeft, o, convertOperand))
           return Boolean.TRUE;
+        if (isNullSubQueryRow(o)) {
+          sawNull = true;
+          continue;
+        }
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
           final Object item = MultiValue.getFirstValue(iLeft);
@@ -343,6 +386,8 @@ public class InCondition extends BooleanExpression {
         }
         if (equalsEitherWay(iLeft, o, convertOperand))
           return Boolean.TRUE;
+        if (isNullSubQueryRow(o))
+          sawNull = true;
       }
       if (array.length == 0)
         return Boolean.FALSE;
@@ -362,6 +407,8 @@ public class InCondition extends BooleanExpression {
         // except for a record property on the left, which is not converted (#8913)
         if (convertOperand ? QueryOperatorEquals.equals(iLeft, o) : QueryOperatorEquals.equals(iLeft, subQueryRowScalar(o)))
           return Boolean.TRUE;
+        if (isNullSubQueryRow(o))
+          sawNull = true;
       }
       if (empty)
         return Boolean.FALSE;
