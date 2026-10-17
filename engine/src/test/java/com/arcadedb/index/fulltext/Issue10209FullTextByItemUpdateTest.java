@@ -162,6 +162,28 @@ class Issue10209FullTextByItemUpdateTest extends TestHelper {
     assertThat(metadata().getSumDocLength()).isEqualTo(2L);
   }
 
+  /** A list emptied and filled again: no posting while empty, the record still counted once all along. */
+  @Test
+  void aListEmptiedAndFilledAgainKeepsPostingsAndCountersRight() {
+    createType(" METADATA {\"similarity\": \"BM25\"}");
+    insertTheThreeLists();
+
+    setEveryListTo(List.of());
+    assertThat(found("beta")).isEmpty();
+    assertThat(metadata().getTotalDocs()).isEqualTo(3L);
+    assertThat(metadata().getSumDocLength()).isZero();
+
+    database.transaction(() -> database.command("sql", "UPDATE L SET tags = null"));
+    assertThat(found("beta")).isEmpty();
+    assertThat(metadata().getTotalDocs()).isEqualTo(3L);
+
+    setEveryListTo(List.of("beta", "gamma"));
+    assertThat(found("beta")).containsExactly(1, 2, 3);
+    assertThat(found("gamma")).containsExactly(1, 2, 3);
+    assertThat(metadata().getTotalDocs()).isEqualTo(3L);
+    assertThat(metadata().getSumDocLength()).isEqualTo(6L);
+  }
+
   /**
    * An index built before the fix counted one document per list ITEM. The first search of a session finds the persisted count
    * disagrees with the record count and recounts, now reading the lists, so the counters come back exact by themselves.

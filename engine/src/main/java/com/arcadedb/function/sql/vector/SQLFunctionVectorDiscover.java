@@ -234,14 +234,6 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
   }
 
   /**
-   * Reads a candidate's embedding for the per-pair margin scoring step. Tries the projected row
-   * first (zero IO when the upstream call included the property in its output) and falls back
-   * to {@code db.lookupByRID} when it is absent (the realistic case when {@code vector.neighbors}
-   * is composed without an explicit projection of the embedding column). Returns {@code null}
-   * when the record is gone, the property is missing on disk too, the value cannot be coerced
-   * to {@code float[]}, or the dimension does not match the expected width.
-   */
-  /**
    * A candidate's property: off the record the row carries, as the transaction sees it now (the row may hold the record as it
    * was before a write of the same transaction, issue #10217; deleted since, null), else off the projected row, else off the
    * record its RID loads. Only a row carrying just a RID pays the load (issue #10170).
@@ -262,6 +254,13 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     return loaded != null ? loaded.get(propertyName) : null;
   }
 
+  /**
+   * Reads a candidate's embedding for the per-pair margin scoring step, through {@link #readCandidateProperty}: zero IO when the
+   * row carries its record or the upstream call projected the property, a {@code db.lookupByRID} otherwise (the realistic case
+   * when {@code vector.neighbors} is composed without an explicit projection of the embedding column). Returns {@code null}
+   * when the record is gone, the property is missing on disk too, the value cannot be coerced to {@code float[]}, or the
+   * dimension does not match the expected width.
+   */
   private float[] readCandidateEmbedding(final BasicDatabase db, final RID rid, final Map<?, ?> row,
       final String propertyName, final int expectedDim) {
     final Object raw = readCandidateProperty(db, rid, row, propertyName);

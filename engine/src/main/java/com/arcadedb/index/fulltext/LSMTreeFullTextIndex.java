@@ -1051,6 +1051,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     LogManager.instance().log(this, Level.INFO, "Recomputing BM25 corpus statistics for type '%s' (full scan)", null, typeName);
 
     final DocumentIndexer indexer = db.getIndexer();
+    // One reusable holder for the length the key consumer below adds up: a lambda cannot assign a local
     final long[] len = new long[1];
     long docs = 0L;
     long sumLen = 0L;
