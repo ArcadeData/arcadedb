@@ -75,7 +75,10 @@ abstract class PostgresCatalogExpression {
       { "[:alnum:]", "\\p{Alnum}" }, { "[:upper:]", "\\p{Upper}" }, { "[:lower:]", "\\p{Lower}" },
       { "[:space:]", "\\p{Space}" }, { "[:punct:]", "\\p{Punct}" }, { "[:xdigit:]", "\\p{XDigit}" },
       { "[:cntrl:]", "\\p{Cntrl}" }, { "[:print:]", "\\p{Print}" }, { "[:graph:]", "\\p{Graph}" },
-      { "[:blank:]", "\\p{Blank}" } };
+      { "[:blank:]", "\\p{Blank}" }, { "[:word:]", "\\w" }, { "[:ascii:]", "\\p{ASCII}" } };
+
+  /** A POSIX class left after translation, which Java would read as a set of its characters rather than refuse. */
+  private static final Pattern UNTRANSLATED_POSIX = Pattern.compile("\\[:[A-Za-z<>]*:\\]");
 
   /** The aggregate functions an aggregated catalog query may project. */
   private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
@@ -674,7 +677,9 @@ abstract class PostgresCatalogExpression {
    * A PostgreSQL regular expression as java.util.regex reads it. The two agree on everything a catalog client
    * writes - anchors, groups, alternation, quantifiers, ordinary bracket expressions - except POSIX character
    * classes: Java compiles {@code [[:alpha:]]} without complaint as a set of the characters {@code [:alph}, which
-   * would answer a different question rather than fail. Those are translated, to Java's ASCII classes: PostgreSQL
+   * would answer a different question rather than fail. Those are translated - the twelve standard classes plus
+   * {@code word} and {@code ascii}, and the {@code [[:<:]]} / {@code [[:>:]]} word boundaries - to Java's ASCII
+   * classes, and any other one is refused as unreadable rather than misread: PostgreSQL
    * takes them from the locale, which for the ASCII names a catalog holds is the same. PostgreSQL's own word-boundary
    * escapes ({@code \m}, {@code \M}, {@code \y}) are not Java syntax and fail to compile, so a pattern using
    * them reads as UNKNOWN instead of being guessed at.
@@ -682,9 +687,12 @@ abstract class PostgresCatalogExpression {
   static String javaRegex(final String pattern) {
     if (pattern.indexOf("[:") < 0)
       return pattern;
-    String translated = pattern;
+    // PostgreSQL's word-boundary brackets are whole bracket expressions of their own.
+    String translated = pattern.replace("[[:<:]]", "\\b(?=\\w)").replace("[[:>:]]", "\\b(?<=\\w)");
     for (final String[] posix : POSIX_CLASSES)
       translated = translated.replace(posix[0], posix[1]);
+    if (UNTRANSLATED_POSIX.matcher(translated).find())
+      throw new PatternSyntaxException("POSIX character class this catalog does not translate", pattern, -1);
     return translated;
   }
 

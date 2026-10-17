@@ -516,6 +516,17 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         .containsExactly("City", "Note", "Person");
     assertThat(resolve("select relname from pg_class where relname ~ '^[[:digit:]]+$'").rows).isEmpty();
     assertThat(resolve("select relname from pg_class where relname ~ '[^[:alpha:]]'").rows).isEmpty();
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:word:]]+$'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:ascii:]]+$'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(column(resolve("select relname from pg_class where relname ~ '[[:<:]]Note[[:>:]]'"), "relname"))
+        .containsExactly("Note");
+    // A class this catalog does not translate is unreadable, not misread: permissive here, declined over pg_type.
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:nope:]]+$'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(PostgresCatalog.resolve("select typname from pg_type where typname ~ '^[[:nope:]]+$'", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
     // Untranslated, Java reads [[:alpha:]] as the character set "[:alph" and matches none of these names.
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:alpha:]]+$'"), "relname"))
         .containsExactly("City", "Note", "Person");
