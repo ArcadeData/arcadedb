@@ -378,18 +378,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, Long>     misdirectedRecoveryQueuedAt    = new ConcurrentHashMap<>();
   private final    Map<RaftPeerId, Long>     misdirectedWarnedAt            = new ConcurrentHashMap<>();
   private final    AtomicLong                misdirectedChannelResets       = new AtomicLong();
-  // Issue #10088: the ids of the live Raft configuration as the last recovery task read it. The listener runs on the gRPC
-  // handler thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so
-  // it consults this copy, written only by the recovery task and replaced as a whole. It starts empty: until a task has
-  // read the configuration, a peer joined after startup shares a not-a-peer slot, which costs it nothing but a turn.
-  // A member removed since keeps its own slot until the next successful read drops it from the copy, and the slots it
-  // took stay in the maps: bounded by the number of peers the cluster has ever had, like the declared ones.
+  // Issue #10088: the ids of the live Raft configuration as this node last learnt it. The listener runs on the gRPC handler
+  // thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so it
+  // consults this copy, replaced as a whole. It is written wherever the configuration reaches this node without a read
+  // the listener would have to wait for (issue #10144): every configuration the state machine applies, every successful
+  // read of the live configuration, and the recovery task's own read. This node only dials the peers of a configuration
+  // it has applied, so a peer joined after start is in the copy before this node can send it anything, and its repair has
+  // a slot of its own. A member removed since keeps its own slot until the next update drops it from the copy, and the
+  // slots it took stay in the maps: bounded by the number of peers the cluster has ever had, like the declared ones.
   private volatile Set<RaftPeerId>           misdirectedLiveMemberIds       = Set.of();
-  // The slots every id outside the cluster shares, so a sender cannot grow the maps above: at most these two entries.
-  // A request this node addressed to itself has its own, so a stranger's refusals cannot hold the slot that a repair of
-  // the sender's own channel to a peer it has not yet learnt as a member (one joined after start) needs (issue #10088).
+  // The one slot every id outside the cluster shares, so a sender cannot grow the maps above past it. It is chosen by the
+  // addressed id alone: the requestor id is an unauthenticated header field, so a slot picked by it would be a slot any
+  // sender could pick, and one that writes this node's own id would hold the one a self-dial repair needs (issue #10144).
   private static final RaftPeerId            UNKNOWN_MISDIRECTED_PEER       = RaftPeerId.valueOf("<not-a-peer>");
-  private static final RaftPeerId            UNKNOWN_MISDIRECTED_SELF_DIAL  = RaftPeerId.valueOf("<not-a-peer-self-dial>");
   // Short enough that the self-dial channel is rebuilt soon after the resolver changes its answer, long enough that the
   // single channel-recovery worker, whose channel close can block for seconds, is never kept busy by it.
   static final     long                      MISDIRECTED_RECOVERY_INTERVAL_MS = 5_000L;
@@ -985,10 +986,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // which keeps both throttling maps bounded by the cluster size whatever a sender writes in the request. Nothing that
     // decides it here may block (issue #10088): this thread is the request's gRPC handler, and the live configuration
     // is read through a division that Ratis parks the reader of for as long as it takes to initialize. So the slot comes
-    // from what needs no read - the declared list, and the live members the last recovery task saw - and the task
-    // settles whether the id is a member after all.
-    final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo
-        : localPeerId.equals(requestor) ? UNKNOWN_MISDIRECTED_SELF_DIAL : UNKNOWN_MISDIRECTED_PEER;
+    // from what needs no read - the declared list, and the live members this node last learnt - and the task settles
+    // whether the id is a member after all. The requestor takes no part in it (issue #10144): it is whatever the sender
+    // wrote in the header, and a sender outside the cluster must not be able to pick the slot a repair of this node's own
+    // channel needs by writing this node's id there.
+    final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
     if (!claimThrottleSlot(misdirectedRecoveryQueuedAt, slot, System.currentTimeMillis(),
         MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
@@ -1062,16 +1064,60 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (isPeerInConfig(raftGroup.getPeers(), peerId))
       return true;
 
-    final Collection<RaftPeer> live = readCommittedPeers(Level.FINE);
-    if (live == null)
-      return misdirectedLiveMemberIds.contains(peerId);
+    // A successful read refreshes the copy on its own way out (rememberLiveMembers), and an unreadable one leaves it as is
+    readCommittedPeers(Level.FINE);
+    return misdirectedLiveMemberIds.contains(peerId);
+  }
 
-    final Set<RaftPeerId> ids = new HashSet<>(live.size() * 2);
-    for (final RaftPeer peer : live)
+  /**
+   * Records the peers of a Raft configuration this node has applied, as {@link ArcadeStateMachine#notifyConfigurationChanged}
+   * hands them over: the new peers and, during a joint-consensus change, the old ones, since this node dials both. It is how
+   * a peer joined after start reaches the copy the misdirected-request listener reads before this node can send that peer
+   * anything (issue #10144). Never blocks and never reads the division: it runs on the Ratis apply loop.
+   */
+  void onRaftConfigurationApplied(final Collection<RaftPeerId> peers, final Collection<RaftPeerId> oldPeers) {
+    final Set<RaftPeerId> ids = new HashSet<>((peers.size() + oldPeers.size()) * 2);
+    ids.addAll(peers);
+    ids.addAll(oldPeers);
+    publishLiveMemberIds(ids);
+  }
+
+  /**
+   * Refreshes the listener's copy from a live configuration read by anyone (issue #10144): the health-monitor tick, the
+   * cluster API, the recovery task. The previous peers count too, as in {@link #onRaftConfigurationApplied}: during a
+   * joint-consensus change this node still dials them. Allocates only when the membership changed, which keeps it free on
+   * the readers that run every tick.
+   */
+  private void rememberLiveMembers(final Collection<RaftPeer> current, final Collection<RaftPeer> previous) {
+    final Collection<RaftPeer> old = previous != null ? previous : List.of();
+    final Set<RaftPeerId> known = misdirectedLiveMemberIds;
+    if (knowsAll(known, current) && knowsAll(known, old)) {
+      // Same ids when nothing is left over: a removed member must leave the copy
+      int distinct = current.size();
+      for (final RaftPeer peer : old)
+        if (!isPeerInConfig(current, peer.getId()))
+          distinct++;
+      if (distinct == known.size())
+        return;
+    }
+    final Set<RaftPeerId> ids = new HashSet<>((current.size() + old.size()) * 2);
+    for (final RaftPeer peer : current)
       ids.add(peer.getId());
+    for (final RaftPeer peer : old)
+      ids.add(peer.getId());
+    publishLiveMemberIds(ids);
+  }
+
+  private static boolean knowsAll(final Set<RaftPeerId> known, final Collection<RaftPeer> peers) {
+    for (final RaftPeer peer : peers)
+      if (!known.contains(peer.getId()))
+        return false;
+    return true;
+  }
+
+  private void publishLiveMemberIds(final Set<RaftPeerId> ids) {
     // Published as a view of a set nothing mutates again: readers on the handler threads see all of it or none of it
     misdirectedLiveMemberIds = Collections.unmodifiableSet(ids);
-    return ids.contains(peerId);
   }
 
   /**
@@ -4450,8 +4496,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       try {
         final var division = raftServer.getDivision(raftGroup.getGroupId());
         final var conf = division.getRaftConf();
-        if (conf != null)
-          return conf.getCurrentPeers();
+        if (conf != null) {
+          final Collection<RaftPeer> peers = conf.getCurrentPeers();
+          // Every successful read keeps the misdirected-request listener's copy current (issue #10144)
+          rememberLiveMembers(peers, conf.getPreviousPeers());
+          return peers;
+        }
       } catch (final Exception e) {
         // Catch Exception, not IOException: Ratis throws IllegalStateException ("stateMachineUpdater is
         // uninitialized") for the whole window in which an in-place restart re-initializes the division
