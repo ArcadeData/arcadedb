@@ -266,8 +266,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
+      // #10135: a session that was open before this attempt belongs to the caller, whatever happens below - joined, or
+      // refused by begin() ("Transaction already begun") when not joining
+      final boolean callerTxActive = isTransactionActive();
       try {
-        if (joinCurrentTransaction && isTransactionActive())
+        if (joinCurrentTransaction && callerTxActive)
           createdNewTx = false;
         else
           begin();
@@ -341,12 +344,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         if (retry + 1 < attempts)
           pauseBeforeRetry(retry, e);
 
-      } catch (final Exception e) {
+      } catch (final Throwable e) {
         // Same as above: the transaction this attempt left open on the server is never going to be committed,
         // so release it now instead of holding its locks until the server-side timeout (issue #7030).
-        rollbackQuietly();
-        setSessionId(null);
-        resetCreatedRecordsIdentity();
+        // #10135: but only when this call OPENED it. A call that joined the caller's transaction owns nothing, and
+        // rolling it back here would discard the caller's earlier work and drop its session, so its next request
+        // would run outside any transaction. The same ownership rule the retryable arm above applies. Throwable, not
+        // Exception: an Error thrown by a block this call opened must release the server-side transaction too. Best
+        // effort for an OutOfMemoryError or StackOverflowError: rollbackQuietly() swallows its own failure.
+        if (!callerTxActive) {
+          rollbackQuietly();
+          setSessionId(null);
+          resetCreatedRecordsIdentity();
+        }
 
         if (error != null)
           error.call(e);
