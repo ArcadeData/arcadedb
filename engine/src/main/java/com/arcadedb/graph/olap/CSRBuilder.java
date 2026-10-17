@@ -750,7 +750,7 @@ public class CSRBuilder {
    * vertex type answers for its sub-types on the record path, and the view holds what a query on the type reads (issue
    * #10208).
    */
-  static Set<String> concreteVertexTypes(final Database database, final String[] vertexTypes) {
+  private Set<String> concreteVertexTypes(final String[] vertexTypes) {
     final Set<String> names = new LinkedHashSet<>();
     if (vertexTypes == null || vertexTypes.length == 0) {
       for (final DocumentType dt : database.getSchema().getTypes())
@@ -760,10 +760,6 @@ public class CSRBuilder {
       for (final String vertexType : vertexTypes)
         collectTypeFamily(database.getSchema().getType(vertexType), names);
     return names;
-  }
-
-  private Set<String> concreteVertexTypes(final String[] vertexTypes) {
-    return concreteVertexTypes(database, vertexTypes);
   }
 
   private Iterator<Record> createVertexIterator(final Set<String> concreteVertexTypes) {

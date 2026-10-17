@@ -31,7 +31,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -192,6 +197,54 @@ class Issue10189AsyncViewServesWhileUpdatingTest {
     assertThat(view.isStale()).isFalse();
     assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(count()).isEqualTo(before + 4);
+  }
+
+  @Test
+  void concurrentCommitsAllReachTheView() throws Exception {
+    final GraphAnalyticalView view = createView();
+
+    final int threads = 4;
+    final int commitsPerThread = 25;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+        final int offset = t;
+        futures.add(pool.submit(() -> {
+          for (int i = 0; i < commitsPerThread; i++) {
+            final int from = (offset * commitsPerThread + i) % VERTICES;
+            database.transaction(() -> {
+              final MutableVertex v = database.newVertex("P").set("pid", -1).save();
+              rids[from].asVertex().modify().newEdge("K", v);
+              v.newEdge("K", rids[(from + 3) % VERTICES].asVertex());
+            }, false, 10);
+          }
+        }));
+      }
+      for (final Future<?> future : futures)
+        future.get(60, TimeUnit.SECONDS);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.getNodeCount()).isEqualTo(VERTICES + threads * commitsPerThread);
+    assertThat(plan()).contains("GAV");
+    assertThat(count()).isEqualTo(countOnRecords());
+  }
+
+  @Test
+  void aViewClosedRightAfterACommitReopensWithIt() {
+    createView();
+    addEdge(0, 10);
+    final long expected = countOnRecords();
+
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+    final GraphAnalyticalView reopened = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(reopened.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(plan()).contains("GAV");
+    assertThat(count()).isEqualTo(expected);
   }
 
   private GraphAnalyticalView createView() {

@@ -966,6 +966,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
       // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.
+      // A change still queued (its merge task outlived the wait above) goes into the overlay first: the snapshot then
+      // carries changes and is not persisted, rather than persisted without them under a certificate the next open rejects
+      mergeQueuedAsyncDeltas();
       if (persistCsr) {
         persistCsrIfPossible();
         persistContractionOrdersIfPossible();
@@ -3612,9 +3615,27 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     // Counted before it is queued: from here on the view reports STALE, so the committing thread's next query does not
     // read a snapshot without its own change, unless the view is allowed to serve stale (issue #10189)
-    asyncDeltaLag.incrementAndGet();
+    if (asyncDeltaLag.incrementAndGet() > MAX_PENDING_DELTAS) {
+      asyncDeltaLag.decrementAndGet();
+      onAsyncDeltaQueueOverflow();
+      return;
+    }
     asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst));
     scheduleAsyncMerge();
+  }
+
+  /**
+   * More committed changes are waiting than {@link #MAX_PENDING_DELTAS}: the merge cannot keep up, and holding them all
+   * would grow without bound. They are dropped for a rebuild, which reads them from the graph, as a build watch that
+   * overflows does; the view is STALE meanwhile.
+   */
+  private synchronized void onAsyncDeltaQueueOverflow() {
+    LogManager.instance().log(this, Level.WARNING,
+        "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, MAX_PENDING_DELTAS);
+    discardQueuedAsyncDeltas();
+    followUpRebuildPending = true;
+    status = Status.STALE;
+    rebuildAfterPublication();
   }
 
   /**
@@ -3642,7 +3663,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     } catch (final RejectedExecutionException e) {
       asyncMergeQueued.set(false);
       taskCompleted();
-      // Shutting down: the view keeps reporting STALE, which is what it is
+      // Shutting down: the lag stays above zero, so the view keeps reporting STALE, which is what it is, and awaitReady()
+      // waits to its timeout; shutdown() discards the queue
       LogManager.instance().log(this, Level.FINE, "GraphAnalyticalView '%s': merge of the committed changes rejected (executor shut down)",
           name);
     }
@@ -3675,6 +3697,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (failed) {
       followUpRebuildPending = true;
       status = Status.STALE;
+      // Inside a compaction swap too: the rebuild dispatched here bumps the generation, so the swap that called this
+      // discards its own result rather than publish a base without the change
       rebuildAfterPublication();
     }
     notifyAll();
