@@ -538,9 +538,11 @@ abstract class PostgresCatalogExpression {
       try {
         // The pattern is a literal in every query a client writes, and the predicate runs once per row, so it is
         // compiled once rather than once per row (psql's \d sends one, issue #10228).
+        final String javaPattern = javaRegex(pattern);
+        final int flags = operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0;
         Pattern regex = compiled;
-        if (regex == null || !regex.pattern().equals(javaRegex(pattern))) {
-          regex = Pattern.compile(javaRegex(pattern), operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
+        if (regex == null || regex.flags() != flags || !regex.pattern().equals(javaPattern)) {
+          regex = Pattern.compile(javaPattern, flags);
           compiled = regex;
         }
         if (regexBudget <= 0)

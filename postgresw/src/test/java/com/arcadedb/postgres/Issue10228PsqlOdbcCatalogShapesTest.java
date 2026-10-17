@@ -459,6 +459,41 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(column(answer, "collate")).containsExactly("Note");
   }
 
+  /** COLLATE with a quoted or a schema-qualified quoted name is dropped whole, not half. */
+  @Test
+  void collateWithAQuotedNameIsDroppedWhole() {
+    assertThat(column(resolve("select relname from pg_class where relname = 'Note' COLLATE \"C\""), "relname"))
+        .containsExactly("Note");
+    assertThat(column(resolve("select relname from pg_class where relname = 'Note' COLLATE pg_catalog.\"default\" "
+        + "order by relname collate \"C\""), "relname")).containsExactly("Note");
+  }
+
+  /**
+   * An operator this catalog does not implement, spelled through OPERATOR(...), becomes that operator rather than a
+   * different one: unreadable, so it keeps every row of the permissive families and declines over pg_type.
+   */
+  @Test
+  void anUnknownOperatorSpelledThroughOperatorIsUnreadable() {
+    assertThat(column(resolve("select relname from pg_class where relname operator(pg_catalog.@@) 'x'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(PostgresCatalog.resolve("select typname from pg_type where typname operator(pg_catalog.@@) 'x'", database,
+        USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /** The nesting bound is exact: 31 derived tables deep is answered, 33 is declined. */
+  @Test
+  void theNestingBoundIsExact() {
+    assertThat(PostgresCatalog.resolve(derivedTables(31), database, USER).rows).hasSize(3);
+    assertThat(PostgresCatalog.resolve(derivedTables(33), database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  private static String derivedTables(final int depth) {
+    final StringBuilder query = new StringBuilder("select relname from pg_class");
+    for (int i = 0; i < depth; i++)
+      query.insert(0, "select * from (").append(") x").append(i);
+    return query.toString();
+  }
+
   /** POSIX character classes mean what they mean in PostgreSQL, not the bracket set Java would read them as. */
   @Test
   void posixCharacterClassesAreTranslated() {
@@ -518,6 +553,10 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         + "on n.oid = c.relnamespace and c.relname is distinct from 'x' and c.relname = 'City'");
 
     assertThat(column(answer, "relname")).containsExactly("City");
+
+    // and an ON condition with nothing readable left in it keeps every row: a superset, never a wrong subset
+    assertThat(column(resolve("select c.relname from pg_class c join pg_namespace n on c.relname is distinct from 'x'"),
+        "relname")).containsExactly("City", "Note", "Person");
   }
 
   /** One regular-expression predicate is bounded over all the rows of the statement, not only per row. */
