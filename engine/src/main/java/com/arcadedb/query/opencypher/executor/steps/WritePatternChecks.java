@@ -23,6 +23,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.parser.CypherSemanticValidator;
 import com.arcadedb.query.sql.executor.Result;
 
 /**
@@ -31,11 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class WritePatternChecks {
-  /** The message of a null MERGE property, the same whether the null was a literal or arrived at run time. */
-  public static final String NULL_MERGE_PROPERTY =
-      "MergeReadOwnWrites: 'MERGE' cannot be used with a graph element property value that is null";
-
+final class WritePatternChecks {
   private WritePatternChecks() {
   }
 
@@ -79,6 +76,6 @@ public final class WritePatternChecks {
    */
   static void checkMergePropertyNotNull(final String key, final Object value) {
     if (value == null)
-      throw new CommandExecutionException(NULL_MERGE_PROPERTY + " (property `" + key + "`)");
+      throw new CommandExecutionException(CypherSemanticValidator.NULL_MERGE_PROPERTY + " (property `" + key + "`)");
   }
 }
