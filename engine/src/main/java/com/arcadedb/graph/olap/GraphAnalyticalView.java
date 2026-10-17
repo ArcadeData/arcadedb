@@ -300,10 +300,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // does not list, null when one of them is not a LocalBucket and so cannot be proven empty. Asked once per vertex by the
   // SQL traversal functions, so the type list is not walked on every call; one immutable holder behind one reference, so
   // a reader never pairs a version with another thread's buckets
-  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets) {
+  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets, DocumentType[] joinedTypes) {
   }
 
   private volatile VertexCoverage allVertexTypesCovered;
+  // Whether the view holds each vertex type its filter covers without listing it by name - a sub-type of a listed type -
+  // for one base CSR and one schema version (issue #10208). Such a type was scanned, or joined the family after the scan:
+  // created then, it was empty and the overlay has held its vertices since, while an existing type attached to a listed
+  // one brings vertices no scan read
+  private record JoinedVertexTypes(NodeIdMapping scannedWith, long schemaVersion, ConcurrentMap<String, Boolean> verdicts) {
+  }
+
+  private volatile JoinedVertexTypes joinedVertexTypes;
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
@@ -1078,11 +1086,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long version = database.getSchema().getEmbedded().getVersion();
       VertexCoverage cached = allVertexTypesCovered;
       if (cached == null || cached.schemaVersion() != version) {
-        cached = new VertexCoverage(version, unlistedVertexBuckets());
+        cached = new VertexCoverage(version, unlistedVertexBuckets(), joinedVertexTypes());
         allVertexTypesCovered = cached;
       }
       if (cached.unlistedBuckets() == null)
         return false;
+      for (final DocumentType joined : cached.joinedTypes())
+        if (!holdsJoinedVertexType(joined))
+          return false;
       // An unlisted vertex type breaks coverage only once it holds a vertex: no walk can reach a type that has none. The
       // common case is an abstract parent whose records all live in listed sub-types (LSQB's Message over Post and
       // Comment), which made the view unusable for every walk (#9301 follow-up). Read per call, not cached, because a
@@ -1096,7 +1107,81 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (vertexTypes == null || containsType(vertexTypes, typeName))
       return true; // we include all vertex types, or this one is listed
     final DocumentType type = database.getSchema().getTypeOrNull(typeName);
-    return type != null && coversVertexTypeByFilter(type);
+    return type != null && coversVertexTypeByFilter(type) && holdsJoinedVertexType(type);
+  }
+
+  /** The vertex types the filter covers without listing them by name: the sub-types of the listed ones. */
+  private DocumentType[] joinedVertexTypes() {
+    final List<DocumentType> joined = new ArrayList<>();
+    for (final DocumentType dt : database.getSchema().getTypes())
+      if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()) && coversVertexTypeByFilter(dt))
+        joined.add(dt);
+    return joined.toArray(new DocumentType[0]);
+  }
+
+  /**
+   * Whether the base CSR, with its overlay, holds the vertices of {@code type}, a sub-type of a listed type (issue #10208).
+   * It does when its scan read the type, or when the type had no committed vertex the first time the view met it after
+   * the scan: it was created since, and its vertices reached the overlay one commit at a time. An existing type attached
+   * to a listed one since the scan holds vertices the view never read: the view does not claim it, and rebuilds (OFF:
+   * turns STALE) to take it in. Decided once per base CSR, and carried over a schema change for the types still covered.
+   */
+  private boolean holdsJoinedVertexType(final DocumentType type) {
+    final Snapshot snap = snapshot;
+    // No CSR yet: the build in flight scans the family as it is when it starts, and its watch takes in what commits since
+    if (snap == null)
+      return true;
+    final long version = database.getSchema().getEmbedded().getVersion();
+    JoinedVertexTypes joined = joinedVertexTypes;
+    if (joined == null || joined.scannedWith() != snap.nodeMapping || joined.schemaVersion() != version) {
+      final ConcurrentMap<String, Boolean> verdicts = new ConcurrentHashMap<>();
+      if (joined != null && joined.scannedWith() == snap.nodeMapping)
+        // A schema change carries the verdicts over for the types still in the family: a type detached and attached again
+        // is asked again, with whatever vertices it holds by then
+        for (final Map.Entry<String, Boolean> verdict : joined.verdicts().entrySet()) {
+          final DocumentType still = database.getSchema().getTypeOrNull(verdict.getKey());
+          if (still != null && coversVertexTypeByFilter(still))
+            verdicts.put(verdict.getKey(), verdict.getValue());
+        }
+      joined = new JoinedVertexTypes(snap.nodeMapping, version, verdicts);
+      joinedVertexTypes = joined;
+    }
+    final String name = type.getName();
+    final Boolean known = joined.verdicts().get(name);
+    if (known != null)
+      return known;
+
+    final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
+    if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
+      onVertexTypeJoinedWithRecords(name);
+    return holds;
+  }
+
+  private static boolean isScanned(final NodeIdMapping mapping, final String typeName) {
+    for (int i = 0; i < mapping.getNumBuckets(); i++)
+      if (typeName.equals(mapping.getBucketTypeName(i)))
+        return true;
+    return false;
+  }
+
+  private static boolean hasNoCommittedRecord(final DocumentType type) {
+    for (final Bucket bucket : type.getBuckets(false))
+      if (!(bucket instanceof LocalBucket localBucket) || !isCommittedEmpty(localBucket))
+        return false;
+    return true;
+  }
+
+  /** A vertex type holding vertices no scan read joined the listed family: see {@link #holdsJoinedVertexType}. */
+  private synchronized void onVertexTypeJoinedWithRecords(final String typeName) {
+    LogManager.instance().log(this, Level.INFO,
+        "GraphAnalyticalView '%s': vertex type '%s' joined the view's types with vertices its CSR does not hold; %s", name,
+        typeName, updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
+    if (updateMode == UpdateMode.OFF) {
+      status = Status.STALE;
+      return;
+    }
+    followUpRebuildPending = true;
+    rebuildAfterPublication();
   }
 
   /**
@@ -3797,8 +3882,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // A full build in flight replaces this base anyway, re-reading the columns and re-applying every delta it
     // buffered (the dirty edge properties included, see publishBuild()): a compaction beside it would scan the graph
-    // a second time, and supersede the build whose caller is waiting for it (issue #8403)
-    if (buildWatch != null)
+    // a second time, and supersede the build whose caller is waiting for it (issue #8403). Nor does a view that is shut
+    // down compact: shutdown() merges what was still queued (issue #10189) after it stopped waiting for its tasks
+    if (buildWatch != null || shutDown)
       return;
 
     if (forceRebuild || (compactionThreshold > 0

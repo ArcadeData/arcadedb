@@ -189,6 +189,37 @@ class Issue10208ViewVertexSubtypesTest {
     assertServedByTheViewAndRight();
   }
 
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "OFF", "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void anExistingTypeAttachedAfterTheBuildIsNotClaimedUntilRebuilt(final GraphAnalyticalView.UpdateMode mode) {
+    // Y holds vertices and edges before the view exists, and is not a V yet
+    database.getSchema().createVertexType("Y");
+    database.transaction(() -> {
+      final MutableVertex y = database.newVertex("Y").set("pid", 8).save();
+      final MutableVertex first = database.select().fromType("V").where().property("pid").eq().value(0).vertices().next()
+          .modify();
+      first.newEdge("E", y);
+      y.newEdge("E", first);
+    });
+    final GraphAnalyticalView view = createView(mode);
+    assertThat(view.getNodeCount()).isEqualTo(6);
+
+    database.getSchema().getType("Y").addSuperType("V");
+
+    assertThat(view.coversVertexType("Y")).as("the CSR holds none of Y's vertices").isFalse();
+    assertThat(view.coversVertexType(null)).isFalse();
+    assertThat(count(ONE_HOP)).as("answered from the records").isEqualTo(expectedPaths("E", 1));
+
+    if (mode == GraphAnalyticalView.UpdateMode.OFF) {
+      assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+      database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW g");
+    }
+    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.getNodeCount()).as("the rebuild read Y").isEqualTo(7);
+    assertThat(view.coversVertexType("Y")).isTrue();
+    assertServedByTheViewAndRight();
+  }
+
   private GraphAnalyticalView createView(final GraphAnalyticalView.UpdateMode mode) {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (V) EDGE TYPES (E) UPDATE MODE " + mode);
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g");
