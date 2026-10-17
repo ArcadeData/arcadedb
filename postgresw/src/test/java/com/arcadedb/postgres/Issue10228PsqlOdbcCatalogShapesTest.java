@@ -459,6 +459,17 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(column(answer, "collate")).containsExactly("Note");
   }
 
+  /** POSIX character classes mean what they mean in PostgreSQL, not the bracket set Java would read them as. */
+  @Test
+  void posixCharacterClassesAreTranslated() {
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:upper:]][[:lower:]]+$'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(resolve("select relname from pg_class where relname ~ '^[[:digit:]]+$'").rows).isEmpty();
+    // Untranslated, Java reads [[:alpha:]] as the character set "[:alph" and matches none of these names.
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:alpha:]]+$'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+  }
+
   /** A pattern Java cannot compile is not an answer: kept by the permissive filter, declined over pg_type. */
   @Test
   void anInvalidRegularExpressionIsUnknown() {

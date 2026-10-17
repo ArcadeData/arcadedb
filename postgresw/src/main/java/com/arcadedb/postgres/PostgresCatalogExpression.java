@@ -532,8 +532,8 @@ abstract class PostgresCatalogExpression {
         // The pattern is a literal in every query a client writes, and the predicate runs once per row, so it is
         // compiled once rather than once per row (psql's \d sends one, issue #10228).
         Pattern regex = compiled;
-        if (regex == null || !regex.pattern().equals(pattern)) {
-          regex = Pattern.compile(pattern, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
+        if (regex == null || !regex.pattern().equals(javaRegex(pattern))) {
+          regex = Pattern.compile(javaRegex(pattern), operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
           compiled = regex;
         }
         if (regexBudget <= 0)
@@ -658,6 +658,30 @@ abstract class PostgresCatalogExpression {
     BudgetExceeded() {
       super(null, null, false, false);
     }
+  }
+
+  /** POSIX bracket-expression classes and the java.util.regex class each means. */
+  private static final String[][] POSIX_CLASSES = { { "[:alpha:]", "\\p{Alpha}" }, { "[:digit:]", "\\p{Digit}" },
+      { "[:alnum:]", "\\p{Alnum}" }, { "[:upper:]", "\\p{Upper}" }, { "[:lower:]", "\\p{Lower}" },
+      { "[:space:]", "\\p{Space}" }, { "[:punct:]", "\\p{Punct}" }, { "[:xdigit:]", "\\p{XDigit}" },
+      { "[:cntrl:]", "\\p{Cntrl}" }, { "[:print:]", "\\p{Print}" }, { "[:graph:]", "\\p{Graph}" },
+      { "[:blank:]", "\\p{Blank}" } };
+
+  /**
+   * A PostgreSQL regular expression as java.util.regex reads it. The two agree on everything a catalog client
+   * writes - anchors, groups, alternation, quantifiers, ordinary bracket expressions - except POSIX character
+   * classes: Java compiles {@code [[:alpha:]]} without complaint as a set of the characters {@code [:alph}, which
+   * would answer a different question rather than fail. Those are translated. PostgreSQL's own word-boundary
+   * escapes ({@code \m}, {@code \M}, {@code \y}) are not Java syntax and fail to compile, so a pattern using
+   * them reads as UNKNOWN instead of being guessed at.
+   */
+  static String javaRegex(final String pattern) {
+    if (pattern.indexOf("[:") < 0)
+      return pattern;
+    String translated = pattern;
+    for (final String[] posix : POSIX_CLASSES)
+      translated = translated.replace(posix[0], posix[1]);
+    return translated;
   }
 
   /** Translates a SQL LIKE pattern into the equivalent regular expression. */

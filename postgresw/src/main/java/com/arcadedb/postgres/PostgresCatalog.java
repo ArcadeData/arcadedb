@@ -1215,11 +1215,12 @@ public class PostgresCatalog {
     return parseFrom(tokens, Join.FIRST, entries, 0) && !entries.isEmpty() ? entries : null;
   }
 
-  private static boolean parseFrom(final List<PostgresCatalogToken> tokens, Join join, final List<FromEntry> entries,
-      final int nesting) {
+  private static boolean parseFrom(final List<PostgresCatalogToken> tokens, final Join firstJoin,
+      final List<FromEntry> entries, final int nesting) {
     if (nesting > MAX_NESTING)
       return false;
 
+    Join join = firstJoin;
     int i = 0;
     while (i < tokens.size()) {
       // Join decorations before the item.
