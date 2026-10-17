@@ -320,6 +320,8 @@ function copyTextToClipboard(text) {
     });
   };
 
+  // when the async API rejects, legacyCopy() runs a microtask later: that is fine, transient user activation outlasts
+  // it by several seconds, so execCommand("copy") is still honoured. Do not "simplify" it into the same call.
   if (navigator.clipboard && navigator.clipboard.writeText) {
     try {
       return navigator.clipboard.writeText(value).catch(legacyCopy);

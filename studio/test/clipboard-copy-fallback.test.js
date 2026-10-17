@@ -46,7 +46,8 @@ function extractFn(src, name) {
   return blockFrom(src, start);
 }
 
-// Source from `start` through the brace that closes the first block opened after it.
+// Source from `start` through the brace that closes the first block opened after it. It counts braces only: a "{" or
+// "}" inside a string, regex or comment in the extracted code would throw it off, so keep those out of the helper.
 function blockFrom(src, start) {
   let i = src.indexOf("{", start);
   let depth = 1;
