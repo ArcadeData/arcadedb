@@ -480,6 +480,21 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
+  /** A statement wrapped in parentheses many thousand times is unwrapped in one pass and answered. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS) // a hang detector: peeling one layer per scan is quadratic
+  void aDeeplyParenthesisedStatementIsUnwrappedInOnePass() {
+    final int layers = 50_000;
+    final String query = "(".repeat(layers) + "select relname from pg_class" + ")".repeat(layers) + " union select 'x'";
+    assertThat(column(resolve(query), "relname")).containsExactly("City", "Note", "Person", "x");
+  }
+
+  /** A set operation naming no catalog relation is a SELECT: an INSERT that only contains the word is not one. */
+  @Test
+  void anInsertContainingASetOperationWordIsNotTokenized() {
+    assertThat(PostgresCatalog.resolve("insert into Person set name = 'select 1 union select 2'", database, USER)).isNull();
+  }
+
   /** The nesting bound is exact: 31 derived tables deep is answered, 33 is declined. */
   @Test
   void theNestingBoundIsExact() {
@@ -500,6 +515,7 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:upper:]][[:lower:]]+$'"), "relname"))
         .containsExactly("City", "Note", "Person");
     assertThat(resolve("select relname from pg_class where relname ~ '^[[:digit:]]+$'").rows).isEmpty();
+    assertThat(resolve("select relname from pg_class where relname ~ '[^[:alpha:]]'").rows).isEmpty();
     // Untranslated, Java reads [[:alpha:]] as the character set "[:alph" and matches none of these names.
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:alpha:]]+$'"), "relname"))
         .containsExactly("City", "Note", "Person");

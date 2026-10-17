@@ -269,6 +269,16 @@ public class PostgresCatalog {
     return false;
   }
 
+  private static boolean startsAsQuery(final String query) {
+    for (int i = 0; i < query.length(); i++) {
+      final char c = query.charAt(i);
+      if (Character.isWhitespace(c))
+        continue;
+      return c == '(' || query.regionMatches(true, i, "select", 0, 6);
+    }
+    return false;
+  }
+
   private static boolean isIdentifierPart(final char c) {
     return Character.isLetterOrDigit(c) || c == '_' || c == '$';
   }
@@ -320,6 +330,10 @@ public class PostgresCatalog {
 
     final boolean catalogNamed = mightBeCatalogQuery(query);
     if (!catalogNamed && !mightBeSetOperation(query))
+      return null;
+    // A set operation naming no catalog relation is a SELECT, possibly parenthesised: an INSERT or a batch whose
+    // data merely contains the word is not tokenized for it.
+    if (!catalogNamed && !startsAsQuery(query))
       return null;
 
     List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
@@ -431,24 +445,38 @@ public class PostgresCatalog {
     return token.type == PostgresCatalogToken.Type.IDENTIFIER || token.type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER;
   }
 
-  /** {@code (SELECT ...)} written whole in parentheses, which a set-operation arm may be, is the SELECT inside. */
-  private static List<PostgresCatalogToken> unwrapParentheses(List<PostgresCatalogToken> tokens) {
-    while (tokens.size() >= 2 && tokens.get(0).isSymbol("(") && tokens.get(tokens.size() - 1).isSymbol(")")) {
-      int depth = 0;
-      boolean wrapsWhole = true;
-      for (int i = 0; i < tokens.size() - 1; i++) {
-        if (tokens.get(i).isSymbol("("))
-          ++depth;
-        else if (tokens.get(i).isSymbol(")") && --depth == 0) {
-          wrapsWhole = false;
-          break;
-        }
+  /**
+   * {@code (SELECT ...)} written whole in parentheses, which a set-operation arm may be, is the SELECT inside. One
+   * pass finds where each of the leading parentheses closes, so peeling a statement wrapped a thousand times costs
+   * one scan rather than one scan per layer - this runs before the nesting bound counts anything.
+   */
+  private static List<PostgresCatalogToken> unwrapParentheses(final List<PostgresCatalogToken> tokens) {
+    final int size = tokens.size();
+    int leading = 0;
+    while (leading < size && tokens.get(leading).isSymbol("("))
+      ++leading;
+    if (leading == 0 || !tokens.get(size - 1).isSymbol(")"))
+      return tokens;
+
+    // closes[d] is where the leading parenthesis at depth d closes: the first time the depth falls back to d.
+    final int[] closes = new int[leading];
+    Arrays.fill(closes, -1);
+    int depth = 0;
+    for (int i = 0; i < size; i++) {
+      if (tokens.get(i).isSymbol("("))
+        ++depth;
+      else if (tokens.get(i).isSymbol(")")) {
+        if (--depth < 0)
+          return tokens;
+        if (depth < leading && closes[depth] < 0)
+          closes[depth] = i;
       }
-      if (!wrapsWhole)
-        break;
-      tokens = tokens.subList(1, tokens.size() - 1);
     }
-    return tokens;
+
+    int peeled = 0;
+    while (peeled < leading && peeled < size - 1 - peeled && closes[peeled] == size - 1 - peeled)
+      ++peeled;
+    return peeled == 0 ? tokens : tokens.subList(peeled, size - peeled);
   }
 
   /**

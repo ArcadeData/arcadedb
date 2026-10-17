@@ -134,7 +134,6 @@ abstract class PostgresCatalogExpression {
     ARRAY
   }
 
-
   abstract Object evaluate(Resolver resolver);
 
   /**
@@ -461,9 +460,11 @@ abstract class PostgresCatalogExpression {
      */
     private       Pattern                   compiled;
     /**
-     * The character reads this node's regular expression has left for the whole statement. One match is bounded
-     * by {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row it is evaluated against,
-     * so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run either.
+     * The character reads this node's regular expression has left. One match is bounded by
+     * {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row the node is evaluated
+     * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
+     * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
+     * statement's work budget, which every re-parse is charged to.
      */
     private       long                      regexBudget = BoundedCharSequence.STATEMENT_BUDGET;
 
@@ -673,7 +674,8 @@ abstract class PostgresCatalogExpression {
    * A PostgreSQL regular expression as java.util.regex reads it. The two agree on everything a catalog client
    * writes - anchors, groups, alternation, quantifiers, ordinary bracket expressions - except POSIX character
    * classes: Java compiles {@code [[:alpha:]]} without complaint as a set of the characters {@code [:alph}, which
-   * would answer a different question rather than fail. Those are translated. PostgreSQL's own word-boundary
+   * would answer a different question rather than fail. Those are translated, to Java's ASCII classes: PostgreSQL
+   * takes them from the locale, which for the ASCII names a catalog holds is the same. PostgreSQL's own word-boundary
    * escapes ({@code \m}, {@code \M}, {@code \y}) are not Java syntax and fail to compile, so a pattern using
    * them reads as UNKNOWN instead of being guessed at.
    */
