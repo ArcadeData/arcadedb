@@ -1955,11 +1955,11 @@ public class CypherSemanticValidator {
           checkMergePropertyNotNull(value);
   }
 
+  /** A literal null, refused before anything runs. One that arrives at run time is refused by {@code MergeStep} (#10191). */
   private void checkMergePropertyNotNull(final Object value) {
-    if (value == null)
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
-    if (value instanceof LiteralExpression && ((LiteralExpression) value).getValue() == null)
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
+    if (value == null || (value instanceof LiteralExpression literal && literal.getValue() == null))
+      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values: "
+          + "'MERGE' cannot be used with a graph element property value that is null");
   }
 
   private void validateDeleteTargets(final DeleteClause deleteClause) {

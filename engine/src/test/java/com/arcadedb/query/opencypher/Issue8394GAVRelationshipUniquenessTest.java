@@ -175,9 +175,10 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
   }
 
   @Test
-  void anEdgeSubTypeKeepsTheClauseOnTheRecords() {
-    // A view builds a type's adjacency polymorphically: the parent's slice also holds the sub-type's edges, so one edge
-    // could be labelled under both names. Such a clause walks the edge records instead
+  void anEdgeSubTypeKeepsTheClauseOnTheView() {
+    // A view answers a type polymorphically, from the parent's slice and the sub-type's. The tracked walk reads one slice
+    // at a time and labels a relationship with the type of its slice, so one edge has one label whichever hop reads it:
+    // the clause stays on the view (issue #10213; until then it walked the edge records)
     database.command("sql", "CREATE EDGE TYPE KC EXTENDS K");
     database.transaction(() -> {
       final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 1").next().getVertex().get();
@@ -196,7 +197,7 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
 
     createView("VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id)");
     for (final String query : queries) {
-      assertThat(plan(query)).as(query).doesNotContain("unique relationships");
+      assertThat(plan(query)).as(query).contains("unique relationships");
       assertThat(answer(query)).as(query + "\n" + plan(query)).isEqualTo(expected.get(query));
     }
   }

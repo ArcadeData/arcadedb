@@ -171,6 +171,40 @@ public interface GraphTraversalProvider {
   int[] getNeighborIds(int nodeId, Vertex.DIRECTION direction, String... edgeTypes);
 
   /**
+   * The concrete edge types a request for {@code edgeTypes} reads, one SLICE each: a type answers for its sub-types, so a
+   * provider that keeps one slice per concrete type answers {@code K} with {@code KC EXTENDS K} from both. Every type of
+   * the result is answered by the {@code ...OfSlice} methods with exactly its own edges (issue #10213). The default is the
+   * request itself, for a provider that does not answer a type with its sub-types' edges.
+   *
+   * @return the requested types, each followed by the sub-types it brings, without duplicates. Callers must not modify it
+   */
+  default String[] resolveEdgeTypes(final String... edgeTypes) {
+    return edgeTypes;
+  }
+
+  /**
+   * {@link #getNeighborIds} along ONE concrete edge type, sub-types left out: the slice a relationship is read from, which
+   * is what names it when two hops of a pattern must not bind the same one (issue #10213).
+   *
+   * @param direction {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}
+   * @param edgeType  a type {@link #resolveEdgeTypes} answers with
+   */
+  default int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborIds(nodeId, direction, edgeType);
+  }
+
+  /** {@link #countEdgesBetween} along ONE concrete edge type, sub-types left out: see {@link #getNeighborIdsOfSlice}. */
+  default long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return countEdgesBetween(nodeA, nodeB, direction, edgeType);
+  }
+
+  /** {@link #getNeighborView} of ONE concrete edge type, sub-types left out: see {@link #getNeighborIdsOfSlice}. */
+  default NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborView(direction, edgeType);
+  }
+
+  /**
    * Returns the edge count for a node, direction, and edge types.
    * Avoids materializing the neighbor array when only the count is needed.
    */

@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
@@ -546,6 +547,25 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (statement.isReadOnly())
       return profile ? plan.profile() : plan.execute(null, timeExecution);
 
+    if (execDb.isTransactionActive())
+      return executeWrite(plan, execDb, profile, timeExecution);
+
+    // An AUTO-COMMIT write (issue #10190): the statement is one transaction, begun here and committed once it has run to
+    // the end, as the HTTP handler does around every command and Neo4j does for an implicit transaction. The write steps
+    // used to begin and commit their own, row by row, so a statement that failed kept what it wrote before the error, a
+    // MERGE over several pairs conflicted with its own earlier rows, and a label round trip that moves the record met
+    // it again in the scan of the label it put back, forever. A conflict re-runs the whole statement from committed
+    // state, which is safe because nothing of the failed attempt survives - unless a CALL { ... } IN TRANSACTIONS
+    // already committed batches of it, which a second run would apply twice: that statement gets one attempt.
+    final ResultSet[] result = new ResultSet[1];
+    execDb.transaction(() -> result[0] = executeWrite(plan, execDb, profile, timeExecution), false,
+        statement.hasSubqueryInTransactions() ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    return result[0];
+  }
+
+  /** Runs a write statement inside the transaction already open, with the existence constraints checked at its end. */
+  private static ResultSet executeWrite(final CypherExecutionPlan plan, final DatabaseInternal execDb, final boolean profile,
+      final boolean timeExecution) {
     final DeferredExistenceChecks deferredChecks = DeferredExistenceChecks.open(execDb);
     try {
       final ResultSet result = profile ? plan.profile() : plan.execute(null, timeExecution);
@@ -569,17 +589,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * The database a Cypher plan executes against, and therefore the one {@code CommandContext.getDatabase()} returns.
    * <p>
-   * The write steps auto-commit: {@code SetStep}, {@code DeleteStep}, {@code MergeStep}, {@code RemoveStep},
-   * {@code ForeachStep} and a writing {@code CALL} subquery each call {@code begin()}/{@code commit()} directly on
-   * {@code context.getDatabase()} when no transaction is already open. Handing them the raw instance sends those
-   * commits to {@code LocalDatabase.commit()}, which on an HA leader applies the pages locally and never proposes
-   * them to Raft: followers then trail by exactly those page versions and the next replicated entry touching one of
-   * them fails the version check (#5492, #5655). Off HA the wrapper is the instance itself, so this is a no-op there.
-   * <p>
-   * {@code CreateStep} would be safe either way - it wraps its work in {@code database.transaction(...)}, and
-   * {@code LocalDatabase.transaction()} drives {@code wrappedDatabaseInstance} internally rather than {@code this}.
-   * That is why a bare {@code CREATE} replicated correctly while an equally ordinary {@code SET} did not, and it is
-   * the kind of asymmetry that makes a smoke test look green.
+   * A write statement commits: the transaction {@link #execute} opens around it when the caller has none (#10190), and
+   * the batches of a {@code CALL { ... } IN TRANSACTIONS}, which {@code SubqueryStep} begins and commits on
+   * {@code context.getDatabase()}. Handing them the raw instance sends those commits to {@code LocalDatabase.commit()},
+   * which on an HA leader applies the pages locally and never proposes them to Raft: followers then trail by exactly
+   * those page versions and the next replicated entry touching one of them fails the version check (#5492, #5655). Off
+   * HA the wrapper is the instance itself, so this is a no-op there. The write steps used to commit row by row on that
+   * same database, which is how a bare {@code SET} once failed to replicate while a {@code CREATE}, committed through
+   * {@code database.transaction(...)} and so through the wrapper, did not.
    * <p>
    * A read-only statement keeps the raw instance. It cannot commit, so resolving the wrapper would change nothing
    * about durability, while it would put the nested reads the steps issue on a different footing. Being precise

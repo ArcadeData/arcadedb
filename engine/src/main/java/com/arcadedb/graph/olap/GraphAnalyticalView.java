@@ -1156,6 +1156,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @return {@code requested} itself when none of its types has a sub-type to add, else a new array with each type
    * followed by the sub-types it brought, without duplicates. Callers must not modify the result.
    */
+  @Override
   public String[] resolveEdgeTypes(final String... requested) {
     if (requested == null || requested.length == 0)
       return requested;
@@ -1664,6 +1665,39 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     Arrays.sort(result);
     return result;
+  }
+
+  /** The slice of {@code edgeType} alone, overlay included, with no type expansion (issue #10213). */
+  @Override
+  public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+    final Snapshot snap = checkBuilt();
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    if (csr == null && snap.overlay == null)
+      return EMPTY_INT;
+    return getNeighborsFromCSR(snap, csr, nodeId, direction, edgeType);
+  }
+
+  /** The relationships of {@code edgeType} alone joining the pair, with no type expansion (issue #10213). */
+  @Override
+  public long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return countBetweenForType(checkBuilt(), nodeA, nodeB, direction, edgeType);
+  }
+
+  /** The zero-copy view of the slice of {@code edgeType} alone, with no type expansion (issue #10213). */
+  @Override
+  public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+    final Snapshot snap = checkBuilt();
+    // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
+    if (hasActiveOverlay(snap))
+      return null;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    if (csr == null)
+      return null;
+    final int n = snap.nodeMapping.size();
+    if (direction == Vertex.DIRECTION.BOTH)
+      return cachedMergedNeighborView(snap, direction, new String[] { edgeType }, List.of(csr), n);
+    return buildNeighborViewFromCSR(csr, n, direction);
   }
 
   // --- Vectorized scan ---

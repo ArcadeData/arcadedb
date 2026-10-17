@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for MERGE clause in OpenCypher queries.
@@ -1019,20 +1020,19 @@ class OpenCypherMergeTest {
       }
     }
 
-    // Issue #4213: OPTIONAL MATCH that finds no match leaves the endpoint null; a subsequent MERGE referencing that null variable must produce zero rows instead of rebinding or emitting a spurious result.
+    // Issue #4213: OPTIONAL MATCH that finds no match leaves the endpoint null; a subsequent MERGE referencing that null
+    // variable must neither rebind it nor emit a spurious result. Issue #10191: it fails the statement, as on Neo4j
+    // 2026.09 ("Expected the value NULL to be of type NODE"), where #4213 had it drop the row.
     @Test
-    void mergeWithNullEndpointFromOptionalMatchProducesNoRows() {
-      final ResultSet rs = db.command("opencypher",
+    void mergeWithNullEndpointFromOptionalMatchFails() {
+      assertThatThrownBy(() -> db.command("opencypher",
           """
           MATCH (a:Node {id: 1}) \
           OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
           WITH a, b \
           MERGE (a)-[:KNOWS]->(b) \
-          RETURN a.id AS aid, b.id AS bid""");
-
-      assertThat(rs.hasNext())
-          .as("MERGE with null endpoint from OPTIONAL MATCH must produce no rows")
-          .isFalse();
+          RETURN a.id AS aid, b.id AS bid"""))
+          .hasMessageContaining("Expected the value NULL to be of type NODE");
     }
 
     // Issue #4213: OPTIONAL MATCH must still expose a null value for unmatched endpoint variables - control case for the regression.
@@ -1107,17 +1107,16 @@ class OpenCypherMergeTest {
       assertThat(rs.hasNext()).isFalse();
     }
 
-    // Issue #4213: The skipped MERGE row must not create spurious Node vertices or KNOWS relationships as a side effect.
+    // Issue #4213: The refused MERGE must not create spurious Node vertices or KNOWS relationships as a side effect.
     @Test
     void mergeWithNullEndpointDoesNotCreateSpuriousVertex() {
-      // Execute the buggy query (which must now produce 0 rows and no side effects).
-      db.command("opencypher",
+      assertThatThrownBy(() -> db.command("opencypher",
           """
           MATCH (a:Node {id: 1}) \
           OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
           WITH a, b \
           MERGE (a)-[:KNOWS]->(b) \
-          RETURN a.id AS aid, b.id AS bid""");
+          RETURN a.id AS aid, b.id AS bid"""));
 
       final ResultSet nodeCount = db.query("opencypher", "MATCH (n:Node) RETURN count(n) AS cnt");
       assertThat(nodeCount.next().<Number>getProperty("cnt").longValue())
@@ -1130,21 +1129,19 @@ class OpenCypherMergeTest {
           .isEqualTo(0L);
     }
 
-    // Issue #4213: Multi-hop MERGE with a null intermediate node from OPTIONAL MATCH must drop the row even when the endpoints are bound.
+    // Issue #4213: Multi-hop MERGE with a null intermediate node from OPTIONAL MATCH must not create anything even when
+    // the endpoints are bound. Issue #10191: the statement fails, as on Neo4j.
     @Test
-    void mergeMultiHopPatternWithNullIntermediateProducesNoRows() {
-      final ResultSet rs = db.command("opencypher",
+    void mergeMultiHopPatternWithNullIntermediateFails() {
+      assertThatThrownBy(() -> db.command("opencypher",
           """
           MATCH (a:Node {id: 1}) \
           OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 99}) \
           WITH a, b \
           MATCH (c:Node {id: 2}) \
           MERGE (a)-[:KNOWS]->(b)-[:KNOWS]->(c) \
-          RETURN a.id AS aid, b.id AS bid, c.id AS cid""");
-
-      assertThat(rs.hasNext())
-          .as("MERGE with null intermediate node must produce no rows")
-          .isFalse();
+          RETURN a.id AS aid, b.id AS bid, c.id AS cid"""))
+          .hasMessageContaining("Expected the value NULL to be of type NODE");
 
       final ResultSet relCount = db.query("opencypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS cnt");
       assertThat(relCount.next().<Number>getProperty("cnt").longValue())
