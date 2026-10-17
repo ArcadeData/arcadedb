@@ -117,6 +117,9 @@ public class DocumentIndexer {
       // Full-text index over BY ITEM / BY KEY / BY VALUE properties (issues #5181, #10209): a full-text index is an inverted
       // per-field index, not a compound key, so each expanded property is indexed as the UNION of its own elements (the lists
       // may be different and of different lengths), ONE key per document. No element-wise zip and no shared-root requirement.
+      // UPGRADE: a single-property BM25 index built before #10209 put every item on its own, so the postings of a record not
+      // written since carry per-item term frequencies and lengths. They are found and removed exactly as before, and the corpus
+      // counters repair themselves, but only a full REBUILD INDEX (not statsOnly) rewrites those per-posting stats.
       keyConsumer.accept(buildFullTextExpandedKey(record, propertyNamesArray, expansions));
     else if (countListExpansions(expansions) > 1)
       // Multiple BY ITEM properties sharing the same root list - one compound entry per list element (issue #5181)

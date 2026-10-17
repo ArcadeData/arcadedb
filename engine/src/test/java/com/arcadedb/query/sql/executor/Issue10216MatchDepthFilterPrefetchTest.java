@@ -127,6 +127,9 @@ class Issue10216MatchDepthFilterPrefetchTest extends TestHelper {
         + "RETURN a.id AS a, b.id AS b")).containsExactly("1->2", "1->3");
     assertThat(rows("MATCH {type: A, as: a}.out('R'){type: C, as: b, while: ($depth < 3)} RETURN a.id AS a, b.id AS b"))
         .containsExactly("1->2", "1->3");
+    // $depth followed by a modifier is a read of $depth too
+    assertThat(rows("MATCH {type: A, as: a}.out('R'){type: C, as: b, maxDepth: 2, where: ($depth.asInteger() >= 1)} "
+        + "RETURN a.id AS a, b.id AS b")).containsExactly("1->2", "1->3");
   }
 
   /**

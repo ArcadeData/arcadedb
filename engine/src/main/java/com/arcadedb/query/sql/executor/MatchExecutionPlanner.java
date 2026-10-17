@@ -817,7 +817,8 @@ public class MatchExecutionPlanner {
 
   /** Whether {@code root} reads {@code $depth}, the depth a recursive MATCH walk has reached. */
   private static boolean readsDepth(final Object root) {
-    return root != null && !SqlAstInspector.allNodesMatch(root, node -> !isDepthRead(node));
+    // ANY USE OF $depth COUNTS HERE, ALSO ONE FOLLOWED BY A MODIFIER ($depth.asInteger())
+    return root != null && !SqlAstInspector.allNodesMatch(root, node -> !isDepthIdentifier(node));
   }
 
   /**
@@ -829,8 +830,14 @@ public class MatchExecutionPlanner {
         || isDepthRead(node));
   }
 
+  /** A bare {@code $depth}, with no modifier: the only read {@link #readsOnlyDepth} accepts. */
   private static boolean isDepthRead(final SimpleNode node) {
-    return node instanceof BaseExpression expression && expression.identifier != null && expression.modifier == null
+    return isDepthIdentifier(node) && ((BaseExpression) node).modifier == null;
+  }
+
+  /** An expression rooted at {@code $depth}, whatever modifier follows it. */
+  private static boolean isDepthIdentifier(final SimpleNode node) {
+    return node instanceof BaseExpression expression && expression.identifier != null
         && "$depth".equalsIgnoreCase(expression.identifier.toString());
   }
 
