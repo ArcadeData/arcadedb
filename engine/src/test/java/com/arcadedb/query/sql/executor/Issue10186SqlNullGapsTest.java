@@ -140,6 +140,14 @@ class Issue10186SqlNullGapsTest extends TestHelper {
   }
 
   @Test
+  void likeOnANullIsUnknownThroughAnIndex() {
+    database.command("sql", "CREATE INDEX ON T (s) NOTUNIQUE");
+    assertThat(names("s NOT LIKE 'x%'")).containsExactly("three");
+    assertThat(names("s LIKE 'a%'")).containsExactly("three");
+    assertThat(names("NOT (s LIKE null)")).isEmpty();
+  }
+
+  @Test
   void likeOnANullIsUnknown() {
     for (final String where : new String[] { "s NOT LIKE 'x%'", "NOT (s LIKE 'x%')", "s NOT ILIKE 'x%'", "NOT (s ILIKE 'x%')",
         "NOT (s MATCHES 'x.*')", "NOT (s = 'x')", "s LIKE '%'", "s ILIKE '%'", "s MATCHES '.*'" })
@@ -188,6 +196,9 @@ class Issue10186SqlNullGapsTest extends TestHelper {
     assertThat(this.<String>value("'a' + s")).isEqualTo("a");
     assertThat(this.<String>value("s + 'a'")).isEqualTo("a");
     assertThat(this.<String>value("'a' + i")).isEqualTo("a");
+    // a value that is not a number, a date or a duration is concatenated, not added, so it keeps the concatenation rule
+    database.transaction(() -> database.command("sql", "UPDATE T SET flag = true WHERE name = 'null'"));
+    assertThat(this.<Boolean>value("flag + i")).isTrue();
     assertThat(this.<List<Object>>value("[1, 2] + i")).containsExactly(1, 2);
     assertThat(this.<List<Object>>value("[1, 2] - i")).containsExactly(1, 2);
     assertThat(this.<Map<String, Object>>value("{'a': 1} - i")).containsOnlyKeys("a");

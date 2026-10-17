@@ -252,6 +252,7 @@ public class UpdateItem extends SimpleNode {
       // nothing minus a string or a list has nothing to remove from, as `null - x` answers in MathExpression
       if (current == null)
         return explicitOperator == MathExpression.Operator.PLUS ? operand :
+            // (Object) picks the Object overload, which promotes 0 to the operand's numeric type
             operand instanceof Number ? explicitOperator.apply((Object) 0, operand) : null;
     }
     return explicitOperator.apply(current, operand);
