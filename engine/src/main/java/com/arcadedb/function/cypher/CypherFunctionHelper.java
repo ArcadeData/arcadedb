@@ -398,6 +398,11 @@ public final class CypherFunctionHelper {
   public static final int TYPE_RANK_FIRST_TEMPORAL = 5;
   /** {@link #cypherTypeRank(Object)} of the last temporal type, DURATION. */
   public static final int TYPE_RANK_LAST_TEMPORAL  = TYPE_RANK_FIRST_TEMPORAL + 5;
+  public static final int TYPE_RANK_STRING         = TYPE_RANK_LAST_TEMPORAL + 1;
+  public static final int TYPE_RANK_BOOLEAN        = TYPE_RANK_STRING + 1;
+  public static final int TYPE_RANK_NUMBER         = TYPE_RANK_BOOLEAN + 1;
+  public static final int TYPE_RANK_NAN            = TYPE_RANK_NUMBER + 1;
+  public static final int TYPE_RANK_NULL           = TYPE_RANK_NAN + 1;
 
   /**
    * Returns the Cypher type order rank for mixed-type comparison.
@@ -406,15 +411,15 @@ public final class CypherFunctionHelper {
    */
   public static int cypherTypeRank(final Object value) {
     if (value == null)
-      return TYPE_RANK_LAST_TEMPORAL + 5;
+      return TYPE_RANK_NULL;
     if (value instanceof Number) {
       final double d = ((Number) value).doubleValue();
-      return Double.isNaN(d) ? TYPE_RANK_LAST_TEMPORAL + 4 : TYPE_RANK_LAST_TEMPORAL + 3;
+      return Double.isNaN(d) ? TYPE_RANK_NAN : TYPE_RANK_NUMBER;
     }
     if (value instanceof Boolean)
-      return TYPE_RANK_LAST_TEMPORAL + 2;
+      return TYPE_RANK_BOOLEAN;
     if (value instanceof String)
-      return TYPE_RANK_LAST_TEMPORAL + 1;
+      return TYPE_RANK_STRING;
     final int temporal = temporalTypeRank(value);
     if (temporal >= 0)
       return TYPE_RANK_FIRST_TEMPORAL + temporal;

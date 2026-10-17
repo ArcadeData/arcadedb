@@ -569,7 +569,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * twice and every repeated neighbour is intersected once per copy. The CSR kernel
    * {@code GraphAlgorithms.localClusteringCoefficient} compacts its own merged adjacency the same way.
    * </p>
-   * A row is trimmed only when something was dropped, so a graph that is already simple allocates nothing.
+   * A row is trimmed only when something was dropped, so a graph that is already simple allocates nothing. The rows are
+   * sorted in place, so they must belong to the caller: {@code GraphData.adjacency()} hands out copies, never the arrays of
+   * a CSR view or of a cache.
    */
   protected static void toSimpleNeighbourSets(final int[][] adj, final WorkGuard guard) {
     for (int u = 0; u < adj.length; u++) {
