@@ -19,12 +19,17 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -183,6 +188,17 @@ class Issue10200TemporalComparisonTest extends TestHelper {
   void minAndMaxOverMixedTemporalTypesDoNotThrow() {
     assertThat(text("max(x)", "date('2024-01-01'), datetime('2024-01-01T00:00Z'), duration('P1D')")).isEqualTo("P1D");
     assertThat(text("min(x)", "date('2024-01-01'), datetime('2024-01-01T00:00Z'), duration('P1D')")).isEqualTo("2024-01-01T00:00Z");
+  }
+
+  /** The whole Cypher order of types, so a type added to the rank table cannot silently reorder the others. */
+  @Test
+  void theOrderOfTypesIsPinned() {
+    final Object[] ascending = { Map.of("a", 1), List.of(1), ZonedDateTime.of(2024, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC),
+        LocalDateTime.of(2024, 1, 1, 0, 0), LocalDate.of(2024, 1, 1), OffsetTime.of(12, 0, 0, 0, ZoneOffset.UTC),
+        LocalTime.of(12, 0), CypherDuration.parse("P1D"), "a", true, 1, Double.NaN, null };
+    for (int i = 1; i < ascending.length; i++)
+      assertThat(CypherFunctionHelper.cypherTypeRank(ascending[i - 1])).as("%s before %s", ascending[i - 1], ascending[i])
+          .isLessThan(CypherFunctionHelper.cypherTypeRank(ascending[i]));
   }
 
   private Object value(final String expression) {

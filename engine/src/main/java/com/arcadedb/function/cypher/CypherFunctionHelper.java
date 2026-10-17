@@ -472,7 +472,8 @@ public final class CypherFunctionHelper {
     final int rankB = cypherTypeRank(b);
     if (rankA != rankB)
       return Integer.compare(rankA, rankB);
-    // Two values of one temporal type, either of them possibly a native java.time value
+    // Two values of one temporal type, either of them possibly a native java.time value: temporalTypeRank ranks a native value
+    // by the Cypher class fromCoreJavaType wraps it in, so one rank is one class and the cast holds
     if (isTemporalTypeRank(rankA))
       return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
     // Same type category - compare within type

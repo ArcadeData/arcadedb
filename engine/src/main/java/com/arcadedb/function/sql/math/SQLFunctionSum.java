@@ -28,6 +28,9 @@ import com.arcadedb.schema.Type;
 /**
  * Computes the sum of field. Uses the context to save the last sum number. When different Number class are used, take the class
  * with most precision.
+ * <p>
+ * Durations add up too: {@code CypherDuration} is the value class of the engine's own {@code DURATION} property type
+ * ({@code Type.DURATION}), not a Cypher-only one, so SQL and Cypher sum stored durations alike (issue #10198).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
