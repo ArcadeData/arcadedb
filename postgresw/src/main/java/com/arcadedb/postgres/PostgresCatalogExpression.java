@@ -70,6 +70,13 @@ abstract class PostgresCatalogExpression {
   /** Stands for a cast type that is more than a bare name, and so is never one of {@link #LOOKUP_CASTS}. */
   private static final String COMPOUND_CAST_TYPE = "";
 
+  /** POSIX bracket-expression classes and the java.util.regex class each means. */
+  private static final String[][] POSIX_CLASSES = { { "[:alpha:]", "\\p{Alpha}" }, { "[:digit:]", "\\p{Digit}" },
+      { "[:alnum:]", "\\p{Alnum}" }, { "[:upper:]", "\\p{Upper}" }, { "[:lower:]", "\\p{Lower}" },
+      { "[:space:]", "\\p{Space}" }, { "[:punct:]", "\\p{Punct}" }, { "[:xdigit:]", "\\p{XDigit}" },
+      { "[:cntrl:]", "\\p{Cntrl}" }, { "[:print:]", "\\p{Print}" }, { "[:graph:]", "\\p{Graph}" },
+      { "[:blank:]", "\\p{Blank}" } };
+
   /** The aggregate functions an aggregated catalog query may project. */
   private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
       "every", "string_agg", "array_agg");
@@ -659,13 +666,6 @@ abstract class PostgresCatalogExpression {
       super(null, null, false, false);
     }
   }
-
-  /** POSIX bracket-expression classes and the java.util.regex class each means. */
-  private static final String[][] POSIX_CLASSES = { { "[:alpha:]", "\\p{Alpha}" }, { "[:digit:]", "\\p{Digit}" },
-      { "[:alnum:]", "\\p{Alnum}" }, { "[:upper:]", "\\p{Upper}" }, { "[:lower:]", "\\p{Lower}" },
-      { "[:space:]", "\\p{Space}" }, { "[:punct:]", "\\p{Punct}" }, { "[:xdigit:]", "\\p{XDigit}" },
-      { "[:cntrl:]", "\\p{Cntrl}" }, { "[:print:]", "\\p{Print}" }, { "[:graph:]", "\\p{Graph}" },
-      { "[:blank:]", "\\p{Blank}" } };
 
   /**
    * A PostgreSQL regular expression as java.util.regex reads it. The two agree on everything a catalog client
