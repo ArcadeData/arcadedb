@@ -33,6 +33,9 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Metrics;
 
 import java.util.Set;
 import java.util.logging.Level;
@@ -59,19 +62,53 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       ArcadeDbAdminServiceGrpc.getHealthMethod().getFullMethodName(),
       ArcadeDbAdminServiceGrpc.getReadyMethod().getFullMethodName());
 
+  /**
+   * Requests refused because the SERVER could not evaluate the credential, as opposed to a credential the server read
+   * and rejected (issue #10142). A refusal of this kind is a fault on the server, and before this counter it was
+   * indistinguishable from a wrong password: the native image, missing protobuf reflection metadata, refused every
+   * admin RPC as "Authentication required" with nothing at the default log level. The {@code stage} tag says where:
+   * {@link #STAGE_ADMIN_CREDENTIAL_READ}, {@link #STAGE_AUTHENTICATE} or {@link #STAGE_INTERCEPT}.
+   */
+  static final String AUTH_FAULTS_METER            = "grpc.auth.faults.total";
+  static final String STAGE_ADMIN_CREDENTIAL_READ  = "admin-credential-read";
+  static final String STAGE_AUTHENTICATE           = "authenticate";
+  static final String STAGE_INTERCEPT              = "intercept";
+  static final String ADMIN_CREDENTIAL_READ_FAULT  =
+      "Authentication required: the server could not read the request credentials (server fault, see the server log)";
+
   private final        ServerSecurity          security;
   private final        boolean                 securityEnabled;
   private final        HttpAuthSessionManager  authSessionManager;
+  private final        Counter                 adminCredentialReadFaults;
+  private final        Counter                 authenticateFaults;
+  private final        Counter                 interceptFaults;
 
   public GrpcAuthInterceptor(final ServerSecurity security) {
     this(security, null);
   }
 
   public GrpcAuthInterceptor(final ServerSecurity security, final HttpAuthSessionManager authSessionManager) {
+    // The server's JVM-wide registry, beside the meters GrpcMetricsInterceptor publishes
+    this(security, authSessionManager, Metrics.globalRegistry);
+  }
+
+  GrpcAuthInterceptor(final ServerSecurity security, final HttpAuthSessionManager authSessionManager,
+      final MeterRegistry meterRegistry) {
     this.security = security;
     this.authSessionManager = authSessionManager;
     // Check if security is enabled by checking if it's not null and has users configured
     this.securityEnabled = security != null && security.getUsers() != null && !security.getUsers().isEmpty();
+    // Registered up front, so a dashboard or an alert sees a zero rather than a meter that does not exist yet
+    this.adminCredentialReadFaults = faultCounter(meterRegistry, STAGE_ADMIN_CREDENTIAL_READ);
+    this.authenticateFaults = faultCounter(meterRegistry, STAGE_AUTHENTICATE);
+    this.interceptFaults = faultCounter(meterRegistry, STAGE_INTERCEPT);
+  }
+
+  private static Counter faultCounter(final MeterRegistry meterRegistry, final String stage) {
+    return Counter.builder(AUTH_FAULTS_METER)
+        .description("gRPC requests refused because the server could not evaluate the credential (a server fault, not a bad credential)")
+        .tag("stage", stage)
+        .register(meterRegistry);
   }
 
   @Override
@@ -129,11 +166,23 @@ class GrpcAuthInterceptor implements ServerInterceptor {
           boolean authenticated;
           try {
             authenticated = authenticateAdminRequest(message);
-          } catch (final Exception e) {
+          } catch (final Exception | Error e) {
             // Keep the fail-closed posture uniform with the rest of the interceptor: any unexpected
-            // error denies the call rather than surfacing as a generic UNKNOWN status.
-            LogManager.instance().log(this, Level.FINE, "Admin authentication error", e);
-            authenticated = false;
+            // error denies the call rather than surfacing as a generic UNKNOWN status. Error is caught
+            // too: a missing native-image registration surfaces as ExceptionInInitializerError or
+            // NoClassDefFoundError on the first touch of a class, and would otherwise escape as UNKNOWN.
+            //
+            // Denying the call and telling nobody why are two separate decisions (issue #10142). This is
+            // a refusal the SERVER could not explain, not one the client caused, so it is logged at
+            // SEVERE like the two sibling fault arms below, counted, and described as a server fault
+            // rather than byte-identically to a wrong password.
+            adminCredentialReadFaults.increment();
+            LogManager.instance().log(GrpcAuthInterceptor.this, Level.SEVERE,
+                "Admin request %s refused: its credentials could not be read. This is a server fault, not a credential refusal",
+                e, methodName);
+            halted = true;
+            call.close(Status.UNAUTHENTICATED.withDescription(ADMIN_CREDENTIAL_READ_FAULT), new Metadata());
+            return;
           }
           if (!authenticated) {
             halted = true;
@@ -205,7 +254,10 @@ class GrpcAuthInterceptor implements ServerInterceptor {
         }
       }
 
-    } catch (Exception e) {
+    } catch (final Exception | Error e) {
+      // Error included for the same reason as the admin arm above: a class-initialization failure must be reported,
+      // not escape as a bare UNKNOWN
+      interceptFaults.increment();
       LogManager.instance().log(this, Level.SEVERE, "Authentication error", e);
       call.close(Status.INTERNAL.withDescription("Authentication error"), new Metadata());
       return new ServerCall.Listener<ReqT>() {
@@ -309,6 +361,7 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       final String reason = e.getMessage();
       return reason == null || reason.isBlank() ? "Invalid credentials" : reason;
     } catch (final Exception e) {
+      authenticateFaults.increment();
       LogManager.instance().log(this, Level.SEVERE, "Failed to authenticate user: %s for database: %s", e, username, database);
       return "Invalid credentials";
     }
