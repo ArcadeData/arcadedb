@@ -28,6 +28,16 @@ import java.util.Locale;
  * relations and join conditions of its FROM, the arms of a set operation, the conjuncts of a condition, and the
  * plain forms of the spellings that mean the same thing. Nothing here knows what a relation holds; that is
  * {@link PostgresCatalog}'s to decide.
+ * <p>
+ * <b>Read:</b> {@code SELECT [DISTINCT]} with or without FROM; FROM items that are relations, derived tables or
+ * parenthesised inner joins, joined by commas, {@code CROSS}, {@code [INNER]}, {@code LEFT}, {@code RIGHT} or
+ * {@code FULL JOIN ... ON | USING}; {@code WHERE}, {@code GROUP BY}, {@code ORDER BY}, {@code LIMIT n | ALL};
+ * {@code UNION}, {@code INTERSECT} and {@code EXCEPT} chains with a trailing ORDER BY and LIMIT; the
+ * {@code OPERATOR(schema.op)} and {@code COLLATE} spellings.
+ * <p>
+ * <b>Declined</b> (the statement is not a shape this catalog answers): {@code DISTINCT ON}, {@code HAVING},
+ * {@code WINDOW}, {@code OFFSET}, {@code FETCH}, {@code INTO}, an outer join to a parenthesised join, an alias on one,
+ * a FROM item that is a function call or a VALUES list, and anything nested deeper than {@link #MAX_NESTING}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
