@@ -359,6 +359,9 @@ public class GraphBatch implements AutoCloseable {
   // DeferredHeadChunks (both directions in one slot, RIDs packed, no boxing) is safe under this lifecycle because
   // writes are never concurrent and concurrent reads never race a write. It holds an entry per vertex the batch
   // touches, which on a 200M-vertex load is the batch's largest structure (issue #9575).
+  // Invariant: it holds only segments this batch wrote, each sized to its content and so full. The connect paths chain the
+  // next segment to a head found here without reading it (#9575): a head with room left (pre-allocated, or found on the
+  // disk) must go to outChunkRIDCache / inChunkRIDCache only, or its free space is never filled.
   private final DeferredHeadChunks deferredHeads;
 
   // --- Known-new vertices: created by createVertices(), guaranteed no existing segments ---
