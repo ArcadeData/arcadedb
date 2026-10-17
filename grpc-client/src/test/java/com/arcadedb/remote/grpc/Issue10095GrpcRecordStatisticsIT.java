@@ -21,6 +21,7 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -109,7 +110,7 @@ public class Issue10095GrpcRecordStatisticsIT extends BaseGrpcClientServerTest {
     grpc.deleteRecord(doc);
     assertThat(stat("deleteRecord")).as("the server deleted the record").isEqualTo(deletes + 1);
 
-    assertThatThrownBy(() -> grpc.deleteRecord(doc)).isInstanceOf(RuntimeException.class);
+    assertThatThrownBy(() -> grpc.deleteRecord(doc)).isInstanceOf(RecordNotFoundException.class);
     assertThat(stat("deleteRecord")).as("a delete the server refused is not counted").isEqualTo(deletes + 1);
   }
 
