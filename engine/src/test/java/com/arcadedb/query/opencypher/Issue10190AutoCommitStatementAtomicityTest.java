@@ -243,6 +243,12 @@ class Issue10190AutoCommitStatementAtomicityTest extends TestHelper {
     assertThat(database.isTransactionActive()).isFalse();
     assertThat(countFromAnotherThread("MATCH (n:B) RETURN count(n) AS c")).isZero();
     assertThat(countFromAnotherThread("MATCH (n:A) WHERE n.touched RETURN count(n) AS c")).isZero();
+
+    // PROFILE runs the write the same way: in the statement's transaction, with the constraints checked at its end
+    assertThatThrownBy(() -> drain("PROFILE MATCH (a:A) SET a.touched = true CREATE (:B {name: 'no k'})")).hasMessageContaining("k");
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(countFromAnotherThread("MATCH (n:B) RETURN count(n) AS c")).isZero();
+    assertThat(countFromAnotherThread("MATCH (n:A) WHERE n.touched RETURN count(n) AS c")).isZero();
   }
 
   private long countFromAnotherThread(final String cypher) throws Exception {
