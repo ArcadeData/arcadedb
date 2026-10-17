@@ -31,9 +31,10 @@ import com.arcadedb.query.sql.executor.Result;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class WritePatternChecks {
-  /** The tail of the message of a null MERGE property, the same whether the null was a literal or arrived at run time. */
-  static final String NULL_MERGE_PROPERTY = "'MERGE' cannot be used with a graph element property value that is null";
+public final class WritePatternChecks {
+  /** The message of a null MERGE property, the same whether the null was a literal or arrived at run time. */
+  public static final String NULL_MERGE_PROPERTY =
+      "MergeReadOwnWrites: 'MERGE' cannot be used with a graph element property value that is null";
 
   private WritePatternChecks() {
   }
@@ -78,6 +79,6 @@ final class WritePatternChecks {
    */
   static void checkMergePropertyNotNull(final String key, final Object value) {
     if (value == null)
-      throw new CommandExecutionException("MergeReadOwnWrites: The property `" + key + "` of the MERGE pattern is invalid: " + NULL_MERGE_PROPERTY);
+      throw new CommandExecutionException(NULL_MERGE_PROPERTY + " (property `" + key + "`)");
   }
 }

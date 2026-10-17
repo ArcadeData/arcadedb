@@ -120,6 +120,28 @@ class Issue10213GAVEdgeSubTypeUniquenessTest extends TestHelper {
     assertThat(failures).isEmpty();
   }
 
+  /**
+   * A view over part of the hierarchy only - F and the G under it, not E. A hop on E is not covered and the clause walks
+   * the records; hops on F and G are walked through the view, F answering for G, with the same answers.
+   */
+  @Test
+  void aViewOverPartOfTheHierarchyKeepsTheAnswers() {
+    final String[] queries = {
+        "MATCH (a:P)-[:F]-(b:P)-[:F]-(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[:F]->(b:P)-[:G]->(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[:G]-(b:P)-[:F]-(a) RETURN count(*) AS n",
+        "MATCH (a:P)-[:E]->(b:P)-[:F]->(c:P) RETURN count(*) AS n" };
+    final Map<String, List<String>> expected = new LinkedHashMap<>();
+    for (final String query : queries)
+      expected.put(query, answer(query));
+
+    createView("VERTEX TYPES (P) EDGE TYPES (F) PROPERTIES (id)");
+    for (int i = 0; i < 3; i++)
+      assertThat(plan(queries[i])).as(queries[i]).contains("unique relationships");
+    for (final String query : queries)
+      assertThat(answer(query)).as(query + "\n" + plan(query)).isEqualTo(expected.get(query));
+  }
+
   @Test
   void theIssueRepro() {
     final String query = "MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS n";

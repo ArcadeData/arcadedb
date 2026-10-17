@@ -154,6 +154,37 @@ class Issue10190AutoCommitStatementAtomicityTest extends TestHelper {
     }
   }
 
+  /** The rows are read only after command() returned, or never: the writes are committed either way, PROFILE included. */
+  @Test
+  void theWritesAreCommittedBeforeTheResultIsRead() throws Exception {
+    final ResultSet unread = database.command("opencypher", "UNWIND range(1, 4) AS i CREATE (n:B {k: i}) RETURN n");
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(countFromAnotherThread("MATCH (n:B) RETURN count(n) AS c")).isEqualTo(4L);
+    int rows = 0;
+    while (unread.hasNext()) {
+      assertThat(unread.next().<Object>getProperty("n")).isNotNull();
+      ++rows;
+    }
+    unread.close();
+    assertThat(rows).isEqualTo(4);
+
+    database.command("opencypher", "MATCH (n:B) SET n.seen = true RETURN n").close();
+    assertThat(countFromAnotherThread("MATCH (n:B) WHERE n.seen RETURN count(n) AS c")).isEqualTo(4L);
+
+    database.command("opencypher", "PROFILE MATCH (n:B) SET n.profiled = true RETURN n").close();
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(countFromAnotherThread("MATCH (n:B) WHERE n.profiled RETURN count(n) AS c")).isEqualTo(4L);
+  }
+
+  /** A UNION of writes is one statement: a failing branch takes back what the other branches wrote. */
+  @Test
+  void aUnionOfWritesFailingInOneBranchLeavesNothingBehind() throws Exception {
+    assertThatThrownBy(() -> drain("CREATE (:A {k: 1}) RETURN 1 AS x UNION ALL CREATE (:A {k: 2}) WITH 0 AS z RETURN 1 / z AS x"))
+        .hasMessageContaining("/ by zero");
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(countFromAnotherThread("MATCH (n:A) RETURN count(n) AS c")).isZero();
+  }
+
   /** A statement refused by an existence constraint checked at its end is rolled back before the error reaches the caller. */
   @Test
   void aFailedExistenceCheckAtTheEndOfTheStatementRollsItBack() throws Exception {

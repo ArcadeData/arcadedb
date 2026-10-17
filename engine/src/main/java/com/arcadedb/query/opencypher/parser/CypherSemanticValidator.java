@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.executor.steps.WritePatternChecks;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
@@ -1958,8 +1959,7 @@ public class CypherSemanticValidator {
   /** A literal null, refused before anything runs. One that arrives at run time is refused by {@code MergeStep} (#10191). */
   private void checkMergePropertyNotNull(final Object value) {
     if (value == null || (value instanceof LiteralExpression literal && literal.getValue() == null))
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values: "
-          + "'MERGE' cannot be used with a graph element property value that is null");
+      throw new CommandParsingException(WritePatternChecks.NULL_MERGE_PROPERTY);
   }
 
   private void validateDeleteTargets(final DeleteClause deleteClause) {
