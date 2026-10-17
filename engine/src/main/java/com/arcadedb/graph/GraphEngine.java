@@ -48,6 +48,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.InternalBucketNaming;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.MultiIterator;
@@ -767,13 +768,43 @@ public class GraphEngine {
     final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
     database.createRecord(chunk, getEdgesBucketName(mutable.getIdentity().getBucketId(), direction));
 
-    if (direction == Vertex.DIRECTION.OUT)
-      mutable.setOutEdgesHeadChunk(chunk.getIdentity());
-    else
-      mutable.setInEdgesHeadChunk(chunk.getIdentity());
-    database.updateRecord(mutable);
+    writeEdgeListHead(database, mutable, direction, chunk.getIdentity());
 
     return new EdgeLinkedList(mutable, direction, chunk);
+  }
+
+  /**
+   * Points a vertex's edge list of one direction at a new head (its first segment, a newer segment, a stripe directory). The
+   * vertex's own bookkeeping rather than an update of it, so it is written without events (issue #10207): announced as an
+   * update, it fired the vertex's UPDATE triggers on some edge creations and not on others, and a BEFORE UPDATE veto dropped the
+   * pointer, which left the new edge an orphan no traversal of the vertex reached.
+   * <p>
+   * The instance written is the caller's, so property edits it carries would ride along. Edits of an instance the transaction
+   * already holds are the transaction's: they are committed with it whether or not an edge is added. An instance the
+   * transaction does not hold yet would be brought into it by this write, and its edits committed unannounced, past a BEFORE
+   * UPDATE trigger that validates them: those are saved first, through the ordinary update and its events. Vetoed, they are
+   * discarded, as a vetoed save never applies them, and the pointer is written alone.
+   */
+  static void writeEdgeListHead(final DatabaseInternal database, final MutableVertex vertex, final Vertex.DIRECTION direction,
+      final RID head) {
+    saveUnannouncedEdits(database, vertex);
+
+    if (direction == Vertex.DIRECTION.OUT)
+      vertex.setOutEdgesHeadChunk(head);
+    else
+      vertex.setInEdgesHeadChunk(head);
+    database.updateRecordWithoutEvents(vertex);
+  }
+
+  /** The first half of {@link #writeEdgeListHead}, for a caller that queues the write of the pointer itself. */
+  static void saveUnannouncedEdits(final DatabaseInternal database, final MutableVertex vertex) {
+    if (!vertex.isDirty())
+      return;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.getWrittenRecord(vertex.getIdentity()) == vertex)
+      return;
+    if (!database.updateRecordReportingVeto(vertex))
+      vertex.reload();
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
@@ -797,8 +828,7 @@ public class GraphEngine {
       database.createRecord(inChunk, getEdgesBucketName(toVertex.getIdentity().getBucketId(), Vertex.DIRECTION.IN));
       inEdgesHeadChunk = inChunk.getIdentity();
 
-      toVertex.setInEdgesHeadChunk(inEdgesHeadChunk);
-      database.updateRecord(toVertex);
+      writeEdgeListHead(database, toVertex, Vertex.DIRECTION.IN, inEdgesHeadChunk);
     }
 
     return inChunk;
@@ -825,8 +855,7 @@ public class GraphEngine {
       database.createRecord(outChunk, getEdgesBucketName(fromVertex.getIdentity().getBucketId(), Vertex.DIRECTION.OUT));
       outEdgesHeadChunk = outChunk.getIdentity();
 
-      fromVertex.setOutEdgesHeadChunk(outEdgesHeadChunk);
-      database.updateRecord(fromVertex);
+      writeEdgeListHead(database, fromVertex, Vertex.DIRECTION.OUT, outEdgesHeadChunk);
     }
 
     return outChunk;
@@ -1144,7 +1173,7 @@ public class GraphEngine {
     // Once the replacement exists, so a move that fails half-way has told no listener of a removal. Still the record being
     // replaced: its identity and endpoints change only on the next line
     ((RecordEventsRegistry) database.getEvents()).onAfterDelete(edge);
-    ((RecordEventsRegistry) edge.getType().getEvents()).onAfterDelete(edge);
+    ((LocalDocumentType) edge.getType()).fireAfterDelete(edge);
 
     edge.updateIdentity(newEdge.getIdentity(), newOut, newIn);
   }

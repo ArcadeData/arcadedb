@@ -392,21 +392,34 @@ public final class CypherFunctionHelper {
     return list;
   }
 
+  /** {@link #cypherTypeRank(Object)} of a path, and of any value Cypher has no type for. */
+  public static final int TYPE_RANK_PATH_OR_OTHER = 4;
+  /** {@link #cypherTypeRank(Object)} of the first temporal type, DATETIME: the six follow in {@link #temporalTypeRank(Object)} order. */
+  public static final int TYPE_RANK_FIRST_TEMPORAL = 5;
+  /** {@link #cypherTypeRank(Object)} of the last temporal type, DURATION. */
+  public static final int TYPE_RANK_LAST_TEMPORAL  = TYPE_RANK_FIRST_TEMPORAL + 5;
+  public static final int TYPE_RANK_STRING         = TYPE_RANK_LAST_TEMPORAL + 1;
+  public static final int TYPE_RANK_BOOLEAN        = TYPE_RANK_STRING + 1;
+  public static final int TYPE_RANK_NUMBER         = TYPE_RANK_BOOLEAN + 1;
+  public static final int TYPE_RANK_NAN            = TYPE_RANK_NUMBER + 1;
+  public static final int TYPE_RANK_NULL           = TYPE_RANK_NAN + 1;
+
   /**
    * Returns the Cypher type order rank for mixed-type comparison.
-   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < STRING(5) < BOOLEAN(6) < NUMBER(7) < NaN(8) < NULL(9)
+   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < the six temporal types (5-10, see
+   * {@link #temporalTypeRank(Object)}) < STRING(11) < BOOLEAN(12) < NUMBER(13) < NaN(14) < NULL(15)
    */
   public static int cypherTypeRank(final Object value) {
     if (value == null)
-      return 9;
+      return TYPE_RANK_NULL;
     if (value instanceof Number) {
       final double d = ((Number) value).doubleValue();
-      return Double.isNaN(d) ? 8 : 7;
+      return Double.isNaN(d) ? TYPE_RANK_NAN : TYPE_RANK_NUMBER;
     }
     if (value instanceof Boolean)
-      return 6;
+      return TYPE_RANK_BOOLEAN;
     if (value instanceof String)
-      return 5;
+      return TYPE_RANK_STRING;
     if (value instanceof List)
       return 3;
     if (value instanceof Vertex)
@@ -415,7 +428,51 @@ public final class CypherFunctionHelper {
       return 2;
     if (value instanceof Map)
       return 0;
-    return 4; // path or other
+    // After the common graph and collection values, which are never temporal, so a sort over them skips the temporal checks
+    final int temporal = temporalTypeRank(value);
+    if (temporal >= 0)
+      return TYPE_RANK_FIRST_TEMPORAL + temporal;
+    return TYPE_RANK_PATH_OR_OTHER;
+  }
+
+  /** Whether a {@link #cypherTypeRank(Object)} is the rank of a temporal type. */
+  public static boolean isTemporalTypeRank(final int rank) {
+    return rank >= TYPE_RANK_FIRST_TEMPORAL && rank <= TYPE_RANK_LAST_TEMPORAL;
+  }
+
+  /**
+   * The rank of a temporal value among the temporal types in the Cypher order of values: DATETIME(0) < LOCAL DATETIME(1) <
+   * DATE(2) < TIME(3) < LOCAL TIME(4) < DURATION(5), all of them after PATH and before STRING, as Neo4j orders them. Values of
+   * two different temporal types are ordered by this rank and never by their content: comparing them used to throw
+   * "Cannot compare DateTime with CypherDate" out of ORDER BY (issue #10200). A native {@code java.time} or
+   * {@code java.util.Date} value, or a {@code java.time.Duration} / {@code Period} parameter, ranks as the Cypher type it is
+   * read as; -1 for any other value.
+   */
+  public static int temporalTypeRank(final Object value) {
+    switch (value) {
+    case CypherDateTime ignored:
+      return 0;
+    case CypherLocalDateTime ignored:
+      return 1;
+    case CypherDate ignored:
+      return 2;
+    case CypherTime ignored:
+      return 3;
+    case CypherLocalTime ignored:
+      return 4;
+    case CypherDuration ignored:
+      return 5;
+    case Duration ignored:
+      return 5;
+    case Period ignored:
+      return 5;
+    case null, default:
+      break;
+    }
+    if (!TemporalUtil.isNativeTemporal(value))
+      return -1;
+    // A native java.time / java.util.Date value ranks as the Cypher type it is wrapped in
+    return TemporalUtil.fromCoreJavaType(value) instanceof CypherTemporalValue wrapped ? temporalTypeRank(wrapped) : -1;
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -430,6 +487,10 @@ public final class CypherFunctionHelper {
     final int rankB = cypherTypeRank(b);
     if (rankA != rankB)
       return Integer.compare(rankA, rankB);
+    // Two values of one temporal type, either of them possibly a native java.time value: temporalTypeRank ranks a native value
+    // by the Cypher class fromCoreJavaType wraps it in, so one rank is one class and the cast holds
+    if (isTemporalTypeRank(rankA))
+      return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
     // Same type category - compare within type
     if (a instanceof Number && b instanceof Number)
       return BinaryComparator.compareDoubles(((Number) a).doubleValue(), ((Number) b).doubleValue());
@@ -594,7 +655,7 @@ public final class CypherFunctionHelper {
     value = map.get("second");
     if (value != null)
       time = time.withSecond(TemporalUtil.toIntField("second", value));
-    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano()));
+    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano(), true));
     return time;
   }
 

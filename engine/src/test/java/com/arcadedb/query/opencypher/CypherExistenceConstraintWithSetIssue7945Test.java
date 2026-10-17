@@ -152,9 +152,8 @@ class CypherExistenceConstraintWithSetIssue7945Test {
   /**
    * Once a clause of the statement has supplied the property, the record is no longer provisional: a later clause
    * clearing it again is an ordinary write that leaves a complete record incomplete, and fails where any such write
-   * does - at the write. What survives is the record as the completing clause left it, which satisfies the
-   * constraint. (That the earlier clauses of a failed statement survive at all is the openCypher pipeline's
-   * long-standing auto-commit behaviour, unchanged here: a write step commits its own transaction.)
+   * does - at the write. The statement is one transaction, so nothing of it survives (issue #10190: the earlier clauses
+   * used to, each write step committing its own transaction).
    */
   @Test
   void clearingThePropertyAgainLaterInTheStatementFailsAtTheWrite() {
@@ -163,9 +162,7 @@ class CypherExistenceConstraintWithSetIssue7945Test {
         .isInstanceOf(CommandExecutionException.class)
         .rootCause().isInstanceOf(ValidationException.class);
 
-    try (final ResultSet rs = database.query("cypher", "MATCH (n:Record {id: 'r7'}) RETURN n.orgId AS o")) {
-      assertThat(rs.next().<String>getProperty("o")).isEqualTo("x");
-    }
+    assertThat(countRecords()).isZero();
   }
 
   /**
@@ -265,10 +262,11 @@ class CypherExistenceConstraintWithSetIssue7945Test {
   }
 
   /**
-   * A MERGE path whose vertices are completed but whose relationship is not: only the relationship is taken back.
+   * A MERGE path whose vertices are completed but whose relationship is not: the statement fails, and being one
+   * transaction it takes the completed vertices back with the relationship (issue #10190: they used to survive).
    */
   @Test
-  void aMergedPathKeepsTheCompletedVerticesWhenTheRelationshipIsNot() {
+  void aMergedPathWhoseRelationshipIsNeverCompletedLeavesNothingBehind() {
     database.command("cypher", "CREATE CONSTRAINT rel_since_exists IF NOT EXISTS FOR ()-[r:KNOWS]-() REQUIRE r.since IS NOT NULL")
         .close();
 
@@ -278,18 +276,18 @@ class CypherExistenceConstraintWithSetIssue7945Test {
         .rootCause().isInstanceOf(ValidationException.class)
         .hasMessageContaining("since");
 
-    assertThat(countRecords()).isEqualTo(2);
+    assertThat(countRecords()).isZero();
     try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c")) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
     }
   }
 
   /**
-   * The mirror image: the vertices are completed and the relationship is not, so only the relationship is taken
-   * back and the two nodes stay.
+   * The same through CREATE: the vertices are completed and the relationship is not, and the failed statement takes all
+   * three back (issue #10190: the two nodes used to stay).
    */
   @Test
-  void aPathWhoseRelationshipIsNeverCompletedKeepsTheCompletedVertices() {
+  void aPathWhoseRelationshipIsNeverCompletedLeavesNothingBehind() {
     database.command("cypher", "CREATE CONSTRAINT rel_since_exists IF NOT EXISTS FOR ()-[r:KNOWS]-() REQUIRE r.since IS NOT NULL")
         .close();
 
@@ -299,7 +297,7 @@ class CypherExistenceConstraintWithSetIssue7945Test {
         .rootCause().isInstanceOf(ValidationException.class)
         .hasMessageContaining("since");
 
-    assertThat(countRecords()).isEqualTo(2);
+    assertThat(countRecords()).isZero();
     try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c")) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
     }

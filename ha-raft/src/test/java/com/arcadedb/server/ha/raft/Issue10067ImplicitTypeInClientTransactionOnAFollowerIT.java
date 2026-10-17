@@ -34,9 +34,12 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -189,10 +192,22 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
    * Two clients creating the SAME new label at the same time through the TWO followers: one has the leader create the type, for the
    * other the leader's {@code IF NOT EXISTS} is a no-op, and both end with the type and their node. A refusal along the way may only be
    * the retryable one (the two commits can meet on a page of the new type), and the retry goes through.
+   * <p>
+   * Over every shape of implicit type a statement introduces (issue #10145): one label, the composite type of a node with two labels
+   * ({@code A~B}, whose builder did not say IF NOT EXISTS and failed the losing side with a non-retryable
+   * {@code TypeAlreadyExistsException}), and a label with a relationship type.
    */
-  @Test
+  @ParameterizedTest
+  @ValueSource(strings = { "oneLabel", "twoLabels", "labelAndRelationship" })
   @Timeout(240)
-  void twoFollowersCreatingTheSameNewLabelAtOnceBothEndWithTheirNode() throws Exception {
+  void twoFollowersCreatingTheSameNewLabelAtOnceBothEndWithTheirNode(final String shape) throws Exception {
+    final String label = "Issue10067Race" + shape;
+    final String statement = switch (shape) {
+      case "twoLabels" -> "CREATE (n:" + label + ":" + label + "B {name: $name})";
+      case "labelAndRelationship" -> "CREATE (n:" + label + " {name: $name})-[:ISSUE10067_RACE_REL]->(:" + label + "End)";
+      default -> "CREATE (n:" + label + " {name: $name})";
+    };
+
     final int leader = requireLeaderIndex();
     final int[] followers = new int[2];
     for (int i = 0, n = 0; i < getServerCount(); i++)
@@ -213,7 +228,7 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
             db.begin();
             try {
               markClientManaged(db);
-              db.command("opencypher", "CREATE (n:Issue10067Race {name: 'client" + name + "'})").close();
+              db.command("opencypher", statement, Map.of("name", "client" + name)).close();
               db.commit();
               return true;
             } catch (final RuntimeException e) {
@@ -233,9 +248,11 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
       pool.shutdownNow();
     }
 
-    awaitOnEveryServer("Issue10067Race", 2);
+    awaitOnEveryServer(label, 2);
+    if (shape.equals("twoLabels"))
+      awaitOnEveryServer(label + "B", 2);
     for (int i = 0; i < getServerCount(); i++)
-      assertThat(getServerDatabase(i, getDatabaseName()).getSchema().existsType("Issue10067Race")).as("server %d", i).isTrue();
+      assertThat(getServerDatabase(i, getDatabaseName()).getSchema().existsType(label)).as("server %d", i).isTrue();
   }
 
   /** A label with a back-tick and a space is quoted into the statement the leader runs, and names the type exactly. */

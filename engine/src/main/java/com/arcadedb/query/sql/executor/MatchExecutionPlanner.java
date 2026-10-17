@@ -128,9 +128,13 @@ public class MatchExecutionPlanner {
     // BOUND, SO THE PREDICATE WOULD BE FALSE FOR EVERY CANDIDATE AND THE STATEMENT WOULD SILENTLY ANSWER NOTHING (ISSUE #7434)
     // AN UNKNOWN ESTIMATE (AN INDEXED FUNCTION LIKE SEARCH_INDEX THAT CANNOT COUNT ITS RESULT) IS NOT A SMALL ONE: PREFETCHING IT
     // DRAINED THE WHOLE RESULT INTO A LIST BEFORE THE PATTERN STARTED, WHATEVER THE LIMIT (ISSUE #9908). IT IS STREAMED INSTEAD
+    // A NODE REACHED THROUGH A while: OR maxDepth: ITEM IS NOT PREFETCHED EITHER: THE RECURSIVE WALK IS RESTRICTED TO THE PREFETCHED
+    // CANDIDATES AT EVERY HOP, SO A PATH THROUGH A VERTEX THAT IS NOT ITSELF A CANDIDATE WAS CUT SHORT, AND A where: READING $depth
+    // HAS NO VALUE BEFORE ANY TRAVERSAL (ISSUE #10216)
+    final Set<String> recursiveTargets = recursiveTargetAliases();
     final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream()
         .filter(x -> x.getValue() >= 0 && x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty()
-            && !ridReadsMatched(x.getKey()))
+            && !ridReadsMatched(x.getKey()) && !recursiveTargets.contains(x.getKey()))
         .map(x -> x.getKey()).collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context));
@@ -531,28 +535,34 @@ public class MatchExecutionPlanner {
     // Add all the remaining aliases after all the suggested start points.
     remainingStarts.addAll(pattern.aliasToNode.keySet());
 
+    final Set<String> rootCandidates = estimatedRootEntries.keySet();
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
-      // 1. Find a starting vertex for the depth-first pass.
+      // 1. Find a starting vertex for the depth-first pass. A node that an edge walked only forward leads to waits for that
+      //    edge's source when the source can be a root itself: started from, the node would have to walk the edge backwards
+      //    (issue #10216). It is taken anyway when nothing else can start
       PatternNode startingNode = null;
-      final List<String> startsToRemove = new ArrayList<>();
-      for (final String currentAlias : remainingStarts) {
-        final PatternNode currentNode = pattern.aliasToNode.get(currentAlias);
+      for (int pass = 0; pass < 2 && startingNode == null; pass++) {
+        final List<String> startsToRemove = new ArrayList<>();
+        for (final String currentAlias : remainingStarts) {
+          final PatternNode currentNode = pattern.aliasToNode.get(currentAlias);
 
-        if (currentNode == null) {
-          // THE ROOT ESTIMATES COVER EVERY ALIAS OF THE STATEMENT: ONE BOUND BY ANOTHER DISJOINT SUB-PATTERN IS NOT A START HERE
-          startsToRemove.add(currentAlias);
-        } else if (visitedNodes.contains(currentNode)) {
-          // If a previous traversal already visited this alias, remove it from further consideration.
-          startsToRemove.add(currentAlias);
-        } else if (remainingDependencies.get(currentAlias) == null || remainingDependencies.get(currentAlias).isEmpty()) {
-          // If it hasn't been visited, and has all dependencies satisfied, visit it.
-          startsToRemove.add(currentAlias);
-          startingNode = currentNode;
-          break;
+          if (currentNode == null) {
+            // THE ROOT ESTIMATES COVER EVERY ALIAS OF THE STATEMENT: ONE BOUND BY ANOTHER DISJOINT SUB-PATTERN IS NOT A START HERE
+            startsToRemove.add(currentAlias);
+          } else if (visitedNodes.contains(currentNode)) {
+            // If a previous traversal already visited this alias, remove it from further consideration.
+            startsToRemove.add(currentAlias);
+          } else if ((remainingDependencies.get(currentAlias) == null || remainingDependencies.get(currentAlias).isEmpty())
+              && (pass > 0 || !waitsForAForwardOnlySource(currentNode, visitedNodes, rootCandidates))) {
+            // If it hasn't been visited, and has all dependencies satisfied, visit it.
+            startsToRemove.add(currentAlias);
+            startingNode = currentNode;
+            break;
+          }
         }
+        startsToRemove.forEach(remainingStarts::remove);
       }
-      startsToRemove.forEach(remainingStarts::remove);
 
       if (startingNode == null) {
         // We didn't manage to find a valid root, and yet we haven't constructed a complete schedule.
@@ -565,7 +575,7 @@ public class MatchExecutionPlanner {
 
       // 2. Having found a starting vertex, traverse its neighbors depth-first,
       //    adding any non-visited ones with satisfied dependencies to our schedule.
-      updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule);
+      updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
     }
 
     if (resultingSchedule.size() != pattern.numOfEdges) {
@@ -669,7 +679,7 @@ public class MatchExecutionPlanner {
    */
   private void updateScheduleStartingAt(final PatternNode startNode, final Set<PatternNode> visitedNodes,
       final Set<PatternEdge> visitedEdges, final Map<String, Set<String>> remainingDependencies,
-      final List<EdgeTraversal> resultingSchedule) {
+      final List<EdgeTraversal> resultingSchedule, final Set<String> rootCandidates) {
     // Arcadedb requires the schedule to contain all edges present in the query, which is a stronger condition
     // than simply visiting all nodes in the query. Consider the following example query:
     //     MATCH {
@@ -729,12 +739,14 @@ public class MatchExecutionPlanner {
           // visit the optional node from its non-optional and already-visited neighbor.
           //
           // The only exception to the above is when we have edges with "while" conditions. We are not allowed
-          // to flip their directionality, so we leave them as-is.
+          // to flip their directionality, so we leave them as-is: walked from their source (edge.out), whichever of the
+          // two ends the startNode is. isOutbound is relative to the startNode, so it walked such an edge backwards
+          // whenever the startNode was its target (issue #10216).
           final boolean traversalDirection;
           if (startNode.optional || edge.item.isBidirectional()) {
             traversalDirection = !isOutbound;
           } else {
-            traversalDirection = isOutbound;
+            traversalDirection = true;
           }
 
           visitedEdges.add(edge);
@@ -743,6 +755,10 @@ public class MatchExecutionPlanner {
       } else if (!startNode.optional) {
         // If the neighboring node wasn't visited, we don't expand the optional node into it, hence the above check.
         // Instead, we'll allow the neighboring node to add the edge we failed to visit, via the above block.
+        if (!isOutbound && walksOnlyForward(edge) && rootCandidates.contains(neighboringNode.alias))
+          // The same for an edge that is walked only forward and whose source can be a root: the source starts later, finds
+          // this node visited and adds the edge in its own direction (issue #10216)
+          continue;
         if (visitedEdges.contains(edge)) {
           // Should never happen.
           throw new AssertionError("The edge was visited, but the neighboring vertex was not: " + edge + " " + neighboringNode);
@@ -750,9 +766,79 @@ public class MatchExecutionPlanner {
 
         visitedEdges.add(edge);
         resultingSchedule.add(new EdgeTraversal(edge, isOutbound));
-        updateScheduleStartingAt(neighboringNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule);
+        updateScheduleStartingAt(neighboringNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule,
+            rootCandidates);
       }
     }
+  }
+
+  /**
+   * The aliases reached through a {@code while:} or {@code maxDepth:} item. The recursive walk evaluates their {@code where:} at
+   * every depth and restricts every hop to the candidates of a prefetch, so they are never prefetched (issue #10216).
+   */
+  private Set<String> recursiveTargetAliases() {
+    final Set<String> aliases = new HashSet<>();
+    for (final PatternNode node : pattern.aliasToNode.values())
+      for (final PatternEdge edge : node.out) {
+        final MatchFilter filter = edge.item.getFilter();
+        if (filter != null && (filter.getWhileCondition() != null || filter.getMaxDepth() != null))
+          aliases.add(edge.in.alias);
+      }
+    return aliases;
+  }
+
+  /**
+   * Whether walking {@code edge} backwards, from its target, could answer something else than walking it forward (issue
+   * #10216). A {@code while:} is evaluated on the vertices the walk expands from, which a backward walk takes from the other
+   * end of each path, unless it reads nothing but {@code $depth}, counted the same from either end. And a {@code where:} of
+   * the target that reads {@code $depth} would be applied to the target as the root of the walk, where no traversal has given
+   * {@code $depth} a value.
+   */
+  private boolean walksOnlyForward(final PatternEdge edge) {
+    final MatchFilter filter = edge.item.getFilter();
+    if (filter == null)
+      return false;
+    if (filter.getWhileCondition() != null && !readsOnlyDepth(filter.getWhileCondition()))
+      return true;
+    return (filter.getWhileCondition() != null || filter.getMaxDepth() != null) && readsDepth(aliasFilters.get(edge.in.alias));
+  }
+
+  /**
+   * Whether {@code node} should not start a depth-first pass yet: an edge walked only forward leads to it from a source that is
+   * not visited and can be a root, so starting from the source walks that edge forward.
+   */
+  private boolean waitsForAForwardOnlySource(final PatternNode node, final Set<PatternNode> visitedNodes,
+      final Set<String> rootCandidates) {
+    for (final PatternEdge edge : node.in)
+      if (!visitedNodes.contains(edge.out) && rootCandidates.contains(edge.out.alias) && walksOnlyForward(edge))
+        return true;
+    return false;
+  }
+
+  /** Whether {@code root} reads {@code $depth}, the depth a recursive MATCH walk has reached. */
+  private static boolean readsDepth(final Object root) {
+    // ANY USE OF $depth COUNTS HERE, ALSO ONE FOLLOWED BY A MODIFIER ($depth.asInteger())
+    return root != null && !SqlAstInspector.allNodesMatch(root, node -> !isDepthIdentifier(node));
+  }
+
+  /**
+   * Whether {@code root} reads no record and no variable but {@code $depth}: every identifier it holds is {@code $depth}.
+   * Conservative: a function call, a property or any other variable answers false.
+   */
+  private static boolean readsOnlyDepth(final Object root) {
+    return SqlAstInspector.allNodesMatch(root, node -> !(node instanceof BaseExpression expression) || expression.identifier == null
+        || isDepthRead(node));
+  }
+
+  /** A bare {@code $depth}, with no modifier: the only read {@link #readsOnlyDepth} accepts. */
+  private static boolean isDepthRead(final SimpleNode node) {
+    return isDepthIdentifier(node) && ((BaseExpression) node).modifier == null;
+  }
+
+  /** An expression rooted at {@code $depth}, whatever modifier follows it. */
+  private static boolean isDepthIdentifier(final SimpleNode node) {
+    return node instanceof BaseExpression expression && expression.identifier != null
+        && "$depth".equalsIgnoreCase(expression.identifier.toString());
   }
 
   /**
@@ -1191,8 +1277,9 @@ public class MatchExecutionPlanner {
         final DocumentType oClass = schema.getType(typeName);
         final long upperBound;
         final WhereClause filter = aliasFilters.get(alias);
-        // A FILTER THAT READS $matched CANNOT BE ESTIMATED BEFORE THE ALIASES IT READS ARE BOUND (ISSUE #7434)
-        if (filter != null && matchedDependencies(filter).isEmpty()) {
+        // A FILTER THAT READS $matched CANNOT BE ESTIMATED BEFORE THE ALIASES IT READS ARE BOUND (ISSUE #7434), NOR ONE THAT READS
+        // $depth BEFORE A TRAVERSAL GIVES IT A VALUE (ISSUE #10216)
+        if (filter != null && matchedDependencies(filter).isEmpty() && !readsDepth(filter)) {
           upperBound = filter.estimate(oClass, threshold, context);
         } else {
           upperBound = context.getDatabase().countType(oClass.getName(), true);
@@ -1205,7 +1292,7 @@ public class MatchExecutionPlanner {
         if (oClass != null) {
           final long upperBound;
           final WhereClause filter = aliasFilters.get(alias);
-          if (filter != null && matchedDependencies(filter).isEmpty()) {
+          if (filter != null && matchedDependencies(filter).isEmpty() && !readsDepth(filter)) {
             // AN UNKNOWN FILTER ESTIMATE STAYS UNKNOWN: IT IS NOT A BOUND TO TAKE THE min WITH (ISSUE #9908)
             final long filterEstimate = filter.estimate(oClass, threshold, context);
             upperBound = filterEstimate == WhereClause.UNKNOWN_ESTIMATE ?

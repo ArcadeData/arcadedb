@@ -138,10 +138,11 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     final ArrayList<Candidate> usable = new ArrayList<>(rawCandidates.size());
     int expectedDim = -1;
     for (final RawCandidate rc : rawCandidates) {
-      // The record the row carries (the output of `vector.neighbors`, `vector.fuse`, ...) is read as it is; only a row
-      // carrying just a RID is loaded here (issue #10170). A candidate whose record was deleted between the upstream
-      // scoring and now, or that is not a document, is dropped
-      final Document rec = rc.record() != null ? rc.record() : candidateRecord(db, null, rc.rid());
+      // The record the row carries (the output of `vector.neighbors`, `vector.fuse`, ...) is read as the transaction sees it
+      // now (issue #10217); only a row carrying just a RID is loaded here (issue #10170). A candidate whose record was deleted
+      // between the upstream scoring and now, or that is not a document, is dropped
+      final Document carried = rc.record() != null ? currentState(db, rc.record()) : null;
+      final Document rec = carried != null ? carried : candidateRecord(db, null, rc.rid());
       if (rec == null)
         continue;
       final Object raw = rec.get(embeddingProperty);
@@ -257,7 +258,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
       if (Float.isNaN(score))
         throw new CommandSQLParsingException(
             NAME + " requires every source row to carry a numeric 'score' or 'distance' field; missing on row " + rid);
-      out.add(new RawCandidate(rid, score, carriedRecord(row, rid)));
+      out.add(new RawCandidate(rid, score, heldRecord(row, rid)));
     }
     return out;
   }

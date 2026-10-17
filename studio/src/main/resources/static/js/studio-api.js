@@ -715,9 +715,11 @@ function renderApiResponse(key, status, elapsed, data, jqXHR) {
 function copyApiResponse(btn) {
   var pre = btn.parentNode.querySelector('.api-playground-response-body');
   if (pre) {
-    navigator.clipboard.writeText(pre.textContent).then(function() {
+    copyTextToClipboard(pre.textContent).then(function() {
       btn.innerHTML = '<i class="fa fa-check"></i>';
       setTimeout(function() { btn.innerHTML = '<i class="fa fa-copy"></i>'; }, 1500);
+    }).catch(function() {
+      globalNotify("Error", "Failed to copy to clipboard", "danger");
     });
   }
 }

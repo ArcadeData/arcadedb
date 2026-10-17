@@ -331,8 +331,9 @@ public class ArcadeGraph implements Graph, Closeable {
     } else
       bucketName = null;
 
+    // getOrCreate: two traversals adding the first vertex of a label concurrently both end with the type (issue #10145)
     if (!this.database.getSchema().existsType(typeName))
-      this.database.getSchema().createVertexType(typeName);
+      this.database.getSchema().getOrCreateVertexType(typeName);
     else if (!(this.database.getSchema().getType(typeName) instanceof VertexType))
       throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex");
 

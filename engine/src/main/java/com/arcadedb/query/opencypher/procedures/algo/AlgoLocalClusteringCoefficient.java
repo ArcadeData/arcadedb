@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -136,41 +135,12 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    // The simple undirected graph, as the CSR kernel builds it: self-loops, parallel and reciprocal edges would
+    // otherwise inflate both the triangle count and the degree, so the two paths answered differently (issue #10203).
+    // Both loops are checkpointed per node by the same guard the CSR path threads into its kernel (issues #6302, #6318).
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
-
-    // Sort adjacency lists for merge-based intersection (O(m log m) total)
-    for (int i = 0; i < n; i++)
-      Arrays.sort(adj[i]);
-
-    // Count triangles using sorted-merge intersection — O(m * sqrt(m)) time, O(m) memory
-    final long[] triangles = new long[n];
-    for (int u = 0; u < n; u++) {
-      // One node intersects its neighbour list against each of its neighbours', which is O(degree²) on a
-      // supernode and O(m x sqrt(m)) over the graph - nothing but the graph sizes it (issue #6302). The CSR
-      // path (executeWithCSR, above) is checkpointed too (issue #6318), via the same guard, threaded into
-      // GraphAlgorithms#localClusteringCoefficient as a WorkCheckpoint.
-      guard.check();
-      final int[] neighborsU = adj[u];
-      for (final int v : neighborsU) {
-        // Count common neighbors of u and v via sorted merge
-        final int[] neighborsV = adj[v];
-        int iu = 0, iv = 0;
-        while (iu < neighborsU.length && iv < neighborsV.length) {
-          if (neighborsU[iu] < neighborsV[iv])
-            iu++;
-          else if (neighborsU[iu] > neighborsV[iv])
-            iv++;
-          else {
-            triangles[u]++;
-            iu++;
-            iv++;
-          }
-        }
-      }
-    }
-    // Each triangle counted twice per node (once per neighbor direction)
-    for (int u = 0; u < n; u++)
-      triangles[u] /= 2;
+    toSimpleNeighbourSets(adj, guard);
+    final long[] triangles = countTriangles(adj, guard);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final long deg = adj[i].length;

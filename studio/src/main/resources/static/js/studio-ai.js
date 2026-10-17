@@ -956,12 +956,14 @@ function aiCopyCode(button, blockId) {
   if (!pre) return;
 
   var text = pre.getAttribute("data-command") || pre.textContent;
-  navigator.clipboard.writeText(text).then(function() {
+  copyTextToClipboard(text).then(function() {
     var icon = button.querySelector("i");
     if (icon) {
       icon.className = "fa fa-check";
       setTimeout(function() { icon.className = "fa fa-copy"; }, 1500);
     }
+  }).catch(function() {
+    globalNotify("Error", "Failed to copy to clipboard", "danger");
   });
 }
 
