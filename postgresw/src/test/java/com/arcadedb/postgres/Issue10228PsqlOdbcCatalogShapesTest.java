@@ -530,6 +530,18 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         .containsExactly("City, Note, Person");
   }
 
+  /**
+   * A join never multiplies rows here: each family is enumerated once and a join only decorates its rows, so a
+   * cross join of a relation with itself - which would be a product - is declined rather than built.
+   */
+  @Test
+  void aSelfCrossJoinIsDeclinedNotMultiplied() {
+    assertThat(PostgresCatalog.resolve("select a.attname, b.attname from pg_attribute a, pg_attribute b", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("select a.attname, b.attname from pg_attribute a cross join pg_attribute b",
+        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
   @Test
   void anOuterJoinToAParenthesisedJoinOrAnAliasedOneIsDeclined() {
     assertThat(PostgresCatalog.resolve("select c.relname from pg_class c left join (pg_attribute a join pg_type t "
