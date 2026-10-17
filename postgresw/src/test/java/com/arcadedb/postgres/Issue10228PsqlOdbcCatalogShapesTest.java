@@ -476,9 +476,13 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     final String name = "x".repeat(40);
     database.transaction(() -> database.getSchema().createDocumentType(name));
 
-    final PostgresCatalog.Answer answer = resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'");
-    // Unknown on the long name, so the permissive filter keeps it; a definite no on the others.
-    assertThat(column(answer, "relname")).containsExactly(name);
+    // Declined rather than read as UNKNOWN, which the permissive filter would keep: a name filter that ran out of
+    // budget must not answer a row that does not match it.
+    assertThat(PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
+        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    // The same pattern over names it is cheap on is answered: the conjunct before it excludes the long name first.
+    assertThat(column(resolve("select relname from pg_class where relname <> '" + name + "' "
+        + "and relname !~ '^(.*)(.*)(.*)(.*)(.*)Y$'"), "relname")).containsExactly("City", "Note", "Person");
   }
 
   /** A second alias read in an inner join's condition would read the first alias's row: declined, not answered wrong. */
@@ -513,11 +517,17 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         database.getSchema().createDocumentType("x".repeat(40) + i);
     });
 
-    final PostgresCatalog.Answer answer = resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'");
-    // City, Note and Person sort first and are a definite no. The long names exhaust the per-match budget one by
-    // one until the predicate's statement budget is gone, after which they are UNKNOWN without being read: all
-    // twenty are kept by the permissive filter, and the predicate stops reading after five of them.
-    assertThat(column(answer, "relname")).hasSize(20).doesNotContain("City", "Note", "Person");
+    assertThat(PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
+        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /** string_agg's delimiter is the one of the row whose value follows it, as in PostgreSQL. */
+  @Test
+  void stringAggReadsTheDelimiterOfEachRow() {
+    assertThat(column(resolve("select string_agg(relname, relname) as s from pg_class"), "s"))
+        .containsExactly("CityNoteNotePersonPerson");
+    assertThat(column(resolve("select string_agg(relname, ', ') as s from pg_class"), "s"))
+        .containsExactly("City, Note, Person");
   }
 
   @Test
@@ -535,9 +545,8 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     for (int i = 0; i < 5_000; i++)
       exists.insert(0, "select 1 from pg_class where exists (").append(")");
     // Each level runs once per row of the one around it, so the depth bound alone would still leave 3^32
-    // evaluations: the work budget is what makes this return. The innermost levels it does not reach are UNKNOWN,
-    // which the permissive filter over pg_class keeps.
-    assertThat(PostgresCatalog.resolve(exists.toString(), database, USER)).isNotNull();
+    // evaluations: the work budget is what makes this return, and spending it declines the statement.
+    assertThat(PostgresCatalog.resolve(exists.toString(), database, USER)).isSameAs(PostgresCatalog.DECLINED);
 
     final StringBuilder joins = new StringBuilder("pg_class c");
     for (int i = 0; i < 5_000; i++)

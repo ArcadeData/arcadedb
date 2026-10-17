@@ -536,7 +536,7 @@ abstract class PostgresCatalogExpression {
           compiled = regex;
         }
         if (regexBudget <= 0)
-          return UNKNOWN;
+          throw new BudgetExceeded();
         final BoundedCharSequence text = new BoundedCharSequence(value,
             (int) Math.min(BoundedCharSequence.MATCH_BUDGET, regexBudget));
         try {
@@ -546,9 +546,6 @@ abstract class PostgresCatalogExpression {
         }
       } catch (final PatternSyntaxException e) {
         // A POSIX regex Java cannot compile: not something to guess the answer of.
-        return UNKNOWN;
-      } catch (final MatchBudgetExceeded e) {
-        // A pattern that backtracks catastrophically on this name: not an answer either.
         return UNKNOWN;
       }
     }
@@ -597,8 +594,8 @@ abstract class PostgresCatalogExpression {
   /**
    * The text a client's regular expression is matched against, counting the characters the matcher reads. The
    * pattern is the client's own, and {@code java.util.regex} backtracks: a pattern like {@code (a+)+$} takes time
-   * exponential in the length of the name it is matched against, once per row. The budget turns that into an
-   * UNKNOWN after a bounded amount of work instead of a connection thread spinning, and it counts steps rather
+   * exponential in the length of the name it is matched against, once per row. The budget turns that into a
+   * declined statement after a bounded amount of work instead of a connection thread spinning, and it counts steps rather
    * than time, so the answer does not depend on how loaded the machine is.
    */
   private static final class BoundedCharSequence implements CharSequence {
@@ -634,7 +631,7 @@ abstract class PostgresCatalogExpression {
     @Override
     public char charAt(final int index) {
       if (--budget[0] < 0)
-        throw new MatchBudgetExceeded();
+        throw new BudgetExceeded();
       return text.charAt(index);
     }
 
@@ -649,8 +646,15 @@ abstract class PostgresCatalogExpression {
     }
   }
 
-  private static final class MatchBudgetExceeded extends RuntimeException {
-    MatchBudgetExceeded() {
+  /**
+   * Thrown when a statement has spent the work it is allowed: a client regular expression's character reads, or
+   * the catalog's statement budget. It is not an UNKNOWN operand: the permissive filter keeps a row an unreadable
+   * predicate is evaluated on, and a name filter that ran out of budget would then answer rows that do not match.
+   * The catalog declines the whole statement instead. No stack trace: it is control flow, thrown on a hostile
+   * query's hot path.
+   */
+  static final class BudgetExceeded extends RuntimeException {
+    BudgetExceeded() {
       super(null, null, false, false);
     }
   }

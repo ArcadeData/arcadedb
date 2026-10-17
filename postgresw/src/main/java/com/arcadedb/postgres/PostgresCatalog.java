@@ -338,11 +338,21 @@ public class PostgresCatalog {
       // answer - with its own error, rather than with the empty result set a declined catalog query gets.
       if (!containsSetOperation(tokens))
         return null;
-      final Answer answer = resolveStatement(tokens, new Context(database, userName), null, true);
+      final Answer answer = resolveBounded(tokens, new Context(database, userName), true);
       return answer == DECLINED ? null : answer;
     }
 
-    return resolveStatement(tokens, new Context(database, userName), null, false);
+    return resolveBounded(tokens, new Context(database, userName), false);
+  }
+
+  /** Resolves a whole statement, declining it if it spends more work than it may (see {@link #WORK_BUDGET}). */
+  private static Answer resolveBounded(final List<PostgresCatalogToken> tokens, final Context context,
+      final boolean nested) {
+    try {
+      return resolveStatement(tokens, context, null, nested);
+    } catch (final PostgresCatalogExpression.BudgetExceeded e) {
+      return DECLINED;
+    }
   }
 
   /**
@@ -505,7 +515,7 @@ public class PostgresCatalog {
    * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
    * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
    * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
-   * units; past the budget the sub-select is UNKNOWN, and the query is declined like any unreadable shape.
+   * units; past the budget the statement is declined, as any shape this catalog will not answer is.
    */
   private static final long WORK_BUDGET = 5_000_000L;
 
@@ -614,8 +624,7 @@ public class PostgresCatalog {
       rows = context.rows(family);
     }
 
-    if (!context.charge(rows.size()))
-      return DECLINED;
+    context.charge(rows.size());
 
     final boolean[] secondAliases = secondAliasesRead(statement, from);
     if (secondAliases == null)
@@ -1417,10 +1426,11 @@ public class PostgresCatalog {
       --nesting;
     }
 
-    /** @return false once this statement has spent its {@link #WORK_BUDGET} */
-    boolean charge(final int units) {
+    /** @throws PostgresCatalogExpression.BudgetExceeded once this statement has spent its {@link #WORK_BUDGET} */
+    void charge(final int units) {
       work += units;
-      return work <= WORK_BUDGET;
+      if (work > WORK_BUDGET)
+        throw new PostgresCatalogExpression.BudgetExceeded();
     }
 
     Database database() {
@@ -2501,8 +2511,7 @@ public class PostgresCatalog {
 
     @Override
     public Object subquery(final List<PostgresCatalogToken> tokens, final PostgresCatalogExpression.SubqueryKind kind) {
-      if (!context.charge(tokens.size()))
-        return PostgresCatalogExpression.UNKNOWN;
+      context.charge(tokens.size());
       final Answer answer = resolveStatement(tokens, context, this, true);
       if (answer == null || answer.rows == null)
         return PostgresCatalogExpression.UNKNOWN;
@@ -2532,13 +2541,15 @@ public class PostgresCatalog {
 
       final List<Object> values = new ArrayList<>(group.size());
       final Set<List<Object>> seen = call.distinct ? new HashSet<>() : null;
+      final List<Object> separators = "string_agg".equals(call.name) ? new ArrayList<>(group.size()) : null;
       for (final Joined joined : group) {
         if (call.argument == null) {
           // count(*): every row counts, whatever it holds.
           values.add(Boolean.TRUE);
           continue;
         }
-        final Object value = call.argument.evaluate(new RowResolver(joined.row(), joined.nulled(), from, context, outer));
+        final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
+        final Object value = call.argument.evaluate(resolver);
         if (value == PostgresCatalogExpression.UNKNOWN)
           return PostgresCatalogExpression.UNKNOWN;
         // Aggregates skip NULLs; array_agg is the one that collects them.
@@ -2547,6 +2558,13 @@ public class PostgresCatalog {
         if (seen != null && !seen.add(distinctKey(Collections.singletonList(value))))
           continue;
         values.add(value);
+        if (separators != null) {
+          // string_agg's delimiter is read off each row, as PostgreSQL does: the one before a value is its row's.
+          final Object separator = call.extraArguments.get(0).evaluate(resolver);
+          if (separator == PostgresCatalogExpression.UNKNOWN)
+            return PostgresCatalogExpression.UNKNOWN;
+          separators.add(separator);
+        }
       }
 
       return switch (call.name) {
@@ -2572,14 +2590,11 @@ public class PostgresCatalog {
         case "string_agg" -> {
           if (values.isEmpty())
             yield null;
-          final Object separator = call.extraArguments.get(0).evaluate(this);
-          if (separator == PostgresCatalogExpression.UNKNOWN)
-            yield PostgresCatalogExpression.UNKNOWN;
           final StringBuilder buffer = new StringBuilder();
-          for (final Object value : values) {
-            if (!buffer.isEmpty() && separator != null)
-              buffer.append(PostgresCatalogExpression.asString(separator));
-            buffer.append(PostgresCatalogExpression.asString(value));
+          for (int i = 0; i < values.size(); i++) {
+            if (i > 0 && separators.get(i) != null)
+              buffer.append(PostgresCatalogExpression.asString(separators.get(i)));
+            buffer.append(PostgresCatalogExpression.asString(values.get(i)));
           }
           yield buffer.toString();
         }
