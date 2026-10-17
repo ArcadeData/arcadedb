@@ -205,6 +205,16 @@ class Issue10186SqlNullGapsTest extends TestHelper {
       assertThat(r.<String>getProperty("text")).isEqualTo("xy");
     }
 
+    // a list starts from nothing too, and subtracting from a missing field has nothing to subtract from
+    database.transaction(() -> database.command("sql", "UPDATE T SET tags += ['a'], gone -= 'a', gone2 -= 5 WHERE name = 'counter'"));
+    database.transaction(() -> database.command("sql", "UPDATE T SET tags += ['b'], tags -= 'a' WHERE name = 'counter'"));
+    try (final ResultSet rs = database.query("sql", "SELECT tags, gone, gone2 FROM T WHERE name = 'counter'")) {
+      final Result r = rs.next();
+      assertThat(r.<List<Object>>getProperty("tags")).containsExactly("b");
+      assertThat(r.<Object>getProperty("gone")).isNull();
+      assertThat(r.<Number>getProperty("gone2").intValue()).isEqualTo(-5);
+    }
+
     // the right-hand side of a compound assignment is evaluated once per record
     database.transaction(() -> database.command("sql", "UPDATE T SET up += (SELECT count(*) AS c FROM U) WHERE name = 'counter'"));
     try (final ResultSet rs = database.query("sql", "SELECT up FROM T WHERE name = 'counter'")) {
