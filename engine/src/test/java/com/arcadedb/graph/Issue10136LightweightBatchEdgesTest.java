@@ -135,6 +135,7 @@ class Issue10136LightweightBatchEdgesTest extends TestHelper {
         .isInstanceOf(DuplicatedKeyException.class);
 
     assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "U")).isZero();
+    assertThat(v[1].asVertex().countEdges(Vertex.DIRECTION.IN, "U")).isZero();
   }
 
   private RID[] newVertices(final int count) {
