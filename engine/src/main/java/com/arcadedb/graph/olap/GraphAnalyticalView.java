@@ -312,6 +312,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private volatile JoinedVertexTypes joinedVertexTypes;
+  // coversVertexType(null)'s answer for the joined types, for one base CSR and one schema version: asked per vertex by the
+  // SQL traversal functions, so one read instead of a lookup per sub-type. Both verdicts are fixed for that pair
+  private record JoinedCoverage(NodeIdMapping scannedWith, long schemaVersion, boolean allHeld) {
+  }
+
+  private volatile JoinedCoverage joinedCoverage;
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
@@ -919,7 +925,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           currentStatus = status;
           latch = readyLatch;
           if (currentStatus == Status.READY) {
-            if (asyncDeltaLag.get() == 0)
+            if (!hasUnmergedAsyncChanges())
               return true;
             // Shut down: what is still queued is never merged
             if (shutDown)
@@ -1097,9 +1103,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
       if (cached.unlistedBuckets() == null)
         return false;
-      for (final DocumentType joined : cached.joinedTypes())
-        if (!holdsJoinedVertexType(joined))
-          return false;
+      if (cached.joinedTypes().length > 0 && !holdsAllJoinedVertexTypes(cached.joinedTypes(), version))
+        return false;
       // An unlisted vertex type breaks coverage only once it holds a vertex: no walk can reach a type that has none. The
       // common case is an abstract parent whose records all live in listed sub-types (LSQB's Message over Post and
       // Comment), which made the view unusable for every walk (#9301 follow-up). Read per call, not cached, because a
@@ -1114,6 +1119,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return true; // we include all vertex types, or this one is listed
     final DocumentType type = database.getSchema().getTypeOrNull(typeName);
     return type != null && coversVertexTypeByFilter(type) && holdsJoinedVertexType(type);
+  }
+
+  private boolean holdsAllJoinedVertexTypes(final DocumentType[] joinedTypes, final long version) {
+    final Snapshot snap = snapshot;
+    if (snap == null)
+      return true;
+    final JoinedCoverage cached = joinedCoverage;
+    if (cached != null && cached.scannedWith() == snap.nodeMapping && cached.schemaVersion() == version)
+      return cached.allHeld();
+    boolean allHeld = true;
+    for (final DocumentType joined : joinedTypes)
+      if (!holdsJoinedVertexType(joined)) {
+        allHeld = false;
+        break;
+      }
+    joinedCoverage = new JoinedCoverage(snap.nodeMapping, version, allHeld);
+    return allHeld;
   }
 
   /** The vertex types the filter covers without listing them by name: the sub-types of the listed ones. */
@@ -2457,7 +2479,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public Status getStatus() {
     final Status s = status;
-    return s == Status.READY && asyncDeltaLag.get() > 0 ? Status.STALE : s;
+    return s == Status.READY && hasUnmergedAsyncChanges() ? Status.STALE : s;
+  }
+
+  /** Whether a committed change is not in the view yet: queued for the merge, or dropped by an overflow for a rebuild. */
+  private boolean hasUnmergedAsyncChanges() {
+    return asyncDeltaLag.get() > 0 || asyncQueueOverflowed.get();
   }
 
   /**
@@ -3748,9 +3775,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // read a snapshot without its own change, unless the view is allowed to serve stale (issue #10189)
     if (asyncDeltaLag.incrementAndGet() > maxQueuedAsyncDeltas) {
       // The merge cannot keep up: this change is left to the rebuild the merge task starts, whose scan reads it. Never
-      // waits for the monitor, which the merge holds; the full queue keeps the view STALE meanwhile
+      // waits for the monitor, which the merge holds. The flag is raised before the change stops being counted: the view
+      // reports STALE while either says a change is not in it, so it never reads READY without this one
+      final boolean first = !asyncQueueOverflowed.getAndSet(true);
       asyncDeltaLag.decrementAndGet();
-      if (asyncQueueOverflowed.compareAndSet(false, true))
+      if (first)
         LogManager.instance().log(this, Level.WARNING,
             "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, maxQueuedAsyncDeltas);
       scheduleAsyncMerge();
@@ -3773,9 +3802,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Run by the merge task under this instance's monitor, once per queue-full however many commits found it full.
    */
   private void rebuildForOverflowedQueue() {
-    discardQueuedAsyncDeltas();
-    followUpRebuildPending = true;
+    // STALE before the flag goes down, so no reader sees READY between the two
     status = Status.STALE;
+    followUpRebuildPending = true;
+    discardQueuedAsyncDeltas();
+    asyncQueueOverflowed.set(false);
+    // A commit that overflowed after the discard is in the scan of this rebuild, which starts after it
     rebuildAfterPublication();
   }
 
@@ -3798,8 +3830,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           asyncMergeQueued.set(false);
           taskCompleted();
           DatabaseContext.INSTANCE.removeCurrentThreadContexts();
-          // A delta queued after the last poll found the merge still queued: it is merged by the next task
-          if (!asyncDeltas.isEmpty() && !shutDown)
+          // A delta queued, or an overflow raised, after the last poll found the merge still queued: the next task takes it
+          if ((!asyncDeltas.isEmpty() || asyncQueueOverflowed.get()) && !shutDown)
             scheduleAsyncMerge();
         }
       });
@@ -3827,7 +3859,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @return whether deltas are left in the queue
    */
   private synchronized boolean mergeQueuedAsyncDeltas(final int max) {
-    if (asyncQueueOverflowed.getAndSet(false)) {
+    if (asyncQueueOverflowed.get()) {
       rebuildForOverflowedQueue();
       return false;
     }
@@ -3856,6 +3888,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // discards its own result rather than publish a base without the change
       rebuildAfterPublication();
     }
+    // The waiters of awaitReady() are woken by the batch that empties the queue, and by any status change a failure or an
+    // overflow makes (the rebuild's dispatch, discardQueuedAsyncDeltas()): not by every batch
     final boolean more = !asyncDeltas.isEmpty();
     if (!more)
       notifyAll();
