@@ -34,9 +34,31 @@ import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
  */
 public class CypherLocalDateTime implements CypherTemporalValue {
   private final LocalDateTime value;
+  // True for a value read out of a DATETIME column, which ArcadeDB stores as an instant (epoch based) and materializes as a
+  // LocalDateTime in UTC: against a zoned datetime it still compares by instant, so a filter like
+  // n.createdAt > datetime('2024-01-01T00:00Z') keeps working. A localdatetime() the query builds is a Cypher local
+  // datetime, which is never equal to a zoned one and not comparable with it (issue #10200). Not part of the value's
+  // identity: equals/hashCode ignore it. A value derived from it (truncated, plus a duration) is an ordinary one.
+  private final boolean       stored;
 
   public CypherLocalDateTime(final LocalDateTime value) {
+    this(value, false);
+  }
+
+  private CypherLocalDateTime(final LocalDateTime value, final boolean stored) {
     this.value = value;
+    this.stored = stored;
+  }
+
+  /**
+   * Wraps a datetime read from storage, where it is kept as an instant: see {@link #isStored()}.
+   */
+  public static CypherLocalDateTime ofStored(final LocalDateTime value) {
+    return new CypherLocalDateTime(value, true);
+  }
+
+  public boolean isStored() {
+    return stored;
   }
 
   public static CypherLocalDateTime now() {

@@ -153,12 +153,18 @@ public class CypherDateTime implements CypherTemporalValue {
   }
 
   public static CypherDateTime fromMap(final Map<String, Object> map) {
-    // Epoch-based construction (Neo4j: epochMillis alone, or epochSeconds with optional nanosecond)
-    if (map.containsKey("epochMillis"))
-      return fromEpochMillis(toLong(map.get("epochMillis")));
-    if (map.containsKey("epochSeconds")) {
-      final long nanos = map.containsKey("nanosecond") ? toLong(map.get("nanosecond")) : 0L;
-      return fromEpoch(toLong(map.get("epochSeconds")), nanos);
+    // Epoch-based construction: the instant, read in the map's timezone (UTC without one), then every field the map also
+    // gives, as Neo4j applies them. The timezone used to be ignored, so datetime({epochSeconds: 0, timezone: '+05:30'}) was
+    // midnight UTC instead of 05:30 at +05:30 (issue #10199)
+    final boolean epochMillis = map.containsKey("epochMillis");
+    if (epochMillis || map.containsKey("epochSeconds")) {
+      if (epochMillis && map.containsKey("epochSeconds"))
+        throw new IllegalArgumentException("epochMillis cannot be selected together with epochSeconds");
+      final Instant instant = epochMillis ?
+          Instant.ofEpochMilli(toLong(map.get("epochMillis"))) :
+          Instant.ofEpochSecond(toLong(map.get("epochSeconds")));
+      final ZoneId zone = map.containsKey("timezone") ? TemporalUtil.parseZone(map.get("timezone").toString()) : ZoneOffset.UTC;
+      return new CypherDateTime(withFieldOverrides(instant.atZone(zone), map));
     }
 
     // Check for base datetime
@@ -180,27 +186,8 @@ public class CypherDateTime implements CypherTemporalValue {
           else
             base = base.withZoneSameLocal(newZone);
         }
-        if (!hasTimeOverrides(map))
-          return new CypherDateTime(base);
-        // Apply individual field overrides on the (possibly timezone-converted) base
-        ZonedDateTime result = base;
-        if (map.containsKey("year"))
-          result = result.withYear(toInt(map.get("year")));
-        if (map.containsKey("month"))
-          result = result.withMonth(toInt(map.get("month")));
-        if (map.containsKey("day"))
-          result = result.withDayOfMonth(toInt(map.get("day")));
-        if (map.containsKey("hour"))
-          result = result.withHour(toInt(map.get("hour")));
-        if (map.containsKey("minute"))
-          result = result.withMinute(toInt(map.get("minute")));
-        if (map.containsKey("second"))
-          result = result.withSecond(toInt(map.get("second")));
-        result = result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
-
-        if (map.containsKey("timezone"))
-          result = result.withZoneSameLocal(TemporalUtil.parseZone(map.get("timezone").toString()));
-        return new CypherDateTime(result);
+        // Individual field overrides apply on the (possibly timezone-converted) base
+        return new CypherDateTime(withFieldOverrides(base, map));
       }
     }
 
@@ -263,9 +250,26 @@ public class CypherDateTime implements CypherTemporalValue {
     return new CypherDateTime(result);
   }
 
-  private static boolean hasTimeOverrides(final Map<String, Object> map) {
-    return map.containsKey("hour") || map.containsKey("minute") || map.containsKey("second")
-        || map.containsKey("year") || map.containsKey("month") || map.containsKey("day");
+  /**
+   * {@code base} with the fields {@code map} gives in place of its own, keeping its zone. A millisecond, microsecond or
+   * nanosecond replaces the whole fraction of second (see {@link TemporalUtil#computeNanos(Map, int)}): they used to be
+   * ignored altogether on a {@code datetime:} base (issue #10199).
+   */
+  private static ZonedDateTime withFieldOverrides(final ZonedDateTime base, final Map<String, Object> map) {
+    ZonedDateTime result = base;
+    if (map.containsKey("year"))
+      result = result.withYear(toInt(map.get("year")));
+    if (map.containsKey("month"))
+      result = result.withMonth(toInt(map.get("month")));
+    if (map.containsKey("day"))
+      result = result.withDayOfMonth(toInt(map.get("day")));
+    if (map.containsKey("hour"))
+      result = result.withHour(toInt(map.get("hour")));
+    if (map.containsKey("minute"))
+      result = result.withMinute(toInt(map.get("minute")));
+    if (map.containsKey("second"))
+      result = result.withSecond(toInt(map.get("second")));
+    return result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
   }
 
   public ZonedDateTime getValue() {

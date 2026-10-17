@@ -150,7 +150,15 @@ public class CypherDate implements CypherTemporalValue {
     final int year = map.containsKey("year") ? toInt(map.get("year")) : (base != null ? base.getYear() : LocalDate.now().getYear());
     final int month = map.containsKey("month") ? toInt(map.get("month")) : (base != null ? base.getMonthValue() : 1);
     final int day = map.containsKey("day") ? toInt(map.get("day")) : (base != null ? base.getDayOfMonth() : 1);
-    return new CypherDate(LocalDate.of(year, month, day));
+    LocalDate result = LocalDate.of(year, month, day);
+    // A dayOfWeek without a week moves the date within its own ISO week, and a dayOfQuarter without a quarter within its own
+    // quarter: date({date: date('2024-02-29'), dayOfWeek: 1}) is the Monday 2024-02-26, as in Neo4j. Both were ignored
+    // (issue #10199)
+    if (map.containsKey("dayOfWeek"))
+      result = result.with(WeekFields.ISO.dayOfWeek(), toInt(map.get("dayOfWeek")));
+    if (map.containsKey("dayOfQuarter"))
+      result = result.with(IsoFields.DAY_OF_QUARTER, toInt(map.get("dayOfQuarter")));
+    return new CypherDate(result);
   }
 
   public LocalDate getValue() {
