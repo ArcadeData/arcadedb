@@ -316,4 +316,14 @@ class PostgresCatalogToken {
       return new PostgresCatalogToken(Type.IDENTIFIER, b ? "TRUE" : "FALSE");
     return null;
   }
+
+  /** An operator token, for a spelling rewritten to its plain form (issue #10228's {@code OPERATOR(pg_catalog.=)}). */
+  static PostgresCatalogToken symbol(final String text) {
+    return new PostgresCatalogToken(Type.SYMBOL, text);
+  }
+
+  /** A keyword token, for an operator whose plain form is a keyword: {@code ~~} is {@code LIKE}. */
+  static PostgresCatalogToken keyword(final String text) {
+    return new PostgresCatalogToken(Type.IDENTIFIER, text);
+  }
 }

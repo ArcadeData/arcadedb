@@ -603,10 +603,11 @@ public final class PostgresCopyStatement {
    */
   public void appendHeader(final StringBuilder out, final Collection<String> columnNames) {
     boolean first = true;
-    for (final String name : columnNames) {
+    for (final String column : columnNames) {
       if (!first)
         out.append(delimiter);
       first = false;
+      final String name = PostgresCatalog.announcedName(column);
       if (format == Format.CSV)
         appendCsvValue(out, name, false, columnNames.size() == 1);
       else

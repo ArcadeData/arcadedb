@@ -1586,14 +1586,15 @@ public class PostgresNetworkExecutor extends Thread {
    * @return the answer, or null when the query is not about the catalog at all and must be executed normally
    */
   private CatalogAnswer handleCatalogQuery(final String query, final Object... parameters) {
-    if (!PostgresCatalog.mightBeCatalogQuery(query))
+    if (!PostgresCatalog.mightBeAnswered(query))
       return null;
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: handling catalog query: %s (thread=%s)", query,
           Thread.currentThread().threadId());
 
-    final List<Result> types = toResults(PostgresTypeCatalog.resolve(query));
+    // A set operation naming no catalog relation (issue #10228) is never a pg_type lookup.
+    final List<Result> types = PostgresCatalog.mightBeCatalogQuery(query) ? toResults(PostgresTypeCatalog.resolve(query)) : null;
     if (types != null)
       return new CatalogAnswer(types, getColumns(types));
 
@@ -2659,7 +2660,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     int colIndex = 0;
     for (final Map.Entry<String, PostgresType> col : columns.entrySet()) {
-      final String columnName = col.getKey();
+      // A catalog answer may name two columns alike, and carries the second under a key only it can produce.
+      final String columnName = PostgresCatalog.announcedName(col.getKey());
       final PostgresType columnType = col.getValue();
 
       bufferDescription.putByteArray(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.

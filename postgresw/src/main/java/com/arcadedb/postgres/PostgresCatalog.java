@@ -22,11 +22,15 @@ import com.arcadedb.database.Database;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -68,6 +72,12 @@ import java.util.TreeMap;
  * as "keeps everything" is not a guess - it is what they mean here. The predicates that do the work a client
  * depends on, the name filters of {@code getTables} and {@code getColumns}, are read and applied.
  * <p>
+ * <b>Joins.</b> An emulated row carries the columns of every relation it can be joined to, so the join conditions
+ * do not pair rows up - but they are not skipped either (issue #10228): an inner join's condition filters like
+ * the WHERE clause, which is where psqlodbc puts its table-name filter, and a LEFT JOIN whose condition does not
+ * hold reads NULL from the joined relation. Set operations, aggregates and correlated sub-selects are evaluated
+ * over the same rows, which is what psql's {@code \dt} and {@code \d} need.
+ * <p>
  * <b>The schema model.</b> A PostgreSQL connection is bound to one database and sees the schemas inside it;
  * an ArcadeDB connection is bound to one database whose types are its tables. So the emulated schema list is
  * exactly one schema, named after the connected database - which is what {@code current_schema()} already
@@ -83,6 +93,8 @@ public class PostgresCatalog {
   /** PostgreSQL's own first user OID: everything below it is a system object. */
   private static final int FIRST_USER_OID = 16384;
   private static final int OID_SPACE      = 1_000_000;
+  /** The OID PostgreSQL gives the {@code heap} table access method, which every table here is. */
+  private static final int HEAP_ACCESS_METHOD_OID = 2;
   /**
    * The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column - here and in
    * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
@@ -138,7 +150,7 @@ public class PostgresCatalog {
 
   /** The families of rows a catalog query can be about. */
   private enum Family {
-    SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS, TYPES
+    SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS, TYPES, ATTRDEFS
   }
 
   private static void relation(final String name, final Family family, final String... columns) {
@@ -156,7 +168,7 @@ public class PostgresCatalog {
         "relfilenode", "reltablespace", "relpages", "reltuples", "relallvisible", "reltoastrelid", "relhasindex",
         "relisshared", "relpersistence", "relkind", "relnatts", "relchecks", "relhasrules", "relhastriggers",
         "relhassubclass", "relrowsecurity", "relforcerowsecurity", "relispopulated", "relreplident", "relispartition",
-        "relacl", "reloptions", "relhasoids");
+        "relacl", "reloptions", "relhasoids", "relrewrite", "relfrozenxid", "relminmxid", "relpartbound");
     relation("pg_tables", Family.TABLES, "schemaname", "tablename", "tableowner", "tablespace", "hasindexes",
         "hasrules", "hastriggers", "rowsecurity");
     relation("information_schema.tables", Family.TABLES, "table_catalog", "table_schema", "table_name", "table_type",
@@ -166,7 +178,7 @@ public class PostgresCatalog {
     relation("pg_attribute", Family.COLUMNS, "attrelid", "attname", "atttypid", "attstattarget", "attlen", "attnum",
         "attndims", "attcacheoff", "atttypmod", "attbyval", "attstorage", "attalign", "attnotnull", "atthasdef",
         "atthasmissing", "attidentity", "attgenerated", "attisdropped", "attislocal", "attinhcount", "attcollation",
-        "attacl", "attoptions", "attfdwoptions");
+        "attacl", "attoptions", "attfdwoptions", "attcompression");
     relation("information_schema.columns", Family.COLUMNS, "table_catalog", "table_schema", "table_name", "column_name",
         "ordinal_position", "column_default", "is_nullable", "data_type", "character_maximum_length",
         "character_octet_length", "numeric_precision", "numeric_precision_radix", "numeric_scale", "datetime_precision",
@@ -207,7 +219,11 @@ public class PostgresCatalog {
     // them is something ArcadeDB has no equivalent of, so their columns are all NULL - which is exactly what a
     // LEFT JOIN against them yields in PostgreSQL when there is no comment, no default and no inheritance.
     relation("pg_description", null, "objoid", "classoid", "objsubid", "description");
-    relation("pg_attrdef", null, "oid", "adrelid", "adnum", "adbin", "adsrc");
+    // A column default, which ArcadeDB does have: one row per column that declares one (issue #10228, psql's \d
+    // reads it through a correlated sub-select). adbin holds the default's text and pg_get_expr() prints it.
+    relation("pg_attrdef", Family.ATTRDEFS, "oid", "adrelid", "adnum", "adbin", "adsrc");
+    // The table access method. Every type is a heap table here, which is what psql's \dt and \d join it for.
+    relation("pg_am", null, "oid", "amname", "amhandler", "amtype");
     relation("pg_collation", null, "oid", "collname", "collnamespace", "collowner", "collprovider", "collcollate",
         "collctype");
   }
@@ -221,6 +237,61 @@ public class PostgresCatalog {
    */
   public static boolean mightBeCatalogQuery(final String query) {
     return containsIgnoreCase(query, "pg_") || containsIgnoreCase(query, "information_schema");
+  }
+
+  /**
+   * Whether {@link #resolve} may answer the query: a catalog query, or a set operation, which ArcadeDB's SQL has
+   * no syntax for (issue #10228) - psqlodbc's {@code SQLTables(SQL_ALL_TABLE_TYPES)} is a UNION over literals and
+   * names no catalog relation at all. A set operation whose arms this catalog cannot evaluate is still handed on.
+   */
+  public static boolean mightBeAnswered(final String query) {
+    return mightBeCatalogQuery(query) || mightBeSetOperation(query);
+  }
+
+  /** A single pass for the three set-operation keywords, so an ordinary query pays one scan rather than three. */
+  private static boolean mightBeSetOperation(final String query) {
+    final int length = query.length();
+    for (int i = 0; i < length; i++) {
+      switch (query.charAt(i)) {
+      case 'u', 'U' -> {
+        if (query.regionMatches(true, i, "union", 0, 5))
+          return true;
+      }
+      case 'i', 'I' -> {
+        if (query.regionMatches(true, i, "intersect", 0, 9))
+          return true;
+      }
+      case 'e', 'E' -> {
+        if (query.regionMatches(true, i, "except", 0, 6))
+          return true;
+      }
+      default -> {
+      }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The name a column is announced under. The rows of an answer are maps keyed by column, and a projection may
+   * name two columns alike - {@code SELECT NULL, NULL, relkind} is two {@code ?column?}s, and psqlodbc reads the
+   * third column of exactly that query (issue #10228). So the second one is keyed {@code "?column?\0" + n}: NUL
+   * can be neither in an identifier nor in a RowDescription field name, which is a C string, so what precedes it
+   * is always the name, and no client-written name can ever collide with such a key.
+   */
+  public static String announcedName(final String column) {
+    final int marker = column.indexOf('\0');
+    return marker < 0 ? column : column.substring(0, marker);
+  }
+
+  private static String uniqueColumnKey(final String name, final Set<String> used) {
+    if (used.add(name))
+      return name;
+    for (int n = 2; ; n++) {
+      final String key = name + '\0' + n;
+      if (used.add(key))
+        return key;
+    }
   }
 
   static boolean containsIgnoreCase(final String text, final String search) {
@@ -243,10 +314,14 @@ public class PostgresCatalog {
    */
   public static Answer resolve(final String query, final Database database, final String userName,
       final Object... parameters) {
-    if (query == null || database == null || !mightBeCatalogQuery(query))
+    if (query == null || database == null)
       return null;
 
-    final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+    final boolean catalogNamed = mightBeCatalogQuery(query);
+    if (!catalogNamed && !mightBeSetOperation(query))
+      return null;
+
+    List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
     if (tokens == null || tokens.isEmpty())
       return null;
 
@@ -255,8 +330,112 @@ public class PostgresCatalog {
       tokens.remove(tokens.size() - 1);
 
     substituteParameters(tokens, parameters);
+    tokens = plainSpellings(tokens);
 
-    return resolveStatement(tokens, new Context(database, userName));
+    if (!catalogNamed) {
+      // Reached only for being a set operation: anything this catalog cannot evaluate is the SQL engine's to
+      // answer - with its own error, rather than with the empty result set a declined catalog query gets.
+      if (!containsSetOperation(tokens))
+        return null;
+      final Answer answer = resolveStatement(tokens, new Context(database, userName), null, true);
+      return answer == DECLINED ? null : answer;
+    }
+
+    return resolveStatement(tokens, new Context(database, userName), null, false);
+  }
+
+  /**
+   * Rewrites the spellings that mean the same as a plainer one, so that nothing past this point has to know
+   * both (issue #10228):
+   * <ul>
+   * <li>{@code OPERATOR(pg_catalog.=)} is {@code =}: psqlodbc writes every exact-name match this way, and psql
+   * its regular-expression lookups ({@code OPERATOR(pg_catalog.~)}). Left as written it parsed as nothing, and a
+   * WHERE that does not parse keeps every row - so asking for one table answered all of them;</li>
+   * <li>{@code ~~}, {@code ~~*} and their negations are LIKE and ILIKE, which is what PostgreSQL itself calls
+   * those operators;</li>
+   * <li>{@code COLLATE <name>} is dropped: every name in this catalog compares the same under any collation a
+   * client names, and psql appends {@code COLLATE pg_catalog.default} to its name lookup.</li>
+   * </ul>
+   */
+  private static List<PostgresCatalogToken> plainSpellings(final List<PostgresCatalogToken> tokens) {
+    List<PostgresCatalogToken> result = null;
+
+    for (int i = 0; i < tokens.size(); i++) {
+      final PostgresCatalogToken token = tokens.get(i);
+      int end = -1;
+      List<PostgresCatalogToken> replacement = null;
+
+      if (token.isKeyword("OPERATOR") && i + 1 < tokens.size() && tokens.get(i + 1).isSymbol("(")) {
+        int j = i + 2;
+        while (j + 1 < tokens.size() && tokens.get(j).type == PostgresCatalogToken.Type.IDENTIFIER
+            && tokens.get(j + 1).isSymbol("."))
+          j += 2;
+        final StringBuilder operator = new StringBuilder();
+        while (j < tokens.size() && tokens.get(j).type == PostgresCatalogToken.Type.SYMBOL && !tokens.get(j).isSymbol(")"))
+          operator.append(tokens.get(j++).text);
+        if (!operator.isEmpty() && j < tokens.size() && tokens.get(j).isSymbol(")")) {
+          end = j + 1;
+          replacement = switch (operator.toString()) {
+            case "~~" -> List.of(PostgresCatalogToken.keyword("LIKE"));
+            case "~~*" -> List.of(PostgresCatalogToken.keyword("ILIKE"));
+            case "!~~" -> List.of(PostgresCatalogToken.keyword("NOT"), PostgresCatalogToken.keyword("LIKE"));
+            case "!~~*" -> List.of(PostgresCatalogToken.keyword("NOT"), PostgresCatalogToken.keyword("ILIKE"));
+            default -> List.of(PostgresCatalogToken.symbol(operator.toString()));
+          };
+        }
+      } else if (token.isKeyword("COLLATE") && i + 1 < tokens.size() && isName(tokens.get(i + 1))) {
+        int j = i + 2;
+        while (j + 1 < tokens.size() && tokens.get(j).isSymbol(".") && isName(tokens.get(j + 1)))
+          j += 2;
+        end = j;
+        replacement = List.of();
+      }
+
+      if (replacement == null) {
+        if (result != null)
+          result.add(token);
+        continue;
+      }
+
+      if (result == null)
+        result = new ArrayList<>(tokens.subList(0, i));
+      result.addAll(replacement);
+      i = end - 1;
+    }
+
+    return result == null ? tokens : result;
+  }
+
+  /** Whether the statement has a set operation anywhere - psqlodbc's is inside a derived table. */
+  private static boolean containsSetOperation(final List<PostgresCatalogToken> tokens) {
+    for (final PostgresCatalogToken token : tokens)
+      if (token.isKeyword("UNION") || token.isKeyword("INTERSECT") || token.isKeyword("EXCEPT"))
+        return true;
+    return false;
+  }
+
+  private static boolean isName(final PostgresCatalogToken token) {
+    return token.type == PostgresCatalogToken.Type.IDENTIFIER || token.type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER;
+  }
+
+  /** {@code (SELECT ...)} written whole in parentheses, which a set-operation arm may be, is the SELECT inside. */
+  private static List<PostgresCatalogToken> unwrapParentheses(List<PostgresCatalogToken> tokens) {
+    while (tokens.size() >= 2 && tokens.get(0).isSymbol("(") && tokens.get(tokens.size() - 1).isSymbol(")")) {
+      int depth = 0;
+      boolean wrapsWhole = true;
+      for (int i = 0; i < tokens.size() - 1; i++) {
+        if (tokens.get(i).isSymbol("("))
+          ++depth;
+        else if (tokens.get(i).isSymbol(")") && --depth == 0) {
+          wrapsWhole = false;
+          break;
+        }
+      }
+      if (!wrapsWhole)
+        break;
+      tokens = tokens.subList(1, tokens.size() - 1);
+    }
+    return tokens;
   }
 
   /**
@@ -311,7 +490,37 @@ public class PostgresCatalog {
     }
   }
 
-  private static Answer resolveStatement(final List<PostgresCatalogToken> tokens, final Context context) {
+  /**
+   * How deeply statements may nest inside one another - derived tables, sub-selects, set-operation arms,
+   * parenthesised joins - before the query is declined. A client's catalog query nests two or three deep; the
+   * bound is what keeps a query nested thousands deep, which any authenticated client can send, from recursing
+   * until the stack gives out: a StackOverflowError is an Error, and would take the connection thread with it.
+   */
+  private static final int MAX_NESTING = 32;
+
+  /**
+   * @param outer  the resolver of the row a sub-select is correlated to, null for a statement that is not one
+   * @param nested whether the statement is part of another one - a set-operation arm, a derived table, a
+   *               sub-select - where a SELECT with no FROM is a row of literals this catalog evaluates. At the
+   *               top level such a SELECT is not a catalog query, and is left to the SQL engine as it always was.
+   */
+  private static Answer resolveStatement(final List<PostgresCatalogToken> tokens, final Context context,
+      final RowResolver outer, final boolean nested) {
+    if (!context.enter())
+      return DECLINED;
+    try {
+      return resolveNested(unwrapParentheses(tokens), context, outer, nested);
+    } finally {
+      context.exit();
+    }
+  }
+
+  private static Answer resolveNested(final List<PostgresCatalogToken> tokens, final Context context,
+      final RowResolver outer, final boolean nested) {
+    final SetOperation setOperation = SetOperation.split(tokens);
+    if (setOperation != null)
+      return resolveSetOperation(setOperation, context, outer);
+
     if (tokens.isEmpty() || !tokens.get(0).isKeyword("SELECT"))
       // Not a SELECT at all: a WITH, an INSERT, something else entirely. If it names an emulated relation it
       // is still a catalog query, and answering it is not this class's job either way.
@@ -320,6 +529,13 @@ public class PostgresCatalog {
     final Statement statement = Statement.split(tokens);
     if (statement == null)
       return namesAnEmulatedRelation(tokens) ? DECLINED : null;
+
+    if (statement.from == null) {
+      if (!nested)
+        return namesAnEmulatedRelation(tokens) ? DECLINED : null;
+      // A row of literals - an arm of psqlodbc's UNION of relkinds, a sub-select's SELECT 1: one row, no relation.
+      return project(statement, List.of(), List.of(new Row()), context, Map.of(), true, null, outer);
+    }
 
     final List<FromEntry> from = parseFrom(statement.from);
     if (from == null || from.isEmpty())
@@ -332,7 +548,7 @@ public class PostgresCatalog {
     if (from.size() == 1 && from.get(0).derived != null) {
       // A derived table: the inner SELECT is the catalog query and this one is a filter over its output. The
       // JDBC driver's column list is written this way, so answering it means answering both levels.
-      final Answer inner = resolveStatement(from.get(0).derived, context);
+      final Answer inner = resolveStatement(from.get(0).derived, context, outer, true);
       if (inner == null || inner.rows == null)
         return inner == null ? null : DECLINED;
 
@@ -345,7 +561,7 @@ public class PostgresCatalog {
       for (final Map<String, Object> innerRow : inner.rows)
         rows.add(new Row().withAll(name, innerRow));
       columnsByRelation.put(name, inner.columns.keySet());
-      from.set(0, new FromEntry(name, null, from.get(0).alias, null));
+      from.set(0, new FromEntry(name, null, from.get(0).alias, null, Join.FIRST));
     } else {
       Family family = null;
       for (final FromEntry entry : from) {
@@ -376,9 +592,6 @@ public class PostgresCatalog {
       if (family == null)
         return DECLINED;
 
-      if (readsOneRelationThroughTwoAliases(statement, from))
-        return DECLINED;
-
       // The permissive-WHERE rule rests on every row being one of the user's own types in the one database
       // this connection is bound to, so a predicate that cannot be read can only be excluding rows this
       // catalog never produced. pg_type breaks that premise: its rows are a fixed set of built-in types, and
@@ -387,57 +600,298 @@ public class PostgresCatalog {
       // "found 23 different types named hstore" - so here an unreadable predicate declines instead.
       toleratesUnreadableFilter = family != Family.TYPES;
 
-      rows = buildRows(family, context);
+      rows = context.rows(family);
     }
 
-    return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter);
+    final boolean[] secondAliases = secondAliasesRead(statement, from);
+    if (secondAliases == null)
+      return DECLINED;
+
+    return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter, secondAliases, outer);
   }
 
   /**
-   * Whether the query reads columns through two different aliases of the same relation, which is a shape this
-   * row model cannot represent: a {@link Row} carries one map per relation, so both aliases read the same map.
-   * The second alias would answer with the first one's values, and a projection naming a column through both
-   * would announce one column where the client asked for two - which is precisely the kind of miscount that
-   * makes a strict client (the Arrow ADBC driver among them) abort. So the query is declined instead, and the
-   * caller sends the empty result set that any unreadable catalog shape gets.
+   * Which FROM entries are a second alias the query reads a relation through, a shape this row model can only
+   * partly represent: a {@link Row} carries one map per relation, so both aliases read the same map. The second
+   * alias would answer with the first one's values, and a projection naming a column through both would read
+   * one row where the client asked about two - which is precisely the kind of wrong answer that makes a strict
+   * client (the Arrow ADBC driver among them) abort.
+   * <p>
+   * The one form of it that IS representable is a second alias on the right of a LEFT JOIN whose condition
+   * does not hold for the row: it then reads NULL, whatever map it shares. psql's {@code \d} is that form -
+   * {@code LEFT JOIN pg_class tc ON (c.reltoastrelid = tc.oid)}, and a type has no TOAST table (issue #10228).
+   * Such an entry is returned flagged, and {@link #project} declines the query if a row matches it after all.
+   * Any other second alias declines the query here, and the caller sends the empty result set that any
+   * unreadable catalog shape gets.
    * <p>
    * The self-join that matters in practice - {@code FROM pg_type t, pg_type e WHERE t.oid = N AND t.typelem =
    * e.oid}, where the projected columns describe a different row from the one the filter selects - is
    * answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own shape.
    * <p>
    * Only aliases the query actually <b>reads through</b> count. An alias that appears solely in a join
-   * condition does not, because those conditions are skipped rather than evaluated: the JDBC driver's
-   * {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a second time purely to look up a
-   * comment it then never projects, and declining that would take out the column list of every JDBC client.
+   * condition does not: the JDBC driver's {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a
+   * second time purely to look up a comment it then never projects, and declining that would take out the
+   * column list of every JDBC client.
+   *
+   * @return one flag per FROM entry, or null when the query reads a relation through a second alias that is
+   * not the right side of a LEFT JOIN
    */
-  private static boolean readsOneRelationThroughTwoAliases(final Statement statement, final List<FromEntry> from) {
-    final Map<String, String> aliasesByRelation = new HashMap<>();
+  private static boolean[] secondAliasesRead(final Statement statement, final List<FromEntry> from) {
+    final boolean[] read = new boolean[from.size()];
 
     for (final List<PostgresCatalogToken> clause : Arrays.asList(statement.projection, statement.where,
-        statement.orderBy)) {
+        statement.groupBy, statement.orderBy)) {
       if (clause == null)
         continue;
 
       for (int i = 0; i + 1 < clause.size(); i++) {
-        final PostgresCatalogToken token = clause.get(i);
-        if (token.type != PostgresCatalogToken.Type.IDENTIFIER
-            && token.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
-          continue;
-        if (!clause.get(i + 1).isSymbol("."))
+        if (!isName(clause.get(i)) || !clause.get(i + 1).isSymbol("."))
           continue;
 
-        final String qualifier = token.text.toLowerCase(Locale.ENGLISH);
-        final FromEntry entry = entryFor(from, qualifier);
-        if (entry == null || entry.derived != null)
-          continue;
-
-        final String previous = aliasesByRelation.putIfAbsent(entry.relation, qualifier);
-        if (previous != null && !previous.equals(qualifier))
-          return true;
+        final int index = entryIndex(from, clause.get(i).text.toLowerCase(Locale.ENGLISH));
+        if (index >= 0 && from.get(index).derived == null)
+          read[index] = true;
       }
     }
 
-    return false;
+    final boolean[] second = new boolean[from.size()];
+    final Map<String, Integer> subjects = new HashMap<>();
+    for (int i = 0; i < from.size(); i++) {
+      if (!read[i] || subjects.putIfAbsent(from.get(i).relation, i) == null)
+        continue;
+      if (from.get(i).join != Join.LEFT || from.get(i).on == null)
+        return null;
+      second[i] = true;
+    }
+    return second;
+  }
+
+  // ---------------------------------------------------------------- set operations
+
+  /**
+   * A UNION, INTERSECT or EXCEPT chain, split at the top level into its arms (issue #10228). ArcadeDB's SQL has
+   * no set operations, so a client that sends one - psqlodbc does, for {@code SQLTables(SQL_ALL_TABLE_TYPES)} -
+   * got a syntax error. The arms are answered by this catalog one by one, and combined here.
+   */
+  private static final class SetOperation {
+    final List<List<PostgresCatalogToken>> arms      = new ArrayList<>();
+    /** Between arm {@code i} and arm {@code i + 1}: UNION, INTERSECT or EXCEPT. */
+    final List<String>                     operators = new ArrayList<>();
+    final List<Boolean>                    all       = new ArrayList<>();
+    /** The trailing ORDER BY and LIMIT, which apply to the result of the whole chain, not to its last arm. */
+    List<PostgresCatalogToken>             orderBy;
+    Integer                                limit;
+
+    /** @return the chain, or null when the statement has no top-level set operation or one this class cannot read */
+    static SetOperation split(final List<PostgresCatalogToken> tokens) {
+      SetOperation operation = null;
+      int depth = 0;
+      int armStart = 0;
+
+      for (int i = 0; i < tokens.size(); i++) {
+        final PostgresCatalogToken token = tokens.get(i);
+        if (token.isSymbol("(") || token.isSymbol("["))
+          ++depth;
+        else if (token.isSymbol(")") || token.isSymbol("]"))
+          --depth;
+        else if (depth == 0 && (token.isKeyword("UNION") || token.isKeyword("INTERSECT") || token.isKeyword("EXCEPT"))) {
+          if (operation == null)
+            operation = new SetOperation();
+          operation.arms.add(tokens.subList(armStart, i));
+          operation.operators.add(token.text.toUpperCase(Locale.ENGLISH));
+          boolean all = false;
+          if (i + 1 < tokens.size() && tokens.get(i + 1).isKeyword("ALL")) {
+            all = true;
+            ++i;
+          } else if (i + 1 < tokens.size() && tokens.get(i + 1).isKeyword("DISTINCT"))
+            ++i;
+          operation.all.add(all);
+          armStart = i + 1;
+        }
+      }
+
+      if (operation == null)
+        return null;
+
+      List<PostgresCatalogToken> last = tokens.subList(armStart, tokens.size());
+      depth = 0;
+      for (int i = 0; i < last.size(); i++) {
+        final PostgresCatalogToken token = last.get(i);
+        if (token.isSymbol("(") || token.isSymbol("["))
+          ++depth;
+        else if (token.isSymbol(")") || token.isSymbol("]"))
+          --depth;
+        else if (depth == 0 && (token.isKeyword("ORDER") || token.isKeyword("LIMIT") || token.isKeyword("OFFSET")
+            || token.isKeyword("FETCH"))) {
+          if (!operation.readTail(last.subList(i, last.size())))
+            return null;
+          last = last.subList(0, i);
+          break;
+        }
+      }
+      operation.arms.add(last);
+
+      for (final List<PostgresCatalogToken> arm : operation.arms)
+        if (arm.isEmpty())
+          return null;
+      return operation;
+    }
+
+    private boolean readTail(final List<PostgresCatalogToken> tail) {
+      int i = 0;
+      if (tail.get(0).isKeyword("ORDER")) {
+        if (tail.size() < 3 || !tail.get(1).isKeyword("BY"))
+          return false;
+        i = 2;
+        int depth = 0;
+        while (i < tail.size() && !(depth == 0 && tail.get(i).isKeyword("LIMIT"))) {
+          if (tail.get(i).isSymbol("(") || tail.get(i).isSymbol("["))
+            ++depth;
+          else if (tail.get(i).isSymbol(")") || tail.get(i).isSymbol("]"))
+            --depth;
+          ++i;
+        }
+        orderBy = new ArrayList<>(tail.subList(2, i));
+      }
+
+      if (i == tail.size())
+        return true;
+
+      // OFFSET and FETCH are outside the slice; LIMIT takes a number and nothing may follow it.
+      if (!tail.get(i).isKeyword("LIMIT") || i + 2 != tail.size() || tail.get(i + 1).type != PostgresCatalogToken.Type.NUMBER)
+        return false;
+      try {
+        limit = Integer.valueOf(tail.get(i + 1).text);
+        return true;
+      } catch (final NumberFormatException e) {
+        return false;
+      }
+    }
+  }
+
+  private static Answer resolveSetOperation(final SetOperation operation, final Context context,
+      final RowResolver outer) {
+    final List<Answer> answers = new ArrayList<>(operation.arms.size());
+    boolean declined = false;
+    for (final List<PostgresCatalogToken> arm : operation.arms) {
+      final Answer answer = resolveStatement(arm, context, outer, true);
+      if (answer == null)
+        // An arm reading the user's own types: the whole statement is the SQL engine's, not this catalog's.
+        return null;
+      declined |= answer.rows == null;
+      answers.add(answer);
+    }
+    if (declined)
+      return DECLINED;
+
+    // The first arm names the columns, as in PostgreSQL; every arm must have as many.
+    final List<String> keys = new ArrayList<>(answers.get(0).columns.keySet());
+    final List<List<List<Object>>> arms = new ArrayList<>(answers.size());
+    boolean filtersExactly = false;
+    for (final Answer answer : answers) {
+      if (answer.columns.size() != keys.size())
+        return DECLINED;
+      filtersExactly |= answer.filtersExactly;
+      final List<List<Object>> values = new ArrayList<>(answer.rows.size());
+      for (final Map<String, Object> row : answer.rows)
+        values.add(new ArrayList<>(row.values()));
+      arms.add(values);
+    }
+
+    // INTERSECT binds tighter than UNION and EXCEPT, which associate to the left.
+    final List<List<List<Object>>> terms = new ArrayList<>();
+    final List<Integer> termOperators = new ArrayList<>();
+    List<List<Object>> current = arms.get(0);
+    for (int i = 0; i < operation.operators.size(); i++) {
+      if ("INTERSECT".equals(operation.operators.get(i)))
+        current = combine("INTERSECT", operation.all.get(i), current, arms.get(i + 1));
+      else {
+        terms.add(current);
+        termOperators.add(i);
+        current = arms.get(i + 1);
+      }
+    }
+    terms.add(current);
+
+    List<List<Object>> combined = terms.get(0);
+    for (int t = 0; t < termOperators.size(); t++) {
+      final int i = termOperators.get(t);
+      combined = combine(operation.operators.get(i), operation.all.get(i), combined, terms.get(t + 1));
+    }
+
+    List<Map<String, Object>> rows = new ArrayList<>(combined.size());
+    for (final List<Object> values : combined) {
+      final Map<String, Object> row = new LinkedHashMap<>(keys.size());
+      for (int k = 0; k < keys.size(); k++)
+        row.put(keys.get(k), values.get(k));
+      rows.add(row);
+    }
+
+    if (operation.orderBy != null)
+      rows = sort(operation.orderBy, rows);
+    if (operation.limit != null && rows.size() > operation.limit)
+      rows = new ArrayList<>(rows.subList(0, operation.limit));
+
+    return new Answer(columnsOf(keys, rows), rows, filtersExactly);
+  }
+
+  /** One set operation over two row lists, with SQL's duplicate rules: without ALL the result has no duplicate. */
+  private static List<List<Object>> combine(final String operator, final boolean all, final List<List<Object>> left,
+      final List<List<Object>> right) {
+    final List<List<Object>> result = new ArrayList<>(left.size() + right.size());
+
+    if ("UNION".equals(operator)) {
+      if (all) {
+        result.addAll(left);
+        result.addAll(right);
+        return result;
+      }
+      final Set<List<Object>> seen = new HashSet<>();
+      for (final List<List<Object>> side : List.of(left, right))
+        for (final List<Object> row : side)
+          if (seen.add(distinctKey(row)))
+            result.add(row);
+      return result;
+    }
+
+    final Map<List<Object>, Integer> inRight = new HashMap<>();
+    for (final List<Object> row : right)
+      inRight.merge(distinctKey(row), 1, Integer::sum);
+
+    final Set<List<Object>> emitted = new HashSet<>();
+    final boolean intersect = "INTERSECT".equals(operator);
+    for (final List<Object> row : left) {
+      final List<Object> key = distinctKey(row);
+      final int count = inRight.getOrDefault(key, 0);
+      if (all) {
+        // The ALL forms are bag operations: each row of the right side matches one row of the left at most.
+        if (count > 0)
+          inRight.put(key, count - 1);
+        if (intersect == (count > 0))
+          result.add(row);
+      } else if (intersect == (count > 0) && emitted.add(key))
+        result.add(row);
+    }
+    return result;
+  }
+
+  /**
+   * The key two rows are compared by when a set operation, DISTINCT, GROUP BY or count(DISTINCT) decides whether
+   * they are the same row. Numbers compare by value, as in SQL: the literal {@code 1} is a Long and an OID is an
+   * Integer, and {@code List.equals} would tell them apart.
+   */
+  private static List<Object> distinctKey(final List<Object> values) {
+    List<Object> key = null;
+    for (int i = 0; i < values.size(); i++) {
+      final Object value = values.get(i);
+      if (!(value instanceof Number number) || value instanceof Long)
+        continue;
+      if (key == null)
+        key = new ArrayList<>(values);
+      final double d = number.doubleValue();
+      key.set(i, d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 9.0E15 ? (Object) (long) d : (Object) d);
+    }
+    return key == null ? values : key;
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -482,6 +936,10 @@ public class PostgresCatalog {
    * <p>
    * TYPES still loses to TABLES, VIEWS and COLUMNS, which is the half of the old ranking that was right, and
    * beats the single-row families: pg_type joined to pg_roles reads an owner for each type, so it qualifies.
+   * <p>
+   * ATTRDEFS (issue #10228) is one row per column default, so it constrains a table query - one row per default
+   * rather than one per table - and is constrained by a column query, whose LEFT JOIN to pg_attrdef reads NULL for
+   * a column without a default.
    */
   private static int rank(final Family family) {
     return switch (family) {
@@ -489,7 +947,8 @@ public class PostgresCatalog {
       case ROLES, DATABASES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -> 1;
       case TYPES -> 2;
       case TABLES, VIEWS -> 3;
-      case COLUMNS -> 4;
+      case ATTRDEFS -> 4;
+      case COLUMNS -> 5;
     };
   }
 
@@ -532,14 +991,17 @@ public class PostgresCatalog {
   private static class Statement {
     boolean                    distinct;
     List<PostgresCatalogToken> projection;
+    /** Null for a SELECT with no FROM clause. */
     List<PostgresCatalogToken> from;
     List<PostgresCatalogToken> where;
+    List<PostgresCatalogToken> groupBy;
     List<PostgresCatalogToken> orderBy;
     Integer                    limit;
 
     /**
      * Splits a token list at the top-level clause keywords. Returns null for anything with a shape this class
-     * does not read: a set operation, a GROUP BY, a sub-select in place of a FROM item.
+     * does not read: a set operation (resolved by {@link SetOperation} before this is reached), a HAVING, a
+     * window clause, an OFFSET.
      */
     static Statement split(final List<PostgresCatalogToken> tokens) {
       final Statement statement = new Statement();
@@ -555,7 +1017,33 @@ public class PostgresCatalog {
 
       final int projectionStart = i;
       int depth = 0;
+      for (; i < tokens.size(); i++) {
+        final PostgresCatalogToken token = tokens.get(i);
+        if (token.isSymbol("(") || token.isSymbol("["))
+          ++depth;
+        else if (token.isSymbol(")") || token.isSymbol("]"))
+          --depth;
+        else if (depth == 0 && endsProjection(token))
+          break;
+      }
+
+      statement.projection = new ArrayList<>(tokens.subList(projectionStart, i));
+      if (statement.projection.isEmpty())
+        return null;
+
       int fromStart = -1;
+      if (i < tokens.size() && tokens.get(i).isKeyword("FROM")) {
+        fromStart = i + 1;
+        i = fromStart;
+      }
+      final int clausesStart = i;
+
+      int end = tokens.size();
+      int whereStart = -1;
+      int groupStart = -1;
+      int orderStart = -1;
+      int limitStart = -1;
+      depth = 0;
 
       for (; i < tokens.size(); i++) {
         final PostgresCatalogToken token = tokens.get(i);
@@ -563,39 +1051,18 @@ public class PostgresCatalog {
           ++depth;
         else if (token.isSymbol(")") || token.isSymbol("]"))
           --depth;
-        else if (depth == 0 && token.isKeyword("FROM")) {
-          fromStart = i + 1;
-          break;
-        }
-      }
-
-      if (fromStart < 0)
-        return null;
-
-      statement.projection = new ArrayList<>(tokens.subList(projectionStart, fromStart - 1));
-      if (statement.projection.isEmpty())
-        return null;
-
-      int end = tokens.size();
-      int whereStart = -1;
-      int orderStart = -1;
-      int limitStart = -1;
-      depth = 0;
-
-      for (i = fromStart; i < tokens.size(); i++) {
-        final PostgresCatalogToken token = tokens.get(i);
-        if (token.isSymbol("(") || token.isSymbol("["))
-          ++depth;
-        else if (token.isSymbol(")") || token.isSymbol("]"))
-          --depth;
         else if (depth == 0) {
           if (token.isKeyword("UNION") || token.isKeyword("INTERSECT") || token.isKeyword("EXCEPT")
-              || token.isKeyword("HAVING") || token.isKeyword("GROUP") || token.isKeyword("WINDOW")
-              || token.isKeyword("FETCH") || token.isKeyword("OFFSET"))
+              || token.isKeyword("HAVING") || token.isKeyword("WINDOW") || token.isKeyword("FETCH")
+              || token.isKeyword("OFFSET") || token.isKeyword("INTO"))
             return null;
-          if (token.isKeyword("WHERE") && whereStart < 0 && orderStart < 0)
+          if (token.isKeyword("WHERE") && whereStart < 0 && groupStart < 0 && orderStart < 0)
             whereStart = i + 1;
-          else if (token.isKeyword("ORDER") && orderStart < 0) {
+          else if (token.isKeyword("GROUP") && groupStart < 0 && orderStart < 0) {
+            if (i + 1 >= tokens.size() || !tokens.get(i + 1).isKeyword("BY"))
+              return null;
+            groupStart = i + 2;
+          } else if (token.isKeyword("ORDER") && orderStart < 0) {
             if (i + 1 >= tokens.size() || !tokens.get(i + 1).isKeyword("BY"))
               return null;
             orderStart = i + 2;
@@ -623,14 +1090,37 @@ public class PostgresCatalog {
         end = Math.min(end, orderStart - 2);
       }
 
+      if (groupStart > 0) {
+        statement.groupBy = new ArrayList<>(tokens.subList(groupStart, end));
+        if (statement.groupBy.isEmpty())
+          return null;
+        end = Math.min(end, groupStart - 2);
+      }
+
       if (whereStart > 0) {
         statement.where = new ArrayList<>(tokens.subList(whereStart, end));
         end = Math.min(end, whereStart - 1);
       }
 
+      if (fromStart < 0)
+        // No FROM: the projection ran up to the first clause, so nothing can be left between the two.
+        return end == clausesStart ? statement : null;
+
       statement.from = new ArrayList<>(tokens.subList(fromStart, end));
       return statement.from.isEmpty() ? null : statement;
     }
+
+    private static boolean endsProjection(final PostgresCatalogToken token) {
+      return token.isKeyword("FROM") || token.isKeyword("WHERE") || token.isKeyword("GROUP") || token.isKeyword("HAVING")
+          || token.isKeyword("ORDER") || token.isKeyword("LIMIT") || token.isKeyword("OFFSET") || token.isKeyword("FETCH")
+          || token.isKeyword("WINDOW") || token.isKeyword("UNION") || token.isKeyword("INTERSECT")
+          || token.isKeyword("EXCEPT") || token.isKeyword("INTO");
+    }
+  }
+
+  /** How a FROM entry is joined to the entries before it. */
+  private enum Join {
+    FIRST, COMMA, CROSS, INNER, LEFT, RIGHT, FULL
   }
 
   /** One item of the FROM clause: an emulated relation, or a derived table with the tokens of its SELECT. */
@@ -640,112 +1130,129 @@ public class PostgresCatalog {
     final String                     writtenAs;
     final String                     alias;
     final List<PostgresCatalogToken> derived;
+    final Join                       join;
+    /** The ON condition the entry was joined with, null without one. */
+    List<PostgresCatalogToken>       on;
 
     FromEntry(final String relation, final String writtenAs, final String alias,
-        final List<PostgresCatalogToken> derived) {
+        final List<PostgresCatalogToken> derived, final Join join) {
       this.relation = relation;
       this.writtenAs = writtenAs;
       this.alias = alias;
       this.derived = derived;
+      this.join = join;
     }
   }
 
   /**
-   * Reads the relations out of a FROM clause: comma-separated items and explicit JOINs alike. The join
-   * conditions themselves are skipped rather than evaluated - every emulated row already carries the columns
-   * of every relation it can be joined to, so the join is satisfied by construction.
+   * Reads the relations out of a FROM clause: comma-separated items, explicit JOINs and parenthesised joins
+   * alike, each with the condition it was joined on. Every emulated row already carries the columns of every
+   * relation it can be joined to, so the conditions do not pair rows up; {@link #project} applies them instead,
+   * an inner join's as a filter and an outer join's as what decides whether the joined relation reads NULL.
    */
   private static List<FromEntry> parseFrom(final List<PostgresCatalogToken> tokens) {
     final List<FromEntry> entries = new ArrayList<>();
+    return parseFrom(tokens, Join.FIRST, entries, 0) && !entries.isEmpty() ? entries : null;
+  }
+
+  private static boolean parseFrom(final List<PostgresCatalogToken> tokens, Join join, final List<FromEntry> entries,
+      final int nesting) {
+    if (nesting > MAX_NESTING)
+      return false;
+
     int i = 0;
-
     while (i < tokens.size()) {
-      // Join decorations before the relation name.
-      while (i < tokens.size() && isJoinWord(tokens.get(i)))
-        ++i;
-
-      if (i >= tokens.size())
-        return entries.isEmpty() ? null : entries;
+      // Join decorations before the item.
+      if (isJoinWord(tokens.get(i))) {
+        boolean left = false, right = false, full = false, cross = false;
+        while (i < tokens.size() && isJoinWord(tokens.get(i))) {
+          final PostgresCatalogToken word = tokens.get(i++);
+          left |= word.isKeyword("LEFT");
+          right |= word.isKeyword("RIGHT");
+          full |= word.isKeyword("FULL");
+          cross |= word.isKeyword("CROSS");
+        }
+        join = left ? Join.LEFT : right ? Join.RIGHT : full ? Join.FULL : cross ? Join.CROSS : Join.INNER;
+        if (i >= tokens.size())
+          return true;
+      }
 
       final PostgresCatalogToken token = tokens.get(i);
+      // The entry an ON condition after this item belongs to: the item itself, or the first relation of a group.
+      final int item = entries.size();
 
       if (token.isSymbol("(")) {
-        // A derived table: read the parenthesised SELECT whole and hand it back for its own resolution.
-        int depth = 0;
-        final int start = i + 1;
-        while (i < tokens.size()) {
-          if (tokens.get(i).isSymbol("("))
-            ++depth;
-          else if (tokens.get(i).isSymbol(")")) {
-            --depth;
-            if (depth == 0)
-              break;
+        final int close = matchingParenthesis(tokens, i);
+        if (close < 0)
+          return false;
+        final List<PostgresCatalogToken> inside = tokens.subList(i + 1, close);
+        i = close + 1;
+
+        if (startsAStatement(inside)) {
+          // A derived table: read the parenthesised SELECT whole and hand it back for its own resolution.
+          String derivedAlias = null;
+          if (i < tokens.size() && tokens.get(i).isKeyword("AS"))
+            ++i;
+          if (i < tokens.size() && isName(tokens.get(i)) && !isStructuralWord(tokens.get(i))) {
+            derivedAlias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
+            ++i;
           }
+          entries.add(new FromEntry(derivedAlias == null ? "" : derivedAlias, null, derivedAlias, new ArrayList<>(inside),
+              join));
+        } else {
+          // A parenthesised join - (a JOIN b ON ...) - which psqlodbc writes its column list with, three deep
+          // (issue #10228). Inner joins associate, so its relations join the outer ones as written. An outer
+          // join to the group would have to null the whole group, and an alias would rename it: neither is a
+          // shape this reads.
+          if (join == Join.LEFT || join == Join.RIGHT || join == Join.FULL)
+            return false;
+          if (!parseFrom(inside, join, entries, nesting + 1) || entries.size() == item)
+            return false;
+          if (i < tokens.size() && (tokens.get(i).isKeyword("AS") || (isName(tokens.get(i))
+              && !isStructuralWord(tokens.get(i)))))
+            return false;
+        }
+      } else if (isName(token)) {
+        final StringBuilder relation = new StringBuilder(token.text.toLowerCase(Locale.ENGLISH));
+        final StringBuilder written = new StringBuilder(token.text);
+        ++i;
+        while (i + 1 < tokens.size() && tokens.get(i).isSymbol(".")) {
+          final PostgresCatalogToken part = tokens.get(i + 1);
+          if (!isName(part))
+            return false;
+          relation.append('.').append(part.text.toLowerCase(Locale.ENGLISH));
+          written.setLength(0);
+          written.append(part.text);
+          i += 2;
+        }
+
+        String name = relation.toString();
+        // pg_catalog is the schema every pg_ relation lives in, and naming it changes nothing.
+        if (name.startsWith("pg_catalog."))
+          name = name.substring("pg_catalog.".length());
+
+        String alias = null;
+        if (i < tokens.size() && tokens.get(i).isKeyword("AS")) {
+          ++i;
+          if (i >= tokens.size())
+            return false;
+          alias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
+          ++i;
+        } else if (i < tokens.size() && isName(tokens.get(i)) && !isStructuralWord(tokens.get(i))) {
+          alias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
           ++i;
         }
-        if (depth != 0 || i >= tokens.size())
-          return null;
 
-        final List<PostgresCatalogToken> derived = new ArrayList<>(tokens.subList(start, i));
-        ++i; // past ")"
-
-        String derivedAlias = null;
-        if (i < tokens.size() && tokens.get(i).isKeyword("AS"))
-          ++i;
-        if (i < tokens.size() && (tokens.get(i).type == PostgresCatalogToken.Type.IDENTIFIER
-            || tokens.get(i).type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER) && !isStructuralWord(tokens.get(i))) {
-          derivedAlias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
-          ++i;
-        }
-
-        entries.add(new FromEntry(derivedAlias == null ? "" : derivedAlias, null, derivedAlias, derived));
-
-        if (i < tokens.size() && tokens.get(i).isSymbol(","))
-          ++i;
-        continue;
-      }
-
-      if (token.type != PostgresCatalogToken.Type.IDENTIFIER && token.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
+        entries.add(new FromEntry(name, written.toString(), alias, null, join));
+      } else
         // A function call, a VALUES list: not a shape this catalog reads.
-        return null;
+        return false;
 
-      final StringBuilder relation = new StringBuilder(token.text.toLowerCase(Locale.ENGLISH));
-      final StringBuilder written = new StringBuilder(token.text);
-      ++i;
-      while (i + 1 < tokens.size() && tokens.get(i).isSymbol(".")) {
-        final PostgresCatalogToken part = tokens.get(i + 1);
-        if (part.type != PostgresCatalogToken.Type.IDENTIFIER && part.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
-          return null;
-        relation.append('.').append(part.text.toLowerCase(Locale.ENGLISH));
-        written.setLength(0);
-        written.append(part.text);
-        i += 2;
-      }
-
-      String name = relation.toString();
-      // pg_catalog is the schema every pg_ relation lives in, and naming it changes nothing.
-      if (name.startsWith("pg_catalog."))
-        name = name.substring("pg_catalog.".length());
-
-      String alias = null;
-      if (i < tokens.size() && tokens.get(i).isKeyword("AS")) {
-        ++i;
-        if (i >= tokens.size())
-          return null;
-        alias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
-        ++i;
-      } else if (i < tokens.size() && (tokens.get(i).type == PostgresCatalogToken.Type.IDENTIFIER
-          || tokens.get(i).type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER) && !isStructuralWord(tokens.get(i))) {
-        alias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
-        ++i;
-      }
-
-      entries.add(new FromEntry(name, written.toString(), alias, null));
-
-      // Skip an ON or USING condition, up to the next comma or join at this level.
+      // An ON or USING condition, up to the next comma or join at this level.
       if (i < tokens.size() && (tokens.get(i).isKeyword("ON") || tokens.get(i).isKeyword("USING"))) {
+        final boolean using = tokens.get(i).isKeyword("USING");
+        final int start = ++i;
         int depth = 0;
-        ++i;
         while (i < tokens.size()) {
           final PostgresCatalogToken t = tokens.get(i);
           if (t.isSymbol("(") || t.isSymbol("["))
@@ -756,13 +1263,43 @@ public class PostgresCatalog {
             break;
           ++i;
         }
+        // USING names columns both sides share, which every emulated row satisfies by construction.
+        if (!using)
+          entries.get(item).on = new ArrayList<>(tokens.subList(start, i));
       }
 
-      if (i < tokens.size() && tokens.get(i).isSymbol(","))
-        ++i;
+      if (i < tokens.size()) {
+        if (tokens.get(i).isSymbol(",")) {
+          join = Join.COMMA;
+          ++i;
+        } else if (!isJoinWord(tokens.get(i)))
+          return false;
+      }
     }
 
-    return entries.isEmpty() ? null : entries;
+    return true;
+  }
+
+  /** The index of the {@code )} closing the {@code (} at {@code open}, or -1. */
+  private static int matchingParenthesis(final List<PostgresCatalogToken> tokens, final int open) {
+    int depth = 0;
+    for (int i = open; i < tokens.size(); i++) {
+      if (tokens.get(i).isSymbol("("))
+        ++depth;
+      else if (tokens.get(i).isSymbol(")") && --depth == 0)
+        return i;
+    }
+    return -1;
+  }
+
+  /** Whether parenthesised FROM content is a sub-select (a derived table) rather than a parenthesised join. */
+  private static boolean startsAStatement(final List<PostgresCatalogToken> inside) {
+    for (final PostgresCatalogToken token : inside) {
+      if (token.isSymbol("("))
+        continue;
+      return token.isKeyword("SELECT") || token.isKeyword("VALUES") || token.isKeyword("WITH") || token.isKeyword("TABLE");
+    }
+    return true;
   }
 
   private static boolean isJoinWord(final PostgresCatalogToken token) {
@@ -791,10 +1328,38 @@ public class PostgresCatalog {
 
     private Map<Integer, String>      namesByOid;
     private Map<String, DocumentType> typesByFoldedName;
+    /**
+     * The rows of each family, built at most once per statement. A correlated sub-select is resolved once per
+     * row of the query around it, and building its rows means walking the schema: psql's {@code \d} asks for each
+     * column's default this way, which would otherwise rebuild every column row once per column.
+     */
+    private final Map<Family, List<Row>> rowsByFamily = new EnumMap<>(Family.class);
+    private int                          nesting;
 
     Context(final Database database, final String userName) {
       this.database = database;
       this.userName = userName;
+    }
+
+    List<Row> rows(final Family family) {
+      List<Row> rows = rowsByFamily.get(family);
+      if (rows == null) {
+        rows = buildRows(family, this);
+        rowsByFamily.put(family, rows);
+      }
+      return rows;
+    }
+
+    /** @return false when one more level of nesting would pass {@link #MAX_NESTING} */
+    boolean enter() {
+      if (nesting >= MAX_NESTING)
+        return false;
+      ++nesting;
+      return true;
+    }
+
+    void exit() {
+      --nesting;
     }
 
     Database database() {
@@ -911,6 +1476,7 @@ public class PostgresCatalog {
       case TABLES -> tableRows(context);
       case COLUMNS -> columnRows(context);
       case TYPES -> typeRows(context);
+      case ATTRDEFS -> defaultRows(context);
       // ArcadeDB has no relation that a PostgreSQL client would render as a view.
       case VIEWS -> List.of();
     };
@@ -1053,7 +1619,10 @@ public class PostgresCatalog {
             "relrowsecurity", Boolean.FALSE, "relforcerowsecurity", Boolean.FALSE, "relchecks", 0,//
             // -1 is PostgreSQL's own "never analysed, count unknown", which is honest here: counting the
             // records of every type to answer a table list would turn a metadata query into a full scan.
-            "reltuples", -1, "relpages", 0, "relam", 0, "reltype", 0, "relfilenode", oid, "reltablespace", 0)//
+            "reltuples", -1, "relpages", 0, "relam", HEAP_ACCESS_METHOD_OID, "reltype", 0, "relfilenode", oid,
+            "reltablespace", 0, "reloftype", 0, "reltoastrelid", 0, "relreplident", "d", "relrewrite", 0)//
+        .with("pg_am", "oid", HEAP_ACCESS_METHOD_OID, "amname", "heap", "amhandler", "heap_tableam_handler",
+            "amtype", "t")//
         .with("pg_tables", "schemaname", schema, "tablename", type.getName(), "tableowner", context.userName(),//
             "hasindexes", !type.getAllIndexes(false).isEmpty(), "hasrules", Boolean.FALSE, "hastriggers", Boolean.FALSE,//
             "rowsecurity", Boolean.FALSE)//
@@ -1079,7 +1648,9 @@ public class PostgresCatalog {
                 "atthasdef", defaultValue != null, "attisdropped", Boolean.FALSE, "attislocal", Boolean.TRUE,//
                 "attinhcount", 0, "attndims", pgType.isArrayType() ? 1 : 0, "attcollation", 0, "attstattarget", -1,//
                 "attidentity", "", "attgenerated", "", "atthasmissing", Boolean.FALSE, "attbyval",
-                pgType.size > 0 && pgType.size <= 8, "attstorage", "p", "attalign", "i")//
+                pgType.size > 0 && pgType.size <= 8, "attalign", "i", "attcompression", "",//
+                // A variable-length value is stored "extended" in PostgreSQL, a fixed-length one "plain".
+                "attstorage", pgType.size > 0 ? "p" : "x")//
             .with("information_schema.columns", "table_catalog", schema, "table_schema", schema, "table_name",
                 type.getName(), "column_name", property.getName(), "ordinal_position", ordinal,//
                 "column_default", defaultValue == null ? null : defaultValue.toString(),//
@@ -1087,12 +1658,27 @@ public class PostgresCatalog {
                 "udt_schema", PG_CATALOG_SCHEMA, "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
                 "is_updatable", "YES", "numeric_precision_radix", numericPrecisionRadix(pgType));
 
+        if (defaultValue != null)
+          // pg_attrdef's adbin is a parsed expression that pg_get_expr() prints; here it holds the text
+          // pg_get_expr() is to print, the same text information_schema.columns reports.
+          row.with("pg_attrdef", "adrelid", oidOf(type.getName()), "adnum", ordinal, "adbin", defaultValue.toString(),
+              "adsrc", defaultValue.toString());
+
         // The type row a client joins pg_attribute to in order to name the column's type. It describes the
         // column's own type, which is the only reading of that join that makes sense.
         rows.add(describeType(row, pgType).complete());
       }
     }
 
+    return rows;
+  }
+
+  /** One row per column that declares a default: pg_attrdef's rows, each carrying its column's (issue #10228). */
+  private static List<Row> defaultRows(final Context context) {
+    final List<Row> rows = new ArrayList<>();
+    for (final Row row : context.rows(Family.COLUMNS))
+      if (row.relations.get("pg_attrdef").get("adrelid") != null)
+        rows.add(row);
     return rows;
   }
 
@@ -1140,81 +1726,120 @@ public class PostgresCatalog {
 
   // ---------------------------------------------------------------- projection
 
+  /** An emulated row together with which of the query's FROM entries an outer join left unmatched on it. */
+  private record Joined(Row row, boolean[] nulled) {
+  }
+
   private static Answer project(final Statement statement, final List<FromEntry> from, final List<Row> rows,
       final Context context, final Map<String, Collection<String>> columnsByRelation,
-      final boolean toleratesUnreadableFilter) {
-    final List<ProjectionItem> projection = parseProjection(statement.projection, from, columnsByRelation);
+      final boolean toleratesUnreadableFilter, final boolean[] secondAliases, final RowResolver outer) {
+    final Projection projection = parseProjection(statement.projection, from, columnsByRelation);
     if (projection == null)
       return DECLINED;
 
-    // A predicate that will not parse as a whole leaves the rows as they are - see the class comment on why
-    // an unreadable filter does not get to empty an answer whose every row is one of the user's own types.
-    final PostgresCatalogExpression where = statement.where == null ? null :
-        PostgresCatalogExpression.parse(statement.where);
-
-    // Unless the rows are pg_type's, where the permissive rule does not hold. A filter that cannot even be
-    // parsed has to be treated exactly like one that parses and then evaluates to UNKNOWN: both mean the
-    // same thing - this catalog does not know which subset was asked for - and only the second was declined,
-    // so a WHERE written with a construct the expression parser does not implement was the way back to
-    // "answer every type".
-    if (where == null && statement.where != null && !toleratesUnreadableFilter)
+    // What a row has to satisfy: the WHERE clause and the ON condition of every inner join, which for an inner
+    // join mean the same thing - psqlodbc puts its table-name filter in the ON clause, and skipping join
+    // conditions answered SQLColumns("Person") with every column of every type (issue #10228). Each conjunct is
+    // read on its own, so that one this evaluator cannot read does not take the readable ones down with it; see
+    // the class comment on why an unreadable one does not get to remove rows.
+    final List<PostgresCatalogExpression> filters = new ArrayList<>();
+    if (!readConjuncts(statement.where, filters, toleratesUnreadableFilter))
       return DECLINED;
 
-    final List<Row> surviving = new ArrayList<>(rows.size());
-    for (final Row row : rows) {
-      if (where == null) {
-        surviving.add(row);
+    // An outer join's condition does not remove the row: where it does not hold, the joined relation reads NULL,
+    // as it does in PostgreSQL. RIGHT and FULL joins keep the rows of the side this row model does not enumerate,
+    // so their conditions stay unread, as every join condition used to be.
+    PostgresCatalogExpression[] outerJoins = null;
+    for (int i = 0; i < from.size(); i++) {
+      final FromEntry entry = from.get(i);
+      if (entry.on == null)
         continue;
-      }
 
-      final Object matches = where.evaluate(new RowResolver(row, from, context, null, 0));
-      if (matches == PostgresCatalogExpression.UNKNOWN && !toleratesUnreadableFilter)
+      if (entry.join == Join.LEFT) {
+        final PostgresCatalogExpression condition = PostgresCatalogExpression.parse(entry.on);
+        if (condition == null) {
+          if (secondAliases != null && secondAliases[i])
+            // Whether the second alias matched cannot be told, and it reads the subject's map if it did.
+            return DECLINED;
+          continue;
+        }
+        if (outerJoins == null)
+          outerJoins = new PostgresCatalogExpression[from.size()];
+        outerJoins[i] = condition;
+      } else if (entry.join != Join.RIGHT && entry.join != Join.FULL && !readConjuncts(entry.on, filters,
+          toleratesUnreadableFilter))
         return DECLINED;
-      if (PostgresCatalogExpression.isTrue(matches))
-        surviving.add(row);
+    }
+
+    final List<Joined> surviving = new ArrayList<>(rows.size());
+    for (final Row row : rows) {
+      final boolean[] nulled = outerJoins == null ? null : new boolean[from.size()];
+      final RowResolver resolver = new RowResolver(row, nulled, from, context, outer);
+
+      if (outerJoins != null)
+        // In FROM order, so that a condition reading an earlier outer-joined relation sees it already nulled.
+        for (int i = 0; i < outerJoins.length; i++)
+          if (outerJoins[i] != null) {
+            final Object matched = outerJoins[i].evaluate(resolver);
+            if (matched != PostgresCatalogExpression.UNKNOWN && !PostgresCatalogExpression.isTrue(matched))
+              nulled[i] = true;
+          }
+
+      if (secondAliases != null)
+        for (int i = 0; i < secondAliases.length; i++)
+          if (secondAliases[i] && (nulled == null || !nulled[i]))
+            // The second alias matched a row, and the only row this model can hand it is the subject's own.
+            return DECLINED;
+
+      final Object passes = passes(filters, resolver);
+      if (passes == PostgresCatalogExpression.UNKNOWN && !toleratesUnreadableFilter)
+        return DECLINED;
+      if (passes != Boolean.FALSE)
+        surviving.add(new Joined(row, nulled));
     }
 
     // Window functions are the one thing that cannot be computed a row at a time: row_number() is defined by
     // the other rows of its partition. They are computed here, over the rows that survived the filter.
-    final Map<PostgresCatalogExpression.WindowCall, Object[]> windows = computeWindows(projection, surviving, from,
-        context);
+    final Map<PostgresCatalogExpression.WindowCall, Object[]> windows = computeWindows(projection.items, surviving,
+        from, context, outer);
     if (windows == null)
       return DECLINED;
 
-    final List<Map<String, Object>> answered = new ArrayList<>(surviving.size());
-    for (int i = 0; i < surviving.size(); i++) {
-      final RowResolver resolver = new RowResolver(surviving.get(i), from, context, windows, i);
-
-      final Map<String, Object> projected = new LinkedHashMap<>(projection.size());
-      for (final ProjectionItem item : projection) {
-        final Object value = item.expression.evaluate(resolver);
-        if (value == PostgresCatalogExpression.UNKNOWN)
+    final List<Map<String, Object>> answered;
+    if (projection.aggregated || statement.groupBy != null) {
+      if (!windows.isEmpty())
+        return DECLINED;
+      answered = aggregate(statement, projection, surviving, from, context, columnsByRelation, outer);
+      if (answered == null)
+        return DECLINED;
+    } else {
+      answered = new ArrayList<>(surviving.size());
+      for (int i = 0; i < surviving.size(); i++) {
+        final Joined joined = surviving.get(i);
+        final Map<String, Object> projected = projectRow(projection,
+            new RowResolver(joined.row(), joined.nulled(), from, context, outer).withWindows(windows, i));
+        if (projected == null)
           // A projected column this catalog cannot compute: answering the rest of the row would be answering
           // a different question from the one asked.
           return DECLINED;
-        projected.put(item.alias, value);
+        answered.add(projected);
       }
 
-      answered.add(projected);
-    }
-
-    // With no rows to project - an empty database, or a filter that matched nothing - the projection was
-    // never evaluated, so a column this catalog cannot produce would go unnoticed and the client would be
-    // told the query succeeded. Evaluate it once against an all-null row of the same shape to find out.
-    if (answered.isEmpty()) {
-      final RowResolver probe = new RowResolver(probeRow(from, columnsByRelation), from, context, windows, 0);
-      for (final ProjectionItem item : projection)
-        if (item.expression.evaluate(probe) == PostgresCatalogExpression.UNKNOWN)
-          return DECLINED;
+      // With no rows to project - an empty database, or a filter that matched nothing - the projection was
+      // never evaluated, so a column this catalog cannot produce would go unnoticed and the client would be
+      // told the query succeeded. Evaluate it once against an all-null row of the same shape to find out.
+      if (answered.isEmpty() && projectRow(projection,
+          new RowResolver(probeRow(from, columnsByRelation), null, from, context, outer).withWindows(windows, 0)) == null)
+        return DECLINED;
     }
 
     List<Map<String, Object>> result = answered;
 
     if (statement.distinct) {
       final List<Map<String, Object>> distinct = new ArrayList<>(result.size());
-      final Set<List<Object>> seen = new LinkedHashSet<>();
+      final Set<List<Object>> seen = new HashSet<>();
       for (final Map<String, Object> row : result)
-        if (seen.add(new ArrayList<>(row.values())))
+        if (seen.add(distinctKey(new ArrayList<>(row.values()))))
           distinct.add(row);
       result = distinct;
     }
@@ -1225,7 +1850,175 @@ public class PostgresCatalog {
     if (statement.limit != null && result.size() > statement.limit)
       result = new ArrayList<>(result.subList(0, statement.limit));
 
-    return new Answer(columnsOf(projection, result), result, !toleratesUnreadableFilter);
+    return new Answer(columnsOf(projection.keys(), result), result, !toleratesUnreadableFilter);
+  }
+
+  /** The projected row, or null when one of its columns cannot be computed. */
+  private static Map<String, Object> projectRow(final Projection projection, final RowResolver resolver) {
+    final Map<String, Object> projected = new LinkedHashMap<>(projection.items.size());
+    for (final ProjectionItem item : projection.items) {
+      final Object value = item.expression.evaluate(resolver);
+      if (value == PostgresCatalogExpression.UNKNOWN)
+        return null;
+      projected.put(item.alias, value);
+    }
+    return projected;
+  }
+
+  /**
+   * Whether a row passes every filter: FALSE as soon as one is false or NULL - NULL AND anything is never TRUE -
+   * otherwise UNKNOWN when one could not be evaluated, otherwise TRUE.
+   */
+  private static Object passes(final List<PostgresCatalogExpression> filters, final RowResolver resolver) {
+    boolean unknown = false;
+    for (final PostgresCatalogExpression filter : filters) {
+      final Object value = filter.evaluate(resolver);
+      if (value == PostgresCatalogExpression.UNKNOWN)
+        unknown = true;
+      else if (!PostgresCatalogExpression.isTrue(value))
+        return Boolean.FALSE;
+    }
+    return unknown ? PostgresCatalogExpression.UNKNOWN : Boolean.TRUE;
+  }
+
+  /**
+   * Parses a condition into its top-level conjuncts and adds the readable ones to {@code into}.
+   *
+   * @return false when a conjunct cannot be read and the rows do not tolerate an unreadable filter
+   */
+  private static boolean readConjuncts(final List<PostgresCatalogToken> tokens,
+      final List<PostgresCatalogExpression> into, final boolean toleratesUnreadableFilter) {
+    if (tokens == null)
+      return true;
+    for (final List<PostgresCatalogToken> conjunct : splitConjuncts(tokens)) {
+      final PostgresCatalogExpression expression = PostgresCatalogExpression.parse(conjunct);
+      if (expression != null)
+        into.add(expression);
+      else if (!toleratesUnreadableFilter)
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Splits a condition at its top-level ANDs: not inside parentheses or a CASE, and not BETWEEN's own AND. A
+   * condition with a top-level OR is one conjunct, because AND binds tighter and splitting it would regroup it.
+   */
+  private static List<List<PostgresCatalogToken>> splitConjuncts(final List<PostgresCatalogToken> tokens) {
+    final List<Integer> ands = new ArrayList<>();
+    int depth = 0;
+    int cases = 0;
+    int betweens = 0;
+    for (int i = 0; i < tokens.size(); i++) {
+      final PostgresCatalogToken token = tokens.get(i);
+      if (token.isSymbol("(") || token.isSymbol("["))
+        ++depth;
+      else if (token.isSymbol(")") || token.isSymbol("]"))
+        --depth;
+      else if (depth == 0) {
+        if (token.isKeyword("CASE"))
+          ++cases;
+        else if (token.isKeyword("END"))
+          --cases;
+        else if (cases == 0 && token.isKeyword("BETWEEN"))
+          ++betweens;
+        else if (cases == 0 && token.isKeyword("OR"))
+          return List.of(tokens);
+        else if (cases == 0 && token.isKeyword("AND")) {
+          if (betweens > 0)
+            --betweens;
+          else
+            ands.add(i);
+        }
+      }
+    }
+
+    if (ands.isEmpty())
+      return List.of(tokens);
+
+    final List<List<PostgresCatalogToken>> conjuncts = new ArrayList<>(ands.size() + 1);
+    int start = 0;
+    for (final int and : ands) {
+      conjuncts.add(tokens.subList(start, and));
+      start = and + 1;
+    }
+    conjuncts.add(tokens.subList(start, tokens.size()));
+    return conjuncts;
+  }
+
+  /**
+   * Projects an aggregated query: one row per group of GROUP BY, or one row over every row without one - which
+   * is a row even when there is nothing to aggregate, {@code count(*)} being 0 then (issue #10228).
+   *
+   * @return the rows, or null when a group key or a projected column cannot be computed
+   */
+  private static List<Map<String, Object>> aggregate(final Statement statement, final Projection projection,
+      final List<Joined> surviving, final List<FromEntry> from, final Context context,
+      final Map<String, Collection<String>> columnsByRelation, final RowResolver outer) {
+    final Map<List<Object>, List<Joined>> groups = new LinkedHashMap<>();
+
+    if (statement.groupBy == null)
+      groups.put(List.of(), surviving);
+    else {
+      final List<PostgresCatalogExpression> keys = groupKeys(statement.groupBy, projection);
+      if (keys == null)
+        return null;
+      for (final Joined joined : surviving) {
+        final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
+        final List<Object> key = new ArrayList<>(keys.size());
+        for (final PostgresCatalogExpression expression : keys) {
+          final Object value = expression.evaluate(resolver);
+          if (value == PostgresCatalogExpression.UNKNOWN)
+            return null;
+          key.add(value);
+        }
+        groups.computeIfAbsent(distinctKey(key), k -> new ArrayList<>()).add(joined);
+      }
+    }
+
+    final List<Map<String, Object>> answered = new ArrayList<>(groups.size());
+    for (final List<Joined> group : groups.values()) {
+      // A column outside the aggregates is read off the group's first row, which is the value every row of the
+      // group shares when the column is grouped by.
+      final Joined first = group.isEmpty() ? new Joined(probeRow(from, columnsByRelation), null) : group.get(0);
+      final Map<String, Object> projected = projectRow(projection,
+          new RowResolver(first.row(), first.nulled(), from, context, outer).withGroup(group));
+      if (projected == null)
+        return null;
+      answered.add(projected);
+    }
+    return answered;
+  }
+
+  /** GROUP BY's keys: expressions, or ordinals naming a projected column. */
+  private static List<PostgresCatalogExpression> groupKeys(final List<PostgresCatalogToken> groupBy,
+      final Projection projection) {
+    final List<List<PostgresCatalogToken>> items = splitTopLevel(groupBy);
+    if (items == null)
+      return null;
+
+    final List<PostgresCatalogExpression> keys = new ArrayList<>(items.size());
+    for (final List<PostgresCatalogToken> item : items) {
+      if (item.size() == 1 && item.get(0).type == PostgresCatalogToken.Type.NUMBER) {
+        final int ordinal;
+        try {
+          ordinal = Integer.parseInt(item.get(0).text);
+        } catch (final NumberFormatException e) {
+          return null;
+        }
+        if (ordinal < 1 || ordinal > projection.items.size())
+          return null;
+        keys.add(projection.items.get(ordinal - 1).expression);
+        continue;
+      }
+
+      final PostgresCatalogExpression.Parser parser = PostgresCatalogExpression.parser(item);
+      final PostgresCatalogExpression key = parser.parseExpression();
+      if (key == null || !parser.atEnd() || parser.isAggregated())
+        return null;
+      keys.add(key);
+    }
+    return keys;
   }
 
   /** An all-null row carrying every column the query's relations have, used to validate a projection. */
@@ -1248,8 +2041,8 @@ public class PostgresCatalog {
    * does not know - in which case the query is declined rather than answered with a number that looks right
    */
   private static Map<PostgresCatalogExpression.WindowCall, Object[]> computeWindows(
-      final List<ProjectionItem> projection, final List<Row> rows, final List<FromEntry> from,
-      final Context context) {
+      final List<ProjectionItem> projection, final List<Joined> rows, final List<FromEntry> from,
+      final Context context, final RowResolver outer) {
     Map<PostgresCatalogExpression.WindowCall, Object[]> windows = null;
 
     for (final ProjectionItem item : projection) {
@@ -1263,7 +2056,7 @@ public class PostgresCatalog {
       final Map<List<Object>, List<Integer>> partitions = new LinkedHashMap<>();
 
       for (int i = 0; i < rows.size(); i++) {
-        final RowResolver resolver = new RowResolver(rows.get(i), from, context, null, i);
+        final RowResolver resolver = new RowResolver(rows.get(i).row(), rows.get(i).nulled(), from, context, outer);
         final List<Object> key = new ArrayList<>(call.partitionBy.size());
         for (final PostgresCatalogExpression expression : call.partitionBy) {
           final Object value = expression.evaluate(resolver);
@@ -1278,7 +2071,8 @@ public class PostgresCatalog {
         if (!call.orderBy.isEmpty()) {
           final Map<Integer, List<Object>> keys = new LinkedHashMap<>();
           for (final Integer index : partition) {
-            final RowResolver resolver = new RowResolver(rows.get(index), from, context, null, index);
+            final RowResolver resolver = new RowResolver(rows.get(index).row(), rows.get(index).nulled(), from, context,
+                outer);
             final List<Object> key = new ArrayList<>(call.orderBy.size());
             for (final PostgresCatalogExpression expression : call.orderBy)
               key.add(expression.evaluate(resolver));
@@ -1315,23 +2109,24 @@ public class PostgresCatalog {
    * types a column from a sample row; a column that is null in every row is a varchar, which is what an
    * all-null column has always been announced as.
    */
-  private static LinkedHashMap<String, PostgresType> columnsOf(final List<ProjectionItem> projection,
+  private static LinkedHashMap<String, PostgresType> columnsOf(final Collection<String> keys,
       final List<Map<String, Object>> rows) {
-    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(projection.size());
-    for (final ProjectionItem item : projection) {
+    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(keys.size());
+    for (final String key : keys) {
       PostgresType type = PostgresType.VARCHAR;
       for (final Map<String, Object> row : rows) {
-        final Object value = row.get(item.alias);
+        final Object value = row.get(key);
         if (value != null) {
           final PostgresType sampled = PostgresType.getTypeForValue(value);
           type = sampled.isArrayType() || sampled.isNativeScalarType() ? sampled : PostgresType.VARCHAR;
           break;
         }
       }
-      columns.put(item.alias, type);
+      columns.put(key, type);
     }
     return columns;
   }
+
 
   /**
    * Sorts the projected rows. ORDER BY items may name a projected alias, an ordinal position or a source
@@ -1419,7 +2214,7 @@ public class PostgresCatalog {
     return String.valueOf(left).compareTo(String.valueOf(right));
   }
 
-  /** One projected expression and the name its column must be announced under. */
+  /** One projected expression and the key its column is carried under, see {@link #announcedName}. */
   private static class ProjectionItem {
     final PostgresCatalogExpression expression;
     final String                    alias;
@@ -1430,13 +2225,25 @@ public class PostgresCatalog {
     }
   }
 
-  private static List<ProjectionItem> parseProjection(final List<PostgresCatalogToken> tokens,
-      final List<FromEntry> from, final Map<String, Collection<String>> columnsByRelation) {
+  /** A parsed projection, and whether it aggregates - which turns the rows it is evaluated over into groups. */
+  private record Projection(List<ProjectionItem> items, boolean aggregated) {
+    List<String> keys() {
+      final List<String> keys = new ArrayList<>(items.size());
+      for (final ProjectionItem item : items)
+        keys.add(item.alias);
+      return keys;
+    }
+  }
+
+  private static Projection parseProjection(final List<PostgresCatalogToken> tokens, final List<FromEntry> from,
+      final Map<String, Collection<String>> columnsByRelation) {
     final List<List<PostgresCatalogToken>> items = splitTopLevel(tokens);
     if (items == null || items.isEmpty())
       return null;
 
     final List<ProjectionItem> projection = new ArrayList<>(items.size());
+    final Set<String> keys = new HashSet<>();
+    boolean aggregated = false;
 
     for (final List<PostgresCatalogToken> item : items) {
       if (item.isEmpty())
@@ -1446,7 +2253,8 @@ public class PostgresCatalog {
       if (item.size() == 1 && item.get(0).isSymbol("*")) {
         for (final FromEntry entry : from)
           for (final String column : columnsByRelation.getOrDefault(entry.relation, List.of()))
-            projection.add(new ProjectionItem(new PostgresCatalogExpression.ColumnReference(entry.alias, column), column));
+            projection.add(new ProjectionItem(new PostgresCatalogExpression.ColumnReference(entry.alias, column),
+                uniqueColumnKey(announcedName(column), keys)));
         continue;
       }
       if (item.size() == 3 && item.get(1).isSymbol(".") && item.get(2).isSymbol("*")) {
@@ -1455,7 +2263,8 @@ public class PostgresCatalog {
         if (entry == null)
           return null;
         for (final String column : columnsByRelation.getOrDefault(entry.relation, List.of()))
-          projection.add(new ProjectionItem(new PostgresCatalogExpression.ColumnReference(qualifier, column), column));
+          projection.add(new ProjectionItem(new PostgresCatalogExpression.ColumnReference(qualifier, column),
+              uniqueColumnKey(announcedName(column), keys)));
         continue;
       }
 
@@ -1463,6 +2272,7 @@ public class PostgresCatalog {
       final PostgresCatalogExpression expression = parser.parseExpression();
       if (expression == null)
         return null;
+      aggregated |= parser.isAggregated();
 
       String alias = null;
       if (!parser.atEnd()) {
@@ -1488,10 +2298,10 @@ public class PostgresCatalog {
       if (alias == null)
         alias = defaultAlias(expression);
 
-      projection.add(new ProjectionItem(expression, alias));
+      projection.add(new ProjectionItem(expression, uniqueColumnKey(alias, keys)));
     }
 
-    return projection;
+    return new Projection(projection, aggregated);
   }
 
   private static String defaultAlias(final PostgresCatalogExpression expression) {
@@ -1502,17 +2312,33 @@ public class PostgresCatalog {
     if (expression instanceof PostgresCatalogExpression.WindowCall call)
       // PostgreSQL names an un-aliased window column after its function, exactly as it does a plain call.
       return call.name;
+    if (expression instanceof PostgresCatalogExpression.AggregateCall call)
+      return call.name;
+    if (expression instanceof PostgresCatalogExpression.Subquery subquery)
+      return switch (subquery.kind) {
+        case EXISTS -> "exists";
+        case ARRAY -> "array";
+        case SCALAR -> "?column?";
+      };
     // PostgreSQL's own name for a column it cannot name from the expression.
     return "?column?";
   }
 
   private static FromEntry entryFor(final List<FromEntry> from, final String qualifier) {
-    for (final FromEntry entry : from)
-      if (qualifier.equals(entry.alias) || qualifier.equals(entry.relation)
-          || entry.relation.endsWith("." + qualifier) || (entry.alias == null && entry.relation.equals(qualifier)))
-        return entry;
-    return null;
+    final int index = entryIndex(from, qualifier);
+    return index < 0 ? null : from.get(index);
   }
+
+  private static int entryIndex(final List<FromEntry> from, final String qualifier) {
+    for (int i = 0; i < from.size(); i++) {
+      final FromEntry entry = from.get(i);
+      if (qualifier.equals(entry.alias) || qualifier.equals(entry.relation) || entry.relation.endsWith("." + qualifier)
+          || (entry.alias == null && entry.relation.equals(qualifier)))
+        return i;
+    }
+    return -1;
+  }
+
 
   /** Splits a token list at the commas that are not inside parentheses or brackets. */
   private static List<List<PostgresCatalogToken>> splitTopLevel(final List<PostgresCatalogToken> tokens) {
@@ -1542,21 +2368,42 @@ public class PostgresCatalog {
 
   // ---------------------------------------------------------------- evaluation context
 
-  /** Resolves a query's column references and session functions against one emulated row. */
+  /**
+   * Resolves a query's column references, session functions, aggregates and sub-selects against one emulated
+   * row. A sub-select's resolver has the resolver of the row it is correlated to as its {@code outer}, which is
+   * where a name the sub-select's own relations do not have is looked up (issue #10228).
+   */
   private static class RowResolver implements PostgresCatalogExpression.Resolver {
-    private final Row                                                     row;
-    private final List<FromEntry>                                         from;
-    private final Context                                                 context;
-    private final Map<PostgresCatalogExpression.WindowCall, Object[]>     windows;
-    private final int                                                     rowIndex;
+    private final Row             row;
+    /** Per FROM entry, whether an outer join left it unmatched on this row, so that it reads NULL. */
+    private final boolean[]       nulled;
+    private final List<FromEntry> from;
+    private final Context         context;
+    private final RowResolver     outer;
 
-    RowResolver(final Row row, final List<FromEntry> from, final Context context,
-        final Map<PostgresCatalogExpression.WindowCall, Object[]> windows, final int rowIndex) {
+    private Map<PostgresCatalogExpression.WindowCall, Object[]> windows;
+    private int                                                 rowIndex;
+    /** The rows an aggregate is computed over, null when this resolver is not evaluating a group. */
+    private List<Joined>                                        group;
+
+    RowResolver(final Row row, final boolean[] nulled, final List<FromEntry> from, final Context context,
+        final RowResolver outer) {
       this.row = row;
+      this.nulled = nulled;
       this.from = from;
       this.context = context;
+      this.outer = outer;
+    }
+
+    RowResolver withWindows(final Map<PostgresCatalogExpression.WindowCall, Object[]> windows, final int rowIndex) {
       this.windows = windows;
       this.rowIndex = rowIndex;
+      return this;
+    }
+
+    RowResolver withGroup(final List<Joined> group) {
+      this.group = group;
+      return this;
     }
 
     @Override
@@ -1572,23 +2419,131 @@ public class PostgresCatalog {
     @Override
     public Object column(final String qualifier, final String name) {
       if (qualifier != null) {
-        final FromEntry entry = entryFor(from, qualifier);
-        if (entry == null)
-          return PostgresCatalogExpression.UNKNOWN;
-        final Map<String, Object> columns = row.relations.get(entry.relation);
+        final int index = entryIndex(from, qualifier);
+        if (index < 0)
+          return outer != null ? outer.column(qualifier, name) : PostgresCatalogExpression.UNKNOWN;
+        final Map<String, Object> columns = row.relations.get(from.get(index).relation);
         if (columns == null || !columns.containsKey(name))
           return PostgresCatalogExpression.UNKNOWN;
-        return columns.get(name);
+        return nulled != null && nulled[index] ? null : columns.get(name);
       }
 
       // Unqualified: the first relation in the FROM clause that has such a column, which is how PostgreSQL
-      // resolves it too when only one of them does.
-      for (final FromEntry entry : from) {
-        final Map<String, Object> columns = row.relations.get(entry.relation);
+      // resolves it too when only one of them does - and then the query around a sub-select.
+      for (int i = 0; i < from.size(); i++) {
+        final Map<String, Object> columns = row.relations.get(from.get(i).relation);
         if (columns != null && columns.containsKey(name))
-          return columns.get(name);
+          return nulled != null && nulled[i] ? null : columns.get(name);
       }
-      return PostgresCatalogExpression.UNKNOWN;
+      return outer != null ? outer.column(null, name) : PostgresCatalogExpression.UNKNOWN;
+    }
+
+    @Override
+    public Object subquery(final List<PostgresCatalogToken> tokens, final PostgresCatalogExpression.SubqueryKind kind) {
+      final Answer answer = resolveStatement(tokens, context, this, true);
+      if (answer == null || answer.rows == null)
+        return PostgresCatalogExpression.UNKNOWN;
+
+      if (kind == PostgresCatalogExpression.SubqueryKind.EXISTS)
+        return !answer.rows.isEmpty();
+      if (answer.columns.size() != 1)
+        return PostgresCatalogExpression.UNKNOWN;
+
+      if (kind == PostgresCatalogExpression.SubqueryKind.SCALAR) {
+        if (answer.rows.size() > 1)
+          // PostgreSQL's "more than one row returned by a subquery used as an expression": an error, not a value.
+          return PostgresCatalogExpression.UNKNOWN;
+        return answer.rows.isEmpty() ? null : answer.rows.get(0).values().iterator().next();
+      }
+
+      final List<Object> values = new ArrayList<>(answer.rows.size());
+      for (final Map<String, Object> innerRow : answer.rows)
+        values.add(innerRow.values().iterator().next());
+      return values;
+    }
+
+    @Override
+    public Object aggregate(final PostgresCatalogExpression.AggregateCall call) {
+      if (group == null)
+        return PostgresCatalogExpression.UNKNOWN;
+
+      final List<Object> values = new ArrayList<>(group.size());
+      final Set<List<Object>> seen = call.distinct ? new HashSet<>() : null;
+      for (final Joined joined : group) {
+        if (call.argument == null) {
+          // count(*): every row counts, whatever it holds.
+          values.add(Boolean.TRUE);
+          continue;
+        }
+        final Object value = call.argument.evaluate(new RowResolver(joined.row(), joined.nulled(), from, context, outer));
+        if (value == PostgresCatalogExpression.UNKNOWN)
+          return PostgresCatalogExpression.UNKNOWN;
+        // Aggregates skip NULLs; array_agg is the one that collects them.
+        if (value == null && !"array_agg".equals(call.name))
+          continue;
+        if (seen != null && !seen.add(distinctKey(Collections.singletonList(value))))
+          continue;
+        values.add(value);
+      }
+
+      return switch (call.name) {
+        case "count" -> (long) values.size();
+        case "sum", "avg" -> sum(call.name, values);
+        case "min", "max" -> {
+          Object extreme = null;
+          for (final Object value : values)
+            if (extreme == null || ("min".equals(call.name) ? compareValues(value, extreme) < 0 :
+                compareValues(value, extreme) > 0))
+              extreme = value;
+          yield extreme;
+        }
+        case "bool_and", "every", "bool_or" -> {
+          if (values.isEmpty())
+            yield null;
+          final boolean and = !"bool_or".equals(call.name);
+          for (final Object value : values)
+            if (PostgresCatalogExpression.isTrue(value) != and)
+              yield !and;
+          yield and;
+        }
+        case "string_agg" -> {
+          if (values.isEmpty())
+            yield null;
+          final Object separator = call.extraArguments.get(0).evaluate(this);
+          if (separator == PostgresCatalogExpression.UNKNOWN)
+            yield PostgresCatalogExpression.UNKNOWN;
+          final StringBuilder buffer = new StringBuilder();
+          for (final Object value : values) {
+            if (!buffer.isEmpty() && separator != null)
+              buffer.append(PostgresCatalogExpression.asString(separator));
+            buffer.append(PostgresCatalogExpression.asString(value));
+          }
+          yield buffer.toString();
+        }
+        case "array_agg" -> values.isEmpty() ? null : values;
+        default -> PostgresCatalogExpression.UNKNOWN;
+      };
+    }
+
+    /** {@code sum} and {@code avg}: NULL over no value, integral when every value is, as in PostgreSQL's sum. */
+    private static Object sum(final String name, final List<Object> values) {
+      if (values.isEmpty())
+        return null;
+      long integral = 0;
+      double real = 0;
+      boolean allIntegral = true;
+      for (final Object value : values) {
+        if (!(value instanceof Number number))
+          return PostgresCatalogExpression.UNKNOWN;
+        if (number instanceof Double || number instanceof Float || number instanceof BigDecimal)
+          allIntegral = false;
+        else
+          integral += number.longValue();
+        real += number.doubleValue();
+      }
+      if ("avg".equals(name))
+        return real / values.size();
+      return allIntegral ? (Object) integral : (Object) real;
     }
 
     @Override
@@ -1609,19 +2564,79 @@ public class PostgresCatalog {
         // argument type means.
         case "regclass", "to_regclass" -> regClass(arguments, context);
         case "regtype", "to_regtype" -> regType(arguments);
+        // The one expression this catalog stores is a column default, whose text pg_attrdef.adbin holds
+        // (issue #10228). Anything else - a partition bound, a policy - has no ArcadeDB equivalent, and NULL is
+        // what PostgreSQL answers for an object that has none.
+        case "pg_get_expr" -> arguments.isEmpty() || arguments.get(0) == null
+            || arguments.get(0) == PostgresCatalogExpression.UNKNOWN ? null :
+            PostgresCatalogExpression.asString(arguments.get(0));
+        case "array_to_string" -> arrayToString(arguments);
         // Comments, defaults and ACLs have no ArcadeDB equivalent, and NULL is what PostgreSQL answers for an
         // object that has none.
-        case "obj_description", "col_description", "shobj_description", "pg_get_expr", "pg_get_indexdef",
-            "pg_get_viewdef", "pg_get_constraintdef", "array_to_string" -> null;
+        case "obj_description", "col_description", "shobj_description", "pg_get_indexdef", "pg_get_viewdef",
+            "pg_get_constraintdef" -> null;
         default -> PostgresCatalogExpression.UNKNOWN;
       };
     }
 
+    /**
+     * {@code array_to_string(array, separator)}. An array this catalog cannot compute answers NULL rather than
+     * declining the query, which is what it always answered: psql's {@code \d+} builds the reloptions list with
+     * one out of a sub-select over {@code unnest()}, and a table here has no options to list.
+     */
+    private static Object arrayToString(final List<Object> arguments) {
+      if (arguments.size() < 2 || !(arguments.get(0) instanceof List<?> list) || arguments.get(1) == null
+          || arguments.get(1) == PostgresCatalogExpression.UNKNOWN)
+        return null;
+      final String separator = PostgresCatalogExpression.asString(arguments.get(1));
+      final StringBuilder buffer = new StringBuilder();
+      for (final Object element : list) {
+        if (element == null)
+          continue;
+        if (!buffer.isEmpty())
+          buffer.append(separator);
+        buffer.append(PostgresCatalogExpression.asString(element));
+      }
+      return buffer.toString();
+    }
+
+
+    /**
+     * {@code format_type(oid, typmod)}: the SQL name PostgreSQL prints a type under - {@code integer}, not
+     * {@code int4} - which is what psql's {@code \d} shows in its Type column (issue #10228).
+     */
     private static Object formatType(final List<Object> arguments) {
       if (arguments.isEmpty() || !(arguments.get(0) instanceof Number oid))
         return PostgresCatalogExpression.UNKNOWN;
       final PostgresType type = PostgresType.byCode(oid.intValue());
-      return type == null ? null : type.typeName;
+      if (type == null)
+        return null;
+      // The one name format_type() and regtype disagree on: blank-padded char without a length is "bpchar".
+      if (type == PostgresType.BPCHAR && (arguments.size() < 2 || !(arguments.get(1) instanceof Number typmod)
+          || typmod.intValue() < 0))
+        return type.typeName;
+      return displayName(type);
+    }
+
+    /** The name PostgreSQL prints a type under, which is what {@code regtype} and {@code format_type()} answer. */
+    private static String displayName(final PostgresType type) {
+      if (type.isArrayType()) {
+        final PostgresType element = PostgresType.byCode(type.elementCode);
+        return element == null ? type.typeName : displayName(element) + "[]";
+      }
+      return switch (type) {
+        case SMALLINT -> "smallint";
+        case INTEGER -> "integer";
+        case LONG -> "bigint";
+        case REAL -> "real";
+        case DOUBLE -> "double precision";
+        case CHAR -> "\"char\"";
+        case BOOLEAN -> "boolean";
+        case TIMESTAMP -> "timestamp without time zone";
+        case VARCHAR -> "character varying";
+        case BPCHAR -> "character";
+        default -> type.typeName;
+      };
     }
 
     /**
@@ -1679,13 +2694,13 @@ public class PostgresCatalog {
       if (value == null || value == PostgresCatalogExpression.UNKNOWN)
         return value;
 
-      if (value instanceof Number)
-        return formatType(arguments);
+      if (value instanceof Number oid)
+        return typeNamed(oid.intValue());
 
       final String written = PostgresCatalogExpression.asString(value).trim();
       if (isDigits(written))
         try {
-          return formatType(List.of(Integer.valueOf(written)));
+          return typeNamed(Integer.parseInt(written));
         } catch (final NumberFormatException e) {
           return null;
         }
@@ -1700,6 +2715,11 @@ public class PostgresCatalog {
      * name is left as written rather than folded to lower case, because the fold is undone by
      * {@link Context#typeNamed} anyway and the verbatim spelling is the one that can match exactly.
      */
+    private static String typeNamed(final int oid) {
+      final PostgresType type = PostgresType.byCode(oid);
+      return type == null ? null : displayName(type);
+    }
+
     private static String unqualify(final String written) {
       final StringBuilder current = new StringBuilder(written.length());
       boolean quoted = false;
