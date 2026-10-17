@@ -97,21 +97,7 @@ public class CypherLocalDateTime implements CypherTemporalValue {
       else if (dtVal instanceof CypherDateTime)
         base = ((CypherDateTime) dtVal).getValue().toLocalDateTime();
       if (base != null) {
-        LocalDateTime result = base;
-        if (map.containsKey("year"))
-          result = result.withYear(toInt(map.get("year")));
-        if (map.containsKey("month"))
-          result = result.withMonth(toInt(map.get("month")));
-        if (map.containsKey("day"))
-          result = result.withDayOfMonth(toInt(map.get("day")));
-        if (map.containsKey("hour"))
-          result = result.withHour(toInt(map.get("hour")));
-        if (map.containsKey("minute"))
-          result = result.withMinute(toInt(map.get("minute")));
-        if (map.containsKey("second"))
-          result = result.withSecond(toInt(map.get("second")));
-        result = result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
-        return new CypherLocalDateTime(result);
+        return new CypherLocalDateTime(TemporalUtil.withFieldOverrides(base, map));
       }
     }
 

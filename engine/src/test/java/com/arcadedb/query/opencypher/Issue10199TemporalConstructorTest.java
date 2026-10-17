@@ -65,6 +65,15 @@ class Issue10199TemporalConstructorTest extends TestHelper {
     assertThat(text("datetime({datetime: datetime('2024-01-01T12:30:45.123456789Z'), second: 1})")).isEqualTo("2024-01-01T12:30:01.123456789Z");
   }
 
+  /** The date fields are resolved together: applied one at a time, February 29 clamped to the 28th before the month moved. */
+  @Test
+  void dateFieldOverridesAreResolvedTogether() {
+    assertThat(text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00Z");
+    assertThat(text("localdatetime({datetime: localdatetime('2024-02-29T12:00'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00");
+    assertThat(text("datetime({epochSeconds: 1709208000, year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00Z");
+    assertThatThrownBy(() -> text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023})")).isNotNull();
+  }
+
   @Test
   void truncateStillKeepsTheUnitsItDidNotTruncate() {
     assertThat(text("localtime.truncate('second', localtime('12:30:45.123456789'), {nanosecond: 5})")).isEqualTo("12:30:45.000000005");

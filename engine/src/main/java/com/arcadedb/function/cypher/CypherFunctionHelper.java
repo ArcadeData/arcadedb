@@ -444,7 +444,8 @@ public final class CypherFunctionHelper {
    * DATE(2) < TIME(3) < LOCAL TIME(4) < DURATION(5), all of them after PATH and before STRING, as Neo4j orders them. Values of
    * two different temporal types are ordered by this rank and never by their content: comparing them used to throw
    * "Cannot compare DateTime with CypherDate" out of ORDER BY (issue #10200). A native {@code java.time} or
-   * {@code java.util.Date} value ranks as the Cypher type it is read as; -1 for any other value.
+   * {@code java.util.Date} value, or a {@code java.time.Duration} / {@code Period} parameter, ranks as the Cypher type it is
+   * read as; -1 for any other value.
    */
   public static int temporalTypeRank(final Object value) {
     return switch (value) {
@@ -454,6 +455,8 @@ public final class CypherFunctionHelper {
       case CypherTime ignored -> 3;
       case CypherLocalTime ignored -> 4;
       case CypherDuration ignored -> 5;
+      case Duration ignored -> 5;
+      case Period ignored -> 5;
       case null, default -> TemporalUtil.isNativeTemporal(value) && TemporalUtil.fromCoreJavaType(value) instanceof CypherTemporalValue t ?
           temporalTypeRank(t) :
           -1;

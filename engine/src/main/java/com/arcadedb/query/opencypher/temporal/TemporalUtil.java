@@ -324,6 +324,29 @@ public final class TemporalUtil {
   }
 
   /**
+   * {@code base} with the date and time fields {@code map} gives in place of its own, all resolved together: applied one at
+   * a time, {@code withYear(2023)} on February 29 clamped the day to the 28th before {@code withMonth(3)} saw it, so
+   * {@code {year: 2023, month: 3}} answered March 28 instead of March 29. A millisecond, microsecond or nanosecond
+   * replaces the whole fraction of second (see {@link #computeNanos(Map, int)}).
+   */
+  public static LocalDateTime withFieldOverrides(final LocalDateTime base, final Map<String, Object> map) {
+    final Object year = map.get("year");
+    final Object month = map.get("month");
+    final Object day = map.get("day");
+    final Object hour = map.get("hour");
+    final Object minute = map.get("minute");
+    final Object second = map.get("second");
+    final LocalDate date = year == null && month == null && day == null ?
+        base.toLocalDate() :
+        LocalDate.of(year != null ? toIntField("year", year) : base.getYear(), month != null ? toIntField("month", month) : base.getMonthValue(),
+            day != null ? toIntField("day", day) : base.getDayOfMonth());
+    final LocalTime time = LocalTime.of(hour != null ? toIntField("hour", hour) : base.getHour(),
+        minute != null ? toIntField("minute", minute) : base.getMinute(), second != null ? toIntField("second", second) : base.getSecond(),
+        computeNanos(map, base.getNano()));
+    return LocalDateTime.of(date, time);
+  }
+
+  /**
    * The fraction of second of a temporal CONSTRUCTED from a map, which may name a base value ({@code time:},
    * {@code datetime:}) to take the fields it does not give from: the map's millisecond, microsecond and nanosecond
    * fields, when it has any, are the whole fraction, and the base's is {@code defaultNanos}, kept only when it has none.
@@ -535,6 +558,11 @@ public final class TemporalUtil {
     // A supported arcadedb.dateTimeImplementation / dateImplementation: an instant like java.util.Date (issue #9647)
     if (value instanceof Calendar calendar)
       return new CypherDateTime(calendar.toInstant().atZone(ZoneOffset.UTC));
+    // A duration a driver or the Java API binds as a parameter
+    if (value instanceof Duration duration)
+      return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
+    if (value instanceof Period period)
+      return new CypherDuration(period.toTotalMonths(), period.getDays(), 0, 0);
 
     return value;
   }

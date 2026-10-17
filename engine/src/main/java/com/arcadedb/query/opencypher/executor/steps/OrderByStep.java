@@ -416,6 +416,11 @@ public class OrderByStep extends AbstractExecutionStep {
         if (rank1 != rank2)
           return Integer.compare(rank1, rank2);
 
+        // One temporal type, one side a native java.time / java.util.Date value: compared as Cypher values, as min() and max()
+        // compare them, rather than through a Comparable that cannot take the other class
+        if (CypherFunctionHelper.isTemporalTypeRank(rank1))
+          return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(v1)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(v2));
+
         // Same rank, try Comparable
         if (v1 instanceof Comparable && v2 instanceof Comparable) {
           try {

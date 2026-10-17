@@ -26,13 +26,16 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetTime;
+import java.time.Period;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -182,6 +185,27 @@ class Issue10200TemporalComparisonTest extends TestHelper {
     // One temporal type still orders by value
     assertThat(sorted("datetime('2024-01-01T12:00+01:00'), datetime('2024-01-01T11:00Z')"))
         .containsExactly("2024-01-01T11:00Z", "2024-01-01T12:00+01:00");
+  }
+
+  /** A native java.time / java.util.Date parameter orders by value among Cypher temporals of its type. */
+  @Test
+  void aNativeTemporalParameterOrdersByValue() {
+    assertThat(sortedNames(Map.of("p", Duration.ofHours(25)), "[$p, 'param'], [duration('P1D'), 'literal']")).containsExactly("literal", "param");
+    assertThat(sortedNames(Map.of("p", Duration.ofHours(23)), "[$p, 'param'], [duration('P1D'), 'literal']")).containsExactly("param", "literal");
+    assertThat(sortedNames(Map.of("p", Period.ofMonths(1)), "[$p, 'param'], [duration('P31D'), 'literal']")).containsExactly("param", "literal");
+    final Date noon = Date.from(ZonedDateTime.of(2024, 1, 1, 12, 0, 0, 0, ZoneOffset.UTC).toInstant());
+    assertThat(sortedNames(Map.of("p", noon), "[$p, 'param'], [datetime('2024-01-01T11:00Z'), 'literal']")).containsExactly("literal", "param");
+    assertThat(sortedNames(Map.of("p", noon), "[$p, 'param'], [datetime('2024-01-01T13:00Z'), 'literal']")).containsExactly("param", "literal");
+  }
+
+  private List<String> sortedNames(final Map<String, Object> parameters, final String pairs) {
+    final List<String> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "UNWIND [" + pairs + "] AS pair WITH pair[0] AS x, pair[1] AS name RETURN name ORDER BY x", parameters)) {
+      while (rs.hasNext())
+        out.add(rs.next().getProperty("name"));
+    }
+    return out;
   }
 
   @Test

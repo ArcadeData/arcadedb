@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.temporal;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -251,25 +252,12 @@ public class CypherDateTime implements CypherTemporalValue {
   }
 
   /**
-   * {@code base} with the fields {@code map} gives in place of its own, keeping its zone. A millisecond, microsecond or
-   * nanosecond replaces the whole fraction of second (see {@link TemporalUtil#computeNanos(Map, int)}): they used to be
-   * ignored altogether on a {@code datetime:} base (issue #10199).
+   * {@code base} with the fields {@code map} gives in place of its own, resolved together (see
+   * {@link TemporalUtil#withFieldOverrides(LocalDateTime, Map)}), in its zone and keeping its offset where the local time
+   * allows two.
    */
   private static ZonedDateTime withFieldOverrides(final ZonedDateTime base, final Map<String, Object> map) {
-    ZonedDateTime result = base;
-    if (map.containsKey("year"))
-      result = result.withYear(toInt(map.get("year")));
-    if (map.containsKey("month"))
-      result = result.withMonth(toInt(map.get("month")));
-    if (map.containsKey("day"))
-      result = result.withDayOfMonth(toInt(map.get("day")));
-    if (map.containsKey("hour"))
-      result = result.withHour(toInt(map.get("hour")));
-    if (map.containsKey("minute"))
-      result = result.withMinute(toInt(map.get("minute")));
-    if (map.containsKey("second"))
-      result = result.withSecond(toInt(map.get("second")));
-    return result.withNano(TemporalUtil.computeNanos(map, result.getNano()));
+    return ZonedDateTime.ofLocal(TemporalUtil.withFieldOverrides(base.toLocalDateTime(), map), base.getZone(), base.getOffset());
   }
 
   public ZonedDateTime getValue() {

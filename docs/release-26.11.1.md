@@ -17,8 +17,9 @@ Cypher now compares temporal values as Neo4j does:
   `DURATION`, all after paths and before strings) instead of failing with "Cannot compare DateTime with CypherDate".
 
 **Who sees a different answer.** A range filter on a duration, `WHERE s.d > duration({days: 2})`, used to compare
-component by component and now keeps no row, with or without an index on the property. Filter on a number instead:
-`WHERE duration.inSeconds(...)`, `s.d.days > 2`. A `DATETIME` property read from the database is the exception to the
+component by component and now keeps no row, with or without an index on the property. Filter on a number instead,
+such as the duration's average length in seconds, `s.d.months * 2629746 + s.d.days * 86400 + s.d.seconds > 172800`, or a
+single component when the durations hold nothing else (`s.d.days > 2` for durations of whole days). A `DATETIME` property read from the database is the exception to the
 second point: ArcadeDB stores it as an instant and it still compares with a zoned `datetime()` literal or parameter by
 instant, so `WHERE e.createdAt > datetime('2024-01-01T00:00Z')` is unchanged. So does a `java.time.LocalDateTime` query
 parameter.
