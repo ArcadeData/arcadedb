@@ -70,6 +70,10 @@ abstract class PostgresCatalogExpression {
   /** Stands for a cast type that is more than a bare name, and so is never one of {@link #LOOKUP_CASTS}. */
   private static final String COMPOUND_CAST_TYPE = "";
 
+  /** The aggregate functions an aggregated catalog query may project. */
+  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
+      "every", "string_agg", "array_agg");
+
   /** Supplies the column values of the row being evaluated, and the session values around it. */
   interface Resolver {
     /**
@@ -123,9 +127,6 @@ abstract class PostgresCatalogExpression {
     ARRAY
   }
 
-  /** The aggregate functions an aggregated catalog query may project. */
-  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
-      "every", "string_agg", "array_agg");
 
   abstract Object evaluate(Resolver resolver);
 
