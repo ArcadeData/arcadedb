@@ -639,8 +639,9 @@ public class PostgresCatalog {
    * e.oid}, where the projected columns describe a different row from the one the filter selects - is
    * answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own shape.
    * <p>
-   * Only aliases the query actually <b>reads through</b> count. An alias that appears solely in a join
-   * condition does not: the JDBC driver's {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a
+   * Only aliases the query actually <b>reads through</b> count, and an inner join's condition is a read: it
+   * filters like the WHERE clause. An alias that appears solely in an outer join's condition does not: the JDBC
+   * driver's {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a
    * second time purely to look up a comment it then never projects, and declining that would take out the
    * column list of every JDBC client.
    *
@@ -650,8 +651,14 @@ public class PostgresCatalog {
   private static boolean[] secondAliasesRead(final Statement statement, final List<FromEntry> from) {
     final boolean[] read = new boolean[from.size()];
 
-    for (final List<PostgresCatalogToken> clause : Arrays.asList(statement.projection, statement.where,
-        statement.groupBy, statement.orderBy)) {
+    final List<List<PostgresCatalogToken>> clauses = new ArrayList<>(Arrays.asList(statement.projection,
+        statement.where, statement.groupBy, statement.orderBy));
+    // An inner join's condition is a filter (see project()), so a name read in it is read as in WHERE.
+    for (final FromEntry entry : from)
+      if (entry.on != null && entry.join != Join.LEFT && entry.join != Join.RIGHT && entry.join != Join.FULL)
+        clauses.add(entry.on);
+
+    for (final List<PostgresCatalogToken> clause : clauses) {
       if (clause == null)
         continue;
 
@@ -756,6 +763,8 @@ public class PostgresCatalog {
         i = 2;
         int depth = 0;
         while (i < tail.size() && !(depth == 0 && tail.get(i).isKeyword("LIMIT"))) {
+          if (depth == 0 && (tail.get(i).isKeyword("OFFSET") || tail.get(i).isKeyword("FETCH")))
+            return false;
           if (tail.get(i).isSymbol("(") || tail.get(i).isSymbol("["))
             ++depth;
           else if (tail.get(i).isSymbol(")") || tail.get(i).isSymbol("]"))

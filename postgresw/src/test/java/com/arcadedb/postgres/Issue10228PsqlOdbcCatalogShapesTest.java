@@ -433,6 +433,21 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(column(answer, "relname")).containsExactly(name);
   }
 
+  /** A second alias read in an inner join's condition would read the first alias's row: declined, not answered wrong. */
+  @Test
+  void aSecondAliasReadOnlyInAnInnerJoinConditionIsDeclined() {
+    assertThat(PostgresCatalog.resolve("select c.relname from pg_class c join pg_class p on p.relname = 'Person'",
+        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /** OFFSET and FETCH after a set operation's ORDER BY are outside the slice: never folded into the sort key. */
+  @Test
+  void anOffsetAfterASetOperationIsNotAnswered() {
+    assertThat(PostgresCatalog.resolve("select 1 as x union select 2 order by 1 offset 1", database, USER)).isNull();
+    assertThat(PostgresCatalog.resolve("select relname from pg_class union select 'x' order by 1 fetch first 1 rows only",
+        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
   @Test
   void anOuterJoinToAParenthesisedJoinOrAnAliasedOneIsDeclined() {
     assertThat(PostgresCatalog.resolve("select c.relname from pg_class c left join (pg_attribute a join pg_type t "
