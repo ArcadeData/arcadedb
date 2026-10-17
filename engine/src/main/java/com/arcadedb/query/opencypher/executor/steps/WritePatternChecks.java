@@ -50,6 +50,7 @@ final class WritePatternChecks {
     final Object bound = row.getProperty(variable);
     if (bound instanceof Vertex vertex)
       return vertex;
+    // A bare RID (or another handle) is resolved to its record; a record that is not a vertex is refused below
     if (bound instanceof Identifiable identifiable && !(bound instanceof Record)) {
       final Record record = identifiable.getRecord();
       if (record instanceof Vertex vertex)
