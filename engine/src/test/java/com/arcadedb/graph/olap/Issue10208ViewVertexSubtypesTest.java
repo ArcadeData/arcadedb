@@ -129,6 +129,32 @@ class Issue10208ViewVertexSubtypesTest {
   }
 
   @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aTypeWithSeveralSuperTypesIsHeldThroughTheListedOne(final GraphAnalyticalView.UpdateMode mode) {
+    // M is a V (through W) and an unlisted Other; Deep is three levels below V
+    database.getSchema().createVertexType("Other");
+    database.getSchema().createVertexType("M").addSuperType("W").addSuperType("Other");
+    database.getSchema().createVertexType("Deep").addSuperType("M");
+    database.transaction(() -> {
+      final MutableVertex m = database.newVertex("M").set("pid", 10).save();
+      final MutableVertex deep = database.newVertex("Deep").set("pid", 11).save();
+      final MutableVertex first = database.select().fromType("V").where().property("pid").eq().value(0).vertices().next()
+          .modify();
+      first.newEdge("E", m);
+      m.newEdge("F", deep);
+      deep.newEdge("E", first);
+    });
+    final GraphAnalyticalView view = createView(mode);
+
+    assertThat(view.getNodeCount()).isEqualTo(8);
+    assertThat(view.coversVertexType("M")).isTrue();
+    assertThat(view.coversVertexType("Deep")).isTrue();
+    assertThat(view.coversVertexType("Other")).isFalse();
+    assertThat(view.coversVertexType(null)).as("Other holds no vertex of its own").isTrue();
+    assertServedByTheViewAndRight();
+  }
+
+  @ParameterizedTest
   @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
   void aViewOverTheSubTypeAloneLeavesTheSuperTypeOut(final GraphAnalyticalView.UpdateMode mode) {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (W) EDGE TYPES (E) UPDATE MODE " + mode);

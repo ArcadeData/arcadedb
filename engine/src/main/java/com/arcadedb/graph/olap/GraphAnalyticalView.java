@@ -370,6 +370,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final ConcurrentLinkedQueue<QueuedDelta> asyncDeltas      = new ConcurrentLinkedQueue<>();
   private final AtomicInteger                     asyncDeltaLag    = new AtomicInteger();
   private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
+  // Set by the first commit that finds the queue full, cleared by the merge task that drops the queue for a rebuild
+  private final AtomicBoolean                     asyncQueueOverflowed = new AtomicBoolean();
   // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
   // compaction swap or a build publication never waits behind a long backlog
   private static final int                        ASYNC_MERGE_BATCH = 64;
@@ -3717,25 +3719,32 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // Counted before it is queued: from here on the view reports STALE, so the committing thread's next query does not
     // read a snapshot without its own change, unless the view is allowed to serve stale (issue #10189)
     if (asyncDeltaLag.incrementAndGet() > maxQueuedAsyncDeltas) {
+      // The merge cannot keep up: this change is left to the rebuild the merge task starts, whose scan reads it. Never
+      // waits for the monitor, which the merge holds; the full queue keeps the view STALE meanwhile
       asyncDeltaLag.decrementAndGet();
-      onAsyncDeltaQueueOverflow();
+      if (asyncQueueOverflowed.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, maxQueuedAsyncDeltas);
+      scheduleAsyncMerge();
       return;
     }
-    // Read after onCommittedDelta() read the build watch, so a build whose watch was not open then is counted only if it
-    // publishes later: its scan started after this commit, and holds it
-    asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst, baseReplacements));
+    try {
+      // Read after onCommittedDelta() read the build watch, so a build whose watch was not open then is counted only if it
+      // publishes later: its scan started after this commit, and holds it
+      asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst, baseReplacements));
+    } catch (final RuntimeException | Error e) {
+      asyncDeltaLag.decrementAndGet();
+      throw e;
+    }
     scheduleAsyncMerge();
   }
 
   /**
-   * More committed changes are waiting than {@link #MAX_PENDING_DELTAS}: the merge cannot keep up, and holding them all
-   * would grow without bound. They are dropped for a rebuild, which reads them from the graph, as a build watch that
-   * overflows does; the view is STALE meanwhile. Reached only when the merge falls a whole queue behind the commits, so
-   * it costs one warning and one rebuild per queue-full.
+   * More committed changes were waiting than the queue holds (see {@link #MAX_PENDING_DELTAS}): holding them all would grow
+   * without bound. They are dropped for a rebuild, which reads them from the graph, as a build watch that overflows does.
+   * Run by the merge task under this instance's monitor, once per queue-full however many commits found it full.
    */
-  private synchronized void onAsyncDeltaQueueOverflow() {
-    LogManager.instance().log(this, Level.WARNING,
-        "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, maxQueuedAsyncDeltas);
+  private void rebuildForOverflowedQueue() {
     discardQueuedAsyncDeltas();
     followUpRebuildPending = true;
     status = Status.STALE;
@@ -3781,7 +3790,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     mergeQueuedAsyncDeltas(Integer.MAX_VALUE);
   }
 
-
   /**
    * Merges up to {@code max} queued deltas into the overlay, in the order they were queued, exactly as the SYNCHRONOUS
    * callback merges one (issue #10189), and wakes the callers of {@link #awaitReady} once none is left. A delta that cannot
@@ -3791,6 +3799,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @return whether deltas are left in the queue
    */
   private synchronized boolean mergeQueuedAsyncDeltas(final int max) {
+    if (asyncQueueOverflowed.getAndSet(false)) {
+      rebuildForOverflowedQueue();
+      return false;
+    }
     boolean failed = false;
     QueuedDelta queued;
     for (int merged = 0; merged < max && (queued = asyncDeltas.poll()) != null; ++merged) {

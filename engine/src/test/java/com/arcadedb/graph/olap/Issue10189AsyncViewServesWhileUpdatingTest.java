@@ -242,7 +242,40 @@ class Issue10189AsyncViewServesWhileUpdatingTest {
     synchronized (view) {
       for (int i = 0; i < 3; i++)
         addEdge(i, (i + 9) % VERTICES);
-      assertThat(view.getStatus()).as("the queue was dropped for a rebuild").isEqualTo(GraphAnalyticalView.Status.BUILDING);
+      assertThat(view.isStale()).as("the full queue keeps the view stale until the merge task drops it").isTrue();
+    }
+
+    final long expected = countOnRecords();
+    Awaitility.await("the rebuilt view answers").atMost(30, TimeUnit.SECONDS).ignoreExceptionsInstanceOf(NeedRetryException.class)
+        .until(() -> view.awaitReady(1, TimeUnit.SECONDS) && plan().contains("GAV") && count() == expected);
+  }
+
+  @Test
+  void concurrentCommitsOverflowingTheQueueRebuildOnce() throws Exception {
+    final GraphAnalyticalView view = createView();
+    view.setMaxQueuedAsyncDeltasForTest(3);
+
+    final ExecutorService pool = Executors.newFixedThreadPool(4);
+    try {
+      // the merge waits on the view's monitor while 4 threads commit 40 changes: the queue overflows many times over
+      synchronized (view) {
+        final List<Future<?>> futures = new ArrayList<>();
+        for (int t = 0; t < 4; t++) {
+          final int offset = t;
+          futures.add(pool.submit(() -> {
+            for (int i = 0; i < 10; i++) {
+              final int from = (offset * 10 + i) % VERTICES;
+              database.transaction(() -> rids[from].asVertex().modify().newEdge("K", rids[(from + 7) % VERTICES].asVertex()),
+                  false, 10);
+            }
+          }));
+        }
+        for (final Future<?> future : futures)
+          future.get(60, TimeUnit.SECONDS);
+        assertThat(view.isStale()).isTrue();
+      }
+    } finally {
+      pool.shutdownNow();
     }
 
     final long expected = countOnRecords();
