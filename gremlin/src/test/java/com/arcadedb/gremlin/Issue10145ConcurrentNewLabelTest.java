@@ -113,8 +113,11 @@ class Issue10145ConcurrentNewLabelTest {
       });
       threads[t].start();
     }
-    for (final Thread thread : threads)
+    for (final Thread thread : threads) {
       thread.join(TimeUnit.MINUTES.toMillis(2));
+      // A thread still running recorded nothing, and would read as a write that succeeded
+      assertThat(thread.isAlive()).as("a writer still running after its join: hung").isFalse();
+    }
     return failures;
   }
 

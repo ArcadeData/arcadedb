@@ -366,6 +366,25 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
     assertThat(audits("update")).isEqualTo(1);
   }
 
+  @Test
+  void aCypherSetVetoedOnTheVertexThenAnEdgeCreatedOnItKeepsTheEdgeAndNotTheValue() {
+    database.command("sql", "CREATE TRIGGER guard BEFORE UPDATE ON TYPE P EXECUTE JAVASCRIPT 'record.get(\"x\") >= 0'");
+    database.transaction(() -> {
+      database.newVertex("P").set("x", 1).save();
+      database.newVertex("S").set("x", 2).save();
+    });
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:P {x: 1}), (b:S {x: 2}) SET a.x = -1 CREATE (a)-[:E]->(b)").close());
+
+    assertThat(count("SELECT count() AS c FROM P WHERE x = -1")).isZero();
+    assertThat(count("SELECT count() AS c FROM E")).isEqualTo(1);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:P {x: 1})-[:E]->(b:S {x: 2}) RETURN count(*) AS c")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1);
+    }
+    // The integrity check of TestHelper.afterTest() reports an edge its vertices do not reach
+  }
+
   private void auditTrigger(final String name, final String timing, final String type, final String tag) {
     database.command("sql",
         "CREATE TRIGGER " + name + " " + timing + " ON TYPE " + type + " EXECUTE SQL 'INSERT INTO Audit SET tag = \"" + tag
