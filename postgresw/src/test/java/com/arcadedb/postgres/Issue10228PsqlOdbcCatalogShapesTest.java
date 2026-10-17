@@ -344,6 +344,12 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         .appendHeader(header, answer.columns.keySet());
 
     assertThat(header.toString()).isEqualTo("?column?,?column?,relkind\n");
+
+    // FORCE_QUOTE names a column the way the client announced it, so a duplicate is forced like its first.
+    final StringBuilder row = new StringBuilder();
+    PostgresCopyStatement.parse("COPY (select 1) TO STDOUT WITH (FORMAT csv, FORCE_QUOTE (\"?column?\"))")
+        .appendRow(row, new String[] { "a", "b", "r" }, answer.columns.keySet().toArray(new String[0]));
+    assertThat(row.toString()).isEqualTo("\"a\",\"b\",r\n");
   }
 
   /** A UNION whose arm reads the user's own type is not this catalog's question: the SQL engine answers it. */

@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -60,6 +61,26 @@ class Issue10228PsqlOdbcCatalogIT extends PostgresWireProtocolTestBase {
         kinds.add(resultSet.getString(3));
       }
       assertThat(kinds).containsExactly("r", "v", "m", "f", "p");
+    }
+  }
+
+  /** Describe on the prepared statement, before it runs: the duplicate names are announced the same way. */
+  @Test
+  void aDescribedStatementAnnouncesDuplicateColumnsByName() throws Exception {
+    try (final Connection connection = openJdbcConnection(); final PreparedStatement statement = connection.prepareStatement(
+        "select NULL, NULL, relkind from (select 'r' as relkind union select 'v') as a")) {
+      final ResultSetMetaData metaData = statement.getMetaData();
+      assertThat(metaData.getColumnCount()).isEqualTo(3);
+      assertThat(metaData.getColumnName(1)).isEqualTo("?column?");
+      assertThat(metaData.getColumnName(2)).isEqualTo("?column?");
+      assertThat(metaData.getColumnName(3)).isEqualTo("relkind");
+
+      final List<String> kinds = new ArrayList<>();
+      try (final ResultSet resultSet = statement.executeQuery()) {
+        while (resultSet.next())
+          kinds.add(resultSet.getString(3));
+      }
+      assertThat(kinds).containsExactly("r", "v");
     }
   }
 

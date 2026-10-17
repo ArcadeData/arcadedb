@@ -3008,7 +3008,7 @@ public class PostgresNetworkExecutor extends Thread {
       final Map<String, PostgresType> columns) {
     return new PostgresCopyStatement.CopyException(
         "a row of this COPY carries column \"" + name + "\", which is not among the columns the stream announced ("
-            + String.join(", ", columns.keySet())
+            + String.join(", ", columns.keySet().stream().map(PostgresCatalog::announcedName).toList())
             + "): this type stores rows of different shapes, and a COPY cannot add a column once its stream has "
             + "started. List the columns to export in the COPY itself - COPY <table> (" + name
             + ", ...) TO STDOUT, or COPY (SELECT " + name + ", ... FROM <table>) TO STDOUT - so its column set is "

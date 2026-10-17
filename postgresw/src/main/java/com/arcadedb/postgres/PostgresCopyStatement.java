@@ -630,7 +630,8 @@ public final class PostgresCopyStatement {
       if (value == null)
         out.append(nullString);
       else if (format == Format.CSV)
-        appendCsvValue(out, value, forceQuoteAll || forceQuoteColumns.contains(columnNames[i]), values.length == 1);
+        appendCsvValue(out, value, forceQuoteAll || forceQuoteColumns.contains(PostgresCatalog.announcedName(columnNames[i])),
+            values.length == 1);
       else
         appendTextValue(out, value);
     }
