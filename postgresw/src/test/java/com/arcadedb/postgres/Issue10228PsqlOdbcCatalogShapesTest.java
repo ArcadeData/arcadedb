@@ -341,6 +341,24 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(PostgresCatalog.resolve("select \"?column?\" from " + types + " a", database, USER)).isNull();
   }
 
+  /**
+   * The key of a second column named alike holds a NUL, which no client-written name can: a wire query is a C string.
+   * A look-alike alias is its own column, and the unnamed ones around it keep theirs.
+   */
+  @Test
+  void aLookAlikeAliasDoesNotCollideWithADuplicateColumnKey() {
+    final PostgresCatalog.Answer answer = resolve(
+        "select NULL, 2 as \"?column?2\", NULL, relname from pg_class where relname = 'Note'");
+
+    assertThat(answer.columns).hasSize(4);
+    final List<String> announced = new ArrayList<>();
+    for (final String key : answer.columns.keySet())
+      announced.add(PostgresCatalog.announcedName(key));
+    assertThat(announced).containsExactly("?column?", "?column?2", "?column?", "relname");
+    assertThat(column(answer, "?column?2")).containsExactly(2L);
+    assertThat(column(answer, "relname")).containsExactly("Note");
+  }
+
   /** A union of a catalog relation and a literal arm is answered too. */
   @Test
   void aUnionMixingACatalogRelationAndLiterals() {
