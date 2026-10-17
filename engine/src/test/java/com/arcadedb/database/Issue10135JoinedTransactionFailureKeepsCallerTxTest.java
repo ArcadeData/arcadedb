@@ -56,16 +56,17 @@ class Issue10135JoinedTransactionFailureKeepsCallerTxTest extends TestHelper {
 
   static Stream<Arguments> failures() {
     return Stream.of(//
-        Arguments.of("retryable", (Supplier<Throwable>) () -> new ConcurrentModificationException("simulated conflict")),
-        Arguments.of("duplicated key", (Supplier<Throwable>) () -> new DuplicatedKeyException("idx", "k", null)),
-        Arguments.of("plain RuntimeException", (Supplier<Throwable>) () -> new IllegalStateException("boom")),
-        Arguments.of("validation", (Supplier<Throwable>) () -> new ValidationException("invalid")),
-        Arguments.of("Error", (Supplier<Throwable>) () -> new AssertionError("fatal")));
+        Arguments.of("retryable", true, (Supplier<Throwable>) () -> new ConcurrentModificationException("simulated conflict")),
+        Arguments.of("duplicated key", true, (Supplier<Throwable>) () -> new DuplicatedKeyException("idx", "k", null)),
+        Arguments.of("plain RuntimeException", false, (Supplier<Throwable>) () -> new IllegalStateException("boom")),
+        Arguments.of("validation", false, (Supplier<Throwable>) () -> new ValidationException("invalid")),
+        Arguments.of("Error", false, (Supplier<Throwable>) () -> new AssertionError("fatal")));
   }
 
   @ParameterizedTest(name = "{0}")
   @MethodSource("failures")
-  void aJoinedBlockThatThrowsLeavesTheCallersTransactionIntact(final String label, final Supplier<Throwable> failure) {
+  void aJoinedBlockThatThrowsLeavesTheCallersTransactionIntact(final String label, final boolean retryable,
+      final Supplier<Throwable> failure) {
     database.begin();
     try {
       database.newDocument(TYPE).set("k", "outer").save();
@@ -81,8 +82,12 @@ class Issue10135JoinedTransactionFailureKeepsCallerTxTest extends TestHelper {
 
       assertThat(database.isTransactionActive()).as("the caller's transaction must survive a %s", label).isTrue();
       assertThat(database.getNestedTransactions()).isEqualTo(nestedBefore);
-      assertThat(reported.get()).as("the error callback must still be told on the non-retryable arm")
-          .isIn(null, expected);
+      if (retryable)
+        assertThat(reported.get()).as("the joined retryable arm hands the failure to the owner without the callback")
+            .isNull();
+      else
+        assertThat(reported.get()).as("the error callback must still be told on the non-retryable arm")
+            .isSameAs(expected);
 
       // THE CALLER CAN KEEP WRITING AND COMMIT ITS OWN WORK
       database.newDocument(TYPE).set("k", "outer2").save();
@@ -177,6 +182,24 @@ class Issue10135JoinedTransactionFailureKeepsCallerTxTest extends TestHelper {
 
     assertThat(database.isTransactionActive()).as("the transaction this call opened must not outlive it").isFalse();
     assertThat(keys()).isEmpty();
+  }
+
+  @Test
+  void aRetriedAttemptStartsFromTheCallersDepthEvenIfTheFailedOneLeftASubTransactionOpen() {
+    final int[] attempts = { 0 };
+
+    database.transaction(() -> {
+      database.newDocument(TYPE).set("k", "owned" + attempts[0]).save();
+      if (attempts[0]++ == 0) {
+        database.begin();
+        throw new ConcurrentModificationException("simulated conflict");
+      }
+      assertThat(database.getNestedTransactions()).as("the retry must not run inside the leaked level").isEqualTo(1);
+    }, false, 3);
+
+    assertThat(attempts[0]).isEqualTo(2);
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(keys()).containsExactly("owned1");
   }
 
   private List<String> keys() {

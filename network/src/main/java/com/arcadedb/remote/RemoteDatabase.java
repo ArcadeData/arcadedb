@@ -350,7 +350,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // #10135: but only when this call OPENED it. A call that joined the caller's transaction owns nothing, and
         // rolling it back here would discard the caller's earlier work and drop its session, so its next request
         // would run outside any transaction. The same ownership rule the retryable arm above applies. Throwable, not
-        // Exception: an Error thrown by a block this call opened must release the server-side transaction too.
+        // Exception: an Error thrown by a block this call opened must release the server-side transaction too. Best
+        // effort for an OutOfMemoryError or StackOverflowError: rollbackQuietly() swallows its own failure.
         if (!callerTxActive) {
           rollbackQuietly();
           setSessionId(null);

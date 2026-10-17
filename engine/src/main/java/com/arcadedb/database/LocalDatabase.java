@@ -2240,6 +2240,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     boolean duplicatedKeyRetried = false;
 
+    // #10135: how many transaction levels belong to the CALLER. On failure only the levels above it are rolled back.
+    // Sampled once: every failed attempt rolls back to exactly this depth, so it is the same before each attempt
+    final boolean callerTxActive = wrappedDatabaseInstance.isTransactionActive();
+    final int callerLevels = callerTxActive ? wrappedDatabaseInstance.getNestedTransactions() : 0;
+
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
@@ -2250,10 +2255,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).
       TransactionContext txAtStart = null;
       long commitCountAtStart = 0;
-
-      // #10135: how many transaction levels belong to the CALLER. On failure only the levels above it are rolled back
-      final boolean callerTxActive = wrappedDatabaseInstance.isTransactionActive();
-      final int callerLevels = callerTxActive ? wrappedDatabaseInstance.getNestedTransactions() : 0;
 
       try {
         if (joinCurrentTx && callerTxActive)
@@ -2290,8 +2291,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // RETRY
         lastException = e;
-        if (wrappedDatabaseInstance.isTransactionActive())
-          wrappedDatabaseInstance.rollback();
+        // Back to the caller's depth, including a level the block began and left open, so the next attempt starts
+        // from the same state as this one (#10135)
+        rollbackLevelsAbove(callerLevels);
 
         if (error != null)
           error.call(e);
@@ -2369,9 +2371,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     int levels;
     while ((levels = activeTransactionLevels()) > levelsToKeep) {
       wrappedDatabaseInstance.rollback();
-      if (activeTransactionLevels() >= levels)
+      if (activeTransactionLevels() >= levels) {
         // NO PROGRESS: STOP INSTEAD OF SPINNING ON A TRANSACTION THAT CANNOT BE ROLLED BACK
+        LogManager.instance().log(this, Level.WARNING,
+            "Rollback of transaction level %d on database '%s' made no progress: leaving %d level(s) active, the caller "
+                + "owns %d", null, levels, name, levels, levelsToKeep);
         break;
+      }
     }
   }
 
