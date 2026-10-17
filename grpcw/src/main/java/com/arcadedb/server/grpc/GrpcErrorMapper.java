@@ -76,6 +76,14 @@ public final class GrpcErrorMapper {
    */
   public static final Metadata.Key<String> ALREADY_EXISTS_KIND_KEY = Metadata.Key.of("arcadedb-already-exists-kind",
       Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Trailer the admin service names a taken user, API token or database name in, with the refusal's class name (issue
+   * #10143), so the client recognises one by what the server says rather than by the class-name trailer it leaves out. Not
+   * {@link #EXCEPTION_CLASS_KEY}: a client that predates this trailer reads only a trailer-less {@code ALREADY_EXISTS} as a
+   * taken name, and must keep doing so.
+   */
+  public static final Metadata.Key<String> NAME_TAKEN_KEY = Metadata.Key.of("arcadedb-name-taken",
+      Metadata.ASCII_STRING_MARSHALLER);
 
   /**
    * The description a CONCEALED failure carries in place of the exception's own message, when the server runs in
