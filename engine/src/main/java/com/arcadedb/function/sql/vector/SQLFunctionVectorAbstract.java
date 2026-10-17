@@ -341,6 +341,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     final RID rid = held.getIdentity();
     if (tx.isDeletedInTransaction(rid))
       return null;
+    // A RID that held a document holds a document: the written copy is never another kind of record
     return tx.getWrittenRecord(rid) instanceof Document written ? written : held;
   }
 

@@ -214,6 +214,14 @@ class Issue10209FullTextByItemUpdateTest extends TestHelper {
     assertThat(found("gamma")).containsExactly(1, 2, 3);
     assertThat(metadata().getTotalDocs()).isEqualTo(3L);
     assertThat(metadata().getSumDocLength()).isEqualTo(6L);
+
+    // Emptied again, then deleted: the delete of a record with an empty list still takes it out of the counters
+    database.transaction(() -> database.command("sql", "UPDATE L SET tags = [] WHERE id = 1"));
+    assertThat(metadata().getSumDocLength()).isEqualTo(4L);
+    database.transaction(() -> database.command("sql", "DELETE FROM L WHERE id = 1"));
+    assertThat(metadata().getTotalDocs()).isEqualTo(2L);
+    assertThat(metadata().getSumDocLength()).isEqualTo(4L);
+    assertThat(found("beta")).containsExactly(2, 3);
   }
 
   /**
