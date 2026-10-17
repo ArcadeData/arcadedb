@@ -273,6 +273,65 @@ function saveAs(blob, filename) {
   }
 }
 
+/**
+ * Copies text to the clipboard and returns a Promise that settles once it is done: resolved on success, rejected when
+ * the browser refused. Every copy button must go through this function (issue #10239).
+ *
+ * The async Clipboard API exists only in a secure context (https, or http on localhost): on a plain-http page served
+ * from any other host navigator.clipboard is undefined. In that case, or when the API rejects, it falls back to
+ * document.execCommand("copy") on a temporary textarea, which works everywhere a click can trigger it.
+ */
+function copyTextToClipboard(text) {
+  const value = text == null ? "" : String(text);
+
+  const legacyCopy = function () {
+    return new Promise(function (resolve, reject) {
+      // inside an open modal the textarea must live in the modal, or Bootstrap's focus trap steals the selection;
+      // with stacked modals the last one open is the one on top
+      const openModals = document.querySelectorAll(".modal.show");
+      const host = openModals.length > 0 ? openModals[openModals.length - 1] : document.body;
+      const previouslyFocused = document.activeElement;
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.setAttribute("readonly", "");
+      // no aria-hidden: the textarea takes focus, and Chrome warns about a focused aria-hidden element
+      area.style.position = "fixed";
+      area.style.fontSize = "16px"; // iOS Safari zooms the page on focusing anything smaller
+      area.style.top = "0";
+      area.style.left = "-9999px";
+      area.style.opacity = "0";
+      host.appendChild(area);
+
+      let copied = false;
+      try {
+        area.focus();
+        area.select();
+        area.setSelectionRange(0, value.length);
+        copied = document.execCommand("copy");
+      } catch (e) {
+        copied = false;
+      }
+
+      host.removeChild(area);
+      if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
+
+      if (copied) resolve();
+      else reject(new Error("Unable to copy to the clipboard"));
+    });
+  };
+
+  // when the async API rejects, legacyCopy() runs a microtask later: that is fine, transient user activation outlasts
+  // it by several seconds, so execCommand("copy") is still honoured. Do not "simplify" it into the same call.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      return navigator.clipboard.writeText(value).catch(legacyCopy);
+    } catch (e) {
+      return legacyCopy();
+    }
+  }
+  return legacyCopy();
+}
+
 function base64ToBlob(base64Image) {
   const parts = base64Image.split(";base64,");
   const imageType = parts[0].split(":")[1];

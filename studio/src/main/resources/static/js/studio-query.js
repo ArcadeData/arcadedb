@@ -124,7 +124,7 @@ function initQuery() {
     e.preventDefault();
     const text = $("#resultJson").val() || $("#resultJson").text();
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       globalNotify("Content", "successfully copied in the clipboard", "success");
     } catch (err) {
       globalNotify("Error", "Failed to copy to clipboard", "danger");

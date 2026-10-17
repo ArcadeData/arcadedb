@@ -798,9 +798,13 @@ function apiTokenTransportRefusal(jqXHR) {
 }
 
 function copyCreatedToken() {
-  navigator.clipboard.writeText($("#createdTokenValue").val()).then(function () {
-    globalNotify("Copied", "Token copied to clipboard", "success");
-  });
+  copyTextToClipboard($("#createdTokenValue").val())
+    .then(function () {
+      globalNotify("Copied", "Token copied to clipboard", "success");
+    })
+    .catch(function () {
+      globalNotify("Error", "Failed to copy to clipboard", "danger");
+    });
 }
 
 function deleteApiToken(tokenHash) {
