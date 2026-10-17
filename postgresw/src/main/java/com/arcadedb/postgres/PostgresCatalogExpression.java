@@ -448,9 +448,16 @@ abstract class PostgresCatalogExpression {
     /**
      * The last regular expression this node compiled. One reference rather than a pattern and its text, so it can
      * never be read half-updated; an expression tree is built per statement and evaluated by the one thread
-     * answering it, so nothing else ever reads it anyway.
+     * answering it, so nothing else ever reads it anyway. Its flags never need checking: they follow from the
+     * operator, which is fixed per node.
      */
     private       Pattern                   compiled;
+    /**
+     * The character reads this node's regular expression has left for the whole statement. One match is bounded
+     * by {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row it is evaluated against,
+     * so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run either.
+     */
+    private       long                      regexBudget = BoundedCharSequence.STATEMENT_BUDGET;
 
     Binary(final String operator, final PostgresCatalogExpression left, final PostgresCatalogExpression right) {
       this.operator = operator;
@@ -528,7 +535,15 @@ abstract class PostgresCatalogExpression {
           regex = Pattern.compile(pattern, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
           compiled = regex;
         }
-        return operator.startsWith("!") != regex.matcher(new BoundedCharSequence(value)).find();
+        if (regexBudget <= 0)
+          return UNKNOWN;
+        final BoundedCharSequence text = new BoundedCharSequence(value,
+            (int) Math.min(BoundedCharSequence.MATCH_BUDGET, regexBudget));
+        try {
+          return operator.startsWith("!") != regex.matcher(text).find();
+        } finally {
+          regexBudget -= text.used();
+        }
       } catch (final PatternSyntaxException e) {
         // A POSIX regex Java cannot compile: not something to guess the answer of.
         return UNKNOWN;
@@ -588,18 +603,27 @@ abstract class PostgresCatalogExpression {
    */
   private static final class BoundedCharSequence implements CharSequence {
     /** Character reads one match may make: some thousand times what any catalog name needs. */
-    private static final int MATCH_BUDGET = 1_000_000;
+    static final int  MATCH_BUDGET     = 1_000_000;
+    /** Character reads one regular-expression predicate may make over all the rows of a statement. */
+    static final long STATEMENT_BUDGET = 5_000_000L;
 
     private final String text;
     private final int[]  budget;
+    private final int    allowance;
 
-    BoundedCharSequence(final String text) {
-      this(text, new int[] { MATCH_BUDGET });
+    BoundedCharSequence(final String text, final int allowance) {
+      this(text, new int[] { allowance }, allowance);
     }
 
-    private BoundedCharSequence(final String text, final int[] budget) {
+    private BoundedCharSequence(final String text, final int[] budget, final int allowance) {
       this.text = text;
       this.budget = budget;
+      this.allowance = allowance;
+    }
+
+    /** The character reads the match made, shared by every sub-sequence the matcher took. */
+    int used() {
+      return allowance - Math.max(budget[0], 0);
     }
 
     @Override
@@ -616,7 +640,7 @@ abstract class PostgresCatalogExpression {
 
     @Override
     public CharSequence subSequence(final int start, final int end) {
-      return new BoundedCharSequence(text.substring(start, end), budget);
+      return new BoundedCharSequence(text.substring(start, end), budget, allowance);
     }
 
     @Override

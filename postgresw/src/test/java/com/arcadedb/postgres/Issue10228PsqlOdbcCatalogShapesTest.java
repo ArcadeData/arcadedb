@@ -448,6 +448,30 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         database, USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
+  /** A join condition with an unreadable conjunct still filters on its readable ones, as a WHERE clause does. */
+  @Test
+  void anUnreadableConjunctInAJoinConditionDoesNotDisableTheReadableOnes() {
+    final PostgresCatalog.Answer answer = resolve("select c.relname from pg_class c join pg_namespace n "
+        + "on n.oid = c.relnamespace and c.relname is distinct from 'x' and c.relname = 'City'");
+
+    assertThat(column(answer, "relname")).containsExactly("City");
+  }
+
+  /** One regular-expression predicate is bounded over all the rows of the statement, not only per row. */
+  @Test
+  void aBacktrackingRegularExpressionIsBoundedAcrossRows() {
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++)
+        database.getSchema().createDocumentType("x".repeat(40) + i);
+    });
+
+    final PostgresCatalog.Answer answer = resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'");
+    // City, Note and Person sort first and are a definite no. The long names exhaust the per-match budget one by
+    // one until the predicate's statement budget is gone, after which they are UNKNOWN without being read: all
+    // twenty are kept by the permissive filter, and the predicate stops reading after five of them.
+    assertThat(column(answer, "relname")).hasSize(20).doesNotContain("City", "Note", "Person");
+  }
+
   @Test
   void anOuterJoinToAParenthesisedJoinOrAnAliasedOneIsDeclined() {
     assertThat(PostgresCatalog.resolve("select c.relname from pg_class c left join (pg_attribute a join pg_type t "
