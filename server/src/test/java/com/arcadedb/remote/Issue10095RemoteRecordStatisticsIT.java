@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10095, the remote half: {@code RemoteDatabase.saveRecord} incremented {@code createRecord} before branching into
@@ -87,6 +88,42 @@ class Issue10095RemoteRecordStatisticsIT extends BaseGraphServerTest {
           // the server refuses the document: the mandatory property is missing
         }
         assertThat(stat(db, "createRecord")).isEqualTo(creates);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  /**
+   * Issue #10141: {@code deleteRecord} counted before its own non-persistent guard and before the server answered, so a
+   * delete the driver rejected locally, or one that matched no record on the server, still moved the counter.
+   */
+  @Test
+  void onlyADeleteTheServerPerformedIsCounted() throws Exception {
+    testEachServer(serverIndex -> {
+      final RemoteDatabase db = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE Doc10141 IF NOT EXISTS");
+
+        final long deletes = stat(db, "deleteRecord");
+
+        final MutableDocument notSaved = db.newDocument("Doc10141");
+        assertThatThrownBy(() -> db.deleteRecord(notSaved)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(stat(db, "deleteRecord")).as("a record that never left the client is not deleted").isEqualTo(deletes);
+
+        final MutableDocument doc = db.newDocument("Doc10141").set("v", 0);
+        doc.save();
+        db.deleteRecord(doc);
+        assertThat(stat(db, "deleteRecord")).as("the server deleted the record").isEqualTo(deletes + 1);
+        assertThat(db.query("sql", "select from Doc10141").hasNext()).isFalse();
+
+        try {
+          db.deleteRecord(doc);
+        } catch (final RuntimeException ignore) {
+          // whether a second delete fails or matches nothing, the server deleted nothing
+        }
+        assertThat(stat(db, "deleteRecord")).as("a delete that matched no record is not counted").isEqualTo(deletes + 1);
       } finally {
         db.close();
       }

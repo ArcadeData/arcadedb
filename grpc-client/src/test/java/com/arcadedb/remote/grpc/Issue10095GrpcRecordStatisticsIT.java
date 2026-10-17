@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10095, the remote half over gRPC: {@code RemoteGrpcDatabase.saveRecord} incremented {@code createRecord} before
@@ -89,6 +90,46 @@ public class Issue10095GrpcRecordStatisticsIT extends BaseGrpcClientServerTest {
 
     grpc.newDocument(DOC_TYPE).set("v", 2);
     assertThat(stat("createRecord")).as("an instance that was not saved is not counted").isEqualTo(creates + 1);
+  }
+
+  /**
+   * Issue #10141: both {@code deleteRecord} overloads counted before the request was built, so a delete the driver
+   * rejected locally, or one the server refused, still moved the counter.
+   */
+  @Test
+  void onlyADeleteTheServerPerformedIsCounted() {
+    final long deletes = stat("deleteRecord");
+
+    final MutableDocument notSaved = grpc.newDocument(DOC_TYPE);
+    assertThatThrownBy(() -> grpc.deleteRecord(notSaved)).isInstanceOf(IllegalArgumentException.class);
+    assertThat(stat("deleteRecord")).as("a record that never left the client is not deleted").isEqualTo(deletes);
+
+    final MutableDocument doc = grpc.newDocument(DOC_TYPE).set("v", 0);
+    doc.save();
+    grpc.deleteRecord(doc);
+    assertThat(stat("deleteRecord")).as("the server deleted the record").isEqualTo(deletes + 1);
+
+    assertThatThrownBy(() -> grpc.deleteRecord(doc)).isInstanceOf(RuntimeException.class);
+    assertThat(stat("deleteRecord")).as("a delete the server refused is not counted").isEqualTo(deletes + 1);
+  }
+
+  @Test
+  void onlyADeleteByRidTheServerPerformedIsCounted() {
+    final long deletes = stat("deleteRecord");
+
+    final MutableDocument doc = grpc.newDocument(DOC_TYPE).set("v", 0);
+    doc.save();
+    final String rid = doc.getIdentity().toString();
+
+    assertThat(grpc.deleteRecord(rid, 10_000)).isTrue();
+    assertThat(stat("deleteRecord")).as("the server deleted the record").isEqualTo(deletes + 1);
+
+    try {
+      grpc.deleteRecord(rid, 10_000);
+    } catch (final RuntimeException ignore) {
+      // the record is gone: whether the server answers deleted=false or fails, nothing was deleted
+    }
+    assertThat(stat("deleteRecord")).as("a delete that deleted nothing is not counted").isEqualTo(deletes + 1);
   }
 
   private long stat(final String name) {

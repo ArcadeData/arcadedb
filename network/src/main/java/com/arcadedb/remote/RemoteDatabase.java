@@ -746,12 +746,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public void deleteRecord(final Record record) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    command("SQL", "delete from " + record.getIdentity());
+    final long deleted;
+    try (final ResultSet result = command("SQL", "delete from " + record.getIdentity())) {
+      deleted = result.hasNext() ? result.next().<Number>getProperty("count", 0).longValue() : 0;
+    }
+    // counted only once the server reported the row it deleted, like createRecord and updateRecord in saveRecord: a
+    // record that never left the client, a refused delete or one that matched nothing is not a delete (issue #10141)
+    if (deleted > 0)
+      stats.deleteRecord.incrementAndGet();
   }
 
   @Override
