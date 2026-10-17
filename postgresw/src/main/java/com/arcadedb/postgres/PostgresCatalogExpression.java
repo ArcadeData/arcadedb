@@ -455,12 +455,11 @@ abstract class PostgresCatalogExpression {
     private final PostgresCatalogExpression left;
     private final PostgresCatalogExpression right;
     /**
-     * The last regular expression this node compiled. One reference rather than a pattern and its text, so it can
-     * never be read half-updated; an expression tree is built per statement and evaluated by the one thread
-     * answering it, so nothing else ever reads it anyway. Its flags never need checking: they follow from the
-     * operator, which is fixed per node.
+     * The last regular expression this node compiled, with the client's text it was translated from: one reference,
+     * so it can never be read half-updated. An expression tree is built per statement and evaluated by the one
+     * thread answering it, so nothing else ever reads it anyway.
      */
-    private       Pattern                   compiled;
+    private       CompiledRegex             compiled;
     /**
      * The character reads this node's regular expression has left. One match is bounded by
      * {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row the node is evaluated
@@ -541,13 +540,14 @@ abstract class PostgresCatalogExpression {
       try {
         // The pattern is a literal in every query a client writes, and the predicate runs once per row, so it is
         // compiled once rather than once per row (psql's \d sends one, issue #10228).
-        final String javaPattern = javaRegex(pattern);
-        final int flags = operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0;
-        Pattern regex = compiled;
-        if (regex == null || regex.flags() != flags || !regex.pattern().equals(javaPattern)) {
-          regex = Pattern.compile(javaPattern, flags);
-          compiled = regex;
+        // Translated and compiled once per pattern text, not once per row: the translation scans the whole pattern.
+        CompiledRegex cached = compiled;
+        if (cached == null || !cached.source().equals(pattern)) {
+          cached = new CompiledRegex(pattern,
+              Pattern.compile(javaRegex(pattern), operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0));
+          compiled = cached;
         }
+        final Pattern regex = cached.regex();
         if (regexBudget <= 0)
           throw new BudgetExceeded();
         final BoundedCharSequence text = new BoundedCharSequence(value,
@@ -684,7 +684,9 @@ abstract class PostgresCatalogExpression {
    * them reads as UNKNOWN instead of being guessed at.
    */
   static String javaRegex(final String pattern) {
-    if (pattern.indexOf("[:") < 0)
+    // Any bracket expression needs the scan, not only one holding a class: a '[' or '&' inside one is a literal in
+    // POSIX, and Java would read "[a&&b]" as an intersection and "[a[b]c]" as a nested class.
+    if (pattern.indexOf('[') < 0)
       return pattern;
 
     // A class is only a class inside a bracket expression: a standalone "[:word:]" is itself a bracket expression,
@@ -758,6 +760,10 @@ abstract class PostgresCatalogExpression {
       throw new PatternSyntaxException("unterminated bracket expression", pattern, open);
     java.append(']');
     return j + 1;
+  }
+
+  /** A compiled regular expression and the client's text it was translated from. */
+  private record CompiledRegex(String source, Pattern regex) {
   }
 
   /** Translates a SQL LIKE pattern into the equivalent regular expression. */

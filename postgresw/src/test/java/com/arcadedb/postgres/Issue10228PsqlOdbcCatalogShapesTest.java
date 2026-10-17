@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -528,6 +529,14 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(resolve("select relname from pg_class where relname ~ '^[:word:]+$'").rows).isEmpty();
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:upper:]][:lowert]+$'"), "relname"))
         .containsExactly("Note");
+    // '&' and '[' inside a bracket are literals in POSIX: "[a&&b]" is the set {a, &, b}, not Java's intersection.
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[CN&&x]'"), "relname"))
+        .containsExactly("City", "Note");
+    // and a '[' inside a bracket is a literal: "^[a[b]c]$" is the set {a, [, b} followed by "c]" (PostgreSQL 17 agrees)
+    final Pattern nested = Pattern.compile(PostgresCatalogExpression.javaRegex("^[a[b]c]$"));
+    assertThat(nested.matcher("ac]").matches()).isTrue();
+    assertThat(nested.matcher("[c]").matches()).isTrue();
+    assertThat(nested.matcher("c").matches()).isFalse();
     // A class this catalog does not translate is unreadable, not misread: permissive here, declined over pg_type.
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:nope:]]+$'"), "relname"))
         .containsExactly("City", "Note", "Person");
