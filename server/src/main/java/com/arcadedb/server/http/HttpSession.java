@@ -104,6 +104,11 @@ public class HttpSession implements QuerySession {
     return lock.isLocked();
   }
 
+  /** Whether a request is waiting for the request running in the session to finish. A snapshot, for tests. */
+  boolean hasWaitingRequests() {
+    return lock.hasQueuedThreads();
+  }
+
   public long elapsedFromLastUpdate() {
     return System.currentTimeMillis() - lastUpdate;
   }
@@ -290,9 +295,11 @@ public class HttpSession implements QuerySession {
         // RE-VALIDATE UNDER THE LOCK: THE IDLE-TIMEOUT SWEEP (OR A commit/rollback/close) COULD HAVE ROLLED BACK
         // AND REMOVED THIS SESSION IN THE GAP BETWEEN THE MANAGER LOOKUP AND ACQUIRING THIS LOCK. RUNNING THE
         // CALLBACK NOW WOULD OPERATE ON A ROLLED-BACK TRANSACTION AND LEAK A FRESH ONE (NOTHING WOULD EVER
-        // COMMIT/ROLL IT BACK, SINCE THE SESSION IS ALREADY UNTRACKED)
+        // COMMIT/ROLL IT BACK, SINCE THE SESSION IS ALREADY UNTRACKED). THE SAME HOLDS FOR A REQUEST THAT WAITED ON ANOTHER ONE ENDING
+        // THE SESSION, SUCH AS A RETRIED /commit WAITING ON THE FIRST: THE ROUTE DECIDES WHAT TO ANSWER (issue #10171)
         if (!manager.isSessionRegistered(id))
-          throw new HttpSessionException("Remote transaction '" + id + "' not found or expired");
+          // A route that ends the session can still have an answer for it (a retried /commit of a session that committed, issue #10171)
+          throw new HttpSessionEndedException(id);
 
         if (rolledBackByFailure && joinsTransaction && !endsSession)
           throw new HttpSessionException("Remote transaction '" + id
@@ -304,8 +311,9 @@ public class HttpSession implements QuerySession {
         // IN THE GAP BETWEEN UNLOCK AND THIS ASSIGNMENT, SEE A STALE lastUpdate, AND ROLL BACK A TRANSACTION
         // WHOSE COMMAND JUST FINISHED
         lastUpdate = System.currentTimeMillis();
-      } catch (final RequestRefusedBeforeExecutionException e) {
-        // A REQUEST REFUSED BEFORE ANYTHING REACHED THE ENGINE LEAVES THE TRANSACTION AS IT WAS: THERE IS NOTHING IN IT TO DISTRUST (issue #9784)
+      } catch (final RequestRefusedBeforeExecutionException | HttpSessionEndedException e) {
+        // A REQUEST REFUSED BEFORE ANYTHING REACHED THE ENGINE LEAVES THE TRANSACTION AS IT WAS: THERE IS NOTHING IN IT TO DISTRUST
+        // (issue #9784). NOR IN A SESSION ANOTHER REQUEST ALREADY ENDED: ITS TRANSACTION IS THAT REQUEST'S BUSINESS (issue #10171)
         throw e;
       } catch (Exception e) {
         // ROLLBACK SERVER-SIDE TRANSACTION. CALL rollbackIfActive() DIRECTLY (NOT cancel()): THIS THREAD

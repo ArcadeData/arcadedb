@@ -77,6 +77,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
@@ -97,6 +98,7 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -4034,6 +4036,22 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
     for (Bucket b : schema.getBuckets())
       ((LocalBucket) b).setCachedRecordCount(-1);
+
+    // THE SAME FOR THE BM25 CORPUS COUNTERS (ISSUE #10133): THE SCHEMA HOLDS THE PAIR OF ITS LAST SAVE, THE REPLAY RESTORES
+    // EVERYTHING COMMITTED AFTER IT. THE DRIFT CHECK ONLY COMPARES DOCUMENT COUNTS, SO A WORKLOAD THAT LEFT THE COUNT WHERE IT WAS
+    // (A DOCUMENT REPLACED BY A LONGER ONE) WOULD KEEP THE OLD LENGTH FOREVER: THE FIRST SEARCH RESCANS UNCONDITIONALLY INSTEAD
+    int bm25Indexes = 0;
+    for (final Index index : schema.getIndexes()) {
+      final FullTextIndexMetadata ftMetadata = LSMTreeFullTextIndex.metadataOf(index);
+      if (ftMetadata != null && ftMetadata.isBM25()) {
+        ftMetadata.requireRescan();
+        ++bm25Indexes;
+      }
+    }
+    if (bm25Indexes > 0)
+      LogManager.instance().log(this, Level.INFO,
+          "The BM25 corpus counters of %d full-text index(es) of database '%s' will be recomputed by a full scan at their first search",
+          null, bm25Indexes, name);
 
     executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
 

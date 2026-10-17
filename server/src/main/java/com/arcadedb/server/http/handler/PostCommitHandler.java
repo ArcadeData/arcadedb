@@ -112,4 +112,19 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   protected boolean endsSession() {
     return true;
   }
+
+  /**
+   * A retry that arrived while the first commit of the same session was still running (a slow Raft round-trip, a client timeout
+   * shorter than the commit) waited for the session lock and found the session ended. When the first commit is what ended it the
+   * answer is the one the retry would get had it arrived afterwards: 204 (issue #10171). A session that was rolled back,
+   * terminated or expired instead is still refused with 404.
+   */
+  @Override
+  protected ExecutionResponse answerForEndedSession(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String sessionId) {
+    if (!httpServer.getSessionManager().wasCommittedBy(user, sessionId))
+      return null;
+    exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
+    return new ExecutionResponse(204, "");
+  }
 }
