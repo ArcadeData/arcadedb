@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -248,28 +249,28 @@ public class PostgresCatalog {
     return mightBeCatalogQuery(query) || mightBeSetOperation(query);
   }
 
-  /** A single pass for the three set-operation keywords, so an ordinary query pays one scan rather than three. */
+  /**
+   * A single pass for the three set-operation keywords as whole words, so an ordinary query pays one scan rather
+   * than three, and a name that merely contains one - {@code exceptions}, {@code reunion} - is not tokenized for it.
+   */
   private static boolean mightBeSetOperation(final String query) {
     final int length = query.length();
     for (int i = 0; i < length; i++) {
-      switch (query.charAt(i)) {
-      case 'u', 'U' -> {
-        if (query.regionMatches(true, i, "union", 0, 5))
-          return true;
-      }
-      case 'i', 'I' -> {
-        if (query.regionMatches(true, i, "intersect", 0, 9))
-          return true;
-      }
-      case 'e', 'E' -> {
-        if (query.regionMatches(true, i, "except", 0, 6))
-          return true;
-      }
-      default -> {
-      }
-      }
+      final int word = switch (query.charAt(i)) {
+        case 'u', 'U' -> query.regionMatches(true, i, "union", 0, 5) ? 5 : 0;
+        case 'i', 'I' -> query.regionMatches(true, i, "intersect", 0, 9) ? 9 : 0;
+        case 'e', 'E' -> query.regionMatches(true, i, "except", 0, 6) ? 6 : 0;
+        default -> 0;
+      };
+      if (word > 0 && (i == 0 || !isIdentifierPart(query.charAt(i - 1))) && (i + word == length
+          || !isIdentifierPart(query.charAt(i + word))))
+        return true;
     }
     return false;
+  }
+
+  private static boolean isIdentifierPart(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_' || c == '$';
   }
 
   /**
@@ -354,7 +355,9 @@ public class PostgresCatalog {
    * <li>{@code ~~}, {@code ~~*} and their negations are LIKE and ILIKE, which is what PostgreSQL itself calls
    * those operators;</li>
    * <li>{@code COLLATE <name>} is dropped: every name in this catalog compares the same under any collation a
-   * client names, and psql appends {@code COLLATE pg_catalog.default} to its name lookup.</li>
+   * client names, and psql appends {@code COLLATE pg_catalog.default} to its name lookup. An ORDER BY with one
+   * sorts in this catalog's own order - by code point, as {@code COLLATE "C"} does - whatever collation it names.
+   * The rewrite only touches tokens this catalog evaluates: a statement it hands on keeps its own text.</li>
    * </ul>
    */
   private static List<PostgresCatalogToken> plainSpellings(final List<PostgresCatalogToken> tokens) {
@@ -777,8 +780,12 @@ public class PostgresCatalog {
       if (i == tail.size())
         return true;
 
-      // OFFSET and FETCH are outside the slice; LIMIT takes a number and nothing may follow it.
-      if (!tail.get(i).isKeyword("LIMIT") || i + 2 != tail.size() || tail.get(i + 1).type != PostgresCatalogToken.Type.NUMBER)
+      // OFFSET and FETCH are outside the slice; LIMIT takes a number or ALL, and nothing may follow it.
+      if (!tail.get(i).isKeyword("LIMIT") || i + 2 != tail.size())
+        return false;
+      if (tail.get(i + 1).isKeyword("ALL"))
+        return true;
+      if (tail.get(i + 1).type != PostgresCatalogToken.Type.NUMBER)
         return false;
       try {
         limit = Integer.valueOf(tail.get(i + 1).text);
@@ -908,10 +915,31 @@ public class PostgresCatalog {
         continue;
       if (key == null)
         key = new ArrayList<>(values);
-      final double d = number.doubleValue();
-      key.set(i, d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 9.0E15 ? (Object) (long) d : (Object) d);
+      key.set(i, numberKey(number));
     }
     return key == null ? values : key;
+  }
+
+  /**
+   * An integral value as a Long, whatever type carries it; a BigDecimal or BigInteger outside long's range by its
+   * exact decimal value, so two that differ below a double's precision stay apart; any other number as a Double.
+   */
+  private static Object numberKey(final Number number) {
+    if (number instanceof Integer || number instanceof Short || number instanceof Byte)
+      return number.longValue();
+    if (number instanceof BigDecimal || number instanceof BigInteger) {
+      final BigDecimal exact = (number instanceof BigDecimal decimal ? decimal : new BigDecimal((BigInteger) number))
+          .stripTrailingZeros();
+      if (exact.scale() <= 0)
+        try {
+          return exact.longValueExact();
+        } catch (final ArithmeticException e) {
+          // beyond long: the decimal value itself is the key
+        }
+      return exact;
+    }
+    final double d = number.doubleValue();
+    return d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 9.0E15 ? (Object) (long) d : (Object) d;
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -1095,12 +1123,15 @@ public class PostgresCatalog {
         if (limitStart >= tokens.size())
           return null;
         final PostgresCatalogToken limitToken = tokens.get(limitStart);
-        if (limitToken.type != PostgresCatalogToken.Type.NUMBER)
-          return null;
-        try {
-          statement.limit = Integer.valueOf(limitToken.text);
-        } catch (final NumberFormatException e) {
-          return null;
+        // LIMIT ALL is no limit at all.
+        if (!limitToken.isKeyword("ALL")) {
+          if (limitToken.type != PostgresCatalogToken.Type.NUMBER)
+            return null;
+          try {
+            statement.limit = Integer.valueOf(limitToken.text);
+          } catch (final NumberFormatException e) {
+            return null;
+          }
         }
         end = Math.min(end, limitStart - 1);
       }

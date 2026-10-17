@@ -425,7 +425,8 @@ class PostgresCatalogTest {
     // A set operation with an arm this catalog cannot answer is declined whole, not answered by its other arm.
     assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT proname FROM pg_proc")).isSameAs(
         PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT relname FROM pg_class LIMIT ALL")).isSameAs(PostgresCatalog.DECLINED);
+    // LIMIT ALL is no limit (issue #10228).
+    assertThat(names(resolve("SELECT relname FROM pg_class LIMIT ALL").rows, "relname")).containsExactly("Article", "Author");
   }
 
   @Test

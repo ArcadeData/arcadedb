@@ -24,10 +24,12 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -311,9 +313,48 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(column(answer, "relname")).containsExactly("Note", "extra");
   }
 
+  @Test
+  void bagSetOperationsAndLimitAll() {
+    // INTERSECT binds first: "select 2 intersect all select 1" is empty (PostgreSQL 17 answers 1,1 too).
+    assertThat(column(resolve("select 1 as x union all select 1 union all select 2 intersect all select 1"), "x"))
+        .containsExactly(1L, 1L);
+    assertThat(column(resolve("select 1 as x union all select 1 union all select 1 except all select 1"), "x"))
+        .containsExactly(1L, 1L);
+    assertThat(column(resolve("select 1 as x union all select 1 except select 1"), "x")).isEmpty();
+    assertThat(column(resolve("select 1 as x union all select 1 intersect all select 1"), "x")).containsExactly(1L, 1L);
+    assertThat(column(resolve("select 2 as x union select 1 order by 1 limit all"), "x")).containsExactly(1L, 2L);
+    assertThat(column(resolve("select relname from pg_class order by 1 limit all"), "relname"))
+        .containsExactly("City", "Note", "Person");
+  }
+
+  /** Numbers compare by value when a set operation removes duplicates, as in SQL: 1 and 1.0 are one row. */
+  @Test
+  void setOperationsCompareNumbersByValue() {
+    assertThat(resolve("select 1 as x union select 1.0").rows).hasSize(1);
+    assertThat(resolve("select 1 as x union select 1.5").rows).hasSize(2);
+  }
+
+  /** A COPY header announces a duplicate column under its own name, as the RowDescription does. */
+  @Test
+  void aCopyHeaderAnnouncesDuplicateColumnsByName() {
+    final PostgresCatalog.Answer answer = resolve(
+        "select NULL, NULL, relkind from (select 'r' as relkind union select 'v') as a");
+    final StringBuilder header = new StringBuilder();
+    PostgresCopyStatement.parse("COPY (select 1) TO STDOUT WITH (FORMAT csv, HEADER true)")
+        .appendHeader(header, answer.columns.keySet());
+
+    assertThat(header.toString()).isEqualTo("?column?,?column?,relkind\n");
+  }
+
   /** A UNION whose arm reads the user's own type is not this catalog's question: the SQL engine answers it. */
   @Test
   void aUnionOverAUserTypeIsNotACatalogQuery() {
+    // not even partly, when the other arm is a catalog relation
+    assertThat(PostgresCatalog.resolve("select relname from pg_class union select name from Person", database, USER))
+        .isNull();
+    // and a word that only contains a set-operation keyword does not make a query one
+    assertThat(PostgresCatalog.mightBeAnswered("select exceptions, reunion from Person")).isFalse();
+    assertThat(PostgresCatalog.mightBeAnswered("select 1 UNION select 2")).isTrue();
     assertThat(PostgresCatalog.resolve("select name from Person union select 'x'", database, USER)).isNull();
     // and a query that merely contains the word is not touched at all
     assertThat(PostgresCatalog.resolve("select name from Person where name = 'union'", database, USER)).isNull();
@@ -389,6 +430,7 @@ class Issue10228PsqlOdbcCatalogShapesTest {
 
   /** Nested sub-selects are bounded: a deep enough nesting is declined rather than recursing until the stack gives out. */
   @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void deeplyNestedSubqueriesAreDeclinedNotOverflowed() {
     final StringBuilder query = new StringBuilder("select relname from pg_class");
     for (int i = 0; i < 5_000; i++)
@@ -481,6 +523,7 @@ class Issue10228PsqlOdbcCatalogShapesTest {
   }
 
   @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS) // a hang detector: unbounded, this is 3^32 evaluations
   void deeplyNestedSubSelectsAndJoinsAreDeclinedNotOverflowed() {
     final StringBuilder exists = new StringBuilder("select 1 from pg_class");
     for (int i = 0; i < 5_000; i++)
