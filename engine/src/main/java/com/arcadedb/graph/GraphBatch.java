@@ -2605,6 +2605,7 @@ public class GraphBatch implements AutoCloseable {
         // Fill first, then persist once
         inChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
             localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+        assert isFull(inChunk) : "a deferred head must be full, see deferredHeads";
         database.createRecord(inChunk, edgeBucketName);
         sharedInChunkCache.put(vertexKey, inChunk.getIdentity());
         sharedDeferredInHead.put(vertexKey, inChunk.getIdentity());
@@ -2888,11 +2889,16 @@ public class GraphBatch implements AutoCloseable {
     return segment;
   }
 
+  private static boolean isFull(final EdgeSegment segment) {
+    return segment.getUsed() == segment.getRecordSize();
+  }
+
   /**
    * Persists a newly created segment (fill-then-persist pattern) and updates caches.
    */
   private void persistNewSegment(final EdgeSegment segment, final int bucketId,
       final Vertex.DIRECTION direction, final long vertexKey) {
+    assert isFull(segment) : "a deferred head must be full, see deferredHeads";
     final String bucketName = database.getGraphEngine().getEdgesBucketName(bucketId, direction);
     database.createRecord(segment, bucketName);
 
@@ -3538,6 +3544,7 @@ public class GraphBatch implements AutoCloseable {
       if (isNew) {
         outChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
             localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+        assert isFull(outChunk) : "a deferred head must be full, see deferredHeads";
         database.createRecord(outChunk, edgeBucketName);
         sharedOutChunkCache.put(vertexKey, outChunk.getIdentity());
         sharedDeferredOutHead.put(vertexKey, outChunk.getIdentity());

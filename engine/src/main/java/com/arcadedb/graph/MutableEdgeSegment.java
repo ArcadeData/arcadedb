@@ -526,7 +526,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     if (previous == null)
       throw new IllegalArgumentException("Previous chunk is not persistent");
     buffer.position(Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE);
-    database.getSerializer().serializeValue(database, buffer, BinaryTypes.TYPE_RID, previous); // NEXT
+    database.getSerializer().serializeValue(database, buffer, BinaryTypes.TYPE_RID, previous); // PREVIOUS
   }
 
   @Override
