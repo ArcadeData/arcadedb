@@ -499,6 +499,14 @@ public class PostgresCatalog {
   private static final int MAX_NESTING = 32;
 
   /**
+   * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
+   * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
+   * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
+   * units; past the budget the sub-select is UNKNOWN, and the query is declined like any unreadable shape.
+   */
+  private static final long WORK_BUDGET = 5_000_000L;
+
+  /**
    * @param outer  the resolver of the row a sub-select is correlated to, null for a statement that is not one
    * @param nested whether the statement is part of another one - a set-operation arm, a derived table, a
    *               sub-select - where a SELECT with no FROM is a row of literals this catalog evaluates. At the
@@ -602,6 +610,9 @@ public class PostgresCatalog {
 
       rows = context.rows(family);
     }
+
+    if (!context.charge(rows.size()))
+      return DECLINED;
 
     final boolean[] secondAliases = secondAliasesRead(statement, from);
     if (secondAliases == null)
@@ -1164,7 +1175,10 @@ public class PostgresCatalog {
     while (i < tokens.size()) {
       // Join decorations before the item.
       if (isJoinWord(tokens.get(i))) {
-        boolean left = false, right = false, full = false, cross = false;
+        boolean left = false;
+        boolean right = false;
+        boolean full = false;
+        boolean cross = false;
         while (i < tokens.size() && isJoinWord(tokens.get(i))) {
           final PostgresCatalogToken word = tokens.get(i++);
           left |= word.isKeyword("LEFT");
@@ -1335,6 +1349,7 @@ public class PostgresCatalog {
      */
     private final Map<Family, List<Row>> rowsByFamily = new EnumMap<>(Family.class);
     private int                          nesting;
+    private long                         work;
 
     Context(final Database database, final String userName) {
       this.database = database;
@@ -1360,6 +1375,12 @@ public class PostgresCatalog {
 
     void exit() {
       --nesting;
+    }
+
+    /** @return false once this statement has spent its {@link #WORK_BUDGET} */
+    boolean charge(final int units) {
+      work += units;
+      return work <= WORK_BUDGET;
     }
 
     Database database() {
@@ -2440,6 +2461,8 @@ public class PostgresCatalog {
 
     @Override
     public Object subquery(final List<PostgresCatalogToken> tokens, final PostgresCatalogExpression.SubqueryKind kind) {
+      if (!context.charge(tokens.size()))
+        return PostgresCatalogExpression.UNKNOWN;
       final Answer answer = resolveStatement(tokens, context, this, true);
       if (answer == null || answer.rows == null)
         return PostgresCatalogExpression.UNKNOWN;

@@ -80,6 +80,9 @@ class Issue10228PsqlOdbcCatalogShapesTest {
   /** psqlodbc's {@code PGAPI_Columns} for {@code SQLColumns(table = "Person")}: the name filter is in an ON clause. */
   @Test
   void odbcColumnsOfOneTableReadTheFilterInTheJoinCondition() {
+    // A second type with a column, so that a filter that is not applied shows.
+    database.transaction(() -> database.getSchema().getType("Note").createProperty("text", Type.STRING));
+
     final PostgresCatalog.Answer answer = resolve(odbcColumns(
         " and c.relname like 'Person' and n.nspname like '" + database.getName() + "'"));
 
@@ -392,6 +395,66 @@ class Issue10228PsqlOdbcCatalogShapesTest {
       query.insert(0, "select * from (").append(") x").append(i);
 
     assertThat(PostgresCatalog.resolve(query.toString(), database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  // ---------------------------------------------------------------- what the rewrites and the evaluator must not do
+
+  /** The OPERATOR and COLLATE rewrites work on tokens: a string literal or a quoted identifier is left as written. */
+  @Test
+  void theSpellingRewritesLeaveLiteralsAndQuotedIdentifiersAlone() {
+    final PostgresCatalog.Answer answer = resolve("select 'a OPERATOR(pg_catalog.=) b' as op, 'x COLLATE \"C\"' as col, "
+        + "'~~' as tilde, relname as \"collate\" from pg_class where relname = 'Note'");
+
+    assertThat(column(answer, "op")).containsExactly("a OPERATOR(pg_catalog.=) b");
+    assertThat(column(answer, "col")).containsExactly("x COLLATE \"C\"");
+    assertThat(column(answer, "tilde")).containsExactly("~~");
+    assertThat(column(answer, "collate")).containsExactly("Note");
+  }
+
+  /** A pattern Java cannot compile is not an answer: kept by the permissive filter, declined over pg_type. */
+  @Test
+  void anInvalidRegularExpressionIsUnknown() {
+    assertThat(column(resolve("select relname from pg_class where relname ~ '(['"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(PostgresCatalog.resolve("select typname from pg_type where typname ~ '(['", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /** A catastrophically backtracking pattern stops after a bounded amount of work, rather than spinning per row. */
+  @Test
+  void aBacktrackingRegularExpressionIsBounded() {
+    // java.util.regex memoizes the classic exponential shapes, but not this polynomial one: unbounded, it reads
+    // the 40 characters of the name some 10^8 times.
+    final String name = "x".repeat(40);
+    database.transaction(() -> database.getSchema().createDocumentType(name));
+
+    final PostgresCatalog.Answer answer = resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'");
+    // Unknown on the long name, so the permissive filter keeps it; a definite no on the others.
+    assertThat(column(answer, "relname")).containsExactly(name);
+  }
+
+  @Test
+  void anOuterJoinToAParenthesisedJoinOrAnAliasedOneIsDeclined() {
+    assertThat(PostgresCatalog.resolve("select c.relname from pg_class c left join (pg_attribute a join pg_type t "
+        + "on t.oid = a.atttypid) on a.attrelid = c.oid", database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("select 1 from (pg_class c join pg_namespace n on n.oid = c.relnamespace) j",
+        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  @Test
+  void deeplyNestedSubSelectsAndJoinsAreDeclinedNotOverflowed() {
+    final StringBuilder exists = new StringBuilder("select 1 from pg_class");
+    for (int i = 0; i < 5_000; i++)
+      exists.insert(0, "select 1 from pg_class where exists (").append(")");
+    // Each level runs once per row of the one around it, so the depth bound alone would still leave 3^32
+    // evaluations: the work budget is what makes this return. The innermost levels it does not reach are UNKNOWN,
+    // which the permissive filter over pg_class keeps.
+    assertThat(PostgresCatalog.resolve(exists.toString(), database, USER)).isNotNull();
+
+    final StringBuilder joins = new StringBuilder("pg_class c");
+    for (int i = 0; i < 5_000; i++)
+      joins.insert(0, "(").append(" join pg_namespace n").append(i).append(" on n").append(i).append(".oid = c.relnamespace)");
+    assertThat(PostgresCatalog.resolve("select 1 from " + joins, database, USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
   // ---------------------------------------------------------------- helpers

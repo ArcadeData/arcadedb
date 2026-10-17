@@ -445,9 +445,12 @@ abstract class PostgresCatalogExpression {
     private final String                    operator;
     private final PostgresCatalogExpression left;
     private final PostgresCatalogExpression right;
-    /** The last regular expression this node compiled, and the text it was compiled from. */
+    /**
+     * The last regular expression this node compiled. One reference rather than a pattern and its text, so it can
+     * never be read half-updated; an expression tree is built per statement and evaluated by the one thread
+     * answering it, so nothing else ever reads it anyway.
+     */
     private       Pattern                   compiled;
-    private       String                    compiledText;
 
     Binary(final String operator, final PostgresCatalogExpression left, final PostgresCatalogExpression right) {
       this.operator = operator;
@@ -520,13 +523,17 @@ abstract class PostgresCatalogExpression {
       try {
         // The pattern is a literal in every query a client writes, and the predicate runs once per row, so it is
         // compiled once rather than once per row (psql's \d sends one, issue #10228).
-        if (!pattern.equals(compiledText)) {
-          compiled = Pattern.compile(pattern, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
-          compiledText = pattern;
+        Pattern regex = compiled;
+        if (regex == null || !regex.pattern().equals(pattern)) {
+          regex = Pattern.compile(pattern, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
+          compiled = regex;
         }
-        return operator.startsWith("!") != compiled.matcher(value).find();
+        return operator.startsWith("!") != regex.matcher(new BoundedCharSequence(value)).find();
       } catch (final PatternSyntaxException e) {
         // A POSIX regex Java cannot compile: not something to guess the answer of.
+        return UNKNOWN;
+      } catch (final MatchBudgetExceeded e) {
+        // A pattern that backtracks catastrophically on this name: not an answer either.
         return UNKNOWN;
       }
     }
@@ -569,6 +576,58 @@ abstract class PostgresCatalogExpression {
         case ">=" -> comparison >= 0;
         default -> UNKNOWN;
       };
+    }
+  }
+
+  /**
+   * The text a client's regular expression is matched against, counting the characters the matcher reads. The
+   * pattern is the client's own, and {@code java.util.regex} backtracks: a pattern like {@code (a+)+$} takes time
+   * exponential in the length of the name it is matched against, once per row. The budget turns that into an
+   * UNKNOWN after a bounded amount of work instead of a connection thread spinning, and it counts steps rather
+   * than time, so the answer does not depend on how loaded the machine is.
+   */
+  private static final class BoundedCharSequence implements CharSequence {
+    /** Character reads one match may make: some thousand times what any catalog name needs. */
+    private static final int MATCH_BUDGET = 1_000_000;
+
+    private final String text;
+    private final int[]  budget;
+
+    BoundedCharSequence(final String text) {
+      this(text, new int[] { MATCH_BUDGET });
+    }
+
+    private BoundedCharSequence(final String text, final int[] budget) {
+      this.text = text;
+      this.budget = budget;
+    }
+
+    @Override
+    public int length() {
+      return text.length();
+    }
+
+    @Override
+    public char charAt(final int index) {
+      if (--budget[0] < 0)
+        throw new MatchBudgetExceeded();
+      return text.charAt(index);
+    }
+
+    @Override
+    public CharSequence subSequence(final int start, final int end) {
+      return new BoundedCharSequence(text.substring(start, end), budget);
+    }
+
+    @Override
+    public String toString() {
+      return text;
+    }
+  }
+
+  private static final class MatchBudgetExceeded extends RuntimeException {
+    MatchBudgetExceeded() {
+      super(null, null, false, false);
     }
   }
 
