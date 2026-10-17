@@ -2251,8 +2251,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       TransactionContext txAtStart = null;
       long commitCountAtStart = 0;
 
+      // #10135: how many transaction levels belong to the CALLER. On failure only the levels above it are rolled back
+      final boolean callerTxActive = wrappedDatabaseInstance.isTransactionActive();
+      final int callerLevels = callerTxActive ? wrappedDatabaseInstance.getNestedTransactions() : 0;
+
       try {
-        if (joinCurrentTx && wrappedDatabaseInstance.isTransactionActive())
+        if (joinCurrentTx && callerTxActive)
           createdNewTx = false;
         else
           wrappedDatabaseInstance.begin();
@@ -2278,8 +2282,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // "Target vertex is not persistent" when a stale, now-unsaved record reference is reused) - and
         // re-running the block against the same conflicted state cannot succeed anyway. Propagate the
         // exception so the real transaction owner retries the whole logical unit with fresh bindings.
-        if (!createdNewTx)
+        if (!createdNewTx) {
+          // A level the block opened itself and left open is not the caller's: take it back, keep the caller's (#10135)
+          rollbackLevelsAbove(callerLevels);
           throw e;
+        }
 
         // RETRY
         lastException = e;
@@ -2328,8 +2335,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           delayBetweenRetries(retry, retryDelayBase, retryDelay);
 
       } catch (final Throwable e) {
-        if (wrappedDatabaseInstance.isTransactionActive())
-          wrappedDatabaseInstance.rollback();
+        // #10135: the same ownership rule as the arm above. A call that JOINED the caller's transaction owns nothing,
+        // so whatever the block threw - not only a retryable exception - must leave the caller's transaction alive with
+        // its earlier work. Only the levels this call opened (its own transaction, or one the block began and left
+        // open) are rolled back: rolling back the caller's would discard work done before this call, and the caller
+        // would only find out at its next write ("Transaction not begun").
+        rollbackLevelsAbove(callerLevels);
 
         if (error != null)
           error.call(e);
@@ -2342,6 +2353,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       error.call(lastException);
 
     throw lastException;
+  }
+
+  /**
+   * Number of active transaction levels on this thread: 0 without a transaction, otherwise the nesting depth.
+   */
+  private int activeTransactionLevels() {
+    return wrappedDatabaseInstance.isTransactionActive() ? wrappedDatabaseInstance.getNestedTransactions() : 0;
+  }
+
+  /**
+   * Rolls back the innermost transaction levels until only {@code levelsToKeep} remain active (issue #10135).
+   */
+  private void rollbackLevelsAbove(final int levelsToKeep) {
+    int levels;
+    while ((levels = activeTransactionLevels()) > levelsToKeep) {
+      wrappedDatabaseInstance.rollback();
+      if (activeTransactionLevels() >= levels)
+        // NO PROGRESS: STOP INSTEAD OF SPINNING ON A TRANSACTION THAT CANNOT BE ROLLED BACK
+        break;
+    }
   }
 
   @Override
