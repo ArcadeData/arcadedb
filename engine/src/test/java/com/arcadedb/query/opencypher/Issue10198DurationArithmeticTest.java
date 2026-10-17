@@ -19,12 +19,17 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.function.agg.CypherAvgFunction;
+import com.arcadedb.function.sql.math.SQLFunctionSum;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -245,6 +250,73 @@ class Issue10198DurationArithmeticTest extends TestHelper {
     });
     try (final ResultSet rs = database.query("sql", "SELECT sum(length) AS total FROM Shift")) {
       assertThat(String.valueOf(rs.next().<Object>getProperty("total"))).isEqualTo("PT8H30M");
+    }
+  }
+
+  @Test
+  void nullsBeforeDurationsAreSkipped() {
+    assertThat(aggregate("sum", "null, null, duration('P1D'), duration('PT1H')")).isEqualTo("P1DT1H");
+    assertThat(aggregate("avg", "null, duration('P1D'), null, duration('PT1H')")).isEqualTo("PT12H30M");
+    try (final ResultSet rs = database.query("opencypher", "UNWIND [null, null] AS x RETURN avg(x) AS a, sum(x) AS s")) {
+      final var row = rs.next();
+      assertThat(row.<Object>getProperty("a")).isNull();
+      assertThat(row.<Number>getProperty("s").longValue()).isEqualTo(0L);
+    }
+  }
+
+  /** Parallel aggregation merges partial states: a duration partial merges as the rows would have added up. */
+  @Test
+  void partialAggregatesMergeDurations() {
+    final SQLFunctionSum sumA = new SQLFunctionSum();
+    final SQLFunctionSum sumB = new SQLFunctionSum();
+    sumA.execute(null, null, null, new Object[] { CypherDuration.parse("P1D") }, null);
+    sumB.execute(null, null, null, new Object[] { null }, null);
+    sumB.execute(null, null, null, new Object[] { CypherDuration.parse("PT2H") }, null);
+    sumA.mergePartial(sumB);
+    assertThat(sumA.getResult()).hasToString("P1DT2H");
+
+    final SQLFunctionSum numbers = new SQLFunctionSum();
+    numbers.execute(null, null, null, new Object[] { 5 }, null);
+    final SQLFunctionSum durations = new SQLFunctionSum();
+    durations.execute(null, null, null, new Object[] { CypherDuration.parse("P1D") }, null);
+    assertThatThrownBy(() -> numbers.mergePartial(durations)).hasMessageContaining("cannot mix numbers and durations");
+
+    final CypherAvgFunction avgA = new CypherAvgFunction();
+    final CypherAvgFunction avgB = new CypherAvgFunction();
+    final CypherAvgFunction empty = new CypherAvgFunction();
+    avgA.execute(new Object[] { CypherDuration.parse("PT1S") }, null);
+    avgB.execute(new Object[] { CypherDuration.parse("PT2S") }, null);
+    avgB.execute(new Object[] { CypherDuration.parse("PT2S") }, null);
+    avgA.mergePartial(avgB);
+    avgA.mergePartial(empty);
+    assertThat(avgA.getAggregatedResult()).hasToString("PT1.666666666S");
+
+    final CypherAvgFunction avgNumbers = new CypherAvgFunction();
+    avgNumbers.execute(new Object[] { 1 }, null);
+    final CypherAvgFunction avgDurations = new CypherAvgFunction();
+    avgDurations.execute(new Object[] { CypherDuration.parse("P1D") }, null);
+    assertThatThrownBy(() -> avgNumbers.mergePartial(avgDurations)).hasMessageContaining("cannot mix numbers and durations");
+  }
+
+  @Test
+  void aNonFiniteOperandOrAnOverflowIsAnErrorNotAWrap() {
+    for (final double operand : new double[] { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY }) {
+      assertThatThrownBy(() -> parameterized("duration('P1D') * $f", operand)).as("* %s", operand).isInstanceOf(ArithmeticErrorException.class);
+      assertThatThrownBy(() -> parameterized("duration('P1D') / $f", operand)).as("/ %s", operand).isInstanceOf(ArithmeticErrorException.class);
+    }
+    assertThatThrownBy(() -> text("duration({months: 9223372036854775807}) * 2")).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> text("duration({seconds: 9223372036854775807}) * 1.5")).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> text("duration({days: 9223372036854775807}) / 0.5")).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> text("duration({months: -9223372036854775807 - 1}) / -1")).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> text("duration({months: -9223372036854775807 - 1}) * -1")).isInstanceOf(ArithmeticErrorException.class);
+    // A product only the nanosecond part of which overflows a long is still exact
+    assertThat(text("duration('PT0.999999999S') * 9223372036854775807")).isEqualTo(
+        CypherDuration.parse("PT0.999999999S").multiply(9223372036854775807L).toString());
+  }
+
+  private String parameterized(final String expression, final Object parameter) {
+    try (final ResultSet rs = database.query("opencypher", "RETURN toString(" + expression + ") AS v", Map.of("f", parameter))) {
+      return rs.next().getProperty("v");
     }
   }
 

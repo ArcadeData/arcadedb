@@ -392,6 +392,13 @@ public final class CypherFunctionHelper {
     return list;
   }
 
+  /** {@link #cypherTypeRank(Object)} of a path, and of any value Cypher has no type for. */
+  public static final int TYPE_RANK_PATH_OR_OTHER = 4;
+  /** {@link #cypherTypeRank(Object)} of the first temporal type, DATETIME: the six follow in {@link #temporalTypeRank(Object)} order. */
+  public static final int TYPE_RANK_FIRST_TEMPORAL = 5;
+  /** {@link #cypherTypeRank(Object)} of the last temporal type, DURATION. */
+  public static final int TYPE_RANK_LAST_TEMPORAL  = TYPE_RANK_FIRST_TEMPORAL + 5;
+
   /**
    * Returns the Cypher type order rank for mixed-type comparison.
    * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < the six temporal types (5-10, see
@@ -399,18 +406,18 @@ public final class CypherFunctionHelper {
    */
   public static int cypherTypeRank(final Object value) {
     if (value == null)
-      return 15;
+      return TYPE_RANK_LAST_TEMPORAL + 5;
     if (value instanceof Number) {
       final double d = ((Number) value).doubleValue();
-      return Double.isNaN(d) ? 14 : 13;
+      return Double.isNaN(d) ? TYPE_RANK_LAST_TEMPORAL + 4 : TYPE_RANK_LAST_TEMPORAL + 3;
     }
     if (value instanceof Boolean)
-      return 12;
+      return TYPE_RANK_LAST_TEMPORAL + 2;
     if (value instanceof String)
-      return 11;
+      return TYPE_RANK_LAST_TEMPORAL + 1;
     final int temporal = temporalTypeRank(value);
     if (temporal >= 0)
-      return 5 + temporal;
+      return TYPE_RANK_FIRST_TEMPORAL + temporal;
     if (value instanceof List)
       return 3;
     if (value instanceof Vertex)
@@ -419,7 +426,12 @@ public final class CypherFunctionHelper {
       return 2;
     if (value instanceof Map)
       return 0;
-    return 4; // path or other
+    return TYPE_RANK_PATH_OR_OTHER;
+  }
+
+  /** Whether a {@link #cypherTypeRank(Object)} is the rank of a temporal type. */
+  public static boolean isTemporalTypeRank(final int rank) {
+    return rank >= TYPE_RANK_FIRST_TEMPORAL && rank <= TYPE_RANK_LAST_TEMPORAL;
   }
 
   /**
@@ -456,7 +468,7 @@ public final class CypherFunctionHelper {
     if (rankA != rankB)
       return Integer.compare(rankA, rankB);
     // Two values of one temporal type, either of them possibly a native java.time value
-    if (rankA >= 5 && rankA <= 10)
+    if (isTemporalTypeRank(rankA))
       return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
     // Same type category - compare within type
     if (a instanceof Number && b instanceof Number)

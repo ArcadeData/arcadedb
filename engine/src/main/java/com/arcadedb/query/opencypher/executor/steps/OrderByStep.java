@@ -434,7 +434,7 @@ public class OrderByStep extends AbstractExecutionStep {
        */
       private int typeRank(final Object v) {
         final int rank = CypherFunctionHelper.cypherTypeRank(v);
-        return rank == 4 && !(v instanceof TraversalPath) ? Integer.MAX_VALUE : rank;
+        return rank == CypherFunctionHelper.TYPE_RANK_PATH_OR_OTHER && !(v instanceof TraversalPath) ? Integer.MAX_VALUE : rank;
       }
 
       @Override
