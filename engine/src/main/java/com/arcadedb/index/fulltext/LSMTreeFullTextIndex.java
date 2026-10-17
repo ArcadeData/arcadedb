@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -1049,7 +1050,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // collection the first BM25 query that triggers it can be slow.
     LogManager.instance().log(this, Level.INFO, "Recomputing BM25 corpus statistics for type '%s' (full scan)", null, typeName);
 
-    final List<String> props = getPropertyNames();
+    final DocumentIndexer indexer = db.getIndexer();
+    // One reusable holder for the length the key consumer below adds up: a lambda cannot assign a local
+    final long[] len = new long[1];
     long docs = 0L;
     long sumLen = 0L;
     // Writers keep bumping the shared counters while the scan runs: remember where they stood so the result is published as a delta
@@ -1064,14 +1067,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final Record record = it.next();
         if (!(record instanceof Document doc))
           continue;
-        int len = 0;
-        for (final String p : props) {
-          final Object v = doc.get(p);
-          if (v != null)
-            len += documentLength(analyzeText(indexAnalyzer, new Object[] { v }));
-        }
+        // The keys the writers put, built by the same indexer: a BY ITEM property is read from its list, not as a property
+        // called "tags by item" that no document has (issue #10209)
+        len[0] = 0L;
+        indexer.forEachIndexKey(this, doc, keys -> len[0] += documentLength(analyzeText(indexAnalyzer, keys)));
         ++docs;
-        sumLen += len;
+        sumLen += len[0];
       }
     }
 
@@ -1880,18 +1881,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         if (identifiable == null)
           continue;
 
-        final Document doc = (Document) identifiable;
-        for (final String propName : propertyNames) {
-          final Object value = doc.get(propName);
-          if (value == null)
-            continue;
-
-          final List<String> tokens = analyzeText(indexAnalyzer, new Object[] { value });
-          for (final String token : tokens) {
+        // The terms the index holds for the document, from the keys the writers put: a BY ITEM property is read from its list,
+        // not as a property called "tags by item" that no document has (issue #10209)
+        db.getIndexer().forEachIndexKey(this, (Document) identifiable, keys -> {
+          for (final String token : analyzeText(indexAnalyzer, keys))
             if (token != null)
               termFreqs.merge(token, 1, Integer::sum);
-          }
-        }
+        });
       }
     }
 
