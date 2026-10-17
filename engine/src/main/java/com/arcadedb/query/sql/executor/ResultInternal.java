@@ -406,6 +406,19 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * The value of the only property of a row that wraps no record (a sub-query row such as {@code SELECT k FROM U}), or
+   * {@code absent} when the row wraps a record or does not hold exactly one property. It answers what
+   * {@link #getPropertyNames()} followed by {@link #getProperty(String)} would, without building the name set: an
+   * {@code IN (SELECT ...)} reads it for every sub-query row of every outer row (#10186). Without a record the names are
+   * exactly the content keys, since {@link #removeProperty(String)} takes the key out of the content too.
+   */
+  public Object getSingleValue(final Object absent) {
+    if (element != null || content == null || content.size() != 1)
+      return absent;
+    return toPropertyValue(content.values().iterator().next());
+  }
+
+  /**
    * Deliberately the union of both stores, so it stays broader than {@link #getPropertyNames()}: for a
    * whole-entity projection this answers {@code true} for a name that is not listed as a column and that
    * {@link #getProperty(String)} resolves to {@code null}. FinalProjectionStep uses it to decide which

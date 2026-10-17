@@ -49,7 +49,8 @@ public class MathExpression extends SimpleNode {
    * Whether a NULL on the other side of {@code +} or {@code -} makes the result NULL: SQL three-valued arithmetic for the scalar
    * operands (a number, a date/time, a duration, or NULL itself), so {@code i - 4 < 6} is unknown for a NULL {@code i} as
    * {@code i * 1 < 6} already was (#10186). A string, a list or a map keeps treating the NULL as absent, which is what
-   * concatenating into them needs.
+   * concatenating into them needs. The list is deliberately the arithmetic types: any other value (a boolean, a binary, a
+   * record) is not added to anything by {@code +}, it is concatenated, so it keeps the concatenation behavior.
    */
   static boolean nullAbsorbing(final Object other) {
     return other == null || other instanceof Number || other instanceof TemporalAmount || DateUtils.isDate(other);

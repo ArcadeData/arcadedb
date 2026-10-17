@@ -232,8 +232,10 @@ public class UpdateItem extends SimpleNode {
    * The new value of {@code x op= rightValue}. The right-hand side is the value {@link #applyUpdate} already computed, so a
    * sub-query or a non-deterministic call on it runs once per record, not twice.
    * <p>
-   * {@code +=} and {@code -=} increment a counter, so a missing or null field starts from nothing: {@code SET n += 1} sets 1 and
-   * {@code SET n -= 1} sets -1, while {@code n + 1} with a NULL {@code n} is NULL in an expression (#10186).
+   * {@code +=} and {@code -=} increment a counter, so a NULL on either side counts as nothing: a missing or null field starts
+   * from it ({@code SET n += 1} sets 1, {@code SET n -= 1} sets -1) and a NULL increment leaves the field as it is
+   * ({@code SET n += :unset} does not wipe {@code n}), while {@code n + 1} with a NULL {@code n} is NULL in an expression
+   * (#10186). {@code *=} and {@code /=} follow the expression: a NULL on either side gives NULL.
    */
   private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final Object rightValue,
       final MathExpression.Operator explicitOperator) {
@@ -243,11 +245,12 @@ public class UpdateItem extends SimpleNode {
 
     final Object current = MathExpression.extractScalarFromResultSet(leftEx.execute(doc, context));
     final Object operand = MathExpression.extractScalarFromResultSet(rightValue);
-    if (current == null) {
-      if (explicitOperator == MathExpression.Operator.PLUS)
-        return operand;
-      if (explicitOperator == MathExpression.Operator.MINUS && operand instanceof Number)
-        return explicitOperator.apply((Object) 0, operand);
+    if (explicitOperator == MathExpression.Operator.PLUS || explicitOperator == MathExpression.Operator.MINUS) {
+      if (operand == null)
+        return current;
+      if (current == null)
+        return explicitOperator == MathExpression.Operator.PLUS ? operand :
+            operand instanceof Number ? explicitOperator.apply((Object) 0, operand) : null;
     }
     return explicitOperator.apply(current, operand);
   }

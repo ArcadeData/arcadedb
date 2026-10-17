@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
@@ -254,15 +255,30 @@ public class InCondition extends BooleanExpression {
    * compared one way like {@code =} and the list forms (#8913). A row holding a collection keeps the IN-over-items behavior.
    */
   private static Object subQueryRowScalar(final Object item) {
-    if (item instanceof Result row && !row.isElement()) {
-      final Set<String> names = row.getPropertyNames();
-      if (names.size() == 1) {
-        final Object value = row.getProperty(names.iterator().next());
-        if (value != null && !MultiValue.isMultiValue(value))
-          return value;
-      }
+    if (item instanceof Result row) {
+      final Object value = singleRowValue(row);
+      if (value != NOT_A_SINGLE_VALUE_ROW && value != null && !MultiValue.isMultiValue(value))
+        return value;
     }
     return item;
+  }
+
+  /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
+  private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
+
+  /**
+   * The value of a sub-query row's only property (null included), or {@link #NOT_A_SINGLE_VALUE_ROW}. A plain
+   * {@link ResultInternal} answers without building its name set, which a {@code NOT IN (SELECT ...)} would otherwise pay
+   * for every sub-query row of every outer row; a subclass may resolve its properties differently, so it takes the
+   * general route.
+   */
+  private static Object singleRowValue(final Result row) {
+    if (row.getClass() == ResultInternal.class)
+      return ((ResultInternal) row).getSingleValue(NOT_A_SINGLE_VALUE_ROW);
+    if (row.isElement())
+      return NOT_A_SINGLE_VALUE_ROW;
+    final Set<String> names = row.getPropertyNames();
+    return names.size() == 1 ? row.getProperty(names.iterator().next()) : NOT_A_SINGLE_VALUE_ROW;
   }
 
   /**
@@ -270,19 +286,17 @@ public class InCondition extends BooleanExpression {
    * planner hoists an {@code IN (SELECT ...)} into a LET, so the right-hand side arrives as a list of rows rather than of
    * values, and the row itself is never null: without this, {@code 3 NOT IN (SELECT k ...)} over {@code 4, NULL} answered TRUE
    * where the literal list {@code 3 NOT IN [4, null]} answers unknown (#10186). Only asked once the row did not match, so a
-   * matching row costs nothing extra.
+   * matching row costs nothing extra. A row of several columns is a row, not a NULL, whatever it holds.
    */
   private static boolean isNullSubQueryRow(final Object item) {
-    if (item instanceof Result row && !row.isElement()) {
-      final Set<String> names = row.getPropertyNames();
-      return names.size() == 1 && row.getProperty(names.iterator().next()) == null;
-    }
-    return false;
+    return item instanceof Result row && singleRowValue(row) == null;
   }
 
   private static boolean containsNullItem(final Set<?> set) {
     if (set.contains(null))
       return true;
+    // A set of sub-query rows is homogeneous (every row comes from the same projection), so it is judged by its first item
+    // like the conversion probe above, and a set of plain values is never scanned
     if (firstItem(set) instanceof Result)
       for (final Object o : set)
         if (isNullSubQueryRow(o))

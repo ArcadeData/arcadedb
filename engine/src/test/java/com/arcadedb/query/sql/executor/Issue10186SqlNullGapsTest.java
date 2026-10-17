@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -80,6 +81,32 @@ class Issue10186SqlNullGapsTest extends TestHelper {
     assertThat(names("i NOT IN (SELECT k FROM U WHERE k IS NOT NULL)")).containsExactly("three");
     // an empty sub-query: NOT IN is TRUE for every row, even the ones without i
     assertThat(names("i NOT IN (SELECT k FROM U WHERE k = 99)")).containsExactly("missing", "null", "three");
+    // a row of several columns is a row, not a NULL, even when one of its columns is null
+    assertThat(names("i NOT IN (SELECT k, 1 AS one FROM U)")).containsExactly("three");
+    // a record of the sub-query is not a NULL either
+    assertThat(names("i NOT IN (SELECT FROM U)")).containsExactly("three");
+  }
+
+  @Test
+  void notInOverALargeSubQueryWithOneNull() {
+    database.transaction(() -> {
+      for (int k = 100; k < 5_100; k++)
+        database.newDocument("V").set("k", k).save();
+    });
+    assertThat(names("i NOT IN (SELECT k FROM V)")).containsExactly("three");
+    database.transaction(() -> database.newDocument("V").set("k", null).save());
+    assertThat(names("i NOT IN (SELECT k FROM V)")).isEmpty();
+    assertThat(names("i IN (SELECT k FROM V)")).isEmpty();
+  }
+
+  @Test
+  void aNullPatternParameterIsUnknown() {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("p", null);
+    for (final String where : new String[] { "NOT (s LIKE :p)", "s NOT ILIKE :p", "NOT (s MATCHES :p)" })
+      try (final ResultSet rs = database.query("sql", "SELECT name FROM T WHERE " + where, params)) {
+        assertThat(rs.hasNext()).as(where).isFalse();
+      }
   }
 
   @Test
@@ -160,6 +187,17 @@ class Issue10186SqlNullGapsTest extends TestHelper {
     }
 
     database.transaction(() -> database.command("sql", "UPDATE T SET up += 2, down -= 3, text += 'y' WHERE name = 'counter'"));
+    try (final ResultSet rs = database.query("sql", "SELECT up, down, text FROM T WHERE name = 'counter'")) {
+      final Result r = rs.next();
+      assertThat(r.<Number>getProperty("up").intValue()).isEqualTo(4);
+      assertThat(r.<Number>getProperty("down").intValue()).isEqualTo(-6);
+      assertThat(r.<String>getProperty("text")).isEqualTo("xy");
+    }
+
+    // a NULL increment leaves the field as it is: SET n += :unset does not wipe n
+    final Map<String, Object> params = new HashMap<>();
+    params.put("x", null);
+    database.transaction(() -> database.command("sql", "UPDATE T SET up += :x, down -= :x, text += :x WHERE name = 'counter'", params));
     try (final ResultSet rs = database.query("sql", "SELECT up, down, text FROM T WHERE name = 'counter'")) {
       final Result r = rs.next();
       assertThat(r.<Number>getProperty("up").intValue()).isEqualTo(4);
