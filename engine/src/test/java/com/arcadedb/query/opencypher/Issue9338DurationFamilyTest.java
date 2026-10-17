@@ -95,7 +95,10 @@ class Issue9338DurationFamilyTest {
         order.add(rs.next().getProperty("r"));
     }
     assertThat(order).containsExactly("2d", "3d", "10d");
-    assertThat(((Number) scalar("MATCH (s:S) WHERE s.d > duration({days: 2}) RETURN count(s) AS r")).longValue()).isEqualTo(2L);
+    // Durations are equal or not, and not comparable: > answers null, so a range filter keeps no row, as in Neo4j
+    // (issue #10200). Equality still filters
+    assertThat(((Number) scalar("MATCH (s:S) WHERE s.d > duration({days: 2}) RETURN count(s) AS r")).longValue()).isEqualTo(0L);
+    assertThat(((Number) scalar("MATCH (s:S) WHERE s.d = duration({days: 3}) RETURN count(s) AS r")).longValue()).isEqualTo(1L);
   }
 
   @Test
@@ -170,8 +173,9 @@ class Issue9338DurationFamilyTest {
   @Test
   void divisionByAnIntegerKeepsExactnessAndTruncatesTheRemainder() {
     assertThat(scalar("RETURN toString(duration({days: 4, hours: 2}) / 2) AS r")).isEqualTo("P2DT1H");
-    // an inexact quotient truncates (as the double based cascade always did): 1 day / 3 is one nanosecond short of 8h
-    assertThat(scalar("RETURN toString(duration({days: 1}) / 3) AS r")).isEqualTo("PT7H59M59.999999999S");
+    // the carry of a day is exact, so 1 day / 3 is 8h (issue #10198: it was one nanosecond short), and only an inexact
+    // nanosecond quotient truncates
+    assertThat(scalar("RETURN toString(duration({days: 1}) / 3) AS r")).isEqualTo("PT8H");
     assertThat(scalar("RETURN toString(duration({seconds: 1}) / 3) AS r")).isEqualTo("PT0.333333333S");
   }
 

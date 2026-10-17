@@ -22,11 +22,15 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.schema.Type;
 
 /**
  * Computes the sum of field. Uses the context to save the last sum number. When different Number class are used, take the class
  * with most precision.
+ * <p>
+ * Durations add up too: {@code CypherDuration} is the value class of the engine's own {@code DURATION} property type
+ * ({@code Type.DURATION}), not a Cypher-only one, so SQL and Cypher sum stored durations alike (issue #10198).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -34,7 +38,9 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   public static final String NAME = "sum";
 
   // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
-  private final NumericSum sum = new NumericSum();
+  private final NumericSum     sum = new NumericSum();
+  // THE CROSS-ROW TOTAL OF A SUM OVER DURATIONS, WHICH ADD COMPONENT BY COMPONENT AND NEVER MIX WITH NUMBERS (#10198)
+  private       CypherDuration durationSum;
 
   public SQLFunctionSum() {
     super(NAME);
@@ -60,15 +66,20 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     if (params.length == 1) {
       if (params[0] instanceof Number number)
         sum(number);
+      else if (params[0] instanceof CypherDuration duration)
+        sum(duration);
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          sum(requireNumericOrNull(n));
+          if (n instanceof CypherDuration duration)
+            sum(duration);
+          else
+            sum(requireNumericOrNull(n));
       else
         // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
         // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
         // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
         sum(requireNumericOrNull(params[0]));
-      return sum.get();
+      return durationSum != null ? durationSum : sum.get();
     }
 
     // MULTI-ARG IS A PER-ROW COMPUTATION: SUM THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE
@@ -83,8 +94,25 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   }
 
   protected void sum(final Number value) {
-    if (value != null)
+    if (value != null) {
+      if (durationSum != null)
+        throw mixedInput();
       sum.add(value);
+    }
+  }
+
+  /**
+   * Adds a duration: a sum over durations is the duration of their component-wise sum, as in Cypher (issue #10198). A
+   * duration after a number, or a number after a duration, is a type error, never a silent drop.
+   */
+  private void sum(final CypherDuration value) {
+    if (sum.get() != null)
+      throw mixedInput();
+    durationSum = durationSum == null ? value : durationSum.add(value);
+  }
+
+  private IllegalArgumentException mixedInput() {
+    return new IllegalArgumentException(getName() + "() cannot mix numbers and durations");
   }
 
   /**
@@ -93,7 +121,7 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
    */
   @Override
   public void aggregate(final Object self, final Object[] params, final CommandContext context) {
-    if (params.length == 1 && params[0] instanceof Number number)
+    if (params.length == 1 && params[0] instanceof Number number && durationSum == null)
       sum.add(number);
     else
       execute(self, null, null, params, context);
@@ -110,13 +138,16 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
 
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
-    sum(((SQLFunctionSum) other).sum.get());
+    final SQLFunctionSum that = (SQLFunctionSum) other;
+    sum(that.sum.get());
+    if (that.durationSum != null)
+      sum(that.durationSum);
   }
 
   @Override
   public Object getResult() {
     // SQL: SUM over an empty group or an all-NULL group is NULL, not 0 (issue #9351). Same answer as avg/min/max and
     // as the time-series push-down.
-    return sum.get();
+    return durationSum != null ? durationSum : sum.get();
   }
 }

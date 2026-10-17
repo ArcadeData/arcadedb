@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.BitSet;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -34,8 +33,9 @@ import java.util.stream.Stream;
  * Procedure: algo.triangleCount(relTypes?)
  * <p>
  * Counts the number of triangles each vertex participates in and computes the local
- * clustering coefficient. Uses BOTH-direction adjacency and BitSet-based intersection for
- * minimal GC pressure.
+ * clustering coefficient over the simple undirected graph: edge direction, parallel edges and
+ * self-loops do not change the count. Uses sorted-merge intersection, with no memory beyond the
+ * adjacency and the result.
  * </p>
  * <p>
  * Example:
@@ -91,42 +91,11 @@ public class AlgoTriangleCount extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    // Always use BOTH for triangle counting (undirected notion)
+    // Triangles are an undirected, simple-graph notion: BOTH directions, each distinct neighbour once and no
+    // self-loop (issue #10203). The degree of the clustering coefficient is then the distinct-neighbour count too.
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
-
-    // Build neighbor BitSets for fast intersection: a nodeCount x nodeCount bit matrix, reserved before the
-    // first BitSet is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] neighborSets = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
-    }
-
-    final long[] triangles = new long[n];
-
-    // For each node u, for each neighbor v of u, count common neighbors
-    // Each triangle (u,v,w) is counted at u via (v,w) AND via (w,v) → divide by 2
-    for (int u = 0; u < n; u++) {
-      // One node costs the sum of its neighbours' degrees, so the whole loop is O(sum of degree²) - quadratic
-      // in the degree distribution, and a single supernode's turn is long enough to want the check unthrottled
-      // (issue #6302).
-      guard.check();
-      long count = 0;
-      final int[] nu = adj[u];
-      for (int ki = 0; ki < nu.length; ki++) {
-        final int v = nu[ki];
-        // Count neighbors of v that are in N(u) — inner loop, no allocation
-        final int[] nv = adj[v];
-        for (int kj = 0; kj < nv.length; kj++) {
-          if (neighborSets[u].get(nv[kj]))
-            count++;
-        }
-      }
-      triangles[u] = count / 2;
-    }
+    toSimpleNeighbourSets(adj, guard);
+    final long[] triangles = countTriangles(adj, guard);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final long deg = adj[i].length;
