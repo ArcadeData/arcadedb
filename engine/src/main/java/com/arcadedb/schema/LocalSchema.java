@@ -3013,6 +3013,15 @@ public class LocalSchema implements Schema {
         for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
           dropIndexInternal(m.getName());
 
+        // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
+        // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). Before the
+        // type leaves the type map, which is where the listener is unregistered from
+        for (final Trigger trigger : new ArrayList<>(triggers.values()))
+          if (canonicalTypeName.equals(trigger.getTypeName())) {
+            unregisterTriggerListener(trigger.getName());
+            triggers.remove(trigger.getName());
+          }
+
         if (type instanceof LocalVertexType vertexType)
           // DELETE IN/OUT EDGE FILES
           database.getGraphEngine().dropVertexType(vertexType);

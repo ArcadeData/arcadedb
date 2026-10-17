@@ -194,6 +194,43 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
   }
 
   @Test
+  void droppingATypeInTheMiddleOfTheHierarchyMovesTheLineageWithIt() {
+    database.command("sql", "CREATE VERTEX TYPE Middle EXTENDS P");
+    database.command("sql", "CREATE VERTEX TYPE Leaf EXTENDS Middle");
+    auditTrigger("onP", "AFTER CREATE", "P", "p");
+    auditTrigger("onMiddle", "AFTER CREATE", "Middle", "middle");
+
+    database.transaction(() -> database.command("sql", "INSERT INTO Leaf SET x = 1"));
+    assertThat(audits("p")).isEqualTo(1);
+    assertThat(audits("middle")).isEqualTo(1);
+
+    // The subtypes of a dropped type are linked to its super types: Leaf keeps firing P's trigger, and no longer Middle's
+    database.command("sql", "DROP TYPE Middle UNSAFE");
+    assertThat(database.getSchema().getType("Leaf").instanceOf("P")).isTrue();
+    database.transaction(() -> database.command("sql", "INSERT INTO Leaf SET x = 2"));
+    assertThat(audits("p")).isEqualTo(2);
+    assertThat(audits("middle")).isEqualTo(1);
+  }
+
+  @Test
+  void droppingATypeDropsItsTriggers() {
+    database.command("sql", "CREATE VERTEX TYPE Gone");
+    auditTrigger("onGone", "AFTER CREATE", "Gone", "gone");
+    auditTrigger("onP", "AFTER CREATE", "P", "p");
+
+    database.command("sql", "DROP TYPE Gone");
+    assertThat(database.getSchema().existsTrigger("onGone")).isFalse();
+    assertThat(database.getSchema().existsTrigger("onP")).isTrue();
+
+    // A type created later under the same name does not inherit the trigger, in this session or after a reopen
+    database.command("sql", "CREATE VERTEX TYPE Gone");
+    database.transaction(() -> database.command("sql", "INSERT INTO Gone SET x = 1"));
+    reopenDatabase();
+    database.transaction(() -> database.command("sql", "INSERT INTO Gone SET x = 2"));
+    assertThat(audits("gone")).isZero();
+  }
+
+  @Test
   void triggersStayPolymorphicAfterReopeningTheDatabase() {
     auditTrigger("ta", "AFTER CREATE", "P", "create");
     reopenDatabase();
