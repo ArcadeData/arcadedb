@@ -67,7 +67,10 @@ class GrpcAuthInterceptor implements ServerInterceptor {
    * and rejected (issue #10142). A refusal of this kind is a fault on the server, and before this counter it was
    * indistinguishable from a wrong password: the native image, missing protobuf reflection metadata, refused every
    * admin RPC as "Authentication required" with nothing at the default log level. The {@code stage} tag says where:
-   * {@link #STAGE_ADMIN_CREDENTIAL_READ}, {@link #STAGE_AUTHENTICATE} or {@link #STAGE_INTERCEPT}.
+   * {@link #STAGE_ADMIN_CREDENTIAL_READ} (the descriptor-driven read of an admin request's credentials),
+   * {@link #STAGE_AUTHENTICATE} (an unexpected failure inside {@link ServerSecurity#authenticate}, such as a security
+   * backend outage) or {@link #STAGE_INTERCEPT} (any other unexpected failure on the data-plane path). Every stage is
+   * also logged at SEVERE, and every stage's refusal names a server fault rather than a bad credential.
    */
   static final String AUTH_FAULTS_METER            = "grpc.auth.faults.total";
   static final String STAGE_ADMIN_CREDENTIAL_READ  = "admin-credential-read";
@@ -75,6 +78,9 @@ class GrpcAuthInterceptor implements ServerInterceptor {
   static final String STAGE_INTERCEPT              = "intercept";
   static final String ADMIN_CREDENTIAL_READ_FAULT  =
       "Authentication required: the server could not read the request credentials (server fault, see the server log)";
+  static final String AUTHENTICATE_FAULT           =
+      "Authentication error: the server could not evaluate the credentials (server fault, see the server log)";
+  private static final String AUTHENTICATION_REQUIRED = "Authentication required";
 
   private final        ServerSecurity          security;
   private final        boolean                 securityEnabled;
@@ -163,9 +169,12 @@ class GrpcAuthInterceptor implements ServerInterceptor {
         public void onMessage(final ReqT message) {
           if (halted)
             return;
-          boolean authenticated;
+          final String failure;
           try {
-            authenticated = authenticateAdminRequest(message);
+            failure = adminRequestFailure(message);
+          } catch (final VirtualMachineError e) {
+            // An OutOfMemoryError or a StackOverflowError is not an authentication fault: the JVM must see it
+            throw e;
           } catch (final Exception | Error e) {
             // Keep the fail-closed posture uniform with the rest of the interceptor: any unexpected
             // error denies the call rather than surfacing as a generic UNKNOWN status. Error is caught
@@ -184,9 +193,12 @@ class GrpcAuthInterceptor implements ServerInterceptor {
             call.close(Status.UNAUTHENTICATED.withDescription(ADMIN_CREDENTIAL_READ_FAULT), new Metadata());
             return;
           }
-          if (!authenticated) {
+          if (failure != null) {
             halted = true;
-            call.close(Status.UNAUTHENTICATED.withDescription("Authentication required"), new Metadata());
+            // A security fault keeps its own description; every credential refusal reads as before, so the
+            // admin path does not tell a caller which part of its credential was wrong
+            call.close(Status.UNAUTHENTICATED.withDescription(
+                AUTHENTICATE_FAULT.equals(failure) ? AUTHENTICATE_FAULT : AUTHENTICATION_REQUIRED), new Metadata());
             return;
           }
           super.onMessage(message);
@@ -254,6 +266,8 @@ class GrpcAuthInterceptor implements ServerInterceptor {
         }
       }
 
+    } catch (final VirtualMachineError e) {
+      throw e;
     } catch (final Exception | Error e) {
       // Error included for the same reason as the admin arm above: a class-initialization failure must be reported,
       // not escape as a bare UNKNOWN
@@ -266,32 +280,32 @@ class GrpcAuthInterceptor implements ServerInterceptor {
   }
 
   /**
-   * Validates the credentials carried in the body of an admin request. Every admin request message
+   * Validates the credentials carried in the body of an admin request and returns {@code null} when they authenticate,
+   * otherwise the reason for the refusal ({@link #AUTHENTICATE_FAULT} when the server could not evaluate them). Every admin request message
    * declares an optional {@code DatabaseCredentials credentials = 1} field; the credential is
    * resolved generically via the protobuf descriptor so new admin RPCs are covered automatically.
-   * Returns {@code true} only when valid credentials authenticate against server security. Fails
-   * closed: a non-protobuf message, a missing credentials field, a blank username or any
-   * authentication failure all return {@code false}.
+   * Fails closed: a non-protobuf message, a missing credentials field, a blank username or any
+   * authentication failure all return a non-null reason.
    */
-  private boolean authenticateAdminRequest(final Object message) {
+  private String adminRequestFailure(final Object message) {
     if (!(message instanceof final Message protoMessage))
-      return false;
+      return AUTHENTICATION_REQUIRED;
 
     // 'credentials' is a message-typed field on every admin request, so hasField() reports explicit
     // presence (proto3 tracks presence for message fields). This presence check is coupled to that
     // field staying message-typed.
     final FieldDescriptor credentialsField = protoMessage.getDescriptorForType().findFieldByName("credentials");
     if (credentialsField == null || !protoMessage.hasField(credentialsField))
-      return false;
+      return AUTHENTICATION_REQUIRED;
 
     if (!(protoMessage.getField(credentialsField) instanceof final DatabaseCredentials credentials))
-      return false;
+      return AUTHENTICATION_REQUIRED;
 
     final String username = credentials.getUsername();
     if (username == null || username.isBlank())
-      return false;
+      return AUTHENTICATION_REQUIRED;
 
-    return validateCredentials(username, credentials.getPassword(), null);
+    return authenticationFailure(username, credentials.getPassword(), null);
   }
 
   private HttpAuthSession getValidSession(final String token, final String database) {
@@ -335,10 +349,6 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     return database == null || database.isBlank() ? null : database;
   }
 
-  private boolean validateCredentials(final String username, final String password, final String database) {
-    return authenticationFailure(username, password, database) == null;
-  }
-
   /**
    * Authenticates {@code username}/{@code password}, additionally requiring a grant on {@code database}
    * when one is named. Returns {@code null} when the caller is authenticated, otherwise the reason to
@@ -361,9 +371,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       final String reason = e.getMessage();
       return reason == null || reason.isBlank() ? "Invalid credentials" : reason;
     } catch (final Exception e) {
+      // Not a credential refusal: the security layer itself failed, so the caller is told so rather than that its
+      // password was wrong (issue #10142)
       authenticateFaults.increment();
       LogManager.instance().log(this, Level.SEVERE, "Failed to authenticate user: %s for database: %s", e, username, database);
-      return "Invalid credentials";
+      return AUTHENTICATE_FAULT;
     }
   }
 

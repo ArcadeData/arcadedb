@@ -26,6 +26,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.Status;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +42,7 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -65,6 +67,7 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
   private ServerCallHandler<Object, Object> handler;
   private MethodDescriptor<Object, Object>  methodDescriptor;
   private ServerCall.Listener<Object>       downstream;
+  private ServerCall.Listener<Object>       listener;
   private Logger                            jul;
   private Level                             previousLevel;
   private final List<LogRecord>             published = new CopyOnWriteArrayList<>();
@@ -144,20 +147,54 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
     verify(downstream, never()).onMessage(any());
 
     // The call is halted: the half-close that follows must not reach the handler either
-    listener().onHalfClose();
+    listener.onHalfClose();
     verify(downstream, never()).onHalfClose();
   }
 
   @Test
-  void anUnexpectedFailureInsideAuthenticateIsCounted() {
-    // Already SEVERE before #10142, but not counted: a security fault looked like a wrong password on every dashboard
+  void anUnexpectedFailureInsideAuthenticateIsCountedAndNamedAsAServerFault() {
+    // Already SEVERE before #10142, but neither counted nor told apart: a security backend outage answered the admin
+    // caller "Authentication required", exactly like a wrong password
     security.fails("authenticate", new IllegalStateException("security backend down"));
 
     final Status status = sendAdminMessage(adminRequest("root", "secret"));
 
     assertThat(status.getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+    assertThat(status.getDescription()).isEqualTo(GrpcAuthInterceptor.AUTHENTICATE_FAULT);
     assertThat(faults(GrpcAuthInterceptor.STAGE_AUTHENTICATE)).isEqualTo(1.0);
-    assertThat(published).anyMatch(r -> r.getLevel().intValue() >= Level.WARNING.intValue());
+    assertFaultLogged(IllegalStateException.class);
+  }
+
+  @Test
+  void anUnexpectedFailureInsideAuthenticateOnTheDataPlaneIsNamedAsAServerFault() {
+    when(methodDescriptor.getFullMethodName()).thenReturn(DATA_METHOD);
+    security.fails("authenticate", new IllegalStateException("security backend down"));
+
+    interceptor.interceptCall(call, basicAuthHeaders(), handler);
+
+    final ArgumentCaptor<Status> status = ArgumentCaptor.forClass(Status.class);
+    verify(call).close(status.capture(), any());
+    assertThat(status.getValue().getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+    assertThat(status.getValue().getDescription()).isEqualTo(GrpcAuthInterceptor.AUTHENTICATE_FAULT);
+    assertThat(faults(GrpcAuthInterceptor.STAGE_AUTHENTICATE)).isEqualTo(1.0);
+  }
+
+  @Test
+  void aVirtualMachineErrorIsNotSwallowedAsAnAuthenticationFault() {
+    // An OOM or a stack overflow must reach the JVM, not be reported as an auth fault
+    security.on("authenticate", args -> {
+      throw new StackOverflowError();
+    });
+    when(methodDescriptor.getFullMethodName()).thenReturn(ADMIN_METHOD);
+    listener = interceptor.interceptCall(call, new Metadata(), handler);
+
+    assertThatThrownBy(() -> listener.onMessage(adminRequest("root", "secret"))).isInstanceOf(StackOverflowError.class);
+    assertThat(totalFaults()).isEqualTo(0.0);
+    verify(downstream, never()).onMessage(any());
+
+    when(methodDescriptor.getFullMethodName()).thenReturn(DATA_METHOD);
+    assertThatThrownBy(() -> interceptor.interceptCall(call, basicAuthHeaders(), handler)).isInstanceOf(StackOverflowError.class);
+    assertThat(totalFaults()).isEqualTo(0.0);
   }
 
   @Test
@@ -178,11 +215,7 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
     security.on("authenticate", args -> {
       throw new NoClassDefFoundError("com/example/Missing");
     });
-    final Metadata headers = new Metadata();
-    headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), "root");
-    headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), "secret");
-
-    interceptor.interceptCall(call, headers, handler);
+    interceptor.interceptCall(call, basicAuthHeaders(), handler);
 
     final ArgumentCaptor<Status> status = ArgumentCaptor.forClass(Status.class);
     verify(call).close(status.capture(), any());
@@ -198,12 +231,6 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
     assertThat(totalFaults()).isEqualTo(0.0);
   }
 
-  private ServerCall.Listener<Object> listener;
-
-  private ServerCall.Listener<Object> listener() {
-    return listener;
-  }
-
   private Status sendAdminMessage(final Object message) {
     when(methodDescriptor.getFullMethodName()).thenReturn(ADMIN_METHOD);
     listener = interceptor.interceptCall(call, new Metadata(), handler);
@@ -212,6 +239,13 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
     final ArgumentCaptor<Status> status = ArgumentCaptor.forClass(Status.class);
     verify(call).close(status.capture(), any());
     return status.getValue();
+  }
+
+  private static Metadata basicAuthHeaders() {
+    final Metadata headers = new Metadata();
+    headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), "root");
+    headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), "secret");
+    return headers;
   }
 
   private static ListDatabasesRequest adminRequest(final String user, final String password) {
@@ -232,6 +266,6 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
   }
 
   private double totalFaults() {
-    return registry.find(GrpcAuthInterceptor.AUTH_FAULTS_METER).counters().stream().mapToDouble(c -> c.count()).sum();
+    return registry.find(GrpcAuthInterceptor.AUTH_FAULTS_METER).counters().stream().mapToDouble(Counter::count).sum();
   }
 }
