@@ -62,6 +62,8 @@ final class GrpcClientErrorMapper {
       Metadata.ASCII_STRING_MARSHALLER);
   static final Metadata.Key<String> ALREADY_EXISTS_KIND_KEY = Metadata.Key.of("arcadedb-already-exists-kind",
       Metadata.ASCII_STRING_MARSHALLER);
+  static final Metadata.Key<String> NAME_TAKEN_KEY       = Metadata.Key.of("arcadedb-name-taken",
+      Metadata.ASCII_STRING_MARSHALLER);
 
   private static final int MAX_CAUSE_DEPTH = 32;
 
@@ -168,16 +170,21 @@ final class GrpcClientErrorMapper {
 
   /**
    * Whether an admin RPC failed because the name it creates is taken: a user, an API token or a database (issue #10075).
-   * The server answers all three {@code ALREADY_EXISTS} with no exception-class trailer, which {@link #toException} reads as
-   * the data plane's duplicate-key answer, so the admin calls ask this first. Only the trailer-less shape is a taken name:
-   * an {@code ALREADY_EXISTS} that names its exception (a duplicate key, or any typed conflict a later server sends) keeps
-   * the type that trailer names.
+   * The server names all three in the {@link #NAME_TAKEN_KEY} trailer (issue #10143) and with no exception-class trailer,
+   * which {@link #toException} would read as the data plane's duplicate-key answer, so the admin calls ask this first.
+   * <p>
+   * The name-taken trailer is the signal. A trailer-less {@code ALREADY_EXISTS} is still read as a taken name too, but only
+   * because a server that predates that trailer answers one exactly so; it is not a rule the server keeps, since the admin
+   * service does send class-name trailers on other arms. An {@code ALREADY_EXISTS} that names its exception (a duplicate
+   * key, or any typed conflict a later server sends) keeps the type that trailer names.
    */
   static boolean isNameTaken(final Throwable e) {
     if (Status.fromThrowable(e).getCode() != Status.Code.ALREADY_EXISTS)
       return false;
     final Metadata trailers = Status.trailersFromThrowable(e);
     if (trailers == null)
+      return true;
+    if (trailers.get(NAME_TAKEN_KEY) != null)
       return true;
     final String exceptionClass = trailers.get(EXCEPTION_CLASS_KEY);
     return exceptionClass == null || exceptionClass.isEmpty();
@@ -232,7 +239,10 @@ final class GrpcClientErrorMapper {
 
   /**
    * Whether {@code e} is a status-only {@code UNAVAILABLE} that may have been raised after the server received the
-   * request. A class-name trailer means the server answered, so it did not apply anything it was not reporting; a
+   * request. A class-name trailer means the server answered, so it did not apply anything it was not reporting - which
+   * holds only because every {@code UNAVAILABLE} the server authors carries one: the data plane through
+   * {@code GrpcErrorMapper}, the admin service on its {@code NeedRetryException} arm and its connect-cluster answer
+   * (issue #10143, pinned by {@code Issue10143AdminStatusRoundTripTest}); a
    * failure to connect means the request never left this client. Everything else - a reset, a GOAWAY, a channel
    * shut down mid-call - can follow a request the server already applied.
    * <p>

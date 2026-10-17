@@ -45,6 +45,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.UserAlreadyExistsException;
 import com.arcadedb.server.security.credential.CredentialsValidator;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
@@ -105,12 +106,17 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // is well formed - it is the identity that is taken. A user or database name already taken is the same conflict
       // (issues #10073, #10074), and not a ServerSecurityException nor a malformed argument. DatabaseAlreadyExistsException
       // extends IllegalArgumentException, so it must stay above that arm; the restore routes raise a plain
-      // IllegalArgumentException for a taken target and keep INVALID_ARGUMENT below (issue #7395). Deliberately trailer-less:
-      // that is what the Java client reads as a taken name on every admin RPC (#10075, #10154), and a class-name trailer
-      // would make a client that does not know the class fall back to the duplicate-key reading instead
-      RefusalArm.own(ServerControlPlane.AlreadyExistsException.class, Status.Code.ALREADY_EXISTS),
-      RefusalArm.own(UserAlreadyExistsException.class, Status.Code.ALREADY_EXISTS),
-      RefusalArm.own(DatabaseAlreadyExistsException.class, Status.Code.ALREADY_EXISTS),
+      // IllegalArgumentException for a taken target and keep INVALID_ARGUMENT below (issue #7395). Named by a trailer of their
+      // own, NAME_TAKEN_KEY, which is what the Java client reads as a taken name on every admin RPC (#10075, #10154, #10143):
+      // the signal used to be the ABSENCE of a class-name trailer, which no other arm could then ever send. Still no
+      // class-name trailer, because a client that predates NAME_TAKEN_KEY reads a trailer-less ALREADY_EXISTS as a taken
+      // name, while a class it does not know would send it back to the duplicate-key reading
+      RefusalArm.own(ServerControlPlane.AlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(UserAlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(DatabaseAlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
       // A backup, restore or import already running on the same database is HTTP's 409 on the other transport: the
       // request is well formed and authorized, and retrying once the other operation finishes is the fix. The engine's
       // base type, so RestoreBackup, RestoreDatabase and ImportDatabase get the same status TriggerBackup already got
@@ -132,8 +138,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // same thing here; without this arm it reached the catch-all and came out INTERNAL, which tells a client the
       // server broke rather than to retry (issue #7532, absorbing #7550). LAST of the named arms because it is a
       // supertype: ServerIsNotTheLeaderException extends it and is answered before this table, with the redirect
-      // trailers it needs
-      RefusalArm.generic(NeedRetryException.class, Status.Code.UNAVAILABLE) };
+      // trailers it needs. Named in the class-name trailer (issue #10143): a status-only UNAVAILABLE is what a lost
+      // connection looks like, so the client reads it on a write as an outcome that may already have been applied and
+      // must not be retried - the opposite of this answer, which is that nothing was applied and sending it again is the fix
+      RefusalArm.generic(NeedRetryException.class, Status.Code.UNAVAILABLE).naming(GrpcErrorMapper.EXCEPTION_CLASS_KEY) };
 
   /**
    * One classified refusal of {@link #toStatus}: a failure of {@code type}, found anywhere along the cause chain, is
@@ -145,16 +153,41 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * its message. Raised as the head frame by this service or the control plane, it is a sentence about the request; buried
    * under a wrapper, it can come from any library on the way and carry a path or an internal. The STATUS is kept either
    * way, because the status is what the client acts on (issue #10158).
+   * <p>
+   * {@code trailer}, when not {@code null}, is the trailer the class name of the classified frame is sent in: the arms whose
+   * TYPE the client has to act on, and not only their status (issue #10143). {@code null} sends no trailer, and the client
+   * maps the status code alone.
    */
-  record RefusalArm(Class<? extends Throwable> type, Status.Code code, boolean broad) {
+  record RefusalArm(Class<? extends Throwable> type, Status.Code code, boolean broad, Metadata.Key<String> trailer) {
     /** An ArcadeDB-authored refusal: its sentence is about the request at any depth. */
     static RefusalArm own(final Class<? extends Throwable> type, final Status.Code code) {
-      return new RefusalArm(type, code, false);
+      return new RefusalArm(type, code, false, null);
     }
 
     /** A JDK or replication-layer type, whose text is concealed in production when it is found under a wrapper. */
     static RefusalArm generic(final Class<? extends Throwable> type, final Status.Code code) {
-      return new RefusalArm(type, code, true);
+      return new RefusalArm(type, code, true, null);
+    }
+
+    /** This arm, sending the class name of the frame it classified in {@code key}. */
+    RefusalArm naming(final Metadata.Key<String> key) {
+      return new RefusalArm(type, code, broad, key);
+    }
+
+    /**
+     * The trailers this arm answers {@code frame} with, or {@code null} when it sends none. The class name is sent in
+     * production mode too, as {@code GrpcErrorMapper} sends it on every data-plane answer: it is the TYPE the client acts
+     * on, not free-form text, which is what production mode conceals. Only an ArcadeDB class is named as itself; a
+     * subtype from any other package (a {@code broad} arm can classify one) is named by the arm's own type, which is all
+     * the client needs to act on and says nothing about what is installed on the server.
+     */
+    Metadata trailersFor(final Throwable frame) {
+      if (trailer == null)
+        return null;
+      final String frameClass = frame.getClass().getName();
+      final Metadata trailers = new Metadata();
+      trailers.put(trailer, frameClass.startsWith("com.arcadedb.") ? frameClass : type.getName());
+      return trailers;
     }
   }
 
@@ -1055,9 +1088,22 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // returning normally so the join stands: respond() catches it and toStatus() passes a StatusException
       // through unchanged, so this is the transport choosing the status for a result it was handed.
       if (result.hasFailedSeeds())
-        throw Status.UNAVAILABLE.withDescription(result.errorMessage() + " " + result.detailMessage()).asException();
+        throw seedFailureStatus(result);
       return ConnectClusterResponse.newBuilder().build();
     });
+  }
+
+  /**
+   * The answer to a join that succeeded with a security document left unseeded: {@code UNAVAILABLE}, named as a
+   * {@link NeedRetryException} in the class-name trailer (issue #10143). Without the trailer the status is
+   * indistinguishable from a lost connection, which the client reads on a write as "may already have been applied, do not
+   * retry" - the opposite of this answer, whose fix is to re-run the idempotent call.
+   */
+  // @VisibleForTesting
+  static StatusException seedFailureStatus(final ServerControlPlane.ConnectClusterResult result) {
+    final Metadata trailers = new Metadata();
+    trailers.put(GrpcErrorMapper.EXCEPTION_CLASS_KEY, NeedRetryException.class.getName());
+    return Status.UNAVAILABLE.withDescription(result.errorMessage() + " " + result.detailMessage()).asException(trailers);
   }
 
   /**
@@ -1282,7 +1328,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
           final boolean conceal = arm.broad() && depth > 0 && concealErrors();
           return Status.fromCode(arm.code())
               .withDescription(conceal ? GrpcErrorMapper.concealableDescription(this, operation, frame, conceal) : frame.getMessage())
-              .asException();
+              .asException(arm.trailersFor(frame));
         }
     // THE CATCH-ALL: AN UNEXPECTED FAULT, WHOSE MESSAGE IS FREE-FORM ENGINE TEXT AND CAN CARRY FILE PATHS, SCHEMA
     // NAMES AND INTERNALS. THAT IS PRECISELY WHAT PRODUCTION MODE CONCEALS IN THE HTTP BODY'S 'detail' FIELD, AND
