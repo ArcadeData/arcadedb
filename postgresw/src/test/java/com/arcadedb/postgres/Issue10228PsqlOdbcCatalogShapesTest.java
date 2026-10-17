@@ -574,6 +574,13 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     assertThat(nested.matcher("ac]").matches()).isTrue();
     assertThat(nested.matcher("[c]").matches()).isTrue();
     assertThat(nested.matcher("c").matches()).isFalse();
+    // A ']' first in a bracket is a member, also after '^', and a backslash escapes inside one (PostgreSQL 17 agrees)
+    assertThat(Pattern.compile(PostgresCatalogExpression.javaRegex("^[^]]$")).matcher("]").matches()).isFalse();
+    assertThat(Pattern.compile(PostgresCatalogExpression.javaRegex("^[^]]$")).matcher("x").matches()).isTrue();
+    assertThat(Pattern.compile(PostgresCatalogExpression.javaRegex("^[]a]$")).matcher("]").matches()).isTrue();
+    assertThat(Pattern.compile(PostgresCatalogExpression.javaRegex("^[]a]$")).matcher("b").matches()).isFalse();
+    assertThat(Pattern.compile(PostgresCatalogExpression.javaRegex("^[\\\\a]$")).matcher("\\").matches()).isTrue();
+    assertThat(Pattern.compile(PostgresCatalogExpression.javaRegex("^[\\\\a]$")).matcher("b").matches()).isFalse();
     // A class this catalog does not translate is unreadable, not misread: permissive here, declined over pg_type.
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:nope:]]+$'"), "relname"))
         .containsExactly("City", "Note", "Person");

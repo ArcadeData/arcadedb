@@ -112,6 +112,13 @@ public class PostgresCatalog {
   /** The OID PostgreSQL gives the {@code heap} table access method, which every table here is. */
   private static final int HEAP_ACCESS_METHOD_OID = 2;
   /**
+   * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
+   * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
+   * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
+   * units; past the budget the statement is refused with {@link WorkLimitExceeded}.
+   */
+  private static final long WORK_BUDGET = 5_000_000L;
+  /**
    * The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column - here and in
    * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
    */
@@ -298,13 +305,10 @@ public class PostgresCatalog {
   }
 
   private static boolean startsAsQuery(final String query) {
-    for (int i = 0; i < query.length(); i++) {
-      final char c = query.charAt(i);
-      if (Character.isWhitespace(c))
-        continue;
-      return c == '(' || query.regionMatches(true, i, "select", 0, 6);
-    }
-    return false;
+    int i = 0;
+    while (i < query.length() && Character.isWhitespace(query.charAt(i)))
+      ++i;
+    return i < query.length() && (query.charAt(i) == '(' || query.regionMatches(true, i, "select", 0, 6));
   }
 
   private static boolean isIdentifierPart(final char c) {
@@ -454,14 +458,6 @@ public class PostgresCatalog {
         tokens.set(i, literal);
     }
   }
-
-  /**
-   * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
-   * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
-   * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
-   * units; past the budget the statement is refused with {@link WorkLimitExceeded}.
-   */
-  private static final long WORK_BUDGET = 5_000_000L;
 
   /**
    * @param outer  the resolver of the row a sub-select is correlated to, null for a statement that is not one
@@ -1285,7 +1281,7 @@ public class PostgresCatalog {
       final Object passes = passes(filters, resolver);
       if (passes == PostgresCatalogExpression.UNKNOWN && !toleratesUnreadableFilter)
         return DECLINED;
-      if (passes != Boolean.FALSE)
+      if (!Boolean.FALSE.equals(passes))
         surviving.add(new Joined(row, nulled));
     }
 

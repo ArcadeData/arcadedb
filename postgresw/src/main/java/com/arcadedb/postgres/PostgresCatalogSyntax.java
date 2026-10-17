@@ -32,9 +32,6 @@ import java.util.Locale;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PostgresCatalogSyntax {
-  private PostgresCatalogSyntax() {
-  }
-
   /**
    * How deeply statements may nest inside one another - derived tables, sub-selects, set-operation arms,
    * parenthesised joins - before the query is declined. A client's catalog query nests two or three deep; the
@@ -42,6 +39,9 @@ final class PostgresCatalogSyntax {
    * until the stack gives out: a StackOverflowError is an Error, and would take the connection thread with it.
    */
   static final int MAX_NESTING = 32;
+
+  private PostgresCatalogSyntax() {
+  }
 
   /**
    * Rewrites the spellings that mean the same as a plainer one, so that nothing past this point has to know
@@ -650,12 +650,13 @@ final class PostgresCatalogSyntax {
 
   /** Whether parenthesised FROM content is a sub-select (a derived table) rather than a parenthesised join. */
   private static boolean startsAStatement(final List<PostgresCatalogToken> inside) {
-    for (final PostgresCatalogToken token : inside) {
-      if (token.isSymbol("("))
-        continue;
-      return token.isKeyword("SELECT") || token.isKeyword("VALUES") || token.isKeyword("WITH") || token.isKeyword("TABLE");
-    }
-    return true;
+    int i = 0;
+    while (i < inside.size() && inside.get(i).isSymbol("("))
+      ++i;
+    if (i == inside.size())
+      return true;
+    final PostgresCatalogToken token = inside.get(i);
+    return token.isKeyword("SELECT") || token.isKeyword("VALUES") || token.isKeyword("WITH") || token.isKeyword("TABLE");
   }
 
   private static boolean isJoinWord(final PostgresCatalogToken token) {

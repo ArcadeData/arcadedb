@@ -465,7 +465,8 @@ abstract class PostgresCatalogExpression {
      * {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row the node is evaluated
      * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
      * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
-     * statement's work budget, which every re-parse is charged to.
+     * statement's work budget, which every re-parse is charged to (pinned by
+     * {@code Issue10228PsqlOdbcCatalogShapesTest.aBacktrackingRegularExpressionIsBounded}).
      */
     private       long                      regexBudget = BoundedCharSequence.STATEMENT_BUDGET;
 
