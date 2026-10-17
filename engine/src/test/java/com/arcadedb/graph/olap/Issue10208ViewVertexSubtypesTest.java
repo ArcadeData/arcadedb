@@ -27,6 +27,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -240,7 +241,9 @@ class Issue10208ViewVertexSubtypesTest {
     assertThat(count(ONE_HOP)).as("answered from the records").isEqualTo(expectedPaths("E", 1));
 
     if (mode == GraphAnalyticalView.UpdateMode.OFF) {
-      assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+      // turned STALE off the query thread that found Y
+      Awaitility.await("the OFF view turns STALE").atMost(30, TimeUnit.SECONDS)
+          .until(() -> view.getStatus() == GraphAnalyticalView.Status.STALE);
       database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW g");
     }
     assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();

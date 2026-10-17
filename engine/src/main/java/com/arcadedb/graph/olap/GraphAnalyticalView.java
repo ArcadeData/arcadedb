@@ -1159,7 +1159,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
     if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
-      onVertexTypeJoinedWithRecords(name);
+      dispatchJoinedTypeRebuild(name);
     return holds;
   }
 
@@ -1175,6 +1175,29 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (!(bucket instanceof LocalBucket localBucket) || !isCommittedEmpty(localBucket))
         return false;
     return true;
+  }
+
+  /**
+   * Hands {@link #onVertexTypeJoinedWithRecords} to the build executor: the coverage check that found the type is asked on
+   * the query path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type
+   * is already not claimed.
+   */
+  private void dispatchJoinedTypeRebuild(final String typeName) {
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          if (!shutDown)
+            onVertexTypeJoinedWithRecords(typeName);
+        } finally {
+          taskCompleted();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Shutting down: nothing left to rebuild
+      taskCompleted();
+    }
   }
 
   /** A vertex type holding vertices no scan read joined the listed family: see {@link #holdsJoinedVertexType}. */
