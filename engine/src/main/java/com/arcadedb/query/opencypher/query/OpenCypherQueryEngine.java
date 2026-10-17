@@ -555,8 +555,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // used to begin and commit their own, row by row, so a statement that failed kept what it wrote before the error, a
     // MERGE over several pairs conflicted with its own earlier rows, and a label round trip that moves the record met
     // it again in the scan of the label it put back, forever. A conflict re-runs the whole statement from committed
-    // state, which is safe because nothing of the failed attempt survives - unless a CALL { ... } IN TRANSACTIONS
-    // already committed batches of it, which a second run would apply twice: that statement gets one attempt.
+    // state, which is safe because nothing of the failed attempt survives in the database - unless a CALL { ... } IN
+    // TRANSACTIONS already committed batches of it, which a second run would apply twice: that statement gets one attempt.
+    // What a procedure did OUTSIDE the database (a call to another system) is repeated by the retry, as it is by the retry
+    // of the HTTP handler and of Database.transaction(): such a procedure has to be idempotent, or run with retries at 1.
+    // The statement is also one unit for memory: a write over millions of records is held until its commit, as over HTTP
+    // and in Neo4j, and CALL { ... } IN TRANSACTIONS is the way to commit it in batches.
     final ResultSet[] result = new ResultSet[1];
     execDb.transaction(() -> result[0] = executeWrite(plan, execDb, profile, timeExecution), false,
         statement.hasSubqueryInTransactions() ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));

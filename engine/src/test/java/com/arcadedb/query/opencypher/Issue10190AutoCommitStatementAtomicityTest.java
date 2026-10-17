@@ -131,6 +131,58 @@ class Issue10190AutoCommitStatementAtomicityTest extends TestHelper {
     assertThat(database.isTransactionActive()).isFalse();
   }
 
+  /**
+   * The commit follows the drain of the write statement, so every write shape must have run before it: each is committed
+   * (seen from ANOTHER thread, which has no view of this thread's transaction) and nothing is left open.
+   */
+  @Test
+  void everyWriteShapeIsDrainedBeforeTheCommit() throws Exception {
+    final String[][] shapes = {
+        { "UNWIND range(1, 3) AS i CREATE (n:B {k: i}) RETURN n.k AS k", "MATCH (n:B) RETURN count(n) AS c", "3" },
+        { "MATCH (n:B) WITH n WHERE n.k > 1 SET n.big = true RETURN n", "MATCH (n:B) WHERE n.big RETURN count(n) AS c", "2" },
+        { "MATCH (n:B) WITH collect(n) AS ns FOREACH (x IN ns | SET x.f = 1)", "MATCH (n:B) WHERE n.f = 1 RETURN count(n) AS c", "3" },
+        { "CREATE (:A {k: 100}) RETURN 1 AS x UNION ALL CREATE (:A {k: 101}) RETURN 2 AS x",
+            "MATCH (n:A) WHERE n.k >= 100 RETURN count(n) AS c", "2" },
+        { "CALL merge.node(['A'], {k: 200}, {}, {}) YIELD node RETURN node", "MATCH (n:A {k: 200}) RETURN count(n) AS c", "1" },
+        { "MATCH (a:A {k: 100}), (b:A {k: 101}) CREATE (a)-[r:R]->(b) RETURN r LIMIT 1", "MATCH ()-[r:R]->() RETURN count(r) AS c", "1" },
+        { "CALL { CREATE (:A {k: 300}) } RETURN 1 AS x", "MATCH (n:A {k: 300}) RETURN count(n) AS c", "1" } };
+
+    for (final String[] shape : shapes) {
+      final List<Result> rows = drain(shape[0]);
+      assertThat(database.isTransactionActive()).as(shape[0]).isFalse();
+      assertThat(countFromAnotherThread(shape[1])).as(shape[0] + " (" + rows.size() + " rows)").isEqualTo(Long.parseLong(shape[2]));
+    }
+  }
+
+  /** A statement refused by an existence constraint checked at its end is rolled back before the error reaches the caller. */
+  @Test
+  void aFailedExistenceCheckAtTheEndOfTheStatementRollsItBack() throws Exception {
+    database.command("opencypher", "CREATE CONSTRAINT b_k_exists IF NOT EXISTS FOR (n:B) REQUIRE n.k IS NOT NULL").close();
+    setup("CREATE (:A {k: 0})");
+
+    assertThatThrownBy(() -> drain("MATCH (a:A) SET a.touched = true CREATE (:B {name: 'no k'})")).hasMessageContaining("k");
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(countFromAnotherThread("MATCH (n:B) RETURN count(n) AS c")).isZero();
+    assertThat(countFromAnotherThread("MATCH (n:A) WHERE n.touched RETURN count(n) AS c")).isZero();
+  }
+
+  private long countFromAnotherThread(final String cypher) throws Exception {
+    final long[] count = new long[1];
+    final Throwable[] failure = new Throwable[1];
+    final Thread reader = new Thread(() -> {
+      try (final ResultSet rs = database.query("opencypher", cypher)) {
+        count[0] = rs.next().<Number>getProperty("c").longValue();
+      } catch (final Throwable t) {
+        failure[0] = t;
+      }
+    });
+    reader.start();
+    reader.join();
+    if (failure[0] != null)
+      throw new AssertionError("The read from another thread failed: " + cypher, failure[0]);
+    return count[0];
+  }
+
   private void setup(final String cypher) {
     database.transaction(() -> database.command("opencypher", cypher).close());
   }
