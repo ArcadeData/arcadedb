@@ -111,9 +111,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // the signal used to be the ABSENCE of a class-name trailer, which no other arm could then ever send. Still no
       // class-name trailer, because a client that predates NAME_TAKEN_KEY reads a trailer-less ALREADY_EXISTS as a taken
       // name, while a class it does not know would send it back to the duplicate-key reading
-      RefusalArm.own(ServerControlPlane.AlreadyExistsException.class, Status.Code.ALREADY_EXISTS).naming(GrpcErrorMapper.NAME_TAKEN_KEY),
-      RefusalArm.own(UserAlreadyExistsException.class, Status.Code.ALREADY_EXISTS).naming(GrpcErrorMapper.NAME_TAKEN_KEY),
-      RefusalArm.own(DatabaseAlreadyExistsException.class, Status.Code.ALREADY_EXISTS).naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(ServerControlPlane.AlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(UserAlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(DatabaseAlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
       // A backup, restore or import already running on the same database is HTTP's 409 on the other transport: the
       // request is well formed and authorized, and retrying once the other operation finishes is the fix. The engine's
       // base type, so RestoreBackup, RestoreDatabase and ImportDatabase get the same status TriggerBackup already got
@@ -174,14 +177,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     /**
      * The trailers this arm answers {@code frame} with, or {@code null} when it sends none. The class name is sent in
      * production mode too, as {@code GrpcErrorMapper} sends it on every data-plane answer: it is the TYPE the client acts
-     * on, and the named arms classify ArcadeDB's own exception hierarchies (a {@code NeedRetryException} subtype, a taken
-     * name), not free-form text, which is what production mode conceals.
+     * on, not free-form text, which is what production mode conceals. Only an ArcadeDB class is named as itself; a
+     * subtype from any other package (a {@code broad} arm can classify one) is named by the arm's own type, which is all
+     * the client needs to act on and says nothing about what is installed on the server.
      */
     Metadata trailersFor(final Throwable frame) {
       if (trailer == null)
         return null;
+      final String frameClass = frame.getClass().getName();
       final Metadata trailers = new Metadata();
-      trailers.put(trailer, frame.getClass().getName());
+      trailers.put(trailer, frameClass.startsWith("com.arcadedb.") ? frameClass : type.getName());
       return trailers;
     }
   }
