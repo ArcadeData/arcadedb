@@ -3013,15 +3013,6 @@ public class LocalSchema implements Schema {
         for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
           dropIndexInternal(m.getName());
 
-        // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
-        // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). Before the
-        // type leaves the type map, which is where the listener is unregistered from
-        for (final Trigger trigger : new ArrayList<>(triggers.values()))
-          if (canonicalTypeName.equals(trigger.getTypeName())) {
-            unregisterTriggerListener(trigger.getName());
-            triggers.remove(trigger.getName());
-          }
-
         if (type instanceof LocalVertexType vertexType)
           // DELETE IN/OUT EDGE FILES
           database.getGraphEngine().dropVertexType(vertexType);
@@ -3048,6 +3039,16 @@ public class LocalSchema implements Schema {
         //     left the instance in getTypes(), which is what CHECK DATABASE walks.
         // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
         // form: a name that has since been taken over by another type must not be taken away from it.
+        // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
+        // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
+        // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
+        // leaves the type map, which is where the listener is unregistered from
+        for (final Trigger trigger : new ArrayList<>(triggers.values()))
+          if (canonicalTypeName.equals(trigger.getTypeName())) {
+            unregisterTriggerListener(trigger.getName());
+            triggers.remove(trigger.getName());
+          }
+
         for (final String alias : type.getAliases())
           typeMap().remove(alias, type);
 
