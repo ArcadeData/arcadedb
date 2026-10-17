@@ -181,7 +181,8 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
 
   @Test
   void aVirtualMachineErrorIsNotSwallowedAsAnAuthenticationFault() {
-    // An OOM or a stack overflow must reach the JVM, not be reported as an auth fault
+    // An OOM or a stack overflow must reach the JVM, not be reported as an auth fault. The StackOverflowError is
+    // constructed and thrown, not provoked by recursion, so the test thread's stack is never actually exhausted
     security.on("authenticate", args -> {
       throw new StackOverflowError();
     });
@@ -198,7 +199,19 @@ class Issue10142GrpcAdminCredentialReadFaultTest {
   }
 
   @Test
-  void aWrongPasswordIsNeitherCountedAsAFaultNorLoggedAboveFine() {
+  void aSecurityExceptionWhoseMessageEqualsTheFaultTextIsStillACredentialRefusal() {
+    // The fault is told apart by reference, not by text: a security layer that happens to say the same words is
+    // still an ordinary refusal on the admin path, neither counted nor described as a server fault
+    security.fails("authenticate", new ServerSecurityException(new String(GrpcAuthInterceptor.AUTHENTICATE_FAULT)));
+
+    final Status status = sendAdminMessage(adminRequest("root", "wrong"));
+
+    assertThat(status.getDescription()).isEqualTo("Authentication required");
+    assertThat(totalFaults()).isEqualTo(0.0);
+  }
+
+  @Test
+  void aWrongPasswordIsNeitherCountedAsAFaultNorLoggedAtWarningOrAbove() {
     security.fails("authenticate", new ServerSecurityException("User/Password not valid"));
 
     final Status status = sendAdminMessage(adminRequest("root", "wrong"));

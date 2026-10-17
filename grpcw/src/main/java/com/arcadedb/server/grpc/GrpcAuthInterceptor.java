@@ -62,6 +62,16 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       ArcadeDbAdminServiceGrpc.getHealthMethod().getFullMethodName(),
       ArcadeDbAdminServiceGrpc.getReadyMethod().getFullMethodName());
 
+  // ---- Authentication faults (issue #10142) ----
+  //
+  // The constants below belong together: the meter, its stage tags, and the descriptions a refusal carries when the
+  // server, not the client, is at fault.
+  //
+  // The status of such a refusal stays UNAUTHENTICATED on the admin path and on the security-layer arm of the
+  // data-plane path, deliberately: the call must fail closed, and a client that retries on INTERNAL or UNAVAILABLE
+  // would hammer a server whose credential evaluation is broken. What changes is that the refusal is no longer
+  // byte-identical to a wrong password AND invisible. The data-plane outer catch keeps its pre-existing INTERNAL.
+
   /**
    * Requests refused because the SERVER could not evaluate the credential, as opposed to a credential the server read
    * and rejected (issue #10142). A refusal of this kind is a fault on the server, and before this counter it was
@@ -80,6 +90,8 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       "Authentication required: the server could not read the request credentials (server fault, see the server log)";
   static final String AUTHENTICATE_FAULT           =
       "Authentication error: the server could not evaluate the credentials (server fault, see the server log)";
+  // The reason adminRequestFailure() gives for every credential refusal. Kept generic on the admin path, so a caller
+  // is not told which part of its credential was wrong
   private static final String AUTHENTICATION_REQUIRED = "Authentication required";
 
   private final        ServerSecurity          security;
@@ -195,10 +207,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
           }
           if (failure != null) {
             halted = true;
-            // A security fault keeps its own description; every credential refusal reads as before, so the
-            // admin path does not tell a caller which part of its credential was wrong
+            // A security fault keeps its own description; every credential refusal reads as before. The sentinel
+            // is compared by REFERENCE on purpose: a ServerSecurityException message is arbitrary text, and no
+            // text the security layer produces can be this instance, whatever it says
             call.close(Status.UNAUTHENTICATED.withDescription(
-                AUTHENTICATE_FAULT.equals(failure) ? AUTHENTICATE_FAULT : AUTHENTICATION_REQUIRED), new Metadata());
+                failure == AUTHENTICATE_FAULT ? AUTHENTICATE_FAULT : AUTHENTICATION_REQUIRED), new Metadata());
             return;
           }
           super.onMessage(message);
@@ -280,10 +293,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
   }
 
   /**
-   * Validates the credentials carried in the body of an admin request and returns {@code null} when they authenticate,
-   * otherwise the reason for the refusal ({@link #AUTHENTICATE_FAULT} when the server could not evaluate them). Every admin request message
-   * declares an optional {@code DatabaseCredentials credentials = 1} field; the credential is
-   * resolved generically via the protobuf descriptor so new admin RPCs are covered automatically.
+   * Validates the credentials carried in the body of an admin request and returns {@code null} when
+   * they authenticate, otherwise the reason for the refusal ({@link #AUTHENTICATE_FAULT}, the same
+   * instance, when the server could not evaluate them). Every admin request message declares an
+   * optional {@code DatabaseCredentials credentials = 1} field; the credential is resolved
+   * generically via the protobuf descriptor so new admin RPCs are covered automatically.
    * Fails closed: a non-protobuf message, a missing credentials field, a blank username or any
    * authentication failure all return a non-null reason.
    */
