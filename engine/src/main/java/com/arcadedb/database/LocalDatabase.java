@@ -3235,6 +3235,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * value the file holds, exactly as in {@link #applyConfigurationChanges(String)}, and for the same reason: memory may
    * hold a change made on this node that is still on its way through the replication, which must not reach the file ahead
    * of its own entry.
+   * <p>
+   * For the Raft state machine's recovery of a replicated change only: memory and file are left disagreeing on purpose
+   * when the document holds a value memory does not. Any other caller wants {@link #saveConfiguration()} or
+   * {@link #applyConfigurationChanges(String)}.
    */
   public void writeConfigurationChanges(final String changesJson) throws IOException {
     final JSONObject changes = new JSONObject(changesJson);

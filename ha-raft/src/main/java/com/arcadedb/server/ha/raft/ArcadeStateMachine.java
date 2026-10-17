@@ -7440,7 +7440,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // In force in memory and not on disk: the entry is held for the replay until the file carries every setting it
       // named (issue #10086), as it is for the security documents
       if (heldConfigurations.isEmpty()) {
-        // The write that just failed was the first attempt, so the first retry is one interval away
+        // The write that just failed was the first attempt, so the first retry is one interval away. Only when nothing
+        // was held yet: one retry pass writes every held database, so another failing while one is held keeps the schedule
         nextConfigurationRetryNanos = configurationRetryClock.getAsLong() + TimeUnit.MILLISECONDS.toNanos(
             SecurityDurabilityFloor.RETRY_INTERVAL_MS);
         failedConfigurationRetries = 0;
@@ -7551,7 +7552,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     nextConfigurationRetryNanos = now + TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
 
-    boolean failed = false;
+    String lastFailure = null;
     for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet()) {
       final String databaseName = entry.getKey();
       final HeldConfiguration held = entry.getValue();
@@ -7564,18 +7565,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
               LocalDatabase.CONFIGURATION_FILE_NAME);
       } catch (final IOException | RuntimeException e) {
         // Runs inside applyTransaction, whose catch-all halts the node: a retry that cannot run is a retry for later
-        failed = true;
+        lastFailure = databaseName + ": " + e;
         LogManager.instance().log(this, Level.FINE, "Could not write the held configuration of database '%s' again: %s",
             databaseName, e.getMessage());
       }
     }
-    if (!failed)
+    if (lastFailure == null)
       failedConfigurationRetries = 0;
     else if (++failedConfigurationRetries % SecurityDurabilityFloor.REPORT_EVERY_RETRIES == 0)
       LogManager.instance().log(this, Level.WARNING,
           "Replicated database configurations are still not written to disk on this node after %d retries (%s): the Raft "
               + "log is not compacted past the lowest held entry, and grows until the database directory takes the write "
-              + "again (issue #10124)", failedConfigurationRetries, heldConfigurations.keySet());
+              + "again (issue #10124). Last failure: %s", failedConfigurationRetries, heldConfigurations.keySet(),
+          lastFailure);
   }
 
   /** Paces {@link #retryHeldConfigurationsIfDue} on {@code clock} instead of {@link System#nanoTime()}, for a test. */

@@ -63,20 +63,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue10124HeldConfigurationRetryTest {
 
-  private static final String DB_NAME       = "db10124";
-  private static final String OTHER_DB      = "other10124";
-  private static final long   FAILED_INDEX  = 5L;
-  private static final String FIVE_BUCKETS  = "{\"configuration\":{\"typeDefaultBuckets\":5},\"removed\":[]}";
+  private static final String DB_NAME        = "db10124";
+  private static final String OTHER_DB       = "other10124";
+  private static final long   FAILED_INDEX   = 5L;
+  private static final String FIVE_BUCKETS   = "{\"configuration\":{\"typeDefaultBuckets\":5},\"removed\":[]}";
   private static final long   INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
 
   @TempDir
   Path tempDir;
 
-  private final AtomicLong     clock = new AtomicLong(1_000_000_000L);
-  private       ArcadeDBServer server;
-  private       LocalDatabase  database;
-  private       LocalDatabase  other;
-  private       RaftStorage    storage;
+  private final AtomicLong         clock = new AtomicLong(1_000_000_000L);
+  private       ArcadeDBServer     server;
+  private       LocalDatabase      database;
+  private       LocalDatabase      other;
+  private       RaftStorage        storage;
   private       ArcadeStateMachine sm;
 
   @BeforeEach
