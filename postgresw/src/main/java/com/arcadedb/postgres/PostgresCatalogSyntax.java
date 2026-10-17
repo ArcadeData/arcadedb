@@ -44,6 +44,21 @@ final class PostgresCatalogSyntax {
   }
 
   /**
+   * How a token moves the bracket depth of the clause around it: +1 for {@code (} and {@code [}, -1 for {@code )}
+   * and {@code ]}, 0 for anything else. Every top-level scan here tracks that depth, and a clause keyword means
+   * what it says only at depth 0.
+   */
+  static int nestingStep(final PostgresCatalogToken token) {
+    if (token.type != PostgresCatalogToken.Type.SYMBOL)
+      return 0;
+    return switch (token.text) {
+      case "(", "[" -> 1;
+      case ")", "]" -> -1;
+      default -> 0;
+    };
+  }
+
+  /**
    * Rewrites the spellings that mean the same as a plainer one, so that nothing past this point has to know
    * both (issue #10228):
    * <ul>
@@ -164,11 +179,9 @@ final class PostgresCatalogSyntax {
     int betweens = 0;
     for (int i = 0; i < tokens.size(); i++) {
       final PostgresCatalogToken token = tokens.get(i);
-      if (token.isSymbol("(") || token.isSymbol("["))
-        ++depth;
-      else if (token.isSymbol(")") || token.isSymbol("]"))
-        --depth;
-      else if (depth == 0) {
+      final int step = nestingStep(token);
+      depth += step;
+      if (step == 0 && depth == 0) {
         if (token.isKeyword("CASE"))
           ++cases;
         else if (token.isKeyword("END"))
@@ -206,11 +219,9 @@ final class PostgresCatalogSyntax {
     int depth = 0;
 
     for (final PostgresCatalogToken token : tokens) {
-      if (token.isSymbol("(") || token.isSymbol("["))
-        ++depth;
-      else if (token.isSymbol(")") || token.isSymbol("]"))
-        --depth;
-      else if (depth == 0 && token.isSymbol(",")) {
+      final int step = nestingStep(token);
+      depth += step;
+      if (step == 0 && depth == 0 && token.isSymbol(",")) {
         items.add(current);
         current = new ArrayList<>();
         continue;
@@ -249,11 +260,10 @@ final class PostgresCatalogSyntax {
 
       for (int i = 0; i < tokens.size(); i++) {
         final PostgresCatalogToken token = tokens.get(i);
-        if (token.isSymbol("(") || token.isSymbol("["))
-          ++depth;
-        else if (token.isSymbol(")") || token.isSymbol("]"))
-          --depth;
-        else if (depth == 0 && (token.isKeyword("UNION") || token.isKeyword("INTERSECT") || token.isKeyword("EXCEPT"))) {
+        final int step = nestingStep(token);
+        depth += step;
+        if (step == 0 && depth == 0 && (token.isKeyword("UNION") || token.isKeyword("INTERSECT")
+            || token.isKeyword("EXCEPT"))) {
           if (operation == null)
             operation = new SetOperation();
           operation.arms.add(tokens.subList(armStart, i));
@@ -276,11 +286,9 @@ final class PostgresCatalogSyntax {
       depth = 0;
       for (int i = 0; i < last.size(); i++) {
         final PostgresCatalogToken token = last.get(i);
-        if (token.isSymbol("(") || token.isSymbol("["))
-          ++depth;
-        else if (token.isSymbol(")") || token.isSymbol("]"))
-          --depth;
-        else if (depth == 0 && (token.isKeyword("ORDER") || token.isKeyword("LIMIT") || token.isKeyword("OFFSET")
+        final int step = nestingStep(token);
+        depth += step;
+        if (step == 0 && depth == 0 && (token.isKeyword("ORDER") || token.isKeyword("LIMIT") || token.isKeyword("OFFSET")
             || token.isKeyword("FETCH"))) {
           if (!operation.readTail(last.subList(i, last.size())))
             return null;
@@ -306,10 +314,7 @@ final class PostgresCatalogSyntax {
         while (i < tail.size() && !(depth == 0 && tail.get(i).isKeyword("LIMIT"))) {
           if (depth == 0 && (tail.get(i).isKeyword("OFFSET") || tail.get(i).isKeyword("FETCH")))
             return false;
-          if (tail.get(i).isSymbol("(") || tail.get(i).isSymbol("["))
-            ++depth;
-          else if (tail.get(i).isSymbol(")") || tail.get(i).isSymbol("]"))
-            --depth;
+          depth += nestingStep(tail.get(i));
           ++i;
         }
         orderBy = new ArrayList<>(tail.subList(2, i));
@@ -368,11 +373,9 @@ final class PostgresCatalogSyntax {
       int depth = 0;
       for (; i < tokens.size(); i++) {
         final PostgresCatalogToken token = tokens.get(i);
-        if (token.isSymbol("(") || token.isSymbol("["))
-          ++depth;
-        else if (token.isSymbol(")") || token.isSymbol("]"))
-          --depth;
-        else if (depth == 0 && endsProjection(token))
+        final int step = nestingStep(token);
+        depth += step;
+        if (step == 0 && depth == 0 && endsProjection(token))
           break;
       }
 
@@ -396,11 +399,9 @@ final class PostgresCatalogSyntax {
 
       for (; i < tokens.size(); i++) {
         final PostgresCatalogToken token = tokens.get(i);
-        if (token.isSymbol("(") || token.isSymbol("["))
-          ++depth;
-        else if (token.isSymbol(")") || token.isSymbol("]"))
-          --depth;
-        else if (depth == 0) {
+        final int step = nestingStep(token);
+        depth += step;
+        if (step == 0 && depth == 0) {
           if (token.isKeyword("UNION") || token.isKeyword("INTERSECT") || token.isKeyword("EXCEPT")
               || token.isKeyword("HAVING") || token.isKeyword("WINDOW") || token.isKeyword("FETCH")
               || token.isKeyword("OFFSET") || token.isKeyword("INTO"))
@@ -611,11 +612,9 @@ final class PostgresCatalogSyntax {
         int depth = 0;
         while (i < tokens.size()) {
           final PostgresCatalogToken t = tokens.get(i);
-          if (t.isSymbol("(") || t.isSymbol("["))
-            ++depth;
-          else if (t.isSymbol(")") || t.isSymbol("]"))
-            --depth;
-          else if (depth == 0 && (t.isSymbol(",") || isJoinWord(t)))
+          final int step = nestingStep(t);
+          depth += step;
+          if (step == 0 && depth == 0 && (t.isSymbol(",") || isJoinWord(t)))
             break;
           ++i;
         }
