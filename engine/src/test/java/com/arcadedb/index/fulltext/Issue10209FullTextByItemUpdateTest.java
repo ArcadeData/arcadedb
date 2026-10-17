@@ -162,6 +162,38 @@ class Issue10209FullTextByItemUpdateTest extends TestHelper {
     assertThat(metadata().getSumDocLength()).isEqualTo(2L);
   }
 
+  /**
+   * Postings written the way the index wrote them before the fix, one put per list ITEM: an update and a delete through the
+   * per-record key remove them all, since a posting is keyed by (token, RID) whatever term frequency it carries.
+   */
+  @Test
+  void postingsWrittenPerItemBeforeTheFixAreRemovedByTheRecordKey() {
+    createType(" METADATA {\"similarity\": \"BM25\"}");
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("L").set("id", 1).set("tags", List.of("gamma")).save().getIdentity());
+    // The pre-fix layout for [beta, BETA, delta]: one put per item, each carrying the stats of that item alone
+    database.transaction(() -> {
+      for (final String item : List.of("beta", "BETA", "delta"))
+        for (final Index bucketIndex : index().getIndexesOnBuckets())
+          if (bucketIndex.getAssociatedBucketId() == rid[0].getBucketId())
+            bucketIndex.put(new Object[] { item }, new RID[] { rid[0] });
+    });
+    assertThat(found("beta")).containsExactly(1);
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM L WHERE id = 1")) {
+        rs.next().toElement().modify().set("tags", List.of("beta", "BETA", "delta")).save();
+      }
+    });
+    database.transaction(() -> database.command("sql", "UPDATE L SET tags = ['epsilon'] WHERE id = 1"));
+    assertThat(found("beta")).isEmpty();
+    assertThat(found("delta")).isEmpty();
+    assertThat(found("epsilon")).containsExactly(1);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM L WHERE id = 1"));
+    assertThat(found("epsilon")).isEmpty();
+  }
+
   /** A list emptied and filled again: no posting while empty, the record still counted once all along. */
   @Test
   void aListEmptiedAndFilledAgainKeepsPostingsAndCountersRight() {

@@ -333,6 +333,8 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * old values, where loading by RID answered the current state (issue #10217). Two hash probes of the transaction, no load.
    */
   protected static Document currentState(final BasicDatabase db, final Document held) {
+    // Without a transaction there is no own write to see. Every database a SQL function runs on is a DatabaseInternal (the
+    // engine evaluates server-side); the type test only guards the cast
     if (!(db instanceof DatabaseInternal database) || !database.isTransactionActive())
       return held;
     final TransactionContext tx = database.getTransaction();

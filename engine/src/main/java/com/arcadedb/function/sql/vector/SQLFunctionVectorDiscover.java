@@ -245,6 +245,8 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       final Document current = currentState(db, held);
       if (current == null)
         return null;
+      // A row that carries its record reads the property off itself (a projection may rename or omit it) and never pays a
+      // load, as before #10217; only a record the transaction rewrote since is read directly
       return current == held ? row.get(propertyName) : current.get(propertyName);
     }
     final Object projected = row.get(propertyName);
