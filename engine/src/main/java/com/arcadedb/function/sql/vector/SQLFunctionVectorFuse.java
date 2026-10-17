@@ -162,8 +162,11 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       if (result.size() >= targetSize)
         break;
 
-      final Document carriedRecord = carried.get(rs.rid());
-      final Document record = carriedRecord != null ? carriedRecord : candidateRecord(db, null, rs.rid());
+      // A carried record is read as the transaction sees it now: a source row may hold it as it was before a write of the same
+      // transaction (issue #10217). Only the winners are checked, the losers of the fusion never are
+      final Document held = carried.get(rs.rid());
+      final Document current = held != null ? currentState(db, held) : null;
+      final Document record = current != null ? current : candidateRecord(db, null, rs.rid());
       if (record == null)
         continue;
 
@@ -249,7 +252,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   private static void rememberCarried(final Object row, final RID rid, final Map<RID, Document> carried) {
     if (carried.containsKey(rid))
       return;
-    final Document record = carriedRecord(row, rid);
+    final Document record = heldRecord(row, rid);
     if (record != null)
       carried.put(rid, record);
   }

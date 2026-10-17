@@ -243,12 +243,22 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
    */
   private float[] readCandidateEmbedding(final BasicDatabase db, final RID rid, final Map<?, ?> row,
       final String propertyName, final int expectedDim) {
-    Object raw = row.get(propertyName);
-    if (raw == null) {
-      // Fast path missed (the embedding is not in the projected row). A row that carries its record already read the
-      // property off it, so only a row carrying just a RID falls back to loading the record (issue #10170).
-      if (carriedRecord(row, rid) != null)
+    final Document held = heldRecord(row, rid);
+    Object raw;
+    if (held != null) {
+      // A row that carries its record reads the property off it, as the transaction sees it now: the row may hold the record
+      // as it was before a write of the same transaction (issue #10217). Deleted since, the candidate is dropped
+      final Document current = currentState(db, held);
+      if (current == null)
         return null;
+      raw = current == held ? row.get(propertyName) : current.get(propertyName);
+      if (raw == null)
+        return null;
+    } else
+      raw = row.get(propertyName);
+    if (raw == null) {
+      // Fast path missed (the embedding is not in the projected row): only a row carrying just a RID falls back to loading the
+      // record (issue #10170).
       final Document rec = candidateRecord(db, row, rid);
       if (rec == null)
         return null;
