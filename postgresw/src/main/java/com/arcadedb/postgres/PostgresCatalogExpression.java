@@ -466,7 +466,9 @@ abstract class PostgresCatalogExpression {
      * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
      * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
      * statement's work budget, which every re-parse is charged to (pinned by
-     * {@code Issue10228PsqlOdbcCatalogShapesTest.aBacktrackingRegularExpressionIsBounded}).
+     * {@code Issue10228PsqlOdbcCatalogShapesTest.aBacktrackingRegularExpressionIsBounded}). Like {@link #compiled} it is
+     * per-statement state: a tree is parsed for one statement, evaluated by the one thread answering it, and never
+     * cached or reused, so a spent budget cannot carry into another statement.
      */
     private       long                      regexBudget = BoundedCharSequence.STATEMENT_BUDGET;
 
@@ -539,9 +541,8 @@ abstract class PostgresCatalogExpression {
       final String value = asString(l);
       final String pattern = asString(r);
       try {
-        // The pattern is a literal in every query a client writes, and the predicate runs once per row, so it is
-        // compiled once rather than once per row (psql's \d sends one, issue #10228).
-        // Translated and compiled once per pattern text, not once per row: the translation scans the whole pattern.
+        // The pattern is a literal in every query a client writes and the predicate runs once per row, so it is
+        // translated and compiled once per pattern text, not once per row (psql's \d sends one, issue #10228).
         CompiledRegex cached = compiled;
         if (cached == null || !cached.source().equals(pattern)) {
           cached = new CompiledRegex(pattern,
