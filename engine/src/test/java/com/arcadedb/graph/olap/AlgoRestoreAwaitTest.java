@@ -143,7 +143,13 @@ class AlgoRestoreAwaitTest {
     GraphAnalyticalView.acquireAllBuildPermitsForTest();
     try {
       database.transaction(() -> database.newVertex("Node").set("name", "E").save());
-      assertThat(view.getStatus()).as("the commit dispatched an asynchronous rebuild").isEqualTo(GraphAnalyticalView.Status.BUILDING);
+      // Since #10189 the commit is merged into the overlay in the background, with no rebuild and no build permit
+      assertThat(view.getStatus()).as("the commit is merged, not rebuilt")
+          .isIn(GraphAnalyticalView.Status.STALE, GraphAnalyticalView.Status.READY);
+      assertThat(view.isRestoring()).as("merging a commit is not a restore").isFalse();
+
+      view.buildAsync();
+      assertThat(view.getStatus()).as("the rebuild waits for a build permit").isEqualTo(GraphAnalyticalView.Status.BUILDING);
       assertThat(view.isRestoring())
           .as("a rebuild after a commit is not a restore, so algorithms must not wait for it")
           .isFalse();

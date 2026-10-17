@@ -189,9 +189,11 @@ public class CSRBuilder {
 
     // --- Phase A: Collect RID positions for node ID mapping ---
     final NodeIdMapping mapping = new NodeIdMapping(16);
-    registerVertexBuckets(mapping, vertexTypes);
+    // A listed vertex type brings its sub-types, as an edge type does (issue #10208)
+    final Set<String> concreteVertexTypes = concreteVertexTypes(vertexTypes);
+    registerVertexBuckets(mapping, concreteVertexTypes);
 
-    final Iterator<Record> collectIter = createVertexIterator(vertexTypes);
+    final Iterator<Record> collectIter = createVertexIterator(concreteVertexTypes);
     while (collectIter.hasNext()) {
       final Record record = collectIter.next();
       final RID rid = record.getIdentity();
@@ -211,7 +213,7 @@ public class CSRBuilder {
 
     // Detect property types from schema (instant, no scanning needed).
     // Falls back to runtime sampling for schemaless properties.
-    final Map<String, Column.Type> detectedTypes = extractProps ? detectPropertyTypesFromSchema(vertexTypes) : new HashMap<>();
+    final Map<String, Column.Type> detectedTypes = extractProps ? detectPropertyTypesFromSchema(concreteVertexTypes) : new HashMap<>();
     final boolean schemaComplete = !detectedTypes.isEmpty();
 
     // Create per-bucket column stores upfront (columns added as types are discovered)
@@ -243,7 +245,7 @@ public class CSRBuilder {
     final List<RID> scannedEdges = observer != null ? new ArrayList<>() : null;
     final List<RID> scannedTargets = observer != null ? new ArrayList<>() : null;
 
-    final Iterator<Record> mainIter = createVertexIterator(vertexTypes);
+    final Iterator<Record> mainIter = createVertexIterator(concreteVertexTypes);
     while (mainIter.hasNext()) {
       final Vertex vertex = (Vertex) mainIter.next();
       final RID rid = vertex.getIdentity();
@@ -602,31 +604,18 @@ public class CSRBuilder {
         uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes);
   }
 
-  private void registerVertexBuckets(final NodeIdMapping mapping, final String[] vertexTypes) {
-    if (vertexTypes == null || vertexTypes.length == 0) {
-      for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType)
-          for (final int bucketId : dt.getBucketIds(false))
-            mapping.registerBucket(bucketId, dt.getName(), (int) database.countBucket(
-                database.getSchema().getBucketById(bucketId).getName()));
-    } else {
-      for (final String typeName : vertexTypes)
-        for (final int bucketId : database.getSchema().getType(typeName).getBucketIds(false))
-          mapping.registerBucket(bucketId, typeName, (int) database.countBucket(
-              database.getSchema().getBucketById(bucketId).getName()));
-    }
+  private void registerVertexBuckets(final NodeIdMapping mapping, final Set<String> concreteVertexTypes) {
+    // Each bucket is attributed to the type that stores its vertices, so a node reports its own type, not the listed one
+    for (final String typeName : concreteVertexTypes)
+      for (final int bucketId : database.getSchema().getType(typeName).getBucketIds(false))
+        mapping.registerBucket(bucketId, typeName, (int) database.countBucket(
+            database.getSchema().getBucketById(bucketId).getName()));
   }
 
-  private Map<String, Column.Type> detectPropertyTypesFromSchema(final String[] vertexTypes) {
+  private Map<String, Column.Type> detectPropertyTypesFromSchema(final Set<String> concreteVertexTypes) {
     final Map<String, Column.Type> result = new HashMap<>();
-    if (vertexTypes == null || vertexTypes.length == 0) {
-      for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType)
-          collectSchemaProperties(dt, result);
-    } else {
-      for (final String typeName : vertexTypes)
-        collectSchemaProperties(database.getSchema().getType(typeName), result);
-    }
+    for (final String typeName : concreteVertexTypes)
+      collectSchemaProperties(database.getSchema().getType(typeName), result);
     return result;
   }
 
@@ -756,19 +745,33 @@ public class CSRBuilder {
       collectTypeFamily(subType, names);
   }
 
-  private Iterator<Record> createVertexIterator(final String[] vertexTypes) {
+  /**
+   * The requested vertex types and all their sub-types, or every vertex type of the schema when none is requested: a
+   * vertex type answers for its sub-types on the record path, and the view holds what a query on the type reads (issue
+   * #10208).
+   */
+  static Set<String> concreteVertexTypes(final Database database, final String[] vertexTypes) {
+    final Set<String> names = new LinkedHashSet<>();
     if (vertexTypes == null || vertexTypes.length == 0) {
-      final MultiIterator<Record> multi = new MultiIterator<>();
       for (final DocumentType dt : database.getSchema().getTypes())
         if (dt instanceof VertexType)
-          multi.addIterator(database.iterateType(dt.getName(), false));
-      return multi;
-    }
-    if (vertexTypes.length == 1)
-      return database.iterateType(vertexTypes[0], false);
+          names.add(dt.getName());
+    } else
+      for (final String vertexType : vertexTypes)
+        collectTypeFamily(database.getSchema().getType(vertexType), names);
+    return names;
+  }
+
+  private Set<String> concreteVertexTypes(final String[] vertexTypes) {
+    return concreteVertexTypes(database, vertexTypes);
+  }
+
+  private Iterator<Record> createVertexIterator(final Set<String> concreteVertexTypes) {
+    if (concreteVertexTypes.size() == 1)
+      return database.iterateType(concreteVertexTypes.iterator().next(), false);
 
     final MultiIterator<Record> multi = new MultiIterator<>();
-    for (final String typeName : vertexTypes)
+    for (final String typeName : concreteVertexTypes)
       multi.addIterator(database.iterateType(typeName, false));
     return multi;
   }
