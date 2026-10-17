@@ -568,7 +568,14 @@ class Issue10228PsqlOdbcCatalogShapesTest {
     // budget must not answer a row that does not match it, and an empty answer would look like an empty catalog.
     assertThatThrownBy(() -> PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
         database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
-    // A set operation naming no catalog relation is the SQL engine's to answer, budget or not.
+    // A correlated sub-select re-parses into fresh nodes per outer row; the statement budget still bounds it.
+    assertThatThrownBy(() -> PostgresCatalog.resolve("select c.relname from pg_class c where exists (select 1 "
+        + "from pg_class d where d.relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$' and d.oid = c.oid)", database, USER))
+        .isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
+    // A set operation naming no catalog relation is the SQL engine's to answer: over its budget it is handed on,
+    // not refused.
+    assertThat(PostgresCatalog.resolve("select 1 as x where '" + name + "' ~ '^(.*)(.*)(.*)(.*)(.*)Y$' union select 2",
+        database, USER)).isNull();
     assertThat(PostgresCatalog.resolve("select 1 union select 2", database, USER)).isNotNull();
     // The same pattern over names it is cheap on is answered: the conjunct before it excludes the long name first.
     assertThat(column(resolve("select relname from pg_class where relname <> '" + name + "' "
