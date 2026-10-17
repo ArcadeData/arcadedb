@@ -420,9 +420,6 @@ public final class CypherFunctionHelper {
       return TYPE_RANK_BOOLEAN;
     if (value instanceof String)
       return TYPE_RANK_STRING;
-    final int temporal = temporalTypeRank(value);
-    if (temporal >= 0)
-      return TYPE_RANK_FIRST_TEMPORAL + temporal;
     if (value instanceof List)
       return 3;
     if (value instanceof Vertex)
@@ -431,6 +428,10 @@ public final class CypherFunctionHelper {
       return 2;
     if (value instanceof Map)
       return 0;
+    // After the common graph and collection values, which are never temporal, so a sort over them skips the temporal checks
+    final int temporal = temporalTypeRank(value);
+    if (temporal >= 0)
+      return TYPE_RANK_FIRST_TEMPORAL + temporal;
     return TYPE_RANK_PATH_OR_OTHER;
   }
 
