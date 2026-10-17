@@ -248,16 +248,43 @@ class Issue10051FullTextCorpusDeltaReplicationTest {
     assertThat(carriedDeltas()).containsExactly(new CorpusDelta(INDEX, 0, 2));
   }
 
-  /** A rewrite that keeps the number of tokens nets to nothing: there is nothing for another node to apply, so nothing is shipped. */
+  /**
+   * A rewrite that keeps the number of tokens nets to {@code (0, 0)}, and still ships it (issue #10132): the node applying the
+   * entry must learn that the counters were touched, or a corpus scan overlapping the apply calls itself exact.
+   */
   @Test
-  void anUpdateThatKeepsItsTokenLengthShipsNothing() {
+  void anUpdateThatKeepsItsTokenLengthShipsAZeroPair() {
     raftServer.fullTextCorpusDeltaCapable(true);
 
     database.begin();
     proxied.iterateType(TYPE, false).next().asDocument().modify().set("content", "delta epsilon zeta").save();
     database.commit();
 
-    assertThat(carriedDeltas()).isEmpty();
+    assertThat(carriedDeltas()).containsExactly(new CorpusDelta(INDEX, 0, 0));
+  }
+
+  /** Issue #10132: a delete and an insert of the same length in one transaction ship their index with a zero pair. */
+  @Test
+  void aDeleteAndAnInsertOfTheSameLengthShipAZeroPair() {
+    raftServer.fullTextCorpusDeltaCapable(true);
+
+    database.begin();
+    proxied.iterateType(TYPE, false).next().asDocument().delete();
+    proxied.newDocument(TYPE).set("content", "delta epsilon zeta").save();
+    database.commit();
+
+    assertThat(carriedDeltas()).containsExactly(new CorpusDelta(INDEX, 0, 0));
+  }
+
+  /** A zero pair is a real section on the wire, not an absent one, and it decodes back as such. */
+  @Test
+  void aZeroPairRoundTrips() {
+    final List<CorpusDelta> deltas = List.of(new CorpusDelta(INDEX, 0, 0));
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(
+        RaftLogEntryCodec.encodeTxEntry("db", WAL, Collections.emptyMap(), -1L, deltas));
+
+    assertThat(decoded.corpusDeltas()).containsExactlyElementsOf(deltas);
   }
 
   @Test
