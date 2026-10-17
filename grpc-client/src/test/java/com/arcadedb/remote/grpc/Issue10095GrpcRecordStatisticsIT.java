@@ -125,11 +125,7 @@ public class Issue10095GrpcRecordStatisticsIT extends BaseGrpcClientServerTest {
     assertThat(grpc.deleteRecord(rid, 10_000)).isTrue();
     assertThat(stat("deleteRecord")).as("the server deleted the record").isEqualTo(deletes + 1);
 
-    try {
-      grpc.deleteRecord(rid, 10_000);
-    } catch (final RuntimeException ignore) {
-      // the record is gone: whether the server answers deleted=false or fails, nothing was deleted
-    }
+    assertThatThrownBy(() -> grpc.deleteRecord(rid, 10_000)).isInstanceOf(RecordNotFoundException.class);
     assertThat(stat("deleteRecord")).as("a delete that deleted nothing is not counted").isEqualTo(deletes + 1);
   }
 
