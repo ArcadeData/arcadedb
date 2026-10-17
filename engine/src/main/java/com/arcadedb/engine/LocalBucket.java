@@ -39,6 +39,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -2476,8 +2477,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // REGISTRY, A CHECKED getSchema() AND A BUCKET-TO-TYPE LOOKUP FOR EVERY RECORD A SCAN HANDS OUT (#9997)
       return true;
 
-    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-    final RecordEventsRegistry typeEvents = type != null ? (RecordEventsRegistry) type.getEvents() : null;
+    // The type's own listeners and the triggers of its lineage, a trigger on a super type included (issue #10207)
+    final LocalDocumentType typeEvents = (LocalDocumentType) database.getSchema().getTypeByBucketId(rid.getBucketId());
 
     if (!databaseEvents.hasBeforeReadListeners() && (typeEvents == null || !typeEvents.hasBeforeReadListeners()))
       return true;
@@ -2503,10 +2504,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private boolean dispatchBeforeRead(final RID rid, final RecordEventsRegistry databaseEvents,
-      final RecordEventsRegistry typeEvents) {
+      final LocalDocumentType typeEvents) {
     if (!databaseEvents.onBeforeRead(rid))
       return false;
-    return typeEvents == null || typeEvents.onBeforeRead(rid);
+    return typeEvents == null || typeEvents.fireBeforeRead(rid);
   }
 
   /**

@@ -48,6 +48,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.InternalBucketNaming;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.MultiIterator;
@@ -771,7 +772,8 @@ public class GraphEngine {
       mutable.setOutEdgesHeadChunk(chunk.getIdentity());
     else
       mutable.setInEdgesHeadChunk(chunk.getIdentity());
-    database.updateRecord(mutable);
+    // The vertex's own bookkeeping, not an update of it: no listener hears it, and none can veto it (issue #10207)
+    database.updateRecordWithoutEvents(mutable);
 
     return new EdgeLinkedList(mutable, direction, chunk);
   }
@@ -798,7 +800,8 @@ public class GraphEngine {
       inEdgesHeadChunk = inChunk.getIdentity();
 
       toVertex.setInEdgesHeadChunk(inEdgesHeadChunk);
-      database.updateRecord(toVertex);
+      // The vertex's own bookkeeping, not an update of it: no listener hears it, and none can veto it (issue #10207)
+      database.updateRecordWithoutEvents(toVertex);
     }
 
     return inChunk;
@@ -826,7 +829,8 @@ public class GraphEngine {
       outEdgesHeadChunk = outChunk.getIdentity();
 
       fromVertex.setOutEdgesHeadChunk(outEdgesHeadChunk);
-      database.updateRecord(fromVertex);
+      // The vertex's own bookkeeping, not an update of it: no listener hears it, and none can veto it (issue #10207)
+      database.updateRecordWithoutEvents(fromVertex);
     }
 
     return outChunk;
@@ -1144,7 +1148,7 @@ public class GraphEngine {
     // Once the replacement exists, so a move that fails half-way has told no listener of a removal. Still the record being
     // replaced: its identity and endpoints change only on the next line
     ((RecordEventsRegistry) database.getEvents()).onAfterDelete(edge);
-    ((RecordEventsRegistry) edge.getType().getEvents()).onAfterDelete(edge);
+    ((LocalDocumentType) edge.getType()).fireAfterDelete(edge);
 
     edge.updateIdentity(newEdge.getIdentity(), newOut, newIn);
   }

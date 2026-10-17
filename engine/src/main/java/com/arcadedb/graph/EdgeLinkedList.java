@@ -483,7 +483,8 @@ public class EdgeLinkedList {
 
       lastSegment = newChunk;
 
-      modifiableV.save();
+      // The vertex's own bookkeeping, not an update of it: no listener hears it, and none can veto it (issue #10207)
+      database.updateRecordWithoutEvents(modifiableV);
     }
   }
 
@@ -538,7 +539,11 @@ public class EdgeLinkedList {
     // edge page from the append-merge so a concurrent-append rebase can never lose these edges.
     final TransactionContext tx = database.getTransactionIfExists();
     for (final Record r : recordsToUpdate) {
-      database.updateRecord(r);
+      // A vertex is in the set for its head pointer only: its own bookkeeping, which no listener hears (issue #10207)
+      if (r instanceof MutableVertex)
+        database.updateRecordWithoutEvents(r);
+      else
+        database.updateRecord(r);
       if (tx != null && r instanceof MutableEdgeSegment segment)
         tx.poisonEdgeAppendPage(segment.getIdentity());
     }
@@ -745,7 +750,8 @@ public class EdgeLinkedList {
       modifiableV.setOutEdgesHeadChunk(directory.getIdentity());
     else
       modifiableV.setInEdgesHeadChunk(directory.getIdentity());
-    modifiableV.save();
+    // The vertex's own bookkeeping, not an update of it: no listener hears it, and none can veto it (issue #10207)
+    database.updateRecordWithoutEvents(modifiableV);
 
     // APPEND THE PENDING EDGE THROUGH THE STRIPED LAYOUT (ALLOCATES ITS STRIPE'S FIRST CHUNK LAZILY)
     new StripedEdgeList(modifiableV, direction, directory).add(edgeRID, vertexRID);

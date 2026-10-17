@@ -381,7 +381,8 @@ public class LocalSchema implements Schema {
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
-  private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
+  // Concurrent: its emptiness is read on every record write, to skip the trigger walk on a database without triggers
+  private final       Map<String, TriggerListenerAdapter> triggerAdapters = new ConcurrentHashMap<>();
   /**
    * The TimeSeries types whose engine waits for the WAL replay of the open in progress, {@code null} when engines are
    * built as their types are read. See {@link #openDeferredTimeSeriesEngines()}.
@@ -898,6 +899,7 @@ public class LocalSchema implements Schema {
 
         // ITS LISTENERS ARE NO LONGER REACHED BY ANY READ: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
         type.events.detachFromDatabase();
+        type.triggerEvents.detachFromDatabase();
 
         if (type instanceof final LocalTimeSeriesType tsType) {
           // Retired, not closed (issue #9886): the replacement engine is built on the same registered files
@@ -2555,8 +2557,9 @@ public class LocalSchema implements Schema {
     final TriggerListenerAdapter adapter =
         new TriggerListenerAdapter(database, trigger, executor);
 
-    // Register listener based on timing and event
-    final RecordEventsRegistry events = (RecordEventsRegistry) type.getEvents();
+    // Register listener based on timing and event. On the type's TRIGGER registry, not on getEvents(): a trigger fires for
+    // the records of every subtype as well, which the type's lineage does at dispatch (issue #10207)
+    final RecordEventsRegistry events = type.getTriggerEvents();
     switch (trigger.getTiming()) {
       case BEFORE -> {
         switch (trigger.getEvent()) {
@@ -2592,7 +2595,7 @@ public class LocalSchema implements Schema {
     final Trigger trigger = adapter.getTrigger();
     final LocalDocumentType type = typeMap().get(trigger.getTypeName());
     if (type != null) {
-      final RecordEventsRegistry events = (RecordEventsRegistry) type.getEvents();
+      final RecordEventsRegistry events = type.getTriggerEvents();
 
       // Unregister listener based on timing and event
       switch (trigger.getTiming()) {
@@ -3044,6 +3047,7 @@ public class LocalSchema implements Schema {
 
         // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
         type.events.detachFromDatabase();
+        type.triggerEvents.detachFromDatabase();
 
         // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
         reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
@@ -5664,6 +5668,14 @@ public class LocalSchema implements Schema {
   }
 
   private record UnidirectionalFlag(long serial, boolean value) {
+  }
+
+  /**
+   * Whether a trigger listens on any type of this schema: what lets a record write skip walking its type's lineage for the
+   * triggers of its super types (issue #10207).
+   */
+  public boolean hasTriggerListeners() {
+    return !triggerAdapters.isEmpty();
   }
 
   /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */

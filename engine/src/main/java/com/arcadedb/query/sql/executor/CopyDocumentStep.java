@@ -84,7 +84,10 @@ public class CopyDocumentStep extends AbstractExecutionStep {
             }
           } else {
             final DocumentType type = context.getDatabase().getSchema().getType(targetType);
-            resultDoc = type.newRecord().set(propertiesToWrite(toCopy)).save();
+            // Not saved here: SaveElementStep, further down the plan, is the one save of the row. Saving here too created the
+            // record and then UPDATED it, firing the type's UPDATE triggers and listeners for every row an
+            // INSERT ... FROM SELECT wrote (issue #10207)
+            resultDoc = type.newRecord().set(propertiesToWrite(toCopy));
           }
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {
