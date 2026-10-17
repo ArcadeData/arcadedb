@@ -7545,6 +7545,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Driven by applied entries, as {@link SecurityDurabilityFloor#retryIfDue} is: on a cluster that applies nothing the hold
    * waits for the next entry, which costs nothing, since an entry applied is also the only thing that grows the Raft log.
+   * Blocking included, like that retry: a volume that HANGS the write stalls the apply once per interval, and would stall
+   * the apply of the next configuration entry of that database just the same.
    */
   private void retryHeldConfigurationsIfDue() {
     if (heldConfigurations.isEmpty())

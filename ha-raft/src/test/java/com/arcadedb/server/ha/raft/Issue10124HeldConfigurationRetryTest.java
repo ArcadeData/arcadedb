@@ -228,6 +228,25 @@ class Issue10124HeldConfigurationRetryTest {
     assertThat(sm.takeSnapshot()).isEqualTo(9L);
   }
 
+  /** A setting one held entry removes and a later held entry sets again ends set, as the replay of both would leave it. */
+  @Test
+  void aSettingRemovedAndThenSetAgainIsWrittenWithTheLaterValue() throws Exception {
+    breakVolume();
+    sm = stateMachine();
+    assertThat(apply(DB_NAME, "{\"configuration\":{},\"removed\":[\"txRetries\"]}", FAILED_INDEX)).isTrue();
+    assertThat(apply(DB_NAME, "{\"configuration\":{\"txRetries\":4},\"removed\":[]}", FAILED_INDEX + 1)).isTrue();
+
+    fixVolume();
+    // The value the file held before the incident
+    database.writeConfigurationChanges("{\"configuration\":{\"txRetries\":2},\"removed\":[]}");
+
+    clock.addAndGet(INTERVAL_NANOS);
+    assertThat(apply(OTHER_DB, "{\"configuration\":{\"txRetries\":7},\"removed\":[]}", 9L)).isFalse();
+
+    assertThat(savedSettings().getInt("txRetries")).as("set again by the later entry, not removed").isEqualTo(4);
+    assertThat(sm.takeSnapshot()).isEqualTo(9L);
+  }
+
   /** A later entry that writes some of the held settings leaves the retry only the others, with their committed values. */
   @Test
   void aLaterEntryThatWritesPartOfTheHeldSettingsLeavesTheRestToTheRetry() throws Exception {
