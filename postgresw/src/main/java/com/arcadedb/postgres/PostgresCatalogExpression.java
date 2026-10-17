@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -70,6 +71,18 @@ abstract class PostgresCatalogExpression {
   /** Stands for a cast type that is more than a bare name, and so is never one of {@link #LOOKUP_CASTS}. */
   private static final String COMPOUND_CAST_TYPE = "";
 
+  /** POSIX bracket-expression class names and the java.util.regex class each means. */
+  private static final Map<String, String> POSIX_CLASSES = Map.ofEntries(Map.entry("alpha", "\\p{Alpha}"),
+      Map.entry("digit", "\\p{Digit}"), Map.entry("alnum", "\\p{Alnum}"), Map.entry("upper", "\\p{Upper}"),
+      Map.entry("lower", "\\p{Lower}"), Map.entry("space", "\\p{Space}"), Map.entry("punct", "\\p{Punct}"),
+      Map.entry("xdigit", "\\p{XDigit}"), Map.entry("cntrl", "\\p{Cntrl}"), Map.entry("print", "\\p{Print}"),
+      Map.entry("graph", "\\p{Graph}"), Map.entry("blank", "\\p{Blank}"), Map.entry("word", "\\w"),
+      Map.entry("ascii", "\\p{ASCII}"));
+
+  /** The aggregate functions an aggregated catalog query may project. */
+  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
+      "every", "string_agg", "array_agg");
+
   /** Supplies the column values of the row being evaluated, and the session values around it. */
   interface Resolver {
     /**
@@ -92,6 +105,35 @@ abstract class PostgresCatalogExpression {
     default Object window(final WindowCall call) {
       return UNKNOWN;
     }
+
+    /**
+     * @return the value of an aggregate over the group of rows being projected, or {@link #UNKNOWN} when this
+     * resolver is not evaluating a group - an aggregate in a WHERE clause, for one
+     */
+    default Object aggregate(final AggregateCall call) {
+      return UNKNOWN;
+    }
+
+    /**
+     * Evaluates a sub-select, correlated to the row this resolver is evaluating.
+     *
+     * @return for {@link SubqueryKind#SCALAR} the one value of its one row (NULL with no row), for
+     * {@link SubqueryKind#EXISTS} whether it has a row, for {@link SubqueryKind#ARRAY} the values of its one
+     * column; {@link #UNKNOWN} when the sub-select cannot be answered
+     */
+    default Object subquery(final List<PostgresCatalogToken> tokens, final SubqueryKind kind) {
+      return UNKNOWN;
+    }
+  }
+
+  /** What a sub-select is asked for, which is decided by where it is written. */
+  enum SubqueryKind {
+    /** {@code (SELECT ...)} as an operand: the value of its single row and column. */
+    SCALAR,
+    /** {@code EXISTS (SELECT ...)}. */
+    EXISTS,
+    /** {@code ARRAY(SELECT ...)}, and the right-hand side of {@code IN (SELECT ...)}: the values of its column. */
+    ARRAY
   }
 
   abstract Object evaluate(Resolver resolver);
@@ -161,17 +203,90 @@ abstract class PostgresCatalogExpression {
   }
 
   /**
-   * An operand this catalog cannot compute, which evaluates to {@link #UNKNOWN} rather than aborting the parse
-   * of the predicate that contains it. Issue #7224: a scalar sub-select used to make the whole WHERE unreadable,
-   * and an unreadable WHERE over pg_type declines the query outright - so {@code DatabaseMetaData.getTypeInfo()},
-   * whose predicate is {@code t.typrelid = 0 OR (SELECT ...)}, lost its readable half along with the subquery.
-   * Reading it as UNKNOWN lets three-valued logic settle it: {@code TRUE OR UNKNOWN} is TRUE, and a predicate
-   * that is still UNKNOWN once the whole tree has been evaluated is declined exactly as it was before.
+   * A sub-select, evaluated by the resolver against the row it is correlated to (issue #10228: psql's {@code \d}
+   * reads a column's default and collation through one each). Its tokens are kept rather than parsed here,
+   * because what they mean - which relations, which family of rows - is the catalog's to decide, not this
+   * evaluator's.
+   * <p>
+   * A resolver that cannot evaluate sub-selects answers {@link #UNKNOWN}, which is what every sub-select used
+   * to be (issue #7224): an operand that does not abort the parse of the predicate containing it, so that
+   * three-valued logic can still settle {@code t.typrelid = 0 OR (SELECT ...)} on its readable half.
    */
-  private static class Unreadable extends PostgresCatalogExpression {
+  static class Subquery extends PostgresCatalogExpression {
+    final List<PostgresCatalogToken> tokens;
+    final SubqueryKind               kind;
+
+    Subquery(final List<PostgresCatalogToken> tokens, final SubqueryKind kind) {
+      this.tokens = tokens;
+      this.kind = kind;
+    }
+
     @Override
     Object evaluate(final Resolver resolver) {
-      return UNKNOWN;
+      return resolver.subquery(tokens, kind);
+    }
+  }
+
+  /** {@code x [NOT] IN (SELECT ...)}, with SQL's answer when the sub-select's column holds a NULL. */
+  private static class InSubquery extends PostgresCatalogExpression {
+    private final PostgresCatalogExpression operand;
+    private final Subquery                  subquery;
+    private final boolean                   negated;
+
+    InSubquery(final PostgresCatalogExpression operand, final Subquery subquery, final boolean negated) {
+      this.operand = operand;
+      this.subquery = subquery;
+      this.negated = negated;
+    }
+
+    @Override
+    Object evaluate(final Resolver resolver) {
+      final Object value = operand.evaluate(resolver);
+      if (value == UNKNOWN)
+        return UNKNOWN;
+
+      final Object candidates = subquery.evaluate(resolver);
+      if (!(candidates instanceof List<?> list))
+        return UNKNOWN;
+      if (value == null)
+        return list.isEmpty() ? negated : null;
+
+      boolean sawNull = false;
+      for (final Object candidate : list) {
+        if (candidate == null)
+          sawNull = true;
+        else if (Boolean.TRUE.equals(Binary.compare("=", value, candidate)))
+          return !negated;
+      }
+      // "1 NOT IN (2, NULL)" is NULL rather than TRUE: the NULL might have been the 1.
+      return sawNull ? null : negated;
+    }
+  }
+
+  /**
+   * An aggregate: {@code count(*)}, {@code count(DISTINCT x)}, {@code min(x)}, ... Like a window function its
+   * value is about other rows than the one being evaluated, so the resolver computes it over the group the
+   * projection is evaluating (issue #10228).
+   */
+  static class AggregateCall extends PostgresCatalogExpression {
+    final String                          name;
+    /** The aggregated expression, null for {@code count(*)}. */
+    final PostgresCatalogExpression       argument;
+    /** What follows the aggregated expression: {@code string_agg}'s separator. */
+    final List<PostgresCatalogExpression> extraArguments;
+    final boolean                         distinct;
+
+    AggregateCall(final String name, final PostgresCatalogExpression argument,
+        final List<PostgresCatalogExpression> extraArguments, final boolean distinct) {
+      this.name = name;
+      this.argument = argument;
+      this.extraArguments = extraArguments;
+      this.distinct = distinct;
+    }
+
+    @Override
+    Object evaluate(final Resolver resolver) {
+      return resolver.aggregate(this);
     }
   }
 
@@ -339,6 +454,23 @@ abstract class PostgresCatalogExpression {
     private final String                    operator;
     private final PostgresCatalogExpression left;
     private final PostgresCatalogExpression right;
+    /**
+     * The last regular expression this node compiled, with the client's text it was translated from: one reference,
+     * so it can never be read half-updated. An expression tree is built per statement and evaluated by the one
+     * thread answering it, so nothing else ever reads it anyway.
+     */
+    private       CompiledRegex             compiled;
+    /**
+     * The character reads this node's regular expression has left. One match is bounded by
+     * {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row the node is evaluated
+     * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
+     * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
+     * statement's work budget, which every re-parse is charged to (pinned by
+     * {@code Issue10228PsqlOdbcCatalogShapesTest.aBacktrackingRegularExpressionIsBounded}). Like {@link #compiled} it is
+     * per-statement state: a tree is parsed for one statement, evaluated by the one thread answering it, and never
+     * cached or reused, so a spent budget cannot carry into another statement.
+     */
+    private       long                      regexBudget = BoundedCharSequence.STATEMENT_BUDGET;
 
     Binary(final String operator, final PostgresCatalogExpression left, final PostgresCatalogExpression right) {
       this.operator = operator;
@@ -403,15 +535,30 @@ abstract class PostgresCatalogExpression {
       return result == Math.rint(result) ? (Object) (long) result : (Object) result;
     }
 
-    private static Object regex(final String operator, final Object l, final Object r) {
+    private Object regex(final String operator, final Object l, final Object r) {
       if (l == null || r == null)
         return null;
       final String value = asString(l);
       final String pattern = asString(r);
       try {
-        final boolean matches = Pattern.compile(pattern, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0)
-            .matcher(value).find();
-        return operator.startsWith("!") != matches;
+        // The pattern is a literal in every query a client writes and the predicate runs once per row, so it is
+        // translated and compiled once per pattern text, not once per row (psql's \d sends one, issue #10228).
+        CompiledRegex cached = compiled;
+        if (cached == null || !cached.source().equals(pattern)) {
+          cached = new CompiledRegex(pattern,
+              Pattern.compile(javaRegex(pattern), operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0));
+          compiled = cached;
+        }
+        final Pattern regex = cached.regex();
+        if (regexBudget <= 0)
+          throw new BudgetExceeded();
+        final BoundedCharSequence text = new BoundedCharSequence(value,
+            (int) Math.min(BoundedCharSequence.MATCH_BUDGET, regexBudget));
+        try {
+          return operator.startsWith("!") != regex.matcher(text).find();
+        } finally {
+          regexBudget -= text.used();
+        }
       } catch (final PatternSyntaxException e) {
         // A POSIX regex Java cannot compile: not something to guess the answer of.
         return UNKNOWN;
@@ -457,6 +604,168 @@ abstract class PostgresCatalogExpression {
         default -> UNKNOWN;
       };
     }
+  }
+
+  /**
+   * The text a client's regular expression is matched against, counting the characters the matcher reads. The
+   * pattern is the client's own, and {@code java.util.regex} backtracks: a pattern like {@code (a+)+$} takes time
+   * exponential in the length of the name it is matched against, once per row. The budget turns that into a
+   * declined statement after a bounded amount of work instead of a connection thread spinning, and it counts steps rather
+   * than time, so the answer does not depend on how loaded the machine is.
+   */
+  private static final class BoundedCharSequence implements CharSequence {
+    /** Character reads one match may make: some thousand times what any catalog name needs. */
+    static final int  MATCH_BUDGET     = 1_000_000;
+    /** Character reads one regular-expression predicate may make over all the rows of a statement. */
+    static final long STATEMENT_BUDGET = 5_000_000L;
+
+    private final String text;
+    private final int[]  budget;
+    private final int    allowance;
+
+    BoundedCharSequence(final String text, final int allowance) {
+      this(text, new int[] { allowance }, allowance);
+    }
+
+    private BoundedCharSequence(final String text, final int[] budget, final int allowance) {
+      this.text = text;
+      this.budget = budget;
+      this.allowance = allowance;
+    }
+
+    /** The character reads the match made, shared by every sub-sequence the matcher took. */
+    int used() {
+      return allowance - Math.max(budget[0], 0);
+    }
+
+    @Override
+    public int length() {
+      return text.length();
+    }
+
+    @Override
+    public char charAt(final int index) {
+      if (--budget[0] < 0)
+        throw new BudgetExceeded();
+      return text.charAt(index);
+    }
+
+    @Override
+    public CharSequence subSequence(final int start, final int end) {
+      return new BoundedCharSequence(text.substring(start, end), budget, allowance);
+    }
+
+    @Override
+    public String toString() {
+      return text;
+    }
+  }
+
+  /**
+   * Thrown when a statement has spent the work it is allowed: a client regular expression's character reads, or
+   * the catalog's statement budget. It is not an UNKNOWN operand: the permissive filter keeps a row an unreadable
+   * predicate is evaluated on, and a name filter that ran out of budget would then answer rows that do not match.
+   * The catalog refuses the whole statement instead (see {@link PostgresCatalog.WorkLimitExceeded}). No stack trace: it is control flow, thrown on a hostile
+   * query's hot path.
+   */
+  static final class BudgetExceeded extends RuntimeException {
+    BudgetExceeded() {
+      super(null, null, false, false);
+    }
+  }
+
+  /**
+   * A PostgreSQL regular expression as java.util.regex reads it. The two agree on everything a catalog client
+   * writes - anchors, groups, alternation, quantifiers, ordinary bracket expressions - except POSIX character
+   * classes: Java compiles {@code [[:alpha:]]} without complaint as a set of the characters {@code [:alph}, which
+   * would answer a different question rather than fail. Those are translated - the twelve standard classes plus
+   * {@code word} and {@code ascii}, and the {@code [[:<:]]} / {@code [[:>:]]} word boundaries - to Java's ASCII
+   * classes, and any other one is refused as unreadable rather than misread: PostgreSQL
+   * takes them from the locale, which for the ASCII names a catalog holds is the same. PostgreSQL's own word-boundary
+   * escapes ({@code \m}, {@code \M}, {@code \y}) are not Java syntax and fail to compile, so a pattern using
+   * them reads as UNKNOWN instead of being guessed at.
+   */
+  static String javaRegex(final String pattern) {
+    // Any bracket expression needs the scan, not only one holding a class: a '[' or '&' inside one is a literal in
+    // POSIX, and Java would read "[a&&b]" as an intersection and "[a[b]c]" as a nested class.
+    if (pattern.indexOf('[') < 0)
+      return pattern;
+
+    // A class is only a class inside a bracket expression: a standalone "[:word:]" is itself a bracket expression,
+    // the set of the characters ":word", which Java reads the same way. So the pattern is scanned for bracket
+    // expressions, and only what is inside one is translated.
+    final int length = pattern.length();
+    final StringBuilder java = new StringBuilder(length + 16);
+    int i = 0;
+    while (i < length) {
+      final char c = pattern.charAt(i);
+      if (c == '\\' && i + 1 < length) {
+        java.append(c).append(pattern.charAt(i + 1));
+        i += 2;
+      } else if (c != '[') {
+        java.append(c);
+        ++i;
+      } else if (pattern.startsWith("[[:<:]]", i)) {
+        // PostgreSQL's word-boundary brackets are whole bracket expressions of their own.
+        java.append("\\b(?=\\w)");
+        i += 7;
+      } else if (pattern.startsWith("[[:>:]]", i)) {
+        java.append("\\b(?<=\\w)");
+        i += 7;
+      } else
+        i = translateBracket(pattern, i, java);
+    }
+    return java.toString();
+  }
+
+  /**
+   * Copies the bracket expression starting at {@code open} into {@code java}, translating the POSIX classes in it.
+   * A {@code [} or {@code &} inside it is a literal in POSIX and is escaped, because Java would read the first as a
+   * nested class and {@code &&} as an intersection.
+   *
+   * @return the index after the closing {@code ]}
+   */
+  private static int translateBracket(final String pattern, final int open, final StringBuilder java) {
+    final int length = pattern.length();
+    int j = open + 1;
+    java.append('[');
+    if (j < length && pattern.charAt(j) == '^')
+      java.append(pattern.charAt(j++));
+    if (j < length && pattern.charAt(j) == ']') {
+      // A ']' right after the opening is a literal in POSIX.
+      java.append("\\]");
+      ++j;
+    }
+
+    while (j < length && pattern.charAt(j) != ']') {
+      final char d = pattern.charAt(j);
+      if (d == '[' && j + 1 < length && pattern.charAt(j + 1) == ':') {
+        final int end = pattern.indexOf(":]", j + 2);
+        final String javaClass = end < 0 ? null : POSIX_CLASSES.get(pattern.substring(j + 2, end));
+        if (javaClass == null)
+          // A class this catalog does not translate: unreadable, rather than misread as a set of its letters.
+          throw new PatternSyntaxException("POSIX character class this catalog does not translate", pattern, j);
+        java.append(javaClass);
+        j = end + 2;
+      } else if (d == '\\' && j + 1 < length) {
+        java.append(d).append(pattern.charAt(j + 1));
+        j += 2;
+      } else {
+        if (d == '[' || d == '&')
+          java.append('\\');
+        java.append(d);
+        ++j;
+      }
+    }
+
+    if (j >= length)
+      throw new PatternSyntaxException("unterminated bracket expression", pattern, open);
+    java.append(']');
+    return j + 1;
+  }
+
+  /** A compiled regular expression and the client's text it was translated from. */
+  private record CompiledRegex(String source, Pattern regex) {
   }
 
   /** Translates a SQL LIKE pattern into the equivalent regular expression. */
@@ -617,6 +926,7 @@ abstract class PostgresCatalogExpression {
     private final List<PostgresCatalogToken> tokens;
     private       int                        position;
     private       int                        depth;
+    private       boolean                    aggregated;
 
     Parser(final List<PostgresCatalogToken> tokens) {
       this.tokens = tokens;
@@ -742,6 +1052,13 @@ abstract class PostgresCatalogExpression {
 
           if (next.isKeyword("IN")) {
             ++position;
+            if (peek() != null && peek().isSymbol("(") && peek(1) != null && peek(1).isKeyword("SELECT")) {
+              final List<PostgresCatalogToken> inner = readParenthesised();
+              if (inner == null)
+                return null;
+              left = new InSubquery(left, new Subquery(inner, SubqueryKind.ARRAY), negated);
+              continue;
+            }
             if (!skipSymbol("("))
               return null;
             final List<PostgresCatalogExpression> candidates = new ArrayList<>();
@@ -998,6 +1315,13 @@ abstract class PostgresCatalogExpression {
         if (token.isKeyword("SELECT") || token.isKeyword("FROM") || token.isKeyword("WHERE"))
           // A sub-select, or the end of the expression where the caller expected more.
           return null;
+        if ((token.isKeyword("EXISTS") || token.isKeyword("ARRAY")) && peek(1) != null && peek(1).isSymbol("(")
+            && peek(2) != null && peek(2).isKeyword("SELECT")) {
+          ++position;
+          final List<PostgresCatalogToken> inner = readParenthesised();
+          return inner == null ? null :
+              new Subquery(inner, token.isKeyword("EXISTS") ? SubqueryKind.EXISTS : SubqueryKind.ARRAY);
+        }
 
         ++position;
         return parseQualifiedReference(null, token.text);
@@ -1037,6 +1361,9 @@ abstract class PostgresCatalogExpression {
         currentQualifier = null;
 
       if (peek() != null && peek().isSymbol("(")) {
+        if (currentQualifier == null && AGGREGATES.contains(name.toLowerCase(Locale.ENGLISH)))
+          return parseAggregate(name.toLowerCase(Locale.ENGLISH));
+
         ++position;
         final List<PostgresCatalogExpression> arguments = new ArrayList<>();
         if (!skipSymbol(")")) {
@@ -1058,6 +1385,52 @@ abstract class PostgresCatalogExpression {
 
       return new ColumnReference(currentQualifier == null ? null : currentQualifier.toLowerCase(Locale.ENGLISH),
           name.toLowerCase(Locale.ENGLISH));
+    }
+
+    /**
+     * Reads an aggregate call: {@code count(*)}, {@code count(DISTINCT x)}, {@code string_agg(x, ', ')}. An
+     * ORDER BY or FILTER clause changes what the aggregate answers, so a call carrying one is not read; followed
+     * by OVER it is a window function instead, which {@link #parseWindow} reads.
+     */
+    private PostgresCatalogExpression parseAggregate(final String functionName) {
+      ++position; // (
+      final boolean distinct = skipKeyword("DISTINCT");
+      if (!distinct)
+        skipKeyword("ALL");
+
+      PostgresCatalogExpression argument = null;
+      final List<PostgresCatalogExpression> extraArguments = new ArrayList<>();
+      if ("count".equals(functionName) && !distinct && peek() != null && peek().isSymbol("*") && peek(1) != null
+          && peek(1).isSymbol(")"))
+        position += 2;
+      else {
+        argument = parseExpression();
+        if (argument == null)
+          return null;
+        while (skipSymbol(",")) {
+          final PostgresCatalogExpression extra = parseExpression();
+          if (extra == null)
+            return null;
+          extraArguments.add(extra);
+        }
+        if (!skipSymbol(")"))
+          return null;
+        if (extraArguments.size() != ("string_agg".equals(functionName) ? 1 : 0))
+          return null;
+      }
+
+      if (peek() != null && peek().isKeyword("OVER"))
+        return parseWindow(functionName);
+      if (peek() != null && peek().isKeyword("FILTER"))
+        return null;
+
+      aggregated = true;
+      return new AggregateCall(functionName, argument, extraArguments, distinct);
+    }
+
+    /** Whether the expressions this parser has read so far contain an aggregate call. */
+    boolean isAggregated() {
+      return aggregated;
     }
 
     /**
@@ -1117,20 +1490,28 @@ abstract class PostgresCatalogExpression {
     }
 
     /**
-     * Skips a parenthesised sub-select and reads it as an operand whose value is unknown (issue #7224). The
-     * tokens are skipped rather than parsed: planning a subquery is well outside what a catalog emulation
-     * should pretend to do, and the point is only to stop one operand from making the whole predicate
-     * unreadable. The scan is iterative, so however deeply the subquery nests it costs no stack, and an
-     * unbalanced tail declines the query as it did before.
+     * Reads a parenthesised sub-select as an operand the resolver evaluates. The tokens are collected rather
+     * than parsed: what they mean is the catalog's to decide when it evaluates them. The scan is iterative, so
+     * however deeply the sub-select nests it costs no stack here, and an unbalanced tail declines the query.
      */
     private PostgresCatalogExpression parseScalarSubquery() {
+      final List<PostgresCatalogToken> inner = readParenthesised();
+      return inner == null ? null : new Subquery(inner, SubqueryKind.SCALAR);
+    }
+
+    /**
+     * Consumes a parenthesised token range starting at the current {@code (} and returns what is inside it, or
+     * null when the parentheses do not balance.
+     */
+    private List<PostgresCatalogToken> readParenthesised() {
+      final int start = position + 1;
       int open = 0;
       while (position < tokens.size()) {
         final PostgresCatalogToken token = tokens.get(position++);
         if (token.isSymbol("("))
           ++open;
         else if (token.isSymbol(")") && --open == 0)
-          return new Unreadable();
+          return new ArrayList<>(tokens.subList(start, position - 1));
       }
       return null;
     }

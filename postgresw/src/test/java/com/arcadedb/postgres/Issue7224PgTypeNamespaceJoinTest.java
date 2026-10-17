@@ -171,9 +171,15 @@ class Issue7224PgTypeNamespaceJoinTest {
     assertThat(resolve("SELECT typname FROM pg_type t WHERE t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_class c "
         + "WHERE c.oid = t.typrelid)").rows).hasSize(PostgresTypeCatalog.types().size());
 
-    // With nothing readable left to decide it, the answer is still a decline rather than "every type".
-    assertThat(PostgresCatalog.resolve("SELECT typname FROM pg_type t WHERE (SELECT c.relkind = 'c' FROM pg_class c "
-        + "WHERE c.oid = t.typrelid)", database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    // A sub-select this catalog can answer is evaluated rather than left UNKNOWN (issue #10228): no table has the
+    // OID 0 a type's typrelid holds, so the sub-select is NULL for every type and selects none of them.
+    assertThat(resolve("SELECT typname FROM pg_type t WHERE (SELECT c.relkind = 'c' FROM pg_class c "
+        + "WHERE c.oid = t.typrelid)").rows).isEmpty();
+
+    // With nothing readable left to decide it - a sub-select over a relation this catalog does not model - the
+    // answer is still a decline rather than "every type".
+    assertThat(PostgresCatalog.resolve("SELECT typname FROM pg_type t WHERE (SELECT p.proisstrict FROM pg_proc p "
+        + "WHERE p.oid = t.typreceive)", database, USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
   private PostgresCatalog.Answer resolve(final String query, final Object... parameters) {

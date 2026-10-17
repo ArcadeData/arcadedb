@@ -603,10 +603,11 @@ public final class PostgresCopyStatement {
    */
   public void appendHeader(final StringBuilder out, final Collection<String> columnNames) {
     boolean first = true;
-    for (final String name : columnNames) {
+    for (final String column : columnNames) {
       if (!first)
         out.append(delimiter);
       first = false;
+      final String name = PostgresCatalog.announcedName(column);
       if (format == Format.CSV)
         appendCsvValue(out, name, false, columnNames.size() == 1);
       else
@@ -629,7 +630,8 @@ public final class PostgresCopyStatement {
       if (value == null)
         out.append(nullString);
       else if (format == Format.CSV)
-        appendCsvValue(out, value, forceQuoteAll || forceQuoteColumns.contains(columnNames[i]), values.length == 1);
+        appendCsvValue(out, value, forceQuoteAll || forceQuoteColumns.contains(PostgresCatalog.announcedName(columnNames[i])),
+            values.length == 1);
       else
         appendTextValue(out, value);
     }
