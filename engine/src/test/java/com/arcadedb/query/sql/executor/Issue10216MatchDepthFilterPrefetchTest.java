@@ -129,6 +129,19 @@ class Issue10216MatchDepthFilterPrefetchTest extends TestHelper {
         .containsExactly("1->2", "1->3");
   }
 
+  /**
+   * Both ends of a recursive edge are bound before it runs (b is reached through x first): the edge is checked from its source,
+   * in its own direction. It used to be walked backwards whenever the scheduler reached it from its target.
+   */
+  @Test
+  void aRecursiveEdgeBetweenTwoBoundNodesIsCheckedFromItsSource() {
+    assertThat(rows("MATCH {type: A, as: a}.out('R'){as: x}.out('R'){type: C, as: b}, "
+        + "{as: a}.out('R'){as: b, while: (id = 1 OR id = 5), where: ($depth = 2)} RETURN a.id AS a, b.id AS b"))
+        .containsExactly("1->3");
+    assertThat(rows("MATCH {type: A, as: a}.out('R'){as: x}.out('R'){type: C, as: b}, "
+        + "{as: a}.out('R'){as: b, maxDepth: 1} RETURN a.id AS a, b.id AS b")).isEmpty();
+  }
+
   /** The plan says why: the node reached through the recursive item is not prefetched. */
   @Test
   void theRecursiveEndNodeIsNotPrefetched() {

@@ -163,7 +163,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
         break;
 
       // A carried record is read as the transaction sees it now: a source row may hold it as it was before a write of the same
-      // transaction (issue #10217). Only the winners are checked, the losers of the fusion never are
+      // transaction (issue #10217). Only the winners are checked, the losers of the fusion never are. A null current state
+      // means the transaction deleted the record: the load below finds nothing and the candidate is skipped
       final Document held = carried.get(rs.rid());
       final Document current = held != null ? currentState(db, held) : null;
       final Document record = current != null ? current : candidateRecord(db, null, rs.rid());

@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -161,6 +162,26 @@ class Issue10209FullTextByItemUpdateTest extends TestHelper {
     assertThat(metadata().getSumDocLength()).isEqualTo(2L);
   }
 
+  /**
+   * An index built before the fix counted one document per list ITEM. The first search of a session finds the persisted count
+   * disagrees with the record count and recounts, now reading the lists, so the counters come back exact by themselves.
+   */
+  @Test
+  void countersLeftByThePerItemCountingAreRepairedByTheFirstSearch() {
+    createType(" METADATA {\"similarity\": \"BM25\"}");
+    insertTheThreeLists();
+    // What the per-item counting left behind for these records: 7 documents (one per item) of length 1
+    metadata().applyCorpusDelta(7 - 3, 7 - 7);
+    ((DatabaseInternal) database).getSchema().getEmbedded().saveConfiguration();
+    reopenDatabase();
+    assertThat(metadata().getTotalDocs()).isEqualTo(7L);
+
+    assertThat(found("beta")).containsExactly(1, 2, 3);
+
+    assertThat(metadata().getTotalDocs()).isEqualTo(3L);
+    assertThat(metadata().getSumDocLength()).isEqualTo(7L);
+  }
+
   @Test
   void moreLikeThisReadsTheTermsOfTheList() {
     createType("");
@@ -199,6 +220,27 @@ class Issue10209FullTextByItemUpdateTest extends TestHelper {
     });
 
     try (final ResultSet rs = database.query("sql", "SELECT id FROM M WHERE labels CONTAINSTEXT 'beta'")) {
+      assertThat(rs.stream().count()).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void aMapByKeyIndexKeepsTheRecordToo() {
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType("K");
+      t.createProperty("id", Type.INTEGER);
+      t.createProperty("labels", Type.MAP);
+    });
+    database.command("sql", "CREATE INDEX ON K (labels BY KEY) FULL_TEXT");
+    database.transaction(() -> database.newDocument("K").set("id", 1).set("labels", Map.of("beta", 1, "BETA", 2)).save());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM K WHERE id = 1")) {
+        rs.next().toElement().modify().set("labels", Map.of("beta", 1)).save();
+      }
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT id FROM K WHERE labels CONTAINSTEXT 'beta'")) {
       assertThat(rs.stream().count()).isEqualTo(1L);
     }
   }
