@@ -921,6 +921,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           if (currentStatus == Status.READY) {
             if (asyncDeltaLag.get() == 0)
               return true;
+            // Shut down: what is still queued is never merged
+            if (shutDown)
+              return false;
             // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
             final long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0)
@@ -992,9 +995,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.
       // A change still queued (its merge task outlived the wait above) goes into the overlay first: the snapshot then
-      // carries changes and is not persisted, rather than persisted without them under a certificate the next open rejects
-      mergeQueuedAsyncDeltas();
+      // carries changes and is not persisted, rather than persisted without them under a certificate the next open rejects.
+      // A view dropped has nothing to persist, and its queue is only discarded
       if (persistCsr) {
+        mergeQueuedAsyncDeltas();
         persistCsrIfPossible();
         persistContractionOrdersIfPossible();
       }
@@ -3814,6 +3818,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         applyDelta(queued.delta(), queued.bufferedAgainst());
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
+        // Before the lag drops below: the view never reads READY without the change
+        status = Status.STALE;
         failed = true;
       } finally {
         asyncDeltaLag.decrementAndGet();

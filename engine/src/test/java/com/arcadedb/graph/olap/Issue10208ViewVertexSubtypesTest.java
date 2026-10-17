@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -31,6 +32,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.io.File;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -243,6 +246,28 @@ class Issue10208ViewVertexSubtypesTest {
     assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
     assertThat(view.getNodeCount()).as("the rebuild read Y").isEqualTo(7);
     assertThat(view.coversVertexType("Y")).isTrue();
+    assertServedByTheViewAndRight();
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
+  void aCsrPersistedInTheFormerFormatIsRebuilt(final GraphAnalyticalView.UpdateMode mode) throws Exception {
+    createView(mode);
+    database.close();
+
+    // the file a release before #10208 wrote: the listed types alone, format version 2 right after the magic number
+    final File file = new File(DB_PATH, NodeLocalFiles.GAV_CSR_FILE_PREFIX + "g" + NodeLocalFiles.GAV_CSR_FILE_EXTENSION);
+    assertThat(file).as("the CSR was persisted on close").exists();
+    try (final RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+      raf.seek(Integer.BYTES);
+      raf.writeInt(2);
+    }
+
+    database = new DatabaseFactory(DB_PATH).open();
+    final GraphAnalyticalView reopened = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(reopened.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(reopened.isRestoredFromPersistedCsr()).as("a former-format file is rebuilt, not restored").isFalse();
+    assertThat(reopened.getNodeCount()).isEqualTo(6);
     assertServedByTheViewAndRight();
   }
 
