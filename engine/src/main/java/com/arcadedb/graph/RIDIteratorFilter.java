@@ -93,4 +93,12 @@ public class RIDIteratorFilter extends ResettableIteratorBase<RID> implements Ed
   public RID getEdgeRID() {
     return lastEntryEdgeRID();
   }
+
+  /** Also forgets the entry {@code hasNext()} peeked, which would otherwise be handed out again before the walk restarts (#10151). */
+  @Override
+  public void reset() {
+    super.reset();
+    next = null;
+    nextContainer = null;
+  }
 }

@@ -55,6 +55,12 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CypherSemanticValidator {
+  /**
+   * The message of a null MERGE property, the same whether the null is a literal refused here or arrived at run time and
+   * was refused by {@code MergeStep} (issue #10191).
+   */
+  public static final String NULL_MERGE_PROPERTY =
+      "MergeReadOwnWrites: 'MERGE' cannot be used with a graph element property value that is null";
 
   private enum VarType {
     NODE, RELATIONSHIP, PATH, SCALAR
@@ -1955,11 +1961,10 @@ public class CypherSemanticValidator {
           checkMergePropertyNotNull(value);
   }
 
+  /** A literal null, refused before anything runs. One that arrives at run time is refused by {@code MergeStep} (#10191). */
   private void checkMergePropertyNotNull(final Object value) {
-    if (value == null)
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
-    if (value instanceof LiteralExpression && ((LiteralExpression) value).getValue() == null)
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
+    if (value == null || (value instanceof LiteralExpression literal && literal.getValue() == null))
+      throw new CommandParsingException(NULL_MERGE_PROPERTY);
   }
 
   private void validateDeleteTargets(final DeleteClause deleteClause) {

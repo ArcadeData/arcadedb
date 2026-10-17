@@ -102,6 +102,14 @@ public class UnionStatement implements CypherStatement {
     return true;
   }
 
+  @Override
+  public boolean hasSubqueryInTransactions() {
+    for (final CypherStatement query : queries)
+      if (query.hasSubqueryInTransactions())
+        return true;
+    return false;
+  }
+
   /**
    * A UNION has no {@code MATCH} of its own - each branch has its own, and they can differ (issue #5671):
    * {@code MATCH (a:P) RETURN a.x AS c UNION MATCH q = (m:P)-->() RETURN q.name AS c} has two entirely different

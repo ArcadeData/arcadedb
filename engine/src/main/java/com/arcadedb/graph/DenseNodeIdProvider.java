@@ -210,6 +210,33 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   }
 
   @Override
+  public String[] resolveEdgeTypes(final String... edgeTypes) {
+    return delegate.resolveEdgeTypes(edgeTypes);
+  }
+
+  @Override
+  public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+    final int id = delegateId(nodeId);
+    if (id < 0)
+      return EMPTY_NEIGHBORS;
+    return translate(delegate.getNeighborIdsOfSlice(id, direction, edgeType));
+  }
+
+  @Override
+  public long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    final int a = delegateId(nodeA);
+    final int b = delegateId(nodeB);
+    return a < 0 || b < 0 ? 0 : delegate.countEdgesBetweenInSlice(a, b, direction, edgeType);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+    // Not renumbered, for the reason given on getNeighborView()
+    return null;
+  }
+
+  @Override
   public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
     final int id = delegateId(nodeId);
     return id < 0 ? 0 : delegate.countEdges(id, direction, edgeTypes);

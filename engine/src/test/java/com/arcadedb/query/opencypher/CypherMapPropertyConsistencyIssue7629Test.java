@@ -241,33 +241,32 @@ class CypherMapPropertyConsistencyIssue7629Test {
   }
 
   /**
-   * A null-valued property on the MERGE creation branch is simply not stored, matching CREATE - it isn't a removal
-   * the way it is on SET's merge form ({@code ON MATCH SET n += {..}}), since there's nothing yet to remove it from.
+   * A null-valued property of a MERGE pattern is refused, as Neo4j refuses it: nothing can match a null, so the MERGE
+   * would create a node without the property on every run (issue #10191). It used to be skipped on the creation branch.
    */
   @Test
-  void mergeCreationBranchSkipsANullVertexProperty() {
-    database.transaction(() -> database.command("opencypher",
-        "MERGE (n:R {id: 1, s: $s})", Collections.singletonMap("s", null)));
+  void mergeRefusesANullVertexProperty() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MERGE (n:R {id: 1, s: $s})", Collections.singletonMap("s", null))))
+        .hasMessageContaining("cannot be used with a graph element property value that is null");
 
-    final ResultSet rs = database.query("opencypher", "MATCH (n:R {id: 1}) RETURN n.s AS s, keys(n) AS k");
-    final var row = rs.next();
-    assertThat(row.<Object>getProperty("s")).isNull();
-    assertThat(row.<List<String>>getProperty("k")).doesNotContain("s");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:R) RETURN count(n) AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
   }
 
-  /** The edge equivalent of {@link #mergeCreationBranchSkipsANullVertexProperty}. */
+  /** The edge equivalent of {@link #mergeRefusesANullVertexProperty}. */
   @Test
-  void mergeCreationBranchSkipsANullEdgeProperty() {
+  void mergeRefusesANullEdgeProperty() {
     database.transaction(() -> database.command("opencypher", "CREATE (:R {id: 1}), (:R {id: 2})"));
 
-    database.transaction(() -> database.command("opencypher",
-        "MATCH (a:R {id: 1}), (b:R {id: 2}) MERGE (a)-[r:REL {s: $s}]->(b)", Collections.singletonMap("s", null)));
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (a:R {id: 1}), (b:R {id: 2}) MERGE (a)-[r:REL {s: $s}]->(b)", Collections.singletonMap("s", null))))
+        .hasMessageContaining("cannot be used with a graph element property value that is null");
 
-    final ResultSet rs = database.query("opencypher",
-        "MATCH (:R {id: 1})-[r:REL]->(:R {id: 2}) RETURN r.s AS s, keys(r) AS k");
-    final var row = rs.next();
-    assertThat(row.<Object>getProperty("s")).isNull();
-    assertThat(row.<List<String>>getProperty("k")).doesNotContain("s");
+    try (final ResultSet rs = database.query("opencypher", "MATCH ()-[r:REL]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
   }
 
   /**

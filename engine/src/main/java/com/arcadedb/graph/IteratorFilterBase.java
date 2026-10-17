@@ -158,12 +158,18 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
     removeReturnedEntry(listOwner, listDirection);
   }
 
-  /** Also forgets the entry {@code hasNext()} peeked, which would otherwise be handed out again before the walk restarts. */
+  /**
+   * Also forgets the entry {@code hasNext()} peeked, which would otherwise be handed out again before the walk restarts
+   * (#10151), and where it was: every field {@code hasNext()} sets goes back to what a new iterator starts from.
+   */
   @Override
   public void reset() {
     super.reset();
     next = null;
+    nextEdge = null;
+    nextVertex = null;
     validatedRecord = null;
+    lastElementPosition = currentPosition.get();
   }
 
   @Override

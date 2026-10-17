@@ -156,51 +156,34 @@ public class RemoveStep extends AbstractExecutionStep {
     // every alias of it at the live replacement before anything reads or writes through them.
     replacements.redirect(result);
 
-    // Check if we're already in a transaction
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190). One of
+    // its own per row committed a relabelled node in its new type, where the scan of the label put back met it again,
+    // forever
 
-    try {
-      // Begin transaction if not already active
-      if (!wasInTransaction) {
-        context.getDatabase().begin();
+    // Phase 1: read every right-hand side against the pre-clause state, before any write of this clause
+    // lands. A clause assigns simultaneously in Cypher, so `REMOVE n.kind, n:$(n.kind)` must name the label
+    // from the property value the clause is about to remove, not from the hole it leaves. This mirrors the
+    // phase-1/phase-2 split SetClauseApplier already performs (issue #5190).
+    final List<RemoveClause.RemoveItem> items = removeClause.getItems();
+    // Allocated only for a clause that actually names a label: the overwhelmingly common REMOVE is
+    // property-only, and this runs once per row.
+    Object[] labels = null;
+    for (int i = 0; i < items.size(); i++) {
+      final RemoveClause.RemoveItem item = items.get(i);
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS) {
+        if (labels == null)
+          labels = new Object[items.size()];
+        labels[i] = resolveLabels(item, result);
       }
+    }
 
-      // Phase 1: read every right-hand side against the pre-clause state, before any write of this clause
-      // lands. A clause assigns simultaneously in Cypher, so `REMOVE n.kind, n:$(n.kind)` must name the label
-      // from the property value the clause is about to remove, not from the hole it leaves. This mirrors the
-      // phase-1/phase-2 split SetClauseApplier already performs (issue #5190).
-      final List<RemoveClause.RemoveItem> items = removeClause.getItems();
-      // Allocated only for a clause that actually names a label: the overwhelmingly common REMOVE is
-      // property-only, and this runs once per row.
-      Object[] labels = null;
-      for (int i = 0; i < items.size(); i++) {
-        final RemoveClause.RemoveItem item = items.get(i);
-        if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS) {
-          if (labels == null)
-            labels = new Object[items.size()];
-          labels[i] = resolveLabels(item, result);
-        }
-      }
-
-      // Phase 2: apply in source order, each label removal working off its phase-1 list.
-      for (int i = 0; i < items.size(); i++) {
-        final RemoveClause.RemoveItem item = items.get(i);
-        if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
-          removeProperty(item, result);
-        else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
-          removeLabels(item, result, replacements, asLabelList(labels[i]));
-      }
-
-      // Commit transaction if we started it
-      if (!wasInTransaction) {
-        context.getDatabase().commit();
-      }
-    } catch (final Exception e) {
-      // Rollback if we started the transaction
-      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
-        context.getDatabase().rollback();
-      }
-      throw e;
+    // Phase 2: apply in source order, each label removal working off its phase-1 list.
+    for (int i = 0; i < items.size(); i++) {
+      final RemoveClause.RemoveItem item = items.get(i);
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
+        removeProperty(item, result);
+      else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
+        removeLabels(item, result, replacements, asLabelList(labels[i]));
     }
   }
 

@@ -273,11 +273,8 @@ public class ForeachStep extends AbstractExecutionStep {
 
     // Per-iteration deferred-delete batching: see DeleteStep.DEFERRED_DELETE_BATCH_VAR.
     final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190)
     try {
-      if (!wasInTransaction)
-        context.getDatabase().begin();
-
       // Every iteration runs the inner clauses on a plan of its own, so nothing that loops over the list checks the
       // statement's deadline or termination: checked here, once per element (issue #9680)
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
@@ -304,12 +301,7 @@ public class ForeachStep extends AbstractExecutionStep {
         // same query observes the update, matching direct SET / Neo4j behaviour (issue #5114).
         propagateMutationsToInputRow(inputRow, iterationRow);
       }
-
-      if (!wasInTransaction)
-        context.getDatabase().commit();
     } catch (final Exception e) {
-      if (!wasInTransaction && context.getDatabase().isTransactionActive())
-        context.getDatabase().rollback();
       if (e instanceof RuntimeException re)
         throw re;
       throw new CommandExecutionException("FOREACH execution failed", e);

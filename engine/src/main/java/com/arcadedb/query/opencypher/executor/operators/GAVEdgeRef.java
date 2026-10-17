@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -36,8 +37,9 @@ import java.util.Set;
  * as well as the record identity would: two relationships of the same type joining the same ordered pair of vertices
  * are interchangeable to every observer of the query.
  * <p>
- * The label is {@code (type, out, in, occurrence)}, where {@code occurrence} ranks this relationship among the parallel
- * ones of the same type and orientation in the adjacency list it was read from. Every list a hop can walk holds the
+ * The label is {@code (type, out, in, occurrence)}, where {@code type} is the concrete type of the relationship - the
+ * slice it was read from, never the super-type a hop asked for (issue #10213) - and {@code occurrence} ranks this
+ * relationship among the parallel ones of the same type and orientation in the adjacency list it was read from. Every list a hop can walk holds the
  * {@code m} parallel relationships of a pair as exactly {@code m} entries - the out-list of {@code out}, the in-list of
  * {@code in} - so each walk hands out the occurrences {@code 0..m-1}, and two hops conflict exactly when they carry the
  * same number. The rank costs a scan of the list, so it is taken only when another label already has the same endpoints.
@@ -103,13 +105,18 @@ public final class GAVEdgeRef {
   }
 
   /**
-   * The edge types a tracked hop walks one by one: its own, or every edge type of the schema for an untyped hop. Read
-   * from the schema rather than from the view's snapshot, which holds no slice for a type that had no edges when it was
-   * built: edges of that type committed since live in the view's overlay, and a walk skipping the type would miss them.
+   * The CONCRETE edge types a tracked hop walks one by one, each read from its own slice with the {@code ...OfSlice}
+   * methods of the provider and labelled with its own name: the hop's types with the sub-types they bring
+   * ({@link GraphTraversalProvider#resolveEdgeTypes}), or every edge type of the schema for an untyped hop. A label
+   * naming the hop's REQUESTED type would call an {@code F EXTENDS E} relationship {@code E} on a hop over {@code E} and
+   * {@code F} on a hop over {@code F}, and miss the collision (issue #10213). The untyped list is read from the schema
+   * rather than from the view's snapshot, which holds no slice for a type that had no edges when it was built: edges of
+   * that type committed since live in the view's overlay, and a walk skipping the type would miss them.
    */
-  public static String[] trackedEdgeTypes(final Database database, final String[] hopTypes) {
+  public static String[] trackedEdgeTypes(final GraphTraversalProvider provider, final Database database,
+      final String[] hopTypes) {
     if (hopTypes != null && hopTypes.length > 0)
-      return hopTypes;
+      return provider.resolveEdgeTypes(hopTypes);
     final List<String> names = new ArrayList<>();
     for (final DocumentType type : database.getSchema().getTypes())
       if (type instanceof EdgeType)

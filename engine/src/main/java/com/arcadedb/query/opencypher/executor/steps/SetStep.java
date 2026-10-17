@@ -128,21 +128,9 @@ public class SetStep extends AbstractExecutionStep {
     if (setClause == null || setClause.isEmpty())
       return;
 
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
-
-    try {
-      if (!wasInTransaction)
-        context.getDatabase().begin();
-
-      applier.apply(setClause, result, writtenDocs, labelReplacements);
-
-      if (!wasInTransaction)
-        context.getDatabase().commit();
-    } catch (final Exception e) {
-      if (!wasInTransaction && context.getDatabase().isTransactionActive())
-        context.getDatabase().rollback();
-      throw e;
-    }
+    // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190): one of
+    // its own per row committed the rows before a failing one, and the statement was not atomic any more
+    applier.apply(setClause, result, writtenDocs, labelReplacements);
   }
 
   @Override

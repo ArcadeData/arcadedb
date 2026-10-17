@@ -271,6 +271,21 @@ public interface CypherStatement {
   }
 
   /**
+   * Returns true if a {@code CALL { ... } IN TRANSACTIONS} appears anywhere in the statement, nested subqueries included:
+   * its batches commit on their own, so the statement cannot be re-run as a whole once one has (issue #10190).
+   */
+  default boolean hasSubqueryInTransactions() {
+    for (final ClauseEntry entry : getClausesInOrder())
+      if (entry.getType() == ClauseEntry.ClauseType.SUBQUERY) {
+        final SubqueryClause subquery = entry.getTypedClause();
+        if (subquery.isInTransactions()
+            || (subquery.getInnerStatement() != null && subquery.getInnerStatement().hasSubqueryInTransactions()))
+          return true;
+      }
+    return false;
+  }
+
+  /**
    * Returns true if any write clause (CREATE, MERGE, SET, DELETE, REMOVE, FOREACH)
    * appears before a MATCH in clause order. Used to disable the optimizer fast path
    * for those queries, because that path executes MATCH first via the physical plan
