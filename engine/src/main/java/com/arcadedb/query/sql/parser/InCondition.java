@@ -265,6 +265,31 @@ public class InCondition extends BooleanExpression {
     return item;
   }
 
+  /**
+   * Whether the item is a sub-query row standing for a NULL ({@code SELECT k FROM U} over a record whose {@code k} is null). The
+   * planner hoists an {@code IN (SELECT ...)} into a LET, so the right-hand side arrives as a list of rows rather than of
+   * values, and the row itself is never null: without this, {@code 3 NOT IN (SELECT k ...)} over {@code 4, NULL} answered TRUE
+   * where the literal list {@code 3 NOT IN [4, null]} answers unknown (#10186). Only asked once the row did not match, so a
+   * matching row costs nothing extra.
+   */
+  private static boolean isNullSubQueryRow(final Object item) {
+    if (item instanceof Result row && !row.isElement()) {
+      final Set<String> names = row.getPropertyNames();
+      return names.size() == 1 && row.getProperty(names.iterator().next()) == null;
+    }
+    return false;
+  }
+
+  private static boolean containsNullItem(final Set<?> set) {
+    if (set.contains(null))
+      return true;
+    if (firstItem(set) instanceof Result)
+      for (final Object o : set)
+        if (isNullSubQueryRow(o))
+          return true;
+    return false;
+  }
+
   // False where QueryOperatorEquals is symmetric (same class, two numbers, records, embedded documents), so the reverse call adds nothing
   private static boolean mayMatchByConversion(final Object left, final Object item) {
     if (item == null || left.getClass() == item.getClass() || (left instanceof Number && item instanceof Number))
@@ -306,7 +331,7 @@ public class InCondition extends BooleanExpression {
             if (o != null && equalsEitherWay(iLeft, o, true))
               return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
-        return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
+        return iLeft == null || containsNullItem(set) ? null : Boolean.FALSE;
       }
 
       boolean sawNull = false;
@@ -319,6 +344,10 @@ public class InCondition extends BooleanExpression {
         }
         if (equalsEitherWay(iLeft, o, convertOperand))
           return Boolean.TRUE;
+        if (isNullSubQueryRow(o)) {
+          sawNull = true;
+          continue;
+        }
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
           final Object item = MultiValue.getFirstValue(iLeft);
@@ -343,6 +372,8 @@ public class InCondition extends BooleanExpression {
         }
         if (equalsEitherWay(iLeft, o, convertOperand))
           return Boolean.TRUE;
+        if (isNullSubQueryRow(o))
+          sawNull = true;
       }
       if (array.length == 0)
         return Boolean.FALSE;
@@ -362,6 +393,8 @@ public class InCondition extends BooleanExpression {
         // except for a record property on the left, which is not converted (#8913)
         if (convertOperand ? QueryOperatorEquals.equals(iLeft, o) : QueryOperatorEquals.equals(iLeft, subQueryRowScalar(o)))
           return Boolean.TRUE;
+        if (isNullSubQueryRow(o))
+          sawNull = true;
       }
       if (empty)
         return Boolean.FALSE;

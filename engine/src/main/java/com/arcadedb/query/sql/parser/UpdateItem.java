@@ -150,16 +150,16 @@ public class UpdateItem extends SimpleNode {
         doc.setProperty(propName, newValue);
       break;
     case OPERATOR_MINUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.MINUS));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.MINUS));
       break;
     case OPERATOR_PLUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.PLUS));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.PLUS));
       break;
     case OPERATOR_SLASHASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.SLASH));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH));
       break;
     case OPERATOR_STARASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.STAR));
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.STAR));
       break;
     }
   }
@@ -228,16 +228,28 @@ public class UpdateItem extends SimpleNode {
     return value.stream().anyMatch(x -> x instanceof Result);
   }
 
-  private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final MathExpression.Operator explicitOperator) {
+  /**
+   * The new value of {@code x op= rightValue}. The right-hand side is the value {@link #applyUpdate} already computed, so a
+   * sub-query or a non-deterministic call on it runs once per record, not twice.
+   * <p>
+   * {@code +=} and {@code -=} increment a counter, so a missing or null field starts from nothing: {@code SET n += 1} sets 1 and
+   * {@code SET n -= 1} sets -1, while {@code n + 1} with a NULL {@code n} is NULL in an expression (#10186).
+   */
+  private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final Object rightValue,
+      final MathExpression.Operator explicitOperator) {
     final Expression leftEx = new Expression(left.copy());
     if (leftModifier != null)
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
 
-    final MathExpression mathExp = new MathExpression();
-    mathExp.getChildExpressions().add(leftEx.getMathExpression());
-    mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));
-    mathExp.getOperators().add(explicitOperator);
-    return mathExp.execute(doc, context);
+    final Object current = MathExpression.extractScalarFromResultSet(leftEx.execute(doc, context));
+    final Object operand = MathExpression.extractScalarFromResultSet(rightValue);
+    if (current == null) {
+      if (explicitOperator == MathExpression.Operator.PLUS)
+        return operand;
+      if (explicitOperator == MathExpression.Operator.MINUS && operand instanceof Number)
+        return explicitOperator.apply((Object) 0, operand);
+    }
+    return explicitOperator.apply(current, operand);
   }
 
   public Identifier getLeft() {
