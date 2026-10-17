@@ -55,7 +55,7 @@ import java.util.Set;
 public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.neighbors";
 
-  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "groupBy", "groupSize", "maxDistance");
+  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "where", "groupBy", "groupSize", "maxDistance");
 
   // Hard cap on the candidate pool the index is asked to materialize when grouping is enabled.
   // Prevents memory exhaustion on pathological combinations of `k` and `groupSize` (e.g. k=1000,
@@ -89,7 +89,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     // Optional 4th parameter. Either:
     //   - a number: efSearch (backward-compatible positional form)
-    //   - a map: options {efSearch, filter, groupBy, groupSize}
+    //   - a map: options {efSearch, filter, where, groupBy, groupSize, maxDistance}
     int efSearch = -1;
     Set<RID> allowedRIDs = null;
     String groupBy = null;
@@ -100,7 +100,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (params[3] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         efSearch = opts.getInt("efSearch", -1);
-        allowedRIDs = parseRidFilter(opts.getList("filter"), NAME, context);
+        // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of
+        // listing every RID in scope up front as a `filter` subquery has to (issue #10169)
+        allowedRIDs = RecordPredicateRidSet.of(opts.get("where"), parseRidFilter(opts.getList("filter"), NAME, context), NAME,
+            context);
         groupBy = opts.getString("groupBy", null);
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
@@ -443,6 +446,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
   public String getSyntax() {
     return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | "
-        + "{ efSearch: <int>, filter: [<rid>, ...], groupBy: <field>, groupSize: <int> }])";
+        + "{ efSearch: <int>, filter: [<rid>, ...], where: { <property>: <value>, ... } | '<condition>', groupBy: <field>, "
+        + "groupSize: <int>, maxDistance: <float> }])";
   }
 }
