@@ -145,10 +145,10 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
   }
 
   /**
-   * The repair of this node's own channel to a peer it has not yet learnt as a member must not wait behind a stranger. Both
-   * are outside the declared list until a recovery task has read the live configuration, so they would share one throttling
-   * slot, and whichever came first would drop the other for the whole interval. The division is parked until both have been
-   * refused, which fixes the order the shared slot would have been claimed in.
+   * The repair of this node's own channel to a peer only the live configuration knows must not wait behind a stranger. This
+   * node dials such a peer only after applying the configuration that added it, which is where the listener learns it, so
+   * it has a slot of its own (issue #10144: not one picked by the requestor id, which any sender writes). The division is
+   * parked until both have been refused, which fixes the order a shared slot would have been claimed in.
    */
   @Test
   void aStrangersRefusalsDoNotDelayTheRepairOfAPeerOnlyTheLiveConfigurationKnows() throws Exception {
@@ -158,6 +158,7 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
       divisionGate.await();
       return liveDivision(List.of(joined));
     }));
+    raft.onRaftConfigurationApplied(List.of(raft.getLocalPeerId(), joined.getId()), List.of());
 
     returnsWhileTheDivisionIsParked(
         () -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), RaftPeerId.valueOf("localhost_2435")));

@@ -2974,7 +2974,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final List<RaftPeerId> oldPeers = new ArrayList<>(newRaftConfiguration.getOldPeersCount());
       for (final RaftProtos.RaftPeerProto peer : newRaftConfiguration.getOldPeersList())
         oldPeers.add(RaftPeerId.valueOf(peer.getId()));
+
       runtimeJoinDetector.onConfiguration(getId(), peers, oldPeers, index);
+
+      // The misdirected-request listener learns a peer joined after start here, before this node can dial it, so the
+      // repair of a channel to it never shares the slot strangers' refusals take (issue #10144)
+      if (membershipHolder != null)
+        membershipHolder.onRaftConfigurationApplied(peers, oldPeers);
 
       membershipSecuritySeeder.onConfigurationChanged(term, index, peers);
     } catch (final Throwable t) {
