@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -70,15 +71,13 @@ abstract class PostgresCatalogExpression {
   /** Stands for a cast type that is more than a bare name, and so is never one of {@link #LOOKUP_CASTS}. */
   private static final String COMPOUND_CAST_TYPE = "";
 
-  /** POSIX bracket-expression classes and the java.util.regex class each means. */
-  private static final String[][] POSIX_CLASSES = { { "[:alpha:]", "\\p{Alpha}" }, { "[:digit:]", "\\p{Digit}" },
-      { "[:alnum:]", "\\p{Alnum}" }, { "[:upper:]", "\\p{Upper}" }, { "[:lower:]", "\\p{Lower}" },
-      { "[:space:]", "\\p{Space}" }, { "[:punct:]", "\\p{Punct}" }, { "[:xdigit:]", "\\p{XDigit}" },
-      { "[:cntrl:]", "\\p{Cntrl}" }, { "[:print:]", "\\p{Print}" }, { "[:graph:]", "\\p{Graph}" },
-      { "[:blank:]", "\\p{Blank}" }, { "[:word:]", "\\w" }, { "[:ascii:]", "\\p{ASCII}" } };
-
-  /** A POSIX class left after translation, which Java would read as a set of its characters rather than refuse. */
-  private static final Pattern UNTRANSLATED_POSIX = Pattern.compile("\\[:[A-Za-z<>]*:\\]");
+  /** POSIX bracket-expression class names and the java.util.regex class each means. */
+  private static final Map<String, String> POSIX_CLASSES = Map.ofEntries(Map.entry("alpha", "\\p{Alpha}"),
+      Map.entry("digit", "\\p{Digit}"), Map.entry("alnum", "\\p{Alnum}"), Map.entry("upper", "\\p{Upper}"),
+      Map.entry("lower", "\\p{Lower}"), Map.entry("space", "\\p{Space}"), Map.entry("punct", "\\p{Punct}"),
+      Map.entry("xdigit", "\\p{XDigit}"), Map.entry("cntrl", "\\p{Cntrl}"), Map.entry("print", "\\p{Print}"),
+      Map.entry("graph", "\\p{Graph}"), Map.entry("blank", "\\p{Blank}"), Map.entry("word", "\\w"),
+      Map.entry("ascii", "\\p{ASCII}"));
 
   /** The aggregate functions an aggregated catalog query may project. */
   private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
@@ -687,13 +686,78 @@ abstract class PostgresCatalogExpression {
   static String javaRegex(final String pattern) {
     if (pattern.indexOf("[:") < 0)
       return pattern;
-    // PostgreSQL's word-boundary brackets are whole bracket expressions of their own.
-    String translated = pattern.replace("[[:<:]]", "\\b(?=\\w)").replace("[[:>:]]", "\\b(?<=\\w)");
-    for (final String[] posix : POSIX_CLASSES)
-      translated = translated.replace(posix[0], posix[1]);
-    if (UNTRANSLATED_POSIX.matcher(translated).find())
-      throw new PatternSyntaxException("POSIX character class this catalog does not translate", pattern, -1);
-    return translated;
+
+    // A class is only a class inside a bracket expression: a standalone "[:word:]" is itself a bracket expression,
+    // the set of the characters ":word", which Java reads the same way. So the pattern is scanned for bracket
+    // expressions, and only what is inside one is translated.
+    final int length = pattern.length();
+    final StringBuilder java = new StringBuilder(length + 16);
+    int i = 0;
+    while (i < length) {
+      final char c = pattern.charAt(i);
+      if (c == '\\' && i + 1 < length) {
+        java.append(c).append(pattern.charAt(i + 1));
+        i += 2;
+      } else if (c != '[') {
+        java.append(c);
+        ++i;
+      } else if (pattern.startsWith("[[:<:]]", i)) {
+        // PostgreSQL's word-boundary brackets are whole bracket expressions of their own.
+        java.append("\\b(?=\\w)");
+        i += 7;
+      } else if (pattern.startsWith("[[:>:]]", i)) {
+        java.append("\\b(?<=\\w)");
+        i += 7;
+      } else
+        i = translateBracket(pattern, i, java);
+    }
+    return java.toString();
+  }
+
+  /**
+   * Copies the bracket expression starting at {@code open} into {@code java}, translating the POSIX classes in it.
+   * A {@code [} or {@code &} inside it is a literal in POSIX and is escaped, because Java would read the first as a
+   * nested class and {@code &&} as an intersection.
+   *
+   * @return the index after the closing {@code ]}
+   */
+  private static int translateBracket(final String pattern, final int open, final StringBuilder java) {
+    final int length = pattern.length();
+    int j = open + 1;
+    java.append('[');
+    if (j < length && pattern.charAt(j) == '^')
+      java.append(pattern.charAt(j++));
+    if (j < length && pattern.charAt(j) == ']') {
+      // A ']' right after the opening is a literal in POSIX.
+      java.append("\\]");
+      ++j;
+    }
+
+    while (j < length && pattern.charAt(j) != ']') {
+      final char d = pattern.charAt(j);
+      if (d == '[' && j + 1 < length && pattern.charAt(j + 1) == ':') {
+        final int end = pattern.indexOf(":]", j + 2);
+        final String javaClass = end < 0 ? null : POSIX_CLASSES.get(pattern.substring(j + 2, end));
+        if (javaClass == null)
+          // A class this catalog does not translate: unreadable, rather than misread as a set of its letters.
+          throw new PatternSyntaxException("POSIX character class this catalog does not translate", pattern, j);
+        java.append(javaClass);
+        j = end + 2;
+      } else if (d == '\\' && j + 1 < length) {
+        java.append(d).append(pattern.charAt(j + 1));
+        j += 2;
+      } else {
+        if (d == '[' || d == '&')
+          java.append('\\');
+        java.append(d);
+        ++j;
+      }
+    }
+
+    if (j >= length)
+      throw new PatternSyntaxException("unterminated bracket expression", pattern, open);
+    java.append(']');
+    return j + 1;
   }
 
   /** Translates a SQL LIKE pattern into the equivalent regular expression. */

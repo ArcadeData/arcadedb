@@ -522,6 +522,11 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         .containsExactly("City", "Note", "Person");
     assertThat(column(resolve("select relname from pg_class where relname ~ '[[:<:]]Note[[:>:]]'"), "relname"))
         .containsExactly("Note");
+    // Outside a bracket expression "[:word:]" is the set of the characters ":word", in PostgreSQL as in Java
+    // (PostgreSQL 17 gives the same answers to both of these).
+    assertThat(resolve("select relname from pg_class where relname ~ '^[:word:]+$'").rows).isEmpty();
+    assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:upper:]][:lowert]+$'"), "relname"))
+        .containsExactly("Note");
     // A class this catalog does not translate is unreadable, not misread: permissive here, declined over pg_type.
     assertThat(column(resolve("select relname from pg_class where relname ~ '^[[:nope:]]+$'"), "relname"))
         .containsExactly("City", "Note", "Person");
