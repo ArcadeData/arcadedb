@@ -1092,7 +1092,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final Collection<RaftPeer> old = previous != null ? previous : List.of();
     final Set<RaftPeerId> known = misdirectedLiveMemberIds;
     if (knowsAll(known, current) && knowsAll(known, old)) {
-      // Same ids when nothing is left over: a removed member must leave the copy
+      // Every id read is already known; the copy is unchanged only if it holds nothing else, i.e. its size equals the
+      // number of distinct ids read (current plus the old ones not also current). Otherwise a removed member must leave it
       int distinct = current.size();
       for (final RaftPeer peer : old)
         if (!isPeerInConfig(current, peer.getId()))
@@ -1116,7 +1117,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private void publishLiveMemberIds(final Set<RaftPeerId> ids) {
-    // Published as a view of a set nothing mutates again: readers on the handler threads see all of it or none of it
+    // Published as a view of a set nothing mutates again: readers on the handler threads see all of it or none of it.
+    // Writers are not ordered (the apply loop, any reader of the live configuration, the recovery task), so a reader that
+    // fetched the configuration just before an apply can publish the older set after it. Accepted: the copy only picks a
+    // throttle slot, and the next applied configuration or successful read puts it right; the worst case is a peer joined a
+    // moment ago sharing the not-a-peer slot for one interval, which is what every peer did before issue #10144.
     misdirectedLiveMemberIds = Collections.unmodifiableSet(ids);
   }
 

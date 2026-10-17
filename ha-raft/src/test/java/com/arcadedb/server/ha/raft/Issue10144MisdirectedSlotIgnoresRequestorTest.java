@@ -59,8 +59,8 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
 
   private static final String   SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   private static final RaftPeer JOINED      = RaftPeer.newBuilder().setId("joined_peer").setAddress("localhost:2439").build();
-  private static final String   SELF_DIAL   = "This node sent a Raft appendEntries meant for peer 'joined_peer'";
   private static final RaftPeer LEAVING     = RaftPeer.newBuilder().setId("leaving_peer").setAddress("localhost:2440").build();
+  private static final String   SELF_DIAL   = "This node sent a Raft appendEntries meant for peer 'joined_peer'";
   private static final String   NOT_A_PEER  = "is not a peer of this cluster";
 
   private CapturingTestLogger log;
@@ -151,6 +151,42 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(SELF_DIAL) == 1);
+  }
+
+  /**
+   * A member removed since leaves the copy at the next live read, so it no longer has a slot of its own and shares the
+   * strangers' one: the copy stays bounded by the current membership, not by every peer ever seen.
+   */
+  @Test
+  void aRemovedMemberLeavesTheCopyAtTheNextLiveRead() throws Exception {
+    final RaftHAServer raft = detachedServer(parkedDivision(List.of()));
+    raft.onRaftConfigurationApplied(List.of(raft.getLocalPeerId(), JOINED.getId()), List.of());
+    divisionGate.countDown();
+
+    // The live configuration no longer lists the joined peer
+    assertThat(raft.getCommittedPeersOrNull()).extracting(RaftPeer::getId).doesNotContain(JOINED.getId());
+
+    final CountDownLatch secondGate = new CountDownLatch(1);
+    final Field field = RaftHAServer.class.getDeclaredField("raftServer");
+    field.setAccessible(true);
+    field.set(raft, ratis(() -> {
+      secondGate.await();
+      return liveDivision(List.of(), List.of());
+    }));
+    try {
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), null));
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId()));
+      // A declared peer's report says the worker has run everything queued before it
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("localhost_2436"),
+          RaftPeerId.valueOf("localhost_2435")));
+    } finally {
+      secondGate.countDown();
+    }
+
+    Awaitility.await("the recovery worker drained").atMost(10, TimeUnit.SECONDS)
+        .until(() -> log.countFormattedContaining("addressed to peer 'localhost_2436'") == 1);
+    assertThat(log.countFormattedContaining("joined_peer")).as("the removed peer shared the strangers' slot and was dropped")
+        .isZero();
   }
 
   /**
