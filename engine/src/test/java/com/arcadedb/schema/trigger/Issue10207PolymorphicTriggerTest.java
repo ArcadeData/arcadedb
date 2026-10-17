@@ -91,7 +91,7 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
     database.transaction(() -> database.newVertex("S").set("x", 3).save());
     database.transaction(() -> database.command("opencypher", "CREATE (:S {x: 4})"));
 
-    assertThat(count("SELECT count(*) AS c FROM P")).isEqualTo(4);
+    assertThat(count("SELECT count() AS c FROM P")).isEqualTo(4);
     assertThat(audits("create")).isEqualTo(4);
   }
 
@@ -106,7 +106,7 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
       database.command("sql", "INSERT INTO S SET x = 5");
     });
 
-    assertThat(count("SELECT count(*) AS c FROM S")).isEqualTo(1);
+    assertThat(count("SELECT count() AS c FROM S")).isEqualTo(1);
   }
 
   @Test
@@ -123,7 +123,7 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
 
     database.transaction(() -> database.command("sql", "DELETE FROM P"));
     assertThat(audits("delete")).isEqualTo(2);
-    assertThat(count("SELECT count(*) AS c FROM P")).isZero();
+    assertThat(count("SELECT count() AS c FROM P")).isZero();
   }
 
   @Test
@@ -281,8 +281,8 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
     assertThat(count("SELECT count(*) AS c FROM P WHERE x IS NOT NULL")).isEqualTo(3);
     final String bucket = database.getSchema().getType("S").getBuckets(false).getLast().getName();
     database.transaction(() -> database.command("sql", "INSERT INTO bucket:" + bucket + " FROM SELECT x FROM Src"));
-    assertThat(count("SELECT count(*) AS c FROM S")).isEqualTo(3);
-    assertThat(count("SELECT count(*) AS c FROM bucket:" + bucket)).isEqualTo(3);
+    assertThat(count("SELECT count() AS c FROM S")).isEqualTo(3);
+    assertThat(count("SELECT count() AS c FROM bucket:" + bucket)).isEqualTo(3);
     assertThat(audits("create")).isEqualTo(6);
     assertThat(audits("update")).isZero();
   }
@@ -301,7 +301,7 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
           () -> database.command("sql", "CREATE EDGE E FROM (SELECT FROM P WHERE x = 1) TO (SELECT FROM P WHERE x = 2)"));
 
     assertThat(audits("update")).isZero();
-    assertThat(count("SELECT count(*) AS c FROM E")).isEqualTo(300);
+    assertThat(count("SELECT count() AS c FROM E")).isEqualTo(300);
   }
 
   @Test
@@ -330,6 +330,38 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
     });
     assertThat(rids[0].asVertex().getInteger("x")).isEqualTo(1);
     // The integrity check of TestHelper.afterTest() is what reported the orphan edges before the fix
+  }
+
+  @Test
+  void unsavedEditsOfAVertexGettingItsFirstEdgeAreStillValidatedAndAnnounced() {
+    database.command("sql", "CREATE TRIGGER guard BEFORE UPDATE ON TYPE P EXECUTE JAVASCRIPT 'record.get(\"x\") >= 0'");
+    auditTrigger("tu", "AFTER UPDATE", "P", "update");
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newVertex("P").set("x", 1).save().getIdentity();
+      rids[1] = database.newVertex("S").set("x", 2).save().getIdentity();
+    });
+
+    // An edit nobody saved, on an instance the transaction does not hold, then the vertex's first outgoing edge: the write of
+    // the edge list head brings the instance into the transaction, and the edit with it - announced, as a save would
+    database.transaction(() -> {
+      final MutableVertex v = rids[0].asVertex().modify();
+      v.set("x", 10);
+      v.newEdge("E", rids[1].asVertex());
+    });
+    assertThat(rids[0].asVertex().getInteger("x")).isEqualTo(10);
+    assertThat(audits("update")).isEqualTo(1);
+
+    // The same with an edit the BEFORE UPDATE trigger refuses: the edit is dropped, as a vetoed save drops it, the edge stays
+    database.transaction(() -> {
+      final MutableVertex v = rids[1].asVertex().modify();
+      v.set("x", -5);
+      v.newEdge("E", rids[0].asVertex());
+    });
+    assertThat(rids[1].asVertex().getInteger("x")).isEqualTo(2);
+    assertThat(rids[1].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(1);
+    assertThat(rids[0].asVertex().countEdges(Vertex.DIRECTION.IN, "E")).isEqualTo(1);
+    assertThat(audits("update")).isEqualTo(1);
   }
 
   private void auditTrigger(final String name, final String timing, final String type, final String tag) {
