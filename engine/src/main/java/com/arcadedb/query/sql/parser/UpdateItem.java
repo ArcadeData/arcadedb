@@ -248,6 +248,8 @@ public class UpdateItem extends SimpleNode {
     if (explicitOperator == MathExpression.Operator.PLUS || explicitOperator == MathExpression.Operator.MINUS) {
       if (operand == null)
         return current;
+      // nothing plus anything is that thing (a number, a string, a list); nothing minus a number is its negative, and
+      // nothing minus a string or a list has nothing to remove from, as `null - x` answers in MathExpression
       if (current == null)
         return explicitOperator == MathExpression.Operator.PLUS ? operand :
             operand instanceof Number ? explicitOperator.apply((Object) 0, operand) : null;

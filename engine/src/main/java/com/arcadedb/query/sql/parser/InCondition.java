@@ -296,8 +296,8 @@ public class InCondition extends BooleanExpression {
     if (set.contains(null))
       return true;
     // A set of sub-query rows is homogeneous (every row comes from the same projection), so it is judged by its first item
-    // like the conversion probe above, and a set of plain values is never scanned
-    if (firstItem(set) instanceof Result)
+    // like the conversion probe above: a set of plain values, records or rows of several columns is never scanned
+    if (firstItem(set) instanceof Result first && singleRowValue(first) != NOT_A_SINGLE_VALUE_ROW)
       for (final Object o : set)
         if (isNullSubQueryRow(o))
           return true;
