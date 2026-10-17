@@ -371,6 +371,9 @@ public class CreateStep extends AbstractExecutionStep {
         // that is not a node, the relationship has no endpoint and the statement fails, as on Neo4j: a node used to be
         // created in its place (issue #10191)
         Vertex vertex = WritePatternChecks.boundEndpoint(result, nodePattern.getVariable());
+        // One bound to a bare RID is the vertex from now on, as for every other clause of the statement
+        if (vertex != null && result.getProperty(nodePattern.getVariable()) != vertex)
+          result.setProperty(nodePattern.getVariable(), vertex);
 
         // Create vertex if not found
         if (vertex == null) {

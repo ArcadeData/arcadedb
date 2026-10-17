@@ -219,15 +219,16 @@ public class MergeStep extends AbstractExecutionStep {
 
     // A path variable an earlier clause bound to null (an unmatched OPTIONAL MATCH) is not a free variable: the pattern
     // has no endpoint there, and the statement fails as on Neo4j. The row used to be dropped in silence (issue #10191)
-    if (inputResult != null) {
-      if (!pathPattern.isSingleNode())
-        checkBoundPathVariables(pathPattern, inputResult);
-      else {
-        // A single node is no endpoint. The validator refuses one an earlier clause bound, and a null is still dropped
-        final String variable = pathPattern.getFirstNode().getVariable();
-        if (variable != null && inputResult.hasProperty(variable) && inputResult.getProperty(variable) == null)
-          return List.of();
-      }
+    // An endpoint bound to a bare RID is resolved to its vertex here, and handed to the walk in its place below
+    final Vertex[] boundEndpoints;
+    if (inputResult != null && !pathPattern.isSingleNode())
+      boundEndpoints = checkBoundPathVariables(pathPattern, inputResult);
+    else {
+      boundEndpoints = null;
+      // A single node is no endpoint. The validator refuses one an earlier clause bound, and a null is still dropped
+      final String variable = pathPattern.getFirstNode().getVariable();
+      if (inputResult != null && variable != null && inputResult.hasProperty(variable) && inputResult.getProperty(variable) == null)
+        return List.of();
     }
 
     final Database database = context.getDatabase();
@@ -260,6 +261,11 @@ public class MergeStep extends AbstractExecutionStep {
           baseResult.setProperty(prop, inputResult.getProperty(prop));
         }
       }
+      // The walk and the creation recognize a bound endpoint by its Vertex: one bound to a bare RID becomes its vertex
+      if (boundEndpoints != null)
+        for (int i = 0; i < boundEndpoints.length; i++)
+          if (boundEndpoints[i] != null)
+            baseResult.setProperty(pathPattern.getNode(i).getVariable(), boundEndpoints[i]);
 
       final List<Result> results;
       if (pathPattern.isSingleNode())
@@ -623,12 +629,24 @@ public class MergeStep extends AbstractExecutionStep {
    * Refuses a path whose variables an upstream step bound to null (typically an unmatched OPTIONAL MATCH) or, for a node,
    * to a value that is not a node. A variable that is absent is a free one the MERGE binds, and
    * {@link Result#hasProperty(String)} tells the two cases apart.
+   *
+   * @return per node of the path, the vertex a bare RID it is bound to resolves to, or null when there is nothing to
+   * replace (a vertex already, or a free variable); null when no node needs it
    */
-  private static void checkBoundPathVariables(final PathPattern pathPattern, final Result inputResult) {
-    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++)
-      WritePatternChecks.boundEndpoint(inputResult, pathPattern.getNode(i).getVariable());
+  private static Vertex[] checkBoundPathVariables(final PathPattern pathPattern, final Result inputResult) {
+    Vertex[] resolved = null;
+    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+      final String variable = pathPattern.getNode(i).getVariable();
+      final Vertex vertex = WritePatternChecks.boundEndpoint(inputResult, variable);
+      if (vertex != null && inputResult.getProperty(variable) != vertex) {
+        if (resolved == null)
+          resolved = new Vertex[pathPattern.getRelationshipCount() + 1];
+        resolved[i] = vertex;
+      }
+    }
     for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
       WritePatternChecks.checkRelationshipNotNull(inputResult, pathPattern.getRelationship(i).getVariable());
+    return resolved;
   }
 
   /**

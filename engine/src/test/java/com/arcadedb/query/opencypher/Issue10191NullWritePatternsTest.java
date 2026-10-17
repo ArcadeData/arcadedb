@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -106,6 +107,25 @@ class Issue10191NullWritePatternsTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MERGE (n:A {k: $p})", parameters).close()))
         .hasMessageContaining("cannot be used with a graph element property value that is null");
     assertUnchanged();
+  }
+
+  /** An endpoint bound to a bare RID is the vertex it names: the pattern connects it rather than a new node. */
+  @Test
+  void anEndpointBoundToARidIsTheVertexItNames() {
+    final RID a;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM A WHERE k = 0")) {
+      a = rs.next().getIdentity().get();
+    }
+    final Map<String, Object> parameters = Map.of("a", a);
+
+    database.transaction(() -> database.command("opencypher", "WITH $a AS a MERGE (a)-[:R]->(b:B {k: 9})", parameters).close());
+    database.transaction(() -> database.command("opencypher", "WITH $a AS a MERGE (a)-[:R]->(b:B {k: 9})", parameters).close());
+    database.transaction(() -> database.command("opencypher", "WITH $a AS a CREATE (a)-[:R]->(:M {k: 1})", parameters).close());
+
+    assertThat(graph()).containsExactly("[A]{k=0}", "[B]{k=9}", "[M]{k=1}");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (x:A {k: 0})-[r:R]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(2L);
+    }
   }
 
   @Test
