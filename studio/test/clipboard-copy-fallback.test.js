@@ -43,6 +43,11 @@ const utilsSrc = fs.readFileSync(path.join(JS_DIR, "studio-utils.js"), "utf8");
 function extractFn(src, name) {
   const start = src.indexOf("function " + name + "(");
   if (start < 0) throw new Error("function not found: " + name);
+  return blockFrom(src, start);
+}
+
+// Source from `start` through the brace that closes the first block opened after it.
+function blockFrom(src, start) {
   let i = src.indexOf("{", start);
   let depth = 1;
   i++;
@@ -56,7 +61,7 @@ function extractFn(src, name) {
 }
 
 // A just-enough DOM: records what the fallback appends, selects and copies, and what is left behind afterwards.
-function fakeDom({ execCopy = "ok", modal = false } = {}) {
+function fakeDom({ execCopy = "ok", modals = 0 } = {}) {
   const log = { copied: null, execCalls: 0, selected: false, focusRestored: false };
   const makeHost = () => ({
     children: [],
@@ -70,12 +75,13 @@ function fakeDom({ execCopy = "ok", modal = false } = {}) {
     },
   });
   const body = makeHost();
-  const modalEl = modal ? makeHost() : null;
+  const modalEls = Array.from({ length: modals }, makeHost);
+  const topModal = modalEls.length > 0 ? modalEls[modalEls.length - 1] : null;
   const previouslyFocused = { focus: () => (log.focusRestored = true) };
   const document = {
     body,
     activeElement: previouslyFocused,
-    querySelector: (selector) => (selector === ".modal.show" ? modalEl : null),
+    querySelectorAll: (selector) => (selector === ".modal.show" ? modalEls : []),
     createElement: (tag) => {
       const el = {
         tag,
@@ -99,7 +105,7 @@ function fakeDom({ execCopy = "ok", modal = false } = {}) {
       log.execCalls++;
       if (execCopy === "throw") throw new Error("execCommand blocked");
       if (execCopy === "fail") return false;
-      const host = modalEl || body;
+      const host = topModal || body;
       const area = host.children.find((c) => c.tag === "textarea");
       assert.ok(area, "the textarea must be attached to the document while copying");
       assert.equal(area.selectedValue, area.value, "the whole text must be selected before copying");
@@ -107,7 +113,7 @@ function fakeDom({ execCopy = "ok", modal = false } = {}) {
       return true;
     },
   };
-  return { document, log, body, modalEl };
+  return { document, log, body, modalEls };
 }
 
 function loadHelper({ navigator, document }) {
@@ -191,13 +197,32 @@ test("rejects when neither mechanism can copy, and still cleans up", async () =>
 });
 
 test("inside an open Bootstrap modal the textarea goes into the modal, so its focus trap does not steal the selection", async () => {
-  const dom = fakeDom({ modal: true });
+  const dom = fakeDom({ modals: 1 });
   const copy = loadHelper({ navigator: {}, document: dom.document });
 
   await copy("settings");
 
   assert.equal(dom.log.copied, "settings");
-  assert.equal(dom.modalEl.children.length, 0);
+  assert.equal(dom.modalEls[0].children.length, 0);
+  assert.equal(dom.body.children.length, 0);
+});
+
+test("with stacked modals the textarea goes into the one on top (the last open)", async () => {
+  const dom = fakeDom({ modals: 2 });
+  const hosts = [];
+  dom.modalEls.forEach((m) => {
+    const append = m.appendChild.bind(m);
+    m.appendChild = (el) => {
+      hosts.push(m);
+      append(el);
+    };
+  });
+  const copy = loadHelper({ navigator: {}, document: dom.document });
+
+  await copy("settings");
+
+  assert.equal(dom.log.copied, "settings");
+  assert.deepEqual(hosts, [dom.modalEls[1]], "only the topmost modal may host the textarea");
   assert.equal(dom.body.children.length, 0);
 });
 
@@ -235,7 +260,7 @@ test("every copy button reports a failed copy instead of failing silently", () =
     const src = fs.readFileSync(path.join(JS_DIR, file), "utf8");
     const at = src.indexOf(anchor);
     assert.ok(at >= 0, file + ": anchor not found: " + anchor);
-    const body = src.substring(at, at + 900);
+    const body = blockFrom(src, at);
     assert.match(body, /copyTextToClipboard\(/, file + " must go through copyTextToClipboard()");
     assert.match(body, /\.catch\(|catch *\(/, file + " must handle a failed copy");
   }

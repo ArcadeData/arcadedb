@@ -286,8 +286,10 @@ function copyTextToClipboard(text) {
 
   const legacyCopy = function () {
     return new Promise(function (resolve, reject) {
-      // inside an open modal the textarea must live in the modal, or Bootstrap's focus trap steals the selection
-      const host = document.querySelector(".modal.show") || document.body;
+      // inside an open modal the textarea must live in the modal, or Bootstrap's focus trap steals the selection;
+      // with stacked modals the last one open is the one on top
+      const openModals = document.querySelectorAll(".modal.show");
+      const host = openModals.length > 0 ? openModals[openModals.length - 1] : document.body;
       const previouslyFocused = document.activeElement;
       const area = document.createElement("textarea");
       area.value = value;
