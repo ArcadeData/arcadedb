@@ -750,6 +750,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
+    // a SQL DELETE answers one row whose "count" is the number of records deleted (DeleteExecutionPlanner chains CountStep),
+    // the same contract the update arm of saveRecord reads
     final long deleted;
     try (final ResultSet result = command("SQL", "delete from " + record.getIdentity())) {
       deleted = result.hasNext() ? result.next().<Number>getProperty("count", 0).longValue() : 0;

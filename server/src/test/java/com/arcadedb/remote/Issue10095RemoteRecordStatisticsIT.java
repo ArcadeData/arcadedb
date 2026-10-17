@@ -20,6 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -116,7 +117,9 @@ class Issue10095RemoteRecordStatisticsIT extends BaseGraphServerTest {
         doc.save();
         db.deleteRecord(doc);
         assertThat(stat(db, "deleteRecord")).as("the server deleted the record").isEqualTo(deletes + 1);
-        assertThat(db.query("sql", "select from Doc10141").hasNext()).isFalse();
+        try (final ResultSet remaining = db.query("sql", "select from Doc10141")) {
+          assertThat(remaining.hasNext()).isFalse();
+        }
 
         try {
           db.deleteRecord(doc);
