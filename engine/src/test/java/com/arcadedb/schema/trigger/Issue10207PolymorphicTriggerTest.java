@@ -226,6 +226,8 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE Gone");
     database.transaction(() -> database.command("sql", "INSERT INTO Gone SET x = 1"));
     reopenDatabase();
+    assertThat(database.getSchema().existsTrigger("onGone")).isFalse();
+    assertThat(database.getSchema().existsTrigger("onP")).isTrue();
     database.transaction(() -> database.command("sql", "INSERT INTO Gone SET x = 2"));
     assertThat(audits("gone")).isZero();
   }
