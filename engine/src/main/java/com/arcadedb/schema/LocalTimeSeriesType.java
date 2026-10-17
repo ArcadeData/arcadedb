@@ -359,7 +359,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    * epoch MILLIS whatever the column's precision, the contract issues #9643 and #9724 pinned, where the other surfaces read it as a
    * count in the column's own unit.
    */
-  public boolean isConvertedOnAppendOnly(final String propertyName) {
+  public boolean skipsDocumentConversion(final String propertyName) {
     final ColumnDefinition col = getTsColumn(propertyName);
     return col != null && col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP && !col.isTemporal();
   }

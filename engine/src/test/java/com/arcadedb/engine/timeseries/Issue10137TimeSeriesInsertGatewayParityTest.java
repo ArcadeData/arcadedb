@@ -163,8 +163,9 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
   private Object viaSql(final String typeName, final Object value) throws Exception {
     try {
       database.command("sql", "INSERT INTO " + typeName + " SET ts = ?, c = ?", SQL_TS, value);
-    } catch (final RuntimeException e) {
-      // the exception type is pinned by anOutOfRangeNumberIsRefusedWithTheReasonEverySurfaceGives; here only the outcome counts
+    } catch (final CommandExecutionException e) {
+      // only the statement's refusal counts as one: any other exception (a typo in the statement, a bare conversion error from the
+      // document layer) fails the test instead of matching a gateway refusal by accident
       return REFUSED;
     }
     return storedAt(typeName, SQL_TS);

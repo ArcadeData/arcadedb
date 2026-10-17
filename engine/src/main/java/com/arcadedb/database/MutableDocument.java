@@ -659,7 +659,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       // A TIMESERIES column is converted once, by ColumnDefinition.storableValue at the append, the contract every ingestion
       // surface shares: converting it here first would hand that contract a value already coerced to the declared class
       // (issue #10137)
-      if (type instanceof LocalTimeSeriesType tsType && tsType.isConvertedOnAppendOnly(name))
+      if (type instanceof LocalTimeSeriesType tsType && tsType.skipsDocumentConversion(name))
         return value;
       try {
         final Type propType = property.getType();

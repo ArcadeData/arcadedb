@@ -354,7 +354,7 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
   }
 
   @Test
-  void aBooleanColumnIsConvertedBeforeTheStorageLayerWhateverTheWriter() throws Exception {
+  void aBooleanColumnRefusesANumberOnEverySurfaceAndTheStorageLayerNamesTheColumn() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Switches TIMESTAMP ts FIELDS (on_ BOOLEAN) SHARDS 1");
 
     // SQL INSERT: storableValue converts the value the statement wrote, so a number is refused as every other surface refuses it
