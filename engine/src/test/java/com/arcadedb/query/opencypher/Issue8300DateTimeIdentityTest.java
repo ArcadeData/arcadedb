@@ -90,7 +90,8 @@ class Issue8300DateTimeIdentityTest extends TestHelper {
 
   /**
    * compareTo is a total order across DateTime and LocalDateTime too (a LocalDateTime is read as UTC and sorts first at
-   * the same instant), so ORDER BY over a mixed list is consistent, while = keeps comparing the two types by instant.
+   * the same instant). In Cypher the two are two types (issue #10200, as in Neo4j): = is false and ORDER BY puts every
+   * zoned datetime before every local one, each ordered by value.
    */
   @Test
   void localAndZonedDateTimesAtOneInstant() {
@@ -102,14 +103,14 @@ class Issue8300DateTimeIdentityTest extends TestHelper {
     assertThat(x.compareTo(local)).isPositive();
     assertThat(y.compareTo(local)).isPositive();
 
-    assertThat(single("RETURN localdatetime('2026-01-01T11:00:00') = " + Y + " AS v")).isEqualTo(true);
-    assertThat(single("RETURN localdatetime('2026-01-01T11:00:00') = " + X + " AS v")).isEqualTo(true);
+    assertThat(single("RETURN localdatetime('2026-01-01T11:00:00') = " + Y + " AS v")).isEqualTo(false);
+    assertThat(single("RETURN localdatetime('2026-01-01T11:00:00') = " + X + " AS v")).isEqualTo(false);
 
     try (final ResultSet rs = database.query("opencypher",
         "UNWIND [" + X + ", localdatetime('2026-01-01T11:00:00'), " + Y + ", localdatetime('2026-01-01T10:59:00')] AS d "
             + "RETURN toString(d) AS s ORDER BY d")) {
       assertThat(rs.stream().map(r -> (String) r.getProperty("s")).toList())
-          .containsExactly("2026-01-01T10:59", "2026-01-01T11:00", "2026-01-01T11:00Z", "2026-01-01T12:00+01:00");
+          .containsExactly("2026-01-01T11:00Z", "2026-01-01T12:00+01:00", "2026-01-01T10:59", "2026-01-01T11:00");
     }
   }
 

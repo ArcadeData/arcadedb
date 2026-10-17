@@ -116,8 +116,14 @@ class Issue8572NativeTemporalIndexTest extends TestHelper {
     for (final int i : order)
       database.command("opencypher", "CREATE (:T {id: " + i + ", p: " + values[i] + "})");
 
-    assertThat(ids("MATCH (n:T) WHERE n.p > " + values[0] + " RETURN n.id AS id ORDER BY n.p")).containsExactly(1, 2);
-    assertThat(ids("MATCH (n:T) WHERE n.p <= " + values[1] + " RETURN n.id AS id ORDER BY n.p")).containsExactly(0, 1);
+    if (type == Type.DURATION) {
+      // Durations are not comparable (issue #10200): a range keeps no row but the equal one, through the index as by scan
+      assertThat(ids("MATCH (n:T) WHERE n.p > " + values[0] + " RETURN n.id AS id ORDER BY n.p")).isEmpty();
+      assertThat(ids("MATCH (n:T) WHERE n.p <= " + values[1] + " RETURN n.id AS id ORDER BY n.p")).containsExactly(1);
+    } else {
+      assertThat(ids("MATCH (n:T) WHERE n.p > " + values[0] + " RETURN n.id AS id ORDER BY n.p")).containsExactly(1, 2);
+      assertThat(ids("MATCH (n:T) WHERE n.p <= " + values[1] + " RETURN n.id AS id ORDER BY n.p")).containsExactly(0, 1);
+    }
     assertThat(ids("MATCH (n:T) RETURN n.id AS id ORDER BY n.p")).containsExactly(0, 1, 2);
   }
 

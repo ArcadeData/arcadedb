@@ -47,6 +47,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The build loops were also the unguarded phase of an otherwise abortable call, the same blind spot issue #6295
  * closed for the SLPA/GraphSAGE/HashGNN initialisation loops: the consumption loops carried the checkpoint and
  * the {@code O(n²/64)} build ahead of them did not.
+ * <p>
+ * {@code algo.triangleCount} was the fifth, and no longer builds one at all: since issue #10203 it intersects
+ * sorted neighbour sets, so its working memory is the adjacency it already prices.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -69,7 +72,7 @@ class Issue6375AlgoBitsetMatrixBudgetTest {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
-    // A directed cycle over four nodes: every node has a neighbour in both directions, so each of the five
+    // A directed cycle over four nodes: every node has a neighbour in both directions, so each of the four
     // procedures has a matrix to build and something to find in it.
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("Node").set("name", "A").save();
@@ -94,9 +97,8 @@ class Issue6375AlgoBitsetMatrixBudgetTest {
     }
   }
 
-  /** The five procedures, each with a call that reaches its bit matrix. */
+  /** The four procedures, each with a call that reaches its bit matrix. */
   private static final String[][] CALLS = {
-      { "algo.triangleCount", "CALL algo.triangleCount() YIELD node RETURN node" },
       { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
       { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
       { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
@@ -113,6 +115,16 @@ class Issue6375AlgoBitsetMatrixBudgetTest {
           .hasStackTraceContaining(call[0] + "(): the neighbour bitsets")
           .hasStackTraceContaining("(4 x 4 nodes)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+  }
+
+  @Test
+  void triangleCountNeedsNoMatrixAnyMore() {
+    // The budget that refuses every bit matrix above serves a sorted-merge triangle count: it holds the adjacency
+    // and the result, both already admitted (issue #10203).
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+        BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
+
+    assertThat(drain("CALL algo.triangleCount() YIELD node RETURN node")).hasSize(4);
   }
 
   @Test
@@ -140,7 +152,7 @@ class Issue6375AlgoBitsetMatrixBudgetTest {
   @Test
   void aBudgetThatFitsLetsEveryCallThrough() {
     // The counterweight: the reservation must not refuse a graph it can serve. At the default budget none of
-    // these five is anywhere near the limit.
+    // these four is anywhere near the limit.
     for (final String[] call : CALLS)
       assertThat(drain(call[1])).as("%s must still run at the default budget", call[0]).isNotNull();
   }
