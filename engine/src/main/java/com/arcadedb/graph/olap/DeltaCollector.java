@@ -47,8 +47,8 @@ import java.util.logging.Level;
  * <ul>
  *   <li><b>SYNCHRONOUS</b>: Collects detailed changes (TxDelta) during the transaction,
  *       then applies them to the overlay on commit — no stale window.</li>
- *   <li><b>ASYNCHRONOUS</b>: Only detects that a relevant change occurred,
- *       then triggers an async rebuild on commit.</li>
+ *   <li><b>ASYNCHRONOUS</b>: Collects the same changes, which the view merges into the overlay off the
+ *       committing thread (issue #10189) - STALE until it has.</li>
  *   <li><b>OFF</b>: Only detects relevance, marks the view as STALE on commit.</li>
  * </ul>
  */
@@ -65,11 +65,11 @@ class DeltaCollector
   private final GraphAnalyticalView view;
   private final String              callbackKey;
 
-  // Only used in SYNCHRONOUS mode: per-thread delta tracking.
+  // Only used in SYNCHRONOUS and ASYNCHRONOUS modes: per-thread delta tracking.
   // Uses ConcurrentHashMap keyed by thread ID instead of ThreadLocal to allow complete
   // cleanup on close() — ThreadLocal entries leak in long-lived thread pools (e.g., HTTP server).
   private final ConcurrentHashMap<Long, TxDelta> perThreadDeltas;
-  // Only used in SYNCHRONOUS mode: the sources of the edges each thread's open transaction created or deleted. A full
+  // Only used with perThreadDeltas: the sources of the edges each thread's open transaction created or deleted. A full
   // build that opens its watch while such a transaction is still open registers them (issue #8378): the transaction
   // reported them before any watch existed, and its commit can still land before the new scan reads the source.
   private final ConcurrentHashMap<Long, Set<RID>> inFlightEdgeSources;
@@ -77,9 +77,7 @@ class DeltaCollector
   DeltaCollector(final GraphAnalyticalView view) {
     this.view = view;
     this.callbackKey = "gav-delta-" + (view.getName() != null ? view.getName() : "anon-" + ANONYMOUS_COUNTER.getAndIncrement());
-    this.perThreadDeltas = view.getUpdateMode() == GraphAnalyticalView.UpdateMode.SYNCHRONOUS
-        ? new ConcurrentHashMap<>()
-        : null;
+    this.perThreadDeltas = view.getUpdateMode() != GraphAnalyticalView.UpdateMode.OFF ? new ConcurrentHashMap<>() : null;
     this.inFlightEdgeSources = perThreadDeltas != null ? new ConcurrentHashMap<>() : null;
   }
 
@@ -91,7 +89,7 @@ class DeltaCollector
     }
 
     if (perThreadDeltas != null) {
-      // SYNCHRONOUS: collect detailed changes
+      // SYNCHRONOUS/ASYNCHRONOUS: collect detailed changes
       final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
@@ -112,7 +110,7 @@ class DeltaCollector
       return;
 
     if (perThreadDeltas != null) {
-      // SYNCHRONOUS: collect property changes
+      // SYNCHRONOUS/ASYNCHRONOUS: collect property changes
       if (record instanceof Vertex vertex) {
         final TxDelta delta = getOrCreateDelta();
         delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
@@ -138,7 +136,7 @@ class DeltaCollector
       return;
 
     if (perThreadDeltas != null) {
-      // SYNCHRONOUS: collect deletions
+      // SYNCHRONOUS/ASYNCHRONOUS: collect deletions
       final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.deletedVertices.add(vertex.getIdentity());
@@ -244,9 +242,9 @@ class DeltaCollector
         });
       }
     } catch (final DatabaseIsClosedException e) {
-      LogManager.instance().log(this, Level.FINE, "SYNC delta collection skipped (database closing): %s", e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "Delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "SYNC delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
+      LogManager.instance().log(this, Level.WARNING, "Delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
     }
   }
 
@@ -256,9 +254,9 @@ class DeltaCollector
       if (dbInternal.isTransactionActive())
         dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommitCallback);
     } catch (final DatabaseIsClosedException e) {
-      LogManager.instance().log(this, Level.FINE, "ASYNC delta collection skipped (database closing): %s", e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "Change detection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "ASYNC delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
+      LogManager.instance().log(this, Level.WARNING, "Change detection failed for GraphAnalyticalView '%s'", e, view.getName());
     }
   }
 

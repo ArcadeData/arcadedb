@@ -81,7 +81,8 @@ import java.util.zip.CRC32;
  */
 class GraphAnalyticalViewCSRPersistence {
   private static final int    MAGIC          = 0x47415643; // "GAVC"
-  private static final int    FORMAT_VERSION = 2;
+  // 3: a listed vertex type brings its sub-types (issue #10208), so a file written for the type alone is not reused
+  private static final int    FORMAT_VERSION = 3;
   // NODE-LOCAL (#9638): DECLARED IN NodeLocalFiles SO A CROSS-NODE CHECKSUM LEAVES THE FILE OUT
   private static final String FILE_PREFIX    = NodeLocalFiles.GAV_CSR_FILE_PREFIX;
   private static final String FILE_EXTENSION = NodeLocalFiles.GAV_CSR_FILE_EXTENSION;

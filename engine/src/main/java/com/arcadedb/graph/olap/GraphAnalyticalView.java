@@ -180,6 +180,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     NOT_BUILT, BUILDING, READY, STALE
   }
 
+  /**
+   * How a view follows the commits to the types it covers.
+   * <ul>
+   *   <li>{@code OFF}: a relevant commit marks the view STALE.</li>
+   *   <li>{@code SYNCHRONOUS}: each commit's change is merged into the overlay by the committing thread, before its
+   *   commit returns.</li>
+   *   <li>{@code ASYNCHRONOUS}: each commit's change is merged into the overlay off the committing thread (issue
+   *   #10189). Until it is, the view reports STALE, which a view allowed to serve stale keeps serving on the previous
+   *   snapshot.</li>
+   * </ul>
+   * In both incremental modes the overlay is compacted into a fresh CSR in the background past the compaction threshold,
+   * while the view keeps serving.
+   */
   public enum UpdateMode {
     OFF, SYNCHRONOUS, ASYNCHRONOUS
   }
@@ -287,10 +300,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // does not list, null when one of them is not a LocalBucket and so cannot be proven empty. Asked once per vertex by the
   // SQL traversal functions, so the type list is not walked on every call; one immutable holder behind one reference, so
   // a reader never pairs a version with another thread's buckets
-  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets) {
+  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets, DocumentType[] joinedTypes) {
   }
 
   private volatile VertexCoverage allVertexTypesCovered;
+  // Whether the view holds each vertex type its filter covers without listing it by name - a sub-type of a listed type -
+  // for one base CSR and one schema version (issue #10208). Such a type was scanned, or joined the family after the scan:
+  // created then, it was empty and the overlay has held its vertices since, while an existing type attached to a listed
+  // one brings vertices no scan read
+  private record JoinedVertexTypes(NodeIdMapping scannedWith, long schemaVersion, ConcurrentMap<String, Boolean> verdicts) {
+  }
+
+  private volatile JoinedVertexTypes joinedVertexTypes;
+  // coversVertexType(null)'s answer for the joined types, for one base CSR and one schema version: asked per vertex by the
+  // SQL traversal functions, so one read instead of a lookup per sub-type. Both verdicts are fixed for that pair
+  private record JoinedCoverage(NodeIdMapping scannedWith, long schemaVersion, boolean allHeld) {
+  }
+
+  private volatile JoinedCoverage joinedCoverage;
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
@@ -343,9 +370,34 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
-  private volatile boolean       asyncRebuildNeeded;  // true when a commit arrived during an async rebuild
-  // SYNCHRONOUS only: the graph changed in a way no build dispatched since has scanned and no delta can bring in - a
-  // GraphBatch load that ended, or lightweight edges a build could not reconcile (issue #9572)
+  // ASYNCHRONOUS only (issue #10189): the committed changes waiting to be merged off the committing threads, in commit
+  // callback order, and how many of them were committed and are not merged yet. The count is raised before the change is
+  // queued, so a reader that sees it at zero sees every change committed before it looked merged
+  private final ConcurrentLinkedQueue<QueuedDelta> asyncDeltas      = new ConcurrentLinkedQueue<>();
+  private final AtomicInteger                     asyncDeltaLag    = new AtomicInteger();
+  private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
+  // Set by the first commit that finds the queue full, cleared by the merge task that drops the queue for a rebuild
+  private final AtomicBoolean                     asyncQueueOverflowed = new AtomicBoolean();
+  // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
+  // compaction swap or a build publication never waits behind a long backlog
+  private static final int                        ASYNC_MERGE_BATCH = 64;
+  // Past this many changes waiting, the queue is dropped for a rebuild. Only lowered by setMaxQueuedAsyncDeltasForTest()
+  private volatile int                            maxQueuedAsyncDeltas = MAX_PENDING_DELTAS;
+  // Bumped by every publication of a full build or a restore, before the build's watch is cleared: a queued change that
+  // was not buffered in a watch, and whose commit callback saw an older count, committed before that build's scan
+  // started, so the base it would be merged into already holds it (issue #10189). Written only under this instance's
+  // monitor, which is what makes the ++ safe; read without it
+  private volatile long                           baseReplacements;
+
+  /**
+   * A committed change waiting for the asynchronous merge, with the base it was buffered against (see {@link #applyDelta})
+   * and, for one buffered against none, the {@link #baseReplacements} its commit callback saw.
+   */
+  private record QueuedDelta(TxDelta delta, Map<String, CSRAdjacencyIndex> bufferedAgainst, long baseReplacementsSeen) {
+  }
+
+  // SYNCHRONOUS and ASYNCHRONOUS: the graph changed in a way no build dispatched since has scanned and no delta can bring
+  // in - a GraphBatch load that ended, or lightweight edges a build could not reconcile (issue #9572)
   private volatile boolean       followUpRebuildPending;
   // true when an edge property update (which cannot be represented in the overlay) was buffered
   // during a compaction rebuild and needs a follow-up rebuild to become visible. See issue #4513.
@@ -635,20 +687,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Publishes the CSR a full build produced, reconciled with every commit its scan raced with (issue #8378). Must be
    * called under this instance's monitor, which is what orders it against the commit callbacks.
    * <ul>
-   *   <li>SYNCHRONOUS: the deltas buffered while the scan ran are re-applied on the new base, each edge change
-   *   deduplicated against what the scan actually read (see {@link BuildWatch}). The watch stays bound to the new
+   *   <li>SYNCHRONOUS and ASYNCHRONOUS: the deltas buffered while the scan ran are re-applied on the new base, each edge
+   *   change deduplicated against what the scan actually read (see {@link BuildWatch}). The watch stays bound to the new
    *   base, because a delta committed during the scan may still be delivered after this point.</li>
    *   <li>OFF: a relevant commit during the scan publishes the view STALE, which is what the same commit does to a
    *   built view.</li>
-   *   <li>ASYNCHRONOUS: nothing to do here - a relevant commit dispatches its own rebuild from its callback.</li>
    * </ul>
    * More buffered deltas than {@link #MAX_PENDING_DELTAS} publish the view STALE rather than reconcile it.
    */
   private void publishBuild(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
       final String[] builtVertexTypes, final String[] builtEdgeTypes, final BuildWatch watch) {
+    // Before the watch is cleared: a commit callback that finds no watch then sees this publication counted
+    ++baseReplacements;
     final List<TxDelta> buffered = watch.close();
     if (buildWatch == watch)
       buildWatch = null;
+    // A change still queued for the asynchronous merge is in this scan, which started after it committed, or it was
+    // buffered in this watch and is re-applied below (issue #10189)
+    discardQueuedAsyncDeltas();
 
     Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, builtVertexTypes, builtEdgeTypes, propertyFilter,
         edgePropertyFilter);
@@ -661,7 +717,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           "GraphAnalyticalView '%s': more than %d transactions committed while its CSR was being built; marking it STALE",
           name, MAX_PENDING_DELTAS);
       newStatus = Status.STALE;
-    } else if (updateMode == UpdateMode.SYNCHRONOUS) {
+    } else if (updateMode != UpdateMode.OFF) {
       if (watch.hasWatchedSources()) {
         watch.bindTo(result.getCsrPerType());
         baseWatch = watch;
@@ -681,13 +737,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             "GraphAnalyticalView '%s': lightweight edges changed during the build could not be reconciled, rebuilding", name);
         followUpRebuildPending = true;
       }
-    } else if (updateMode == UpdateMode.OFF && watch.hadRelevantCommit())
+      // A commit reported with no delta, by the listener of the mode the view had before a switch, is in no buffer
+      if (watch.hadRelevantCommit())
+        followUpRebuildPending = true;
+    } else if (watch.hadRelevantCommit())
       newStatus = Status.STALE;
     // A bulk load that ended during the scan is only partly in it, and in no delta, and lightweight edges the
     // reconciliation got wrong are in no delta either: the rebuild they asked for follows
-    if (updateMode == UpdateMode.SYNCHRONOUS && followUpRebuildPending)
+    if (updateMode != UpdateMode.OFF && followUpRebuildPending)
       newStatus = Status.STALE;
-    final boolean rebuildNeeded = updateMode == UpdateMode.ASYNCHRONOUS && watch.hadRelevantCommit();
 
     this.snapshot = fresh;
     this.status = newStatus;
@@ -701,9 +759,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       forced.forceEdgePropertyRebuild = true;
       applyDelta(forced);
     }
-    // An ASYNCHRONOUS view raced by a relevant commit rebuilds now, rather than from the commit callback mid-scan
-    if (rebuildNeeded)
-      onRelevantCommit();
   }
 
   /**
@@ -855,6 +910,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * other being a real query, via {@link #checkBuilt()} — that dispatches it: an explicit status wait is
    * a legitimate signal that the caller wants the view actually resolved, not just optimistically READY.
    *
+   * An {@code ASYNCHRONOUS} view also waits for the commits not merged yet (issue #10189).
+   *
    * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
   public boolean awaitReady(final long timeout, final TimeUnit unit) {
@@ -862,20 +919,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     try {
       while (true) {
-        // Snapshot the three fields under the monitor: onRelevantCommit() resets
-        // asyncRebuildNeeded=false and flips status=BUILDING in separate volatile
-        // writes, so an unsynchronized reader can observe status=READY together
-        // with asyncRebuildNeeded=false and return early on a stale snapshot.
         final Status currentStatus;
-        final boolean rebuildPending;
         final CountDownLatch latch;
         synchronized (this) {
           currentStatus = status;
-          rebuildPending = asyncRebuildNeeded;
           latch = readyLatch;
+          if (currentStatus == Status.READY) {
+            if (!hasUnmergedAsyncChanges())
+              return true;
+            // Shut down: what is still queued is never merged
+            if (shutDown)
+              return false;
+            // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
+            final long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0)
+              return false;
+            TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
+            continue;
+          }
         }
-        if (currentStatus == Status.READY && !rebuildPending)
-          return true;
         // STALE, or NOT_BUILT after a failed build or a shutdown: nothing is on the way, and the latch of the build that
         // ended is already counted down, so waiting on it again would spin until the timeout (issue #8403)
         if (currentStatus != Status.READY && currentStatus != Status.BUILDING)
@@ -938,10 +1000,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
       // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.
+      // A change still queued (its merge task outlived the wait above) goes into the overlay first: the snapshot then
+      // carries changes and is not persisted, rather than persisted without them under a certificate the next open rejects.
+      // A view dropped has nothing to persist, and its queue is only discarded
       if (persistCsr) {
+        mergeQueuedAsyncDeltas();
         persistCsrIfPossible();
         persistContractionOrdersIfPossible();
       }
+      discardQueuedAsyncDeltas();
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
@@ -1031,10 +1098,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long version = database.getSchema().getEmbedded().getVersion();
       VertexCoverage cached = allVertexTypesCovered;
       if (cached == null || cached.schemaVersion() != version) {
-        cached = new VertexCoverage(version, unlistedVertexBuckets());
+        cached = new VertexCoverage(version, unlistedVertexBuckets(), joinedVertexTypes());
         allVertexTypesCovered = cached;
       }
       if (cached.unlistedBuckets() == null)
+        return false;
+      if (cached.joinedTypes().length > 0 && !holdsAllJoinedVertexTypes(cached.joinedTypes(), version))
         return false;
       // An unlisted vertex type breaks coverage only once it holds a vertex: no walk can reach a type that has none. The
       // common case is an abstract parent whose records all live in listed sub-types (LSQB's Message over Post and
@@ -1046,16 +1115,144 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           return false;
       return true;
     }
-    if (vertexTypes == null)
-      return true; // we include all vertex types
-    return containsType(vertexTypes, typeName);
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return true; // we include all vertex types, or this one is listed
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    return type != null && coversVertexTypeByFilter(type) && holdsJoinedVertexType(type);
   }
 
-  /** The own buckets of the vertex types this view does not list, or null when one of them is not a {@link LocalBucket}. */
+  private boolean holdsAllJoinedVertexTypes(final DocumentType[] joinedTypes, final long version) {
+    final Snapshot snap = snapshot;
+    if (snap == null)
+      return true;
+    final JoinedCoverage cached = joinedCoverage;
+    if (cached != null && cached.scannedWith() == snap.nodeMapping && cached.schemaVersion() == version)
+      return cached.allHeld();
+    boolean allHeld = true;
+    for (final DocumentType joined : joinedTypes)
+      if (!holdsJoinedVertexType(joined)) {
+        allHeld = false;
+        break;
+      }
+    joinedCoverage = new JoinedCoverage(snap.nodeMapping, version, allHeld);
+    return allHeld;
+  }
+
+  /** The vertex types the filter covers without listing them by name: the sub-types of the listed ones. */
+  private DocumentType[] joinedVertexTypes() {
+    final List<DocumentType> joined = new ArrayList<>();
+    for (final DocumentType dt : database.getSchema().getTypes())
+      if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()) && coversVertexTypeByFilter(dt))
+        joined.add(dt);
+    return joined.toArray(new DocumentType[0]);
+  }
+
+  /**
+   * Whether the base CSR, with its overlay, holds the vertices of {@code type}, a sub-type of a listed type (issue #10208).
+   * It does when its scan read the type, or when the type had no committed vertex the first time the view met it after
+   * the scan: it was created since, and its vertices reached the overlay one commit at a time. An existing type attached
+   * to a listed one since the scan holds vertices the view never read: the view does not claim it, and rebuilds (OFF:
+   * turns STALE) to take it in. Decided once per base CSR, and carried over a schema change for the types still covered.
+   */
+  private boolean holdsJoinedVertexType(final DocumentType type) {
+    final Snapshot snap = snapshot;
+    // No CSR yet: the build in flight scans the family as it is when it starts, and its watch takes in what commits since
+    if (snap == null)
+      return true;
+    final long version = database.getSchema().getEmbedded().getVersion();
+    JoinedVertexTypes joined = joinedVertexTypes;
+    if (joined == null || joined.scannedWith() != snap.nodeMapping || joined.schemaVersion() != version) {
+      final ConcurrentMap<String, Boolean> verdicts = new ConcurrentHashMap<>();
+      if (joined != null && joined.scannedWith() == snap.nodeMapping)
+        // A schema change carries the verdicts over for the types still in the family: a type detached and attached again
+        // is asked again, with whatever vertices it holds by then
+        for (final Map.Entry<String, Boolean> verdict : joined.verdicts().entrySet()) {
+          final DocumentType still = database.getSchema().getTypeOrNull(verdict.getKey());
+          if (still != null && coversVertexTypeByFilter(still))
+            verdicts.put(verdict.getKey(), verdict.getValue());
+        }
+      joined = new JoinedVertexTypes(snap.nodeMapping, version, verdicts);
+      joinedVertexTypes = joined;
+    }
+    final String name = type.getName();
+    final Boolean known = joined.verdicts().get(name);
+    if (known != null)
+      return known;
+
+    final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
+    if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
+      dispatchJoinedTypeRebuild(name);
+    return holds;
+  }
+
+  private static boolean isScanned(final NodeIdMapping mapping, final String typeName) {
+    for (int i = 0; i < mapping.getNumBuckets(); i++)
+      if (typeName.equals(mapping.getBucketTypeName(i)))
+        return true;
+    return false;
+  }
+
+  private static boolean hasNoCommittedRecord(final DocumentType type) {
+    for (final Bucket bucket : type.getBuckets(false))
+      if (!(bucket instanceof LocalBucket localBucket) || !isCommittedEmpty(localBucket))
+        return false;
+    return true;
+  }
+
+  /**
+   * Hands {@link #onVertexTypeJoinedWithRecords} to the build executor: the coverage check that found the type is asked on
+   * the query path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type
+   * is already not claimed.
+   */
+  private void dispatchJoinedTypeRebuild(final String typeName) {
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          if (!shutDown)
+            onVertexTypeJoinedWithRecords(typeName);
+        } finally {
+          taskCompleted();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Shutting down: nothing left to rebuild
+      taskCompleted();
+    }
+  }
+
+  /** A vertex type holding vertices no scan read joined the listed family: see {@link #holdsJoinedVertexType}. */
+  private synchronized void onVertexTypeJoinedWithRecords(final String typeName) {
+    LogManager.instance().log(this, Level.INFO,
+        "GraphAnalyticalView '%s': vertex type '%s' joined the view's types with vertices its CSR does not hold; %s", name,
+        typeName, updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
+    if (updateMode == UpdateMode.OFF) {
+      status = Status.STALE;
+      return;
+    }
+    followUpRebuildPending = true;
+    rebuildAfterPublication();
+  }
+
+  /**
+   * Whether the vertex types this view was built with hold {@code type}: it is listed, or one of its super-types is, because
+   * a type brings its sub-types along, as it does on the record path and as an edge type does in the view (issue #10208).
+   */
+  private boolean coversVertexTypeByFilter(final DocumentType type) {
+    if (vertexTypes == null || containsType(vertexTypes, type.getName()))
+      return true;
+    for (final String listed : vertexTypes)
+      if (type.instanceOf(listed))
+        return true;
+    return false;
+  }
+
+  /** The own buckets of the vertex types this view does not hold, or null when one of them is not a {@link LocalBucket}. */
   private LocalBucket[] unlistedVertexBuckets() {
     final List<LocalBucket> unlisted = new ArrayList<>();
     for (final DocumentType dt : database.getSchema().getTypes())
-      if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
+      if (dt instanceof VertexType && !coversVertexTypeByFilter(dt))
         for (final Bucket bucket : dt.getBuckets(false)) {
           if (!(bucket instanceof LocalBucket localBucket))
             return null;
@@ -2276,8 +2473,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return name;
   }
 
+  /**
+   * The view's status. An {@code ASYNCHRONOUS} view whose snapshot is READY but behind a commit not merged yet reports
+   * STALE (issue #10189).
+   */
   public Status getStatus() {
-    return status;
+    final Status s = status;
+    return s == Status.READY && hasUnmergedAsyncChanges() ? Status.STALE : s;
+  }
+
+  /** Whether a committed change is not in the view yet: queued for the merge, or dropped by an overflow for a rebuild. */
+  private boolean hasUnmergedAsyncChanges() {
+    return asyncDeltaLag.get() > 0 || asyncQueueOverflowed.get();
   }
 
   /**
@@ -2355,7 +2562,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isReady() {
     triggerDeferredDiskRestoreIfPending();
-    final Status s = status;
+    final Status s = getStatus();
     if (s == Status.READY)
       return true;
     return s == Status.STALE && isUseWhenStale();
@@ -2373,7 +2580,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public boolean isStale() {
-    return status == Status.STALE;
+    return getStatus() == Status.STALE;
   }
 
   /**
@@ -2426,6 +2633,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // where no listener is active and a committing tx's delta is lost.
     final DeltaCollector oldCollector = this.deltaCollector;
     this.updateMode = newMode;
+    // Leaving ASYNCHRONOUS: what it queued is merged now, so a SYNCHRONOUS view has no stale window to begin with. On the
+    // caller's thread, under the monitor: the backlog is bounded by the queue's cap, and a mode switch is a rare admin call
+    mergeQueuedAsyncDeltas();
     if (snapshot != null || buildWatch != null)
       registerChangeListeners();
     if (oldCollector != null)
@@ -2825,7 +3035,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public Map<String, Object> getStats() {
     final Map<String, Object> stats = new HashMap<>();
     stats.put("name", name);
-    stats.put("status", status.name());
+    stats.put("status", getStatus().name());
     stats.put("updateMode", updateMode.name());
 
     final Snapshot snap = this.snapshot;
@@ -3295,8 +3505,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return true;
     }
 
+    ++baseReplacements;
     this.snapshot = restored;
     baseWatch = null;
+    // The restored CSR is as of the last commit: a change still queued is in it
+    discardQueuedAsyncDeltas();
     this.status = Status.READY;
     notifyContractionHierarchies();
     this.notifyAll();
@@ -3357,12 +3570,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * A {@code GraphBatch} wrote edges of a covered type in bulk, with no record event to report them one by one (issue
-   * #9572). {@code OFF} and {@code ASYNCHRONOUS} react as to any relevant commit. {@code SYNCHRONOUS} cannot reconcile
-   * edges it holds no delta for, so it rebuilds; while it does, the view is not READY and queries take the ordinary
+   * #9572). {@code OFF} reacts as to any relevant commit. {@code SYNCHRONOUS} and {@code ASYNCHRONOUS} cannot reconcile
+   * edges they hold no delta for, so they rebuild; while they do, the view is not READY and queries take the ordinary
    * path, so none is answered without the load.
    */
   void onEdgesWrittenInBulk() {
-    if (updateMode != UpdateMode.SYNCHRONOUS) {
+    if (updateMode == UpdateMode.OFF) {
       onRelevantCommitCallback();
       return;
     }
@@ -3488,104 +3701,31 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Called by the DeltaCollector (ASYNCHRONOUS/OFF mode) after a committed transaction affected
-   * covered vertex/edge types. ASYNCHRONOUS triggers an async rebuild, OFF marks the view as STALE.
-   */
-  /**
-   * Entry point of the ASYNCHRONOUS/OFF commit callback. While a full build is in flight the commit only marks the
-   * build's watch, for the build to publish STALE (OFF) or rebuild (ASYNCHRONOUS) - without taking this instance's
-   * monitor, and without dispatching a second scan beside the one in flight (issue #8378).
+   * Entry point of the OFF commit callback, which reports that a commit touched the covered types without collecting what
+   * it changed. While a full build is in flight the commit only marks the build's watch, for the build to publish STALE -
+   * without taking this instance's monitor, and without dispatching a second scan beside the one in flight (issue #8378).
    */
   void onRelevantCommitCallback() {
     final BuildWatch watch = buildWatch;
-    if (watch != null && updateMode != UpdateMode.SYNCHRONOUS && watch.markRelevantCommit())
+    if (watch != null && watch.markRelevantCommit())
       return;
     onRelevantCommit();
   }
 
+  /**
+   * A commit touched the covered types and its change was not collected: the view no longer matches the graph. An OFF view
+   * stays STALE until it is rebuilt. An incremental view reaches here only from a listener of the mode it had before a
+   * switch, and rebuilds, since it has no delta to merge.
+   */
   synchronized void onRelevantCommit() {
-    if (updateMode == UpdateMode.ASYNCHRONOUS) {
-      if (!compacting.compareAndSet(false, true)) {
-        // A rebuild is already in progress — flag that another one is needed once it finishes.
-        asyncRebuildNeeded = true;
-        return;
-      }
-      asyncRebuildNeeded = false;
-      // See the `generation` field javadoc (issue #6636): captured at dispatch time so a later-dispatched
-      // build (e.g. a direct build()/buildAsync() call racing this rebuild) correctly supersedes it.
-      final long myGeneration = ++generation;
-      final CountDownLatch latch = new CountDownLatch(1);
-      this.readyLatch = latch;
-      this.status = Status.BUILDING;
-      inFlightTasks.incrementAndGet();
-      try {
-        getExecutor().execute(() -> {
-          BUILD_PERMITS.acquireUninterruptibly();
-          try {
-            final long asOfTransactionId = currentLastTransactionId();
-            database.begin();
-            try {
-              final long buildStart = System.currentTimeMillis();
-              final CSRBuilder builder = newCSRBuilder();
-              final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-              final long durationMs = System.currentTimeMillis() - buildStart;
-              // Synchronized swap: check that the mode hasn't changed to SYNCHRONOUS during rebuild.
-              // If it did, applyDelta() may have enriched the current snapshot with overlay deltas
-              // that would be lost by an unconditional swap. Also check generation: a direct build()/
-              // buildAsync() dispatched after this rebuild started must win even if this one finishes
-              // last (issue #6636).
-              synchronized (GraphAnalyticalView.this) {
-                if (updateMode == UpdateMode.ASYNCHRONOUS && myGeneration == generation) {
-                  this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
-                  this.status = Status.READY;
-                  baseWatch = null;
-                  notifyContractionHierarchies();
-                } else
-                  LogManager.instance().log(this, Level.INFO,
-                      "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild, or superseded by a newer build/restore)", name, updateMode);
-              }
-
-            } finally {
-              if (database.isTransactionActive())
-                database.rollback();
-            }
-          } catch (final Exception e) {
-            synchronized (GraphAnalyticalView.this) {
-              if (myGeneration == generation) {
-                this.buildError = e;
-                this.status = Status.STALE;
-              }
-            }
-            if (isBenignShutdownError(e))
-              LogManager.instance().log(this, Level.FINE,
-                  "Async rebuild of GraphAnalyticalView '%s' aborted because the database is closing", name);
-            else
-              LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
-          } finally {
-            // #4956: drop this worker's DatabaseContext entry (see buildAsync)
-            DatabaseContext.INSTANCE.removeCurrentThreadContexts();
-            BUILD_PERMITS.release();
-            compacting.set(false);
-            latch.countDown();
-            taskCompleted();
-            // Volatile read outside the monitor is intentional: visibility is guaranteed by the
-            // volatile flag, and onRelevantCommit() will acquire the lock when it executes.
-            if (asyncRebuildNeeded)
-              onRelevantCommit();
-          }
-        });
-      } catch (final RejectedExecutionException e) {
-        this.status = Status.STALE;
-        compacting.set(false);
-        latch.countDown();
-        taskCompleted();
-        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async rebuild rejected (executor shut down)", name);
-      }
-    } else {
-      // A build in flight would publish READY over this: it publishes STALE instead (issue #8378)
-      final BuildWatch watch = buildWatch;
-      if (watch == null || !watch.markRelevantCommit())
-        this.status = Status.STALE;
+    // A build in flight would publish READY over this: it publishes STALE instead (issue #8378)
+    final BuildWatch watch = buildWatch;
+    if (watch != null && watch.markRelevantCommit())
+      return;
+    this.status = Status.STALE;
+    if (updateMode != UpdateMode.OFF) {
+      followUpRebuildPending = true;
+      rebuildAfterPublication();
     }
   }
 
@@ -3619,10 +3759,151 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Snapshot served = snapshot;
     if (watch != null && watch.offer(delta)) {
       if (served != null)
-        applyDelta(delta, served.csrPerType);
+        mergeCommittedDelta(delta, served.csrPerType);
       return;
     }
-    applyDelta(delta, (Map<String, CSRAdjacencyIndex>) null);
+    mergeCommittedDelta(delta, null);
+  }
+
+  /** Merges a committed delta now (SYNCHRONOUS), or queues it for the merge off the committing thread (ASYNCHRONOUS). */
+  private void mergeCommittedDelta(final TxDelta delta, final Map<String, CSRAdjacencyIndex> bufferedAgainst) {
+    if (updateMode != UpdateMode.ASYNCHRONOUS) {
+      applyDelta(delta, bufferedAgainst);
+      return;
+    }
+    // Counted before it is queued: from here on the view reports STALE, so the committing thread's next query does not
+    // read a snapshot without its own change, unless the view is allowed to serve stale (issue #10189)
+    if (asyncDeltaLag.incrementAndGet() > maxQueuedAsyncDeltas) {
+      // The merge cannot keep up: this change is left to the rebuild the merge task starts, whose scan reads it. Never
+      // waits for the monitor, which the merge holds. The flag is raised before the change stops being counted: the view
+      // reports STALE while either says a change is not in it, so it never reads READY without this one
+      final boolean first = !asyncQueueOverflowed.getAndSet(true);
+      asyncDeltaLag.decrementAndGet();
+      if (first)
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, maxQueuedAsyncDeltas);
+      scheduleAsyncMerge();
+      return;
+    }
+    try {
+      // Read after onCommittedDelta() read the build watch, so a build whose watch was not open then is counted only if it
+      // publishes later: its scan started after this commit, and holds it
+      asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst, baseReplacements));
+    } catch (final RuntimeException | Error e) {
+      asyncDeltaLag.decrementAndGet();
+      throw e;
+    }
+    scheduleAsyncMerge();
+  }
+
+  /**
+   * More committed changes were waiting than the queue holds (see {@link #MAX_PENDING_DELTAS}): holding them all would grow
+   * without bound. They are dropped for a rebuild, which reads them from the graph, as a build watch that overflows does.
+   * Run by the merge task under this instance's monitor, once per queue-full however many commits found it full.
+   */
+  private void rebuildForOverflowedQueue() {
+    // STALE before the flag goes down, so no reader sees READY between the two
+    status = Status.STALE;
+    followUpRebuildPending = true;
+    discardQueuedAsyncDeltas();
+    asyncQueueOverflowed.set(false);
+    // A commit that overflowed after the discard is in the scan of this rebuild, which starts after it
+    rebuildAfterPublication();
+  }
+
+  /**
+   * Dispatches the merge of the queued deltas to the build executor, unless one is already queued: one task merges whatever
+   * has accumulated, so a stream of small commits costs one task per batch rather than one per commit. It needs no build
+   * permit, unlike a scan: a merge is as cheap as the change it merges.
+   */
+  private void scheduleAsyncMerge() {
+    if (!asyncMergeQueued.compareAndSet(false, true))
+      return;
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          // One batch per hold of the monitor, until the queue is empty
+          while (!shutDown && mergeQueuedAsyncDeltas(ASYNC_MERGE_BATCH))
+            Thread.yield();
+        } finally {
+          asyncMergeQueued.set(false);
+          taskCompleted();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          // A delta queued, or an overflow raised, after the last poll found the merge still queued: the next task takes it
+          if ((!asyncDeltas.isEmpty() || asyncQueueOverflowed.get()) && !shutDown)
+            scheduleAsyncMerge();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      asyncMergeQueued.set(false);
+      taskCompleted();
+      // Shutting down: the lag stays above zero, so the view keeps reporting STALE, which is what it is, and awaitReady()
+      // waits to its timeout; shutdown() discards the queue
+      LogManager.instance().log(this, Level.FINE, "GraphAnalyticalView '%s': merge of the committed changes rejected (executor shut down)",
+          name);
+    }
+  }
+
+  /** Merges every queued delta, under this instance's monitor. */
+  private void mergeQueuedAsyncDeltas() {
+    mergeQueuedAsyncDeltas(Integer.MAX_VALUE);
+  }
+
+  /**
+   * Merges up to {@code max} queued deltas into the overlay, in the order they were queued, exactly as the SYNCHRONOUS
+   * callback merges one (issue #10189), and wakes the callers of {@link #awaitReady} once none is left. A delta that cannot
+   * be merged leaves the view STALE and rebuilds it: it is not in the overlay, and dropping it would serve a graph that
+   * never existed.
+   *
+   * @return whether deltas are left in the queue
+   */
+  private synchronized boolean mergeQueuedAsyncDeltas(final int max) {
+    if (asyncQueueOverflowed.get()) {
+      rebuildForOverflowedQueue();
+      return false;
+    }
+    boolean failed = false;
+    QueuedDelta queued;
+    for (int merged = 0; merged < max && (queued = asyncDeltas.poll()) != null; ++merged) {
+      try {
+        // Runs on a GAV worker, as the compaction's own applyDelta() does: the merge works on RIDs and the view's
+        // mappings and reads no record. A full build or a restore that published since the commit holds it already
+        if (queued.bufferedAgainst() == null && queued.baseReplacementsSeen() != baseReplacements)
+          continue;
+        applyDelta(queued.delta(), queued.bufferedAgainst());
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
+        // Before the lag drops below: the view never reads READY without the change
+        status = Status.STALE;
+        failed = true;
+      } finally {
+        asyncDeltaLag.decrementAndGet();
+      }
+    }
+    if (failed) {
+      followUpRebuildPending = true;
+      status = Status.STALE;
+      // Inside a compaction swap too: the rebuild dispatched here bumps the generation, so the swap that called this
+      // discards its own result rather than publish a base without the change
+      rebuildAfterPublication();
+    }
+    // The waiters of awaitReady() are woken by the batch that empties the queue, and by any status change a failure or an
+    // overflow makes (the rebuild's dispatch, discardQueuedAsyncDeltas()): not by every batch
+    final boolean more = !asyncDeltas.isEmpty();
+    if (!more)
+      notifyAll();
+    return more;
+  }
+
+  /**
+   * Drops the queued deltas, when the base they would be merged into is replaced by one that already holds them. Under this
+   * instance's monitor, which the merge holds while it polls, so no delta is half merged.
+   */
+  private synchronized void discardQueuedAsyncDeltas() {
+    while (asyncDeltas.poll() != null)
+      asyncDeltaLag.decrementAndGet();
+    notifyAll();
   }
 
   private synchronized void applyDelta(final TxDelta delta, final Map<String, CSRAdjacencyIndex> bufferedAgainst) {
@@ -3677,8 +3958,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // A full build in flight replaces this base anyway, re-reading the columns and re-applying every delta it
     // buffered (the dirty edge properties included, see publishBuild()): a compaction beside it would scan the graph
-    // a second time, and supersede the build whose caller is waiting for it (issue #8403)
-    if (buildWatch != null)
+    // a second time, and supersede the build whose caller is waiting for it (issue #8403). Nor does a view that is shut
+    // down compact: shutdown() merges what was still queued (issue #10189) after it stopped waiting for its tasks
+    if (buildWatch != null || shutDown)
       return;
 
     if (forceRebuild || (compactionThreshold > 0
@@ -3720,6 +4002,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
               // Synchronized swap: capture buffered deltas and re-apply against the new mapping
               synchronized (GraphAnalyticalView.this) {
+                // A change committed before the swap and still queued for the asynchronous merge joins the buffered ones
+                // now (issue #10189): merged after the swap, it would be applied to the fresh base unchecked against the
+                // scan, which may already hold it
+                mergeQueuedAsyncDeltas();
                 final List<TxDelta> buffered = pendingDeltas;
                 pendingDeltas = null;
 
@@ -4287,6 +4573,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   static void acquireAllBuildPermitsForTest() {
     BUILD_PERMITS.acquireUninterruptibly(MAX_CONCURRENT_BUILDS);
+  }
+
+  /** Test-only hook: lowers the number of committed changes an ASYNCHRONOUS view queues before it rebuilds instead. */
+  void setMaxQueuedAsyncDeltasForTest(final int max) {
+    this.maxQueuedAsyncDeltas = max;
   }
 
   /** Test-only hook: releases the permits taken by {@link #acquireAllBuildPermitsForTest()}. */
