@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -306,6 +307,40 @@ class Issue10228PsqlOdbcCatalogShapesTest {
       assertThat(new ArrayList<>(row.values()).subList(0, 2)).containsExactly(null, null);
   }
 
+  /**
+   * Two output columns named alike are each announced under that name, and a reference to the name is ambiguous, as
+   * in PostgreSQL: ORDER BY and GROUP BY by position or by a name only one column has keep working, a reference to
+   * the shared name is declined rather than resolved to whichever column comes first.
+   */
+  @Test
+  void duplicateColumnNamesInOrderByAndGroupBy() {
+    final String types = "(select NULL, NULL, relkind from (select 'r' as relkind union select 'v' union select 'm') b)";
+
+    assertThat(column(resolve("select NULL, NULL, relkind from (select 'r' as relkind union select 'v' union select 'm') a "
+        + "order by 3"), "relkind")).containsExactly("m", "r", "v");
+    assertThat(column(resolve("select NULL, NULL, relkind from (select 'r' as relkind union select 'v' union select 'm') a "
+        + "order by relkind desc"), "relkind")).containsExactly("v", "r", "m");
+    assertThat(column(resolve("select relkind, count(*) as n from " + types + " a group by relkind order by 1"), "n"))
+        .containsExactly(1L, 1L, 1L);
+    assertThat(column(resolve("select relkind from " + types + " a group by 1 order by 1"), "relkind"))
+        .containsExactly("m", "r", "v");
+
+    // Over a catalog relation an ambiguous reference is declined; over literals alone the statement is the SQL
+    // engine's, which is told so by a null answer.
+    final String catalog = "(select NULL, NULL, relname from pg_class)";
+    assertThat(PostgresCatalog.resolve("select NULL, NULL, relname from pg_class order by \"?column?\"", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("select count(*) from " + catalog + " a group by \"?column?\"", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("select \"?column?\" from " + catalog + " a", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+    assertThat(column(resolve("select relname from " + catalog + " a order by relname"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(PostgresCatalog.resolve("select NULL, NULL, relkind from (select 'r' as relkind union select 'v') a "
+        + "order by \"?column?\"", database, USER)).isNull();
+    assertThat(PostgresCatalog.resolve("select \"?column?\" from " + types + " a", database, USER)).isNull();
+  }
+
   /** A union of a catalog relation and a literal arm is answered too. */
   @Test
   void aUnionMixingACatalogRelationAndLiterals() {
@@ -488,7 +523,9 @@ class Issue10228PsqlOdbcCatalogShapesTest {
   void aDeeplyParenthesisedStatementIsUnwrappedInOnePass() {
     final int layers = 50_000;
     final String query = "(".repeat(layers) + "select relname from pg_class" + ")".repeat(layers) + " union select 'x'";
+    final StallAwareStopwatch unwrap = StallAwareStopwatch.start();
     assertThat(column(resolve(query), "relname")).containsExactly("City", "Note", "Person", "x");
+    unwrap.assertGaveUpWithin(15_000, "one scan of the parentheses from one scan per layer, 2.5 * 10^9 token reads");
   }
 
   /** A set operation naming no catalog relation is a SELECT: an INSERT that only contains the word is not one. */
@@ -566,8 +603,10 @@ class Issue10228PsqlOdbcCatalogShapesTest {
 
     // Refused rather than read as UNKNOWN, which the permissive filter would keep: a name filter that ran out of
     // budget must not answer a row that does not match it, and an empty answer would look like an empty catalog.
+    final StallAwareStopwatch match = StallAwareStopwatch.start();
     assertThatThrownBy(() -> PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
         database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
+    match.assertGaveUpWithin(15_000, "a match cut off by its step budget from one reading the name some 10^8 times");
     // A correlated sub-select re-parses into fresh nodes per outer row; the statement budget still bounds it.
     assertThatThrownBy(() -> PostgresCatalog.resolve("select c.relname from pg_class c where exists (select 1 "
         + "from pg_class d where d.relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$' and d.oid = c.oid)", database, USER))
@@ -618,8 +657,10 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         database.getSchema().createDocumentType("x".repeat(40) + i);
     });
 
+    final StallAwareStopwatch rows = StallAwareStopwatch.start();
     assertThatThrownBy(() -> PostgresCatalog.resolve("select relname from pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'",
         database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
+    rows.assertGaveUpWithin(15_000, "one budget for the predicate over every row from a full match budget per row");
   }
 
   /** string_agg's delimiter is the one of the row whose value follows it, as in PostgreSQL. */
@@ -659,8 +700,10 @@ class Issue10228PsqlOdbcCatalogShapesTest {
       exists.insert(0, "select 1 from pg_class where exists (").append(")");
     // Each level runs once per row of the one around it, so the depth bound alone would still leave 3^32
     // evaluations: the work budget is what makes this return, and spending it refuses the statement.
+    final StallAwareStopwatch nested = StallAwareStopwatch.start();
     assertThatThrownBy(() -> PostgresCatalog.resolve(exists.toString(), database, USER))
         .isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
+    nested.assertGaveUpWithin(15_000, "the statement work budget from 3^32 correlated evaluations");
 
     final StringBuilder joins = new StringBuilder("pg_class c");
     for (int i = 0; i < 5_000; i++)
