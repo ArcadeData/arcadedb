@@ -139,7 +139,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private boolean finished = false;
       // Tracked mode (#8394): the current source's adjacency, one slice per (edge type, orientation)
       private final String[] trackedTypes = edgeTrackingVar != null ?
-          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
+          GAVEdgeRef.trackedEdgeTypes(provider, context.getDatabase(), edgeTypes) : null;
       private GAVEdgeRef[] boundRefs;
       private int sourceNodeId;
       private RID sourceRID;
@@ -364,11 +364,12 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
           sliceOutgoing = new boolean[slices.length];
           sliceSorted = new boolean[slices.length];
         }
+        // One concrete type per slice, sub-types left out: each has its own (issue #10213)
         for (final String type : trackedTypes) {
           if (direction != Direction.IN)
-            addSlice(type, true, provider.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, type));
+            addSlice(type, true, provider.getNeighborIdsOfSlice(nodeId, Vertex.DIRECTION.OUT, type));
           if (direction != Direction.OUT)
-            addSlice(type, false, provider.getNeighborIds(nodeId, Vertex.DIRECTION.IN, type));
+            addSlice(type, false, provider.getNeighborIdsOfSlice(nodeId, Vertex.DIRECTION.IN, type));
         }
       }
 

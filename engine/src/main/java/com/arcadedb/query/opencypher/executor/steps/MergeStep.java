@@ -206,15 +206,10 @@ public class MergeStep extends AbstractExecutionStep {
    * In Cypher, MERGE returns ALL matching elements (one row per match),
    * or creates one element if no match exists.
    * <p>
-   * Uses {@code database.transaction()} to get the same automatic retry on MVCC conflicts
-   * ({@code NeedRetryException}/{@code ConcurrentModificationException}) that {@code CreateStep}
-   * already has (issue #6367). {@code joinCurrentTx=true} means this joins an already-active
-   * transaction (an explicit {@code BEGIN}, or the HTTP auto-commit wrapper in
-   * {@code DatabaseAbstractHandler}) exactly as the previous raw {@code begin()}/{@code commit()}
-   * did - no behavior change there. The difference is when MERGE owns its transaction outright
-   * (the normal case for an unwrapped autocommit caller, e.g. Bolt's {@code handleRun}): a
-   * transient conflict is now retried up to {@link com.arcadedb.GlobalConfiguration#TX_RETRIES}
-   * instead of propagating on the first attempt.
+   * Runs in {@code database.transaction(..., true)}, which joins the statement's transaction: the caller's, or the one
+   * {@code OpenCypherQueryEngine} opens around a write statement when the caller has none (issue #10190), so a conflict
+   * re-runs the whole statement from committed state rather than this row alone (issue #6367 retried the row, which owned
+   * its transaction then, and a MERGE over several pairs conflicted with the rows it had already committed).
    *
    * @param inputResult input result from previous step (may be null for standalone MERGE)
    * @return list of results containing matched or created elements
@@ -222,12 +217,19 @@ public class MergeStep extends AbstractExecutionStep {
   private List<Result> executeMerge(final Result inputResult, final LabelReplacements labelReplacements) {
     final PathPattern pathPattern = mergeClause.getPathPattern();
 
-    // Cypher null-propagation: a named path variable that was explicitly bound
-    // to null by a prior step (e.g. an unmatched OPTIONAL MATCH) is not an
-    // unbound free variable - it is a concrete null.  Merging a pattern that
-    // references a null endpoint or relationship is undefined, so drop the row.
-    if (inputResult != null && hasNullBoundPathVariable(pathPattern, inputResult))
-      return List.of();
+    // A path variable an earlier clause bound to null (an unmatched OPTIONAL MATCH) is not a free variable: the pattern
+    // has no endpoint there, and the statement fails as on Neo4j. The row used to be dropped in silence (issue #10191)
+    // An endpoint bound to a bare RID is resolved to its vertex here, and handed to the walk in its place below
+    final Vertex[] boundEndpoints;
+    if (inputResult != null && !pathPattern.isSingleNode())
+      boundEndpoints = checkBoundPathVariables(pathPattern, inputResult);
+    else {
+      boundEndpoints = null;
+      // A single node is no endpoint. The validator refuses one an earlier clause bound, and a null is still dropped
+      final String variable = pathPattern.getFirstNode().getVariable();
+      if (inputResult != null && variable != null && inputResult.hasProperty(variable) && inputResult.getProperty(variable) == null)
+        return List.of();
+    }
 
     final Database database = context.getDatabase();
     final QueryStatistics stats = context.getStatistics();
@@ -259,6 +261,11 @@ public class MergeStep extends AbstractExecutionStep {
           baseResult.setProperty(prop, inputResult.getProperty(prop));
         }
       }
+      // The walk and the creation recognize a bound endpoint by its Vertex: one bound to a bare RID becomes its vertex
+      if (boundEndpoints != null)
+        for (int i = 0; i < boundEndpoints.length; i++)
+          if (boundEndpoints[i] != null)
+            baseResult.setProperty(pathPattern.getNode(i).getVariable(), boundEndpoints[i]);
 
       final List<Result> results;
       if (pathPattern.isSingleNode())
@@ -619,23 +626,27 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * A variable explicitly bound to null by an upstream step (typically an
-   * unmatched OPTIONAL MATCH) differs from one that is absent: the former
-   * triggers Cypher null-propagation, the latter is an unbound free variable.
-   * {@link Result#hasProperty(String)} disambiguates the two cases.
+   * Refuses a path whose variables an upstream step bound to null (typically an unmatched OPTIONAL MATCH) or, for a node,
+   * to a value that is not a node. A variable that is absent is a free one the MERGE binds, and
+   * {@link Result#hasProperty(String)} tells the two cases apart.
+   *
+   * @return per node of the path, the vertex a bare RID it is bound to resolves to, or null when there is nothing to
+   * replace (a vertex already, or a free variable); null when no node needs it
    */
-  private boolean hasNullBoundPathVariable(final PathPattern pathPattern, final Result inputResult) {
+  private static Vertex[] checkBoundPathVariables(final PathPattern pathPattern, final Result inputResult) {
+    Vertex[] resolved = null;
     for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
-      final String nodeVar = pathPattern.getNode(i).getVariable();
-      if (nodeVar != null && inputResult.hasProperty(nodeVar) && inputResult.getProperty(nodeVar) == null)
-        return true;
+      final String variable = pathPattern.getNode(i).getVariable();
+      final Vertex vertex = WritePatternChecks.boundEndpoint(inputResult, variable);
+      if (vertex != null && inputResult.getProperty(variable) != vertex) {
+        if (resolved == null)
+          resolved = new Vertex[pathPattern.getRelationshipCount() + 1];
+        resolved[i] = vertex;
+      }
     }
-    for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
-      final String relVar = pathPattern.getRelationship(i).getVariable();
-      if (relVar != null && inputResult.hasProperty(relVar) && inputResult.getProperty(relVar) == null)
-        return true;
-    }
-    return false;
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
+      WritePatternChecks.checkRelationshipNotNull(inputResult, pathPattern.getRelationship(i).getVariable());
+    return resolved;
   }
 
   /**
@@ -1592,6 +1603,10 @@ public class MergeStep extends AbstractExecutionStep {
     return TemporalUtil.toCoreJavaType(value);
   }
 
+  /**
+   * Every inline property of the MERGE pattern, node or relationship, is evaluated through here before anything is matched
+   * or created with it, so a null that arrives at run time is refused here, as the validator refuses a literal one (#10191).
+   */
   private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result,
       final boolean keepTemporalWrapper) {
     final Map<String, Object> evaluated = new HashMap<>();
@@ -1642,6 +1657,7 @@ public class MergeStep extends AbstractExecutionStep {
         }
       }
 
+      WritePatternChecks.checkMergePropertyNotNull(key, value);
       evaluated.put(key, value);
     }
 

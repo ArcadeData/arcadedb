@@ -899,7 +899,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int i = 0; i < hopDirections.length; i++) {
       if (!hopTracked[i])
         continue;
-      final String[] types = GAVEdgeRef.trackedEdgeTypes(database, hopEdgeTypes[i]);
+      final String[] types = GAVEdgeRef.trackedEdgeTypes(provider, database, hopEdgeTypes[i]);
       hopTypeIds[i] = new int[types.length];
       for (int t = 0; t < types.length; t++) {
         final String type = types[t];
@@ -909,10 +909,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         });
       }
     }
+    // One concrete type per slice, sub-types left out: each has its own (issue #10213)
     final NeighborView[] views = new NeighborView[names.size() * 2];
     for (int t = 0; t < names.size(); t++) {
-      views[t * 2] = provider.getNeighborView(Vertex.DIRECTION.IN, names.get(t));
-      views[t * 2 + 1] = provider.getNeighborView(Vertex.DIRECTION.OUT, names.get(t));
+      views[t * 2] = provider.getNeighborViewOfSlice(Vertex.DIRECTION.IN, names.get(t));
+      views[t * 2 + 1] = provider.getNeighborViewOfSlice(Vertex.DIRECTION.OUT, names.get(t));
     }
     return new TrackedTypes(names.toArray(new String[0]), hopTypeIds, views);
   }
@@ -977,7 +978,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       final NeighborView view = types.views()[orientation == Vertex.DIRECTION.OUT ? typeId * 2 + 1 : typeId * 2];
       if (view != null && nodeId < view.nodeCount())
         return append(depth, size, view.neighbors(), view.offset(nodeId), view.offsetEnd(nodeId), entryMeta, skip);
-      final int[] slice = provider.getNeighborIds(nodeId, orientation, type);
+      final int[] slice = provider.getNeighborIdsOfSlice(nodeId, orientation, type);
       return slice == null ? size : append(depth, size, slice, 0, slice.length, entryMeta, skip);
     }
 

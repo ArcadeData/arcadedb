@@ -100,7 +100,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private boolean finished = false;
       // Resolved once per execution, not per row: an untyped hop reads every edge type of the schema
       private final String[] trackedTypes = edgeTrackingVar != null ?
-          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
+          GAVEdgeRef.trackedEdgeTypes(provider, context.getDatabase(), edgeTypes) : null;
 
       @Override
       public boolean hasNext() {
@@ -189,7 +189,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private void emitTracked(final Result inputResult, final GAVEdgeRef[] bound, final String type, final RID out,
           final RID in, final int srcId, final int tgtId, final Vertex.DIRECTION orientation, final Vertex sourceVertex,
           final Vertex targetVertex) {
-        long parallel = srcId < 0 || tgtId < 0 ? -1 : provider.countEdgesBetween(srcId, tgtId, orientation, type);
+        // The concrete type alone, as the label names it and as the record fallback counts it (issue #10213)
+        long parallel = srcId < 0 || tgtId < 0 ? -1 : provider.countEdgesBetweenInSlice(srcId, tgtId, orientation, type);
         if (parallel < 0)
           parallel = countTypedOLTP(sourceVertex, targetVertex, orientation, type);
         for (int occurrence = 0; occurrence < parallel; occurrence++) {
