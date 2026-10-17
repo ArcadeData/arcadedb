@@ -171,7 +171,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       return new RefusalArm(type, code, broad, key);
     }
 
-    /** The trailers this arm answers {@code frame} with, or {@code null} when it sends none. */
+    /**
+     * The trailers this arm answers {@code frame} with, or {@code null} when it sends none. The class name is sent in
+     * production mode too, as {@code GrpcErrorMapper} sends it on every data-plane answer: it is the TYPE the client acts
+     * on, and the named arms classify ArcadeDB's own exception hierarchies (a {@code NeedRetryException} subtype, a taken
+     * name), not free-form text, which is what production mode conceals.
+     */
     Metadata trailersFor(final Throwable frame) {
       if (trailer == null)
         return null;

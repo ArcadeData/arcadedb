@@ -35,6 +35,7 @@ import com.arcadedb.server.grpc.ArcadeDbGrpcAdminService;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.UserAlreadyExistsException;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
@@ -114,6 +115,17 @@ class Issue10143AdminStatusRoundTripTest {
     final RuntimeException mapped = GrpcClientErrorMapper.toAutoCommitWriteException(wire, "save group");
     assertThat(mapped).isInstanceOf(NeedRetryException.class);
     assertThat(mapped.getMessage()).doesNotContain("may already have applied");
+  }
+
+  @Test
+  void aRetryableSubtypeThisClientDoesNotKnowIsStillRetryable() {
+    // a later server may name a NeedRetryException subtype this client has no case for: the status decides, not the name
+    final Metadata trailers = new Metadata();
+    trailers.put(GrpcClientErrorMapper.EXCEPTION_CLASS_KEY, "com.arcadedb.network.binary.SomeFutureRetryableException");
+    final StatusException wire = Status.UNAVAILABLE.withDescription("try later").asException(trailers);
+
+    final RuntimeException mapped = GrpcClientErrorMapper.toAdminException(wire, "create user", true);
+    assertThat(mapped).isInstanceOf(NeedRetryException.class).hasMessage("try later");
   }
 
   @Test
