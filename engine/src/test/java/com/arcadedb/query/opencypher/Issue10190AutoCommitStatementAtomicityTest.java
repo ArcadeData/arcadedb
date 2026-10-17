@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -174,6 +178,50 @@ class Issue10190AutoCommitStatementAtomicityTest extends TestHelper {
     database.command("opencypher", "PROFILE MATCH (n:B) SET n.profiled = true RETURN n").close();
     assertThat(database.isTransactionActive()).isFalse();
     assertThat(countFromAnotherThread("MATCH (n:B) WHERE n.profiled RETURN count(n) AS c")).isEqualTo(4L);
+  }
+
+  /**
+   * Concurrent auto-commit statements on one record conflict, and a conflict re-runs the whole statement from committed
+   * state: every increment that reports success lands exactly once, none is lost and none is applied twice.
+   */
+  @Test
+  void aConflictReRunsTheWholeStatementOnce() throws Exception {
+    setup("CREATE (:A {k: 0, v: 0})");
+    final int threads = 4;
+    final int perThread = 25;
+    final AtomicInteger succeeded = new AtomicInteger();
+    final AtomicInteger refused = new AtomicInteger();
+    final List<Throwable> unexpected = new CopyOnWriteArrayList<>();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> workers = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final Thread worker = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < perThread; i++)
+            try {
+              database.command("opencypher", "MATCH (n:A {k: 0}) SET n.v = n.v + 1").close();
+              succeeded.incrementAndGet();
+            } catch (final NeedRetryException e) {
+              // ALL THE ATTEMPTS CONFLICTED: THE INCREMENT IS NOT APPLIED, AND THE CALLER IS TOLD
+              refused.incrementAndGet();
+            }
+        } catch (final Throwable e) {
+          unexpected.add(e);
+        }
+      });
+      workers.add(worker);
+      worker.start();
+    }
+    start.countDown();
+    for (final Thread worker : workers)
+      worker.join();
+
+    assertThat(unexpected).isEmpty();
+    assertThat(succeeded.get() + refused.get()).isEqualTo(threads * perThread);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:A {k: 0}) RETURN n.v AS v")) {
+      assertThat(rs.next().<Number>getProperty("v").intValue()).isEqualTo(succeeded.get());
+    }
   }
 
   /** A UNION of writes is one statement: a failing branch takes back what the other branches wrote. */

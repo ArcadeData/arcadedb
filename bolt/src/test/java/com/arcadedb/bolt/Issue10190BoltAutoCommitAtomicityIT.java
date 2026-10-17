@@ -28,6 +28,7 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.exceptions.ClientException;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -67,11 +68,13 @@ public class Issue10190BoltAutoCommitAtomicityIT extends BaseBoltServerTest {
   void aFailingStatementLeavesNothingBehind() {
     try (final Driver driver = getDriver();
         final Session s = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-      assertThatThrownBy(() -> s.run("CREATE (:A10190 {k: 1}) WITH 1 AS z RETURN 1 / (z - 1) AS e").consume());
+      assertThatThrownBy(() -> s.run("CREATE (:A10190 {k: 1}) WITH 1 AS z RETURN 1 / (z - 1) AS e").consume())
+          .isInstanceOf(ClientException.class).hasMessageContaining("/ by zero");
       assertThat(s.run("MATCH (n:A10190) RETURN count(n) AS c").single().get("c").asLong()).isZero();
 
       s.run("CREATE (:B10190 {k: 0}), (:B10190 {k: 1})").consume();
-      assertThatThrownBy(() -> s.run("MATCH (n:B10190) WITH n ORDER BY n.k SET n.i = 10 / (n.k - 1)").consume());
+      assertThatThrownBy(() -> s.run("MATCH (n:B10190) WITH n ORDER BY n.k SET n.i = 10 / (n.k - 1)").consume())
+          .isInstanceOf(ClientException.class).hasMessageContaining("/ by zero");
       assertThat(s.run("MATCH (n:B10190) WHERE n.i IS NOT NULL RETURN count(n) AS c").single().get("c").asLong()).isZero();
     }
   }
