@@ -44,6 +44,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.IntHashSet;
 
 import java.lang.ref.SoftReference;
 import java.util.ArrayList;
@@ -238,6 +239,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // The concrete edge types the scan materialized: a type that leaves the filter later (its super-type changed) keeps
     // the edges the scan counted as covered, so it never counts as proven empty
     final Set<String>                    scannedEdgeTypes;
+    // The view's uncovered-edge write counter as the scan that produced this snapshot started, whatever the scan met, and the
+    // buckets of the edges of a type the view did not materialize that the scan met (issue #10214): what proves that an edge
+    // type which joins the filter later - attached to a listed type - holds no edge the CSR lacks. -1 and null when nobody
+    // knows (a CSR restored from disk)
+    final long                           uncoveredWritesMark;
+    final IntHashSet                     uncoveredEdgeBuckets;
     // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
@@ -250,7 +257,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd, overlay, buildTimestamp, buildDurationMs,
-          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null);
+          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null);
     }
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
@@ -259,9 +266,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
-        final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes) {
+        final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
+        final IntHashSet uncoveredEdgeBuckets) {
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
+      this.uncoveredWritesMark = uncoveredWritesMark;
+      this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
@@ -281,7 +291,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
           newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
-          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes);
+          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes, uncoveredWritesMark,
+          uncoveredEdgeBuckets);
     }
 
   }
@@ -321,6 +332,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
+  // Per edge type the view does not materialize, the value of uncoveredEdgeWrites its latest edge written moved it to (issue
+  // #10214): a type attached to a listed one since a scan holds edges that scan did not read when it was written past the
+  // scan's mark. One entry per such edge type ever written, never removed
+  private final ConcurrentMap<String, AtomicLong> lastUncoveredEdgeWrite = new ConcurrentHashMap<>();
+  // Whether the base CSR holds every edge type the filter covers without listing it - a sub-type of a listed edge type - for
+  // one base CSR and one schema version (issue #10214)
+  private record JoinedEdgeCoverage(Map<String, CSRAdjacencyIndex> scannedWith, long schemaVersion, boolean allHeld) {
+  }
+
+  private volatile JoinedEdgeCoverage joinedEdgeCoverage;
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -1181,7 +1202,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
     if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
-      dispatchJoinedTypeRebuild(name);
+      dispatchJoinedTypeRebuild("vertex", name);
     return holds;
   }
 
@@ -1200,17 +1221,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Hands {@link #onVertexTypeJoinedWithRecords} to the build executor: the coverage check that found the type is asked on
-   * the query path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type
-   * is already not claimed.
+   * Hands {@link #onTypeJoinedWithRecords} to the build executor: the coverage check that found the type is asked on the query
+   * path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type is already not
+   * claimed.
+   *
+   * @param kind "vertex" or "edge", for the log
    */
-  private void dispatchJoinedTypeRebuild(final String typeName) {
+  private void dispatchJoinedTypeRebuild(final String kind, final String typeName) {
     inFlightTasks.incrementAndGet();
     try {
       getExecutor().execute(() -> {
         try {
           if (!shutDown)
-            onVertexTypeJoinedWithRecords(typeName);
+            onTypeJoinedWithRecords(kind, typeName);
         } finally {
           taskCompleted();
           DatabaseContext.INSTANCE.removeCurrentThreadContexts();
@@ -1222,10 +1245,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
   }
 
-  /** A vertex type holding vertices no scan read joined the listed family: see {@link #holdsJoinedVertexType}. */
-  private synchronized void onVertexTypeJoinedWithRecords(final String typeName) {
+  /**
+   * A type holding records no scan read joined the listed family: see {@link #holdsJoinedVertexType} and
+   * {@link #holdsJoinedEdgeTypes}.
+   */
+  private synchronized void onTypeJoinedWithRecords(final String kind, final String typeName) {
     LogManager.instance().log(this, Level.INFO,
-        "GraphAnalyticalView '%s': vertex type '%s' joined the view's types with vertices its CSR does not hold; %s", name,
+        "GraphAnalyticalView '%s': %s type '%s' joined the view's types with records its CSR does not hold; %s", name, kind,
         typeName, updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
     if (updateMode == UpdateMode.OFF) {
       status = Status.STALE;
@@ -1306,6 +1332,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * such as {@link ContractionHierarchy#find} is.
    */
   public boolean coversEveryEdge() {
+    if (!holdsJoinedEdgeTypes())
+      return false;
     if (coversEdgeType(null))
       return true;
     final Snapshot snap = snapshot;
@@ -1320,9 +1348,68 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return true;
   }
 
-  /** An edge of a type this view does not materialize was written (issue #9915): see {@link #coversEveryEdge()}. */
-  void onUncoveredEdgeWritten() {
-    uncoveredEdgeWrites.incrementAndGet();
+  /**
+   * An edge of {@code edgeTypeName}, a type this view does not materialize, was written (issue #9915): see
+   * {@link #coversEveryEdge()} and, for the type joining the filter later, {@link #holdsJoinedEdgeTypes()} (issue #10214).
+   */
+  void onUncoveredEdgeWritten(final String edgeTypeName) {
+    final long written = uncoveredEdgeWrites.incrementAndGet();
+    if (edgeTypeName != null)
+      lastUncoveredEdgeWrite.computeIfAbsent(edgeTypeName, k -> new AtomicLong(-1L)).accumulateAndGet(written, Math::max);
+  }
+
+  /**
+   * Whether the base CSR, with its overlay, holds the edges of every edge type the filter covers without listing it: a sub-type
+   * of a listed type (issue #10214). One created after the scan was empty then, and the overlay has held its edges since. An
+   * existing type attached to a listed one since the scan brings edges no scan read, and a hop on the listed type, which reads
+   * its sub-types' slices, would miss them: the view is not served until it has rebuilt (OFF: it turns STALE).
+   * <p>
+   * {@link #coversEdgeType} cannot give this answer: it is the schema-only check the cached query plans rely on and the one the
+   * listeners route a written edge to the overlay by, while this one depends on the edges written. So it is asked where the view
+   * is served - {@link #isReady()} - and by {@link #coversEveryEdge()}. Decided once per base CSR and schema version.
+   */
+  private boolean holdsJoinedEdgeTypes() {
+    if (edgeTypes == null)
+      // EVERY EDGE TYPE IS MATERIALIZED: NONE CAN JOIN
+      return true;
+    final Snapshot snap = snapshot;
+    // No CSR yet: the build in flight scans the family as it is when it starts, and its watch takes in what commits since
+    if (snap == null)
+      return true;
+    final long version = database.getSchema().getEmbedded().getVersion();
+    final JoinedEdgeCoverage cached = joinedEdgeCoverage;
+    if (cached != null && cached.scannedWith() == snap.csrPerType && cached.schemaVersion() == version)
+      return cached.allHeld();
+
+    String unheld = null;
+    for (final DocumentType dt : database.getSchema().getTypes())
+      if (dt instanceof EdgeType && !containsType(edgeTypes, dt.getName()) && coversEdgeTypeByFilter(dt) && !holdsJoinedEdgeType(dt,
+          snap)) {
+        unheld = dt.getName();
+        break;
+      }
+    joinedEdgeCoverage = new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null);
+    if (unheld != null)
+      dispatchJoinedTypeRebuild("edge", unheld);
+    return unheld == null;
+  }
+
+  /**
+   * Whether the CSR holds the edges of {@code type}, a sub-type of a listed edge type: the scan materialized it, or proves it held
+   * no edge the CSR lacks - it met none of its buckets among the edges it did not materialize, and none was written while the
+   * type was not covered since the scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record.
+   */
+  private boolean holdsJoinedEdgeType(final DocumentType type, final Snapshot snap) {
+    final String name = type.getName();
+    if (snap.csrPerType.containsKey(name) || (snap.scannedEdgeTypes != null && snap.scannedEdgeTypes.contains(name)))
+      return true;
+    if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null)
+      return false;
+    for (final int bucketId : type.getBucketIds(false))
+      if (snap.uncoveredEdgeBuckets.contains(bucketId))
+        return false;
+    final AtomicLong lastWrite = lastUncoveredEdgeWrite.get(name);
+    return lastWrite == null || lastWrite.get() <= snap.uncoveredWritesMark;
   }
 
   /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
@@ -2597,9 +2684,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public boolean isReady() {
     triggerDeferredDiskRestoreIfPending();
     final Status s = getStatus();
-    if (s == Status.READY)
-      return true;
-    return s == Status.STALE && isUseWhenStale();
+    if (s != Status.READY && (s != Status.STALE || !isUseWhenStale()))
+      return false;
+    // AN EDGE TYPE ATTACHED TO A LISTED ONE SINCE THE SCAN BRINGS EDGES THE CSR DOES NOT HAVE: NOT SERVED, EVEN STALE (#10214)
+    return holdsJoinedEdgeTypes();
   }
 
   /**
@@ -3176,7 +3264,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result.getEdgeColumnStores(), result.getBwdToFwd(),
         null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
         builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter, result.getUncoveredEdgeFreeAsOf(),
-        result.getScannedEdgeTypes());
+        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets());
   }
 
   /**

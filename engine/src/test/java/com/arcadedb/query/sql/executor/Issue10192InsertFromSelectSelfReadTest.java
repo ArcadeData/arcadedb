@@ -1,0 +1,172 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.executor;
+
+import com.arcadedb.TestHelper;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * #10192: {@code INSERT INTO T FROM SELECT ... FROM T} read the rows it was inserting. An OR filter (planned as one scan per
+ * branch) copied a row twice, because the second branch met the copy the first one had just inserted, and an index range
+ * scan on the filtered property never ended, meeting its own new keys ahead of the cursor. The SELECT must be evaluated on the
+ * state the statement started from.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
+
+  private void createType(final String name, final String extra) {
+    database.command("sql", "CREATE DOCUMENT TYPE " + name + extra).close();
+    database.command("sql", "CREATE PROPERTY " + name + ".id LONG").close();
+    database.command("sql", "CREATE PROPERTY " + name + ".a INTEGER").close();
+    database.command("sql", "CREATE PROPERTY " + name + ".b INTEGER").close();
+  }
+
+  private List<Long> ids(final String type) {
+    final List<Long> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT id FROM " + type + " ORDER BY id")) {
+      while (rs.hasNext())
+        ids.add(rs.next().<Number>getProperty("id").longValue());
+    }
+    return ids;
+  }
+
+  private long insert(final String statement) {
+    final long[] count = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", statement)) {
+        while (rs.hasNext()) {
+          rs.next();
+          count[0]++;
+        }
+      }
+    });
+    return count[0];
+  }
+
+  @Test
+  void orFilterCopiesEachRowOnce() {
+    createType("T", "");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close());
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3 OR b = 4")).isEqualTo(1);
+    assertThat(ids("T")).containsExactly(1L, 101L);
+  }
+
+  @Test
+  void plainFilterCopiesEachRowOnce() {
+    createType("T", "");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close());
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3")).isEqualTo(1);
+    assertThat(ids("T")).containsExactly(1L, 101L);
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void indexRangeScanEnds() {
+    createType("T", "");
+    database.command("sql", "CREATE INDEX ON T (id) NOTUNIQUE").close();
+    database.transaction(() -> {
+      for (int i = 4; i <= 6; i++)
+        database.command("sql", "INSERT INTO T SET id = ?, a = 1", i).close();
+    });
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a FROM T WHERE id >= 4")).isEqualTo(3);
+    assertThat(ids("T")).containsExactly(4L, 5L, 6L, 104L, 105L, 106L);
+  }
+
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void indexRangeScanEndsOnManyRows() {
+    createType("T", "");
+    database.command("sql", "CREATE INDEX ON T (id) NOTUNIQUE").close();
+    database.transaction(() -> {
+      for (int i = 0; i < 2_000; i++)
+        database.command("sql", "INSERT INTO T SET id = ?, a = 1", i).close();
+    });
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 10 AS id, a FROM T WHERE id >= 0")).isEqualTo(2_000);
+    assertThat(ids("T")).hasSize(4_000);
+  }
+
+  @Test
+  void selectFromSuperTypeDoesNotSeeTheInsertedSubTypeRows() {
+    createType("P", "");
+    database.command("sql", "CREATE DOCUMENT TYPE T EXTENDS P").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO P SET id = 1, a = 3, b = 4").close();
+      database.command("sql", "INSERT INTO T SET id = 2, a = 3, b = 4").close();
+    });
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a, b FROM P WHERE a = 3 OR b = 4")).isEqualTo(2);
+    assertThat(ids("P")).containsExactly(1L, 2L, 101L, 102L);
+  }
+
+  @Test
+  void subQueryOnTheTargetSeesTheStartingState() {
+    createType("T", "");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close();
+      database.command("sql", "INSERT INTO T SET id = 2, a = 5, b = 6").close();
+    });
+
+    // EVERY ROW WHOSE id IS ONE OF T's ids AT THE START: THE COPIES (id 101, 102) MUST NOT QUALIFY THEMSELVES
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a, b FROM T WHERE id IN (SELECT id FROM T) OR b = 4")).isEqualTo(2);
+    assertThat(ids("T")).containsExactly(1L, 2L, 101L, 102L);
+  }
+
+  @Test
+  void bucketTargetIsGuardedToo() {
+    createType("T", "");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close());
+    final String bucket = database.getSchema().getType("T").getBuckets(false).getFirst().getName();
+
+    assertThat(insert("INSERT INTO bucket:" + bucket + " FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3 OR b = 4")).isEqualTo(1);
+    assertThat(ids("T")).containsExactly(1L, 101L);
+  }
+
+  @Test
+  void copyBetweenUnrelatedTypesStillStreams() {
+    createType("A", "");
+    createType("B", "");
+    database.transaction(() -> database.command("sql", "INSERT INTO A SET id = 1, a = 3, b = 4").close());
+
+    // NO BARRIER WHEN THE SELECT CANNOT SEE THE TARGET: THE ROWS FLOW STRAIGHT FROM THE SOURCE TO THE INSERT
+    try (final ResultSet rs = database.command("sql", "EXPLAIN INSERT INTO B FROM SELECT id + 100 AS id, a, b FROM A WHERE a = 3 OR b = 4")) {
+      final String plan = rs.next().getProperty("executionPlanAsString");
+      assertThat(plan).doesNotContain("MATERIALIZE");
+    }
+    try (final ResultSet rs = database.command("sql", "EXPLAIN INSERT INTO A FROM SELECT id + 100 AS id, a, b FROM A WHERE a = 3 OR b = 4")) {
+      final String plan = rs.next().getProperty("executionPlanAsString");
+      assertThat(plan).contains("MATERIALIZE");
+    }
+
+    assertThat(insert("INSERT INTO B FROM SELECT id + 100 AS id, a, b FROM A WHERE a = 3 OR b = 4")).isEqualTo(1);
+    assertThat(ids("A")).containsExactly(1L);
+    assertThat(ids("B")).containsExactly(101L);
+  }
+}

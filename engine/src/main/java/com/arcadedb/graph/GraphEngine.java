@@ -280,6 +280,7 @@ public class GraphEngine {
       throw new IllegalArgumentException("Target vertex is not persistent");
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
+    checkEndpointsNotDeletedInTransaction(database, fromVertexRID, toVertex.getIdentity());
 
     final EdgeType edgeType = getEdgeType(database, edgeTypeName);
 
@@ -371,6 +372,30 @@ public class GraphEngine {
     return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, initializer, NO_PROPERTIES);
   }
 
+  /**
+   * Refuses an edge with an endpoint this same transaction already deleted (issue #10196). The delete wins over a later write to
+   * the vertex record (#7149), so the endpoint's adjacency update would be dropped while the edge record itself was created: the
+   * commit then persisted an edge whose vertex no longer exists, and when the deleted vertex had edges of its own the append met
+   * its freed head chunk and was refused as a retryable "concurrent commit in flight" that no other transaction caused. Neither
+   * can ever succeed, so the answer is the not-found of the vertex, before anything is stored. One hash probe per endpoint into the
+   * transaction's deleted set.
+   */
+  private static void checkEndpointsNotDeletedInTransaction(final DatabaseInternal database, final RID fromVertexRID,
+      final RID toVertexRID) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null)
+      return;
+    if (tx.isDeletedInTransaction(fromVertexRID))
+      throw deletedEndpoint(fromVertexRID, "source");
+    if (toVertexRID != null && tx.isDeletedInTransaction(toVertexRID))
+      throw deletedEndpoint(toVertexRID, "destination");
+  }
+
+  private static VertexNotFoundException deletedEndpoint(final RID vertexRID, final String side) {
+    return new VertexNotFoundException(
+        "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
+  }
+
   private static RecordVetoedException vetoedEdge(final String edgeTypeName, final RID fromVertexRID, final Identifiable toVertex) {
     return new RecordVetoedException("Cannot create edge of type '" + edgeTypeName + "' from " + fromVertexRID + " to "
         + (toVertex != null ? toVertex.getIdentity() : null) + ": a beforeCreate listener vetoed it");
@@ -390,6 +415,7 @@ public class GraphEngine {
       throw new IllegalArgumentException("Target vertex is not persistent. Call save() on vertex first");
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
+    checkEndpointsNotDeletedInTransaction(database, fromVertexRID, toVertex.getIdentity());
 
     final String bucketName;
     if (edgeTypeName.startsWith("bucket:")) {
@@ -498,6 +524,7 @@ public class GraphEngine {
       final MutableEdge edge;
 
       final Identifiable destinationVertex = connection.destinationVertex;
+      checkEndpointsNotDeletedInTransaction(database, sourceVertexRID, destinationVertex.getIdentity());
 
       final EdgeType edgeType = getEdgeType(database, connection.edgeTypeName);
 

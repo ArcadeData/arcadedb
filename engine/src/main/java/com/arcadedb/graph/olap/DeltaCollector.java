@@ -184,7 +184,7 @@ class DeltaCollector
       if (view.coversEdgeType(edgeTypeName))
         covered = true;
       else
-        view.onUncoveredEdgeWritten();
+        view.onUncoveredEdgeWritten(edgeTypeName);
     if (covered)
       view.onEdgesWrittenInBulk();
   }
@@ -196,8 +196,8 @@ class DeltaCollector
    */
   private void noteUncoveredEdge(final Record record) {
     // NOT RELEVANT AND TRACKING: AN EDGE THE VIEW DOES NOT COVER
-    if (record instanceof Edge && view.isTrackingChanges())
-      view.onUncoveredEdgeWritten();
+    if (record instanceof Edge edge && view.isTrackingChanges())
+      view.onUncoveredEdgeWritten(edge.getTypeName());
   }
 
   /** The identity a change of {@code edge} is tracked by: its own RID, or a key of the change's own for a lightweight edge. */

@@ -18,11 +18,14 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.graph.LightEdge;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Graph;
@@ -40,6 +43,13 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   protected       T           baseElement;
   protected final ArcadeGraph graph;
+  /**
+   * Set by {@link #remove()} (issue #10196): a traversal keeps the element it dropped - {@code sideEffect(drop())} passes it on -
+   * and its in-memory record still holds the properties and the edge lists it had, so without this every later step read and
+   * wrote a record that no longer exists. Confirmed against the database by {@link #isRemoved()}, because a rollback brings the
+   * element back.
+   */
+  private         boolean     removed;
 
   protected ArcadeElement(final ArcadeGraph graph, final T baseElement, final Object... keyValues) {
     this.baseElement = baseElement;
@@ -54,7 +64,8 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   @Override
   public <V> V value(final String key) throws NoSuchElementException {
-    final V value = (V) baseElement.get(key);
+    // A REMOVED ELEMENT HAS NO PROPERTIES, AS IN TINKERGRAPH
+    final V value = isRemoved() ? null : (V) baseElement.get(key);
     if (value == null)
       throw Property.Exceptions.propertyDoesNotExist(this, key);
     return value;
@@ -62,6 +73,8 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   @Override
   public <V> Iterator<V> values(final String... propertyKeys) {
+    if (isRemoved())
+      return Collections.emptyIterator();
     final List<V> props;
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Map<String, Object> properties = baseElement.toMap(false);
@@ -85,6 +98,46 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
   public void remove() {
     this.graph.tx().readWrite();
     this.graph.deleteElement(this);
+    removed = true;
+  }
+
+  /**
+   * Whether this element was removed, the way TinkerGraph answers it: reads of a removed element find no properties, no edges and no
+   * adjacent vertices, and writes to it are refused (issue #10196). Only an element removed through THIS instance is known: the flag
+   * costs a field read, where asking the transaction would cost a lookup per property read. The flag is confirmed against the
+   * database when set, so an element whose delete was rolled back is usable again; a lightweight edge has no record to look for.
+   */
+  protected boolean isRemoved() {
+    if (!removed)
+      return false;
+    final RID rid = baseElement.getIdentity();
+    if (rid == null || baseElement instanceof LightEdge || !graph.getDatabase().existsRecord(rid))
+      return true;
+    removed = false;
+    return false;
+  }
+
+  /**
+   * Refuses a write to a removed element with the exception TinkerGraph raises for it. A write also asks the transaction, which
+   * knows of the elements deleted through another instance - the edges a vertex delete took with it - and costs one probe of its
+   * deleted set next to the record write it guards.
+   */
+  protected void checkNotRemoved() {
+    if (isRemoved() || isDeletedInTransaction())
+      throw elementAlreadyRemoved(this instanceof Vertex ? Vertex.class : Edge.class, id());
+  }
+
+  /** The refusal TinkerGraph raises, in its words: TinkerPop's core no longer provides a factory for it. */
+  private static IllegalStateException elementAlreadyRemoved(final Class<? extends Element> type, final Object id) {
+    return new IllegalStateException(type.getSimpleName() + " with id " + id + " was removed.");
+  }
+
+  private boolean isDeletedInTransaction() {
+    final RID rid = baseElement.getIdentity();
+    if (rid == null || !(graph.getDatabase() instanceof DatabaseInternal database))
+      return false;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isDeletedInTransaction(rid);
   }
 
   @Override

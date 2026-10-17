@@ -19,6 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.InsertBody;
@@ -27,9 +30,13 @@ import com.arcadedb.query.sql.parser.InsertStatement;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.UpdateItem;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Created by luigidellaquila on 08/08/16.
@@ -229,9 +236,87 @@ public class InsertExecutionPlanner {
       effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
 
+    // #10192 (Halloween problem): a SELECT that can read a bucket the statement writes to would meet the rows it inserts -
+    // a scan per OR branch copies a row twice, an index range scan never ends - so it is drained before the first insert
+    if (readsAny(subPlan, targetBucketIds(effectiveTargetType, context)))
+      result.chain(new MaterializeRowsStep(context));
+
     if (effectiveTargetType != null)
       result.chain(new CopyDocumentStep(context, effectiveTargetType.getStringValue()));
 
     result.chain(new RemoveEdgePointersStep(context));
+  }
+
+  /**
+   * @return the buckets the statement can write to: the target bucket when one is named, otherwise every bucket of the target
+   * type (its own, not its sub-types': a record inserted into a type is never stored in a sub-type's bucket), or null when
+   * they cannot be told, which is read as "any"
+   */
+  private Set<Integer> targetBucketIds(final Identifier effectiveTargetType, final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
+    final Set<Integer> bucketIds = new HashSet<>();
+    if (targetBucket != null) {
+      final String name = resolveBucketName(targetBucket, context);
+      final com.arcadedb.engine.Bucket bucket = name != null ?
+          schema.getBucketByNameIfExists(name) :
+          targetBucket.getBucketNumber() != null ? schema.getBucketByIdIfExists(targetBucket.getBucketNumber()) : null;
+      if (bucket == null)
+        return null;
+      bucketIds.add(bucket.getFileId());
+      return bucketIds;
+    }
+    if (effectiveTargetType == null)
+      return null;
+    final DocumentType type = schema.getTypeOrNull(effectiveTargetType.getStringValue());
+    if (type == null)
+      return null;
+    for (final com.arcadedb.engine.Bucket bucket : type.getBuckets(false))
+      bucketIds.add(bucket.getFileId());
+    return bucketIds;
+  }
+
+  /**
+   * Whether the plan, its sub-steps or its sub-plans read one of the buckets: a bucket scan (a type scan is one per bucket), an
+   * index lookup or range (by the buckets the index covers), and conservatively every source whose buckets cannot be told - an
+   * indexed function (full-text, geospatial, vector), the lightweight edges of a type and a correlated LET subquery, whose plan
+   * is only built row by row.
+   */
+  private static boolean readsAny(final ExecutionPlan plan, final Set<Integer> bucketIds) {
+    for (final ExecutionStep step : plan.getSteps())
+      if (readsAny(step, bucketIds))
+        return true;
+    return false;
+  }
+
+  private static boolean readsAny(final ExecutionStep step, final Set<Integer> bucketIds) {
+    if (step instanceof final FetchFromClusterExecutionStep bucketStep)
+      return bucketIds == null || bucketIds.contains(bucketStep.getBucketId());
+    if (step instanceof final FetchFromIndexStep indexStep)
+      return indexReadsAny(indexStep.index, bucketIds);
+    if (step instanceof FetchFromIndexedFunctionStep || step instanceof FetchFromLightweightEdgeTypeStep || step instanceof LetQueryStep)
+      return true;
+
+    for (final ExecutionStep subStep : step.getSubSteps())
+      if (readsAny(subStep, bucketIds))
+        return true;
+    if (step instanceof final ExecutionStepInternal internal)
+      for (final ExecutionPlan subPlan : internal.getSubExecutionPlans())
+        if (readsAny(subPlan, bucketIds))
+          return true;
+    return false;
+  }
+
+  private static boolean indexReadsAny(final Index index, final Set<Integer> bucketIds) {
+    if (bucketIds == null)
+      return true;
+    if (index instanceof final TypeIndex typeIndex) {
+      for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+        if (bucketIds.contains(bucketIndex.getAssociatedBucketId()))
+          return true;
+      return false;
+    }
+    final int bucketId = index.getAssociatedBucketId();
+    // AN INDEX THAT NAMES NO BUCKET COULD COVER ANY OF THEM
+    return bucketId < 0 || bucketIds.contains(bucketId);
   }
 }
