@@ -238,6 +238,19 @@ class Issue10186SqlNullGapsTest extends TestHelper {
       assertThat(r.<String>getProperty("text")).isEqualTo("xy");
     }
 
+    // a NULL increment of an absent field leaves it absent, and rewrites nothing
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "UPDATE T SET never += :x, never2 -= :x WHERE name = 'counter'", params)) {
+        assertThat(rs.next().<Long>getProperty("count")).isEqualTo(1L);
+      }
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT FROM T WHERE name = 'counter'")) {
+      final Result r = rs.next();
+      assertThat(r.hasProperty("never")).isFalse();
+      assertThat(r.hasProperty("never2")).isFalse();
+      assertThat(r.getRecord().get().asDocument().has("never")).isFalse();
+    }
+
     // a list starts from nothing too, and subtracting from a missing field has nothing to subtract from
     database.transaction(() -> database.command("sql", "UPDATE T SET tags += ['a'], gone -= 'a', gone2 -= 5 WHERE name = 'counter'"));
     database.transaction(() -> database.command("sql", "UPDATE T SET tags += ['b'], tags -= 'a' WHERE name = 'counter'"));

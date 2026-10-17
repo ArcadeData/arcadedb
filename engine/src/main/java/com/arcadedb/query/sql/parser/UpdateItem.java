@@ -150,10 +150,12 @@ public class UpdateItem extends SimpleNode {
         doc.setProperty(propName, newValue);
       break;
     case OPERATOR_MINUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.MINUS));
-      break;
     case OPERATOR_PLUSASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.PLUS));
+      // A NULL increment is nothing to add: the field is left as it is, absent included, and the record is not rewritten
+      if (MathExpression.extractScalarFromResultSet(rightValue) == null)
+        break;
+      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue,
+          operator == OPERATOR_PLUSASSIGN ? MathExpression.Operator.PLUS : MathExpression.Operator.MINUS));
       break;
     case OPERATOR_SLASHASSIGN:
       doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH));
@@ -233,9 +235,9 @@ public class UpdateItem extends SimpleNode {
    * sub-query or a non-deterministic call on it runs once per record, not twice.
    * <p>
    * {@code +=} and {@code -=} increment a counter, so a NULL on either side counts as nothing: a missing or null field starts
-   * from it ({@code SET n += 1} sets 1, {@code SET n -= 1} sets -1) and a NULL increment leaves the field as it is
-   * ({@code SET n += :unset} does not wipe {@code n}), while {@code n + 1} with a NULL {@code n} is NULL in an expression
-   * (#10186). {@code *=} and {@code /=} follow the expression: a NULL on either side gives NULL.
+   * from it ({@code SET n += 1} sets 1, {@code SET n -= 1} sets -1) and a NULL increment never gets here, {@link #applyOperation}
+   * leaves the field as it is ({@code SET n += :unset} does not wipe {@code n}), while {@code n + 1} with a NULL {@code n} is
+   * NULL in an expression (#10186). {@code *=} and {@code /=} follow the expression: a NULL on either side gives NULL.
    */
   private Object calculateNewValue(final ResultInternal doc, final CommandContext context, final Object rightValue,
       final MathExpression.Operator explicitOperator) {
@@ -245,15 +247,14 @@ public class UpdateItem extends SimpleNode {
 
     final Object current = MathExpression.extractScalarFromResultSet(leftEx.execute(doc, context));
     final Object operand = MathExpression.extractScalarFromResultSet(rightValue);
-    if (explicitOperator == MathExpression.Operator.PLUS || explicitOperator == MathExpression.Operator.MINUS) {
-      if (operand == null)
-        return current;
+    if (current == null) {
       // nothing plus anything is that thing (a number, a string, a list); nothing minus a number is its negative, and
       // nothing minus a string or a list has nothing to remove from, as `null - x` answers in MathExpression
-      if (current == null)
-        return explicitOperator == MathExpression.Operator.PLUS ? operand :
-            // (Object) picks the Object overload, which promotes 0 to the operand's numeric type
-            operand instanceof Number ? explicitOperator.apply((Object) 0, operand) : null;
+      if (explicitOperator == MathExpression.Operator.PLUS)
+        return operand;
+      if (explicitOperator == MathExpression.Operator.MINUS)
+        // (Object) picks the Object overload, which promotes 0 to the operand's numeric type
+        return operand instanceof Number ? explicitOperator.apply((Object) 0, operand) : null;
     }
     return explicitOperator.apply(current, operand);
   }
