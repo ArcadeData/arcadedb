@@ -342,7 +342,8 @@ public class DocumentIndexer {
     for (int i = 0; i < propertyNames.length; ++i)
       keyValues[i] = switch (expansions[i]) {
         case LIST_ITEM -> collectListItemValues(record, propertyNames[i]);
-        case MAP_KEY, MAP_VALUE -> new ArrayList<>(mapElements(record, propertyNames[i], expansions[i]));
+        // mapElements() answers a collection of its own, never the map's live view: no copy needed
+        case MAP_KEY, MAP_VALUE -> mapElements(record, propertyNames[i], expansions[i]);
         case NONE -> getPropertyValue(record, propertyNames[i]);
       };
     return keyValues;

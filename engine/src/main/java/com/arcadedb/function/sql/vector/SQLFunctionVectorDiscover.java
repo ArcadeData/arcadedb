@@ -241,31 +241,32 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
    * when the record is gone, the property is missing on disk too, the value cannot be coerced
    * to {@code float[]}, or the dimension does not match the expected width.
    */
-  private float[] readCandidateEmbedding(final BasicDatabase db, final RID rid, final Map<?, ?> row,
-      final String propertyName, final int expectedDim) {
+  /**
+   * A candidate's property: off the record the row carries, as the transaction sees it now (the row may hold the record as it
+   * was before a write of the same transaction, issue #10217; deleted since, null), else off the projected row, else off the
+   * record its RID loads. Only a row carrying just a RID pays the load (issue #10170).
+   */
+  private static Object readCandidateProperty(final BasicDatabase db, final RID rid, final Map<?, ?> row,
+      final String propertyName) {
     final Document held = heldRecord(row, rid);
-    Object raw;
     if (held != null) {
-      // A row that carries its record reads the property off it, as the transaction sees it now: the row may hold the record
-      // as it was before a write of the same transaction (issue #10217). Deleted since, the candidate is dropped
       final Document current = currentState(db, held);
       if (current == null)
         return null;
-      raw = current == held ? row.get(propertyName) : current.get(propertyName);
-      if (raw == null)
-        return null;
-    } else
-      raw = row.get(propertyName);
-    if (raw == null) {
-      // Fast path missed (the embedding is not in the projected row): only a row carrying just a RID falls back to loading the
-      // record (issue #10170).
-      final Document rec = candidateRecord(db, row, rid);
-      if (rec == null)
-        return null;
-      raw = rec.get(propertyName);
-      if (raw == null)
-        return null;
+      return current == held ? row.get(propertyName) : current.get(propertyName);
     }
+    final Object projected = row.get(propertyName);
+    if (projected != null)
+      return projected;
+    final Document loaded = candidateRecord(db, row, rid);
+    return loaded != null ? loaded.get(propertyName) : null;
+  }
+
+  private float[] readCandidateEmbedding(final BasicDatabase db, final RID rid, final Map<?, ?> row,
+      final String propertyName, final int expectedDim) {
+    final Object raw = readCandidateProperty(db, rid, row, propertyName);
+    if (raw == null)
+      return null;
     final float[] v;
     try {
       v = toFloatArray(raw);
