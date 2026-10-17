@@ -143,6 +143,14 @@ class Issue10200TemporalComparisonTest extends TestHelper {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("b");
       assertThat(rs.hasNext()).isFalse();
     }
+    // A java.time.LocalDateTime parameter is the same raw value a DATETIME read gives: it compares with a zoned datetime by
+    // instant too (a deliberate deviation from Neo4j, which answers null), where a localdatetime() of the query does not
+    try (final ResultSet rs = database.query("opencypher", "RETURN $p = datetime('2024-01-01T12:00Z') AS v, $p < datetime('2024-01-01T13:00Z') AS w",
+        Map.of("p", LocalDateTime.of(2024, 1, 1, 12, 0)))) {
+      final Result row = rs.next();
+      assertThat(row.<Boolean>getProperty("v")).isTrue();
+      assertThat(row.<Boolean>getProperty("w")).isTrue();
+    }
     // Against a local datetime of the query, a stored DATETIME is a local datetime like any other
     assertThat(names("MATCH (e:Event) WHERE e.at = localdatetime('2024-01-01T14:00') RETURN e.name AS name")).containsExactly("b");
     // A value derived from it is an ordinary local datetime

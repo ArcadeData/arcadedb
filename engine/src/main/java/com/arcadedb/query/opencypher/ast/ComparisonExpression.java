@@ -269,7 +269,8 @@ public class ComparisonExpression implements BooleanExpression {
         // exception is a DATETIME read from storage, which ArcadeDB keeps as an instant and reads back as a local datetime
         // in UTC: it compares with a zoned datetime by instant, so a filter on a stored DATETIME against a datetime()
         // literal or parameter keeps working. A raw LocalDateTime operand comes from storage or a driver, never from a
-        // localdatetime() of the query, and counts as stored.
+        // localdatetime() of the query, and counts as stored: a java.time.LocalDateTime PARAMETER therefore compares with a
+        // zoned datetime by instant (read as UTC) as well, a deliberate deviation from Neo4j, which answers null.
         final int cmp;
         if (leftTemporal instanceof CypherLocalDateTime local && rightTemporal instanceof CypherDateTime zoned) {
           if (!isStoredLocal(left, local))

@@ -22,9 +22,9 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -428,18 +428,13 @@ public class OrderByStep extends AbstractExecutionStep {
         return v1.toString().compareTo(v2.toString());
       }
 
+      /**
+       * The Cypher order of types, shared with min() and max() through {@link CypherFunctionHelper#cypherTypeRank(Object)} so
+       * the two cannot drift apart. A value Cypher has no type for sorts after every other one.
+       */
       private int typeRank(final Object v) {
-        if (v instanceof Map) return 0;
-        if (v instanceof Vertex) return 1;
-        if (v instanceof Edge) return 2;
-        if (v instanceof List) return 3;
-        if (v instanceof TraversalPath) return 4;
-        // The temporal types sit between PATH and STRING, as Neo4j orders them (issue #10200)
-        if (v instanceof CypherTemporalValue) return 5;
-        if (v instanceof String) return 6;
-        if (v instanceof Boolean) return 7;
-        if (v instanceof Number) return 8;
-        return 9; // other types
+        final int rank = CypherFunctionHelper.cypherTypeRank(v);
+        return rank == 4 && !(v instanceof TraversalPath) ? Integer.MAX_VALUE : rank;
       }
 
       @Override
