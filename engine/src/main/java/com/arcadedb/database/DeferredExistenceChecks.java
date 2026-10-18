@@ -455,12 +455,10 @@ public class DeferredExistenceChecks {
     // never completed would otherwise pay thousands of commits on its way out.
     //
     // joinCurrentTx is true because it has to be: inside an explicit transaction the provisional records are not
-    // committed yet, so a private transaction could not even see them. That makes it critical that nothing thrown
-    // by a delete escapes this block - LocalDatabase.transaction() rolls the current transaction back on any
-    // exception it does not recognise as retryable, and when it has joined the caller's transaction, "the current
-    // transaction" is a session-long explicit one holding work this statement knows nothing about. Discarding that
-    // to report a record we could not tidy up would be silent data loss well beyond the failure being reported, so
-    // each delete swallows and logs its own failure and the sweep continues.
+    // committed yet, so a private transaction could not even see them. Since #10135 a joined transaction() no longer
+    // rolls the caller's transaction back when its block throws, but a delete failure must still not escape: it
+    // would replace the validation error on its way out and stop the sweep halfway, so each delete swallows and logs
+    // its own failure and the sweep continues.
     final int[] removed = { 0 };
     database.transaction(() -> {
       removed[0] = 0;
