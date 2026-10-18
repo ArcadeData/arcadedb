@@ -266,6 +266,7 @@ public class WithStep extends AbstractExecutionStep {
         finished = true;
         if (seenResults != null) {
           seenResults.clear();
+          distinctKeys = null;
           distinctLimit.release();
         }
       }

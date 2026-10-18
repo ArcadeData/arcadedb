@@ -7877,7 +7877,7 @@ public class CypherExecutionPlan {
           // the operator intersects the undirected adjacency, so only an undirected hop is its pattern: a written
           // direction is a constraint it cannot check (#9387)
           if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
-              || !rel.hasTypes() || rel.getTypes().size() != 1 || rel.hasProperties() || rel.getDirection() != Direction.BOTH) {
+              || !rel.hasTypes() || rel.getTypes().size() != 1 || rel.hasProperties() || rel.hasWhereExpression() || rel.getDirection() != Direction.BOTH) {
             valid = false;
             break;
           }
@@ -8085,7 +8085,7 @@ public class CypherExecutionPlan {
       final RelationshipPattern rel = pathPattern.getRelationship(i);
       // the operator intersects the undirected adjacency, so only an undirected hop is its pattern (#9387)
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty()) || !rel.hasTypes()
-          || rel.getTypes().size() != 1 || rel.hasProperties() || rel.getDirection() != Direction.BOTH)
+          || rel.getTypes().size() != 1 || rel.hasProperties() || rel.hasWhereExpression() || rel.getDirection() != Direction.BOTH)
         return null;
       if (edgeType == null)
         edgeType = rel.getTypes().getFirst();

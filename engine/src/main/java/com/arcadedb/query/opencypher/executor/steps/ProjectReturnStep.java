@@ -166,6 +166,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
           if (seenResults != null) {
             seenResults.clear();
+            distinctKeys = null;
             distinctLimit.release();
           }
         }

@@ -203,6 +203,9 @@ class Issue10255SingleMatchTriangleCountTest extends TestHelper {
         // two properties, or something else than a comparison
         TRIANGLE + " WHERE a.id < b.id AND b.name < c.name",
         TRIANGLE + " WHERE a.id < b.id OR b.id < c.id",
+        // a predicate written inside a hop, which the operator could not apply
+        "MATCH (a:Person)-[:KNOWS WHERE a.id > 1]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) WHERE a.id < b.id AND b.id < c.id",
+        "MATCH (a:Person)-[:KNOWS WHERE a.id > 1]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a)",
         // a label on only some positions, or a directed hop
         "MATCH (a:Person)-[:KNOWS]-(b)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) WHERE a.id < b.id AND b.id < c.id",
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) WHERE a.id < b.id AND b.id < c.id" }) {
