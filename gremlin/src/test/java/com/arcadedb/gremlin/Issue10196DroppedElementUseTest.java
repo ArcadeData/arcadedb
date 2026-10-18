@@ -22,6 +22,7 @@ import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
+import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
@@ -231,6 +232,43 @@ class Issue10196DroppedElementUseTest {
     graph.tx().commit();
     assertThat(graph.traversal().V().has("uid", 1).values("k").toList()).containsExactly(7);
     assertThat(state()).isEqualTo("vertices [1, 2], edges [e 1->2, r 1->2]");
+  }
+
+  @Test
+  void anotherInstanceOfADroppedVertexReadsNothing() {
+    seed(true);
+    final GraphTraversalSource g = graph.traversal();
+    final Vertex held = g.V().has("uid", 1).next();
+
+    g.V().has("uid", 1).drop().iterate();
+    // NOT THE INSTANCE THAT WAS DROPPED: THE TRANSACTION KNOWS
+    assertThat(held.keys()).isEmpty();
+    assertThat(held.properties()).toIterable().isEmpty();
+    assertThat(held.edges(Direction.OUT)).toIterable().isEmpty();
+    graph.tx().rollback();
+    assertThat((Integer) held.value("uid")).isEqualTo(1);
+  }
+
+  @Test
+  void aCommittedDropStaysDroppedWhenItsRidIsReused() {
+    seed(false);
+    final Vertex v1 = graph.traversal().V().has("uid", 1).next();
+    final Object droppedId = v1.id();
+    v1.remove();
+    graph.tx().commit();
+
+    // A NEW VERTEX MAY TAKE THE FREED SLOT: THE OLD INSTANCE MUST NOT COME BACK AS IT
+    Vertex reused = null;
+    for (int i = 0; i < 20 && reused == null; i++) {
+      final Vertex created = graph.addVertex(T.label, "n", "uid", 100 + i);
+      graph.tx().commit();
+      if (created.id().equals(droppedId))
+        reused = created;
+    }
+    assertThat(v1.keys()).isEmpty();
+    assertThatThrownBy(() -> v1.property("k", 1)).isInstanceOf(IllegalStateException.class).hasMessageContaining("was removed");
+    if (reused != null)
+      assertThat(graph.traversal().V(droppedId).values("k").toList()).isEmpty();
   }
 
   @Test

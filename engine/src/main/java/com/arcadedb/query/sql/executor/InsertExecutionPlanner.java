@@ -305,9 +305,12 @@ public class InsertExecutionPlanner {
   private static boolean readsAny(final ExecutionStep step, final Set<Integer> bucketIds) {
     if (step instanceof final FetchFromClusterExecutionStep bucketStep)
       return bucketIds == null || bucketIds.contains(bucketStep.getBucketId());
+    if (step instanceof final ScanWithFilterStep bucketStep)
+      return bucketIds == null || bucketIds.contains(bucketStep.getBucketId());
     if (step instanceof final FetchFromIndexStep indexStep)
       return indexReadsAny(indexStep.index, bucketIds);
-    if (step instanceof FetchFromIndexedFunctionStep || step instanceof FetchFromLightweightEdgeTypeStep || step instanceof LetQueryStep)
+    if (step instanceof FetchFromIndexedFunctionStep || step instanceof FetchFromLightweightEdgeTypeStep || step instanceof LetQueryStep
+        || step instanceof FetchFromTimeSeriesStep)
       return true;
 
     for (final ExecutionStep subStep : step.getSubSteps())

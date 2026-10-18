@@ -163,6 +163,41 @@ class Issue10214ViewJoinedEdgeTypeTest {
     return gate;
   }
 
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "OFF", "SYNCHRONOUS" })
+  void aViewRestoredFromDiskStillHoldsTheSubTypesItsScanCovered(final GraphAnalyticalView.UpdateMode mode) {
+    // K IS EMPTY WHEN SCANNED, SO THE CSR HAS NO SLICE FOR IT: ONLY THE PERSISTED SCAN COVERAGE SAYS IT WAS READ
+    database.command("sql", "CREATE EDGE TYPE K EXTENDS E").close();
+    createView(mode);
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(restored.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr()).isTrue();
+    assertThat(restored.isReady()).as("K was scanned: no rebuild").isTrue();
+    assertServedAndRight(restored, 4);
+    assertThat(restored.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
+  void aTypeWrittenWhileNotCoveredAfterTheScanIsNotClaimedAfterAReopen(final GraphAnalyticalView.UpdateMode mode) {
+    database.getSchema().createEdgeType("G");
+    createView(mode);
+    // WRITTEN AFTER THE SCAN, WHILE G IS NOT COVERED: THE COMMIT VOIDS THE PERSISTED CSR, SO THE REOPEN SCANS AND MEETS THEM
+    addEdges("G", 2);
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(restored.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr()).isFalse();
+
+    final CountDownLatch gate = holdRebuilds(restored);
+    database.command("sql", "ALTER TYPE G SUPERTYPE +E").close();
+    assertNotServedUntilRebuilt(restored, mode, gate, 6);
+  }
+
   private void assertNotServedUntilRebuilt(final GraphAnalyticalView view, final GraphAnalyticalView.UpdateMode mode,
       final CountDownLatch gate, final long expectedEdges) {
     try {

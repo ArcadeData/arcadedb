@@ -53,7 +53,8 @@ class Issue10196EdgeOnDeletedVertexTest extends TestHelper {
   }
 
   private long edges() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM E")) {
+    // count(), NOT count(*): THE CACHED COUNTER IS NOT GROUND TRUTH
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM E")) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

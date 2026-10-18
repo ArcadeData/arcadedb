@@ -3328,7 +3328,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // covers - the header must match what was actually scanned, or a later reopen could restore a snapshot that
       // silently under-covers what the view claims to (#6583 review).
       GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
-          snap.edgePropertyFilter, snap);
+          snap.edgePropertyFilter, snap, snap.scannedEdgeTypes != null ? snap.scannedEdgeTypes.toArray(new String[0]) : null,
+          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null);
     } catch (final OutOfMemoryError | Exception e) {
       // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
       // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
@@ -3601,7 +3602,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Snapshot restored;
     try {
       restored = GraphAnalyticalViewCSRPersistence.load(database, name, vertexTypes, edgeTypes, propertyFilter,
-          edgePropertyFilter, currentTxId);
+          edgePropertyFilter, currentTxId, uncoveredEdgeWrites.get());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to load persisted CSR from disk", e, name);
       return false;

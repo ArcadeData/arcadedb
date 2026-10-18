@@ -22,9 +22,14 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -81,6 +86,11 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
     createType("T", "");
     database.transaction(() -> database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close());
 
+    // A WHERE WITH NO INDEX IS PUSHED INTO THE SCAN OF EACH BUCKET: THAT SCAN READS THE TARGET TOO
+    try (final ResultSet rs = database.command("sql", "EXPLAIN INSERT INTO T FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3")) {
+      final String plan = rs.next().getProperty("executionPlanAsString");
+      assertThat(plan).contains("MATERIALIZE");
+    }
     assertThat(insert("INSERT INTO T FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3")).isEqualTo(1);
     assertThat(ids("T")).containsExactly(1L, 101L);
   }
@@ -179,6 +189,30 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
 
     assertThat(insert("INSERT INTO bucket:" + bucket + " FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3 OR b = 4")).isEqualTo(1);
     assertThat(ids("T")).containsExactly(1L, 101L);
+  }
+
+  /**
+   * InsertExecutionPlanner.readsAny recognizes the steps that read records by class. A new source step it does not know would let
+   * the SELECT read its own inserts again, silently: this fails first, so whoever adds one decides where it belongs.
+   */
+  @Test
+  void everySourceStepIsKnownToTheSelfReadCheck() throws IOException {
+    // READ THE TARGET'S BUCKETS: RECOGNIZED BY readsAny, OR (THE COMPOSITES) WALKED THROUGH THEIR SUB-STEPS
+    final Set<String> handled = Set.of("FetchFromClusterExecutionStep", "ScanWithFilterStep", "FetchFromIndexStep",
+        "FetchFromIndexValuesStep", "FetchFromIndexedFunctionStep", "FetchFromLightweightEdgeTypeStep", "FetchFromTimeSeriesStep",
+        "FetchFromTypeExecutionStep", "FetchFromClustersExecutionStep", "FetchFromTypeWithFilterStep");
+    // CANNOT MEET A ROW INSERTED BY THE STATEMENT: EXPLICIT RIDS, VARIABLES AND RESULT SETS COMPUTED BEFORE, THE SCHEMA, AND
+    // THE EDGES OF A VERTEX, WHICH AN INSERT DOES NOT ADD
+    final Set<String> unaffected = Set.of("FetchFromRidsStep", "FetchFromVariableStep", "FetchFromResultsetStep",
+        "FetchEdgesFromVertexStep");
+
+    final List<String> unknown = new ArrayList<>();
+    try (final Stream<Path> files = Files.list(Path.of("src/main/java/com/arcadedb/query/sql/executor"))) {
+      files.map(f -> f.getFileName().toString()).filter(n -> (n.startsWith("Fetch") || n.startsWith("Scan")) && n.endsWith("Step.java"))
+          .map(n -> n.substring(0, n.length() - ".java".length()))
+          .filter(n -> !handled.contains(n) && !unaffected.contains(n) && !n.startsWith("FetchFromSchema")).forEach(unknown::add);
+    }
+    assertThat(unknown).as("source steps InsertExecutionPlanner.readsAny does not know").isEmpty();
   }
 
   @Test

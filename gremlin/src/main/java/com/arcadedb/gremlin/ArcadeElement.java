@@ -43,13 +43,17 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   protected       T           baseElement;
   protected final ArcadeGraph graph;
+  private static final byte LIVE              = 0;
+  private static final byte REMOVED_IN_TX     = 1;
+  private static final byte REMOVED_COMMITTED = 2;
+
   /**
    * Set by {@link #remove()} (issue #10196): a traversal keeps the element it dropped - {@code sideEffect(drop())} passes it on -
    * and its in-memory record still holds the properties and the edge lists it had, so without this every later step read and
-   * wrote a record that no longer exists. Confirmed against the database by {@link #isRemoved()}, because a rollback brings the
-   * element back.
+   * wrote a record that no longer exists. A delete still in its transaction can be rolled back, which brings the element back;
+   * one committed never does, even when a later record reuses its RID.
    */
-  private         boolean     removed;
+  private volatile byte       removal = LIVE;
 
   protected ArcadeElement(final ArcadeGraph graph, final T baseElement, final Object... keyValues) {
     this.baseElement = baseElement;
@@ -98,32 +102,46 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
   public void remove() {
     this.graph.tx().readWrite();
     this.graph.deleteElement(this);
-    removed = true;
+    removal = REMOVED_IN_TX;
+    // A ROLLBACK DISCARDS THE CALLBACK, A COMMIT MAKES THE REMOVAL FINAL
+    if (graph.getDatabase() instanceof DatabaseInternal database) {
+      final TransactionContext tx = database.getTransactionIfExists();
+      if (tx != null)
+        tx.addAfterCommitCallback(() -> removal = REMOVED_COMMITTED);
+    }
   }
 
   /**
    * Whether this element was removed, the way TinkerGraph answers it: reads of a removed element find no properties, no edges and no
-   * adjacent vertices, and writes to it are refused (issue #10196). Only an element removed through THIS instance is known: the flag
-   * costs a field read, where asking the transaction would cost a lookup per property read. The flag is confirmed against the
-   * database when set, so an element whose delete was rolled back is usable again; a lightweight edge has no record to look for.
+   * adjacent vertices, and writes to it are refused (issue #10196). An element removed through another instance of it - the edges a
+   * vertex delete took with it, a vertex looked up twice - is known from the transaction's deleted set, one hash probe. An element
+   * removed through this instance is removed for good once the delete committed; while it is in flight, a delete the transaction no
+   * longer holds was rolled back, and the element is usable again. A lightweight edge has no record the transaction tracks: one
+   * removed through this instance stays removed.
    */
   protected boolean isRemoved() {
-    if (!removed)
-      return false;
-    final RID rid = baseElement.getIdentity();
-    if (rid == null || baseElement instanceof LightEdge || !graph.getDatabase().existsRecord(rid))
+    final byte state = removal;
+    if (state == REMOVED_COMMITTED)
       return true;
-    removed = false;
+    if (state == LIVE)
+      return isDeletedInTransaction();
+    final RID rid = baseElement.getIdentity();
+    if (rid == null || baseElement instanceof LightEdge || isDeletedInTransaction())
+      return true;
+    if (!(graph.getDatabase() instanceof DatabaseInternal)) {
+      // A REMOTE DATABASE HAS NO LOCAL TRANSACTION TO ASK: THE RECORD IS
+      if (!graph.getDatabase().existsRecord(rid))
+        return true;
+    }
+    removal = LIVE;
     return false;
   }
 
   /**
-   * Refuses a write to a removed element with the exception TinkerGraph raises for it. A write also asks the transaction, which
-   * knows of the elements deleted through another instance - the edges a vertex delete took with it - and costs one probe of its
-   * deleted set next to the record write it guards.
+   * Refuses a write to a removed element with the exception TinkerGraph raises for it.
    */
   protected void checkNotRemoved() {
-    if (isRemoved() || isDeletedInTransaction())
+    if (isRemoved())
       throw elementAlreadyRemoved(this instanceof Vertex ? Vertex.class : Edge.class, id());
   }
 

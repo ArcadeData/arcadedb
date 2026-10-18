@@ -3645,7 +3645,7 @@ class GraphAnalyticalViewTest extends TestHelper {
         .doesNotContain(secretName);
 
     final GraphAnalyticalView.Snapshot restored = GraphAnalyticalViewCSRPersistence.load(database, "csr-encrypted-test",
-        new String[] { "Person" }, null, new String[] { "name" }, null, asOfTransactionId);
+        new String[] { "Person" }, null, new String[] { "name" }, null, asOfTransactionId, 0L);
     assertThat(restored).as("the persisted CSR must decrypt and parse back correctly").isNotNull();
     assertThat(restored.nodeMapping.size()).isEqualTo(1);
     assertThat(restored.bucketColumns[0].getValue(0, "name")).isEqualTo(secretName);
