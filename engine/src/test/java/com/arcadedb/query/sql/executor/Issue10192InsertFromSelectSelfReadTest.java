@@ -171,6 +171,23 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
   }
 
   @Test
+  void everySpellingOfASubQueryOnTheTargetTakesTheBarrier() {
+    createType("A", "");
+    createType("T", "");
+    // THE SELECT ITSELF READS A ONLY: WHAT READS T IS A SUBQUERY, WRITTEN IN EACH POSITION AND SPELLING THE PARSER ACCEPTS
+    final String[] selects = {//
+        "SELECT id + 100 AS id, (\n   select count(*) AS c FROM T)[0].c AS a FROM A",//
+        "SELECT id + 100 AS id, coalesce((SELECT max(id) AS m FROM T)[0].m, 0) AS a FROM A",//
+        "SELECT id + 100 AS id FROM A WHERE id IN (SELECT id FROM T)",//
+        "SELECT id + 100 AS id FROM A WHERE id NOT IN ( SELECT id FROM T WHERE a = 1 )",//
+        "SELECT id + 100 AS id, $t.size() AS a FROM A LET $t = (SELECT FROM T)" };
+    for (final String select : selects)
+      try (final ResultSet rs = database.command("sql", "EXPLAIN INSERT INTO T FROM " + select)) {
+        assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(select).contains("MATERIALIZE");
+      }
+  }
+
+  @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void orderByAndLimitSeeTheStartingState() {
     createType("T", "");

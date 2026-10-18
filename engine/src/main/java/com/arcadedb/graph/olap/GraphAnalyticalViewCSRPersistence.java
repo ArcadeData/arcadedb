@@ -438,7 +438,7 @@ class GraphAnalyticalViewCSRPersistence {
         return new GraphAnalyticalView.Snapshot(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwd,
             null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
             vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L,
-            scannedEdgeTypes != null ? Set.of(scannedEdgeTypes) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered);
+            scannedEdgeTypes != null ? Set.copyOf(Arrays.asList(scannedEdgeTypes)) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered);
       }
     } catch (final IOException | OutOfMemoryError | RuntimeException e) {
       // IOException here also catches the "encrypted but no DataEncryption configured" case thrown above:

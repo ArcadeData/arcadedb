@@ -333,13 +333,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
-  // Per edge type the view does not materialize, the value of uncoveredEdgeWrites its latest edge written moved it to (issue
-  // #10214): a type attached to a listed one since a scan holds edges that scan did not read when it was written past the
-  // scan's mark. One entry per such edge type ever written, never removed
-  private final ConcurrentMap<String, AtomicLong> lastUncoveredEdgeWrite = new ConcurrentHashMap<>();
+  // Per edge type the view does not materialize, what its writes left (issue #10214). One entry per such edge type ever
+  // written, never removed: bounded by the schema
+  private final ConcurrentMap<String, UncoveredEdgeType> uncoveredEdgeTypes = new ConcurrentHashMap<>();
   // Distinct per view instance, as two views can register the commit callback of the same transaction
-  private final String                            uncoveredCommitKeyPrefix =
+  private final String                                   uncoveredCommitKeyPrefix =
       "gav-uncovered-" + Integer.toHexString(System.identityHashCode(this)) + "-";
+
+  /**
+   * An edge type the view does not materialize that was written: the value of uncoveredEdgeWrites its latest edge moved it to - a
+   * type attached to a listed one since a scan holds edges that scan did not read when it was written past the scan's mark - and,
+   * built once, the key and the callback its commits register, so an edge written allocates nothing.
+   */
+  private final class UncoveredEdgeType {
+    private final AtomicLong lastWrite = new AtomicLong(-1L);
+    private final String     commitKey;
+    private final Runnable   onCommit;
+
+    private UncoveredEdgeType(final String name) {
+      this.commitKey = uncoveredCommitKeyPrefix + name;
+      this.onCommit = () -> noteUncoveredEdgeWrite(this);
+    }
+  }
   // Whether the base CSR holds every edge type the filter covers without listing it - a sub-type of a listed edge type - for
   // one base CSR and one schema version (issue #10214)
   private record JoinedEdgeCoverage(Map<String, CSRAdjacencyIndex> scannedWith, long schemaVersion, boolean allHeld) {
@@ -1358,20 +1373,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * {@link #coversEveryEdge()} and, for the type joining the filter later, {@link #holdsJoinedEdgeTypes()} (issue #10214).
    */
   void onUncoveredEdgeWritten(final String edgeTypeName) {
-    noteUncoveredEdgeWrite(edgeTypeName);
+    if (edgeTypeName == null) {
+      uncoveredEdgeWrites.incrementAndGet();
+      return;
+    }
+    UncoveredEdgeType type = uncoveredEdgeTypes.get(edgeTypeName);
+    if (type == null)
+      type = uncoveredEdgeTypes.computeIfAbsent(edgeTypeName, UncoveredEdgeType::new);
+    noteUncoveredEdgeWrite(type);
     // TOLD AT THE CREATION, BUT A SCAN CANNOT READ THE EDGE BEFORE ITS COMMIT: ONE CREATED BEFORE A SCAN SAMPLED ITS MARK AND
     // COMMITTED AFTER IS NOT IN THAT SCAN, SO THE COMMIT MOVES THE COUNTER AGAIN, PAST THE MARK. ONCE PER TYPE AND TRANSACTION
     if (database instanceof DatabaseInternal internal) {
       final TransactionContext tx = internal.getTransactionIfExists();
       if (tx != null && tx.isActive())
-        tx.addAfterCommitCallbackIfAbsent(uncoveredCommitKeyPrefix + edgeTypeName, () -> noteUncoveredEdgeWrite(edgeTypeName));
+        tx.addAfterCommitCallbackIfAbsent(type.commitKey, type.onCommit);
     }
   }
 
-  private void noteUncoveredEdgeWrite(final String edgeTypeName) {
-    final long written = uncoveredEdgeWrites.incrementAndGet();
-    if (edgeTypeName != null)
-      lastUncoveredEdgeWrite.computeIfAbsent(edgeTypeName, k -> new AtomicLong(-1L)).accumulateAndGet(written, Math::max);
+  private void noteUncoveredEdgeWrite(final UncoveredEdgeType type) {
+    type.lastWrite.accumulateAndGet(uncoveredEdgeWrites.incrementAndGet(), Math::max);
   }
 
   /**
@@ -1393,6 +1413,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap == null)
       return true;
     final long version = database.getSchema().getEmbedded().getVersion();
+    // A plain volatile publish: two threads missing the cache at once each compute the same verdict, which is harmless
     final JoinedEdgeCoverage cached = joinedEdgeCoverage;
     if (cached != null && cached.scannedWith() == snap.csrPerType && cached.schemaVersion() == version)
       return cached.allHeld();
@@ -1424,8 +1445,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     for (final int bucketId : type.getBucketIds(false))
       if (snap.uncoveredEdgeBuckets.contains(bucketId))
         return false;
-    final AtomicLong lastWrite = lastUncoveredEdgeWrite.get(name);
-    return lastWrite == null || lastWrite.get() <= snap.uncoveredWritesMark;
+    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
+    return written == null || written.lastWrite.get() <= snap.uncoveredWritesMark;
   }
 
   /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
