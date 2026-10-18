@@ -37,7 +37,6 @@ import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
-import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.Methods;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -552,11 +551,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler paths) {
+  public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
     // Every route is declared with its method, so any other method is answered 405 before a handler runs: these
     // operations change the cluster, and GET is the method link prefetchers, crawlers and a browser replaying the
     // operator's cached credentials send (issue #10157).
-    final PluginRoutes routes = new PluginRoutes(paths);
     // Always register the endpoint - it returns 503 when Raft is not yet started.
     // Note: registerAPI is called before configure()/startService() for AFTER_HTTP_ON plugins,
     // so isRaftEnabled() cannot be checked here.

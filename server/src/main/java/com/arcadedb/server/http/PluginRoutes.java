@@ -34,16 +34,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The method-keyed registrar a {@link com.arcadedb.server.ServerPlugin} declares its HTTP routes through (issue #10157).
+ * The method-keyed registrar a {@link com.arcadedb.server.ServerPlugin} declares its HTTP routes through (issue #10157),
+ * handed to it by {@code ServerPlugin.registerAPI(HttpServer, PluginRoutes)} (issue #10296).
  * <p>
- * {@code registerAPI} hands a plugin the server's outer {@link PathHandler}, which matches on the path alone: a handler
- * added with {@code addExactPath}/{@code addPrefixPath} answers EVERY method, so a route declared as {@code POST} was
- * also served on {@code GET}, {@code PUT}, {@code DELETE} and {@code HEAD} - and a {@code GET} is what link prefetchers,
- * crawlers and a browser replaying cached Basic credentials send. The core routes never had the problem, because
- * {@code HttpServer} registers them on a method-keyed {@code RoutingHandler}. This class gives plugin routes the same
- * guarantee: a route is declared with its method ({@code routes.post("/api/v1/cluster/stepdown", handler)}), and any
- * other method is answered {@code 405 Method Not Allowed} with an {@code Allow} header naming the declared ones, before
- * the plugin's handler runs.
+ * The deprecated {@code registerAPI(HttpServer, PathHandler)} hands a plugin the server's outer {@link PathHandler},
+ * which matches on the path alone: a handler added with {@code addExactPath}/{@code addPrefixPath} answers EVERY method,
+ * so a route declared as {@code POST} was also served on {@code GET}, {@code PUT}, {@code DELETE} and {@code HEAD} - and
+ * a {@code GET} is what link prefetchers, crawlers and a browser replaying cached Basic credentials send. The core routes
+ * never had the problem, because {@code HttpServer} registers them on a method-keyed {@code RoutingHandler}. This class
+ * gives plugin routes the same guarantee: a route is declared with its method
+ * ({@code routes.post("/api/v1/cluster/stepdown", handler)}), and any other method is answered
+ * {@code 405 Method Not Allowed} with an {@code Allow} header naming the declared ones, before the plugin's handler runs.
  * <p>
  * Each path is registered on the underlying {@link PathHandler} once, as a {@link MethodRestrictedHandler} holding one
  * handler per declared method, so declaring a second method on a path already declared adds to the same entry. Exact and
