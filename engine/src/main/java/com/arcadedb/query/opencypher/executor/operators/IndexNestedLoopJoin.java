@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -39,14 +40,13 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.RidHashSet;
 
 import java.math.BigDecimal;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
-import java.util.Set;
 
 /**
  * Joins a node pattern onto the rows of the rest of the pattern by seeking an index for each row: {@code MATCH (a:T),
@@ -130,7 +130,9 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       private IndexCursor                    cursor;
       private Iterator<? extends Identifiable> scan;
       // The vertices the prefix seek of the current left row served, when the statement writes a key of the index
-      private Set<RID>                       servedForLeftRow;
+      private RidHashSet                     servedForLeftRow;
+      // ... charged to the heap budget all queries share (issue #9792), and given back at the next left row
+      private OperationHeapLimit             servedHeapLimit;
       private Result                         pending;
 
       @Override
@@ -222,8 +224,11 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
             continue;
 
           // An entry the statement moved further along the prefix it walks: the vertex was served already (issue #10251)
-          if (cursor != null && servedForLeftRow != null && !wholeKey && !servedForLeftRow.add(identifiable.getIdentity()))
-            continue;
+          if (cursor != null && servedForLeftRow != null && !wholeKey) {
+            if (!servedForLeftRow.add(identifiable.getIdentity()))
+              continue;
+            servedHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
+          }
 
           final ResultInternal row = new ResultInternal();
           row.setProperty(variable, identifiable.asVertex());
@@ -269,10 +274,13 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
           return ConsistentKeyLookup.get(context.getDatabase(), index, key);
         if (statementWritesKey)
           // Each left row walks its prefix afresh, so what it has served is forgotten with the row before
-          if (servedForLeftRow == null)
-            servedForLeftRow = new HashSet<>();
-          else
+          if (servedForLeftRow == null) {
+            servedForLeftRow = new RidHashSet();
+            servedHeapLimit = OperationHeapLimit.of(context, "record addresses", "IndexNestedLoopJoin");
+          } else {
             servedForLeftRow.clear();
+            servedHeapLimit.release();
+          }
         return index.range(true, key, true, key, true);
       }
 
@@ -289,6 +297,11 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         finished = true;
         currentLeft = null;
         closeRight();
+        servedForLeftRow = null;
+        if (servedHeapLimit != null) {
+          servedHeapLimit.release();
+          servedHeapLimit = null;
+        }
         if (leftResults != null) {
           leftResults.close();
           leftResults = null;

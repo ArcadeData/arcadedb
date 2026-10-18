@@ -172,7 +172,7 @@ public class CypherOptimizer {
   public PhysicalPlan optimize() {
     final PhysicalPlan plan = buildPhysicalPlan();
     if (plan != null && !statement.isReadOnly())
-      readRangesFirstWhereWritten(plan.getRootOperator());
+      readRangesFirstWhereWritten(plan.getRootOperator(), CypherEagernessAnalyzer.ofPropertyWrites(statement.getClausesInOrder()));
     return plan;
   }
 
@@ -183,20 +183,17 @@ public class CypherOptimizer {
    * vertex once. A seek of a whole key is answered at once, and the seeks of a label disjunction already serve each vertex
    * once. Every input of every operator is visited, through {@link PhysicalOperator#getInputs()}.
    */
-  private void readRangesFirstWhereWritten(final PhysicalOperator operator) {
+  private static void readRangesFirstWhereWritten(final PhysicalOperator operator, final CypherEagernessAnalyzer writes) {
     if (operator == null)
       return;
-    if (operator instanceof NodeIndexRangeScan rangeScan
-        && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), rangeScan.getIndexProperties()))
+    if (operator instanceof NodeIndexRangeScan rangeScan && writes.writesAnyPropertyOf(rangeScan.getIndexProperties()))
       rangeScan.setReadsEntriesFirst(true);
-    else if (operator instanceof NodeIndexSeek seek
-        && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), seek.getIndexProperties()))
+    else if (operator instanceof NodeIndexSeek seek && writes.writesAnyPropertyOf(seek.getIndexProperties()))
       seek.setStatementWritesKey(true);
-    else if (operator instanceof IndexNestedLoopJoin join
-        && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), join.getIndexProperties()))
+    else if (operator instanceof IndexNestedLoopJoin join && writes.writesAnyPropertyOf(join.getIndexProperties()))
       join.setStatementWritesKey(true);
     for (final PhysicalOperator input : operator.getInputs())
-      readRangesFirstWhereWritten(input);
+      readRangesFirstWhereWritten(input, writes);
   }
 
   private PhysicalPlan buildPhysicalPlan() {

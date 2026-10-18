@@ -205,6 +205,33 @@ class Issue10251SetIndexedRangeHalloweenTest extends TestHelper {
   }
 
   @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void setInsideACallSubqueryRaisesEveryKeyOnce() {
+    database.command("opencypher", "MATCH (n:A) WHERE n.k > 0 CALL { WITH n SET n.k = n.k + 1000 }").close();
+    assertRaisedOnce(1000);
+  }
+
+  @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void thePrefixSeekGivesBackTheHeapItCharged() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("C").createProperty("g", Integer.class);
+      database.getSchema().getType("C").createProperty("k", Integer.class);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "C", "g", "k");
+    });
+    database.transaction(() -> database.command("opencypher", "UNWIND range(1, " + N + ") AS i CREATE (:C {g: 1, k: i})").close());
+    final long baseline = QueryHeapBudget.getReservedBytes();
+    database.command("opencypher", "MATCH (n:C {g: 1}) SET n.k = n.k + 1000").close();
+    database.command("opencypher", "MATCH (n:C) WHERE n.g IN [1, 2] SET n.k = n.k + 1000").close();
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:C) RETURN min(n.k) AS lo, max(n.k) AS hi")) {
+      final Result r = rs.next();
+      assertThat(r.<Number>getProperty("lo").intValue()).isEqualTo(2001);
+      assertThat(r.<Number>getProperty("hi").intValue()).isEqualTo(N + 2000);
+    }
+  }
+
+  @Test
   void aWriteOfAnotherKeyKeepsStreamingAndWritesEveryNode() {
     database.command("opencypher", "MATCH (n:A) WHERE n.k > 0 SET n.other = n.k * 2").close();
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:A) WHERE n.other = n.k * 2 RETURN count(n) AS c")) {

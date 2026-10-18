@@ -359,7 +359,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         if (entries == entryBuckets.length) {
           if (entries == MAX_ENTRIES)
             throw new CommandExecutionException("The range of index '" + indexName + "' holds more than " + MAX_ENTRIES
-                + " entries, more than a statement that writes its key can read first: narrow the range or write in batches");
+                + " entries, more than a statement that writes its key can read first: narrow the range or write in batches with CALL { ... } IN TRANSACTIONS");
           final int capacity = (int) Math.min(MAX_ENTRIES, (long) entries << 1);
           heapLimit.charge((long) (capacity - entries) * ENTRY_BYTES);
           entryBuckets = Arrays.copyOf(entryBuckets, capacity);

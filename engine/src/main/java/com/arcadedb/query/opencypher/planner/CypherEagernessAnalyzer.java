@@ -318,22 +318,31 @@ public final class CypherEagernessAnalyzer {
   }
 
   /**
-   * Whether a clause of the statement can write one of {@code keys} on a record: a {@code SET} or {@code REMOVE} of one of
-   * them, a {@code SET} of a whole map or of a key computed per row, the {@code ON CREATE} / {@code ON MATCH} of a MERGE, and
-   * any clause whose writes the planner cannot see (a procedure call, a subquery). CREATE and the label writes are not
-   * counted: they get a barrier of their own, see {@link #needsBarrier(CreateClause, Set)}. An index walked by such a
-   * statement reads its whole range before the first write, or the statement meets the entries it moved (issue #10251).
+   * The property writes of a statement's clauses, read once for the whole plan: a {@code SET} or {@code REMOVE} of a key,
+   * a {@code SET} of a whole map or of a key computed per row, the {@code ON CREATE} / {@code ON MATCH} of a MERGE, the
+   * clauses of a FOREACH, and any clause whose writes the planner cannot see (a procedure call, a subquery), which counts as
+   * writing every key. CREATE and the label writes are not counted: they get a barrier of their own, see
+   * {@link #needsBarrier(CreateClause, Set)}. An index walked by such a statement reads its whole range before the first
+   * write, or the statement meets the entries it moved (issue #10251), so {@link #writesAnyPropertyOf} is asked once per
+   * index read of the plan.
+   * <p>
+   * The opaque clauses are counted conservatively: a read-only subquery or procedure then costs the range scans of the
+   * statement their streaming, never a wrong answer. The optimizer, the only caller, plans no statement with a subquery
+   * (see {@code CypherExecutionPlan.canUseOptimizedPhysicalPlan()}) nor with a procedure call, so this does not arise there today.
    */
-  public static boolean writesAnyPropertyOf(final List<ClauseEntry> clauses, final Collection<String> keys) {
-    if (clauses == null)
-      return false;
+  public static CypherEagernessAnalyzer ofPropertyWrites(final List<ClauseEntry> clauses) {
     final CypherEagernessAnalyzer writes = new CypherEagernessAnalyzer();
-    if (writesUnseen(clauses, writes))
-      return true;
-    if (writes.writesAnyPropertyKey)
+    if (clauses != null && writesUnseen(clauses, writes))
+      writes.writesAnyPropertyKey = true;
+    return writes;
+  }
+
+  /** Whether the writes folded in can write one of {@code keys}, see {@link #ofPropertyWrites(List)}. */
+  public boolean writesAnyPropertyOf(final Collection<String> keys) {
+    if (writesAnyPropertyKey)
       return true;
     for (final String key : keys)
-      if (writes.writtenPropertyKeys.contains(key))
+      if (writtenPropertyKeys.contains(key))
         return true;
     return false;
   }
