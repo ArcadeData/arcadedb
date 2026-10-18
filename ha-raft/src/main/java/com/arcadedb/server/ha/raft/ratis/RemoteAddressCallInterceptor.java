@@ -41,6 +41,12 @@ import java.net.SocketAddress;
  * ({@code requestVote}, {@code startLeaderElection}, {@code readIndex}, and {@code onNext} of the {@code appendEntries}
  * and {@code installSnapshot} streams), so the guard reads it there with {@link #remoteAddress()}.
  * <p>
+ * <b>That synchronous dispatch is an assumption about Ratis, not a guarantee.</b> A Ratis upgrade that moves one of those
+ * calls onto an executor of its own leaves the guard reading {@code null} there, and a self-dial on that RPC is then
+ * refused and reported but no longer repaired - safe, but #10016's recovery silently gone for it.
+ * {@code Issue10016MisdirectedRaftRequestIT} pins it for {@code requestVote} and the {@code appendEntries} stream, the two
+ * RPCs a self-dial carries.
+ * <p>
  * Costs one {@link Context} per call, and an {@code appendEntries} stream is one call for its whole life.
  */
 public final class RemoteAddressCallInterceptor implements ServerInterceptor {

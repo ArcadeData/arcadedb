@@ -98,6 +98,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -388,6 +389,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // leads here - can hold the slot the repair needs, nor turn its report into a FINE line by taking the WARNING first.
   private final    Map<RaftPeerId, Long>     selfDialRepairQueuedAt         = new ConcurrentHashMap<>();
   private final    Map<RaftPeerId, Long>     selfDialWarnedAt               = new ConcurrentHashMap<>();
+  // Issue #10225: refused requests that named this node as sender from a source that is not an address of this host - an
+  // impostor, or this node's own request that crossed an address-translating hop and so could not be repaired (#10299).
+  private final    AtomicLong                misdirectedSelfClaimsFromElsewhere = new AtomicLong();
+  // Issue #10225: this host's interface addresses, read at most once per LOCAL_ADDRESSES_TTL_MS. The lookup runs on the gRPC
+  // handler thread for every refused request that claims this node's id, which any sender can write, so it must not
+  // enumerate the interfaces each time. An address assigned since is recognised by the next refresh at the latest.
+  private static final long                  LOCAL_ADDRESSES_TTL_NANOS      = TimeUnit.SECONDS.toNanos(30);
+  private static final AtomicBoolean         localAddressesRefreshing       = new AtomicBoolean();
+  private static volatile LocalAddresses     localAddresses;
+
+  private record LocalAddresses(Set<InetAddress> addresses, long loadedAtNanos) {
+  }
   // Issue #10088: the ids of the live Raft configuration as this node last learnt it. The listener runs on the gRPC handler
   // thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so it
   // consults this copy, replaced as a whole. It is written wherever the configuration reaches this node without a read
@@ -1013,9 +1026,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Nor does it decide on its own that this node sent the request (issue #10225): a request this node sent itself comes
     // from an address of this host, which a remote sender cannot fake over TCP, so only one that claims this node's id AND
     // comes from here takes a slot of the self-dial throttles, which nothing from anywhere else can then hold. The lookup
-    // runs only for a request claiming this node's id, and answers the loopback without a system call.
+    // answers the loopback at once and anything else from a cached set of this host's addresses, never a system call per
+    // request (a sender can write this node's id as often as it likes).
     final boolean claimsSelf = localPeerId.equals(requestor);
     final boolean fromThisHost = claimsSelf && isAddressOfThisHost(remote);
+    if (claimsSelf && !fromThisHost)
+      misdirectedSelfClaimsFromElsewhere.incrementAndGet();
     final Map<RaftPeerId, Long> queuedAt = fromThisHost ? selfDialRepairQueuedAt : misdirectedRecoveryQueuedAt;
     final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
     if (!claimThrottleSlot(queuedAt, slot, System.currentTimeMillis(), MISDIRECTED_RECOVERY_INTERVAL_MS))
@@ -1206,12 +1222,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /** How many refused Raft requests named this node as their sender from a source that is not this host (issue #10225). */
+  public long getMisdirectedSelfClaimsFromElsewhere() {
+    return misdirectedSelfClaimsFromElsewhere.get();
+  }
+
   /**
-   * Whether {@code address} - the remote end of an inbound Raft connection - is an address of this host: the loopback,
-   * the wildcard, or one assigned to a local network interface. A request this node sent to itself arrives from one of
-   * these, whatever name its channel dialled, and a sender on another host cannot make a TCP connection appear to come
-   * from one (issue #10225). {@code null}, a non-IP address and an unresolved one answer false: nothing confirms them.
-   * Package-private for testing.
+   * Whether {@code address} - the remote end of an inbound Raft connection - is an address of this host: the loopback, or
+   * one assigned to a local network interface. A request this node sent to itself arrives from one of these, whatever name
+   * its channel dialled, and a sender on another host cannot make a TCP connection appear to come from one (issue #10225).
+   * {@code null}, a non-IP address and an unresolved one answer false: nothing confirms them.
+   * <p>
+   * It is a host identity, not a node identity (issue #10299): every process on this host passes, and so does every
+   * connection a local proxy relays - a service-mesh sidecar (Envoy, Istio) or a Docker userland proxy in front of the Raft
+   * port makes every inbound connection look local, and on such a deployment this check protects nothing. Conversely this
+   * node's own request that crossed a hop rewriting its source arrives from a foreign address and is not repaired.
+   * <p>
+   * Never enumerates the interfaces per call: the set is cached for {@link #LOCAL_ADDRESSES_TTL_NANOS}. Package-private
+   * for testing.
    */
   static boolean isAddressOfThisHost(final SocketAddress address) {
     if (!(address instanceof InetSocketAddress socket))
@@ -1219,13 +1247,48 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final InetAddress ip = socket.getAddress();
     if (ip == null)
       return false;
-    if (ip.isLoopbackAddress() || ip.isAnyLocalAddress())
+    if (ip.isLoopbackAddress())
       return true;
+    return localInterfaceAddresses().contains(ip);
+  }
+
+  /**
+   * This host's interface addresses, reloaded when older than the TTL by one caller at a time; the others keep using the
+   * previous set meanwhile, so a burst of requests at expiry enumerates the interfaces once.
+   */
+  private static Set<InetAddress> localInterfaceAddresses() {
+    final long now = System.nanoTime();
+    final LocalAddresses cached = localAddresses;
+    if (cached != null && now - cached.loadedAtNanos() < LOCAL_ADDRESSES_TTL_NANOS)
+      return cached.addresses();
+    if (cached != null && !localAddressesRefreshing.compareAndSet(false, true))
+      return cached.addresses();
     try {
-      return NetworkInterface.getByInetAddress(ip) != null;
-    } catch (final SocketException e) {
-      return false;
+      final LocalAddresses loaded = new LocalAddresses(loadLocalInterfaceAddresses(), now);
+      localAddresses = loaded;
+      return loaded.addresses();
+    } finally {
+      if (cached != null)
+        localAddressesRefreshing.set(false);
     }
+  }
+
+  private static Set<InetAddress> loadLocalInterfaceAddresses() {
+    final Set<InetAddress> addresses = new HashSet<>();
+    try {
+      final Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+      if (interfaces != null)
+        while (interfaces.hasMoreElements()) {
+          final Enumeration<InetAddress> assigned = interfaces.nextElement().getInetAddresses();
+          while (assigned.hasMoreElements())
+            addresses.add(assigned.nextElement());
+        }
+    } catch (final SocketException e) {
+      // Only the loopback is recognised until the next refresh: a self-dial over another address waits for it, an
+      // impostor gains nothing
+      LogManager.instance().log(RaftHAServer.class, Level.FINE, "Cannot list this host's network interfaces: %s", e.toString());
+    }
+    return Set.copyOf(addresses);
   }
 
   /**

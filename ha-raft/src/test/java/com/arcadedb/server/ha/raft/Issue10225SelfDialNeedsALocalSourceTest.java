@@ -88,6 +88,7 @@ class Issue10225SelfDialNeedsALocalSourceTest {
         .until(() -> log.countFormattedContaining(IMPOSTOR) == 1);
     assertThat(log.countFormattedContaining(SELF_DIAL)).as("a claim the connection does not confirm is no self-dial").isZero();
     assertThat(raft.getMisdirectedChannelResets()).isZero();
+    assertThat(raft.getMisdirectedSelfClaimsFromElsewhere()).as("counted, so an operator can spot it without the log").isEqualTo(1L);
   }
 
   /** The repair #10016 needs still runs: this node's own request comes back over the loopback. */
@@ -101,6 +102,7 @@ class Issue10225SelfDialNeedsALocalSourceTest {
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(SELF_DIAL) == 1);
     assertThat(log.countFormattedContaining(IMPOSTOR)).isZero();
+    assertThat(raft.getMisdirectedSelfClaimsFromElsewhere()).isZero();
   }
 
   /**
