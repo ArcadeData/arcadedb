@@ -41,7 +41,24 @@ parameter.
 - `datetime({epochSeconds | epochMillis, timezone})` reads the instant in that time zone (the zone was ignored).
 - `date({date: ..., dayOfWeek: n})` moves the date within its ISO week, and `dayOfQuarter` within its quarter.
 
+### PostgreSQL wire: `regtype` and `format_type()` print PostgreSQL's type names (#10228)
+
+`format_type()` and the `regtype` cast now answer the name PostgreSQL prints for a type - `integer`,
+`character varying`, `double precision`, `boolean` - instead of its internal name (`int4`, `varchar`, `float8`, `bool`),
+as PostgreSQL does and as `psql`'s `\d` shows in its Type column. `pg_type.typname` is unchanged. A client that compared
+the old text, such as `atttypid::regtype = 'int4'` written as a string comparison, sees the SQL name instead; compare OIDs
+(`atttypid = 'int4'::regtype`) to be independent of the spelling.
+
 ## Fixes
+
+- **#10228** PostgreSQL wire: `psql`'s `\dt`, `\d <table>` and `\d+ <table>`, and psqlodbc's `SQLColumns` and
+  `SQLTables(SQL_ALL_TABLE_TYPES)`, answer from the emulated `pg_catalog` instead of empty results or a syntax error. The
+  catalog reads parenthesised joins, applies join conditions (an INNER JOIN's `ON` filters, a LEFT JOIN that does not
+  match reads NULL), models `pg_am` and the column defaults of `pg_attrdef`, rewrites `OPERATOR(pg_catalog.=)` and
+  `COLLATE`, and evaluates `UNION`/`INTERSECT`/`EXCEPT` over catalog queries and literal `SELECT`s, aggregates with or
+  without `GROUP BY`, and correlated sub-selects. Two columns named alike (`SELECT NULL, NULL, relkind`) are both returned.
+  A catalog query that would take more work than one statement may spend fails with SQLSTATE `54000` rather than
+  answering empty.
 
 - **#10199** `datetime()` reads years outside 0000-9999 (`'-0001-12-31T23:59:59Z'`, `'+10000-01-01T00:00Z'`), and
   `time()` accepts a zone name as its `timezone` (the offset that zone has now).
