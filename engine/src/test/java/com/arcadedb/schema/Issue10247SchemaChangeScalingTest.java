@@ -27,6 +27,11 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -120,9 +125,9 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
     database.command("sql", "CREATE TRIGGER t1 BEFORE CREATE ON TYPE Person EXECUTE SQL 'SELECT 1'");
 
     // a type is reachable under its aliases too, and still written once, where the same key would be repeated
-    schema.getType("Knows").setAliases(java.util.Set.of("AaaKnows", "ZzzKnows"));
-    schema.getType("Person").setAliases(java.util.Set.of("Human"));
-    schema.createDocumentType("Aaa").setAliases(java.util.Set.of("Zzz"));
+    schema.getType("Knows").setAliases(Set.of("AaaKnows", "ZzzKnows"));
+    schema.getType("Person").setAliases(Set.of("Human"));
+    schema.createDocumentType("Aaa").setAliases(Set.of("Zzz"));
 
     assertThat(schema.serializeSchemaForTest()).isEqualTo(schema.toJSON().toString());
 
@@ -143,6 +148,45 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
     reopenDatabase();
     assertThat(localSchema().getTypes()).hasSize(300);
     assertBucketMapsMatchTheTypes(localSchema());
+  }
+
+  /** Schema changes from several threads are serialized by the write lock, and the maps they leave describe the types. */
+  @Test
+  void concurrentSchemaChangesLeaveTheBucketMapsRight() throws Exception {
+    final LocalSchema schema = localSchema();
+    final int threads = 4;
+    final int perThread = 15;
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+    final List<Thread> workers = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final int thread = t;
+      final Thread worker = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < perThread; i++) {
+            final String name = "C" + thread + "_" + i;
+            if (i % 3 == 0)
+              schema.createVertexType(name).createProperty("p", Type.STRING);
+            else
+              schema.createDocumentType(name).createProperty("p", Type.STRING);
+            if (i % 5 == 0)
+              schema.dropType(name);
+          }
+        } catch (final Throwable e) {
+          failures.add(e);
+        }
+      });
+      workers.add(worker);
+      worker.start();
+    }
+    start.countDown();
+    for (final Thread worker : workers)
+      worker.join();
+
+    assertThat(failures).isEmpty();
+    assertThat(schema.getTypes()).hasSize(threads * (perThread - 3));
+    assertBucketMapsMatchTheTypes(schema);
   }
 
   /**

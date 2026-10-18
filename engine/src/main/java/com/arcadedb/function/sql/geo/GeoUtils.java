@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import com.arcadedb.log.LogManager;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
@@ -43,6 +44,7 @@ import org.locationtech.spatial4j.shape.jts.JtsShapeFactory;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Geospatial utility class.
@@ -192,6 +194,8 @@ public class GeoUtils {
       return result == null ? null : SPATIAL_CONTEXT.getShapeFactory().makeShapeFromGeometry(result);
     } catch (final RuntimeException e) {
       // an invalid shape (a self-intersecting polygon) fails in the overlay: not a geometry, like any other unreadable one
+      LogManager.instance().log(GeoUtils.class, Level.FINE, "Cannot split the geometry '%s' at the antimeridian: %s", wkt,
+          e.getMessage());
       return null;
     }
   }

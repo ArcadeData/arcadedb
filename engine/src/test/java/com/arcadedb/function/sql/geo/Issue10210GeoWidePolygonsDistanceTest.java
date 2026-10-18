@@ -19,6 +19,8 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
@@ -31,6 +33,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -206,6 +209,38 @@ class Issue10210GeoWidePolygonsDistanceTest extends TestHelper {
     }
     assertThat(planUsesIndex(query)).isTrue();
     assertThat(coords(query)).containsExactlyInAnyOrder("POINT (0 0)", "POINT (100 50)");
+  }
+
+  /**
+   * An invalid geometry is skipped for the thread that is building the index and refused for every other one: a write that
+   * lands while the build runs must fail, not vanish from the index.
+   */
+  @Test
+  void anInvalidGeometryIsRefusedOnAnotherThreadWhileTheIndexIsBeingBuilt() throws Exception {
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Pt[coords]");
+    final LSMTreeGeoIndex geoIndex = (LSMTreeGeoIndex) typeIndex.getIndexesOnBuckets()[0];
+    final AtomicReference<Throwable> refused = new AtomicReference<>();
+
+    database.begin();
+    geoIndex.build(1000, true, (document, totalIndexed) -> {
+      final Thread writer = new Thread(() -> {
+        try {
+          geoIndex.put(new Object[] { "POINT (10 95)" }, new RID[] { document.getIdentity() });
+        } catch (final Throwable e) {
+          refused.set(e);
+        }
+      });
+      writer.start();
+      try {
+        writer.join();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+
+    database.commit();
+
+    assertThat(refused.get()).isInstanceOf(IndexException.class);
   }
 
   /** A value the index used to skip is not re-put by a write that does not touch it. */

@@ -142,7 +142,7 @@ public final class IntegralKeyBound {
 
   /**
    * {@link #ceiling} for any key type {@link #isInexact} accepts, a DATE key included: the day after a datetime bound with a
-   * time of day.
+   * time of day. Only for a bound {@code isInexact} accepted: anything else is not a bound this maps.
    */
   public static Object ceilingKey(final byte keyType, final Object bound) {
     if (keyType == BinaryTypes.TYPE_DATE)
