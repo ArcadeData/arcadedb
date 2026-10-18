@@ -245,6 +245,14 @@ Any method a route does not declare is answered `405 Method Not Allowed` with an
 runs. Do not call `routes.addExactPath`/`addPrefixPath` directly: `PathHandler` matches on the path alone, so such a
 route answers every method, `GET` included, and the server logs a warning naming it at startup.
 
+`HEAD` and `OPTIONS` are methods like any other: a route declared only with `get(...)` answers `HEAD` with 405, as the
+core routes do, and the server answers no CORS preflight on plugin routes. Declare them explicitly
+(`.exact(Methods.HEAD, path, handler)`) for a route that a probe reaches with `HEAD`.
+
+A protocol with its own error envelope can replace the default 405 JSON body for one path with
+`onMethodNotAllowed(path, rejection)`, called after that path is declared on the same `PluginRoutes` instance. The
+rejection runs with the 405 status and the `Allow` header already set, and only writes the body.
+
 ## Troubleshooting
 
 ### Plugin Not Discovered

@@ -141,11 +141,11 @@ public final class PluginRoutes {
    * Public so that a recording {@link PathHandler} in a test can report the methods a path actually answers.
    */
   public static final class MethodRestrictedHandler implements HttpHandler {
-    private final    String                        path;
+    private final    String                       path;
     // Copy-on-write: written while registerAPI runs, read by every request afterwards without a lock.
-    private volatile Map<HttpString, HttpHandler> byMethod = Map.of();
-    private volatile String                        allowHeader = "";
-    private volatile HttpHandler                   rejection;
+    private volatile Map<HttpString, HttpHandler> byMethod    = Map.of();
+    private volatile String                       allowHeader = "";
+    private volatile HttpHandler                  rejection;
 
     private MethodRestrictedHandler(final String path) {
       this.path = path;

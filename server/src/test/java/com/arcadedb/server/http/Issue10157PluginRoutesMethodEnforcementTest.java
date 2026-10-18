@@ -161,6 +161,17 @@ class Issue10157PluginRoutesMethodEnforcementTest {
   }
 
   @Test
+  void aRouteNeedsAMethodAPathAndAHandler() {
+    final PluginRoutes routes = new PluginRoutes(new PathHandler());
+    final HttpHandler handler = exchange -> {
+    };
+    assertThatThrownBy(() -> routes.exact(null, "/a", handler)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> routes.post(null, handler)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> routes.prefix(Methods.DELETE, "/b/", null)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> new PluginRoutes(null)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void theRecordingHandlerReportsTheMethodDimension() {
     final RecordingPathHandler routes = new RecordingPathHandler();
     final HttpHandler handler = exchange -> {
