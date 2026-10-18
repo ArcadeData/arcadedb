@@ -840,6 +840,9 @@ public class BinarySerializer {
 
       if (value instanceof JSONObject object)
         value = object.toMap();
+      else if (value instanceof Result result)
+        // COMING FROM A QUERY
+        value = result.toMap();
 
       final Map<Object, Object> map = (Map<Object, Object>) value;
       final int mapSize = map.size();
