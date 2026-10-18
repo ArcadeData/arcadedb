@@ -23,6 +23,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.parser.CypherSemanticValidator;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -59,6 +60,10 @@ final class WritePatternChecks {
     if (bound == null)
       throw new CommandExecutionException(
           "Failed to create the relationship: node `" + variable + "` is missing. Expected the value NULL to be of type NODE, but was of type NULL");
+    // An earlier DELETE replaced the node with its marker: say so, as Neo4j does, rather than naming the marker (issue #10196)
+    if (bound instanceof DeletedEntityMarker)
+      throw new CommandExecutionException(
+          "DeletedEntityAccess: Failed to create the relationship: node `" + variable + "` was deleted in this transaction");
     throw new CommandExecutionException(
         "Invalid input '" + CypherFunctionHelper.cypherTypeName(bound) + "' for " + variable + ". Expected to be NODE");
   }

@@ -39,6 +39,7 @@ import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -89,6 +90,9 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     this.graph.tx().readWrite();
     final ArcadeVertex vertex = (ArcadeVertex) inVertex;
+    // AN EDGE FROM OR TO A REMOVED VERTEX WOULD BE COMMITTED WITHOUT IT (#10196)
+    checkNotRemoved();
+    vertex.checkNotRemoved();
 
     //ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
@@ -133,6 +137,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
       throw VertexProperty.Exceptions.metaPropertiesNotSupported();
 
     this.graph.tx().readWrite();
+    checkNotRemoved();
 
     final MutableVertex mutableElement = baseElement.modify();
     // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
@@ -153,6 +158,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     ElementHelper.validateProperty(key, value);
     ArcadeProperty.validateValue(value);
     this.graph.tx().readWrite();
+    checkNotRemoved();
 
     final MutableVertex mutableElement = baseElement.modify();
     // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
@@ -169,6 +175,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   public VertexProperty<EmbeddedDocument> embed(final String key, final String typeName) {
     this.graph.tx().readWrite();
+    checkNotRemoved();
 
     final MutableVertex mutableElement = baseElement.modify();
     // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
@@ -185,6 +192,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   @Override
   public <V> VertexProperty<V> property(final String key) {
+    if (isRemoved())
+      return VertexProperty.empty();
     final V value = (V) baseElement.get(key);
     if (value != null)
       return new ArcadeVertexProperty<>(this, key, value);
@@ -193,6 +202,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   @Override
   public <V> Iterator<VertexProperty<V>> properties(final String... propertyKeys) {
+    if (isRemoved())
+      return Collections.emptyIterator();
     final List<ArcadeVertexProperty> props;
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Set<String> propNames = baseElement.getPropertyNames();
@@ -215,6 +226,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   @Override
   public Set<String> keys() {
+    if (isRemoved())
+      return Collections.emptySet();
     return baseElement.getPropertyNames();
   }
 
@@ -222,6 +235,9 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
   public Iterator<Edge> edges(final Direction direction, final String... edgeLabels) {
     // A terminated statement stops here, at every step of a traversal, and every so often inside a supernode (#9689)
     ArcadeGraph.checkNotTerminated();
+    // A REMOVED VERTEX HAS NO EDGES: ITS RECORD STILL POINTS TO THE LISTS ITS DELETE FREED (#10196)
+    if (isRemoved())
+      return Collections.emptyIterator();
     final List<Edge> result = new ArrayList<>();
 
     int walked = 0;
@@ -253,6 +269,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
   public Iterator<Vertex> vertices(final Direction direction, final String... edgeLabels) {
     // A terminated statement stops here, at every step of a traversal, and every so often inside a supernode (#9689)
     ArcadeGraph.checkNotTerminated();
+    if (isRemoved())
+      return Collections.emptyIterator();
     // CSR fast path: use GAV provider when available for O(1) neighbor lookup
     final GraphTraversalProvider provider = graph.getDatabase() instanceof Database db
         ? (edgeLabels.length == 0
