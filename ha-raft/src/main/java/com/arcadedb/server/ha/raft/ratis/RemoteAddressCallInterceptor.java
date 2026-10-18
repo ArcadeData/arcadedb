@@ -32,20 +32,17 @@ import java.net.SocketAddress;
  * Makes the remote address of the connection an inbound Raft RPC arrived on readable by {@link GuardedRaftServer}
  * (issue #10225).
  * <p>
- * The guard sees only the request protos Ratis hands the {@code RaftServer}, and the requestor id in their header is
- * whatever the sender wrote: on its own it cannot tell this node's own request, which came back to it because the
- * address it holds for a peer leads here, from a request that merely claims to be from this node. The connection's
- * remote address is what the sender cannot write. gRPC exposes it only to an interceptor, through the call's
- * attributes, so this one copies it into the call's {@link Context}, which gRPC attaches around every listener callback
- * of the call. Ratis's server protocol service invokes the {@code RaftServer} synchronously from those callbacks
- * ({@code requestVote}, {@code startLeaderElection}, {@code readIndex}, and {@code onNext} of the {@code appendEntries}
- * and {@code installSnapshot} streams), so the guard reads it there with {@link #remoteAddress()}.
+ * gRPC exposes that address only to an interceptor, through the call's attributes, so this one copies it into the call's
+ * {@link Context}, which gRPC attaches around every listener callback of the call. Ratis's server protocol service invokes
+ * the {@code RaftServer} synchronously from those callbacks, so the guard reads it there with {@link #remoteAddress()}.
  * <p>
- * <b>That synchronous dispatch is an assumption about Ratis, not a guarantee.</b> A Ratis upgrade that moves one of those
- * calls onto an executor of its own leaves the guard reading {@code null} there, and a self-dial on that RPC is then
- * refused and reported but no longer repaired - safe, but #10016's recovery silently gone for it.
- * {@code Issue10016MisdirectedRaftRequestIT} pins it for {@code requestVote} and the {@code appendEntries} stream, the two
- * RPCs a self-dial carries.
+ * <b>It is reported, not trusted</b> (issue #10299). Until then the guard's listener took a refused request that named
+ * this node as its sender for this node's own when it came from an address of this host. An address names a host, not a
+ * node: every local process passes, so does anything a local proxy or service-mesh sidecar relays, and this node's own
+ * request that crossed a hop rewriting its source fails. Whether a request is this node's own is now settled by a probe
+ * of this node's channel (see {@code RaftHAServer.onMisdirectedRaftRequest}); the address only tells the operator where a
+ * claim it did not confirm came from, and a {@code null} - an RPC Ratis served outside the call's context - costs no more
+ * than that line.
  * <p>
  * Costs one {@link Context} per call, and an {@code appendEntries} stream is one call for its whole life.
  */

@@ -49,7 +49,7 @@ class Issue8856HAExecutorPoolMetricsIT extends BaseRaftHATest {
 
     final JSONObject executors = GetServerHandler.buildExecutorsJSON(Metrics.globalRegistry);
     for (final String pool : new String[] { "snapshot_install", "sm_lifecycle", "database_deleter", "channel_recovery",
-        "stalled_resync" }) {
+        "stalled_resync", "self_dial_probe" }) {
       assertThat(executors.has(pool)).as("Studio's card must receive the %s row", pool).isTrue();
       assertThat(executors.getJSONObject(pool).has("queue.depth")).isTrue();
       assertThat(executors.getJSONObject(pool).has("tasks.caller_run_fallbacks")).isTrue();
@@ -59,6 +59,8 @@ class Issue8856HAExecutorPoolMetricsIT extends BaseRaftHATest {
     assertThat(executors.getJSONObject("snapshot_install").has("tasks.rejected")).isTrue();
     assertThat(executors.getJSONObject("snapshot_install").has("tasks.coalesced")).isFalse();
     assertThat(executors.getJSONObject("channel_recovery").has("tasks.rejected")).isTrue();
+    assertThat(executors.getJSONObject("self_dial_probe").has("tasks.rejected")).isTrue();
+    assertThat(executors.getJSONObject("self_dial_probe").has("tasks.coalesced")).isFalse();
     // ...and the channel-recovery pool also skips a #8491 hand-off already queued: coalesced
     assertThat(executors.getJSONObject("channel_recovery").has("tasks.coalesced")).isTrue();
     // caller-runs or unbounded pools: neither extra applies
@@ -93,7 +95,7 @@ class Issue8856HAExecutorPoolMetricsIT extends BaseRaftHATest {
     getServer(0).stop();
 
     for (final String pool : new String[] { "snapshot_install", "sm_lifecycle", "database_deleter", "channel_recovery",
-        "stalled_resync", "security_seed", "security_catch_up" })
+        "stalled_resync", "self_dial_probe", "security_seed", "security_catch_up" })
       assertThat(gauge("arcadedb.executor.pool.size", pool)).as("the %s row must go with its owner", pool).isNull();
   }
 
