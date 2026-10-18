@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.math.BigDecimal;
+import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -280,6 +281,26 @@ class Issue10201JsonlRoundTripFidelityTest {
         assertSame("emb.long", 8L, emb.get("long"));
         assertSame("emb.bigdec", new BigDecimal("2.500"), emb.get("bigdec"));
       }
+    }
+  }
+
+  /** A type tree naming a property the record does not carry, or a type this version does not know, is ignored. */
+  @Test
+  void aTypeTreeEntryWithoutItsPropertyOrWithAnUnknownTypeIsIgnored() throws Exception {
+    final File file = new File(SOURCE_PATH + "-hand.jsonl");
+    file.getParentFile().mkdirs();
+    Files.writeString(file.toPath(), ""
+        + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":2}}\n"
+        + "{\"t\":\"schema\",\"c\":{\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"D\":{\"type\":\"d\",\"parents\":[],\"buckets\":[\"D_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}}}}}\n"
+        + "{\"t\":\"d\",\"c\":{\"p\":{\"a\":5,\"b\":\"x\"},\"y\":{\"missing\":\"LONG\",\"a\":\"LONG\",\"b\":\"FROM_THE_FUTURE\"},\"r\":\"#1:0\",\"t\":\"D\"}}\n");
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath());
+      final Document d = only(target);
+      assertThat(d.get("a")).isEqualTo(5L);
+      assertThat(d.get("b")).isEqualTo("x");
+      assertThat(d.has("missing")).isFalse();
+    } finally {
+      file.delete();
     }
   }
 

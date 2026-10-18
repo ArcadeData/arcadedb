@@ -23,18 +23,21 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.ArcadeGraph;
+import com.arcadedb.gremlin.io.graphml.ArcadeGraphMLReader;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.math.BigDecimal;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -156,6 +159,35 @@ class Issue10202GraphFormatsValueRoundTripTest {
           assertThat(v.get("bin")).isEqualTo("AQID");
         }
       }
+  }
+
+  /** The GraphML reader reads untrusted files: no DTD, so no external entity can pull a local file into a property. */
+  @Test
+  void anExternalEntityInAGraphMLFileIsNotResolved() throws Exception {
+    final File secret = new File("target/issue10202-secret.txt");
+    Files.writeString(secret.toPath(), "TOP-SECRET");
+    final File graphml = new File("target/issue10202-xxe.graphml");
+    Files.writeString(graphml.toPath(), "<?xml version=\"1.0\"?>\n"
+        + "<!DOCTYPE graphml [<!ENTITY xxe SYSTEM \"" + secret.toURI() + "\">]>\n"
+        + "<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\">"
+        + "<key id=\"name\" for=\"node\" attr.name=\"name\" attr.type=\"string\"/>"
+        + "<graph id=\"G\" edgedefault=\"directed\"><node id=\"1\"><data key=\"name\">&xxe;</data></node></graph></graphml>");
+    try (final ArcadeGraph graph = ArcadeGraph.open(new File(COPY_PATH).getAbsolutePath())) {
+      try (final FileInputStream is = new FileInputStream(graphml)) {
+        new ArcadeGraphMLReader().readGraph(is, graph);
+      } catch (final Exception e) {
+        // REFUSING THE FILE IS FINE TOO: WHAT MUST NOT HAPPEN IS THE FILE'S CONTENT REACHING THE GRAPH
+      }
+      try (final ResultSet rs = graph.getDatabase().query("sql", "SELECT FROM vertex")) {
+        while (rs.hasNext())
+          assertThat(String.valueOf(rs.next().<Object>getProperty("name"))).doesNotContain("TOP-SECRET");
+      } catch (final Exception e) {
+        // NO vertex TYPE: NOTHING WAS IMPORTED
+      }
+    } finally {
+      secret.delete();
+      graphml.delete();
+    }
   }
 
   private static Document vertex(final Database db, final int id) {
