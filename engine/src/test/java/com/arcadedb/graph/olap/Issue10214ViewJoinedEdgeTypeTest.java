@@ -198,6 +198,39 @@ class Issue10214ViewJoinedEdgeTypeTest {
     assertNotServedUntilRebuilt(restored, mode, gate, 6);
   }
 
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
+  void anEdgeCreatedBeforeTheScanButCommittedAfterItIsNotClaimed(final GraphAnalyticalView.UpdateMode mode) throws Exception {
+    database.getSchema().createEdgeType("G");
+    // A VIEW TRACKING CHANGES FIRST, SO THE CREATION OF THE G EDGE BELOW IS COUNTED BEFORE THE REBUILD SAMPLES ITS MARK
+    final GraphAnalyticalView view = createView(mode);
+
+    final CountDownLatch created = new CountDownLatch(1);
+    final CountDownLatch scanned = new CountDownLatch(1);
+    final Thread writer = new Thread(() -> database.transaction(() -> {
+      final Vertex from = database.select().fromType("V").where().property("pid").eq().value(0).vertices().next();
+      final Vertex to = database.select().fromType("V").where().property("pid").eq().value(2).vertices().next();
+      from.newEdge("G", to);
+      created.countDown();
+      try {
+        // COMMITTED ONLY ONCE THE REBUILD HAS SCANNED: THAT SCAN CANNOT HAVE READ THE EDGE
+        scanned.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }));
+    writer.start();
+    assertThat(created.await(30, TimeUnit.SECONDS)).isTrue();
+    database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW g").close();
+    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    scanned.countDown();
+    writer.join(30_000);
+
+    final CountDownLatch gate = holdRebuilds(view);
+    database.command("sql", "ALTER TYPE G SUPERTYPE +E").close();
+    assertNotServedUntilRebuilt(view, mode, gate, 5);
+  }
+
   private void assertNotServedUntilRebuilt(final GraphAnalyticalView view, final GraphAnalyticalView.UpdateMode mode,
       final CountDownLatch gate, final long expectedEdges) {
     try {

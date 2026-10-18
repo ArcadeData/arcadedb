@@ -253,11 +253,32 @@ public class InsertExecutionPlanner {
   /**
    * Whether the SELECT nests a statement that its plan does not show. The planner lifts most subqueries into LET steps, whose plans
    * {@link #readsAny} walks, but one buried in an expression - {@code (SELECT ...)[0].c} in a projection - is run row by row by the
-   * expression itself, and would read the rows inserted before. The AST offers no complete walk of its nodes, so this asks the
-   * statement's text, conservatively: a false positive (a string literal that looks like a subquery) only costs the barrier.
+   * expression itself, and would read the rows inserted before. The AST offers no complete walk of its nodes (most node classes do
+   * not list their children), so this asks the statement's text with its quoted parts - string literals and quoted identifiers -
+   * blanked out, so a literal that reads like a subquery does not count.
    */
   private static boolean hasExpressionSubQuery(final SelectStatement statement) {
-    return NESTED_STATEMENT.matcher(statement.toString()).find();
+    return NESTED_STATEMENT.matcher(withoutQuotedText(statement.toString())).find();
+  }
+
+  /** {@code text} with what is between single quotes, double quotes or backticks replaced by spaces, escapes honoured. */
+  static String withoutQuotedText(final String text) {
+    final char[] chars = text.toCharArray();
+    char quote = 0;
+    for (int i = 0; i < chars.length; i++) {
+      final char c = chars[i];
+      if (quote == 0) {
+        if (c == '\'' || c == '"' || c == '`')
+          quote = c;
+      } else if (c == '\\' && i + 1 < chars.length) {
+        chars[i] = ' ';
+        chars[++i] = ' ';
+      } else if (c == quote)
+        quote = 0;
+      else
+        chars[i] = ' ';
+    }
+    return new String(chars);
   }
 
   /**

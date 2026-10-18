@@ -226,6 +226,11 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
       final String plan = rs.next().getProperty("executionPlanAsString");
       assertThat(plan).doesNotContain("MATERIALIZE");
     }
+    // A STRING LITERAL THAT READS LIKE A SUBQUERY IS NOT ONE
+    try (final ResultSet rs = database.command("sql",
+        "EXPLAIN INSERT INTO B FROM SELECT id + 100 AS id, a, b, '(select x from A)' AS s FROM A WHERE a = 3 OR b = 4")) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).doesNotContain("MATERIALIZE");
+    }
     try (final ResultSet rs = database.command("sql", "EXPLAIN INSERT INTO A FROM SELECT id + 100 AS id, a, b FROM A WHERE a = 3 OR b = 4")) {
       final String plan = rs.next().getProperty("executionPlanAsString");
       assertThat(plan).contains("MATERIALIZE");

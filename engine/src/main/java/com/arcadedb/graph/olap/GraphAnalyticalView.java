@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.AfterRecordCreateListener;
@@ -336,6 +337,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // #10214): a type attached to a listed one since a scan holds edges that scan did not read when it was written past the
   // scan's mark. One entry per such edge type ever written, never removed
   private final ConcurrentMap<String, AtomicLong> lastUncoveredEdgeWrite = new ConcurrentHashMap<>();
+  // Distinct per view instance, as two views can register the commit callback of the same transaction
+  private final String                            uncoveredCommitKeyPrefix =
+      "gav-uncovered-" + Integer.toHexString(System.identityHashCode(this)) + "-";
   // Whether the base CSR holds every edge type the filter covers without listing it - a sub-type of a listed edge type - for
   // one base CSR and one schema version (issue #10214)
   private record JoinedEdgeCoverage(Map<String, CSRAdjacencyIndex> scannedWith, long schemaVersion, boolean allHeld) {
@@ -1354,6 +1358,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * {@link #coversEveryEdge()} and, for the type joining the filter later, {@link #holdsJoinedEdgeTypes()} (issue #10214).
    */
   void onUncoveredEdgeWritten(final String edgeTypeName) {
+    noteUncoveredEdgeWrite(edgeTypeName);
+    // TOLD AT THE CREATION, BUT A SCAN CANNOT READ THE EDGE BEFORE ITS COMMIT: ONE CREATED BEFORE A SCAN SAMPLED ITS MARK AND
+    // COMMITTED AFTER IS NOT IN THAT SCAN, SO THE COMMIT MOVES THE COUNTER AGAIN, PAST THE MARK. ONCE PER TYPE AND TRANSACTION
+    if (database instanceof DatabaseInternal internal) {
+      final TransactionContext tx = internal.getTransactionIfExists();
+      if (tx != null && tx.isActive())
+        tx.addAfterCommitCallbackIfAbsent(uncoveredCommitKeyPrefix + edgeTypeName, () -> noteUncoveredEdgeWrite(edgeTypeName));
+    }
+  }
+
+  private void noteUncoveredEdgeWrite(final String edgeTypeName) {
     final long written = uncoveredEdgeWrites.incrementAndGet();
     if (edgeTypeName != null)
       lastUncoveredEdgeWrite.computeIfAbsent(edgeTypeName, k -> new AtomicLong(-1L)).accumulateAndGet(written, Math::max);
