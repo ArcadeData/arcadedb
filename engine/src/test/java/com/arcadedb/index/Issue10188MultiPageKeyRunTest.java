@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexUnderlyingCompactedSeriesCursor;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -131,6 +132,50 @@ class Issue10188MultiPageKeyRunTest extends TestHelper {
     compact(bucketIndex);
 
     assertTheIndexMatchesTheRecords();
+  }
+
+  @Test
+  void thePositionOfASeriesCursorIsTheEndOfTheKeyWhateverIsAskedFirst() throws Exception {
+    final LSMTreeIndex bucketIndex = createTypeWithHotKey();
+    compact(bucketIndex);
+
+    for (final boolean ascending : new boolean[] { true, false }) {
+      final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> byPosition = bucketIndex.getMutableIndex().getSubIndex()
+          .newIterators(ascending, null, null);
+      final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> byKey = bucketIndex.getMutableIndex().getSubIndex()
+          .newIterators(ascending, null, null);
+      assertThat(byPosition).hasSameSizeAs(byKey).isNotEmpty();
+
+      int keys = 0;
+      int hotKeys = 0;
+      for (int series = 0; series < byPosition.size(); series++) {
+        final LSMTreeIndexUnderlyingCompactedSeriesCursor asksPositionFirst = byPosition.get(series);
+        final LSMTreeIndexUnderlyingCompactedSeriesCursor asksKeyFirst = byKey.get(series);
+        while (asksPositionFirst.hasNext()) {
+          assertThat(asksKeyFirst.hasNext()).isTrue();
+          asksPositionFirst.next();
+          asksKeyFirst.next();
+
+          final int pageAsked = asksPositionFirst.getCurrentPageId().getPageNumber();
+          final int positionAsked = asksPositionFirst.getCurrentPositionInPage();
+          final Object[] key = asksKeyFirst.getKeys();
+          final int firstPage = asksKeyFirst.getCurrentPageId().getPageNumber();
+
+          assertThat(pageAsked).as("page of key " + key[0]).isEqualTo(firstPage);
+          assertThat(positionAsked).as("position of key " + key[0]).isEqualTo(asksKeyFirst.getCurrentPositionInPage());
+          assertThat(asksPositionFirst.getValue()).as("values of key " + key[0]).isEqualTo(asksKeyFirst.getValue());
+          ++keys;
+          if (asksKeyFirst.getValue().length >= HOT / 2)
+            ++hotKeys;
+        }
+        assertThat(asksKeyFirst.hasNext()).isFalse();
+        asksPositionFirst.close();
+        asksKeyFirst.close();
+      }
+      // The last page of the index is still being filled and stays in the mutable index: the series holds the keys up to there
+      assertThat(keys).as("keys of the series, " + (ascending ? "ascending" : "descending")).isGreaterThanOrEqualTo(2);
+      assertThat(hotKeys).as("the hot key comes back whole").isEqualTo(1);
+    }
   }
 
   private LSMTreeIndex createTypeWithHotKey() {

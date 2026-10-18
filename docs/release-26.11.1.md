@@ -70,12 +70,14 @@ The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they fol
   conflicted could reach the view in the opposite order, and an edge created in the record slot a deleted one had just freed
   (the same RID) was withdrawn by the deletion that arrived after it. The changes now reach the view in the order their
   transactions committed, for `SYNCHRONOUS` (broken since the views exist) and `ASYNCHRONOUS` (since #10212) alike.
-  `OrderedAfterCommitCallback` gives any after-commit callback the same guarantee.
+  `OrderedAfterCommitCallback` gives any after-commit callback the same guarantee. A commit on a table the view covers now
+  returns once the commits ahead of it have reached the view (a few microseconds when they are running; a transaction that
+  never reports, because its thread died, costs the commits behind it one wait of 30 seconds, logged as a WARNING, and is then
+  skipped).
 - **#10188** A `NOTUNIQUE` LSM-tree index no longer returns entries its records do not have once it has been compacted:
   `TypeIndex.iterator()`, `countEntries()`, range scans and `ORDER BY` on the indexed property returned extra rows after
   updates. A key with many values is stored in chunks that can run over a data page of the compacted series, and the scan
   applied the deletions of the newer pages to the first page of the key only. Point lookups were not affected.
-
 - **#10228** PostgreSQL wire: `psql`'s `\dt`, `\d <table>` and `\d+ <table>`, and psqlodbc's `SQLColumns` and
   `SQLTables(SQL_ALL_TABLE_TYPES)`, answer from the emulated `pg_catalog` instead of empty results or a syntax error. The
   catalog reads parenthesised joins, applies join conditions (an INNER JOIN's `ON` filters, a LEFT JOIN that does not

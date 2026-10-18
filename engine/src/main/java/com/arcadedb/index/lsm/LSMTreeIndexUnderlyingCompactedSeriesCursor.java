@@ -39,9 +39,10 @@ import java.util.List;
  * ({@link LSMTreeIndexCursor}) resolved the tombstones of the newer cursors against the first part only, and the later parts
  * returned entries that had been deleted (issue #10188).
  * <p>
- * The key is read on the first {@link #getKeys()} or {@link #getValue()} after {@link #next()}, and from then on
- * {@link #getCurrentPageId()} and {@link #getCurrentPositionInPage()} name the end of the key, the entry {@link #next()} steps
- * past. Callers read the key before asking for the position.
+ * The key is read on the first {@link #getKeys()}, {@link #getValue()}, {@link #getCurrentPageId()} or
+ * {@link #getCurrentPositionInPage()} after {@link #next()}, and from then on the position names the end of the key, the entry
+ * {@link #next()} steps past, whichever of the four was asked first. The values of a key are held in one array, so the memory a
+ * key takes is proportional to its number of values, as the merge of the cursors already needs.
  */
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   // The last data page of the series to visit in the direction of the scan: the highest page number going up, the lowest going down
@@ -209,12 +210,24 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
 
   @Override
   public PageId getCurrentPageId() {
+    settleOnKey();
     return pageCursor.pageId;
   }
 
   @Override
   public int getCurrentPositionInPage() {
+    settleOnKey();
     return pageCursor.currentEntryIndex;
+  }
+
+  /**
+   * Reads the key the cursor stands on, if it has not been read since {@link #next()}, so that a position asked first is the same
+   * as one asked after the key: the end of the key, not the start of its first chunk. A cursor that is not on an entry yet (before
+   * the first one, or past the last) has no key to read.
+   */
+  private void settleOnKey() {
+    if (groupKeys == null && pageCursor.currentEntryIndex >= 0 && pageCursor.currentEntryIndex < pageCursor.totalKeys)
+      loadGroup();
   }
 
   @Override
