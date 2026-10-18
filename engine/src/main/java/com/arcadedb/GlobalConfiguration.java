@@ -226,6 +226,13 @@ public enum GlobalConfiguration {
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
+  TX_WAL_IDLE_TIMEOUT("arcadedb.txWalIdleTimeout", SCOPE.DATABASE, """
+      Milliseconds a WAL file of the pool can stay without writes before the WAL housekeeping closes and removes it, \
+      once all its pages reached the data files. A WAL file is opened on the first commit that needs it, so a database \
+      that is only read, or not written for this long, holds no WAL file open. 0 or a negative value keeps every WAL \
+      file open until the database is closed""",
+      Long.class, 60_000L),
+
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
 
@@ -1799,6 +1806,11 @@ public enum GlobalConfiguration {
 
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
+
+  SERVER_QUERY_WARM_UP("arcadedb.server.queryWarmUp", SCOPE.SERVER, """
+      Once the server is online, warms the query stack in the background: parses a SQL statement and runs a trivial \
+      statement in SQL and OpenCypher on a database the server holds open, so the first client request does not pay for \
+      loading the parsers and the function registry""", Boolean.class, true),
 
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\

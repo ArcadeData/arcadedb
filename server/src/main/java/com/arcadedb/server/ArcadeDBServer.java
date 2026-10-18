@@ -248,6 +248,8 @@ public class ArcadeDBServer {
   // The statements this server is running, listed and terminated by the "list queries" / "terminate query" commands
   // (issue #9680). One per server rather than per JVM: each node answers for its own work.
   private final       RunningQueryRegistry                  runningQueries = newRunningQueryRegistry();
+  // The background warm-up of the query stack started once the server is ONLINE, null when disabled (issue #10218)
+  private volatile    QueryWarmUp                           queryWarmUp;
   // Admission for backups of a database, shared by every entry point that can start one on this server: the
   // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
@@ -717,6 +719,10 @@ public class ArcadeDBServer {
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
+
+    // #10218: THE FIRST CLIENT REQUEST NO LONGER PAYS FOR LOADING THE QUERY STACK, A BACKGROUND THREAD DOES
+    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_QUERY_WARM_UP))
+      queryWarmUp = new QueryWarmUp(this).start();
 
     // A server registered with a support key registers itself as an installation of the portal (after a delay, in the background)
     if (supportService != null)
@@ -1399,6 +1405,33 @@ public class ArcadeDBServer {
     return getDatabase(databaseName, true, true);
   }
 
+  /**
+   * The database a client request names, opened now when it is on disk but not open (issue #10234): with
+   * {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} off, or after a {@code close database}, a database was
+   * reachable over the binary protocols - which have always opened it on demand - but not over HTTP, which answered that
+   * it was not available until somebody opened it by hand. A server holding thousands of databases can now leave them
+   * closed at start and open each on its first request.
+   * <p>
+   * Only a directory that holds a database is opened: one the operating system or the storage put in the database
+   * directory must not become a database because a request named it (issue #8805). Any other name is refused as before,
+   * with {@link DatabaseNotAvailableException}. The caller has already checked that the user may access the database.
+   */
+  public ServerDatabase getDatabaseForRequest(final String databaseName) {
+    final ServerDatabase db = databases.get(databaseName);
+    if (status == STATUS.ONLINE && db != null && db.isOpen())
+      return db;
+
+    if (databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName)) {
+      // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK
+      checkDatabaseNameIsValid(databaseName);
+      final File directory = new File(
+          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
+      if (holdsDatabase(directory))
+        return getDatabase(databaseName, false, true);
+    }
+    return getDatabase(databaseName, false, false);
+  }
+
   public FileServerEventLog getEventLog() {
     return eventLog;
   }
@@ -1959,6 +1992,11 @@ public class ArcadeDBServer {
     // a Postgres pg_cancel_backend: the server administrator sees everything, other users their own (issue #9689)
     registry.setAdministrator(ServerSecurityUser::isServerAdministrator);
     return registry;
+  }
+
+  /** The background warm-up of the query stack (issue #10218), null before the server is ONLINE or when disabled. */
+  public QueryWarmUp getQueryWarmUp() {
+    return queryWarmUp;
   }
 
   /** The statements this server is running (issue #9680). */

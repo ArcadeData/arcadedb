@@ -1,0 +1,119 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression test for issue #10234, the server half: a database on disk that the server did not hold open - because
+ * {@code arcadedb.server.databaseLoadAtStartup} was off, or after a {@code close database} - answered "not available" over
+ * HTTP until somebody opened it by hand, while the binary protocols opened it on its first request. HTTP now opens it on
+ * its first request too, so a server holding thousands of databases can leave them closed at start. A name that is not a
+ * database on disk is still refused, and never becomes one.
+ * <p>
+ * And issue #10218: once the server is online, the query stack is warmed in the background, so the first client request
+ * does not pay for it.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
+
+  @Test
+  void aClosedDatabaseIsOpenedByItsFirstRequest() throws Exception {
+    assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
+
+    final HttpResponse<String> response = postQuery(getDatabaseName(), "select count(*) as c from V1");
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.body()).contains("\"c\"");
+    assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
+  }
+
+  @Test
+  void aNameThatIsNotADatabaseOnDiskIsStillRefused() throws Exception {
+    final String name = getDatabaseName() + "_10234_missing";
+    final File directory = new File(
+        getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), name);
+
+    final HttpResponse<String> missing = postQuery(name, "select 1");
+    assertThat(missing.statusCode()).isNotEqualTo(200);
+    assertThat(directory).doesNotExist();
+    assertThat(getServer(0).existsDatabase(name)).isFalse();
+
+    // A DIRECTORY THE OPERATING SYSTEM OR THE STORAGE PUT THERE (#8805): IT DOES NOT BECOME A DATABASE BECAUSE A REQUEST NAMED IT
+    assertThat(directory.mkdirs()).isTrue();
+    try {
+      final HttpResponse<String> notADatabase = postQuery(name, "select 1");
+      assertThat(notADatabase.statusCode()).isNotEqualTo(200);
+      assertThat(directory.list()).isEmpty();
+      assertThat(getServer(0).existsDatabase(name)).isFalse();
+    } finally {
+      directory.delete();
+    }
+  }
+
+  @Test
+  void aNameLeavingTheDatabaseDirectoryIsRefused() throws Exception {
+    final HttpResponse<String> response = postQuery("..", "select 1");
+    assertThat(response.statusCode()).isNotEqualTo(200);
+  }
+
+  @Test
+  void theQueryStackIsWarmedOnceTheServerIsOnline() throws Exception {
+    final QueryWarmUp warmUp = getServer(0).getQueryWarmUp();
+    assertThat(warmUp).isNotNull();
+    assertThat(warmUp.awaitCompletion(60, TimeUnit.SECONDS)).isTrue();
+    // SQL AND OPENCYPHER, ON THE DATABASE THE FIXTURE OPENED
+    assertThat(warmUp.getExecutedStatements()).isEqualTo(QueryWarmUp.EXECUTED_STATEMENTS.size());
+  }
+
+  private HttpResponse<String> postQuery(final String database, final String query) throws Exception {
+    return post("/api/v1/query/" + database, new JSONObject().put("language", "sql").put("command", query));
+  }
+
+  private HttpResponse<String> postServerCommand(final String command) throws Exception {
+    return post("/api/v1/server", new JSONObject().put("command", command));
+  }
+
+  private HttpResponse<String> post(final String path, final JSONObject payload) throws Exception {
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(getServerHttpUrl(0, path)))
+        .header("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+        .build();
+    try (final HttpClient client = HttpClient.newHttpClient()) {
+      return client.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+  }
+}

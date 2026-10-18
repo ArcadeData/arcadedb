@@ -537,7 +537,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       runningQuery = registerRunningQuery(exchange, user, databaseName, session != null ? session.id : null,
           session != null ? session.getTag() : null);
 
-      final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
+      final DatabaseInternal database = httpServer.getServer().getDatabaseForRequest(databaseName);
       final boolean isCsv = contentType.contains("text/csv");
 
       // Configure GraphBatch from query parameters

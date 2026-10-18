@@ -287,6 +287,8 @@ public class TypeBuilder<T> {
       }
 
       schema.typeMap().put(typeName, c);
+      // THE SESSION CHANGES THE NEW TYPE AND, ONCE LINKED BELOW, ITS SUPER TYPES: THE OTHERS KEEP THEIR JSON (#10247)
+      schema.typeChangedInRecordingSession(c);
 
       if (bucketInstances.isEmpty()) {
         for (int i = 0; i < buckets; ++i) {

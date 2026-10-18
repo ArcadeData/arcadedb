@@ -47,9 +47,12 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONFactory;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
+import com.google.gson.Gson;
+import com.google.gson.JsonPrimitive;
 
 import java.io.IOException;
 import java.util.*;
@@ -130,6 +133,8 @@ public class LocalDocumentType implements DocumentType {
   // changed by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released: copy-on-write, an unmodifiable
   // map replaced as a whole, so neither a reader nor a schema reload ever sees it half changed (#9989)
   protected volatile Map<String, Object>            custom                       = Collections.emptyMap();
+  // #10247: THIS TYPE'S JSON AS THE LAST SCHEMA SAVE SERIALIZED IT, null WHEN IT MAY HAVE CHANGED SINCE (getSerializedJSON)
+  private volatile   String                         serializedJSON;
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
   // planning through getBuckets(polymorphic)/getBucketIds(polymorphic), both branches of the ternary - the
   // non-polymorphic pair feeds SelectExecutionPlanner's partition pruning and FetchFromSchemaTypesStep exactly as the
@@ -1686,7 +1691,7 @@ public class LocalDocumentType implements DocumentType {
     // Flipped inside a schema recording session rather than followed by a bare saveConfiguration(): under HA only the
     // session ships the schema, so a REBUILD TYPE that cleared the flag on the leader left every follower declining to
     // prune the type's queries (issue #9747). Nested in the frame of a bucket add or drop, the outermost frame saves.
-    return schema.<Boolean>recordFileChanges(() -> this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition));
+    return recordFileChanges(() -> this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition));
   }
 
   /**
@@ -2362,11 +2367,11 @@ public class LocalDocumentType implements DocumentType {
   }
 
   protected void addBucketInternal(final Bucket bucket) {
-    for (final DocumentType cl : schema.getTypes()) {
-      if (cl.hasBucket(bucket.getName()))
-        throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name
-            + "', because the bucket is already associated to the type '" + cl.getName() + "'");
-    }
+    // ONE LOOKUP, NOT A SCAN OF EVERY TYPE: RESTORING N TYPES AT OPEN COST O(N^2) (ISSUE #10247)
+    final LocalDocumentType owner = schema.getBucketOwner(bucket);
+    if (owner != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name
+          + "', because the bucket is already associated to the type '" + owner.getName() + "'");
 
     // If we already have a partitioned strategy in place, growing the bucket count changes the
     // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any
@@ -2385,6 +2390,7 @@ public class LocalDocumentType implements DocumentType {
 
     bucketIds = CollectionUtils.addToUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
+    schema.bucketAttached(bucket, this);
 
     // PROPAGATE THE NEW BUCKET UP THE INHERITANCE TREE. THE SUPER TYPES ARE OFTEN LINKED BEFORE THE BUCKET EXISTS
     // (`ALTER TYPE x BUCKET +y`, GROWING AN EXISTING TYPE THROUGH THE TYPE BUILDER), AND THEIR POLYMORPHIC CACHES
@@ -2478,7 +2484,7 @@ public class LocalDocumentType implements DocumentType {
   private void ensureExternalBucketFor(final LocalBucket primary) {
     // Atomic check-and-create: two threads racing through ensureExternalBuckets()/addBucketInternal() must not
     // both attempt to allocate the paired _ext bucket and trip schema.createBucket's "already exists" guard.
-    externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
+    final int externalBucketId = externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
       final String extName = InternalBucketNaming.externalPropertyBucketName(primary.getName());
       final LocalBucket external;
       final LocalBucket registered = schema.lookupBucket(extName);
@@ -2517,6 +2523,9 @@ public class LocalDocumentType implements DocumentType {
       external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
       return external.getFileId();
     });
+    // THE PERMISSIONS ON THE PAIRED FILE ARE THE TYPE'S AT ONCE, NOT FROM THE END OF THE SCHEMA CHANGE ON (ISSUE #10247).
+    // OUTSIDE computeIfAbsent: IT TAKES THE SCHEMA MONITOR, WHICH IS NOT TO BE WAITED FOR UNDER A LOCK OF THE MAP
+    schema.involvedBucketAttached(externalBucketId, this);
   }
 
   /**
@@ -2665,6 +2674,7 @@ public class LocalDocumentType implements DocumentType {
 
     bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
+    schema.bucketDetached(bucket, this);
 
     // SYMMETRIC TO addBucketInternal: A BUCKET BELONGS TO EXACTLY ONE TYPE, SO ONCE IT IS DETACHED FROM THIS TYPE NO
     // SUPER TYPE CAN REACH IT ANY LONGER AND EVERY POLYMORPHIC CACHE UP THE TREE MUST DROP IT (ISSUE #5297).
@@ -2886,7 +2896,32 @@ public class LocalDocumentType implements DocumentType {
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
-    return schema.recordFileChanges(callback);
+    return schema.recordFileChanges(() -> {
+      // A CHANGE MADE THROUGH THIS TYPE: THE SAVE THAT ENDS THE SESSION SERIALIZES THIS TYPE AND ITS HIERARCHY AGAIN, AND
+      // WRITES THE OTHER TYPES AS THE LAST SAVE SERIALIZED THEM (ISSUE #10247)
+      schema.typeChangedInRecordingSession(this);
+      return callback.call();
+    });
+  }
+
+  /**
+   * This type's member of the {@code types} object of the schema file - its name and {@link #toJSON()} in compact form -
+   * cached between two schema saves (issue #10247): a save rewrites the whole schema file, and serializing every type again
+   * for a change to one of them made a DDL statement cost O(N) in the number of types. {@link LocalSchema} drops the cache
+   * whenever this type may have changed.
+   */
+  String getSerializedJSON() {
+    String json = serializedJSON;
+    if (json == null) {
+      final Gson gson = JSONFactory.INSTANCE.getGson();
+      json = gson.toJson(new JsonPrimitive(name)) + ":" + gson.toJson(toJSON().getInternal());
+      serializedJSON = json;
+    }
+    return json;
+  }
+
+  void invalidateSerializedJSON() {
+    serializedJSON = null;
   }
 
   private void updatePolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {

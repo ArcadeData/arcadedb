@@ -139,7 +139,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         throw new SecurityException(
             "User '" + user.getName() + "' is not allowed to access database '" + databaseName.getFirst() + "'");
 
-      database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
+      // OPENED ON ITS FIRST REQUEST WHEN IT IS ON DISK BUT NOT OPEN (#10234), AS THE BINARY PROTOCOLS ALWAYS DID
+      database = httpServer.getServer().getDatabaseForRequest(databaseName.getFirst());
 
       current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
       if (current != null && !current.transactions.isEmpty() && current.transactions.getFirst().isActive()) {

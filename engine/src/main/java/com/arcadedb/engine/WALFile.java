@@ -72,6 +72,8 @@ public class WALFile extends LockContext {
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
+  // #10234: WHEN THIS FILE WAS OPENED OR LAST WRITTEN, SO THE HOUSEKEEPING CAN RELEASE A FILE NOBODY WRITES ANY MORE
+  private volatile long             lastWriteTime     = System.currentTimeMillis();
   // #8139: THROTTLES THE REOPEN DIAGNOSTIC, WHICH A RECOVERY SCAN ON AN INTERRUPTED THREAD HITS ONCE PER READ
   private final    ChannelReopenLog reopenLog         = new ChannelReopenLog();
 
@@ -721,6 +723,7 @@ public class WALFile extends LockContext {
     }
 
     statsBytesWritten += buffer.size();
+    lastWriteTime = System.currentTimeMillis();
 
     // This instance's own channel, exactly as the channel.force() calls these replaced: the `file`
     // parameter is this same object at the only call site (TransactionManager.tryWriteTransactionToWALFile
@@ -735,6 +738,11 @@ public class WALFile extends LockContext {
 
   public void notifyPageFlushed() {
     pagesToFlush.decrementAndGet();
+  }
+
+  /** When this file was opened or last written, in epoch milliseconds (issue #10234). */
+  long getLastWriteTime() {
+    return lastWriteTime;
   }
 
   public long getSize() throws IOException {

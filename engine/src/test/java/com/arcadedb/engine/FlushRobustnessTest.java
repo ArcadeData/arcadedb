@@ -208,7 +208,7 @@ class FlushRobustnessTest extends TestHelper {
       final java.lang.reflect.Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
       pendingField.setAccessible(true);
       final java.util.concurrent.atomic.AtomicInteger pending =
-          (java.util.concurrent.atomic.AtomicInteger) pendingField.get(pool[0]);
+          (java.util.concurrent.atomic.AtomicInteger) pendingField.get(firstOpenWALFile(pool));
       pending.incrementAndGet();
 
       // The pipeline is empty, so the flush wait succeeds - but the ack gate must still preserve the WAL.
@@ -246,7 +246,7 @@ class FlushRobustnessTest extends TestHelper {
 
     final Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
     poolField.setAccessible(true);
-    final WALFile wal = ((WALFile[]) poolField.get(db.getTransactionManager()))[0];
+    final WALFile wal = firstOpenWALFile((WALFile[]) poolField.get(db.getTransactionManager()));
 
     final PageId pageId = new PageId(db, 0, 4_000_000);
     final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 0, 0);
@@ -264,5 +264,13 @@ class FlushRobustnessTest extends TestHelper {
     final Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
     pendingField.setAccessible(true);
     ((java.util.concurrent.atomic.AtomicInteger) pendingField.get(wal)).incrementAndGet();
+  }
+
+  /** The WAL file the commit above opened: a slot holds a file only once a commit wrote to it (issue #10234). */
+  private static WALFile firstOpenWALFile(final WALFile[] pool) {
+    for (final WALFile file : pool)
+      if (file != null)
+        return file;
+    throw new IllegalStateException("No WAL file is open");
   }
 }
