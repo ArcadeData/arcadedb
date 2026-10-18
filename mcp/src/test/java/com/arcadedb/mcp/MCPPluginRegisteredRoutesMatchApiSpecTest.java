@@ -43,4 +43,17 @@ class MCPPluginRegisteredRoutesMatchApiSpecTest {
         .as("MCPPlugin.registerAPI() and McpApiSpec.MCP_PATHS have drifted apart")
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalize(McpApiSpec.MCP_PATHS));
   }
+
+  /** Issue #10157: every route answers exactly the methods McpApiSpec declares for it, and no other. */
+  @Test
+  void registeredOperationsMatchTheDeclaredApiSpecOperations() {
+    final MCPPlugin plugin = new MCPPlugin();
+    final RecordingPathHandler routes = new RecordingPathHandler();
+
+    plugin.registerAPI(null, routes);
+
+    assertThat(routes.getRegisteredOperations())
+        .as("MCPPlugin.registerAPI() serves methods McpApiSpec.MCP_OPERATIONS does not declare, or the reverse")
+        .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(McpApiSpec.MCP_OPERATIONS));
+  }
 }

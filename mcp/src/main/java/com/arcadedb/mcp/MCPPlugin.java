@@ -23,7 +23,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.PluginRoutes;
 import io.undertow.server.handlers.PathHandler;
+import io.undertow.util.Headers;
 
 import java.nio.file.Paths;
 import java.util.logging.Level;
@@ -84,8 +86,19 @@ public class MCPPlugin implements ServerPlugin {
   @Override
   public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
-    routes.addExactPath("/api/v1/mcp", new MCPHttpHandler(httpServer, server, configuration));
-    routes.addExactPath("/api/v1/mcp/config", new MCPConfigHandler(httpServer, configuration));
+    // Declared with their methods, so any other method is answered 405 before a handler runs (issue #10157). The
+    // handlers keep their own method checks, which are now a second line rather than the only one.
+    final MCPConfigHandler configHandler = new MCPConfigHandler(httpServer, configuration);
+    new PluginRoutes(routes)//
+        .post("/api/v1/mcp", new MCPHttpHandler(httpServer, server, configuration))//
+        .get("/api/v1/mcp/config", configHandler)//
+        .post("/api/v1/mcp/config", configHandler)//
+        // JSON-RPC carries its own error envelope, which the published spec promises for this endpoint's 405 too
+        .onMethodNotAllowed("/api/v1/mcp", exchange -> {
+          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+          exchange.getResponseSender().send(
+              MCPDispatcher.errorObject(null, -32600, "Method Not Allowed: the MCP endpoint accepts POST only").toString());
+        });
 
     LogManager.instance().log(this, Level.INFO, "MCP server endpoint registered at /api/v1/mcp");
   }

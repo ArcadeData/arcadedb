@@ -42,6 +42,18 @@ public final class RoutePathNormalizer {
     return templatePaths.stream().map(RoutePathNormalizer::normalize).collect(Collectors.toSet());
   }
 
+  /**
+   * {@link #normalize(String)} applied to the path of each {@code "METHOD path"} operation, for the method dimension of
+   * the anti-drift check (issue #10157). Two operations that collapse to one prefix with the same method collapse to one
+   * entry, as their routes do.
+   */
+  public static Set<String> normalizeOperations(final Set<String> operations) {
+    return operations.stream().map(operation -> {
+      final int space = operation.indexOf(' ');
+      return operation.substring(0, space + 1) + normalize(operation.substring(space + 1));
+    }).collect(Collectors.toSet());
+  }
+
   public static String normalize(final String templatePath) {
     final int paramStart = templatePath.indexOf('{');
     if (paramStart < 0)

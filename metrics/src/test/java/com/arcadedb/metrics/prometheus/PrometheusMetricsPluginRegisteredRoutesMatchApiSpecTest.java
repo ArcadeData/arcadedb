@@ -56,4 +56,18 @@ class PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest {
         .as("PrometheusMetricsPlugin.registerAPI() and PluginApiSpec.METRICS_PATHS have drifted apart")
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalize(PluginApiSpec.METRICS_PATHS));
   }
+
+  /** Issue #10157: the scrape route answers GET, the one method PluginApiSpec declares for it, and no other. */
+  @Test
+  void registeredOperationsMatchTheDeclaredApiSpecOperations() {
+    plugin = new PrometheusMetricsPlugin();
+    plugin.configure(null, new ContextConfiguration());
+    final RecordingPathHandler routes = new RecordingPathHandler();
+
+    plugin.registerAPI(null, routes);
+
+    assertThat(routes.getRegisteredOperations())
+        .as("PrometheusMetricsPlugin.registerAPI() serves methods PluginApiSpec.METRICS_OPERATIONS does not declare")
+        .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(PluginApiSpec.METRICS_OPERATIONS));
+  }
 }

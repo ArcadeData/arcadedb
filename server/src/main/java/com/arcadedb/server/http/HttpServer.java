@@ -154,6 +154,7 @@ public class HttpServer implements ServerPlugin {
   private          int                    httpsPortListening = -1;
   private volatile List<RouteRecordingRoutingHandler.RouteDescriptor> registeredRoutes = List.of();
   private volatile Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> registeredRouteHandlers = Map.of();
+  private volatile List<String>                                                   unrestrictedPluginRoutes = List.of();
   /**
    * Test-only: runs after the ports are probed and right before {@code Undertow.start()}, so a test can take a port in
    * the window between the two (issue #9479). Always {@code null} in production. It is JVM-wide: every server started
@@ -336,7 +337,7 @@ public class HttpServer implements ServerPlugin {
   }
 
   private PathHandler setupRoutes() {
-    final PathHandler routes = new PathHandler();
+    final PluginPathHandler routes = new PluginPathHandler();
     final RouteRecordingRoutingHandler basicRoutes = new RouteRecordingRoutingHandler();
 
     // Shared with the GET registrations below (issue #8133): container healthchecks such as
@@ -453,12 +454,19 @@ public class HttpServer implements ServerPlugin {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
+    // A plugin's route added to the PathHandler directly answers every method; PluginPathHandler names it (issue #10157)
     for (final ServerPlugin plugin : server.getPlugins()) {
-      plugin.registerAPI(this, routes);
+      routes.setRegisteringPlugin(plugin.getName());
+      try {
+        plugin.registerAPI(this, routes);
+      } finally {
+        routes.setRegisteringPlugin(null);
+      }
     }
 
     registeredRouteHandlers = mergeWithPrefix("/api/v1", basicRoutes, "/api/v1/ai", aiRoutes);
     registeredRoutes = List.copyOf(registeredRouteHandlers.keySet());
+    unrestrictedPluginRoutes = routes.getUnrestrictedPluginRoutes();
 
     return routes;
   }
@@ -485,6 +493,15 @@ public class HttpServer implements ServerPlugin {
    */
   List<RouteRecordingRoutingHandler.RouteDescriptor> getRegisteredRoutes() {
     return registeredRoutes;
+  }
+
+  /**
+   * The {@code "<plugin> <path>"} of every route a plugin's {@code registerAPI} added to the outer {@code PathHandler}
+   * directly rather than through {@link PluginRoutes}: a route that answers every HTTP method, whatever the plugin meant
+   * it for (issue #10157). Empty for the plugins this repository ships, which the HA integration test asserts.
+   */
+  public List<String> getUnrestrictedPluginRoutes() {
+    return unrestrictedPluginRoutes;
   }
 
   /**
