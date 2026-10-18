@@ -127,6 +127,40 @@ class Issue10263ConcurrentEdgeDeleteTest extends TestHelper {
   }
 
   /**
+   * The conflict is retryable: the retry reads the list again and the delete goes through, leaving nothing behind.
+   */
+  @Test
+  void theRetryOfTheRefusedDeleteSucceeds() throws Exception {
+    final RID[] v = createVertices(2);
+    database.command("sql", "CREATE EDGE TYPE F").close();
+    database.transaction(() -> v[0].asVertex().newEdge("E", v[1].asVertex()));
+
+    final ExecutorService other = Executors.newSingleThreadExecutor();
+    final RID[] added = new RID[1];
+    final int[] attempts = new int[1];
+    try {
+      database.transaction(() -> {
+        ++attempts[0];
+        if (attempts[0] == 1) {
+          v[0].asVertex().newEdge("F", v[1].asVertex());
+          try {
+            added[0] = addEdgeInOwnTransaction(other, v[0], v[1]);
+          } catch (final Exception e) {
+            throw new RuntimeException(e);
+          }
+        }
+        added[0].asEdge().delete();
+      }, false, 3);
+    } finally {
+      other.shutdownNow();
+    }
+
+    assertThat(attempts[0]).isEqualTo(2);
+    assertEdgeListsMatchRecords(v);
+    assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(1);
+  }
+
+  /**
    * The same window when the transaction holds its own copy of the vertex from before the vertex had any list in that
    * direction: the removal finds no list at all.
    */

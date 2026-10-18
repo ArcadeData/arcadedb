@@ -1147,6 +1147,7 @@ public class GraphEngine {
       throw new ConcurrentModificationException(
           "Edge " + edge.getIdentity() + " is in the committed " + direction + " edge list of vertex " + endpoint.getIdentity()
               + " but not in the one this transaction read: the list changed after it was read");
+
     keepEdgeRecordPageOutOfSlotMerge(edge);
   }
 
@@ -1158,6 +1159,9 @@ public class GraphEngine {
    * pre-image check of the slot merge cannot tell from the record anchored here, and the delete would take it out
    * while its entries stay (#10263). Excluding the page from the slot merge leaves the plain page-version check: the
    * commit goes through only when nothing committed on the record's page since the anchor, which is the orphan case.
+   * <p>
+   * The price is paid by this rare path only: a commit of an UNRELATED record on the same page in that window now fails
+   * the orphan delete with a retryable conflict too, which the slot merge would have absorbed.
    */
   private void keepEdgeRecordPageOutOfSlotMerge(final Edge edge) {
     if (edge instanceof LightEdge)
@@ -1288,8 +1292,9 @@ public class GraphEngine {
     return committedChainHolds(headRID, edge.getIdentity());
   }
 
-  private boolean committedChainHolds(RID chunkRID, final RID edgeRID) {
-    final ChainCycleGuard guard = new ChainCycleGuard(chunkRID);
+  private boolean committedChainHolds(final RID headRID, final RID edgeRID) {
+    final ChainCycleGuard guard = new ChainCycleGuard(headRID);
+    RID chunkRID = headRID;
     while (chunkRID != null) {
       final Binary content = committedRecordContent(chunkRID);
       if (content == null || content.getByte(0) != EdgeSegment.RECORD_TYPE)
