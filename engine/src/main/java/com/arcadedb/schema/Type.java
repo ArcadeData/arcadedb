@@ -189,7 +189,7 @@ public enum Type {
     TYPES_BY_USERTYPE.put(Date.class, DATETIME);
     TYPES_BY_USERTYPE.put(Calendar.class, DATETIME);
     TYPES_BY_USERTYPE.put(LocalDateTime.class, DATETIME);
-    // THE CLASS A DATE IS READ AS: WITHOUT IT validateValue() REFUSED IT, SO A GRAPH IMPORT COULD NOT WRITE ONE BACK (issue #10202)
+    // The class a DATE is read as: without it validateValue() refused it, so a graph import could not write one back (issue #10202)
     TYPES_BY_USERTYPE.put(LocalDate.class, DATE);
     TYPES_BY_USERTYPE.put(ZonedDateTime.class, ZONED_DATETIME);
     TYPES_BY_USERTYPE.put(OffsetDateTime.class, DATETIME);

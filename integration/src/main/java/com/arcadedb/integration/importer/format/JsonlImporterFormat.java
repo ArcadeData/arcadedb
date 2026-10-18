@@ -134,6 +134,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private static final int COMMIT_EVERY = 1_000;
 
+  /** The most buckets one type creation takes: the rest of an exported type's buckets are added after it exists. */
+  private static final int MAX_BUCKETS_PER_CREATION = 32;
+
   /**
    * TIMESERIES samples appended since the last commit. One {@code "ts"} line carries a whole chunk of samples
    * (up to {@code JsonlExporterFormat}'s own chunk size), so counting LINES the way {@code context.parsed} does
@@ -298,8 +301,6 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   private static <T> TypeBuilder<T> withExportedBuckets(final TypeBuilder<T> builder, final int exportedBuckets) {
     return exportedBuckets >= 0 ? builder.withTotalBuckets(Math.min(exportedBuckets, MAX_BUCKETS_PER_CREATION)) : builder;
   }
-
-  private static final int MAX_BUCKETS_PER_CREATION = 32;
 
   private void loadSchema(DatabaseInternal database,
       ImporterContext context,

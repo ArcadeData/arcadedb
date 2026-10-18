@@ -84,6 +84,24 @@ class Issue10205IncrementalViewSourcesTest extends TestHelper {
 
     database.transaction(() -> database.command("sql", "UPDATE ItemC SET grp = 'w'"));
     assertSameAsQuery("Vc", COUNT);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM ItemC"));
+    assertThat(viewRows("Vc")).containsExactly("c=2");
+    assertSameAsQuery("Vc", COUNT);
+  }
+
+  @Test
+  void aViewGroupingASubtypeSeesItsUpdates() {
+    database.command("sql", "CREATE MATERIALIZED VIEW Vg AS " + GROUPED + " REFRESH INCREMENTAL");
+    database.command("sql", "CREATE DOCUMENT TYPE ItemC EXTENDS Item");
+    database.transaction(() -> database.command("sql", "INSERT INTO ItemC SET grp = 'x'"));
+    database.transaction(() -> database.command("sql", "UPDATE ItemC SET grp = 'q'"));
+    assertSameAsQuery("Vg", GROUPED);
+
+    reopenDatabase();
+    database.transaction(() -> database.command("sql", "UPDATE ItemC SET grp = 'r'"));
+    assertSameAsQuery("Vg", GROUPED);
+    assertThat(viewRows("Vg")).containsExactly("c=1 grp=r", "c=1 grp=x", "c=1 grp=y");
   }
 
   @Test

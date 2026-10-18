@@ -111,6 +111,8 @@ class Issue10202GraphFormatsValueRoundTripTest {
         v.save();
         // THE SAME PROPERTY WITH A DIFFERENT TYPE ON ANOTHER VERTEX: ONE GRAPHML KEY, TWO VALUE TYPES
         final MutableVertex w = source.newVertex("V").set("id", 2, "long", "not a number", "int", 7L).save();
+        // AND A NULL IN THAT KEY: NOTHING IS WRITTEN FOR IT, SO THE VERTEX COMES BACK WITHOUT A VALUE
+        source.newVertex("V").set("id", 3, "long", null).save();
         v.newEdge("E", w, "weight", new BigDecimal("0.75"), "since", LocalDate.of(2020, 5, 6), "b", (byte) 1).save();
       });
       source.command("sql", "EXPORT DATABASE file://" + file + " WITH overwrite = true, format = '" + format + "'");
@@ -123,6 +125,7 @@ class Issue10202GraphFormatsValueRoundTripTest {
         for (final String key : values.keySet())
           assertSame(format + " " + key, x.get(key), y.get(key));
 
+        assertThat(vertex(target, 3).get("long")).as(format + " null").isNull();
         final Document w = vertex(target, 2);
         assertSame(format + " w.long", "not a number", w.get("long"));
         assertSame(format + " w.int", 7L, w.get("int"));
@@ -143,7 +146,7 @@ class Issue10202GraphFormatsValueRoundTripTest {
         try (final GZIPInputStream is = new GZIPInputStream(new FileInputStream("exports/" + file))) {
           graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
         }
-        assertThat(graph.getDatabase().countType("V", true)).isEqualTo(2);
+        assertThat(graph.getDatabase().countType("V", true)).isEqualTo(3);
         assertThat(graph.getDatabase().countType("E", true)).isEqualTo(1);
         try (final ResultSet rs = graph.getDatabase().query("sql", "SELECT FROM V WHERE id = 1")) {
           // GRAPHML'S OWN TYPES COME BACK AS THEY WERE, THE OTHERS AS THEIR TEXT

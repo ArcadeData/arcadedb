@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.grammar.SQLParser;
@@ -58,7 +59,7 @@ final class MaterializedViewSources {
   /**
    * @param query the defining query
    *
-   * @throws com.arcadedb.exception.CommandSQLParsingException if the query does not parse
+   * @throws CommandSQLParsingException if the query does not parse
    */
   static MaterializedViewSources of(final Database database, final String query) {
     final ParseTree tree = new SQLAntlrParser(database).parseWithTree(query).tree();
@@ -108,18 +109,18 @@ final class MaterializedViewSources {
     if (node instanceof SQLParser.MatchStatementContext)
       return "a MATCH";
     if (node instanceof SQLParser.FromFunctionCallContext f)
-      return "the function call '" + text(f) + "' in FROM";
+      return "the function call '" + f.getText() + "' in FROM";
     if (node instanceof SQLParser.FromBucketContext || node instanceof SQLParser.FromBucketListContext
         || node instanceof SQLParser.FromBucketParameterContext)
-      return "the bucket '" + text((ParserRuleContext) node) + "' in FROM";
+      return "the bucket '" + ((ParserRuleContext) node).getText() + "' in FROM";
     if (node instanceof SQLParser.FromIndexContext f)
-      return "the index '" + text(f) + "' in FROM";
+      return "the index '" + f.getText() + "' in FROM";
     if (node instanceof SQLParser.FromSchemaContext f)
-      return "the schema metadata '" + text(f) + "' in FROM";
+      return "the schema metadata '" + f.getText() + "' in FROM";
     if (node instanceof SQLParser.FromRidsContext || node instanceof SQLParser.FromRidArrayContext)
-      return "the record ids '" + text((ParserRuleContext) node) + "' in FROM";
+      return "the record ids '" + ((ParserRuleContext) node).getText() + "' in FROM";
     if (node instanceof SQLParser.FromParamContext || node instanceof SQLParser.FromParamArrayContext)
-      return "the parameter '" + text((ParserRuleContext) node) + "' in FROM";
+      return "the parameter '" + ((ParserRuleContext) node).getText() + "' in FROM";
     return null;
   }
 
@@ -131,8 +132,4 @@ final class MaterializedViewSources {
     return ctx.getText();
   }
 
-  // The tokens' text without the whitespace the lexer skipped: enough to recognize the source in a message
-  private static String text(final ParserRuleContext ctx) {
-    return ctx.getText();
-  }
 }

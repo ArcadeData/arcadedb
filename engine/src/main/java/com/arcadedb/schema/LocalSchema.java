@@ -2440,15 +2440,10 @@ public class LocalSchema implements Schema {
 
     // See dropMaterializedView for why the monitor is not held across recordFileChanges, and why the teardown of the
     // old refresh resources and the setup of the new ones both run inside it (#7457)
-    final MaterializedViewImpl current;
     synchronized (this) {
-      current = materializedViews.get(viewName);
-      if (current == null)
+      if (!materializedViews.containsKey(viewName))
         throw new SchemaException("Materialized view '" + viewName + "' not found");
     }
-    // A view whose query reads what no type's events report cannot become INCREMENTAL (issue #10205)
-    if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
-      MaterializedViewSources.of(database, current.getQuery()).checkIncremental(viewName);
 
     recordFileChanges(() -> {
       final MaterializedViewImpl oldView;
@@ -2458,6 +2453,10 @@ public class LocalSchema implements Schema {
         oldView = materializedViews.get(viewName);
         if (oldView == null)
           throw new SchemaException("Materialized view '" + viewName + "' not found");
+        // A view whose query reads what no type's events report cannot become INCREMENTAL (issue #10205). Checked here, on
+        // the query of the view this ALTER replaces, before anything changes
+        if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
+          MaterializedViewSources.of(database, oldView.getQuery()).checkIncremental(viewName);
         // Create new view instance with updated refresh mode
         newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
         adoptEveryReadType(newView);
@@ -5726,8 +5725,9 @@ public class LocalSchema implements Schema {
           found.add(getType(typeName).getName());
       view.addSourceTypeNames(found);
     } catch (final RuntimeException e) {
-      LogManager.instance().log(this, Level.FINE, "Cannot analyze the query of materialized view '%s': %s", e, view.getName(),
-          e.getMessage());
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot analyze the query of materialized view '%s', it is maintained by the source types it was stored with: %s", e,
+          view.getName(), e.getMessage());
     }
   }
 
