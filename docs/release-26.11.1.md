@@ -73,7 +73,8 @@ The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they fol
   `OrderedAfterCommitCallback` gives any after-commit callback the same guarantee. A commit on a table the view covers now
   returns once the commits ahead of it have reached the view (a few microseconds when they are running; a transaction that
   never reports, because its thread died, costs the commits behind it one wait of 30 seconds, logged as a WARNING, and is then
-  skipped; `arcadedb.gavCommitOrderMaxWait` sets the wait in milliseconds, 0 to not wait at all).
+  skipped, and its change reaches the view out of order if it ever comes: the commit order is guaranteed until such a WARNING is logged;
+  `arcadedb.gavCommitOrderMaxWait` sets the wait in milliseconds, 0 to not wait at all).
 - **#10188** A `NOTUNIQUE` LSM-tree index no longer returns entries its records do not have once it has been compacted:
   `TypeIndex.iterator()`, `countEntries()`, range scans and `ORDER BY` on the indexed property returned extra rows after
   updates. A key with many values is stored in chunks that can run over a data page of the compacted series, and the scan

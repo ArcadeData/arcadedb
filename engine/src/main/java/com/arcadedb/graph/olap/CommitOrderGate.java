@@ -66,7 +66,7 @@ final class CommitOrderGate {
   private final AtomicBoolean                delivering = new AtomicBoolean();
   private final Object                       waitLock   = new Object();
   // Read at every wait, so a change of the setting applies at once. 0 or less: the committing thread does not wait
-  private final LongSupplier                  maxWaitMs;
+  private final LongSupplier                 maxWaitMs;
 
   /**
    * @param maxWaitMs how long, in milliseconds, a committing thread waits for the changes ahead of its own, asked at every wait

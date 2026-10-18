@@ -107,6 +107,15 @@ class Issue10248SqlStringMethodsCodePointsTest extends TestHelper {
     assertThat(literal(VALUE + needle, "lastIndexOf('" + needle + "')")).isEqualTo(2);
     assertThat(literal(VALUE, "indexOf('" + needle + "')")).isEqualTo(-1);
     assertThat(literal(VALUE, "lastIndexOf('" + needle + "')")).isEqualTo(-1);
+
+    // nor the high surrogate alone, which would end inside the pair, or a needle that ends with it
+    final String high = "\uD83D";
+    assertThat(literal(VALUE, "indexOf('" + high + "')")).isEqualTo(-1);
+    assertThat(literal(VALUE, "lastIndexOf('" + high + "')")).isEqualTo(-1);
+    assertThat(literal("a" + EMOJI, "indexOf('a" + high + "')")).isEqualTo(-1);
+    assertThat(literal("a" + EMOJI, "lastIndexOf('a" + high + "')")).isEqualTo(-1);
+    assertThat(literal("a" + EMOJI + "a" + high, "indexOf('a" + high + "')")).isEqualTo(2);
+    assertThat(literal("a" + EMOJI + "a" + high, "lastIndexOf('a" + high + "')")).isEqualTo(2);
   }
 
   @Test
