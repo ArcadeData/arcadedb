@@ -25,10 +25,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.StallAwareStopwatch;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -36,6 +38,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * Regression test for issue #10234: every open database kept a {@code java.util.Timer} thread of its own for the WAL
@@ -254,6 +257,37 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
     // THE RECOVERY LEFT A DATABASE THAT KEEPS WORKING
     database.transaction(() -> database.newDocument("Doc").set("name", "after").save());
     assertThat(database.countType("Doc", false)).isEqualTo(51);
+  }
+
+  /**
+   * A WAL file that cannot be created (permissions, a full disk) fails the commit at once, before any of its pages is
+   * written, where an unusable slot is retried for the 30 seconds of the WAL write timeout; the commit works again once the
+   * directory does.
+   */
+  @Test
+  void aWALFileThatCannotBeCreatedFailsTheCommitAtOnce() throws Exception {
+    database.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);
+    reopenDatabase();
+    final File directory = new File(getDatabasePath());
+    assertThat(((DatabaseInternal) database).getTransactionManager().getOpenWALFileCountForTesting()).isZero();
+
+    assertThat(directory.setWritable(false)).isTrue();
+    try {
+      // A USER WHO CAN WRITE ANYWHERE (ROOT) CANNOT MAKE THE CREATION FAIL THIS WAY
+      assumeFalse(Files.isWritable(directory.toPath()));
+
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Doc").set("name", "x").save()))
+          .hasMessageContaining("Cannot create the WAL file");
+      watch.assertGaveUpWithin(20_000,
+          "a commit that fails at once versus the 30s write timeout spent retrying a file that cannot be created");
+    } finally {
+      assertThat(directory.setWritable(true)).isTrue();
+    }
+
+    assertThat(database.countType("Doc", false)).isZero();
+    database.transaction(() -> database.newDocument("Doc").set("name", "y").save());
+    assertThat(database.countType("Doc", false)).isEqualTo(1);
   }
 
   @Test

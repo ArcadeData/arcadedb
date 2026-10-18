@@ -1698,11 +1698,12 @@ public class TransactionManager {
   /**
    * Opens the WAL file of an empty pool slot, for the commit about to write to it (issue #10234), and returns the file the
    * slot holds afterwards: the one this call opened, or the one a concurrent commit opened first. Returns null once a
-   * close or a kill retired the pool, or when the file cannot be created (logged): the caller then tries the other slots,
-   * as it does for any slot that refuses a write.
+   * close or a kill retired the pool: the caller then tries the other slots, as it does for any slot that refuses a write.
    *
-   * @throws TransactionException when the new file is held by another process or database instance (#7479): the
-   *                              database is fenced, as the rotation in {@link #checkWALFiles} does in the same case
+   * @throws TransactionException when the file cannot be created (disk full, permissions), which fails the commit before
+   *                              any of its pages is written; or when the new file is held by another process or database
+   *                              instance (#7479), in which case the database is fenced, as the rotation in
+   *                              {@link #checkWALFiles} does in the same case
    */
   private WALFile openWALFileForSlot(final WALFile[] pool, final int slot) {
     synchronized (walSlotLock) {
@@ -1716,8 +1717,10 @@ public class TransactionManager {
       try {
         file = database.getWALFileFactory().newInstance(walFilePath);
       } catch (final FileNotFoundException e) {
+        // THE COMMIT FAILS NOW, BEFORE ANY OF ITS PAGES IS WRITTEN OR PUBLISHED: A WAL FILE THAT CANNOT BE CREATED (DISK FULL,
+        // PERMISSIONS) IS NOT A SLOT TO TRY AGAIN FOR THE 30 SECONDS OF WRITE_WAL_TIMEOUT, AS A SLOT THAT REFUSES A WRITE IS
         LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, walFilePath);
-        return null;
+        throw new TransactionException("Cannot create the WAL file '" + walFilePath + "': " + e.getMessage(), e);
       }
 
       // #7479: the counter is seeded past every WAL file the open could see, so a brand-new name colliding with one that

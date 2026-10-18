@@ -24,6 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -35,6 +36,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -325,6 +327,92 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
             database.getSchema().dropType(type.getName());
           }
     }
+  }
+
+  /**
+   * Index compactions swap the files of an index under the lock of that index, not under the schema's monitor, while DDL on
+   * other types saves the schema. Every save of every thread is verified against the full serialization (a difference
+   * between two serializations the schema held still for fails it), and the file is the full serialization when it ends.
+   */
+  @Test
+  void compactionsInterleavedWithDdlOnOtherTypesAreWrittenAsTheFullSerialization() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    // SMALL PAGES AND A LOW THRESHOLD, AS THE COMPACTION TESTS OF THE INDEXES DO: THE INDEX COMPACTS AFTER A FEW PAGES
+    final int previousMinPages = GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.getValueAsInteger();
+    GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(3);
+    try {
+      schema.createDocumentType("Hot").createProperty("k", Type.STRING);
+      schema.buildTypeIndex("Hot", new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
+          .withPageSize(16 * 1024).create();
+      compactionsInterleavedWithDdl(schema);
+    } finally {
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(previousMinPages);
+    }
+  }
+
+  private void compactionsInterleavedWithDdl(final LocalSchema schema) throws Exception {
+    final AtomicBoolean running = new AtomicBoolean(true);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    final Thread writer = new Thread(() -> {
+      try {
+        for (int batch = 0; batch < 60 && failure.get() == null; batch++) {
+          final int base = batch * 40;
+          database.transaction(() -> {
+            for (int i = 0; i < 40; i++)
+              database.newDocument("Hot").set("k", "key" + (base + i)).save();
+          });
+        }
+      } catch (final Throwable e) {
+        failure.compareAndSet(null, e);
+      }
+    }, "issue10247-writer");
+
+    final Thread compactor = new Thread(() -> {
+      while (running.get())
+        try {
+          final TypeIndex index = (TypeIndex) schema.getType("Hot").getPolymorphicIndexByProperties("k");
+          for (final IndexInternal bucketIndex : index.getIndexesOnBuckets()) {
+            bucketIndex.scheduleCompaction();
+            bucketIndex.compact();
+          }
+        } catch (final Throwable e) {
+          // A COMPACTION MAY LEGITIMATELY GIVE UP AGAINST A BUSY INDEX; WHAT MUST NOT HAPPEN IS A SCHEMA SAVE THAT DISAGREES
+          // WITH THE FULL SERIALIZATION
+          if (String.valueOf(e.getMessage()).contains("per-type cache"))
+            failure.compareAndSet(null, e);
+        }
+    }, "issue10247-compactor");
+
+    writer.start();
+    compactor.start();
+    try {
+      for (int i = 0; i < 25 && failure.get() == null; i++) {
+        final String name = "Other" + i;
+        final DocumentType type = schema.createDocumentType(name);
+        type.createProperty("p", Type.STRING);
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p");
+        type.setCustomValue("k", "v" + i);
+      }
+    } finally {
+      writer.join();
+      running.set(false);
+      compactor.join();
+    }
+
+    assertThat(failure.get()).isNull();
+    // THE TYPES, NOT THE WHOLE FILE: A DROPPED FILE REWRITES THE COMPACTION MIGRATIONS IN MEMORY WITHOUT A SAVE, AS IT ALWAYS DID,
+    // SO THE MIGRATIONS OF THE FILE MAY LAG THE LIVE ONES UNTIL THE NEXT SAVE; THE CACHE ONLY CONCERNS THE TYPES
+    final String onDisk = Files.readString(schema.getConfigurationFile().toPath(), StandardCharsets.UTF_8);
+    assertThat(new JSONObject(onDisk).getJSONObject("types").toString()).isEqualTo(schema.toJSON().getJSONObject("types").toString());
+
+    // THE COMPACTOR REALLY COMPACTED: A COMPACTED SUB-INDEX ADDS ITS FILE TO THE FILES OF THE INDEX
+    final TypeIndex hot = (TypeIndex) schema.getType("Hot").getPolymorphicIndexByProperties("k");
+    assertThat(hot.getIndexesOnBuckets()).anyMatch(bucketIndex -> bucketIndex.getFileIds().size() > 1);
+
+    reopenDatabase();
+    assertThat(database.countType("Hot", false)).isEqualTo(60 * 40);
+    assertThat(database.getSchema().getTypes().size()).isEqualTo(26);
   }
 
   @Test

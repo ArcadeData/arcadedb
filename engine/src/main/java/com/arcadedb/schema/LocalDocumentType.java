@@ -2915,6 +2915,12 @@ public class LocalDocumentType implements DocumentType {
    * of it cannot survive it; a change made without a session (a direct save, a load, a lazy change) drops the cache of every
    * type before the next write serializes them.
    */
+  // THE RULE THAT KEEPS THIS CACHE HONEST (ISSUE #10247): A MUTATION OF ANYTHING toJSON() WRITES MUST EITHER RUN INSIDE
+  // recordFileChanges() OF THIS TYPE (WHICH DROPS THE CACHE OF ITS WHOLE HIERARCHY WHEN THE SESSION ENDS), OR BE FOLLOWED BY A
+  // SCHEMA-LEVEL SAVE - schema.saveConfiguration(), markDirty(), recordChange() - WHICH MARKS EVERY TYPE STALE. A MUTATION THAT
+  // DOES NEITHER LEAVES THE PREVIOUS JSON IN schema.json UNTIL SOMETHING ELSE DROPS THE CACHE.
+  // arcadedb.schema.verifyIncrementalSerialization (ON IN THE TEST SUITES) FAILS THE SAVE THAT WOULD WRITE SUCH A TYPE, AND
+  // arcadedb.schema.incrementalSerialization=false TURNS THE CACHE OFF.
   String getSerializedJSON() {
     String json = serializedJSON;
     if (json == null) {
