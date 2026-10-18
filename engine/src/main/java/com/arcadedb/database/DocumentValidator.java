@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -211,10 +212,14 @@ public class DocumentValidator {
     // Every value has a string form, so converting cannot be what accepts it: an index on the property compares its keys as
     // text, while a scan compares the stored number, date or boolean natively, and the two disagree on ranges and order
     // (issue #10204)
-    if (type == Type.STRING && constraints.checkType() && !(stored instanceof String))
+    if (type == Type.STRING && constraints.checkType() && !(stored instanceof String)) {
+      final String text = String.valueOf(stored);
+      final String property = Identifier.quote(p.getName());
       throwValidationException(document.getType(), p, "is declared as STRING but a stored value is a " + stored.getClass()
-          .getSimpleName() + ", not a string: " + stored + " (convert the stored values first, e.g. with UPDATE "
-          + document.getTypeName() + " SET " + p.getName() + " = " + p.getName() + ".asString())");
+          .getSimpleName() + ", not a string: " + (text.length() > 100 ? text.substring(0, 100) + "..." : text)
+          + " (convert the stored values first, e.g. with UPDATE " + Identifier.quote(document.getTypeName()) + " SET "
+          + property + " = " + property + ".asString())");
+    }
 
     Object value = stored;
     if (isScalarType(type)) {

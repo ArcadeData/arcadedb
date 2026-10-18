@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10201: a JSONL EXPORT DATABASE / IMPORT DATABASE round trip
@@ -108,6 +109,77 @@ class Issue10201JsonlRoundTripFidelityTest {
       // AN UNDECLARED LINK IS A LINK TOO: REMAPPED WHEN ITS TARGET CAME ALONG, AND NEVER RE-POINTED WHEN IT DID NOT
       assertThat(one.get("free")).isNull();
       assertThat(one.getList("freeList")).containsExactly(null, live);
+    }
+  }
+
+  /** Dozens of dangling links of mixed kinds in one record: removed from the typed list in order, cleared elsewhere. */
+  @Test
+  void manyDanglingLinksOfMixedKindsInOneRecord() {
+    try (final Database source = new DatabaseFactory(SOURCE_PATH).create()) {
+      source.command("sql", "CREATE DOCUMENT TYPE D");
+      source.command("sql", "CREATE PROPERTY D.uid LONG");
+      source.command("sql", "CREATE PROPERTY D.lst LIST OF LINK");
+      source.command("sql", "CREATE PROPERTY D.mp MAP OF LINK");
+      source.transaction(() -> {
+        final List<RID> list = new ArrayList<>();
+        final Map<String, RID> map = new LinkedHashMap<>();
+        final List<Object> free = new ArrayList<>();
+        for (int i = 0; i < 40; i++) {
+          final RID rid = source.newDocument("D").set("uid", 100L + i).save().getIdentity();
+          list.add(rid);
+          map.put("k" + i, rid);
+          free.add(rid);
+        }
+        source.newDocument("D").set("uid", 1L, "lst", list, "mp", map, "free", free).save();
+      });
+      // EVERY ODD ONE GOES
+      source.transaction(() -> source.command("sql", "DELETE FROM D WHERE uid >= 100 AND uid % 2 = 1"));
+      exportTo(source);
+    }
+
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      importInto(target);
+      final Document one = byUid(target, 1L);
+
+      final List<RID> expected = new ArrayList<>();
+      for (int i = 0; i < 40; i += 2)
+        expected.add(byUid(target, 100L + i).getIdentity());
+
+      assertThat(one.getList("lst")).containsExactlyElementsOf(expected);
+      assertThat(one.getMap("mp")).hasSize(20);
+      final List<Object> free = one.getList("free");
+      assertThat(free).hasSize(40);
+      for (int i = 0; i < 40; i++)
+        assertThat(free.get(i)).isEqualTo(i % 2 == 0 ? expected.get(i / 2) : null);
+    }
+  }
+
+  /** A MANDATORY link cannot be cleared: the record fails the import as any record that breaks its schema does. */
+  @Test
+  void aDanglingMandatoryLinkFailsTheImportInsteadOfBeingRepointed() {
+    try (final Database source = new DatabaseFactory(SOURCE_PATH).create()) {
+      source.command("sql", "CREATE DOCUMENT TYPE D");
+      source.command("sql", "CREATE PROPERTY D.uid LONG");
+      source.transaction(() -> {
+        final MutableDocument target = source.newDocument("D").set("uid", 2L).save();
+        source.newDocument("D").set("uid", 1L, "lnk", target.getIdentity()).save();
+        source.newDocument("D").set("uid", 3L).set("lnk", target.getIdentity()).save();
+      });
+      // THE TARGET GOES, THE LINKS TO IT STAY, AND EVERY REMAINING RECORD SATISFIES THE DECLARATION
+      source.transaction(() -> source.command("sql", "DELETE FROM D WHERE uid = 2"));
+      source.command("sql", "CREATE PROPERTY D.lnk LINK (mandatory true, notnull true)");
+      exportTo(source);
+    }
+
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      assertThatThrownBy(() -> importInto(target)).hasStackTraceContaining("lnk");
+      // NOTHING WAS LEFT POINTING AT ANOTHER RECORD
+      try (final ResultSet rs = target.query("sql", "SELECT FROM D WHERE lnk IS NOT NULL")) {
+        while (rs.hasNext()) {
+          final Document d = rs.next().getElement().get();
+          assertThat(d.get("lnk")).isNotEqualTo(d.getIdentity());
+        }
+      }
     }
   }
 

@@ -23,9 +23,13 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -183,6 +187,23 @@ class Issue10205IncrementalViewSourcesTest extends TestHelper {
       database.command("sql", "INSERT INTO Owner SET name = 'z'");
     });
     assertSameAsQuery("Vc", COUNT);
+    assertSameAsQuery("Vo", OWNED);
+  }
+
+  /** A view stored before every source was tracked lists only its first FROM identifier: the load completes the list. */
+  @Test
+  void aViewStoredWithOnlyItsFirstSourceTracksAllAfterLoad() throws Exception {
+    database.command("sql", "CREATE MATERIALIZED VIEW Vo AS " + OWNED + " REFRESH INCREMENTAL");
+    database.close();
+
+    final File schemaFile = new File(getDatabasePath(), LocalSchema.SCHEMA_FILE_NAME);
+    final JSONObject schema = new JSONObject(Files.readString(schemaFile.toPath()));
+    schema.getJSONObject("materializedViews").getJSONObject("Vo").put("sourceTypes", new JSONArray().put("Item"));
+    Files.writeString(schemaFile.toPath(), schema.toString());
+
+    database = factory.open();
+    assertThat(sourceTypesOf("Vo")).containsExactlyInAnyOrder("Item", "Owner");
+    database.transaction(() -> database.command("sql", "INSERT INTO Owner SET name = 'y'"));
     assertSameAsQuery("Vo", OWNED);
   }
 

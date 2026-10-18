@@ -63,10 +63,9 @@ final class MaterializedViewSources {
    */
   static MaterializedViewSources of(final Database database, final String query) {
     final ParseTree tree = new SQLAntlrParser(database).parseWithTree(query).tree();
-    final Set<String> typeNames = new LinkedHashSet<>();
-    final String[] untrackable = { null };
-    collect(tree, typeNames, untrackable);
-    return new MaterializedViewSources(List.copyOf(typeNames), untrackable[0]);
+    final Collector collector = new Collector();
+    collector.collect(tree);
+    return new MaterializedViewSources(List.copyOf(collector.typeNames), collector.untrackable);
   }
 
   /** The types the query reads, in the order the query first names them. Their subtypes are read too. */
@@ -87,20 +86,23 @@ final class MaterializedViewSources {
           + "date. Use REFRESH MANUAL or REFRESH EVERY <n> <unit> instead");
   }
 
-  private static void collect(final ParseTree node, final Set<String> typeNames, final String[] untrackable) {
-    if (node instanceof SQLParser.FromIdentifierContext from) {
-      final String name = identifierName(from.identifier(0));
-      // A $variable names a LET result, whose own subquery the walk reaches anyway
-      if (name != null && !name.startsWith("$"))
-        typeNames.add(name);
-    } else if (untrackable[0] == null) {
-      final String reason = untrackableSource(node);
-      if (reason != null)
-        untrackable[0] = reason;
-    }
+  /** What one walk of the parse tree found. */
+  private static final class Collector {
+    private final Set<String> typeNames   = new LinkedHashSet<>();
+    private       String      untrackable;
 
-    for (int i = 0; i < node.getChildCount(); i++)
-      collect(node.getChild(i), typeNames, untrackable);
+    private void collect(final ParseTree node) {
+      if (node instanceof SQLParser.FromIdentifierContext from) {
+        final String name = identifierName(from.identifier(0));
+        // A $variable names a LET result, whose own subquery the walk reaches anyway
+        if (name != null && !name.startsWith("$"))
+          typeNames.add(name);
+      } else if (untrackable == null)
+        untrackable = untrackableSource(node);
+
+      for (int i = 0; i < node.getChildCount(); i++)
+        collect(node.getChild(i));
+    }
   }
 
   private static String untrackableSource(final ParseTree node) {

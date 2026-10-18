@@ -1211,8 +1211,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         // HIGHEST LIST POSITION FIRST: AN ELEMENT REMOVED FROM A TYPED LIST SHIFTS ONLY THE ONES AFTER IT
         final List<PendingLink> links = new ArrayList<>(entry.getValue());
-        links.sort((a, b) -> a.path().length > 0 && a.path()[0] instanceof Integer x && b.path().length > 0
-            && b.path()[0] instanceof Integer y ? Integer.compare(y, x) : 0);
+        links.sort(JsonlImporterFormat::reconciliationOrder);
 
         final DocumentType type = document.getType();
         for (final PendingLink link : links) {
@@ -1278,6 +1277,24 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     }
 
     pendingLinkReconciliation.clear();
+  }
+
+  /**
+   * A total order over the pending links of one record: by property, then the ones whose path starts with a list position by
+   * that position, highest first, then every other one. Only the relative order of the positions in one list matters, but a
+   * comparator that answered "equal" across kinds would not be transitive, which List.sort() may refuse.
+   */
+  private static int reconciliationOrder(final PendingLink a, final PendingLink b) {
+    final int byProperty = a.property().compareTo(b.property());
+    if (byProperty != 0)
+      return byProperty;
+    final Integer x = a.path().length > 0 && a.path()[0] instanceof Integer i ? i : null;
+    final Integer y = b.path().length > 0 && b.path()[0] instanceof Integer i ? i : null;
+    if (x != null && y != null)
+      return Integer.compare(y, x);
+    if (x != null)
+      return -1;
+    return y != null ? 1 : 0;
   }
 
   /**

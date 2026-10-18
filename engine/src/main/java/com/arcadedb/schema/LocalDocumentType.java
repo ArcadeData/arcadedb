@@ -362,7 +362,9 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * As {@link #hasTriggers()}, for the AFTER CREATE / UPDATE / DELETE events only, which an INCREMENTAL materialized view
-   * listens to on the same registries (issue #10205). Kept apart so that a view adds nothing to the read path.
+   * listens to on the same registries (issue #10205). Kept apart so that a view adds nothing to the read path. While any such
+   * view exists, an AFTER write on any type walks its lineage (an array cached per type graph, each registry a list that is
+   * empty unless something listens), not only a write on a source type of the view.
    */
   private boolean hasAfterWriteListenersInLineage() {
     return schema != null && (schema.hasTriggerListeners() || schema.hasPolymorphicViewListeners());
