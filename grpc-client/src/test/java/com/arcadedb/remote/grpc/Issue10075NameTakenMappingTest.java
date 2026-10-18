@@ -72,6 +72,18 @@ class Issue10075NameTakenMappingTest {
   }
 
   @Test
+  void theNameTakenTrailerIsATakenNameWhateverElseTheAnswerCarries() {
+    // issue #10143: the server names a taken name in a trailer of its own rather than by leaving the class-name one out
+    final Metadata trailers = new Metadata();
+    trailers.put(GrpcClientErrorMapper.NAME_TAKEN_KEY, "com.arcadedb.server.security.UserAlreadyExistsException");
+    trailers.put(GrpcClientErrorMapper.EXCEPTION_CLASS_KEY, "com.arcadedb.server.SomeFutureConflictException");
+    final StatusException wire = Status.ALREADY_EXISTS.withDescription("User 'bob' already exists").asException(trailers);
+
+    assertThat(GrpcClientErrorMapper.isNameTaken(wire)).isTrue();
+    assertThat(GrpcClientErrorMapper.toAdminException(wire, "create user", true)).isInstanceOf(RemoteAlreadyExistsException.class);
+  }
+
+  @Test
   void otherStatusesAreNotATakenName() {
     assertThat(GrpcClientErrorMapper.isNameTaken(Status.NOT_FOUND.withDescription("User 'bob' not found").asException())).isFalse();
     assertThat(GrpcClientErrorMapper.isNameTaken(Status.ABORTED.withDescription("busy").asException())).isFalse();
