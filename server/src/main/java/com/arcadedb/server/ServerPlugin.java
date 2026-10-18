@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.PluginRoutes;
 import io.undertow.server.handlers.PathHandler;
 
 import java.util.Map;
@@ -45,15 +46,27 @@ public interface ServerPlugin {
   }
 
   /**
+   * Declares the plugin's HTTP routes, each with its method ({@code routes.post(path, handler)}). Any method a route does
+   * not declare is answered {@code 405} with an {@code Allow} header before the plugin's handler runs (issues #10157,
+   * #10296). The server calls this right before {@link #registerAPI(HttpServer, PathHandler)}.
+   */
+  default void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
+    // DEFAULT IMPLEMENTATION
+  }
+
+  /**
    * Registers the plugin's HTTP routes on the server's outer {@link PathHandler}.
    * <p>
-   * Declare each route through {@link com.arcadedb.server.http.PluginRoutes} ({@code new PluginRoutes(routes).post(path,
-   * handler)}), never with {@code routes.addExactPath}/{@code addPrefixPath} directly: {@link PathHandler} matches on the
-   * path alone, so a handler added to it answers EVERY method, and a state-changing route becomes reachable by a plain
-   * {@code GET} (issue #10157). {@code PluginRoutes} answers an undeclared method {@code 405} with an {@code Allow} header
-   * before the handler runs. A route registered directly still works, and is named at {@code WARNING} when the server
-   * starts.
+   * {@link PathHandler} matches on the path alone, so a handler a plugin adds to it with {@code addExactPath}/
+   * {@code addPrefixPath} answers EVERY method, and a state-changing route becomes reachable by a plain {@code GET}
+   * (issue #10157). The server still calls this overload, after {@link #registerAPI(HttpServer, PluginRoutes)}, so a
+   * plugin built against it keeps working; it logs a deprecation {@code WARNING} for a plugin that implements it, and
+   * names at {@code WARNING} every route registered here without a method restriction.
+   *
+   * @deprecated implement {@link #registerAPI(HttpServer, PluginRoutes)} instead, which cannot register a route that
+   * answers every method (issue #10296). Implement one overload, not both: the server calls both.
    */
+  @Deprecated(since = "26.11.1", forRemoval = true)
   default void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     // DEFAULT IMPLEMENTATION
   }

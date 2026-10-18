@@ -24,7 +24,6 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.PluginRoutes;
-import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.Headers;
 
 import java.nio.file.Paths;
@@ -84,12 +83,12 @@ public class MCPPlugin implements ServerPlugin {
   }
 
   @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
+  public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
     // MCP routes are always registered; the handler checks isEnabled() at request time to support runtime toggling
     // Declared with their methods, so any other method is answered 405 before a handler runs (issue #10157). The
     // handlers keep their own method checks, which are now a second line rather than the only one.
     final MCPConfigHandler configHandler = new MCPConfigHandler(httpServer, configuration);
-    new PluginRoutes(routes)//
+    routes//
         .post("/api/v1/mcp", new MCPHttpHandler(httpServer, server, configuration))//
         .get("/api/v1/mcp/config", configHandler)//
         .post("/api/v1/mcp/config", configHandler)//

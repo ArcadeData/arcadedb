@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.http.PluginRoutes;
 import com.arcadedb.server.http.RecordingPathHandler;
 import com.arcadedb.server.http.RoutePathNormalizer;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
@@ -48,7 +49,7 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
     plugin = new RaftHAPlugin();
     final RecordingPathHandler routes = new RecordingPathHandler();
 
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
 
     assertThat(routes.getRegisteredPaths())
         .as("RaftHAPlugin.registerAPI() and PluginApiSpec.HA_RAFT_PATHS have drifted apart")
@@ -64,7 +65,7 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
   void theAntiDriftCheckCatchesARouteThatIsNotDeclared() {
     plugin = new RaftHAPlugin();
     final RecordingPathHandler routes = new RecordingPathHandler();
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
     routes.addExactPath("/api/v1/cluster/issue-4896-undeclared", (exchange) -> {
     });
 
@@ -83,7 +84,7 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
     plugin = new RaftHAPlugin();
     final RecordingPathHandler routes = new RecordingPathHandler();
 
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
 
     assertThat(routes.getRegisteredOperations())
         .as("RaftHAPlugin.registerAPI() serves methods PluginApiSpec.HA_RAFT_OPERATIONS does not declare, or the reverse")
@@ -95,7 +96,7 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
   void theMethodCheckCatchesARouteThatAnswersEveryMethod() {
     plugin = new RaftHAPlugin();
     final RecordingPathHandler routes = new RecordingPathHandler();
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
     // The shape the issue reports: the declared path, re-registered on the raw PathHandler
     routes.addExactPath("/api/v1/cluster/stepdown", (exchange) -> {
     });

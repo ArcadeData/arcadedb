@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.http.PluginRoutes;
 import io.undertow.server.handlers.PathHandler;
 import org.junit.jupiter.api.Test;
 
@@ -42,7 +43,7 @@ class RaftHAPluginExecutorLeakTest {
   @Test
   void stopServiceShutsDownSnapshotHandlerWatchdogExecutor() throws Exception {
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
 
     final SnapshotHttpHandler snapshotHandler = getField(plugin, "snapshotHttpHandler", SnapshotHttpHandler.class);
     final ScheduledExecutorService watchdogExecutor = getField(snapshotHandler, "watchdogExecutor", ScheduledExecutorService.class);
@@ -59,7 +60,7 @@ class RaftHAPluginExecutorLeakTest {
   @Test
   void stopServiceShutsDownVerifyHandlerPeerQueryExecutor() throws Exception {
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
 
     final PostVerifyDatabaseHandler verifyHandler = getField(plugin, "postVerifyDatabaseHandler", PostVerifyDatabaseHandler.class);
     final ExecutorService peerQueryExecutor = getField(verifyHandler, "peerQueryExecutor", ExecutorService.class);
@@ -88,7 +89,7 @@ class RaftHAPluginExecutorLeakTest {
     // is itself a discovered ServerPlugin) and once directly via haServer.stopService(), since
     // startService() aliases ArcadeDBServer.haServer to this instance via server.setHA(this) (issue #5890).
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
     final SnapshotHttpHandler snapshotHandler = getField(plugin, "snapshotHttpHandler", SnapshotHttpHandler.class);
     final ScheduledExecutorService watchdogExecutor = getField(snapshotHandler, "watchdogExecutor", ScheduledExecutorService.class);
     final PostVerifyDatabaseHandler verifyHandler = getField(plugin, "postVerifyDatabaseHandler", PostVerifyDatabaseHandler.class);
@@ -106,11 +107,11 @@ class RaftHAPluginExecutorLeakTest {
     // Defensive close in registerAPI() itself: even without an intervening stopService(), a second
     // registerAPI() call must not leak the first handler's executor (issue #5890).
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
     final SnapshotHttpHandler firstHandler = getField(plugin, "snapshotHttpHandler", SnapshotHttpHandler.class);
     final ScheduledExecutorService firstWatchdogExecutor = getField(firstHandler, "watchdogExecutor", ScheduledExecutorService.class);
 
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
 
     assertThat(firstWatchdogExecutor.isShutdown())
         .as("A second registerAPI() call must close the previous SnapshotHttpHandler's watchdog executor")
@@ -121,11 +122,11 @@ class RaftHAPluginExecutorLeakTest {
   @Test
   void registerAPIClosesAPreviouslyRegisteredVerifyHandlerBeforeReplacingIt() throws Exception {
     final RaftHAPlugin plugin = new RaftHAPlugin();
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
     final PostVerifyDatabaseHandler firstHandler = getField(plugin, "postVerifyDatabaseHandler", PostVerifyDatabaseHandler.class);
     final ExecutorService firstPeerQueryExecutor = getField(firstHandler, "peerQueryExecutor", ExecutorService.class);
 
-    plugin.registerAPI(null, new PathHandler());
+    plugin.registerAPI(null, new PluginRoutes(new PathHandler()));
 
     assertThat(firstPeerQueryExecutor.isShutdown())
         .as("A second registerAPI() call must close the previous PostVerifyDatabaseHandler's peer-query pool")

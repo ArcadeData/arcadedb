@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.http.PluginRoutes;
 import com.arcadedb.server.http.RecordingPathHandler;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
@@ -155,7 +156,7 @@ class Issue7621BlockingHandlersWorkerThreadTest {
   void everyHaRaftRouteIsClassifiedAndDispatchesAccordingly() {
     plugin = new RaftHAPlugin();
     final RecordingPathHandler routes = new RecordingPathHandler();
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
     final Map<String, HttpHandler> registered = routes.getRegisteredHandlers();
 
     assertThat(registered.keySet())
