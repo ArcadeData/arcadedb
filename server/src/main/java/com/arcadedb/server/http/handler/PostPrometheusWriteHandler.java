@@ -278,7 +278,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         // sample would repeat identical work for every sample of every tag column. A tag the column cannot hold drops the series; a
         // sample value a field cannot hold drops that sample alone. Both are named in unreadableValues and answered 400 below.
         final List<Label> labels = ts.getLabels();
-        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, count, true,
+        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, typeName, tsType, timestamps, count, true,
             (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
                 findLabelValue(labels, col.getName()) :
                 tsSamples.get(row).value(), // the "value" field

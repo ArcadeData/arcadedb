@@ -18,10 +18,19 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.TimeSeriesColumnConstraints;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.utility.TimeBoundRegex;
+
+import java.io.IOException;
+import java.util.List;
 
 import java.util.Iterator;
 
@@ -57,6 +66,12 @@ public final class ExistingRecordsCheck {
       final boolean mandatory, final boolean notNull) {
     if (propertyNames.length == 0)
       return;
+    if (type instanceof LocalTimeSeriesType tsType) {
+      for (final String propertyName : propertyNames)
+        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? "MANDATORY" : "NOT NULL", null, null, null,
+            mandatory ? "MANDATORY" : "NOTNULL");
+      return;
+    }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
@@ -79,6 +94,10 @@ public final class ExistingRecordsCheck {
    */
   public static void requireValues(final Database db, final DocumentType type, final Property property,
       final DocumentValidator.StoredValueConstraints constraints, final String what) {
+    if (type instanceof LocalTimeSeriesType tsType) {
+      requireSamples(db, tsType, property.getName(), false, null, constraints.min(), constraints.max(), constraints.regexp(), what);
+      return;
+    }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
@@ -117,6 +136,62 @@ public final class ExistingRecordsCheck {
         throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
       }
     }
+  }
+
+  /**
+   * The check of a TIMESERIES type, whose samples are not records: they are read from its engine, and the column's value in each is
+   * held to the constraint about to be declared by the same rule every write path applies to a new sample
+   * ({@link TimeSeriesColumnConstraints}, issue #10238), so a constraint accepted here is one every stored sample satisfies.
+   * <p>
+   * One shape cannot be judged: the storage writes no value of a STRING column as the empty text, so a stored sample of one never
+   * reads back as missing, and MANDATORY / NOTNULL find nothing to refuse there. The write path still holds every new sample to them.
+   */
+  private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
+      final boolean required, final String requiredBy, final String min, final String max, final String regexp, final String what) {
+    final TimeSeriesEngine engine = type.getEngine();
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (engine == null || property == null)
+      return;
+
+    // the position of the column in a row: the timestamp first, then the other columns in schema order
+    final List<ColumnDefinition> columns = type.getTsColumns();
+    ColumnDefinition column = null;
+    int position = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getName().equals(propertyName)) {
+        column = col;
+        break;
+      }
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        position++;
+    }
+    if (column == null)
+      return;
+    final int index = column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP ? 0 : position + 1;
+
+    final TimeSeriesColumnConstraints.ColumnCheck check = TimeSeriesColumnConstraints.columnCheck(db, column, property.getType(),
+        required, requiredBy, min, max, regexp);
+    if (check == null)
+      return;
+
+    final long regexTimeoutMs = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(db);
+    final Object[] violation = new Object[2];
+    try {
+      engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
+        final String reason = check.check(row[index], regexp != null ? TimeBoundRegex.newDeadline(regexTimeoutMs) : 0L);
+        if (reason == null)
+          return true;
+        violation[0] = row[0];
+        violation[1] = reason;
+        return false;
+      });
+    } catch (final IOException e) {
+      throw new CommandExecutionException("Cannot set " + what + ": the samples of the TIMESERIES type '" + type.getName()
+          + "' could not be read to check it", e);
+    }
+    if (violation[1] != null)
+      throw new CommandExecutionException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
+          + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first");
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,
