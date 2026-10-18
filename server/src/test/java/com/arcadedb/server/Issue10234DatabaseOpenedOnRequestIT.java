@@ -29,7 +29,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -61,6 +67,34 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     assertThat(response.statusCode()).isEqualTo(200);
     assertThat(response.body()).contains("\"c\"");
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
+  }
+
+  @Test
+  void concurrentFirstRequestsOpenTheDatabaseOnce() throws Exception {
+    getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+    getServer(0).removeDatabase(getDatabaseName());
+
+    final int requests = 8;
+    final CountDownLatch go = new CountDownLatch(1);
+    final ExecutorService pool = Executors.newFixedThreadPool(requests);
+    try {
+      final List<Future<Integer>> answers = new ArrayList<>();
+      for (int i = 0; i < requests; i++)
+        answers.add(pool.submit(() -> {
+          go.await();
+          return postQuery(getDatabaseName(), "select count(*) as c from V1").statusCode();
+        }));
+      go.countDown();
+
+      for (final Future<Integer> answer : answers)
+        assertThat(answer.get(60, TimeUnit.SECONDS)).isEqualTo(200);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    // ONE OPEN INSTANCE SERVES THEM ALL: A SECOND OPEN OF THE SAME DIRECTORY WOULD HAVE BEEN REFUSED AS ALREADY IN USE
+    assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
+    assertThat(getServer(0).getDatabase(getDatabaseName()).isOpen()).isTrue();
   }
 
   @Test

@@ -186,6 +186,10 @@ public class TransactionManager {
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
 
+      // The field is assigned from the return value of the call that schedules the first tick, which runs a second later on
+      // another thread: housekeepingTick() null-checks it, and a tick that finds it still null only skips the cancel of a
+      // closed database, which the next tick does. The delay is what makes the window theoretical, not a happens-before edge.
+      //
       // #10234: ONE SCHEDULER FOR THE WAL HOUSEKEEPING OF EVERY DATABASE OF THE JVM, NOT A TIMER THREAD PER DATABASE: A
       // SERVER WITH THOUSANDS OF DATABASES HELD A THREAD FOR EACH. Its threads are daemon, as the timer's was since #5418:
       // a leaked (never closed) Database must not keep the JVM alive. The housekeeping is best-effort background work;
@@ -263,6 +267,15 @@ public class TransactionManager {
    */
   boolean isHousekeepingScheduled() {
     return housekeeping != null && !housekeeping.isDone();
+  }
+
+  /**
+   * Test-support hook (issue #10234): the release of idle WAL files alone, the file retired into the inactive list and not
+   * yet dropped after the fsync of the data files. A crash right after it leaves the file on disk for the recovery of the
+   * next open.
+   */
+  void releaseIdleWALFilesForTesting() {
+    releaseIdleWALFiles();
   }
 
   /** Test-support hook: stops the periodic housekeeping, as a test that drives every pass by hand needs. */

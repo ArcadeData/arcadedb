@@ -222,6 +222,40 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
     }
   }
 
+  /**
+   * A crash between the release of an idle WAL file (its slot emptied, the file retired) and its drop after the fsync of the
+   * data files leaves the file on disk, and the next open recovers from it as from any other WAL file.
+   */
+  @Test
+  void aCrashBetweenTheReleaseAndTheDropOfAnIdleWALFileLosesNothing() throws Exception {
+    database.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    transactionManager.cancelHousekeepingForTesting();
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_IDLE_TIMEOUT, 1L);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        database.newDocument("Doc").set("name", "n" + i).save();
+    });
+    ((DatabaseInternal) database).getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+    waitForIdleTimeout();
+
+    transactionManager.releaseIdleWALFilesForTesting();
+    assertThat(transactionManager.getOpenWALFileCountForTesting()).isZero();
+    // RETIRED, NOT DROPPED: THE DROP WAITS FOR THE FSYNC OF THE DATA FILES THAT THE NEXT PASS DOES
+    assertThat(walFiles()).hasSize(1);
+
+    // A KILL, NOT A CLOSE: THE WAL FILE AND THE LOCK FILE STAY, SO THE NEXT OPEN RUNS THE RECOVERY
+    ((LocalDatabase) database).kill();
+    database.close();
+    database = factory.open();
+
+    assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc").next().<Long>getProperty("c")).isEqualTo(50L);
+    // THE RECOVERY LEFT A DATABASE THAT KEEPS WORKING
+    database.transaction(() -> database.newDocument("Doc").set("name", "after").save());
+    assertThat(database.countType("Doc", false)).isEqualTo(51);
+  }
+
   @Test
   void anActiveWALFileIsKept() {
     database.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);
