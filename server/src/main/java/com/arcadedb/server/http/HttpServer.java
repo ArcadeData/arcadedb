@@ -465,7 +465,7 @@ public class HttpServer implements ServerPlugin {
           if (PluginPathHandler.implementsPluginRoutesRegisterAPI(plugin))
             LogManager.instance().log(this, Level.WARNING,
                 "Plugin '%s' implements both registerAPI(HttpServer, PluginRoutes) and the deprecated registerAPI(HttpServer, "
-                    + "PathHandler): both are called, so a route declared in both is registered twice and the later one wins. "
+                    + "PathHandler): both are called, so a route may be registered twice. "
                     + "Keep only registerAPI(HttpServer, PluginRoutes)", plugin.getName());
           else
             LogManager.instance().log(this, Level.WARNING,
