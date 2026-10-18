@@ -392,15 +392,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Issue #10225: refused requests that named this node as sender from a source that is not an address of this host - an
   // impostor, or this node's own request that crossed an address-translating hop and so could not be repaired (#10299).
   private final    AtomicLong                misdirectedSelfClaimsFromElsewhere = new AtomicLong();
-  // Issue #10225: this host's interface addresses, read at most once per LOCAL_ADDRESSES_TTL_MS. The lookup runs on the gRPC
-  // handler thread for every refused request that claims this node's id, which any sender can write, so it must not
-  // enumerate the interfaces each time. An address assigned since is recognised by the next refresh at the latest.
-  private static final long                  LOCAL_ADDRESSES_TTL_NANOS      = TimeUnit.SECONDS.toNanos(30);
-  private static final AtomicBoolean         localAddressesRefreshing       = new AtomicBoolean();
-  private static volatile LocalAddresses     localAddresses;
-
-  private record LocalAddresses(Set<InetAddress> addresses, long loadedAtNanos) {
-  }
   // Issue #10088: the ids of the live Raft configuration as this node last learnt it. The listener runs on the gRPC handler
   // thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so it
   // consults this copy, replaced as a whole. It is written wherever the configuration reaches this node without a read
@@ -419,6 +410,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static final     long                      MISDIRECTED_RECOVERY_INTERVAL_MS = 5_000L;
   // The operator needs the condition once, not once per recovery: later recoveries within this window log at FINE.
   static final     long                      MISDIRECTED_WARNING_INTERVAL_MS  = 60_000L;
+  // Issue #10225: this host's interface addresses, read at most once per LOCAL_ADDRESSES_TTL_NANOS. The lookup runs on the gRPC
+  // handler thread for every refused request that claims this node's id, which any sender can write, so it must not
+  // enumerate the interfaces each time. An address assigned since is recognised by the next refresh at the latest.
+  private static final long                  LOCAL_ADDRESSES_TTL_NANOS      = TimeUnit.SECONDS.toNanos(30);
+  private static final AtomicBoolean         localAddressesRefreshing       = new AtomicBoolean();
+  private static volatile LocalAddresses     localAddresses;
+
+  private record LocalAddresses(Set<InetAddress> addresses, long loadedAtNanos) {
+  }
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
   // is not going to.
@@ -1254,7 +1254,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * This host's interface addresses, reloaded when older than the TTL by one caller at a time; the others keep using the
-   * previous set meanwhile, so a burst of requests at expiry enumerates the interfaces once.
+   * previous set meanwhile, so a burst of requests at expiry enumerates the interfaces once. Before the first load there
+   * is no previous set to fall back on, so callers racing it may each enumerate once: harmless, and only at start.
    */
   private static Set<InetAddress> localInterfaceAddresses() {
     final long now = System.nanoTime();
@@ -7902,6 +7903,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long maxConnectionAgeMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS);
     final long maxConnectionAgeGraceMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS);
+    // gRPC runs the interceptor added last first, so the remote address is in the context before the allowlist sees the
+    // call. Either order works - each only reads the call's attributes - but the context must wrap the service handler.
     final ServerInterceptor remoteAddress = new RemoteAddressCallInterceptor();
 
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
