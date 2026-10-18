@@ -151,14 +151,20 @@ public final class FullTextCorpusDeltas {
   }
 
   /**
-   * @return the net effect per logical index, for the replicated transaction; empty when there is nothing to ship
+   * The net effect per logical index, for the replicated transaction: one entry for every index the transaction wrote, a net of
+   * {@code (0, 0)} included. What a node applying the entry learns from it is not only how far the counters move but that they
+   * are being touched: {@link #replicatedApplyStarted} marks them as being applied while the pages become visible, and
+   * {@link FullTextIndexMetadata#applyCorpusDelta} counts a mutation even for a zero pair, exactly as the node that committed the
+   * transaction does. A transaction that removed one document and added another of the same length changes no total, yet a
+   * corpus scan overlapping its apply may read either document: shipping nothing for it would let that scan call itself exact
+   * on the receiving node (issue #10132).
+   *
+   * @return the deltas to ship; empty only when the transaction wrote no full-text index
    */
   public List<CorpusDelta> snapshot() {
     final List<CorpusDelta> result = new ArrayList<>(entries.size());
     for (final Entry e : entries)
-      // an insert and a delete of the same length in one transaction net to nothing: there is nothing for another node to apply
-      if (e.docs != 0 || e.length != 0)
-        result.add(new CorpusDelta(e.indexName, e.docs, e.length));
+      result.add(new CorpusDelta(e.indexName, e.docs, e.length));
     return result;
   }
 
