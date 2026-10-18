@@ -106,7 +106,8 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     assertThat(candidateRaft.getMisdirectedRaftRequestsRefused()).isGreaterThan(refusedBefore);
 
     // The candidate sent it to itself, so its own channel to that peer is the one pointing the wrong way: it is reset,
-    // off the gRPC thread, so the next request resolves the peer's name again.
+    // off the gRPC thread, so the next request resolves the peer's name again. It came from 127.0.0.1, an address of this
+    // host: the reset also needs the real listener to hand the guard each call's remote address (issue #10225).
     Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
         .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> candidateRaft.getMisdirectedChannelResets() > resetsBefore);
   }

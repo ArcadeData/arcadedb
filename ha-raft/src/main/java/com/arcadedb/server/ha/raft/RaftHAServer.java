@@ -32,6 +32,7 @@ import com.arcadedb.server.ha.raft.ratis.GuardedRaftServer;
 import com.arcadedb.server.ha.raft.ratis.RatisMisdirectedRequestFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
+import com.arcadedb.server.ha.raft.ratis.RemoteAddressCallInterceptor;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.monitor.CountingRejectionPolicy;
@@ -84,6 +85,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.http.HttpClient;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
@@ -378,6 +383,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, Long>     misdirectedRecoveryQueuedAt    = new ConcurrentHashMap<>();
   private final    Map<RaftPeerId, Long>     misdirectedWarnedAt            = new ConcurrentHashMap<>();
   private final    AtomicLong                misdirectedChannelResets       = new AtomicLong();
+  // Issue #10225: the same two throttles for the requests this host sent itself, the only ones that repair a channel. Kept
+  // apart so that no request from anywhere else - a stranger claiming this node's id, a member whose address for a peer
+  // leads here - can hold the slot the repair needs, nor turn its report into a FINE line by taking the WARNING first.
+  private final    Map<RaftPeerId, Long>     selfDialRepairQueuedAt         = new ConcurrentHashMap<>();
+  private final    Map<RaftPeerId, Long>     selfDialWarnedAt               = new ConcurrentHashMap<>();
   // Issue #10088: the ids of the live Raft configuration as this node last learnt it. The listener runs on the gRPC handler
   // thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so it
   // consults this copy, replaced as a whole. It is written wherever the configuration reaches this node without a read
@@ -968,6 +978,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * called from; and it is throttled per peer, because the name may keep resolving the same way for a while (the JVM
    * caches a successful lookup for 30 s by default) and every heartbeat in that window would otherwise queue another.
    * <p>
+   * <b>A self-dial is confirmed by the connection, not by the header</b> (issue #10225). The requestor id is an
+   * unauthenticated field of the request: a sender outside the cluster that writes this node's own id there and a member
+   * as the addressee would otherwise make this node tear down a working channel to that member every
+   * {@link #MISDIRECTED_RECOVERY_INTERVAL_MS}, and so would a node of another cluster that shares this node's id and whose
+   * name for that member resolves here. A request this node sent to itself arrives on a connection whose remote address is
+   * one of this host's own, which a remote sender cannot fake over TCP, so the reset needs both; a claim from anywhere else
+   * is reported and repairs nothing, and throttles of its own keep it from holding the slot a repair needs.
+   * <p>
    * <b>A request from another peer can only be reported.</b> It means that peer's address for {@code addressedTo}
    * leads here; the channel to fix is on that peer, which logs nothing about it, so the WARNING here names the peer
    * that has to be looked at.
@@ -977,7 +995,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * in-place restart, which is when a node is being flooded with misdirected heartbeats. Nothing here reads it; the
    * recovery task does.
    */
-  void onMisdirectedRaftRequest(final String rpc, final RaftPeerId addressedTo, final RaftPeerId requestor) {
+  void onMisdirectedRaftRequest(final String rpc, final RaftPeerId addressedTo, final RaftPeerId requestor,
+      final SocketAddress remote) {
     misdirectedRaftRequestsRefused.incrementAndGet();
     if (shutdownRequested)
       return;
@@ -990,9 +1009,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // whether the id is a member after all. The requestor takes no part in it (issue #10144): it is whatever the sender
     // wrote in the header, and a sender outside the cluster must not be able to pick the slot a repair of this node's own
     // channel needs by writing this node's id there.
+    //
+    // Nor does it decide on its own that this node sent the request (issue #10225): a request this node sent itself comes
+    // from an address of this host, which a remote sender cannot fake over TCP, so only one that claims this node's id AND
+    // comes from here takes a slot of the self-dial throttles, which nothing from anywhere else can then hold. The lookup
+    // runs only for a request claiming this node's id, and answers the loopback without a system call.
+    final boolean claimsSelf = localPeerId.equals(requestor);
+    final boolean fromThisHost = claimsSelf && isAddressOfThisHost(remote);
+    final Map<RaftPeerId, Long> queuedAt = fromThisHost ? selfDialRepairQueuedAt : misdirectedRecoveryQueuedAt;
     final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
-    if (!claimThrottleSlot(misdirectedRecoveryQueuedAt, slot, System.currentTimeMillis(),
-        MISDIRECTED_RECOVERY_INTERVAL_MS))
+    if (!claimThrottleSlot(queuedAt, slot, System.currentTimeMillis(), MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
 
     final String sender = requestor != null ? "'" + requestor + "'" : "<unknown>";
@@ -1000,10 +1026,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       channelRecoveryExecutor.execute(() -> {
         final boolean member = isMisdirectedPeerMember(addressedTo);
         // Only a member has a channel to repair: this node never dials an id outside its own configuration.
-        final boolean selfDial = member && localPeerId.equals(requestor);
+        final boolean selfDial = member && fromThisHost;
         // Read here rather than when the task was queued: the worker may have been busy closing another channel.
-        final Level level = claimThrottleSlot(misdirectedWarnedAt, member ? addressedTo : UNKNOWN_MISDIRECTED_PEER,
-            System.currentTimeMillis(), MISDIRECTED_WARNING_INTERVAL_MS) ? Level.WARNING : Level.FINE;
+        final Level level = claimThrottleSlot(fromThisHost ? selfDialWarnedAt : misdirectedWarnedAt,
+            member ? addressedTo : UNKNOWN_MISDIRECTED_PEER, System.currentTimeMillis(), MISDIRECTED_WARNING_INTERVAL_MS)
+            ? Level.WARNING : Level.FINE;
 
         if (!member) {
           LogManager.instance().log(this, level,
@@ -1013,6 +1040,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
 
         final String resolved = resolvePeerAddresses(addressedTo);
+        if (claimsSelf && !fromThisHost) {
+          LogManager.instance().log(this, level,
+              "Refused a Raft %s addressed to peer '%s' that names this node as its sender but arrived from %s, which is "
+                  + "not an address of this host (issue #10225): another process writes this node's id '%s' as its "
+                  + "own. The channel to '%s' is left alone. Check which node or cluster connects from that address; "
+                  + "here '%s' resolves to %s.", rpc, addressedTo, remote != null ? remote : "<unknown address>",
+              localPeerId, addressedTo, addressedTo, resolved);
+          return;
+        }
+
         if (!selfDial) {
           LogManager.instance().log(this, level,
               "Refused a Raft %s from peer %s addressed to peer '%s' (issue #10016): the address %s holds for '%s' "
@@ -1038,7 +1075,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       });
     } catch (final RejectedExecutionException e) {
       // Counted by the executor's policy. Free to drop: release the slot so the next refused request queues it again.
-      misdirectedRecoveryQueuedAt.remove(slot);
+      queuedAt.remove(slot);
     }
   }
 
@@ -1166,6 +1203,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return buffer.append(']').toString();
     } catch (final UnknownHostException e) {
       return host + "=<unresolvable: " + e.getMessage() + ">";
+    }
+  }
+
+  /**
+   * Whether {@code address} - the remote end of an inbound Raft connection - is an address of this host: the loopback,
+   * the wildcard, or one assigned to a local network interface. A request this node sent to itself arrives from one of
+   * these, whatever name its channel dialled, and a sender on another host cannot make a TCP connection appear to come
+   * from one (issue #10225). {@code null}, a non-IP address and an unresolved one answer false: nothing confirms them.
+   * Package-private for testing.
+   */
+  static boolean isAddressOfThisHost(final SocketAddress address) {
+    if (!(address instanceof InetSocketAddress socket))
+      return false;
+    final InetAddress ip = socket.getAddress();
+    if (ip == null)
+      return false;
+    if (ip.isLoopbackAddress() || ip.isAnyLocalAddress())
+      return true;
+    try {
+      return NetworkInterface.getByInetAddress(ip) != null;
+    } catch (final SocketException e) {
+      return false;
     }
   }
 
@@ -7751,14 +7810,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Installs the one {@code GrpcServices.Customizer} the Raft listener gets: the peer allowlist's transport filter
-   * and call interceptor (issues #7132, #7225, #7250), the connection-idle window (issue #7316) and the
-   * connection-age window (issue #7339).
+   * and call interceptor (issues #7132, #7225, #7250), the connection-idle window (issue #7316), the
+   * connection-age window (issue #7339) and the interceptor that hands the misdirected-request guard the remote address
+   * of each call (issue #10225).
    * <p>
    * All three are configured independently, so this method is not gated on any of them: gating it on
    * {@code arcadedb.ha.peerAllowlist.enabled}, which is where the allowlist install used to live, would have made
    * {@code arcadedb.ha.grpcMaxConnectionIdleMs} a setting that silently does nothing on exactly the clusters that
-   * turned the allowlist off. When none is configured no customizer is installed at all, which leaves Ratis's
-   * builder exactly as it was.
+   * turned the allowlist off. The remote-address interceptor is not a setting: it is what tells this node's own
+   * request from one that only claims to be (issue #10225), so the customizer is always installed, and when nothing
+   * else is configured it adds that interceptor alone.
    */
   private void installGrpcServerCustomizations(final ContextConfiguration configuration, final Parameters parameters) {
     final PeerAddressAllowlistFilter filter = buildPeerAllowlistFilter(configuration);
@@ -7778,12 +7839,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long maxConnectionAgeMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS);
     final long maxConnectionAgeGraceMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS);
-    if (filter == null && maxConnectionIdleMs <= 0 && maxConnectionAgeMs <= 0)
-      return;
+    final ServerInterceptor remoteAddress = new RemoteAddressCallInterceptor();
 
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(
         filter == null ? new ServerTransportFilter[0] : new ServerTransportFilter[] { filter },
-        interceptor == null ? new ServerInterceptor[0] : new ServerInterceptor[] { interceptor },
+        interceptor == null ? new ServerInterceptor[] { remoteAddress } : new ServerInterceptor[] { interceptor, remoteAddress },
         maxConnectionIdleMs, maxConnectionAgeMs, maxConnectionAgeGraceMs));
   }
 
