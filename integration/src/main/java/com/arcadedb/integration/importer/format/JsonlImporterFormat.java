@@ -383,6 +383,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                       docType.getProperty(propertyName).setCustomValue(key, custom.get(key));
                     }
                   }
+                  if (docType instanceof LocalTimeSeriesType)
+                    restoreTimeSeriesColumnConstraints(typeName, propertyName, docType.getProperty(propertyName), property);
                   return;
                 }
                 if (docType instanceof LocalTimeSeriesType tsType && !tsType.isDeclaredColumn(propertyName)) {
@@ -611,6 +613,33 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   }
 
   /**
+   * Restores the constraints the export recorded on a column of a TIMESERIES type, whose property the type's builder already
+   * created without them. Every write path holds a sample to MANDATORY, NOTNULL, MIN, MAX and REGEXP (issue #10238), the samples of
+   * this import included, so dropping them would restore a type that accepts what the source refused. DEFAULT and HIDDEN are refused
+   * on such a column, having no effect on it: one exported from a database written before that rule is dropped with a warning, as
+   * the CUSTOM 'role' above, so the backup still restores.
+   */
+  private void restoreTimeSeriesColumnConstraints(final String typeName, final String propertyName, final Property p,
+      final JSONObject exported) {
+    if (exported.has("readonly"))
+      p.setReadonly(exported.getBoolean("readonly"));
+    if (exported.has("mandatory"))
+      p.setMandatory(exported.getBoolean("mandatory"));
+    if (exported.has("notNull"))
+      p.setNotNull(exported.getBoolean("notNull"));
+    if (exported.has("min"))
+      p.setMin(exported.getString("min"));
+    if (exported.has("max"))
+      p.setMax(exported.getString("max"));
+    if (exported.has("regexp"))
+      p.setRegexp(exported.getString("regexp"));
+    if (exported.has("default") && Property.fillsInAValue(exported.get("default")) || exported.getBoolean("hidden", false))
+      LogManager.instance().log(this, Level.WARNING,
+          "Ignored the DEFAULT/HIDDEN recorded on TIMESERIES property '%s.%s': no write path of a TIMESERIES type fills in a "
+              + "default and every read returns all of its columns", typeName, propertyName);
+  }
+
+  /**
    * Recreates a TIMESERIES type from its exported schema definition (issue #7032).
    * <p>
    * Everything the type's identity depends on comes out of the export: the column list WITH the per-column codec
@@ -792,7 +821,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     // The values follow the timestamp in non-timestamp schema order, which is the order of the converted grid's columns: the
     // value column `valueColumn` is at position `valueColumn + 1` of the sample
-    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, kept, false,
+    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, tsType, timestamps, kept, false,
         (row, valueColumn, column) -> decodeSampleValue(samples.getJSONArray(sampleOfRow[row]).get(valueColumn + 1),
             column.getDataType()), unreadable);
 
