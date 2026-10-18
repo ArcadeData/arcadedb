@@ -613,11 +613,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final DeleteRecordResponse resp = callUnary("DeleteRecord",
           () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(req));
 
-      // Prefer the proto's 'deleted' flag (your other overload uses it)
-      if (!resp.getDeleted()) {
-        throw new DatabaseOperationException(
-            "Failed to delete record: " + (resp.getMessage().isEmpty() ? "unknown error" : resp.getMessage()));
-      }
+      // The server answers deleted=false for a delete a before-delete listener vetoed: a refusal, raised as the HTTP driver
+      // raises it (issue #10230). A missing record never answers false: the server's lookup of the RID fails first, and arrives
+      // here as RecordNotFoundException
+      if (!resp.getDeleted())
+        throw RecordVetoedException.ofDelete(record.getIdentity());
       // counted only once the server confirmed the delete, like createRecord and updateRecord in saveRecord (issue #10141)
       stats.deleteRecord.incrementAndGet();
 
@@ -627,6 +627,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
   }
 
+  /**
+   * Deletes the record {@code rid} with its own deadline. Unlike {@link #deleteRecord(Record)}, which throws
+   * {@link RecordVetoedException}, a delete a before-delete listener vetoed answers {@code false} here (issue #10230). A missing
+   * record still fails with {@link RecordNotFoundException}.
+   */
   public boolean deleteRecord(final String rid, final long timeoutMs) {
     checkDatabaseIsOpen();
 

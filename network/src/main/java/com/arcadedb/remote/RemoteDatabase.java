@@ -766,10 +766,20 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     try (final ResultSet result = command("SQL", "delete from " + record.getIdentity())) {
       deleted = result.hasNext() ? result.next().<Number>getProperty("count", 0).longValue() : 0;
     }
+    // a DELETE matches zero records both when the RID no longer exists and when a before-delete listener vetoed it. The first
+    // fails with RecordNotFoundException as the embedded engine and the gRPC remote do, the second with RecordVetoedException,
+    // as the update arm of saveRecord does (issue #10230): the probe tells them apart, on the refusal path only. It is the same
+    // heuristic as saveRecord's (see recordExistsUncounted): a record another client deletes or recreates between the DELETE and
+    // the probe is reported as it stands at the probe. A probe that fails (network, permission) raises its own error, the only
+    // one there is: the DELETE raised nothing
+    if (deleted == 0) {
+      if (recordExistsUncounted(record.getIdentity()))
+        throw RecordVetoedException.ofDelete(record.getIdentity());
+      throw new RecordNotFoundException("Record " + record.getIdentity() + " not found", record.getIdentity());
+    }
     // counted only once the server reported the row it deleted, like createRecord and updateRecord in saveRecord: a
     // record that never left the client, a refused delete or one that matched nothing is not a delete (issue #10141)
-    if (deleted > 0)
-      stats.deleteRecord.incrementAndGet();
+    stats.deleteRecord.incrementAndGet();
   }
 
   @Override
@@ -1934,9 +1944,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
-   * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} to tell a veto from a
-   * missing record. Not counted in any statistic: the caller made no read, and the statistics count what the caller did (issue
-   * #10095). It runs in the caller's session, so inside a remote transaction it sees that transaction's records.
+   * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} and
+   * {@link #deleteRecord(Record)} to tell a veto from a missing record. Not counted in any statistic: the caller made no read,
+   * and the statistics count what the caller did (issue #10095). It runs in the caller's session, so inside a remote
+   * transaction it sees that transaction's records.
    * <p>
    * A heuristic, as an UPDATE that matched nothing says no more: a record deleted by someone else between the UPDATE and this
    * probe reads as missing, which it is by then, and a record the UPDATE could not change for any other reason that leaves it
