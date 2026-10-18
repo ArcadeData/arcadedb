@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.params.ParameterizedTest;
@@ -87,8 +88,18 @@ class EdgeCreationEntryPointsContractTest extends TestHelper {
       @Override
       Edge create(final Database database, final RID from, final RID to, final String type) {
         final AtomicReference<Edge> created = new AtomicReference<>();
-        database.async().newEdge(from.asVertex(), type, to, false, (edge, newSource, newDestination) -> created.set(edge));
-        database.async().waitCompletion();
+        final AtomicReference<Throwable> failure = new AtomicReference<>();
+        database.async().onError((ErrorCallback) failure::set);
+        try {
+          // THE FOURTH ARGUMENT IS "light", NOT A DIRECTION: THIS OVERLOAD TAKES THE DIRECTION FROM THE TYPE
+          database.async().newEdge(from.asVertex(), type, to, false, (edge, newSource, newDestination) -> created.set(edge));
+          database.async().waitCompletion();
+        } finally {
+          database.async().onError((ErrorCallback) null);
+        }
+        // AN ASYNC FAILURE DOES NOT REACH THE CALLER: SURFACE IT HERE, OR THE TEST WOULD ONLY SEE A MISSING EDGE
+        assertThat(failure.get()).isNull();
+        assertThat(created.get()).isNotNull();
         return created.get();
       }
     },

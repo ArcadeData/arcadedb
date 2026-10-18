@@ -45,6 +45,7 @@ class Issue10268NewEdgesDirectionFromTypeTest extends TestHelper {
       database.getSchema().buildEdgeType().withName("B").create();
       database.getSchema().buildEdgeType().withName("U").withBidirectional(false).create();
       database.getSchema().buildEdgeType().withName("UL").withBidirectional(false).withLightweight(true).create();
+      database.getSchema().buildEdgeType().withName("L").withLightweight(true).create();
     });
   }
 
@@ -133,7 +134,6 @@ class Issue10268NewEdgesDirectionFromTypeTest extends TestHelper {
   /** The type check runs on a lightweight type too, where the single-edge path would otherwise ignore the flag. */
   @Test
   void aBidirectionalLightweightTypeRefusesAUnidirectionalBatch() {
-    database.transaction(() -> database.getSchema().buildEdgeType().withName("L").withLightweight(true).create());
     final RID[] v = newVertices(2);
 
     assertThatThrownBy(() -> newEdges(v[0], false, new GraphEngine.CreateEdgeOperation("L", v[1], new Object[0])))

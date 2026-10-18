@@ -521,8 +521,11 @@ public class GraphEngine {
    * its destination, an edge of a unidirectional type never is (issue #10268).
    *
    * @param bidirectional {@code false} asks for edges without an incoming side, which only a unidirectional type can hold: a
-   *                      connection on a bidirectional type is then refused, before any edge of the batch is created, as
-   *                      {@link MutableVertex#newEdge(String, Identifiable, boolean, Object...)} refuses it. {@code true} is
+   *                      connection on a bidirectional type is then refused, as
+   *                      {@link MutableVertex#newEdge(String, Identifiable, boolean, Object...)} refuses it. This check runs on
+   *                      every connection before any edge of the batch is created, so this refusal leaves nothing behind; a
+   *                      failure met later while creating the edges (a deleted destination, a property, a duplicated key) can
+   *                      still leave the earlier edges of the batch in the caller's transaction. {@code true} is
    *                      what every type accepts, and a unidirectional type still gets no incoming side.
    *
    * @throws IllegalArgumentException if {@code bidirectional} is {@code false} and a connection names a bidirectional edge type
