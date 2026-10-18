@@ -176,6 +176,11 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
   void aNameLeavingTheDatabaseDirectoryIsRefused() throws Exception {
     final HttpResponse<String> response = postQuery("..", "select 1");
     assertThat(response.statusCode()).isNotEqualTo(200);
+
+    // ANSWERED AS A NAME THAT IS NOT A DATABASE ALWAYS WAS, NOT WITH A NEW KIND OF ERROR
+    final HttpResponse<String> unknown = postQuery(getDatabaseName() + "_never_existed", "select 1");
+    assertThat(response.statusCode()).isEqualTo(unknown.statusCode());
+    assertThat(postQuery("a..b", "select 1").statusCode()).isEqualTo(unknown.statusCode());
   }
 
   @Test

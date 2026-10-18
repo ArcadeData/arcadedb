@@ -451,7 +451,10 @@ public class TransactionManager {
       final WALFile[] pool = activeWALFilePool;
       final int slot = (int) (Thread.currentThread().threadId() % pool.length);
 
-      // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE
+      // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE. READ WITHOUT
+      // walSlotLock: A FILE SEEN HERE IS SAFELY PUBLISHED, ITS PATH BEING FINAL AND ITS CHANNEL, LOCK AND STATE VOLATILE, AND
+      // acquire() TAKES THE MONITOR OF THE FILE; A NULL IS READ AGAIN UNDER THE LOCK BY openWALFileForSlot(), AND A FILE THE
+      // HOUSEKEEPING RETIRES MEANWHILE REFUSES THE WRITE (INACTIVE), SO THE COMMIT MOVES ON TO ANOTHER SLOT
       WALFile file = pool[slot];
       if (file == null)
         file = openWALFileForSlot(pool, slot);
@@ -1777,6 +1780,17 @@ public class TransactionManager {
   private void releaseIdleWALFiles() {
     final WALFile[] pool = activeWALFilePool;
     if (pool == null)
+      return;
+
+    // A DATABASE THAT HOLDS NO WAL FILE - MOST OF THEM, ON A SERVER WITH THOUSANDS - COSTS THIS SHARED SCHEDULER NO CONFIGURATION
+    // LOOKUP: ITS TICK IS A SCAN OF A FEW NULL SLOTS
+    boolean holdsAFile = false;
+    for (final WALFile file : pool)
+      if (file != null) {
+        holdsAFile = true;
+        break;
+      }
+    if (!holdsAFile)
       return;
 
     final long idleTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_WAL_IDLE_TIMEOUT);

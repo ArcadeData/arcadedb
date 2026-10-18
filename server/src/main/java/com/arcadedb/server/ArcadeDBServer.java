@@ -1434,12 +1434,14 @@ public class ArcadeDBServer {
 
     if (databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName) && !closedByCommand.contains(
         databaseName)) {
-      // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK
-      checkDatabaseNameIsValid(databaseName);
-      final File directory = new File(
-          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
-      if (holdsDatabase(directory))
-        return getDatabase(databaseName, false, true, false, true);
+      // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK, AND IS
+      // ANSWERED AS IT ALWAYS WAS (NOT AVAILABLE), NOT WITH A NEW KIND OF ERROR
+      if (isValidDatabaseName(databaseName)) {
+        final File directory = new File(
+            configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
+        if (holdsDatabase(directory))
+          return getDatabase(databaseName, false, true, false, true);
+      }
     }
     return getDatabase(databaseName, false, false);
   }
@@ -1711,6 +1713,15 @@ public class ArcadeDBServer {
    *
    * @throws IllegalArgumentException if the name is empty or would escape the database directory
    */
+  private boolean isValidDatabaseName(final String databaseName) {
+    try {
+      checkDatabaseNameIsValid(databaseName);
+      return true;
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+  }
+
   public void checkDatabaseNameIsValid(final String databaseName) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Database name is empty");
