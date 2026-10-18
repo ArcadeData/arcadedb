@@ -354,10 +354,15 @@ public class SaveElementStep extends AbstractExecutionStep {
    */
   private static void refuseViolation(final LocalTimeSeriesType tsType, final ColumnDefinition col, final Object value,
       final String violation) {
-    if (violation != null)
-      throw new ValidationException("The property '" + tsType.getName() + "." + col.getName() + "' refuses " + (value == null ?
-          "the sample" :
-          "the value " + value) + ": " + violation);
+    if (violation == null)
+      return;
+    // at most 100 characters of the value, as the check of stored values shows it: a long text would make the message as long
+    String text = value == null ? null : String.valueOf(value);
+    if (text != null && text.length() > 100)
+      text = text.substring(0, 100) + "...";
+    throw new ValidationException("The property '" + tsType.getName() + "." + col.getName() + "' refuses " + (text == null ?
+        "the sample" :
+        "the value " + text) + ": " + violation);
   }
 
   private void scheduleContinuousAggregateRefresh(final CommandContext context, final LocalTimeSeriesType tsType) {

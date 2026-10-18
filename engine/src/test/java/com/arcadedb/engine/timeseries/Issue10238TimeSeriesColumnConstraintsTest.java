@@ -317,6 +317,51 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
     assertThat(type.getProperty("day").getRegexp()).isEqualTo("2023-11-1[45]");
   }
 
+  /**
+   * The check of stored samples finds a column by its place in the engine row, the timestamp first and the other columns in
+   * declaration order, wherever the TIMESTAMP clause was declared.
+   */
+  @Test
+  void theStoredSampleCheckFindsTheColumnWhereverTheTimestampIsDeclared() {
+    database.command("sql", "CREATE TIMESERIES TYPE O TAGS (host STRING, port INTEGER) TIMESTAMP ts FIELDS (v DOUBLE) SHARDS 1");
+    database.command("sql", "INSERT INTO O SET ts = 1, host = 'a', port = 80, v = 1.0");
+    database.command("sql", "INSERT INTO O SET ts = 2, host = 'b', port = 8080, v = 2.0");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.port MAX 100")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("timestamp 2");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.v MAX 1.5")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("timestamp 2");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.host REGEXP 'a'")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("timestamp 2");
+    database.command("sql", "ALTER PROPERTY O.port MAX 8080");
+    database.command("sql", "ALTER PROPERTY O.v MAX 2.0");
+    database.command("sql", "ALTER PROPERTY O.host REGEXP '[ab]'");
+  }
+
+  /**
+   * A multi-row INSERT refused at one row keeps the rows appended before it: each row is appended in its own shard transaction, so an
+   * INSERT into a TIMESERIES type is not atomic (issue #7410), and a constraint is one more way for a later row to be refused. The
+   * rows before it stay, the row and the rows after it are not written.
+   */
+  @Test
+  void aMultiRowInsertRefusedAtOneRowKeepsTheRowsBeforeIt() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE A TIMESTAMP ts FIELDS (i INTEGER) SHARDS 1");
+    database.command("sql", "ALTER PROPERTY A.i MAX 10");
+
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO A CONTENT [{\"ts\":1,\"i\":1},{\"ts\":2,\"i\":2},{\"ts\":3,\"i\":50},{\"ts\":4,\"i\":4}]"))
+        .isInstanceOf(ValidationException.class).hasMessageContaining("MAX 10");
+    assertThat(rows("A")).extracting(row -> ((Number) row[0]).longValue()).doesNotContain(3L, 4L).containsAnyOf(1L, 2L);
+  }
+
+  @Test
+  void aLongValueIsTruncatedInTheRefusal() {
+    database.command("sql", "CREATE TIMESERIES TYPE K TIMESTAMP ts FIELDS (s STRING) SHARDS 1");
+    database.command("sql", "ALTER PROPERTY K.s MAX 10");
+    final String longText = "x".repeat(200);
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO K SET ts = 1, s = ?", longText)).isInstanceOf(ValidationException.class)
+        .hasMessageContaining("x".repeat(100) + "...").satisfies(e -> assertThat(e.getMessage()).doesNotContain(longText));
+  }
+
   /** DEFAULT and HIDDEN are honoured by no path of a TIMESERIES type, so they are refused rather than stored for nothing. */
   @Test
   void anAttributeNoPathHonoursIsRefused() {
