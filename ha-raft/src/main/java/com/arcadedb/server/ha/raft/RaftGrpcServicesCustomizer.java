@@ -111,4 +111,19 @@ final class RaftGrpcServicesCustomizer implements GrpcServices.Customizer {
           .maxConnectionAgeGrace(maxConnectionAgeGraceMs, TimeUnit.MILLISECONDS);
     return result;
   }
+
+  /** The transport filters this customizer installs. For tests. */
+  ServerTransportFilter[] filters() {
+    return filters.clone();
+  }
+
+  /** The call interceptors this customizer installs. For tests. */
+  ServerInterceptor[] interceptors() {
+    return interceptors.clone();
+  }
+
+  /** Whether this customizer bounds a connection's idle time or age at all. For tests. */
+  boolean boundsConnections() {
+    return maxConnectionIdleMs > 0 || maxConnectionAgeMs > 0;
+  }
 }
