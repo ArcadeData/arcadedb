@@ -61,9 +61,14 @@ class Issue10245LazyPolyglotEngineTest extends TestHelper {
       assertThat(manager.isLanguageRegistered("sqlscript")).isTrue();
       assertThat(listings.get()).as("no polyglot language was asked for").isZero();
 
-      // a language no engine answers to lists them, once
-      assertThat(manager.isLanguageRegistered("js")).isTrue();
+      // the per-query check of the metrics never lists them: an invented language must not build the engine there
+      assertThat(manager.isLanguageRegistered("lang12345")).isFalse();
+      assertThat(manager.isLanguageRegistered("js")).isFalse();
+      assertThat(listings.get()).isZero();
+
+      // a lookup of a language no engine answers to lists them, once
       assertThatThrownBy(() -> manager.getEngine("lang12345", (DatabaseInternal) database)).isInstanceOf(IllegalArgumentException.class);
+      assertThat(manager.isLanguageRegistered("js")).isTrue();
       assertThat(manager.isLanguageRegistered("lang12345")).isFalse();
       assertThat(listings.get()).isEqualTo(1);
 
@@ -85,6 +90,7 @@ class Issue10245LazyPolyglotEngineTest extends TestHelper {
       return List.of("js", "python");
     });
     try {
+      assertThat(manager.isLanguageRegistered("PYTHON")).isFalse();
       assertThat(manager.getAvailableLanguages()).contains("js", "python", "sql");
       assertThat(manager.isLanguageRegistered("PYTHON")).isTrue();
       assertThat(listings.get()).isEqualTo(1);

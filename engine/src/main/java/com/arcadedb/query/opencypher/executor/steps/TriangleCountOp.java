@@ -70,6 +70,8 @@ public final class TriangleCountOp implements CountOp {
   private static final byte STRING           = 1;
   private static final byte BOOLEAN          = 2;
   private static final long MAX_EXACT_DOUBLE = 1L << 53;
+  // THE 6 BINDINGS OF THE VERTICES OF A TRIANGLE TO THE THREE VARIABLES
+  private static final int[][] PERMUTATIONS = { { 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 }, { 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 } };
 
   private final String                 edgeType;
   private final String                 label;
@@ -352,8 +354,6 @@ public final class TriangleCountOp implements CountOp {
     }
     return matches;
   }
-
-  private static final int[][] PERMUTATIONS = { { 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 }, { 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 } };
 
   /**
    * Ranks the values of the accepted nodes within their family, equal values sharing a rank, so a strict order between two

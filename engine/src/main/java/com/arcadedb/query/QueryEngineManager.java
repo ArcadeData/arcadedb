@@ -192,7 +192,9 @@ public class QueryEngineManager extends DedicatedThreadPool {
    * {@link #getEngine(String, DatabaseInternal)} matches it (case-insensitively). Unlike
    * {@link #getAvailableLanguages()} this answers the question without copying the key set, so it is usable
    * from instrumentation that runs once per query: one volatile read of the copy-on-write map plus one hash
-   * lookup, no allocation. The first miss resolves the polyglot languages, once, as {@code getEngine()} does.
+   * lookup, no allocation. A miss does not resolve the polyglot languages, which would build the GraalVM engine inside
+   * the instrumentation of a query in an invented language (issue #10245): a query in a script language reaches
+   * {@code getEngine()} first, which resolves them, so its tag is known by the time it is recorded.
    * <p>
    * Exists so the {@code language} tag of {@code arcadedb.query.duration} can be bounded at its source. The
    * language travels straight from the caller - {@code db.query("<language>", ...)}, the {@code {lang}} path
@@ -200,6 +202,6 @@ public class QueryEngineManager extends DedicatedThreadPool {
    * name; the engine registry is the component that knows which values are real (issue #7122).
    */
   public boolean isLanguageRegistered(final String language) {
-    return language != null && lookup(language.toLowerCase(Locale.ENGLISH)) != null;
+    return language != null && implementations.containsKey(language.toLowerCase(Locale.ENGLISH));
   }
 }
