@@ -26,7 +26,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,6 +100,41 @@ class Issue10245LazyPolyglotLanguagesTest extends TestHelper {
     // registered the polyglot languages first and the built-in engines over them.
     manager.getAvailableLanguages();
     assertThat(manager.getEngine("sql", (DatabaseInternal) database)).isNotInstanceOf(PolyglotQueryEngine.class);
+  }
+
+  @Test
+  void concurrentLookupsAndRegistrationsResolveThePolyglotLanguagesOnce() throws Exception {
+    final int threads = 8;
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+    final List<Thread> workers = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final int thread = t;
+      final Thread worker = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < 50; i++) {
+            if (thread % 2 == 0)
+              assertThat(manager.isLanguageRegistered("js")).isTrue();
+            else
+              assertThat(manager.getEngine("JS", (DatabaseInternal) database)).isNotNull();
+            if (i == 10)
+              manager.register(new PolyglotQueryEngine.PolyglotQueryEngineFactory("custom" + thread));
+          }
+        } catch (final Throwable e) {
+          failures.add(e);
+        }
+      });
+      workers.add(worker);
+      worker.start();
+    }
+    start.countDown();
+    for (final Thread worker : workers)
+      worker.join();
+
+    assertThat(failures).isEmpty();
+    assertThat(enumerations.get()).isEqualTo(1);
+    assertThat(manager.getAvailableLanguages()).contains("js", "sql", "custom0", "custom7");
   }
 
   @Test
