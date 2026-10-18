@@ -39,6 +39,8 @@ public final class RidHashSet {
   private static final int  EMPTY_BUCKET = Integer.MIN_VALUE;
   private static final long EMPTY_OFFSET = Long.MIN_VALUE;
   private static final float LOAD_FACTOR = 0.75f;
+  /** What one RID held costs, the free slots the load factor keeps around it included: what a heap budget is charged. */
+  public static final int   BYTES_PER_ENTRY = (int) Math.ceil((Integer.BYTES + Long.BYTES) / LOAD_FACTOR);
 
   private int[]  bucketIds;
   private long[] offsets;

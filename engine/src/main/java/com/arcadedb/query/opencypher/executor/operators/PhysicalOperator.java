@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.executor.operators;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.List;
+
 /**
  * Base interface for physical operators in the query execution plan.
  * Physical operators represent "how" operations are executed with specific algorithms.
@@ -82,6 +84,18 @@ public interface PhysicalOperator {
    * @return child operator or null
    */
   PhysicalOperator getChild();
+
+  /**
+   * Returns every operator that provides input to this one: the child, and the second input of a join or a product. A
+   * walk over the plan that must reach every operator - one that marks the index reads of a write statement
+   * (issue #10251) - goes through this rather than {@link #getChild()}, which names one input only.
+   *
+   * @return the inputs, empty for a leaf operator; an input not set is null
+   */
+  default List<PhysicalOperator> getInputs() {
+    final PhysicalOperator child = getChild();
+    return child != null ? List.of(child) : List.of();
+  }
 
   /**
    * Sets the child operator that will provide input to this operator.

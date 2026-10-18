@@ -27,6 +27,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -40,14 +41,13 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
-import java.util.Set;
 
 /**
  * Physical operator that performs an index seek for vertices.
@@ -74,6 +74,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
   private final List<Object> keyValues;
   /** Predicates reading only {@link #variable}, evaluated once per seeked vertex instead of once per expanded row. */
   private BooleanExpression whereFilter;
+  /** Whether the statement can write a key of the index, see {@link #setStatementWritesKey}. */
+  private boolean statementWritesKey;
 
   public NodeIndexSeek(final String variable, final String label, final String propertyName,
                       final Object propertyValue, final String indexName,
@@ -111,6 +113,18 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     return whereFilter;
   }
 
+  /**
+   * Tells the seek that the statement can write a key of its index (issue #10251, the Halloween problem). A key shorter
+   * than the index walks the range of the entries sharing that prefix, and a write of a trailing key moves the record's
+   * entry inside that range, ahead of the cursor when the key grows: the seek then serves each vertex once, as it does
+   * across the values of an IN-list, and the entries it moved are passed over. That holds a RID per vertex served, for as
+   * long as the seek runs, only for a prefix seek of a statement that writes a key of the index. A whole key is answered
+   * at once and needs nothing.
+   */
+  public void setStatementWritesKey(final boolean statementWritesKey) {
+    this.statementWritesKey = statementWritesKey;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
@@ -124,7 +138,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       private int seekIndex = 0;
       private boolean wholeKey = false;        // the key covers every index property: single-entry lookup
       private IndexCursor cursor = null;
-      private Set<RID> seen = null;            // de-duplicate RIDs across multiple seek values (IN-list set semantics)
+      private RidHashSet seen = null;          // de-duplicate RIDs across multiple seek values (IN-list set semantics)
+      // The RIDs seen are charged to the heap budget all queries share (issue #9792)
+      private OperationHeapLimit seenHeapLimit = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean initialized = false;
@@ -194,7 +210,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         // removed and result RIDs de-duplicated to honor set-membership semantics.
         seekKeys = new ArrayList<>();
         if (propertyValue instanceof InListValues inList) {
-          seen = new HashSet<>();
+          seen = newSeen();
           for (final Expression element : inList.getValues()) {
             final Object resolved = resolveValue(element);
             if (inList.isScalar(element))
@@ -216,6 +232,21 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         // (issue #9236), so there is nothing to read
         if (seekKeys.isEmpty() || (!wholeKey && !index.supportsOrderedIterations()))
           finished = true;
+        else if (seen == null && statementWritesKey && !wholeKey)
+          seen = newSeen();
+      }
+
+      private RidHashSet newSeen() {
+        seenHeapLimit = OperationHeapLimit.of(context, "record addresses", "NodeIndexSeek");
+        return new RidHashSet();
+      }
+
+      private void releaseSeen() {
+        seen = null;
+        if (seenHeapLimit != null) {
+          seenHeapLimit.release();
+          seenHeapLimit = null;
+        }
       }
 
       private void addSeekKey(final Object leadingValue, final List<Object> trailing) {
@@ -263,6 +294,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
             }
             if (seekIndex >= seekKeys.size()) {
               finished = true;
+              releaseSeen();
               return;
             }
             if (wholeKey && seekIndex == 0) {
@@ -285,8 +317,11 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           final Identifiable identifiable = cursor.next();
 
           // Skip already-emitted vertices when seeking multiple IN-list values (set semantics).
-          if (seen != null && !seen.add(identifiable.getIdentity()))
-            continue;
+          if (seen != null) {
+            if (!seen.add(identifiable.getIdentity()))
+              continue;
+            seenHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
+          }
 
           // Reject a record of another type in the hierarchy without loading it: the bucket the RID names
           // already says which type it belongs to (issue #7021).
@@ -316,6 +351,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           cursor.close();
           cursor = null;
         }
+        releaseSeen();
       }
     };
   }
@@ -356,6 +392,10 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
   public String getPropertyName() {
     return propertyName;
+  }
+
+  public List<String> getIndexProperties() {
+    return indexProperties;
   }
 
   public Object getPropertyValue() {

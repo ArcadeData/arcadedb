@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -39,6 +40,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.RidHashSet;
 
 import java.math.BigDecimal;
 import java.util.Iterator;
@@ -77,6 +79,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
   private final EquiJoinKey[]     keys;
   /** The WHERE conjuncts that read the sought node alone, or null. */
   private final BooleanExpression rightFilter;
+  /** Whether the statement can write a key of the index, see {@link #setStatementWritesKey}. */
+  private       boolean           statementWritesKey;
 
   public IndexNestedLoopJoin(final PhysicalOperator left, final String variable, final String label, final String indexName,
       final List<String> indexProperties, final EquiJoinKey[] keys, final BooleanExpression rightFilter,
@@ -88,6 +92,20 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
     this.indexProperties = indexProperties;
     this.keys = keys;
     this.rightFilter = rightFilter;
+  }
+
+  /**
+   * Tells the join that the statement can write a key of the index it seeks (issue #10251, the Halloween problem): a key
+   * shorter than the index walks the entries sharing that prefix, and a write of a trailing key moves the entry ahead of
+   * the cursor, so each left row then serves each vertex once. That holds the vertices of one left row's prefix as RIDs,
+   * forgotten at the next row. A whole key is answered at once and needs nothing.
+   */
+  public void setStatementWritesKey(final boolean statementWritesKey) {
+    this.statementWritesKey = statementWritesKey;
+  }
+
+  public List<String> getIndexProperties() {
+    return indexProperties;
   }
 
   @Override
@@ -111,6 +129,10 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       private Result                         currentLeft;
       private IndexCursor                    cursor;
       private Iterator<? extends Identifiable> scan;
+      // The vertices the prefix seek of the current left row served, when the statement writes a key of the index
+      private RidHashSet                     servedForLeftRow;
+      // ... charged to the heap budget all queries share (issue #9792), and given back at the next left row
+      private OperationHeapLimit             servedHeapLimit;
       private Result                         pending;
 
       @Override
@@ -201,6 +223,13 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
           if (cursor != null && inheritedIndex && !Labels.carriesLabel(schema, identifiable, label))
             continue;
 
+          // An entry the statement moved further along the prefix it walks: the vertex was served already (issue #10251)
+          if (cursor != null && servedForLeftRow != null && !wholeKey) {
+            if (!servedForLeftRow.add(identifiable.getIdentity()))
+              continue;
+            servedHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
+          }
+
           final ResultInternal row = new ResultInternal();
           row.setProperty(variable, identifiable.asVertex());
           if (rightFilter == null || Boolean.TRUE.equals(rightFilter.evaluateTernary(row, context)))
@@ -241,7 +270,18 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
 
       // A key covering every index property is a single-entry lookup; a prefix is a range of the ordered index
       private IndexCursor seek(final Object[] key) {
-        return wholeKey ? ConsistentKeyLookup.get(context.getDatabase(), index, key) : index.range(true, key, true, key, true);
+        if (wholeKey)
+          return ConsistentKeyLookup.get(context.getDatabase(), index, key);
+        if (statementWritesKey)
+          // Each left row walks its prefix afresh, so what it has served is forgotten with the row before
+          if (servedForLeftRow == null) {
+            servedForLeftRow = new RidHashSet();
+            servedHeapLimit = OperationHeapLimit.of(context, "record addresses", "IndexNestedLoopJoin");
+          } else {
+            servedForLeftRow.clear();
+            servedHeapLimit.release();
+          }
+        return index.range(true, key, true, key, true);
       }
 
       private void closeRight() {
@@ -257,6 +297,11 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         finished = true;
         currentLeft = null;
         closeRight();
+        servedForLeftRow = null;
+        if (servedHeapLimit != null) {
+          servedHeapLimit.release();
+          servedHeapLimit = null;
+        }
         if (leftResults != null) {
           leftResults.close();
           leftResults = null;

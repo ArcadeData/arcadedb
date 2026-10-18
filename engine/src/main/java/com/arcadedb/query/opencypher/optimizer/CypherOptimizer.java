@@ -52,6 +52,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVEdgeRef;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
@@ -70,6 +71,7 @@ import com.arcadedb.query.opencypher.optimizer.rules.JoinOrderRule;
 import com.arcadedb.query.opencypher.optimizer.rules.OptimizationRule;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
@@ -168,6 +170,33 @@ public class CypherOptimizer {
    * operators can represent, in which case the caller falls back to the ordinary pipeline
    */
   public PhysicalPlan optimize() {
+    final PhysicalPlan plan = buildPhysicalPlan();
+    if (plan != null && !statement.isReadOnly())
+      readRangesFirstWhereWritten(plan.getRootOperator(), CypherEagernessAnalyzer.ofPropertyWrites(statement.getClausesInOrder()));
+    return plan;
+  }
+
+  /**
+   * Makes every index range scan of the plan whose key the statement can write read its whole range before the first row,
+   * so the statement does not meet the entries its own writes move ahead of the cursor (issue #10251, the Halloween
+   * problem), and every prefix seek of such an index, a leaf or the inner side of an index nested-loop join, serve each
+   * vertex once. A seek of a whole key is answered at once, and the seeks of a label disjunction already serve each vertex
+   * once. Every input of every operator is visited, through {@link PhysicalOperator#getInputs()}.
+   */
+  private static void readRangesFirstWhereWritten(final PhysicalOperator operator, final CypherEagernessAnalyzer writes) {
+    if (operator == null)
+      return;
+    if (operator instanceof NodeIndexRangeScan rangeScan && writes.writesAnyPropertyOf(rangeScan.getIndexProperties()))
+      rangeScan.setReadsEntriesFirst(true);
+    else if (operator instanceof NodeIndexSeek seek && writes.writesAnyPropertyOf(seek.getIndexProperties()))
+      seek.setStatementWritesKey(true);
+    else if (operator instanceof IndexNestedLoopJoin join && writes.writesAnyPropertyOf(join.getIndexProperties()))
+      join.setStatementWritesKey(true);
+    for (final PhysicalOperator input : operator.getInputs())
+      readRangesFirstWhereWritten(input, writes);
+  }
+
+  private PhysicalPlan buildPhysicalPlan() {
     // 1. Build logical plan from AST
     final LogicalPlan logicalPlan = buildLogicalPlan();
 

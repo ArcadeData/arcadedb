@@ -396,6 +396,11 @@ public class OrderByStep extends AbstractExecutionStep {
         if (v1 instanceof String s1 && v2 instanceof String s2)
           return BinaryComparator.compareStrings(s1, s2);
 
+        // BINARY values sort by their bytes, unsigned, as SQL and the index order them. A byte[] is not Comparable, and its
+        // toString() is the identity of the array, which changes with every load of the record (issue #10195)
+        if (v1 instanceof byte[] b1 && v2 instanceof byte[] b2)
+          return BinaryComparator.compareBytes(b1, b2);
+
         // Same-type Comparable comparison
         if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {
           try {

@@ -1149,45 +1149,43 @@ public class CypherExecutionPlan {
     context.setProfiling(true);
 
     final InternalResultSet results = new InternalResultSet();
-    String errorMessage = null;
     AbstractExecutionStep rootStep = null;
     boolean countPushedDown = false;
 
-    try {
-      if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
-        final UnionStep unionStep =
-            new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
-        try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
+    // A failure ends the statement here, as it ends the statement PROFILE wraps: it reaches the caller, so the transaction
+    // around the statement rolls back what was written before it. It used to be caught into the profile text, which
+    // answered a failed write with no rows and no error and let its writes commit (issue #10252); Neo4j's PROFILE fails too
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+      final UnionStep unionStep =
+          new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+      try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
+        while (resultSet.hasNext())
+          results.add(resultSet.next());
+      }
+    } else {
+      // FAST PATH: Count-push-down (same logic as execute())
+      rootStep = tryCountPushDown(context, false);
+      countPushedDown = rootStep != null;
+
+      if (rootStep == null) {
+        if (canUseOptimizedPhysicalPlan()) {
+          rootStep = buildExecutionStepsWithOptimizer(context);
+        } else
+          rootStep = buildExecutionSteps(context);
+      }
+
+      if (rootStep != null) {
+        try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
           while (resultSet.hasNext())
             results.add(resultSet.next());
         }
-      } else {
-        // FAST PATH: Count-push-down (same logic as execute())
-        rootStep = tryCountPushDown(context, false);
-        countPushedDown = rootStep != null;
-
-        if (rootStep == null) {
-          if (canUseOptimizedPhysicalPlan()) {
-            rootStep = buildExecutionStepsWithOptimizer(context);
-          } else
-            rootStep = buildExecutionSteps(context);
-        }
-
-        if (rootStep != null) {
-          try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
-            while (resultSet.hasNext())
-              results.add(resultSet.next());
-          }
-        }
       }
-    } catch (final Exception e) {
-      errorMessage = e.getMessage();
     }
 
     final long endTime = System.nanoTime();
     final long rowCount = results.countEntries();
 
-    results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount, errorMessage));
+    results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount));
     // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
     // mirroring execute()'s write path so a profiled write still reports its counters. Read-only
     // statements never attach a statistics accumulator, matching execute()'s read path.
@@ -1204,11 +1202,9 @@ public class CypherExecutionPlan {
    *
    * @param elapsedNanos wall clock of the run being described
    * @param rowCount     rows the run produced - for the streaming path, rows the caller actually pulled
-   * @param errorMessage the failure that ended the run, or {@code null}
    */
   private OpenCypherExplainExecutionPlan buildProfilePlan(final CommandContext context,
-      final AbstractExecutionStep rootStep, final boolean countPushedDown, final long elapsedNanos, final long rowCount,
-      final String errorMessage) {
+      final AbstractExecutionStep rootStep, final boolean countPushedDown, final long elapsedNanos, final long rowCount) {
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
     profileOutput.append("========================\n\n");
@@ -1216,9 +1212,6 @@ public class CypherExecutionPlan {
       profileOutput.append("CSR-accelerated via Graph Analytical View\n");
     profileOutput.append(String.format(Locale.ROOT, "Execution Time: %.3f ms\n", elapsedNanos / 1_000_000.0));
     profileOutput.append(String.format(Locale.ROOT, "Rows Returned: %d\n", rowCount));
-
-    if (errorMessage != null)
-      profileOutput.append(String.format(Locale.ROOT, "\nError: %s\n", errorMessage));
 
     // Collect execution steps for structured plan data
     final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
@@ -1316,7 +1309,7 @@ public class CypherExecutionPlan {
       //
       // Reading the clock rather than stopping it: a caller that inspects progress mid-stream and asks again at
       // the end must get the elapsed of the whole run the second time, not the reading frozen by the first ask.
-      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount, null));
+      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount));
     }
 
     /** The run's elapsed: final once the run has ended, and how long it has been going otherwise. */
