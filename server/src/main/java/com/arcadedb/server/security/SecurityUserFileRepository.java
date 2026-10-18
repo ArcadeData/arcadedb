@@ -130,10 +130,19 @@ public class SecurityUserFileRepository {
    * Shared by the users and groups repositories: logs ONE SEVERE naming the file that failed and copies it, byte for
    * byte, to {@code errorFile}. The copy is written to a temp file (created owner-only by the JDK) and renamed over the
    * target, so the users file's password hashes are never exposed with a wider mode, not even for an instant.
+   * <p>
+   * An existing {@code errorFile} is REPLACED: it always holds the most recent file that failed to load. Keeping every
+   * failure would need a rotation policy for a directory operators hand-edit; the latest bad file is the one the SEVERE
+   * just reported.
+   * <p>
+   * Not synchronized itself: each caller holds the lock that serializes its own writers ({@code saveLock} here, the
+   * repository monitor in {@link SecurityGroupFileRepository#saveInError}).
    */
   static void preserveInError(final Object requester, final File file, final File errorFile, final Exception cause) {
     if (!file.isFile()) {
-      LogManager.instance().log(requester, Level.SEVERE, "Error on loading file '%s', using the default configuration", cause, file.getName());
+      LogManager.instance().log(requester, Level.SEVERE,
+          "Error on loading file '%s', using the default configuration. The file is no longer there, so nothing was saved as '%s'", cause,
+          file.getName(), errorFile.getPath());
       return;
     }
 
