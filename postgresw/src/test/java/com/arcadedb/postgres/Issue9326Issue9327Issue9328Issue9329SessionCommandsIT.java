@@ -63,6 +63,16 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  */
 class Issue9326Issue9327Issue9328Issue9329SessionCommandsIT extends PostgresWireProtocolTestBase {
 
+  /**
+   * Every row runs the subquery once more over the whole type, and each row binds a different {@code $parent.$current},
+   * so the subquery cache cannot collapse them: the statement is quadratic in the row count, 9 million record visits here,
+   * about a second uncancelled where the deadline is 1 ms - a thousand times over (#10166). A plain scan of 30,000 records
+   * is linear and did not clear that bar: a fast runner finished it inside the millisecond, and the statement was
+   * answered instead of cancelled.
+   */
+  private static final String SLOW_STATEMENT =
+      "SELECT count(*) FROM Issue9329Doc WHERE (SELECT count(*) FROM Issue9329Doc d WHERE d.n % 7 = $parent.$current.n % 7) > 0";
+
   @Test
   @DisplayName("[#9326] SHOW is answered with the SHOW command tag on both protocols")
   void showCarriesItsCommandTag() throws Exception {
@@ -232,17 +242,16 @@ class Issue9326Issue9327Issue9328Issue9329SessionCommandsIT extends PostgresWire
       final Database database = getServer(0).getDatabase(getDatabaseName());
       database.getSchema().getOrCreateDocumentType("Issue9329Doc");
       database.transaction(() -> {
-        for (int i = 0; i < 30_000; i++)
+        for (int i = 0; i < 3_000; i++)
           database.newDocument("Issue9329Doc").set("n", i).save();
       });
 
       assertThat(messageTypesOf(simple(out, in, "SET statement_timeout = 1"))).doesNotContain('E');
-      // Not answerable from an index, so the scan has to run, and no machine scans 30,000 records in a millisecond
-      final List<WireMessage> answer = simple(out, in, "SELECT count(*) FROM Issue9329Doc WHERE n % 7 = 3");
-      assertThat(sqlStateOf(answer)).isEqualTo("57014");
+      assertThat(sqlStateOf(simple(out, in, SLOW_STATEMENT))).isEqualTo("57014");
 
+      // The same statement is a valid one, so the cancellation above was the deadline's doing and nothing else's
       assertThat(messageTypesOf(simple(out, in, "SET statement_timeout = 0"))).doesNotContain('E');
-      assertThat(messageTypesOf(simple(out, in, "SELECT count(*) FROM Issue9329Doc WHERE n % 7 = 3"))).doesNotContain('E');
+      assertThat(messageTypesOf(simple(out, in, SLOW_STATEMENT))).doesNotContain('E');
     });
   }
 
