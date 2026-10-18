@@ -91,7 +91,7 @@ public class TransactionManager {
   // Guarded by walSlotLock: set by close()/kill(), after which no commit opens a WAL file on this instance again
   private       boolean                      walPoolRetired;
   private final String                       logContext;
-  private final ScheduledFuture<?>           housekeeping;
+  private volatile ScheduledFuture<?>        housekeeping;
   private final AtomicLong                   transactionIds      = new AtomicLong();
   // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
@@ -186,9 +186,9 @@ public class TransactionManager {
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
 
-      // The field is assigned from the return value of the call that schedules the first tick, which runs a second later on
-      // another thread: housekeepingTick() null-checks it, and a tick that finds it still null only skips the cancel of a
-      // closed database, which the next tick does. The delay is what makes the window theoretical, not a happens-before edge.
+      // Volatile, because the field is assigned from the return value of the call that schedules the first tick, which runs on
+      // another thread a second later: housekeepingTick() reads it, and a tick that finds it still null only skips the cancel
+      // of a closed database, which the next tick does.
       //
       // #10234: ONE SCHEDULER FOR THE WAL HOUSEKEEPING OF EVERY DATABASE OF THE JVM, NOT A TIMER THREAD PER DATABASE: A
       // SERVER WITH THOUSANDS OF DATABASES HELD A THREAD FOR EACH. Its threads are daemon, as the timer's was since #5418:
@@ -197,8 +197,7 @@ public class TransactionManager {
       // installed by DatabaseFactory, which completes before daemon threads are stopped.
       housekeeping = HousekeepingScheduler.INSTANCE.scheduleWithFixedDelay(this::housekeepingTick, HOUSEKEEPING_PERIOD_MS,
           HOUSEKEEPING_PERIOD_MS, TimeUnit.MILLISECONDS);
-    } else
-      housekeeping = null;
+    }
   }
 
   /**

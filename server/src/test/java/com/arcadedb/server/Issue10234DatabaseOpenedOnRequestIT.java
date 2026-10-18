@@ -210,9 +210,12 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     });
     try {
       final QueryWarmUp second = new QueryWarmUp(getServer(0));
+      final Object queriesBefore = getServer(0).getDatabase(getDatabaseName()).getEmbedded().getStats().get("queries");
       second.run();
       assertThat(second.getExecutedStatements()).isEqualTo(QueryWarmUp.EXECUTED_STATEMENTS.size());
       assertThat(spans.get()).as("spans opened by the warm-up").isZero();
+      // NOT COUNTED AMONG THE QUERIES OF THE DATABASE EITHER
+      assertThat(getServer(0).getDatabase(getDatabaseName()).getEmbedded().getStats().get("queries")).isEqualTo(queriesBefore);
     } finally {
       QueryTracer.Holder.register(previous);
     }

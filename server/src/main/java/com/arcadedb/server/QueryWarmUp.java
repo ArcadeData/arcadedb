@@ -47,9 +47,8 @@ import java.util.logging.Level;
  * credential, and runs on the embedded database through the query engine itself, so it is neither replicated nor counted as
  * a client request - no tracing span, no query metric, no statistic of the database. It runs once, on a daemon thread of its
  * own that ends when it is done, at the lowest priority (a hint the operating system may ignore, so the start does share
- * its cores with it), so it delays no request that arrives first; whatever it fails on is logged at {@code FINE} and
- * skipped, because nothing depends on it.
- * An {@link Error} is not swallowed.
+ * its cores with it), so it delays no request that arrives first. Whatever it fails on is logged at {@code FINE} and skipped,
+ * because nothing depends on it; an {@link Error} is not swallowed.
  * <p>
  * Disabled with {@link GlobalConfiguration#SERVER_QUERY_WARM_UP}.
  *
