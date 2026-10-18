@@ -33,6 +33,7 @@ import java.util.Set;
 import java.util.Spliterator;
 import java.util.stream.StreamSupport;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -138,7 +139,11 @@ class Issue5588PrimitiveLocationIndexTest {
 
     final Thread writer = new Thread(() -> {
       try {
-        seedRead.await();
+        // A hang detector, not a latency bound: a reader that never got to its first read must fail the test, not park the writer
+        if (!seedRead.await(30, TimeUnit.SECONDS)) {
+          failure.compareAndSet(null, "a reader never read the seeded generation");
+          return;
+        }
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return;
@@ -176,11 +181,14 @@ class Issue5588PrimitiveLocationIndexTest {
     readers.forEach(Thread::start);
     Thread.sleep(500);
     stop.set(true);
-    writer.join(30_000);
+    // Longer than the writer's own wait for the seed read, so a writer that gave up has already said so when this returns
+    writer.join(60_000);
     for (final Thread reader : readers)
       reader.join(30_000);
 
     assertThat(failure.get()).isNull();
+    assertThat(writer.isAlive()).as("the writer must have terminated").isFalse();
+    assertThat(readers).allSatisfy(reader -> assertThat(reader.isAlive()).as(reader.getName()).isFalse());
     assertThat(reads.get()).as("the readers must really have observed the id being rewritten").isGreaterThan(1000);
   }
 

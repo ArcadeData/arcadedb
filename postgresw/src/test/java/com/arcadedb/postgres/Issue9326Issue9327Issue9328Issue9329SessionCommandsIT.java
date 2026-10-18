@@ -63,6 +63,16 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  */
 class Issue9326Issue9327Issue9328Issue9329SessionCommandsIT extends PostgresWireProtocolTestBase {
 
+  /**
+   * Every row runs the subquery once more over the whole type, and each row binds a different {@code $parent.$current},
+   * so the subquery cache cannot collapse them: the statement is quadratic in the row count, 9 million record visits here,
+   * about a second uncancelled where the deadline is 1 ms - a thousand times over (#10166). A plain scan of 30,000 records
+   * is linear and did not clear that bar: a fast runner finished it inside the millisecond, and the statement was
+   * answered instead of cancelled.
+   */
+  private static final String SLOW_STATEMENT =
+      "SELECT count(*) FROM Issue9329Doc WHERE (SELECT count(*) FROM Issue9329Doc d WHERE d.n % 7 = $parent.$current.n % 7) > 0";
+
   @Test
   @DisplayName("[#9326] SHOW is answered with the SHOW command tag on both protocols")
   void showCarriesItsCommandTag() throws Exception {
@@ -219,16 +229,6 @@ class Issue9326Issue9327Issue9328Issue9329SessionCommandsIT extends PostgresWire
       assertThat(firstDataRowValue(simple(out, in, "SELECT current_schema()"))).isEqualTo(schema);
     });
   }
-
-  /**
-   * Every row runs the subquery once more over the whole type, and each row binds a different {@code $parent.$current},
-   * so the subquery cache cannot collapse them: the statement is quadratic in the row count, 9 million record visits here,
-   * about a second uncancelled where the deadline is 1 ms - a thousand times over (#10166). A plain scan of 30,000 records
-   * is linear and did not clear that bar: a fast runner finished it inside the millisecond, and the statement was
-   * answered instead of cancelled.
-   */
-  private static final String SLOW_STATEMENT =
-      "SELECT count(*) FROM Issue9329Doc WHERE (SELECT count(*) FROM Issue9329Doc d WHERE d.n % 7 = $parent.$current.n % 7) > 0";
 
   @Test
   @DisplayName("[#9329] statement_timeout cancels a statement at the deadline, and 0 disables it")

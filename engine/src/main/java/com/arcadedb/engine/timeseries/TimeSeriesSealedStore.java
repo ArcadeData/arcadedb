@@ -5848,7 +5848,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * flag is left as it is, so the caller still sees the cancellation, as with {@link #retryAfterReopen}.
    * <p>
    * The handle is opened read-only, which never re-creates a file that was dropped meanwhile, and only after
-   * {@link #reopenChannel()} has refused a store closed on purpose or whose file is gone.
+   * {@link #reopenChannel()} has refused a store closed on purpose or whose file is gone. It reads the file at
+   * {@code basePath}, which is the one the shared channel is on because every caller of {@link #readBytes} holds the
+   * directory lock (READ for a scan, WRITE for a rewrite), and a file swap runs under the WRITE lock.
+   * <p>
+   * Cost: one open, seek, read and close per call. While other threads keep closing the shared channel, every
+   * {@link #readBytes} takes this path, so a storm of cancelled queries is one {@code open()} per block read - acceptable
+   * for a path that is rare by construction, and what buys a read that cannot be failed by anyone else's interrupt.
    */
   private void readAfterChannelClosed(final byte[] bytes, final long offset) throws IOException {
     reopenChannel();
