@@ -279,7 +279,7 @@ public class ImmutableDocument extends BaseDocument {
    * Whether this record's content was read from its bucket by the transaction that began with {@code transactionBeginSequence}
    * (issue #8984). A record that was only referenced (not yet loaded) proves nothing about the bucket, so it does not count.
    */
-  boolean wasLoadedInTransaction(final long transactionBeginSequence) {
+  public boolean wasLoadedInTransaction(final long transactionBeginSequence) {
     return buffer != null && readInTransaction >= 0 && readInTransaction == readTransactionId(transactionBeginSequence);
   }
 
