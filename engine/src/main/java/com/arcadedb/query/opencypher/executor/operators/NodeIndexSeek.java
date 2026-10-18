@@ -117,8 +117,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
    * Tells the seek that the statement can write a key of its index (issue #10251, the Halloween problem). A key shorter
    * than the index walks the range of the entries sharing that prefix, and a write of a trailing key moves the record's
    * entry inside that range, ahead of the cursor when the key grows: the seek then serves each vertex once, as it does
-   * across the values of an IN-list, and the entries it moved are passed over. A whole key is answered at once and needs
-   * nothing.
+   * across the values of an IN-list, and the entries it moved are passed over. That holds a RID per vertex served, for as
+   * long as the seek runs, only for a prefix seek of a statement that writes a key of the index. A whole key is answered
+   * at once and needs nothing.
    */
   public void setStatementWritesKey(final boolean statementWritesKey) {
     this.statementWritesKey = statementWritesKey;

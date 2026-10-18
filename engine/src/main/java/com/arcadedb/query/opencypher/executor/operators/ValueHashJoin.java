@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -340,6 +341,11 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
   /** The right input; the left one is {@link #getChild()}. */
   public PhysicalOperator getRight() {
     return right;
+  }
+
+  @Override
+  public List<PhysicalOperator> getInputs() {
+    return Arrays.asList(getChild(), right);
   }
 
   public EquiJoinKey[] getKeys() {

@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
@@ -82,6 +83,11 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   private boolean ascending = true;
   /** Whether the scan reads the addresses of the whole range before it serves the first row, see {@link #setReadsEntriesFirst}. */
   private boolean readsEntriesFirst;
+  /** The most addresses a range read first can hold: the largest array the JVM allocates. */
+  private static final int MAX_ENTRIES   = Integer.MAX_VALUE - 8;
+  /** What one address held by a range read first costs: an int and a long. */
+  private static final int ENTRY_BYTES   = Integer.BYTES + Long.BYTES;
+  private static final int FIRST_ENTRIES = 64;
   /** Where the vertices with no value for the key come in a scan that stands for a whole label, see {@link NullKeys}. */
   private NullKeys nullKeys = NullKeys.NONE;
   /**
@@ -231,6 +237,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private long[] entryPositions;
       private int entries = 0;
       private int nextEntry = 0;
+      // The arrays are charged to the heap budget all queries share (issue #9792), as SQL's MaterializeRecordsStep charges
+      // its addresses: not capped in number, since reading them first is what makes the write correct
+      private OperationHeapLimit heapLimit;
 
       @Override
       public boolean hasNext() {
@@ -290,13 +299,19 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
        * streaming scan takes, without loading a record.
        */
       private void readEntries(final int n) {
-        entryBuckets = new int[64];
-        entryPositions = new long[64];
+        heapLimit = OperationHeapLimit.of(context, "record addresses", "NodeIndexRangeScan");
         collecting = true;
         try {
+          heapLimit.charge((long) FIRST_ENTRIES * ENTRY_BYTES);
+          entryBuckets = new int[FIRST_ENTRIES];
+          entryPositions = new long[FIRST_ENTRIES];
           cursor = openCursor();
           while (!finished)
             readRange(n);
+        } catch (final RuntimeException | Error e) {
+          // THE STATEMENT FAILS, POSSIBLY BEFORE ITS CALLER HOLDS A RESULT SET TO CLOSE: GIVE THE HEAP BACK NOW
+          releaseEntries();
+          throw e;
         } finally {
           collecting = false;
           if (cursor != null) {
@@ -324,16 +339,31 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         }
         if (nextEntry >= entries) {
           finished = true;
-          entryBuckets = null;
-          entryPositions = null;
+          releaseEntries();
+        }
+      }
+
+      private void releaseEntries() {
+        entryBuckets = null;
+        entryPositions = null;
+        if (heapLimit != null) {
+          heapLimit.release();
+          heapLimit = null;
         }
       }
 
       private void collect(final Identifiable identifiable) {
+        // The read of a large range is bounded by the command deadline too, not only the serving of it
+        guard.checkPeriodically(entries);
         final RID rid = identifiable.getIdentity();
         if (entries == entryBuckets.length) {
-          entryBuckets = Arrays.copyOf(entryBuckets, entries << 1);
-          entryPositions = Arrays.copyOf(entryPositions, entries << 1);
+          if (entries == MAX_ENTRIES)
+            throw new CommandExecutionException("The range of index '" + indexName + "' holds more than " + MAX_ENTRIES
+                + " entries, more than a statement that writes its key can read first: narrow the range or write in batches");
+          final int capacity = (int) Math.min(MAX_ENTRIES, (long) entries << 1);
+          heapLimit.charge((long) (capacity - entries) * ENTRY_BYTES);
+          entryBuckets = Arrays.copyOf(entryBuckets, capacity);
+          entryPositions = Arrays.copyOf(entryPositions, capacity);
         }
         entryBuckets[entries] = rid.getBucketId();
         entryPositions[entries] = rid.getPosition();
@@ -666,6 +696,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           fetcher.close();
           fetcher = null;
         }
+        releaseEntries();
       }
     };
   }

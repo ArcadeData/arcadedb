@@ -45,7 +45,6 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
-import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -53,12 +52,11 @@ import com.arcadedb.query.opencypher.executor.operators.GAVEdgeRef;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
-import com.arcadedb.query.opencypher.executor.operators.NodeHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
-import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
@@ -181,8 +179,9 @@ public class CypherOptimizer {
   /**
    * Makes every index range scan of the plan whose key the statement can write read its whole range before the first row,
    * so the statement does not meet the entries its own writes move ahead of the cursor (issue #10251, the Halloween
-   * problem), and every prefix seek of such an index serve each vertex once. A seek of a whole key is answered at once,
-   * and the seeks of a label disjunction already serve each vertex once.
+   * problem), and every prefix seek of such an index, a leaf or the inner side of an index nested-loop join, serve each
+   * vertex once. A seek of a whole key is answered at once, and the seeks of a label disjunction already serve each vertex
+   * once. Every input of every operator is visited, through {@link PhysicalOperator#getInputs()}.
    */
   private void readRangesFirstWhereWritten(final PhysicalOperator operator) {
     if (operator == null)
@@ -193,14 +192,11 @@ public class CypherOptimizer {
     else if (operator instanceof NodeIndexSeek seek
         && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), seek.getIndexProperties()))
       seek.setStatementWritesKey(true);
-    if (operator instanceof NodeHashJoin join) {
-      readRangesFirstWhereWritten(join.getLeftChild());
-      readRangesFirstWhereWritten(join.getRightChild());
-    } else if (operator instanceof CartesianProduct product)
-      readRangesFirstWhereWritten(product.getRight());
-    else if (operator instanceof ValueHashJoin join)
-      readRangesFirstWhereWritten(join.getRight());
-    readRangesFirstWhereWritten(operator.getChild());
+    else if (operator instanceof IndexNestedLoopJoin join
+        && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), join.getIndexProperties()))
+      join.setStatementWritesKey(true);
+    for (final PhysicalOperator input : operator.getInputs())
+      readRangesFirstWhereWritten(input);
   }
 
   private PhysicalPlan buildPhysicalPlan() {
