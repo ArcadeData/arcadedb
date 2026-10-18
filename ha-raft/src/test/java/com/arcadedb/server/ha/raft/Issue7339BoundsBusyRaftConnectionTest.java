@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.ha.raft.ratis.RemoteAddressCallInterceptor;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.grpc.server.GrpcServices;
@@ -149,19 +150,37 @@ class Issue7339BoundsBusyRaftConnectionTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Row 4: nothing configured at all - Ratis's builder is left exactly as it was
+  // Row 4: nothing configured at all - no filter and no window, only the remote-address interceptor (issue #10225)
   // ---------------------------------------------------------------------------
 
   @Test
-  void noCustomizerIsInstalledWhenNothingNeedsOne() {
+  void nothingConfiguredInstallsOnlyTheRemoteAddressInterceptor() {
     final ContextConfiguration config = baseConfiguration();
     config.setValue(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED, false);
     config.setValue(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_IDLE_MS, 0L);
     config.setValue(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS, 0L);
 
-    assertThat(GrpcConfigKeys.Server.servicesCustomizer(detachedServer().buildParameters(config)))
-        .as("a third window that nothing turned on must not start installing a customizer on its own")
-        .isNull();
+    final GrpcServices.Customizer customizer = GrpcConfigKeys.Server.servicesCustomizer(
+        detachedServer().buildParameters(config));
+    assertThat(customizer).as("the misdirected-request guard needs each call's remote address on every cluster")
+        .isInstanceOf(RaftGrpcServicesCustomizer.class);
+    final RaftGrpcServicesCustomizer installed = (RaftGrpcServicesCustomizer) customizer;
+    assertThat(installed.filters()).as("the allowlist is off").isEmpty();
+    assertThat(installed.boundsConnections()).as("a window that nothing turned on must not start bounding connections")
+        .isFalse();
+    assertThat(installed.interceptors()).hasExactlyElementsOfTypes(RemoteAddressCallInterceptor.class);
+  }
+
+  /** With the allowlist on, its interceptor and the remote-address one are both installed (issue #10225). */
+  @Test
+  void theRemoteAddressInterceptorIsInstalledBesideTheAllowlist() {
+    final ContextConfiguration config = baseConfiguration();
+    config.setValue(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED, true);
+
+    final RaftGrpcServicesCustomizer installed = (RaftGrpcServicesCustomizer) GrpcConfigKeys.Server.servicesCustomizer(
+        detachedServer().buildParameters(config));
+    assertThat(installed.interceptors()).hasExactlyElementsOfTypes(PeerAllowlistCallInterceptor.class,
+        RemoteAddressCallInterceptor.class);
   }
 
   // ---------------------------------------------------------------------------

@@ -106,7 +106,8 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     assertThat(candidateRaft.getMisdirectedRaftRequestsRefused()).isGreaterThan(refusedBefore);
 
     // The candidate sent it to itself, so its own channel to that peer is the one pointing the wrong way: it is reset,
-    // off the gRPC thread, so the next request resolves the peer's name again.
+    // off the gRPC thread, so the next request resolves the peer's name again. It came from 127.0.0.1, an address of this
+    // host: the reset also needs the real listener to hand the guard each call's remote address (issue #10225).
     Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
         .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> candidateRaft.getMisdirectedChannelResets() > resetsBefore);
   }
@@ -162,6 +163,7 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     final RaftPeerId leaderId = leaderRaft.getLocalPeerId();
     final RaftPeerId addressedToId = getRaftPlugin(addressedTo).getRaftHAServer().getLocalPeerId();
     final long term = leaderRaft.getCurrentTerm();
+    final long resetsBefore = leaderRaft.getMisdirectedChannelResets();
 
     final TermIndex last = leaderRaft.getRaftServerForTesting().getDivision(leaderRaft.getRaftGroup().getGroupId())
         .getRaftLog().getLastEntryTermIndex();
@@ -212,6 +214,12 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     Awaitility.await("the leader must not step down on its own misdirected heartbeat")
         .during(2, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
         .until(() -> leaderRaft.isLeader() && leaderRaft.getCurrentTerm() == term);
+
+    // The heartbeat came over the appendEntries stream from 127.0.0.1 naming the leader as sender: a self-dial, so the
+    // channel is reset. This pins that Ratis hands a stream's requests to the guard inside the call's gRPC context, where
+    // the remote address is (issue #10225); a dispatch moved off it would leave the address null and the reset undone.
+    Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
+        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> leaderRaft.getMisdirectedChannelResets() > resetsBefore);
   }
 
   private int otherFollower(final int leader, final int follower) {

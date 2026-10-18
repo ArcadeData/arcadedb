@@ -37,6 +37,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -60,6 +62,10 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
   private static final String   SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   private static final RaftPeer JOINED      = RaftPeer.newBuilder().setId("joined_peer").setAddress("localhost:2439").build();
   private static final RaftPeer LEAVING     = RaftPeer.newBuilder().setId("leaving_peer").setAddress("localhost:2440").build();
+  // This node's own requests arrive from this host, as a request it sent itself does (issue #10225)
+  private static final InetSocketAddress FROM_THIS_HOST = new InetSocketAddress(InetAddress.getLoopbackAddress(), 40_000);
+  // A stranger is somewhere else (TEST-NET-1, RFC 5737): a request claiming this node's id from there is no self-dial
+  private static final InetSocketAddress FROM_ELSEWHERE = new InetSocketAddress("192.0.2.10", 40_000);
   private static final String   SELF_DIAL   = "This node sent a Raft appendEntries meant for peer 'joined_peer'";
   private static final String   NOT_A_PEER  = "is not a peer of this cluster";
 
@@ -95,8 +101,8 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
       default -> RaftPeerId.valueOf(strangerRequestor);
     };
 
-    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), requestor));
-    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId()));
+    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), requestor, FROM_ELSEWHERE));
+    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId(), FROM_THIS_HOST));
     divisionGate.countDown();
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
@@ -112,14 +118,14 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
   void aStrangerCannotChooseItsSlotByTheRequestorItWrites() throws Exception {
     final RaftHAServer raft = detachedServer(parkedDivision(List.of()));
 
-    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger_a"), raft.getLocalPeerId()));
+    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger_a"), raft.getLocalPeerId(), FROM_ELSEWHERE));
     returnsWithoutWaiting(
-        () -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger_b"), RaftPeerId.valueOf("localhost_2435")));
-    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger_c"), null));
+        () -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger_b"), RaftPeerId.valueOf("localhost_2435"), FROM_ELSEWHERE));
+    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger_c"), null, FROM_ELSEWHERE));
     // A declared peer has a slot of its own; its task runs after every task queued before it on the single recovery worker,
     // so its report says the strangers' tasks have all run
     returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("localhost_2436"),
-        RaftPeerId.valueOf("localhost_2435")));
+        RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST));
     divisionGate.countDown();
 
     Awaitility.await("the recovery worker drained").atMost(10, TimeUnit.SECONDS)
@@ -145,8 +151,8 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
     assertThat(raft.getCommittedPeersOrNull()).extracting(RaftPeer::getId).contains(JOINED.getId());
     park.set(true);
 
-    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), raft.getLocalPeerId()));
-    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId()));
+    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), raft.getLocalPeerId(), FROM_ELSEWHERE));
+    returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId(), FROM_THIS_HOST));
     divisionGate.countDown();
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
@@ -174,11 +180,11 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
       return liveDivision(List.of(), List.of());
     }));
     try {
-      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), null));
-      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId()));
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), null, FROM_ELSEWHERE));
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId(), FROM_ELSEWHERE));
       // A declared peer's report says the worker has run everything queued before it
       returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("localhost_2436"),
-          RaftPeerId.valueOf("localhost_2435")));
+          RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST));
     } finally {
       secondGate.countDown();
     }
@@ -206,10 +212,10 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
       sm.notifyConfigurationChanged(1, 10,
           configuration(List.of(raft.getLocalPeerId().toString(), "joined_peer"), List.of(raft.getLocalPeerId().toString(), "leaving_peer")));
 
-      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), raft.getLocalPeerId()));
-      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId()));
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), raft.getLocalPeerId(), FROM_ELSEWHERE));
+      returnsWithoutWaiting(() -> raft.onMisdirectedRaftRequest("appendEntries", JOINED.getId(), raft.getLocalPeerId(), FROM_THIS_HOST));
       returnsWithoutWaiting(
-          () -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("leaving_peer"), RaftPeerId.valueOf("localhost_2435")));
+          () -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("leaving_peer"), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST));
       divisionGate.countDown();
 
       Awaitility.await("both members' refusals are looked at").atMost(10, TimeUnit.SECONDS)

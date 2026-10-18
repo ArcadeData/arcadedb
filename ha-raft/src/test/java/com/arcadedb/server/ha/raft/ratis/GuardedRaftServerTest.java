@@ -36,6 +36,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Proxy;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -79,7 +81,7 @@ class GuardedRaftServerTest {
 
   private RaftServer guarded() {
     return GuardedRaftServer.wrap(realServer(),
-        (rpc, addressedTo, requestor) -> refused.add(rpc + ":" + addressedTo + "<-" + requestor));
+        (rpc, addressedTo, requestor, remote) -> refused.add(rpc + ":" + addressedTo + "<-" + requestor));
   }
 
   private static RaftRpcRequestProto header(final RaftPeerId requestor, final RaftPeerId addressedTo) {
@@ -166,6 +168,23 @@ class GuardedRaftServerTest {
     assertThat(refused).isEmpty();
   }
 
+  /**
+   * Issue #10225: the listener is handed the remote address of the call being served, which the sender cannot write, so it
+   * can tell this node's own request from one that only claims this node's id; outside a call there is none.
+   */
+  @Test
+  void theListenerIsHandedTheRemoteAddressOfTheCallBeingServed() {
+    final List<SocketAddress> remotes = new ArrayList<>();
+    final RaftServer server = GuardedRaftServer.wrap(realServer(), (rpc, addressedTo, requestor, remote) -> remotes.add(remote));
+    final InetSocketAddress from = new InetSocketAddress("192.0.2.10", 51_000);
+
+    RemoteAddressCallInterceptor.runAsIfFrom(from,
+        () -> assertThatThrownBy(() -> server.requestVote(vote(SELF, OTHER))).isInstanceOf(MisdirectedRaftRequestException.class));
+    assertThatThrownBy(() -> server.requestVote(vote(SELF, OTHER))).isInstanceOf(MisdirectedRaftRequestException.class);
+
+    assertThat(remotes).containsExactly(from, null);
+  }
+
   /** Nothing to compare a request with no target id against, so it is not this guard's to refuse. */
   @Test
   void aRequestWithNoTargetIdReachesRatis() throws Exception {
@@ -176,7 +195,7 @@ class GuardedRaftServerTest {
   /** A listener that fails must not turn the refusal into anything else, nor let the request through. */
   @Test
   void aFailingListenerDoesNotChangeTheRefusal() {
-    final RaftServer server = GuardedRaftServer.wrap(realServer(), (rpc, addressedTo, requestor) -> {
+    final RaftServer server = GuardedRaftServer.wrap(realServer(), (rpc, addressedTo, requestor, remote) -> {
       throw new IllegalStateException("listener failure");
     });
 
