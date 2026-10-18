@@ -417,7 +417,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
   // SYNCHRONOUS and ASYNCHRONOUS: the committed changes reach the view in the order their transactions committed (issue #10249)
-  private final CommitOrderGate  commitOrder = new CommitOrderGate();
+  private final CommitOrderGate  commitOrder = new CommitOrderGate(this::commitOrderMaxWaitMs);
   // ASYNCHRONOUS only (issue #10189): the committed changes waiting to be merged off the committing threads, in commit
   // callback order, and how many of them were committed and are not merged yet. The count is raised before the change is
   // queued, so a reader that sees it at zero sees every change committed before it looked merged
@@ -439,6 +439,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   CommitOrderGate getCommitOrder() {
     return commitOrder;
+  }
+
+  private long commitOrderMaxWaitMs() {
+    return database.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_COMMIT_ORDER_MAX_WAIT);
   }
 
   /**

@@ -138,6 +138,8 @@ class Issue10188MultiPageKeyRunTest extends TestHelper {
   void thePositionOfASeriesCursorIsTheEndOfTheKeyWhateverIsAskedFirst() throws Exception {
     final LSMTreeIndex bucketIndex = createTypeWithHotKey();
     compact(bucketIndex);
+    // The root page, the first page of the file and at least three data pages: the hot key reaches over several of them
+    assertThat(bucketIndex.getMutableIndex().getSubIndex().getTotalPages()).as("pages of the compacted index").isGreaterThanOrEqualTo(5);
 
     for (final boolean ascending : new boolean[] { true, false }) {
       final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> byPosition = bucketIndex.getMutableIndex().getSubIndex()

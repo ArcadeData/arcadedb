@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -67,13 +68,19 @@ final class CommitOrderGate {
   // they have to it. Not a lock: the delivery runs the view's merge, and a thread must not wait for it while holding anything
   private final AtomicBoolean                delivering = new AtomicBoolean();
   private final Object                       waitLock   = new Object();
-  private final long                         maxWaitMs;
+  // Read at every wait, so a change of the setting applies at once. 0 or less: the committing thread does not wait
+  private final LongSupplier                  maxWaitMs;
 
   CommitOrderGate() {
     this(MAX_WAIT_MS);
   }
 
   CommitOrderGate(final long maxWaitMs) {
+    this(() -> maxWaitMs);
+  }
+
+  /** @param maxWaitMs how long a committing thread waits for the changes ahead of its own, asked at every wait */
+  CommitOrderGate(final LongSupplier maxWaitMs) {
     this.maxWaitMs = maxWaitMs;
   }
 
@@ -179,7 +186,10 @@ final class CommitOrderGate {
   }
 
   private void awaitHandled(final Place place, final Consumer<TxDelta> sink) {
-    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxWaitMs);
+    final long waitMs = maxWaitMs.getAsLong();
+    if (waitMs <= 0)
+      return;
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs);
     while (!place.handled) {
       // Also takes over the delivery a thread left half done when an Error escaped the view: the places it did not reach are ready
       drain(sink);
@@ -191,10 +201,10 @@ final class CommitOrderGate {
         return;
       final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
       if (remainingMs <= 0) {
-        if (!evictHead(place, sink))
+        if (!evictHead(place, sink, waitMs))
           return;
         // The line moved: wait for what is left in front of this place
-        deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxWaitMs);
+        deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs);
         continue;
       }
       synchronized (waitLock) {
@@ -216,13 +226,13 @@ final class CommitOrderGate {
    *
    * @return whether a place was evicted
    */
-  private boolean evictHead(final Place waiter, final Consumer<TxDelta> sink) {
+  private boolean evictHead(final Place waiter, final Consumer<TxDelta> sink, final long waitMs) {
     final Place head = line.peek();
     if (head == null || head == waiter || !head.state.compareAndSet(PENDING, EVICTED))
       return false;
     LogManager.instance().log(this, Level.WARNING,
         "A transaction did not report its change to the Graph Analytical View in %d ms after it committed: the commits behind it go"
-            + " ahead, and its change is delivered out of order if it comes", maxWaitMs);
+            + " ahead, and its change is delivered out of order if it comes (setting arcadedb.gavCommitOrderMaxWait)", waitMs);
     drain(sink);
     return true;
   }

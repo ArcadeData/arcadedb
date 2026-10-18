@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -200,6 +201,72 @@ class CommitOrderGateTest {
 
     assertThat(delivered).containsExactly(second);
     assertThat(gate.pending()).isZero();
+  }
+
+  @Test
+  @Timeout(20)
+  void aLateChangeDeliveredWhileAnotherDeliveryIsInProgressIsNotLost() throws Exception {
+    final CommitOrderGate shortWait = new CommitOrderGate(100);
+    final TxDelta lost = new TxDelta();
+    final TxDelta second = new TxDelta();
+    final CountDownLatch inSink = new CountDownLatch(1);
+    final CountDownLatch releaseSink = new CountDownLatch(1);
+    final Consumer<TxDelta> view = delta -> {
+      if (delta == second) {
+        inSink.countDown();
+        try {
+          releaseSink.await(1, TimeUnit.MINUTES);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      delivered.add(delta);
+    };
+
+    final ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      // The place of a transaction that is late, taken by a thread of its own
+      final CommitOrderGate.Place stuck = executor.submit(shortWait::takePlace).get(1, TimeUnit.MINUTES);
+      final CommitOrderGate.Place secondPlace = shortWait.takePlace();
+      // Evicts the stuck place once the wait is over, and delivers the second change: held in the view by the latch
+      final Future<?> secondDelivery = executor.submit(() -> shortWait.deliver(secondPlace, second, view));
+      assertThat(inSink.await(1, TimeUnit.MINUTES)).as("the second change is being delivered").isTrue();
+
+      // The late transaction reports meanwhile: its change goes in beside the delivery in progress
+      shortWait.deliver(stuck, lost, view);
+      assertThat(delivered).containsExactly(lost);
+
+      releaseSink.countDown();
+      secondDelivery.get(1, TimeUnit.MINUTES);
+    } finally {
+      releaseSink.countDown();
+      executor.shutdownNow();
+    }
+
+    assertThat(delivered).containsExactlyInAnyOrder(lost, second);
+    assertThat(shortWait.pending()).isZero();
+  }
+
+  @Test
+  void withNoWaitACommitDoesNotWaitForTheOnesAheadButTheOrderIsKept() throws Exception {
+    final CommitOrderGate noWait = new CommitOrderGate(0);
+    final TxDelta first = new TxDelta();
+    final TxDelta second = new TxDelta();
+    final ExecutorService executor = Executors.newSingleThreadExecutor();
+    final CommitOrderGate.Place firstPlace;
+    try {
+      firstPlace = executor.submit(noWait::takePlace).get(1, TimeUnit.MINUTES);
+    } finally {
+      executor.shutdownNow();
+    }
+    final CommitOrderGate.Place secondPlace = noWait.takePlace();
+
+    // Returns at once, with its change still behind the first one
+    noWait.deliver(secondPlace, second, delivered::add);
+    assertThat(delivered).isEmpty();
+
+    noWait.deliver(firstPlace, first, delivered::add);
+    assertThat(delivered).containsExactly(first, second);
   }
 
   @Test
