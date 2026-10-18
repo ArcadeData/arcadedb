@@ -1175,6 +1175,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             GlobalConfiguration.HA_SERVER_LIST.getKey());
       });
     } catch (final RejectedExecutionException e) {
+      // Reopening the slot lets the next claim queue another probe at once; what bounds that is the probe pool's own
+      // queue (8) and abort policy, never this worker or the gRPC handler thread
       queuedAt.remove(slot);
       LogManager.instance().log(this, Level.WARNING,
           "Replication-channel recovery queue is saturated; the reset of the self-dialled channel to '%s' was dropped and "
