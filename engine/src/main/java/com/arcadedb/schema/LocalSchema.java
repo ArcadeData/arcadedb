@@ -90,6 +90,7 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -383,6 +384,8 @@ public class LocalSchema implements Schema {
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   // Concurrent: its emptiness is read on every record write, to skip the trigger walk on a database without triggers
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new ConcurrentHashMap<>();
+  // INCREMENTAL MATERIALIZED VIEWS LISTENING ON THE POLYMORPHIC (TRIGGER) REGISTRIES OF THEIR SOURCE TYPES (issue #10205)
+  private final       AtomicInteger                       polymorphicViewListeners = new AtomicInteger();
   /**
    * The TimeSeries types whose engine waits for the WAL replay of the open in progress, {@code null} when engines are
    * built as their types are read. See {@link #openDeferredTimeSeriesEngines()}.
@@ -2450,8 +2453,13 @@ public class LocalSchema implements Schema {
         oldView = materializedViews.get(viewName);
         if (oldView == null)
           throw new SchemaException("Materialized view '" + viewName + "' not found");
+        // A view whose query reads what no type's events report cannot become INCREMENTAL (issue #10205). Checked here, on
+        // the query of the view this ALTER replaces, before anything changes
+        if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
+          MaterializedViewSources.of(database, oldView.getQuery()).checkIncremental(viewName);
         // Create new view instance with updated refresh mode
         newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
+        adoptEveryReadType(newView);
         materializedViews.put(viewName, newView);
         scheduler = materializedViewScheduler;
       }
@@ -4313,6 +4321,7 @@ public class LocalSchema implements Schema {
         try {
           final JSONObject viewDef = mvJSON.getJSONObject(viewName);
           final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
+          adoptEveryReadType(view);
 
           // Same replacement rule as the trigger above, and the same merge-path hole: a same-named view already
           // installed has its own listeners and schedule, and the put below is the only thing that used to happen
@@ -5686,6 +5695,40 @@ public class LocalSchema implements Schema {
    */
   public boolean hasTriggerListeners() {
     return !triggerAdapters.isEmpty();
+  }
+
+  /**
+   * Whether an INCREMENTAL materialized view listens on the trigger registries of its source types (issue #10205): the records
+   * of their subtypes reach it through the same lineage walk the triggers use, for the AFTER write events only.
+   */
+  public boolean hasPolymorphicViewListeners() {
+    return polymorphicViewListeners.get() > 0;
+  }
+
+  void polymorphicListenerRegistered() {
+    polymorphicViewListeners.incrementAndGet();
+  }
+
+  void polymorphicListenerUnregistered() {
+    polymorphicViewListeners.decrementAndGet();
+  }
+
+  /**
+   * Adds to {@code view} the types its query reads that exist and it does not list yet (issue #10205): a view stored before
+   * every type of its query was tracked listed only the first FROM identifier. A query that no longer parses keeps its list.
+   */
+  private void adoptEveryReadType(final MaterializedViewImpl view) {
+    try {
+      final List<String> found = new ArrayList<>();
+      for (final String typeName : MaterializedViewSources.of(database, view.getQuery()).typeNames())
+        if (existsType(typeName))
+          found.add(getType(typeName).getName());
+      view.addSourceTypeNames(found);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot analyze the query of materialized view '%s', it is maintained by the source types it was stored with: %s", e,
+          view.getName(), e.getMessage());
+    }
   }
 
   /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */

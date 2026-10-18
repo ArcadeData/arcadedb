@@ -232,22 +232,11 @@ public class ArcadeGraphFeatures implements Graph.Features {
   public static class ArcadeEdgePropertyFeatures extends ArcadeDataTypeFeatures implements EdgePropertyFeatures {
   }
 
+  /**
+   * byte[] and the int, long, float and double arrays are stored as what they are (BINARY, ARRAY_OF_*), so they are supported
+   * (issue #10202); a String or boolean array would be stored as a list, so it is not.
+   */
   public static class ArcadeDataTypeFeatures implements DataTypeFeatures {
-
-    @Override
-    public boolean supportsIntegerArrayValues() {
-      return false;
-    }
-
-    @Override
-    public boolean supportsFloatArrayValues() {
-      return false;
-    }
-
-    @Override
-    public boolean supportsDoubleArrayValues() {
-      return false;
-    }
 
     @Override
     public boolean supportsStringArrayValues() {
@@ -256,11 +245,6 @@ public class ArcadeGraphFeatures implements Graph.Features {
 
     @Override
     public boolean supportsBooleanArrayValues() {
-      return false;
-    }
-
-    @Override
-    public boolean supportsLongArrayValues() {
       return false;
     }
 
