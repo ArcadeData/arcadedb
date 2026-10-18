@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
@@ -50,7 +51,7 @@ import java.util.logging.Level;
  * skipped, because nothing depends on it.
  * An {@link Error} is not swallowed.
  * <p>
- * Disabled with {@link com.arcadedb.GlobalConfiguration#SERVER_QUERY_WARM_UP}.
+ * Disabled with {@link GlobalConfiguration#SERVER_QUERY_WARM_UP}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

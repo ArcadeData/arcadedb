@@ -415,6 +415,67 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
     assertThat(database.getSchema().getTypes().size()).isEqualTo(26);
   }
 
+  /** Counts the rebuilds of the bucket maps instead of timing anything: a nested frame used to run one per bucket created. */
+  @Test
+  void aBulkChangeDoesNotRebuildTheBucketMapsForEveryTypeItCreates() {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final long before = schema.getBucketMapRebuildsForTesting();
+
+    schema.bulkChange(() -> {
+      for (int i = 0; i < 30; i++)
+        schema.createDocumentType("Bulk" + i).createProperty("p", Type.STRING);
+    });
+
+    // THE SAVE THAT ENDS THE SESSION, NOT ONE PER TYPE, PER BUCKET OR PER PROPERTY
+    assertThat(schema.getBucketMapRebuildsForTesting() - before).isLessThanOrEqualTo(2);
+    for (int i = 0; i < 30; i++)
+      assertThat(schema.getTypeByBucketName("Bulk" + i + "_0").getName()).isEqualTo("Bulk" + i);
+  }
+
+  /**
+   * A change to a type reaches the JSON of every type of its hierarchy, on both sides and over several levels, with one type
+   * under two parents: the types above it, the types below it and the siblings through a shared sub type.
+   */
+  @Test
+  void aChangeReachesTheWholeHierarchyOverSeveralLevelsAndMultipleInheritance() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    schema.createDocumentType("Root").createProperty("id", Type.LONG);
+    schema.createDocumentType("Other").createProperty("tag", Type.STRING);
+    schema.buildDocumentType().withName("Mid").withSuperType("Root").create();
+    schema.buildDocumentType().withName("Leaf").withSuperType("Mid").create();
+    // TWO PARENTS: Mid (UNDER Root) AND Other
+    schema.buildDocumentType().withName("Both").withSuperType("Mid").withSuperType("Other").create();
+    schema.createDocumentType("Alone");
+    assertFileIsTheFullSerialization();
+
+    final String alone = schema.getType("Alone").getSerializedJSON();
+    final String leaf = schema.getType("Leaf").getSerializedJSON();
+    final String both = schema.getType("Both").getSerializedJSON();
+    final String other = schema.getType("Other").getSerializedJSON();
+
+    // AN INDEX ON THE ROOT GETS A SUB-INDEX ON THE BUCKETS OF EVERY SUB TYPE, THREE LEVELS DOWN
+    schema.getType("Root").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+    assertFileIsTheFullSerialization();
+    assertThat(schema.getType("Leaf").getSerializedJSON()).isNotSameAs(leaf);
+    assertThat(schema.getType("Both").getSerializedJSON()).isNotSameAs(both);
+    assertThat(schema.getType("Alone").getSerializedJSON()).isSameAs(alone);
+
+    // A CHANGE TO A SUB TYPE WITH TWO PARENTS REACHES BOTH LINES UP
+    schema.getType("Both").createProperty("extra", Type.STRING);
+    schema.getType("Both").setCustomValue("k", "v");
+    assertFileIsTheFullSerialization();
+    assertThat(schema.getType("Other").getSerializedJSON()).isNotSameAs(other);
+    assertThat(schema.getType("Alone").getSerializedJSON()).isSameAs(alone);
+
+    // UNLINKING ONE PARENT
+    schema.getType("Both").removeSuperType("Other");
+    assertFileIsTheFullSerialization();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Both").getSuperTypes()).extracting(DocumentType::getName).containsExactly("Mid");
+    assertThat(database.getSchema().getType("Leaf").getAllIndexes(true)).hasSize(1);
+  }
+
   @Test
   void theSwitchTurnsTheCacheOff() throws Exception {
     final LocalSchema schema = (LocalSchema) database.getSchema();

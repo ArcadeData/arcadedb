@@ -6195,7 +6195,16 @@ public class LocalSchema implements Schema {
     return ((RecordEventsRegistry) database.getEmbedded().getEvents()).newTypeRegistry();
   }
 
+  // How many full rebuilds of the bucket-to-type maps this schema ran: what the test of issue #10247 counts instead of timing a DDL
+  // statement, to pin that a nested frame no longer rebuilds them
+  private final AtomicLong bucketMapRebuilds = new AtomicLong();
+
+  long getBucketMapRebuildsForTesting() {
+    return bucketMapRebuilds.get();
+  }
+
   private void rebuildBucketTypeMap() {
+    bucketMapRebuilds.incrementAndGet();
     typesChanged();
     final Collection<LocalDocumentType> types = typeMap().values();
 
