@@ -34,9 +34,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -163,6 +169,33 @@ class Issue10322IsolationDowngradeSignalIT extends BaseGrpcServerTest {
     // Once the window has elapsed the next downgrade is reported at WARNING again, and opens a new window
     assertThat(service.claimSerializableDowngradeWarning(t0 + window)).isTrue();
     assertThat(service.claimSerializableDowngradeWarning(t0 + window + 1)).isFalse();
+  }
+
+  @Test
+  void concurrentDowngradesInOneWindowLetExactlyOneWarningThrough() throws Exception {
+    final ArcadeDbGrpcService service = grpcService();
+    final int threads = 16;
+    final long now = 5_000_000L;
+    final CountDownLatch start = new CountDownLatch(1);
+    final AtomicInteger winners = new AtomicInteger();
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int i = 0; i < threads; i++)
+        futures.add(pool.submit(() -> {
+          start.await();
+          if (service.claimSerializableDowngradeWarning(now))
+            winners.incrementAndGet();
+          return null;
+        }));
+      start.countDown();
+      for (final Future<?> f : futures)
+        f.get(30, TimeUnit.SECONDS);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    assertThat(winners.get()).isEqualTo(1);
   }
 
   private ArcadeDbGrpcService grpcService() {
