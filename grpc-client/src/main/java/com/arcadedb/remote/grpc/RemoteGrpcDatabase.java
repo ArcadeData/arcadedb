@@ -590,7 +590,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   @Override
   public void deleteRecord(final Record record) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
@@ -619,6 +618,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         throw new DatabaseOperationException(
             "Failed to delete record: " + (resp.getMessage().isEmpty() ? "unknown error" : resp.getMessage()));
       }
+      // counted only once the server confirmed the delete, like createRecord and updateRecord in saveRecord (issue #10141)
+      stats.deleteRecord.incrementAndGet();
 
     } catch (StatusRuntimeException | StatusException e) {
       handleGrpcWriteException(e, "DeleteRecord", commitsOnItsOwn(req.getTransaction()));
@@ -628,7 +629,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   public boolean deleteRecord(final String rid, final long timeoutMs) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     final DeleteRecordRequest.Builder deleteBuilder = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid)
         .setCredentials(buildCredentials());
@@ -649,6 +649,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final DeleteRecordResponse res = callUnary("DeleteRecord",
           () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req));
 
+      // counted only when the server reports the record deleted (issue #10141)
+      if (res.getDeleted())
+        stats.deleteRecord.incrementAndGet();
       return res.getDeleted();
 
     } catch (StatusRuntimeException | StatusException e) {
