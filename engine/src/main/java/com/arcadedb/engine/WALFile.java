@@ -401,6 +401,8 @@ public class WALFile extends LockContext {
     if (!active || !open)
       return false;
 
+    // #10234: A WRITE IN PROGRESS IS NOT IDLE, HOWEVER LONG ITS FSYNC TAKES: THE HOUSEKEEPING DOES NOT PICK THIS FILE TO RELEASE
+    lastWriteTime = System.currentTimeMillis();
     try {
       callable.call();
     } catch (final RuntimeException e) {

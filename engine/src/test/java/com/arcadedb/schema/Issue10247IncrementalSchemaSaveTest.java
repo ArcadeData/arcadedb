@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.json.JSONObject;
@@ -149,6 +150,51 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
     assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc WHERE name = 'n7'").next().<Long>getProperty("c")).isEqualTo(1L);
     assertThat(database.getSchema().existsType("Renamed")).isTrue();
     assertThat(database.getSchema().getType("Renamed").existsProperty("late")).isTrue();
+  }
+
+  @Test
+  void renameAndDropOfATypeWithSubTypesAreWrittenAsTheFullSerialization() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    schema.createVertexType("Animal").createProperty("name", Type.STRING);
+    schema.buildVertexType().withName("Dog").withSuperType("Animal").create();
+    schema.buildVertexType().withName("Puppy").withSuperType("Dog").create();
+    schema.createDocumentType("Owner").createProperty("pet", Type.LINK).setOfType("Dog");
+
+    // THE SUB TYPES NAME THE RENAMED TYPE AS THEIR PARENT, AND ANOTHER TYPE LINKS TO IT
+    schema.getType("Dog").rename("Hound");
+    assertFileIsTheFullSerialization();
+
+    schema.getType("Owner").createProperty("since", Type.DATETIME);
+    assertFileIsTheFullSerialization();
+
+    // THE DROP UNLINKS THE SUB TYPE FROM IT
+    schema.getType("Puppy").removeSuperType("Hound");
+    schema.dropType("Hound");
+    schema.getType("Puppy").createProperty("age", Type.INTEGER);
+    assertFileIsTheFullSerialization();
+
+    reopenDatabase();
+    assertThat(database.getSchema().existsType("Hound")).isFalse();
+    assertThat(database.getSchema().getType("Puppy").existsProperty("age")).isTrue();
+  }
+
+  @Test
+  void aSchemaWrittenFromOutsideIsSerializedAfreshByTheNextSave() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    schema.createDocumentType("A").createProperty("p", Type.STRING);
+    schema.createDocumentType("B");
+
+    // WHAT AN HA FOLLOWER DOES WITH THE LEADER'S SCHEMA: WRITE IT, THEN LOAD IT
+    final JSONObject replicated = schema.toJSON();
+    replicated.getJSONObject("types").getJSONObject("A").put("custom", new JSONObject().put("fromLeader", "yes"));
+    schema.update(replicated);
+    schema.load(ComponentFile.MODE.READ_WRITE, true);
+    assertThat(schema.getType("A").getCustomValue("fromLeader")).isEqualTo("yes");
+
+    // A CHANGE TO ANOTHER TYPE: THE FILE STILL CARRIES WHAT THE LEADER WROTE FOR A
+    schema.getType("B").createProperty("q", Type.STRING);
+    assertFileIsTheFullSerialization();
+    assertThat(Files.readString(schema.getConfigurationFile().toPath(), StandardCharsets.UTF_8)).contains("fromLeader");
   }
 
   @Test

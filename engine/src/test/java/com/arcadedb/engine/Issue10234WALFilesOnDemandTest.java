@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #10234: every open database kept a {@code java.util.Timer} thread of its own for the WAL
@@ -144,6 +146,35 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
     reopenDatabase();
     assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc").next().<Long>getProperty("c")).isEqualTo(
         (long) threads * perThread);
+  }
+
+  /**
+   * The #7479 check moved from the open to the first commit that opens a WAL file: a name another live instance already
+   * holds must fail that commit loudly and fence the database, never retry it into another file.
+   */
+  @Test
+  void aWALFileOpenedOnDemandThatAnotherInstanceHoldsFencesTheDatabase() throws Exception {
+    database.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);
+    reopenDatabase();
+    final LocalDatabase db = (LocalDatabase) database;
+    final TransactionManager transactionManager = db.getTransactionManager();
+    transactionManager.cancelHousekeepingForTesting();
+    assertThat(transactionManager.getOpenWALFileCountForTesting()).isZero();
+
+    final String collidingPath = db.getDatabasePath() + File.separator + "txlog_" + transactionManager.getLogFileCounterForTesting()
+        + ".wal";
+    // STANDS IN FOR ANOTHER LIVE INSTANCE THAT CLAIMED THE NAME THE COMMIT IS ABOUT TO OPEN: A WALFile LOCKS ITS FILE FOR LIFE
+    final WALFile anotherInstanceWAL = new WALFile(collidingPath);
+    try {
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Doc").set("name", "x").save()))
+          .hasMessageContaining("already open by another process or database instance");
+      assertThat(db.isFencedForRecovery()).isTrue();
+    } finally {
+      anotherInstanceWAL.close();
+      new File(collidingPath).delete();
+    }
+
+    database.close();
   }
 
   @Test

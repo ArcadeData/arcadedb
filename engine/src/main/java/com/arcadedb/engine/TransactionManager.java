@@ -244,8 +244,10 @@ public class TransactionManager {
       // THE SCHEDULER IS SHARED BY EVERY DATABASE: A PASS LONGER THAN THE PERIOD HOLDS BACK THE OTHERS, SAY SO
       final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - beginTime);
       if (elapsedMs > HOUSEKEEPING_PERIOD_MS)
-        LogManager.instance().log(this, Level.FINE, "WAL housekeeping of database '%s' took %dms, longer than its %dms period",
-            null, database.getName(), elapsedMs, HOUSEKEEPING_PERIOD_MS);
+        LogManager.instance()
+            .log(this, elapsedMs > 10 * HOUSEKEEPING_PERIOD_MS ? Level.WARNING : Level.FINE,
+                "WAL housekeeping of database '%s' took %dms, longer than its %dms period: the passes of the other databases "
+                    + "sharing the scheduler waited meanwhile", null, database.getName(), elapsedMs, HOUSEKEEPING_PERIOD_MS);
     } catch (final Throwable e) {
       // NEVER LET IT ESCAPE: AN EXCEPTION OUT OF A PERIODIC TASK SILENTLY SUPPRESSES EVERY LATER RUN OF IT
       LogManager.instance().log(this, Level.SEVERE, "Error on transaction manager task", e);
