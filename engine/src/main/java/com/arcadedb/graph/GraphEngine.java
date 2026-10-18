@@ -1128,9 +1128,17 @@ public class GraphEngine {
    */
   private void disconnectEndpoint(final Edge edge, final Vertex.DIRECTION direction, final RID skipEndpoint,
       final Vertex.DIRECTION skipDirection) {
+    final boolean lightweight = edge instanceof LightEdge || edge.getIdentity().getPosition() < 0;
     if (skipEndpoint != null && (skipDirection == null || skipDirection == direction) && skipEndpoint.equals(
-        direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn()))
+        direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn())) {
+      if (lightweight && skipDirection != null)
+        // THE ITERATOR REMOVES THE ENTRY ITSELF (#9779): IT IS A REMOVAL BY THIS TRANSACTION ALL THE SAME (#10302). It walks
+        // the transaction's own view, so the entry is there to remove; the one way it finds none is a delete listener or
+        // trigger that took it out first, through this transaction. Counting it then over-counts by one, which can only
+        // hide a stale view (the delete lost, as before #10302), never invent a conflict
+        lightEdgeEntriesRemoved(skipEndpoint, direction, edge, 1);
       return;
+    }
 
     final VertexInternal endpoint = resolveEndpointToDisconnect(edge, direction);
     if (endpoint == null)
@@ -1155,17 +1163,25 @@ public class GraphEngine {
               edge.getIdentity(), direction, endpoint.getIdentity());
       return;
     }
-    if (list != null && list.removeEdge(edge))
+    final int removed = list == null ? 0 : list.removeEdge(edge);
+    if (removed > 0) {
+      if (lightweight)
+        // ONE PER CHAIN THAT HELD A TWIN: A STRIPED LIST CAN REMOVE ONE IN EACH GENERATION (#10314)
+        lightEdgeEntriesRemoved(endpoint.getIdentity(), direction, edge, removed);
       return;
+    }
 
     if (direction == Vertex.DIRECTION.IN && edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional())
       // A UNIDIRECTIONAL EDGE IS NEVER IN THE IN LIST: NOTHING WAS MISSED
       return;
 
-    if (edge instanceof LightEdge || edge.getIdentity().getPosition() < 0)
+    if (lightweight) {
       // A LIGHTWEIGHT EDGE HAS NO RECORD TO OUTLIVE ITS ENTRY OR TO REUSE ITS RID, AND ITS TWINS (SAME TYPE, SAME NEIGHBOUR)
-      // ARE INDISTINGUISHABLE: AN ENTRY IN THE COMMITTED LIST CAN BE ONE THIS TRANSACTION HAS ALREADY REMOVED
+      // ARE INDISTINGUISHABLE: AN ENTRY IN THE COMMITTED LIST CAN BE ONE THIS TRANSACTION HAS ALREADY REMOVED, SO IT IS
+      // COUNTED INSTEAD (#10302)
+      checkLightEdgeListNotStale(endpoint, direction, edge);
       return;
+    }
 
     if (database.getTransactionIfExists() instanceof TransactionContext tx && tx.isDeletedInTransaction(edge.getIdentity()))
       // THIS TRANSACTION HAS ALREADY DELETED THE EDGE, AND REMOVED THE ENTRY WITH IT: THE COMMITTED LIST STILL HOLDS IT
@@ -1182,6 +1198,98 @@ public class GraphEngine {
               + " but not in the one this transaction read: the list changed after it was read");
 
     keepEdgeRecordPageOutOfSlotMerge(edge);
+  }
+
+  /**
+   * Refuses, with a retryable {@link ConcurrentModificationException}, the delete of a lightweight edge that the list
+   * this transaction reads does not hold while the committed list holds more of its entries than this transaction removed
+   * (#10302, the lightweight half of #10263). The transaction read the list before a concurrent commit appended the
+   * entry, so nothing was removed and no page was anchored: the commit would go through and the delete would be lost,
+   * one lightweight edge too many. A retry reads the list again.
+   * <p>
+   * The entries of a lightweight edge and of its twins (same type, same neighbour) are indistinguishable, so the two
+   * sides are counted rather than matched: an entry in the committed list that this transaction has itself removed is
+   * not a sign of a stale view, and deleting more twins than there are stays the no-op it always was.
+   * <p>
+   * Limit: twins this transaction CREATED and then removed count as removed, though they were never in the committed
+   * list. A transaction that creates twins and deletes more of them than it created can therefore miss a twin committed
+   * concurrently, and the delete is lost as before. Counting the creations too would cost a map entry per lightweight
+   * edge created, on the bulk-load path, for this corner (#10315). The removals are counted for the whole transaction,
+   * up to its commit or rollback: a removal undone by a part of the transaction failing and being retried within it stays
+   * counted. Both over-count, which can only hide a stale view, never invent a conflict.
+   * <p>
+   * Cost: only a removal that found nothing gets here, and it reads the committed vertex and walks the committed chain
+   * (one stripe chain per generation on a super-node), stopping as soon as it counts more than were removed. A delete
+   * of a lightweight edge that is not there at all walks the whole chain, as the regular-edge check does.
+   */
+  private void checkLightEdgeListNotStale(final VertexInternal endpoint, final Vertex.DIRECTION direction, final Edge edge) {
+    if (!(database.getTransactionIfExists() instanceof TransactionContext tx))
+      return;
+    final RID neighbour = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+    if (neighbour == null)
+      return;
+    final int removed = tx.getLightEdgeEntriesRemoved(lightEdgeEntry(endpoint.getIdentity(), direction, edge));
+    final int committed = committedLightEdgeCount(endpoint, direction, edge.getIdentity().getBucketId(), neighbour, removed + 1);
+    if (committed > removed)
+      throw new ConcurrentModificationException(
+          "Lightweight edge " + edge.getOut() + "->" + edge.getIn() + " of type " + edge.getTypeName() + " is in the committed "
+              + direction + " edge list of vertex " + endpoint.getIdentity() + " but not in the one this transaction read: "
+              + "the list changed after it was read");
+  }
+
+  private void lightEdgeEntriesRemoved(final RID vertex, final Vertex.DIRECTION direction, final Edge edge, final int removed) {
+    if (database.getTransactionIfExists() instanceof TransactionContext tx)
+      tx.lightEdgeEntriesRemoved(lightEdgeEntry(vertex, direction, edge), removed);
+  }
+
+  private static TransactionContext.LightEdgeEntry lightEdgeEntry(final RID vertex, final Vertex.DIRECTION direction,
+      final Edge edge) {
+    final boolean out = direction == Vertex.DIRECTION.OUT;
+    return new TransactionContext.LightEdgeEntry(vertex, out, edge.getIdentity().getBucketId(), out ? edge.getIn() : edge.getOut());
+  }
+
+  /**
+   * How many lightweight edges of the type of {@code edgeTypeBucketId} reaching {@code neighbour} the COMMITTED edge list
+   * of {@code vertex} in {@code direction} holds, read as {@link #committedEdgeListHolds} reads it, counting no further
+   * than {@code limit}: the caller only needs to know whether there are more than it removed.
+   */
+  private int committedLightEdgeCount(final VertexInternal vertex, final Vertex.DIRECTION direction, final int edgeTypeBucketId,
+      final RID neighbour, final int limit) {
+    final RID headRID = committedEdgeListHead(vertex, direction);
+    if (headRID == null)
+      return 0;
+
+    final Binary headContent = committedRecordContent(headRID);
+    if (headContent == null)
+      return 0;
+
+    if (headContent.getByte(0) == StripeDirectory.RECORD_TYPE) {
+      final StripeDirectory directory = new StripeDirectory(database, headRID, headContent);
+      int count = 0;
+      for (int g = 0; g < directory.getGenerationCount() && count < limit; g++)
+        count += committedChainLightEdgeCount(directory.getHead(g, StripeDirectory.stripeOf(neighbour, directory.getStripes(g))),
+            edgeTypeBucketId, neighbour, limit - count);
+      return count;
+    }
+    return committedChainLightEdgeCount(headRID, edgeTypeBucketId, neighbour, limit);
+  }
+
+  private int committedChainLightEdgeCount(final RID headRID, final int edgeTypeBucketId, final RID neighbour, final int limit) {
+    final ChainCycleGuard guard = new ChainCycleGuard(headRID);
+    int count = 0;
+    RID chunkRID = headRID;
+    while (chunkRID != null && count < limit) {
+      final Binary content = committedRecordContent(chunkRID);
+      if (content == null || content.getByte(0) != EdgeSegment.RECORD_TYPE)
+        return count;
+
+      final EdgeSegment chunk = new MutableEdgeSegment(database, chunkRID, content);
+      count += chunk.countLightEdges(edgeTypeBucketId, neighbour);
+
+      final RID previousRID = chunk.getPreviousRID();
+      chunkRID = previousRID == null || previousRID.equals(chunkRID) || guard.revisits(previousRID) ? null : previousRID;
+    }
+    return count;
   }
 
   /**
@@ -1295,15 +1403,7 @@ public class GraphEngine {
    * too, head pointers included (#10304), see {@link LocalBucket#getRecordFromCommittedPage}.
    */
   private boolean committedEdgeListHolds(final VertexInternal vertex, final Vertex.DIRECTION direction, final Edge edge) {
-    final RID vertexRID = vertex.getIdentity();
-    final Binary vertexContent = committedRecordContent(vertexRID);
-    if (vertexContent == null || vertexContent.getByte(0) != Vertex.RECORD_TYPE)
-      return false;
-
-    final ImmutableVertex committedVertex = new ImmutableVertex(database, vertex.getType(), vertexRID, vertexContent);
-    final RID headRID = direction == Vertex.DIRECTION.OUT ?
-        committedVertex.getOutEdgesHeadChunk() :
-        committedVertex.getInEdgesHeadChunk();
+    final RID headRID = committedEdgeListHead(vertex, direction);
     if (headRID == null)
       return false;
 
@@ -1321,6 +1421,17 @@ public class GraphEngine {
       return false;
     }
     return committedChainHolds(headRID, edge.getIdentity());
+  }
+
+  /** The head of the edge list of {@code vertex} in {@code direction} in the COMMITTED vertex record, or null. */
+  private RID committedEdgeListHead(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    final RID vertexRID = vertex.getIdentity();
+    final Binary vertexContent = committedRecordContent(vertexRID);
+    if (vertexContent == null || vertexContent.getByte(0) != Vertex.RECORD_TYPE)
+      return null;
+
+    final ImmutableVertex committedVertex = new ImmutableVertex(database, vertex.getType(), vertexRID, vertexContent);
+    return direction == Vertex.DIRECTION.OUT ? committedVertex.getOutEdgesHeadChunk() : committedVertex.getInEdgesHeadChunk();
   }
 
   private boolean committedChainHolds(final RID headRID, final RID edgeRID) {
