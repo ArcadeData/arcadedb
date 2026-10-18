@@ -462,9 +462,15 @@ public class HttpServer implements ServerPlugin {
       try {
         plugin.registerAPI(this, new PluginRoutes(routes));
         if (PluginPathHandler.implementsDeprecatedRegisterAPI(plugin)) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Plugin '%s' implements the deprecated registerAPI(HttpServer, PathHandler), which will be removed in a future "
-                  + "release: implement registerAPI(HttpServer, PluginRoutes) instead", plugin.getName());
+          if (PluginPathHandler.implementsPluginRoutesRegisterAPI(plugin))
+            LogManager.instance().log(this, Level.WARNING,
+                "Plugin '%s' implements both registerAPI(HttpServer, PluginRoutes) and the deprecated registerAPI(HttpServer, "
+                    + "PathHandler): both are called, so a route declared in both is registered twice and the later one wins. "
+                    + "Keep only registerAPI(HttpServer, PluginRoutes)", plugin.getName());
+          else
+            LogManager.instance().log(this, Level.WARNING,
+                "Plugin '%s' implements the deprecated registerAPI(HttpServer, PathHandler), which will be removed in a future "
+                    + "release: implement registerAPI(HttpServer, PluginRoutes) instead", plugin.getName());
           callDeprecatedRegisterAPI(plugin, routes);
         }
       } finally {

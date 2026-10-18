@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
+import io.undertow.server.handlers.PathHandler;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * against it keeps working and keeps being named.
  */
 class Issue10296PluginRoutesRegisterApiTest extends BaseGraphServerTest {
+  private static final HttpClient CLIENT = HttpClient.newHttpClient();
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
@@ -84,8 +86,45 @@ class Issue10296PluginRoutesRegisterApiTest extends BaseGraphServerTest {
     assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(new ArrayPayloadTestPlugin())).isTrue();
     assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(new PluginRoutesTestPlugin())).isFalse();
     // A plugin with no HTTP routes at all overrides neither overload
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI((ServerPlugin) () -> {
-    })).isFalse();
+    final ServerPlugin noRoutes = () -> {
+    };
+    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(noRoutes)).isFalse();
+    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(noRoutes)).isFalse();
+
+    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(new PluginRoutesTestPlugin())).isTrue();
+    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(new ArrayPayloadTestPlugin())).isFalse();
+  }
+
+  @Test
+  void aPluginImplementingBothOverloadsIsDetectedAsSuch() {
+    final ServerPlugin both = new BothOverloadsPlugin();
+
+    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(both)).isTrue();
+    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(both)).isTrue();
+  }
+
+  @Test
+  void anOverrideInheritedFromASuperclassIsStillDetected() {
+    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(new ArrayPayloadTestPlugin() {
+    })).isTrue();
+  }
+
+  @SuppressWarnings("removal")
+  private static final class BothOverloadsPlugin implements ServerPlugin {
+    @Override
+    public void startService() {
+      // NO-OP
+    }
+
+    @Override
+    public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
+      // NO-OP
+    }
+
+    @Override
+    public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
+      // NO-OP
+    }
   }
 
   private HttpResponse<String> send(final String method, final String path, final String body) throws Exception {
@@ -94,6 +133,6 @@ class Issue10296PluginRoutesRegisterApiTest extends BaseGraphServerTest {
         .header("Content-Type", "application/json")
         .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
         .build();
-    return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    return CLIENT.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
   }
 }

@@ -65,16 +65,27 @@ final class PluginPathHandler extends PathHandler {
   }
 
   /**
-   * Whether {@code plugin}'s class (or a superclass of it) overrides the deprecated
-   * {@code registerAPI(HttpServer, PathHandler)}, rather than inheriting the interface's no-op default (issue #10296).
+   * Whether {@code plugin}'s class (or a superclass or interface of it) overrides the deprecated
+   * {@code registerAPI(HttpServer, PathHandler)}, rather than inheriting the {@link ServerPlugin} no-op default (issue
+   * #10296).
    */
   static boolean implementsDeprecatedRegisterAPI(final ServerPlugin plugin) {
+    return overridesRegisterAPI(plugin, PathHandler.class);
+  }
+
+  /** Whether {@code plugin} overrides {@code registerAPI(HttpServer, PluginRoutes)} (issue #10296). */
+  static boolean implementsPluginRoutesRegisterAPI(final ServerPlugin plugin) {
+    return overridesRegisterAPI(plugin, PluginRoutes.class);
+  }
+
+  private static boolean overridesRegisterAPI(final ServerPlugin plugin, final Class<?> routesType) {
     try {
-      return plugin.getClass().getMethod("registerAPI", HttpServer.class, PathHandler.class).getDeclaringClass()
-          != ServerPlugin.class;
+      return plugin.getClass().getMethod("registerAPI", HttpServer.class, routesType).getDeclaringClass() != ServerPlugin.class;
     } catch (final NoSuchMethodException e) {
-      // UNREACHABLE WHILE THE INTERFACE DECLARES THE OVERLOAD
-      return false;
+      // ServerPlugin declares both overloads, so this means the SPI changed without this lookup: failing here is what
+      // keeps a renamed overload from silently dropping every third-party plugin's routes
+      throw new IllegalStateException(
+          "ServerPlugin no longer declares registerAPI(HttpServer, " + routesType.getSimpleName() + ")", e);
     }
   }
 
