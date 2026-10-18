@@ -149,6 +149,41 @@ class Issue10205IncrementalViewSourcesTest extends TestHelper {
     assertThat(viewRows("Vn")).containsExactly("grp=x owners=1", "grp=y owners=1");
   }
 
+  /** The count of views on the polymorphic registries follows every lifecycle step, so it never drifts. */
+  @Test
+  void theListenerCountFollowsCreateAlterReopenAndDrop() {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    assertThat(schema.hasPolymorphicViewListeners()).isFalse();
+
+    database.command("sql", "CREATE MATERIALIZED VIEW Va AS " + COUNT + " REFRESH INCREMENTAL");
+    database.command("sql", "CREATE MATERIALIZED VIEW Vb AS " + OWNED + " REFRESH INCREMENTAL");
+    assertThat(schema.hasPolymorphicViewListeners()).isTrue();
+
+    database.command("sql", "ALTER MATERIALIZED VIEW Va REFRESH MANUAL");
+    database.command("sql", "ALTER MATERIALIZED VIEW Vb REFRESH MANUAL");
+    assertThat(schema.hasPolymorphicViewListeners()).isFalse();
+
+    database.command("sql", "ALTER MATERIALIZED VIEW Va REFRESH INCREMENTAL");
+    database.command("sql", "ALTER MATERIALIZED VIEW Va REFRESH INCREMENTAL");
+    assertThat(schema.hasPolymorphicViewListeners()).isTrue();
+
+    reopenDatabase();
+    final LocalSchema reopened = (LocalSchema) database.getSchema();
+    assertThat(reopened.hasPolymorphicViewListeners()).isTrue();
+
+    database.command("sql", "DROP MATERIALIZED VIEW Va");
+    assertThat(reopened.hasPolymorphicViewListeners()).isFalse();
+    database.command("sql", "DROP MATERIALIZED VIEW Vb");
+    assertThat(reopened.hasPolymorphicViewListeners()).isFalse();
+
+    // AND THE REMAINING VIEW STILL REFRESHES AFTER ALL OF IT
+    database.command("sql", "CREATE MATERIALIZED VIEW Vc AS " + COUNT + " REFRESH INCREMENTAL");
+    database.transaction(() -> database.command("sql", "INSERT INTO ItemB SET grp = 'z'"));
+    assertSameAsQuery("Vc", COUNT);
+    database.command("sql", "DROP MATERIALIZED VIEW Vc");
+    assertThat(reopened.hasPolymorphicViewListeners()).isFalse();
+  }
+
   @Test
   void writesToATypeTheQueryDoesNotReadDoNotRefresh() {
     database.command("sql", "CREATE MATERIALIZED VIEW Vo AS " + OWNED + " REFRESH INCREMENTAL");

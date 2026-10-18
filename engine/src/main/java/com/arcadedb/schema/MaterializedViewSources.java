@@ -133,5 +133,4 @@ final class MaterializedViewSources {
       return Identifier.quoted(ctx.QUOTED_IDENTIFIER().getText()).getStringValue();
     return ctx.getText();
   }
-
 }
