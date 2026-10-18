@@ -29,6 +29,7 @@ import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import static java.util.Map.entry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -38,33 +39,37 @@ import static org.assertj.core.api.Assertions.assertThat;
  * slot before a wait silently gives nothing back (#10140).
  */
 class AdmissionSurfaceCensusTest {
-  /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
-  private static final Path    REACTOR_ROOT = Path.of("..");
+  /** The reactor root: the parent of the {@code server} module, wherever the JVM that runs this class was started. */
+  private static final Path    REACTOR_ROOT = Path.of(System.getProperty("basedir", System.getProperty("user.dir"))).resolve("..")
+      .normalize();
   private static final String  GATE_CLASS   = "engine/src/main/java/com/arcadedb/query/sql/executor/QueryAdmissionGate.java";
   // A CALL TO admit(), IN A CLASS THAT USES THE GATE: WHATEVER THE NAME OF THE VARIABLE THAT HOLDS IT. THE OTHER admit() OF
   // THE CODE BASE (VECTOR GROUPS, PATH EXPANSION) LIVE IN CLASSES THAT NEVER NAME THE GATE
   private static final Pattern ADMIT        = Pattern.compile("\\.admit\\(");
 
-  /** Each surface, and the conformance test that drives it. */
-  private static final Map<String, String> SURFACES = Map.of(//
-      "server/src/main/java/com/arcadedb/server/http/handler/DatabaseAbstractHandler.java",
-      "server/src/test/java/com/arcadedb/server/http/handler/AdmissionSlotConformanceHttpTest.java",
-      "server/src/main/java/com/arcadedb/server/http/handler/PostBatchHandler.java",
-      "server/src/test/java/com/arcadedb/server/http/handler/AdmissionSlotConformanceHttpTest.java",
-      "bolt/src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java",
-      "bolt/src/test/java/com/arcadedb/bolt/AdmissionSlotConformanceBoltIT.java",
-      "gremlin/src/main/java/com/arcadedb/server/gremlin/ArcadeGraphManager.java",
-      "gremlin/src/test/java/com/arcadedb/server/gremlin/AdmissionSlotConformanceGremlinTest.java",
-      "grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAdmissionInterceptor.java",
-      "grpcw/src/test/java/com/arcadedb/server/grpc/AdmissionSlotConformanceGrpcIT.java",
-      "mcp/src/main/java/com/arcadedb/mcp/MCPDispatcher.java",
-      "mcp/src/test/java/com/arcadedb/mcp/AdmissionSlotConformanceMcpIT.java",
-      "mongodbw/src/main/java/com/arcadedb/mongo/MongoDBBackend.java",
-      "mongodbw/src/test/java/com/arcadedb/mongo/AdmissionSlotConformanceMongoTest.java",
-      "postgresw/src/main/java/com/arcadedb/postgres/PostgresNetworkExecutor.java",
-      "postgresw/src/test/java/com/arcadedb/postgres/AdmissionSlotConformancePostgresIT.java",
-      "redisw/src/main/java/com/arcadedb/redis/RedisNetworkExecutor.java",
-      "redisw/src/test/java/com/arcadedb/redis/AdmissionSlotConformanceRedisTest.java");
+  /**
+   * Each surface, and the conformance test that drives it. The census checks that the test calls the check, not which entry
+   * points of the surface it drives: the test of each surface lists those.
+   */
+  private static final Map<String, String> SURFACES = Map.ofEntries(//
+      entry("server/src/main/java/com/arcadedb/server/http/handler/DatabaseAbstractHandler.java",
+          "server/src/test/java/com/arcadedb/server/http/handler/AdmissionSlotConformanceHttpTest.java"),
+      entry("server/src/main/java/com/arcadedb/server/http/handler/PostBatchHandler.java",
+          "server/src/test/java/com/arcadedb/server/http/handler/AdmissionSlotConformanceHttpTest.java"),
+      entry("bolt/src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java",
+          "bolt/src/test/java/com/arcadedb/bolt/AdmissionSlotConformanceBoltIT.java"),
+      entry("gremlin/src/main/java/com/arcadedb/server/gremlin/ArcadeGraphManager.java",
+          "gremlin/src/test/java/com/arcadedb/server/gremlin/AdmissionSlotConformanceGremlinTest.java"),
+      entry("grpcw/src/main/java/com/arcadedb/server/grpc/GrpcAdmissionInterceptor.java",
+          "grpcw/src/test/java/com/arcadedb/server/grpc/AdmissionSlotConformanceGrpcIT.java"),
+      entry("mcp/src/main/java/com/arcadedb/mcp/MCPDispatcher.java",
+          "mcp/src/test/java/com/arcadedb/mcp/AdmissionSlotConformanceMcpIT.java"),
+      entry("mongodbw/src/main/java/com/arcadedb/mongo/MongoDBBackend.java",
+          "mongodbw/src/test/java/com/arcadedb/mongo/AdmissionSlotConformanceMongoTest.java"),
+      entry("postgresw/src/main/java/com/arcadedb/postgres/PostgresNetworkExecutor.java",
+          "postgresw/src/test/java/com/arcadedb/postgres/AdmissionSlotConformancePostgresIT.java"),
+      entry("redisw/src/main/java/com/arcadedb/redis/RedisNetworkExecutor.java",
+          "redisw/src/test/java/com/arcadedb/redis/AdmissionSlotConformanceRedisTest.java"));
 
   @Test
   void everyClassThatAdmitsThroughTheGateHasAConformanceTest() throws IOException {

@@ -54,7 +54,7 @@ class AdmissionSlotConformanceHttpTest extends BaseGraphServerTest {
   @Test
   void aCommandInsideASessionGivesItsSlotBackFromTheThreadThatRunsIt() throws Exception {
     final Database database = createType();
-    final HttpResponse<String> begin = send(post("/api/v1/begin/" + getDatabaseName(), null).POST(HttpRequest.BodyPublishers.noBody()).build());
+    final HttpResponse<String> begin = send(emptyPost("/api/v1/begin/" + getDatabaseName(), null));
     assertThat(begin.statusCode()).as(begin.body()).isEqualTo(204);
     final String session = begin.headers().firstValue("arcadedb-session-id").orElseThrow();
 
@@ -64,7 +64,7 @@ class AdmissionSlotConformanceHttpTest extends BaseGraphServerTest {
       return null;
     });
 
-    final HttpResponse<String> commit = send(post("/api/v1/commit/" + getDatabaseName(), session).POST(HttpRequest.BodyPublishers.noBody()).build());
+    final HttpResponse<String> commit = send(emptyPost("/api/v1/commit/" + getDatabaseName(), session));
     assertThat(commit.statusCode()).as(commit.body()).isEqualTo(204);
     assertThat(database.countType(TYPE, false)).isEqualTo(1);
   }
@@ -74,8 +74,9 @@ class AdmissionSlotConformanceHttpTest extends BaseGraphServerTest {
     final Database database = getServerDatabase(0, getDatabaseName());
     database.getSchema().getOrCreateVertexType(TYPE);
     AdmissionSlotConformance.assertGivesItsSlotBack(database, TYPE, "HTTP POST /batch", () -> {
-      final HttpResponse<String> answer = send(post("/api/v1/batch/" + getDatabaseName(), null).header("Content-Type", "application/x-ndjson")
-          .POST(HttpRequest.BodyPublishers.ofString("{\"@type\":\"vertex\",\"@class\":\"" + TYPE + "\",\"name\":\"a\"}\n")).build());
+      final String line = "{\"@type\":\"vertex\",\"@class\":\"" + TYPE + "\",\"name\":\"a\"}\n";
+      final HttpResponse<String> answer = send(post("/api/v1/batch/" + getDatabaseName(), null)
+          .header("Content-Type", "application/x-ndjson").POST(HttpRequest.BodyPublishers.ofString(line)).build());
       assertThat(answer.statusCode()).as(answer.body()).isEqualTo(200);
       return null;
     });
@@ -91,6 +92,10 @@ class AdmissionSlotConformanceHttpTest extends BaseGraphServerTest {
   private HttpRequest command(final String sql, final String session) {
     return post("/api/v1/command/" + getDatabaseName(), session).header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("language", "sql").put("command", sql).toString())).build();
+  }
+
+  private HttpRequest emptyPost(final String path, final String session) {
+    return post(path, session).POST(HttpRequest.BodyPublishers.noBody()).build();
   }
 
   private HttpRequest.Builder post(final String path, final String session) {

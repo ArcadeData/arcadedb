@@ -104,11 +104,15 @@ public final class AdmissionSlotConformance {
       }
       awaitCondition(() -> gate.getRunning() == 0, surface + ": the request leaves no slot taken");
     } finally {
-      probe.proceed.countDown();
-      type.getEvents().unregisterListener(probe);
-      client.shutdownNow();
-      GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(savedMaxConcurrent);
-      GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(savedQueueTimeout);
+      try {
+        probe.proceed.countDown();
+        type.getEvents().unregisterListener(probe);
+        client.shutdownNow();
+      } finally {
+        // THE GATE IS JVM-WIDE: LEFT ENABLED, IT WOULD GATE EVERY TEST THAT RUNS AFTER THIS ONE
+        GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(savedMaxConcurrent);
+        GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(savedQueueTimeout);
+      }
     }
   }
 
