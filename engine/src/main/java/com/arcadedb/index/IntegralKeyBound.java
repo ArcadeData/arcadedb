@@ -165,6 +165,7 @@ public final class IntegralKeyBound {
    * past the upper one ({@code 11.5 < i < 11.9} maps to {@code 12 <= i <= 11}). An index is not asked to read such a range.
    */
   public static boolean isEmptyRange(final Object lower, final Object upper) {
+    // longValue(): the bounds are the integral keys or days ceilingKey/floorKey answer, never a BigDecimal or a fraction
     if (lower instanceof Number from && upper instanceof Number to)
       return from.longValue() > to.longValue();
     return lower instanceof LocalDate from && upper instanceof LocalDate to && from.isAfter(to);

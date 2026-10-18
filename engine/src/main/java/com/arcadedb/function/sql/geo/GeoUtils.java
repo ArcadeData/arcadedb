@@ -231,11 +231,16 @@ public class GeoUtils {
 
   /** The central angle between two lon/lat points, in degrees, by the haversine formula. */
   public static double haversineDegrees(final double lon1, final double lat1, final double lon2, final double lat2) {
+    return Math.toDegrees(haversineRadians(lon1, lat1, lon2, lat2));
+  }
+
+  /** The central angle between two lon/lat points, in radians, by the haversine formula. */
+  public static double haversineRadians(final double lon1, final double lat1, final double lon2, final double lat2) {
     final double deltaLat = Math.toRadians(lat2 - lat1);
     final double deltaLon = Math.toRadians(lon2 - lon1);
     final double h = Math.pow(Math.sin(deltaLat / 2), 2)
         + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.pow(Math.sin(deltaLon / 2), 2);
-    return Math.toDegrees(2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)));
+    return 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
   }
 
   /**

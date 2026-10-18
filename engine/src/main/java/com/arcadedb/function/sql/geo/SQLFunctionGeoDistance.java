@@ -68,16 +68,9 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
     final String unit = iParams.length >= 3 && iParams[2] != null ? iParams[2].toString() : "m";
 
     final double distance;
-    if (shape1 instanceof Point p1 && shape2 instanceof Point p2) {
-      final double deltaLat = Math.toRadians(p2.getY() - p1.getY());
-      final double deltaLon = Math.toRadians(p2.getX() - p1.getX());
-
-      final double a = Math.pow(Math.sin(deltaLat / 2), 2)
-          + Math.cos(Math.toRadians(p1.getY())) * Math.cos(Math.toRadians(p2.getY()))
-          * Math.pow(Math.sin(deltaLon / 2), 2);
-
-      distance = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * GeoUtils.EARTH_RADIUS_KM;
-    } else
+    if (shape1 instanceof Point p1 && shape2 instanceof Point p2)
+      distance = GeoUtils.haversineRadians(p1.getX(), p1.getY(), p2.getX(), p2.getY()) * GeoUtils.EARTH_RADIUS_KM;
+    else
       // between the closest points of the shapes, 0 when they intersect, rather than between the centres of their
       // bounding boxes (issue #10210)
       distance = Math.toRadians(GeoUtils.distanceDegrees(shape1, shape2)) * GeoUtils.EARTH_RADIUS_KM;

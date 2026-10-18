@@ -289,7 +289,7 @@ public class LocalSchema implements Schema {
    * edge-list buckets), the type rename, {@link #dropType}, {@link #dropBucket} and a stripe-pool bucket created through
    * {@link #createBucket}. A new way to change a type's buckets has to report itself too.
    */
-  private             boolean                                bucketTypeMapsStale           = false;
+  private volatile    boolean                                bucketTypeMapsStale           = false;
   /** Length of the last schema file written, to size the buffer of the next one (issue #10247). */
   private             int                                    lastSchemaFileLength          = 0;
   private             long                                   bucketTypeMapRebuilds         = 0;
@@ -5452,8 +5452,14 @@ public class LocalSchema implements Schema {
             recordingSavePending = false;
             if (!executed[0]) {
               // A change that failed part way may have attached or detached a bucket that a hook reported before the
-              // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted (issue #10247)
+              // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted, at once, so no
+              // lock-free reader resolves a bucket to a type through an entry the failed change left behind (issue #10247)
               bucketTypeMapsStale = true;
+              try {
+                rebuildBucketTypeMap();
+              } catch (final RuntimeException e) {
+                // stays stale: the next lookup or save rebuilds it, and the exception to report is the change's own
+              }
               if (pending)
                 keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
             }
