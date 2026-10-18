@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.WriteReport;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -353,12 +354,14 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
   }
 
   @Test
-  void aBooleanColumnIsConvertedBeforeTheStorageLayerWhateverTheWriter() throws Exception {
+  void aBooleanColumnRefusesANumberOnEverySurfaceAndTheStorageLayerNamesTheColumn() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Switches TIMESTAMP ts FIELDS (on_ BOOLEAN) SHARDS 1");
 
-    // SQL INSERT: the document layer hands the storage layer a Boolean whatever the statement wrote
+    // SQL INSERT: storableValue converts the value the statement wrote, so a number is refused as every other surface refuses it
+    // (issue #10137, where the document layer used to turn it into a Boolean first)
     assertThatCode(() -> database.command("sql", "INSERT INTO Switches SET ts = " + T0 + ", on_ = true")).doesNotThrowAnyException();
-    assertThatCode(() -> database.command("sql", "INSERT INTO Switches SET ts = " + (T0 + 1) + ", on_ = 1")).doesNotThrowAnyException();
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO Switches SET ts = " + (T0 + 1) + ", on_ = 1"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("'on_'");
     assertThatCode(() -> database.command("sql", "INSERT INTO Switches SET ts = " + (T0 + 2) + ", on_ = 'true'")).doesNotThrowAnyException();
     assertThat(valueAt("Switches", "on_", T0)).isEqualTo(true);
 
@@ -367,7 +370,7 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
     assertThatThrownBy(() -> engine.appendSamples(new long[] { T0 + 10 }, new Object[] { 1L }))
         .isInstanceOf(IOException.class).hasRootCauseInstanceOf(IllegalArgumentException.class)
         .rootCause().hasMessageContaining("'on_'").hasMessageContaining("BOOLEAN");
-    assertThat(rows("Switches")).as("nothing was stored for the refused call").isEqualTo(3);
+    assertThat(rows("Switches")).as("nothing was stored for the refused calls").isEqualTo(2);
   }
 
   @Test

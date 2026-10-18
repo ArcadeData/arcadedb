@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalProperty;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
@@ -655,6 +656,11 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     final Property property = type.getPolymorphicPropertyIfExists(name);
     if (property != null) {
+      // A TIMESERIES column is converted once, by ColumnDefinition.storableValue at the append, the contract every ingestion
+      // surface shares: converting it here first would hand that contract a value already coerced to the declared class
+      // (issue #10137)
+      if (type instanceof LocalTimeSeriesType tsType && tsType.skipsDocumentConversion(name))
+        return value;
       try {
         final Type propType = property.getType();
 

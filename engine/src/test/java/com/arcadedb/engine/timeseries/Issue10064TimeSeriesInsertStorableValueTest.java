@@ -49,9 +49,8 @@ class Issue10064TimeSeriesInsertStorableValueTest extends TestHelper {
   }
 
   /**
-   * A number the column cannot hold is refused and no sample is stored. The document layer has already converted each property to
-   * its declared type by the time the step runs, so it is the first to refuse (which is why the INTEGER overflow of the issue never
-   * narrowed through SQL); whichever layer refuses, the statement stores nothing.
+   * A number the column cannot hold is refused and no sample is stored. Since issue #10137 the document layer no longer converts a
+   * non-temporal column first, so {@code storableValue} is the one that refuses, as it does on every other surface.
    */
   @Test
   void anOutOfRangeNumberIsRefusedAndNothingIsStored() throws Exception {
