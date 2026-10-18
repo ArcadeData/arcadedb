@@ -49,8 +49,36 @@ as PostgreSQL does and as `psql`'s `\d` shows in its Type column. `pg_type.typna
 the old text, such as `atttypid::regtype = 'int4'` written as a string comparison, sees the SQL name instead; compare OIDs
 (`atttypid = 'int4'::regtype`) to be independent of the spelling.
 
+### SQL: string methods count and cut characters, not UTF-16 code units (#10248)
+
+`length()`, `left()`, `right()`, `subString()`, `indexOf()`, `lastIndexOf()` and `charAt()` count Unicode characters, as
+openCypher's `size()`, `left()`, `right()` and `substring()` already did (#8998). A character outside the Basic Multilingual
+Plane, such as an emoji, is one character: `'\uD83D\uDE00a'.length()` is 2 (it was 3), `.left(1)` is the emoji (it was the high
+half of its surrogate pair, which compared equal to `'?'`) and `.indexOf('a')` is 1 (it was 2). A search never matches inside a
+surrogate pair. Text made of characters in the Basic Multilingual Plane, which is almost all text, answers exactly as before.
+
+**Who sees a different answer.** A query that keeps a position or a length in a property and uses it later on a text with
+emojis or other characters outside the Basic Multilingual Plane (`WHERE s.length() > 140` on tweets, `s.substring(0, 280)`).
+The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they follow APOC, which counts UTF-16 code units.
+
+**Cost.** `length()` is constant time on Latin-1 text, which is how the JVM stores most of it. A position past the start of text with other characters (`charAt(i)`, `indexOf(s, i)`) is found by walking to it, so a query that reads every character of a long text of that kind by position costs more than before; `left()`, `right()` and `subString()` cost what they cut.
+
 ## Fixes
 
+- **#10249** A Graph Analytical View no longer ends up a few edges short when several threads commit at the same time and some
+  of the commits delete edges. A transaction reported its change to the view after releasing its locks, so two commits that
+  conflicted could reach the view in the opposite order, and an edge created in the record slot a deleted one had just freed
+  (the same RID) was withdrawn by the deletion that arrived after it. The changes now reach the view in the order their
+  transactions committed, for `SYNCHRONOUS` (broken since the views exist) and `ASYNCHRONOUS` (since #10212) alike.
+  `OrderedAfterCommitCallback` gives any after-commit callback the same guarantee. A commit on a table the view covers now
+  returns once the commits ahead of it have reached the view (a few microseconds when they are running; a transaction that
+  never reports, because its thread died, costs the commits behind it one wait of 30 seconds, logged as a WARNING, and is then
+  skipped, and its change reaches the view out of order if it ever comes: the commit order is guaranteed until such a WARNING is logged;
+  `arcadedb.gavCommitOrderMaxWait` sets the wait in milliseconds, 0 to not wait at all).
+- **#10188** A `NOTUNIQUE` LSM-tree index no longer returns entries its records do not have once it has been compacted:
+  `TypeIndex.iterator()`, `countEntries()`, range scans and `ORDER BY` on the indexed property returned extra rows after
+  updates. A key with many values is stored in chunks that can run over a data page of the compacted series, and the scan
+  applied the deletions of the newer pages to the first page of the key only. Point lookups were not affected.
 - **#10228** PostgreSQL wire: `psql`'s `\dt`, `\d <table>` and `\d+ <table>`, and psqlodbc's `SQLColumns` and
   `SQLTables(SQL_ALL_TABLE_TYPES)`, answer from the emulated `pg_catalog` instead of empty results or a syntax error. The
   catalog reads parenthesised joins, applies join conditions (an INNER JOIN's `ON` filters, a LEFT JOIN that does not

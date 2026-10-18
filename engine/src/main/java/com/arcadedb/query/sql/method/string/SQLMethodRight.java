@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -52,8 +53,9 @@ public class SQLMethodRight extends AbstractSQLMethod {
 
     // A negative offset has no characters to return, same as MySQL's RIGHT(): clamp rather than let
     // substring() throw StringIndexOutOfBoundsException (#5885).
-    final int offset = Math.max(0, indexArgument(params[0], "characters"));
-    return valueAsString.substring(offset < valueAsString.length() ? valueAsString.length() - offset : 0);
+    // Characters are Unicode code points, never half of a surrogate pair (issue #10248).
+    final int count = Math.max(0, indexArgument(params[0], "characters"));
+    return CypherFunctionHelper.rightCodePoints(valueAsString, count);
   }
 
 }

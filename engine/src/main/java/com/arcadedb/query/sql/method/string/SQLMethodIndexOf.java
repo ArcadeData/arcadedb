@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.FileUtils;
@@ -43,6 +44,7 @@ public class SQLMethodIndexOf extends AbstractSQLMethod {
     final String toFind = FileUtils.getStringContent(params[0].toString());
     final int startIndex = params.length > 1 ? indexArgument(params[1], "from-index") : 0;
 
-    return value.toString().indexOf(toFind, startIndex);
+    // The result and the start index count Unicode code points, and a match never begins or ends inside a surrogate pair (issue #10248)
+    return CypherFunctionHelper.indexOfCodePoints(value.toString(), toFind, startIndex);
   }
 }

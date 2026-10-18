@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -50,7 +51,8 @@ public class SQLMethodLeft extends AbstractSQLMethod {
 
     // A negative length has no characters to return, same as MySQL's LEFT(): clamp rather than let
     // substring() throw StringIndexOutOfBoundsException (#5885).
+    // Characters are Unicode code points, never half of a surrogate pair (issue #10248).
     final int len = Math.max(0, indexArgument(params[0], "characters"));
-    return valueAsString.substring(0, len <= valueAsString.length() ? len : valueAsString.length());
+    return CypherFunctionHelper.leftCodePoints(valueAsString, len);
   }
 }
