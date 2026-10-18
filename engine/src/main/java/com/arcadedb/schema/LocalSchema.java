@@ -4785,6 +4785,7 @@ public class LocalSchema implements Schema {
    * types: each type is now serialized as it is visited, into the same Gson writer the document's {@code toString()}
    * uses, so the formatting cannot differ.
    */
+  // Byte identity with toJSON().toString() is pinned by Issue10247SchemaChangeScalingTest, which writes the same schema both ways
   private String serializeSchema(final long schemaVersion) throws IOException {
     final JSONObject root = toJSON(schemaVersion, false);
     final Gson gson = JSONFactory.INSTANCE.getGson();
@@ -5449,8 +5450,13 @@ public class LocalSchema implements Schema {
             recordingThread = null;
             final boolean pending = recordingSavePending;
             recordingSavePending = false;
-            if (!executed[0] && pending)
-              keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            if (!executed[0]) {
+              // A change that failed part way may have attached or detached a bucket that a hook reported before the
+              // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted (issue #10247)
+              bucketTypeMapsStale = true;
+              if (pending)
+                keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            }
           }
           --recordingDepth;
         }

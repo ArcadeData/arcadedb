@@ -26,6 +26,8 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -110,6 +112,33 @@ class Issue10206SqlDateStrictnessTest extends TestHelper {
         LocalDateTime.of(2021, 2, 3, 23, 30));
   }
 
+  /** A datetime with an offset is the instant it names, read at UTC, with an index on the DATE or without one. */
+  @Test
+  void aDateComparesAsMidnightAgainstAZonedDatetimeWithOrWithoutAnIndex() {
+    // 2021-02-03T23:30-05:00 is 2021-02-04T04:30Z
+    final OffsetDateTime zoned = OffsetDateTime.of(2021, 2, 3, 23, 30, 0, 0, ZoneOffset.ofHours(-5));
+    for (int pass = 0; pass < 2; pass++) {
+      assertThat(ids("SELECT id FROM E WHERE d1 < ?", zoned)).as("pass %d", pass).containsExactly(1, 6);
+      assertThat(ids("SELECT id FROM E WHERE d1 = ?", zoned)).as("pass %d", pass).isEmpty();
+      assertThat(ids("SELECT id FROM E WHERE d1 >= ?", zoned)).as("pass %d", pass).containsExactly(2);
+      assertThat(ids("SELECT id FROM E WHERE d1 <= ?", LocalDateTime.of(2021, 2, 4, 0, 0))).as("pass %d", pass)
+          .containsExactly(1, 6);
+      if (pass == 0)
+        database.command("sql", "CREATE INDEX ON E (d1) NOTUNIQUE");
+    }
+  }
+
+  @Test
+  void patternsWithLiteralsQuotesAndWeekdaysAreReadStrictly() {
+    assertThat(value("SELECT '2021-02-03T10:15'.asDateTime(\"yyyy-MM-dd'T'HH:mm\") AS v")).isEqualTo(
+        LocalDateTime.of(2021, 2, 3, 10, 15));
+    assertThat(value("SELECT ?.asDate(?) AS v", "3 o'clock 2021-02-03", "d 'o''clock' yyyy-MM-dd")).isEqualTo(LocalDate.of(2021, 2, 3));
+    assertThat(value("SELECT 'Wed, 03 Feb 2021 10:00'.asDateTime('EEE, dd MMM yyyy HH:mm') AS v")).isEqualTo(
+        LocalDateTime.of(2021, 2, 3, 10, 0));
+    // the day of the week has to agree with the date
+    assertThat(value("SELECT 'Thu, 03 Feb 2021 10:00'.asDateTime('EEE, dd MMM yyyy HH:mm') AS v")).isNull();
+  }
+
   @Test
   void anInvalidDateLiteralMatchesNoDate() {
     assertThat(ids("SELECT id FROM E WHERE d1 = '2021-02-30'")).isEmpty();
@@ -159,8 +188,8 @@ class Issue10206SqlDateStrictnessTest extends TestHelper {
     return ids;
   }
 
-  private Object value(final String sql) {
-    try (final ResultSet rs = database.query("sql", sql)) {
+  private Object value(final String sql, final Object... args) {
+    try (final ResultSet rs = database.query("sql", sql, args)) {
       final Result r = rs.next();
       return r.getProperty("v");
     }

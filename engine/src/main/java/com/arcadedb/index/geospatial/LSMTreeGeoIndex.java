@@ -544,6 +544,9 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     LogManager.instance().log(this, Level.INFO, "Building geospatial index '%s'...", getName());
 
+    // The scan below runs on this thread and so does every put it causes: an invalid geometry is skipped only while the
+    // thread that put it is the one building, so a build that ever fanned the scan out to other threads would have to hand
+    // them this marker too
     buildingThread = Thread.currentThread();
     try {
       db.scanBucket(bucketName, record -> {

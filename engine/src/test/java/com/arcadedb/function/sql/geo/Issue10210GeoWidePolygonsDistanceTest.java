@@ -208,6 +208,22 @@ class Issue10210GeoWidePolygonsDistanceTest extends TestHelper {
     assertThat(coords(query)).containsExactlyInAnyOrder("POINT (0 0)", "POINT (100 50)");
   }
 
+  /** A value the index used to skip is not re-put by a write that does not touch it. */
+  @Test
+  void updatingAnotherPropertyOfARecordWithAnInvalidStoredValueIsNotRefused() {
+    database.command("sql", "CREATE DOCUMENT TYPE Old");
+    database.command("sql", "CREATE PROPERTY Old.coords STRING");
+    database.command("sql", "CREATE PROPERTY Old.note STRING");
+    database.transaction(() -> database.newDocument("Old").set("coords", "POINT (10 95)").set("note", "a").save());
+    database.command("sql", "CREATE INDEX ON Old (coords) GEOSPATIAL");
+
+    database.transaction(() -> database.command("sql", "UPDATE Old SET note = 'b'"));
+
+    try (final ResultSet rs = database.query("sql", "SELECT note FROM Old")) {
+      assertThat(rs.next().<String>getProperty("note")).isEqualTo("b");
+    }
+  }
+
   private boolean planUsesIndex(final String sql) {
     try (final ResultSet rs = database.query("sql", sql)) {
       while (rs.hasNext())

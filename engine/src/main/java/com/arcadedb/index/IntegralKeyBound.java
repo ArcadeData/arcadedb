@@ -146,7 +146,7 @@ public final class IntegralKeyBound {
    */
   public static Object ceilingKey(final byte keyType, final Object bound) {
     if (keyType == BinaryTypes.TYPE_DATE)
-      return ((LocalDateTime) dateTimeOf(bound)).toLocalDate().plusDays(1);
+      return dateTimeOf(bound).toLocalDate().plusDays(1);
     return ceiling(keyType, (Number) bound);
   }
 
@@ -156,7 +156,7 @@ public final class IntegralKeyBound {
    */
   public static Object floorKey(final byte keyType, final Object bound) {
     if (keyType == BinaryTypes.TYPE_DATE)
-      return ((LocalDateTime) dateTimeOf(bound)).toLocalDate();
+      return dateTimeOf(bound).toLocalDate();
     return floor(keyType, (Number) bound);
   }
 
@@ -174,7 +174,7 @@ public final class IntegralKeyBound {
    * The UTC wall clock of a datetime value, the reading of every conversion of one to a DATE, or null for anything else (a
    * {@link LocalDate} is not a datetime: it never needs mapping).
    */
-  private static Object dateTimeOf(final Object bound) {
+  private static LocalDateTime dateTimeOf(final Object bound) {
     if (bound instanceof LocalDate || !DateUtils.isDate(bound))
       return null;
     if (bound instanceof LocalDateTime dateTime)

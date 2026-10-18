@@ -203,7 +203,9 @@ public class GeoUtils {
    * <p>
    * The closest points are found on the longitude/latitude plane, the way the predicates read a shape, with the second
    * shape also tried one turn either way so that two shapes facing each other across the antimeridian are measured the
-   * short way round. A circle is its centre less its radius.
+   * short way round. A circle is its centre less its radius. The distance between those two points is the great-circle
+   * one, so it is exact for a point and, for a larger shape, close to the shortest distance on the sphere but not always
+   * equal to it: the plane picks the nearest edge in degrees, and a degree of longitude is shorter the nearer the pole.
    */
   public static double distanceDegrees(final Shape a, final Shape b) {
     if (a instanceof Circle circle)
