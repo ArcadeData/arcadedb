@@ -144,6 +144,9 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
+  private static final int                           REMOVED                = 0;
+  private static final int                           APPENDED               = 1;
   // a record position must fit the 40 low bits of a packed (bucket id, position) target
   private static final int                           UNIDIRECTIONAL_TARGET_BUCKET_SHIFT = 40;
   private       Map<RID, Record>                     immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
@@ -179,8 +182,6 @@ public class TransactionContext implements Transaction {
   // are indistinguishable, so a removal that finds nothing is told from a stale list by counting. Lazily allocated: only a
   // lightweight edge delete, or the append of one between two vertices that both predate the transaction, fills it.
   private       Map<LightEdgeEntry, int[]>            lightEdgeEntryChanges;
-  private static final int                           REMOVED               = 0;
-  private static final int                           APPENDED              = 1;
   // #10315: the RIDs of newRecords, hashed the first time a lightweight edge append asks, then kept up to date by
   // registerNewRecord(). Never shrinks: a record unregistered keeps reading as created here, which only skips counting.
   private       RidHashSet                            newRecordRIDs;

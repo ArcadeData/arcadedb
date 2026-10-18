@@ -620,6 +620,7 @@ public class GraphEngine {
     // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
     // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
     getOrCreateEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+    // ONLY THE RID REACHES HERE: A LIGHTWEIGHT EDGE HAS NO RECORD, SO ITS RID CARRIES A NEGATIVE POSITION (see disconnectEndpoint)
     if (edgeRID.getPosition() < 0)
       lightEdgeEntryAppended(toVertex.getIdentity(), Vertex.DIRECTION.IN, edgeRID.getBucketId(), fromVertexRID);
   }
@@ -1221,8 +1222,8 @@ public class GraphEngine {
 
   /**
    * Refuses, with a retryable {@link ConcurrentModificationException}, the delete of a lightweight edge that the list
-   * this transaction reads does not hold while the committed list holds more of its entries than the list this
-   * transaction read held (#10302, the lightweight half of #10263). The transaction read the list before a concurrent commit appended the
+   * this transaction reads does not hold while the committed list holds more of its entries than the list held when
+   * this transaction read it (#10302, the lightweight half of #10263). The transaction read the list before a concurrent commit appended the
    * entry, so nothing was removed and no page was anchored: the commit would go through and the delete would be lost,
    * one lightweight edge too many. A retry reads the list again.
    * <p>
