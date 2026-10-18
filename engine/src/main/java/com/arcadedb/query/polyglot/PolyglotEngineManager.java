@@ -63,14 +63,6 @@ public class PolyglotEngineManager {
   }
 
   /**
-   * Whether the shared Engine exists, without creating it: a statement in a language that is not a script one must not
-   * build it (issue #10245).
-   */
-  public boolean isSharedEngineCreated() {
-    return sharedEngine != null;
-  }
-
-  /**
    * Closes the shared Engine. This should only be called during application shutdown.
    * After calling this method, subsequent calls to getSharedEngine() will create a new Engine.
    */

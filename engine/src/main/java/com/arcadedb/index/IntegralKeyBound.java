@@ -20,10 +20,15 @@ package com.arcadedb.index;
 
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 
 /**
  * Maps a numeric bound onto the keys of an integral index (BYTE, SHORT, INTEGER, LONG) without changing the answer
@@ -35,6 +40,11 @@ import java.math.RoundingMode;
  * {@code i < 12.5} lost the 12. A bound no key equals is therefore turned into the key that bounds the same set of keys,
  * inclusive: the smallest key above it for a lower bound, the largest key below it for an upper bound, and no key at all
  * for an equality. NaN reads as the greatest number, as the scan orders it.
+ * <p>
+ * A DATE key is integral too, a count of days: a datetime bound with a time of day ({@code 2021-02-03T12:00}) was narrowed
+ * to its day, so {@code d = ?} found the rows of that day through the index and none in a scan, which compares the day at
+ * midnight (issue #10206). Such a bound maps onto the following day as a lower bound and onto its own day as an upper one,
+ * through {@link #ceilingKey}/{@link #floorKey}.
  */
 public final class IntegralKeyBound {
   /** 2^53: below it a {@code double} holds every integer exactly, and its decimal reading has the same integral part. */
@@ -49,6 +59,8 @@ public final class IntegralKeyBound {
    * {@code Double} or {@code Float} below 2^53 in magnitude.
    */
   public static boolean isInexact(final byte keyType, final Object bound) {
+    if (keyType == BinaryTypes.TYPE_DATE)
+      return dateTimeOf(bound) instanceof LocalDateTime dateTime && !dateTime.toLocalTime().equals(LocalTime.MIDNIGHT);
     if (!(bound instanceof Number number))
       return false;
     final long min, max;
@@ -126,6 +138,49 @@ public final class IntegralKeyBound {
     if (rounded.compareTo(BigDecimal.valueOf(maxOf(keyType).longValue())) > 0)
       return maxOf(keyType);
     return box(keyType, rounded.longValue());
+  }
+
+  /**
+   * {@link #ceiling} for any key type {@link #isInexact} accepts, a DATE key included: the day after a datetime bound with a
+   * time of day. Only for a bound {@code isInexact} accepted: anything else is not a bound this maps.
+   */
+  public static Object ceilingKey(final byte keyType, final Object bound) {
+    if (keyType == BinaryTypes.TYPE_DATE)
+      return dateTimeOf(bound).toLocalDate().plusDays(1);
+    return ceiling(keyType, (Number) bound);
+  }
+
+  /**
+   * {@link #floor} for any key type {@link #isInexact} accepts, a DATE key included: the day of a datetime bound with a time
+   * of day.
+   */
+  public static Object floorKey(final byte keyType, final Object bound) {
+    if (keyType == BinaryTypes.TYPE_DATE)
+      return dateTimeOf(bound).toLocalDate();
+    return floor(keyType, (Number) bound);
+  }
+
+  /**
+   * True when two exact bounds of one key, as {@link #ceilingKey}/{@link #floorKey} answer them, admit no key: the lower one
+   * past the upper one ({@code 11.5 < i < 11.9} maps to {@code 12 <= i <= 11}). An index is not asked to read such a range.
+   */
+  public static boolean isEmptyRange(final Object lower, final Object upper) {
+    // longValue(): the bounds are the integral keys or days ceilingKey/floorKey answer, never a BigDecimal or a fraction
+    if (lower instanceof Number from && upper instanceof Number to)
+      return from.longValue() > to.longValue();
+    return lower instanceof LocalDate from && upper instanceof LocalDate to && from.isAfter(to);
+  }
+
+  /**
+   * The UTC wall clock of a datetime value, the reading of every conversion of one to a DATE, or null for anything else (a
+   * {@link LocalDate} is not a datetime: it never needs mapping).
+   */
+  private static LocalDateTime dateTimeOf(final Object bound) {
+    if (bound instanceof LocalDate || !DateUtils.isDate(bound))
+      return null;
+    if (bound instanceof LocalDateTime dateTime)
+      return dateTime;
+    return LocalDateTime.ofInstant(DateUtils.toInstant(bound), ZoneOffset.UTC);
   }
 
   /** Maps a {@link Type} to the binary key type {@link #isInexact} takes, or -1 for a type that is not integral. */

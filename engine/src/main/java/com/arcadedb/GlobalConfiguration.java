@@ -915,9 +915,8 @@ public enum GlobalConfiguration {
   POLYGLOT_ENGINE_ENABLED("arcadedb.polyglotEngineEnabled", SCOPE.JVM,
       """
       Enable the GraalVM Polyglot Engine used to register scripting languages (js, python, ...) as query engines. \
-      When true (default), the shared Engine is created lazily, the first time a script language is used or the list \
-      of the languages is asked for, and all GraalVM languages found on the classpath are registered then: a SQL or \
-      openCypher statement does not create it. When false, the Polyglot engine is not initialised and no polyglot language \
+      When true (default), the shared Engine is created lazily on first use and all GraalVM languages found on \
+      the classpath are registered. When false, the Polyglot engine is not initialised and no polyglot language \
       is registered: this saves tens of MB of heap and class-loading work on small footprints. The 'low-ram' \
       profile sets this to false.""",
       Boolean.class, true),
@@ -950,7 +949,8 @@ public enum GlobalConfiguration {
       database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
       of a LET subquery, the records a TRAVERSE has visited or a MATCH prefetches, the record addresses an UPDATE reads ahead \
       of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
-      materialization ahead of a write. Every buffer reserves its estimated size from this budget as it grows and gives it \
+      materialization ahead of a write, or the record addresses an index range reads ahead of a write to its key. Every \
+      buffer reserves its estimated size from this budget as it grows and gives it \
       back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
       below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \
       fails with a QueryHeapBudgetExceededException, which is transient: the same query can succeed once the others release \
@@ -3315,6 +3315,15 @@ public enum GlobalConfiguration {
       """
       When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. \
       Stale data is faster but may not reflect the latest committed changes""", Boolean.class, false),
+
+  GAV_COMMIT_ORDER_MAX_WAIT("arcadedb.gavCommitOrderMaxWait", SCOPE.DATABASE,
+      """
+      Milliseconds a commit on a SYNCHRONOUS or ASYNCHRONOUS Graph Analytical View (GAV/CSR) waits, after it is durable, for the \
+      commits ahead of it to reach the view, so that its own change is in the view (or counted as pending) when commit() \
+      returns. The changes always reach the view in the order the transactions committed; this only bounds the wait. A \
+      transaction that never reports (its thread died between its commit point and its callback) costs the commits behind \
+      it one such wait, logged as a WARNING, and is then skipped. 0 does not wait: commit() may return before its change \
+      is in the view""", Long.class, 30_000L),
 
   GAV_RESTORE_AWAIT_TIMEOUT("arcadedb.gavRestoreAwaitTimeout", SCOPE.DATABASE,
       """

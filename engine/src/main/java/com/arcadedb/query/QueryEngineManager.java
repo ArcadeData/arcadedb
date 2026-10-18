@@ -58,19 +58,24 @@ public class QueryEngineManager extends DedicatedThreadPool {
   // getAvailableLanguages() read the map without locks: registration publishes a new copy
   // (copy-on-write) instead of mutating in place. Registration is rare, reads are hot.
   private volatile     Map<String, QueryEngine.QueryEngineFactory> implementations = new LinkedHashMap<>();
-  // THE LANGUAGES OF THE GRAALVM POLYGLOT ENGINE, ASKED FOR ONLY WHEN A LANGUAGE NOT REGISTERED YET IS (ISSUE #10245)
-  private final        Supplier<? extends Iterable<String>>        polyglotLanguages;
-  private volatile     boolean                                     polyglotResolved;
+  // #10245: where the GraalVM languages come from, and whether they have been asked for yet. Listing them builds the
+  // shared polyglot Engine, which loads Truffle and every GraalVM language jar on the classpath, so it is deferred
+  // until a caller asks for a language no built-in engine answers, or for the complete list.
+  private final        Supplier<Iterable<String>>                  polyglotLanguages;
+  private volatile     boolean                                     polyglotLanguagesResolved;
+  // Serializes the one resolution, apart from the registry monitor: building the Engine takes long, and register() and the
+  // other resolvers must not wait behind it on the monitor of the registry itself
+  private final        Object                                      polyglotResolution = new Object();
 
   private QueryEngineManager() {
     this(PolyglotQueryEngine.PolyglotQueryEngineFactory::getSupportedLanguages);
   }
 
   /**
-   * @param polyglotLanguages the languages of the polyglot engine, asked for the first time a language that no engine
-   *                          registered so far answers to is looked up, or the whole list is
+   * Visible for tests: {@code polyglotLanguages} replaces the enumeration of the GraalVM languages, so a test can see
+   * when (and whether) the registry asks for them without building the JVM-wide shared Engine.
    */
-  QueryEngineManager(final Supplier<? extends Iterable<String>> polyglotLanguages) {
+  QueryEngineManager(final Supplier<Iterable<String>> polyglotLanguages) {
     // Pool sizing: explicit knob first, then "as many threads as cores (min 2)". Configurable so
     // operators can cap or expand without rebuild; the previous hardcoded {@code max(2, cpuCount)}
     // is preserved as the default behaviour when the knob is left at its default of 0.
@@ -88,12 +93,9 @@ public class QueryEngineManager extends DedicatedThreadPool {
         SaturationPolicy.CALLER_RUNS, DedicatedThreadPool::plainWorker, "Query parallelism pool",
         "the query loses its parallelism but never fails",
         GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS, GlobalConfiguration.QUERY_PARALLELISM_QUEUE_SIZE);
-
-    // THE POLYGLOT LANGUAGES ARE NOT REGISTERED HERE: LISTING THEM BUILDS THE SHARED GRAALVM ENGINE, WHICH LOADS TRUFFLE AND
-    // EVERY GRAALVM LANGUAGE ON THE CLASSPATH, AND THE FIRST STATEMENT OF ANY LANGUAGE PAID FOR IT (ISSUE #10245). THEY ARE
-    // RESOLVED BY THE FIRST LOOKUP OF A LANGUAGE NO OTHER ENGINE ANSWERS TO, SEE resolvePolyglotLanguages()
     this.polyglotLanguages = polyglotLanguages;
 
+    // THE POLYGLOT LANGUAGES ARE NOT REGISTERED HERE BUT ON FIRST DEMAND, SEE resolvePolyglotLanguages() (#10245)
     register(new JavaQueryEngine.JavaQueryEngineFactory());
     register(new SQLQueryEngine.SQLQueryEngineFactory());
     register(new SQLScriptQueryEngine.SQLScriptQueryEngineFactory());
@@ -133,7 +135,10 @@ public class QueryEngineManager extends DedicatedThreadPool {
   }
 
   public QueryEngine getEngine(final String language, final DatabaseInternal database) {
-    final QueryEngine.QueryEngineFactory impl = lookup(language.toLowerCase(Locale.ENGLISH));
+    final String key = language.toLowerCase(Locale.ENGLISH);
+    QueryEngine.QueryEngineFactory impl = implementations.get(key);
+    if (impl == null && resolvePolyglotLanguages())
+      impl = implementations.get(key);
     if (impl == null)
       throw new IllegalArgumentException("Query engine '" + language + "' was not found. Check your configuration");
     return impl.getInstance(database);
@@ -148,47 +153,9 @@ public class QueryEngineManager extends DedicatedThreadPool {
     return getPoolStats();
   }
 
-  /** Every language an engine answers to, the polyglot ones included: asking for them builds the polyglot engine. */
   public List<String> getAvailableLanguages() {
     resolvePolyglotLanguages();
     return new ArrayList<>(implementations.keySet());
-  }
-
-  /** The factory of a lower-case language, resolving the polyglot languages when no engine registered so far answers to it. */
-  private QueryEngine.QueryEngineFactory lookup(final String language) {
-    final QueryEngine.QueryEngineFactory impl = implementations.get(language);
-    if (impl != null || polyglotResolved)
-      return impl;
-    resolvePolyglotLanguages();
-    return implementations.get(language);
-  }
-
-  /**
-   * Registers the languages of the GraalVM polyglot engine, once. Guarded by {@link GlobalConfiguration#POLYGLOT_ENGINE_ENABLED}:
-   * when disabled the languages are never listed, so the shared Engine is never created. A language some other engine already
-   * answers to keeps that engine, as when the polyglot languages were registered first and the built-in engines over them.
-   */
-  private void resolvePolyglotLanguages() {
-    if (polyglotResolved)
-      return;
-    synchronized (this) {
-      if (polyglotResolved)
-        return;
-      // RESOLVED ONCE, AS THE CONSTRUCTOR DID: AN ENGINE THAT CANNOT START (getSupportedLanguages() LOGS AND ANSWERS NONE) DOES
-      // NOT START LATER EITHER, AND RETRYING WOULD PAY ITS FAILED START-UP ON EVERY LOOKUP OF AN UNKNOWN LANGUAGE
-      try {
-        if (GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean()) {
-          final Map<String, QueryEngine.QueryEngineFactory> copy = new LinkedHashMap<>(implementations);
-          for (final String language : polyglotLanguages.get())
-            copy.putIfAbsent(language.toLowerCase(Locale.ENGLISH), new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
-          implementations = copy;
-        }
-      } catch (final RuntimeException | LinkageError e) {
-        LogManager.instance().log(this, Level.WARNING, "Unable to register the polyglot languages: no script language is available", e);
-      } finally {
-        polyglotResolved = true;
-      }
-    }
   }
 
   /**
@@ -196,9 +163,7 @@ public class QueryEngineManager extends DedicatedThreadPool {
    * {@link #getEngine(String, DatabaseInternal)} matches it (case-insensitively). Unlike
    * {@link #getAvailableLanguages()} this answers the question without copying the key set, so it is usable
    * from instrumentation that runs once per query: one volatile read of the copy-on-write map plus one hash
-   * lookup, no allocation. A miss does not resolve the polyglot languages, which would build the GraalVM engine inside
-   * the instrumentation of a query in an invented language (issue #10245): a query in a script language reaches
-   * {@code getEngine()} first, which resolves them, so its tag is known by the time it is recorded.
+   * lookup, no allocation.
    * <p>
    * Exists so the {@code language} tag of {@code arcadedb.query.duration} can be bounded at its source. The
    * language travels straight from the caller - {@code db.query("<language>", ...)}, the {@code {lang}} path
@@ -206,6 +171,54 @@ public class QueryEngineManager extends DedicatedThreadPool {
    * name; the engine registry is the component that knows which values are real (issue #7122).
    */
   public boolean isLanguageRegistered(final String language) {
-    return language != null && implementations.containsKey(language.toLowerCase(Locale.ENGLISH));
+    if (language == null)
+      return false;
+    final String key = language.toLowerCase(Locale.ENGLISH);
+    return implementations.containsKey(key) || (resolvePolyglotLanguages() && implementations.containsKey(key));
+  }
+
+  /**
+   * Registers the GraalVM polyglot languages the first time a caller needs them: a language no built-in engine
+   * answers, or the complete list. They used to be registered by the constructor, so the first statement of ANY
+   * language in a JVM - an embedded {@code SELECT} included - built the shared polyglot Engine and loaded Truffle
+   * with every GraalVM language jar, about a third of that statement (#10245).
+   * <p>
+   * Guarded by {@link GlobalConfiguration#POLYGLOT_ENGINE_ENABLED}, read at resolution time: while it is off the Engine
+   * is never created and nothing is marked resolved, so enabling it later still makes the languages appear. A
+   * polyglot language never displaces an engine registered under the same name, as it never did when the
+   * constructor registered the polyglot languages first and the built-in ones over them.
+   *
+   * @return true if the polyglot languages are registered, by this call or an earlier one, so a lookup that missed is
+   * worth repeating: a caller that missed while another thread was registering them must not conclude the language
+   * does not exist
+   */
+  private boolean resolvePolyglotLanguages() {
+    if (polyglotLanguagesResolved)
+      return true;
+    if (!GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean())
+      return false;
+
+    synchronized (polyglotResolution) {
+      if (!polyglotLanguagesResolved) {
+        Iterable<String> languages;
+        try {
+          languages = polyglotLanguages.get();
+        } catch (final RuntimeException e) {
+          // resolved as none, once: a lookup of an unknown name must not retry the enumeration every time
+          LogManager.instance().log(this, Level.WARNING, "Cannot list the polyglot languages: %s", e, e.getMessage());
+          languages = List.of();
+        }
+        registerAbsent(languages);
+        polyglotLanguagesResolved = true;
+      }
+      return true;
+    }
+  }
+
+  private synchronized void registerAbsent(final Iterable<String> languages) {
+    final Map<String, QueryEngine.QueryEngineFactory> copy = new LinkedHashMap<>(implementations);
+    for (final String language : languages)
+      copy.putIfAbsent(language.toLowerCase(Locale.ENGLISH), new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
+    implementations = copy;
   }
 }

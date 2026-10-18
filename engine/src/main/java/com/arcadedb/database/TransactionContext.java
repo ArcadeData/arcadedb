@@ -356,6 +356,11 @@ public class TransactionContext implements Transaction {
   private volatile Object                             requester;
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
+  // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
+  // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
+  // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
+  // per commit
+  private volatile boolean                           commitPointReached          = false;
   private       Map<String, Object>                  attachments                 = null;
   // #10040: the client opened this transaction and ends it with its own COMMIT/ROLLBACK, see setClientManaged()
   private       boolean                              clientManaged               = false;
@@ -922,16 +927,56 @@ public class TransactionContext implements Transaction {
     ++commitCount;
 
     final List<Runnable> callbacks = afterCommitCallbacks;
+    // They run below, so reset() has no abandonment to owe on their behalf
+    afterCommitCallbacks = null;
+    final boolean commitPointWasReached = commitPointReached;
     reset();
     if (callbacks != null) {
-      for (final Runnable callback : callbacks) {
-        try {
-          callback.run();
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+      int next = 0;
+      try {
+        while (next < callbacks.size()) {
+          final Runnable callback = callbacks.get(next++);
+          try {
+            callback.run();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+          }
         }
+      } finally {
+        // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
+        if (commitPointWasReached && next < callbacks.size())
+          abandonOrderedCallbacks(callbacks, next);
       }
     }
+  }
+
+  /**
+   * Tells the ordered after-commit callbacks (issue #10249) that this transaction holds every lock it needs and can no longer
+   * be refused: called right before its pages are published, so two transactions that conflict reach it one after the other.
+   */
+  private void reachCommitPoint() {
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    if (callbacks == null)
+      return;
+    for (final Runnable callback : callbacks)
+      if (callback instanceof OrderedAfterCommitCallback ordered) {
+        commitPointReached = true;
+        try {
+          ordered.onCommitPoint();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error taking the commit order of a post-commit callback: %s", e, e.getMessage());
+        }
+      }
+  }
+
+  private void abandonOrderedCallbacks(final List<Runnable> callbacks, final int from) {
+    for (int i = from; i < callbacks.size(); i++)
+      if (callbacks.get(i) instanceof OrderedAfterCommitCallback ordered)
+        try {
+          ordered.onAbandoned();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error abandoning the commit order of a post-commit callback: %s", e, e.getMessage());
+        }
   }
 
   /**
@@ -2674,6 +2719,9 @@ public class TransactionContext implements Transaction {
         phase2WalAppended = true;
       }
 
+      // Every file lock is held and nothing can refuse this commit any more: this is the order the callbacks that mirror it run in
+      reachCommitPoint();
+
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
             .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
@@ -3095,6 +3143,13 @@ public class TransactionContext implements Transaction {
     else
       deletedRecordsInTx.clear();
     newRecords.clear();
+    // Reached only with callbacks left when the transaction ends without running them (a failed commit, a rollback past the
+    // commit point): a commit that runs them takes them out first, see resetAndFireCallbacks()
+    if (commitPointReached) {
+      commitPointReached = false;
+      if (afterCommitCallbacks != null)
+        abandonOrderedCallbacks(afterCommitCallbacks, 0);
+    }
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
     attachments = null;

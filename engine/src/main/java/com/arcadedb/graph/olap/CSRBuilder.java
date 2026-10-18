@@ -30,6 +30,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.*;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -185,6 +186,8 @@ public class CSRBuilder {
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
     final Set<String> scannedEdgeTypes = Set.copyOf(bucketToEdgeType.values());
     boolean uncoveredEdgesSeen = false;
+    // THE BUCKETS OF THE UNCOVERED EDGES MET: A TYPE THAT JOINS THE FILTER LATER HELD EDGES THE CSR DOES NOT HAVE (#10214)
+    final IntHashSet uncoveredEdgeBuckets = new IntHashSet();
     final boolean extractProps = propertyIncludeSet == null || !propertyIncludeSet.isEmpty() || propertyExcludeSet != null;
 
     // --- Phase A: Collect RID positions for node ID mapping ---
@@ -208,7 +211,7 @@ public class CSRBuilder {
       final long elapsedMs = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO, "CSR built: 0 nodes, 0 edges, 0.0 MB, %d ms", elapsedMs);
       return new CSRResult(new HashMap<>(), mapping, createEmptyBucketColumns(mapping)).withScanCoverage(uncoveredMark,
-          scannedEdgeTypes);
+          scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
     }
 
     // Detect property types from schema (instant, no scanning needed).
@@ -296,6 +299,7 @@ public class CSRBuilder {
           if (edgeTypeName == null) {
             // AN EDGE OF A TYPE THE VIEW DOES NOT MATERIALIZE, LIGHTWEIGHT ONES INCLUDED: NO RECORD COUNT CAN SAY THAT
             uncoveredEdgesSeen = true;
+            uncoveredEdgeBuckets.add(entry.getFirst().getBucketId());
             continue;
           }
           final int targetGlobalId = mapping.getGlobalId(entry.getSecond());
@@ -601,7 +605,7 @@ public class CSRBuilder {
         totalMemory / (1024.0 * 1024.0), elapsedMs);
 
     return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap).withScanCoverage(
-        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes);
+        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
   }
 
   private void registerVertexBuckets(final NodeIdMapping mapping, final Set<String> concreteVertexTypes) {
@@ -1217,6 +1221,9 @@ public class CSRBuilder {
     // SEE GraphAnalyticalView.Snapshot.uncoveredEdgeFreeAsOf (ISSUE #9915). -1: UNKNOWN, OR THE SCAN MET SUCH AN EDGE
     private       long                           uncoveredEdgeFreeAsOf = -1L;
     private       Set<String>                    scannedEdgeTypes;
+    // SEE GraphAnalyticalView.Snapshot.uncoveredWritesMark AND uncoveredEdgeBuckets (ISSUE #10214)
+    private       long                           uncoveredWritesMark   = -1L;
+    private       IntHashSet                     uncoveredEdgeBuckets;
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
@@ -1233,14 +1240,19 @@ public class CSRBuilder {
       this.bwdToFwd = bwdToFwd;
     }
 
-    CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes) {
+    CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
+        final IntHashSet uncoveredEdgeBuckets) {
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
+      this.uncoveredWritesMark = uncoveredWritesMark;
+      this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
       return this;
     }
 
     long getUncoveredEdgeFreeAsOf() { return uncoveredEdgeFreeAsOf; }
     Set<String> getScannedEdgeTypes() { return scannedEdgeTypes; }
+    long getUncoveredWritesMark() { return uncoveredWritesMark; }
+    IntHashSet getUncoveredEdgeBuckets() { return uncoveredEdgeBuckets; }
     public Map<String, CSRAdjacencyIndex> getCsrPerType() { return csrPerType; }
     public NodeIdMapping getMapping() { return mapping; }
     public ColumnStore[] getBucketColumns() { return bucketColumns; }

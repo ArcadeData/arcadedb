@@ -18,11 +18,14 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.graph.LightEdge;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Graph;
@@ -40,6 +43,17 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   protected       T           baseElement;
   protected final ArcadeGraph graph;
+  private static final byte LIVE              = 0;
+  private static final byte REMOVED_IN_TX     = 1;
+  private static final byte REMOVED_COMMITTED = 2;
+
+  /**
+   * Set by {@link #remove()} (issue #10196): a traversal keeps the element it dropped - {@code sideEffect(drop())} passes it on -
+   * and its in-memory record still holds the properties and the edge lists it had, so without this every later step read and
+   * wrote a record that no longer exists. A delete still in its transaction can be rolled back, which brings the element back;
+   * one committed never does, even when a later record reuses its RID.
+   */
+  private volatile byte       removal = LIVE;
 
   protected ArcadeElement(final ArcadeGraph graph, final T baseElement, final Object... keyValues) {
     this.baseElement = baseElement;
@@ -54,7 +68,8 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   @Override
   public <V> V value(final String key) throws NoSuchElementException {
-    final V value = (V) baseElement.get(key);
+    // A REMOVED ELEMENT HAS NO PROPERTIES, AS IN TINKERGRAPH
+    final V value = isRemoved() ? null : (V) baseElement.get(key);
     if (value == null)
       throw Property.Exceptions.propertyDoesNotExist(this, key);
     return value;
@@ -62,6 +77,8 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
 
   @Override
   public <V> Iterator<V> values(final String... propertyKeys) {
+    if (isRemoved())
+      return Collections.emptyIterator();
     final List<V> props;
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Map<String, Object> properties = baseElement.toMap(false);
@@ -85,6 +102,62 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
   public void remove() {
     this.graph.tx().readWrite();
     this.graph.deleteElement(this);
+    removal = REMOVED_IN_TX;
+    // A ROLLBACK DISCARDS THE CALLBACK, A COMMIT MAKES THE REMOVAL FINAL
+    if (graph.getDatabase() instanceof DatabaseInternal database) {
+      final TransactionContext tx = database.getTransactionIfExists();
+      if (tx != null)
+        tx.addAfterCommitCallback(() -> removal = REMOVED_COMMITTED);
+    }
+  }
+
+  /**
+   * Whether this element was removed, the way TinkerGraph answers it: reads of a removed element find no properties, no edges and no
+   * adjacent vertices, and writes to it are refused (issue #10196). An element removed through another instance of it - the edges a
+   * vertex delete took with it, a vertex looked up twice - is known from the transaction's deleted set, one hash probe. An element
+   * removed through this instance is removed for good once the delete committed; while it is in flight, a delete the transaction no
+   * longer holds was rolled back, and the element is usable again. A lightweight edge has no record the transaction tracks: one
+   * removed through this instance stays removed.
+   */
+  protected boolean isRemoved() {
+    final byte state = removal;
+    if (state == REMOVED_COMMITTED)
+      return true;
+    if (state == LIVE)
+      // NO PROBE UNTIL THE GRAPH HAS REMOVED SOMETHING: A READ-ONLY TRAVERSAL PAYS A FIELD READ PER ELEMENT ACCESS
+      return graph.hasRemovedElements() && isDeletedInTransaction();
+    final RID rid = baseElement.getIdentity();
+    if (rid == null || baseElement instanceof LightEdge || isDeletedInTransaction())
+      return true;
+    if (!(graph.getDatabase() instanceof DatabaseInternal)) {
+      // A REMOTE DATABASE HAS NO LOCAL TRANSACTION TO ASK: ITS RECORD IS, AND A RECORD STILL THERE MEANS THE DROP WAS ROLLED BACK
+      if (!graph.getDatabase().existsRecord(rid))
+        return true;
+    }
+    removal = LIVE;
+    return false;
+  }
+
+  /**
+   * Refuses a write to a removed element with the exception TinkerGraph raises for it.
+   */
+  protected void checkNotRemoved() {
+    // A WRITE ALWAYS ASKS THE TRANSACTION: THE ELEMENT MAY HAVE BEEN DELETED BY A STATEMENT RATHER THAN THROUGH THE GRAPH
+    if (isRemoved() || (removal == LIVE && isDeletedInTransaction()))
+      throw elementAlreadyRemoved(this instanceof Vertex ? Vertex.class : Edge.class, id());
+  }
+
+  /** The refusal TinkerGraph raises, in its words: TinkerPop's core no longer provides a factory for it. */
+  private static IllegalStateException elementAlreadyRemoved(final Class<? extends Element> type, final Object id) {
+    return new IllegalStateException(type.getSimpleName() + " with id " + id + " was removed.");
+  }
+
+  private boolean isDeletedInTransaction() {
+    final RID rid = baseElement.getIdentity();
+    if (rid == null || !(graph.getDatabase() instanceof DatabaseInternal database))
+      return false;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isDeletedInTransaction(rid);
   }
 
   @Override

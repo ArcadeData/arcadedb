@@ -266,8 +266,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
+      // #10135: a session that was open before this attempt belongs to the caller, whatever happens below - joined, or
+      // refused by begin() ("Transaction already begun") when not joining
+      final boolean callerTxActive = isTransactionActive();
       try {
-        if (joinCurrentTransaction && isTransactionActive())
+        if (joinCurrentTransaction && callerTxActive)
           createdNewTx = false;
         else
           begin();
@@ -341,12 +344,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         if (retry + 1 < attempts)
           pauseBeforeRetry(retry, e);
 
-      } catch (final Exception e) {
+      } catch (final Throwable e) {
         // Same as above: the transaction this attempt left open on the server is never going to be committed,
         // so release it now instead of holding its locks until the server-side timeout (issue #7030).
-        rollbackQuietly();
-        setSessionId(null);
-        resetCreatedRecordsIdentity();
+        // #10135: but only when this call OPENED it. A call that joined the caller's transaction owns nothing, and
+        // rolling it back here would discard the caller's earlier work and drop its session, so its next request
+        // would run outside any transaction. The same ownership rule the retryable arm above applies. Throwable, not
+        // Exception: an Error thrown by a block this call opened must release the server-side transaction too. Best
+        // effort for an OutOfMemoryError or StackOverflowError: rollbackQuietly() swallows its own failure.
+        if (!callerTxActive) {
+          rollbackQuietly();
+          setSessionId(null);
+          resetCreatedRecordsIdentity();
+        }
 
         if (error != null)
           error.call(e);
@@ -746,12 +756,30 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public void deleteRecord(final Record record) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    command("SQL", "delete from " + record.getIdentity());
+    // a SQL DELETE answers one row whose "count" is the number of records deleted (DeleteExecutionPlanner chains CountStep),
+    // the same contract the update arm of saveRecord reads
+    final long deleted;
+    try (final ResultSet result = command("SQL", "delete from " + record.getIdentity())) {
+      deleted = result.hasNext() ? result.next().<Number>getProperty("count", 0).longValue() : 0;
+    }
+    // a DELETE matches zero records both when the RID no longer exists and when a before-delete listener vetoed it. The first
+    // fails with RecordNotFoundException as the embedded engine and the gRPC remote do, the second with RecordVetoedException,
+    // as the update arm of saveRecord does (issue #10230): the probe tells them apart, on the refusal path only. It is the same
+    // heuristic as saveRecord's (see recordExistsUncounted): a record another client deletes or recreates between the DELETE and
+    // the probe is reported as it stands at the probe. A probe that fails (network, permission) raises its own error, the only
+    // one there is: the DELETE raised nothing
+    if (deleted == 0) {
+      if (recordExistsUncounted(record.getIdentity()))
+        throw RecordVetoedException.ofDelete(record.getIdentity());
+      throw new RecordNotFoundException("Record " + record.getIdentity() + " not found", record.getIdentity());
+    }
+    // counted only once the server reported the row it deleted, like createRecord and updateRecord in saveRecord: a
+    // record that never left the client, a refused delete or one that matched nothing is not a delete (issue #10141)
+    stats.deleteRecord.incrementAndGet();
   }
 
   @Override
@@ -1916,9 +1944,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
-   * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} to tell a veto from a
-   * missing record. Not counted in any statistic: the caller made no read, and the statistics count what the caller did (issue
-   * #10095). It runs in the caller's session, so inside a remote transaction it sees that transaction's records.
+   * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} and
+   * {@link #deleteRecord(Record)} to tell a veto from a missing record. Not counted in any statistic: the caller made no read,
+   * and the statistics count what the caller did (issue #10095). It runs in the caller's session, so inside a remote
+   * transaction it sees that transaction's records.
    * <p>
    * A heuristic, as an UPDATE that matched nothing says no more: a record deleted by someone else between the UPDATE and this
    * probe reads as missing, which it is by then, and a record the UPDATE could not change for any other reason that leaves it

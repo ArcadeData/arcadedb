@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -43,9 +44,11 @@ public class SQLMethodLength extends AbstractSQLMethod {
 
   @Override
   public Object execute( final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+    // The length of NULL is unknown, as SQL's LENGTH(): 0 claimed an empty string where there is no value (issue #10193)
     if (value == null)
-      return 0;
+      return null;
 
-    return value.toString().length();
+    // Unicode characters, not UTF-16 code units: a character outside the BMP is one, as openCypher's size() counts it (issue #10248)
+    return CypherFunctionHelper.codePointLength(value.toString());
   }
 }

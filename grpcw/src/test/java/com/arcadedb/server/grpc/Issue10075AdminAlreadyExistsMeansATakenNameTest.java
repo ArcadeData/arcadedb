@@ -45,6 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * test pins: it answers {@code ALREADY_EXISTS} for a taken user, token or database name and for nothing else, and it sends
  * those without an exception-class trailer. A new admin conflict that needs the same status has to name itself in the
  * trailer, or this test goes red before the client mislabels it.
+ * <p>
+ * Issue #10143: a taken name also carries {@code GrpcErrorMapper.NAME_TAKEN_KEY}, which is what a current client keys on,
+ * since the admin service now sends class-name trailers on other arms.
  */
 class Issue10075AdminAlreadyExistsMeansATakenNameTest {
   @TempDir
@@ -60,8 +63,13 @@ class Issue10075AdminAlreadyExistsMeansATakenNameTest {
 
       assertThat(status.getStatus().getCode()).as(taken.getClass().getSimpleName()).isEqualTo(Status.Code.ALREADY_EXISTS);
       final Metadata trailers = status.getTrailers();
-      assertThat(trailers == null ? null : trailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY))
-          .as("the client recognises a taken name by the missing trailer").isNull();
+      // issue #10143: named by a trailer of its own, so the client does not depend on the absence of one
+      assertThat(trailers).as(taken.getClass().getSimpleName()).isNotNull();
+      assertThat(trailers.get(GrpcErrorMapper.NAME_TAKEN_KEY)).as(taken.getClass().getSimpleName())
+          .isEqualTo(taken.getClass().getName());
+      assertThat(trailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY))
+          .as("a client that predates the name-taken trailer recognises a taken name by the missing class-name trailer")
+          .isNull();
     }
   }
 

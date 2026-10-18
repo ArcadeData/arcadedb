@@ -1057,7 +1057,8 @@ public class RemoteGrpcServer implements AutoCloseable {
    * unknown outcome rather than a {@link NeedRetryException} (issue #8822). That holds for an
    * idempotent write too, the line the HTTP client draws for every server command (issue #8136): only the caller knows
    * whether asking again is harmless. An error the server classified (a class-name trailer, such as the
-   * {@code NeedRetryException} {@link #connectCluster} documents) keeps its type.
+   * {@code NeedRetryException} {@link #connectCluster} documents, or the one any admin RPC answers when a quorum could
+   * not be reached) keeps its type: the admin service names every {@code UNAVAILABLE} it authors (issue #10143).
    */
   private <T> T callWrite(final String operation, final AdminCall<T> body) {
     return call(operation, body, true);
@@ -1068,8 +1069,8 @@ public class RemoteGrpcServer implements AutoCloseable {
       return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
     } catch (final StatusException e) {
       // A taken user, token or database name has its own type; the generic mapping would read the same status as a
-      // duplicate key (#10075). Every admin call is checked because the admin service sends a trailer-less
-      // ALREADY_EXISTS for a taken name only: a new RPC that sends it for anything else must add a trailer
+      // duplicate key (#10075). Every admin call is checked because the admin service names a taken name in its own
+      // trailer (#10143), and an older server sends a trailer-less ALREADY_EXISTS for a taken name only
       final RuntimeException mapped = GrpcClientErrorMapper.toAdminException(e, operation, write);
       if (mapped.getMessage() == null || mapped.getMessage().isBlank())
         throw new RemoteException("Failed to " + operation, e);

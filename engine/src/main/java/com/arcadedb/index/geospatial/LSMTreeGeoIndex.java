@@ -101,11 +101,18 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   private final LSMTreeIndex                     underlyingIndex;
   private final int                              precision;
   private final GeoIndexMetadata.TOKENIZATION    tokenization;
+  /** See {@link GeoIndexMetadata#isPlanar()}: false for an index written before 26.11.1, which no query uses (issue #10210). */
+  private final boolean                          planar;
   /** Built once at construction, see {@link #getUpgradeWarning()}. Null on an index already in the current layout. */
   private final String                           upgradeWarning;
   private final GeohashPrefixTree                grid;
   private final RecursivePrefixTreeStrategy      strategy;
   private       TypeIndex                        typeIndex;
+  /**
+   * Set on the thread running {@link #build}, which skips an invalid geometry where a write refuses it (issue #10210). Per
+   * thread, so a write from any other thread, a second build or a build that ends first cannot clear or borrow it.
+   */
+  private final ThreadLocal<Boolean>             building = new ThreadLocal<>();
 
   /**
    * Factory handler for creating LSMTreeGeoIndex instances.
@@ -122,14 +129,16 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
       int precision = GeoIndexMetadata.DEFAULT_PRECISION;
       GeoIndexMetadata.TOKENIZATION tokenization = GeoIndexMetadata.DEFAULT_TOKENIZATION;
+      boolean planar = true;
       if (builder.getMetadata() instanceof GeoIndexMetadata geoMeta) {
         precision = geoMeta.getPrecision();
         tokenization = geoMeta.getTokenization();
+        planar = geoMeta.isPlanar();
       }
 
       return new LSMTreeGeoIndex(builder.getDatabase(), builder.getIndexName(),
           builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
-          builder.getPageSize(), builder.getNullStrategy(), precision, tokenization);
+          builder.getPageSize(), builder.getNullStrategy(), precision, tokenization, planar);
     }
   }
 
@@ -145,10 +154,19 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    * Called at load time with explicit precision and tokenization, both read back from the persisted index definition.
    */
   public LSMTreeGeoIndex(final LSMTreeIndex index, final int precision, final GeoIndexMetadata.TOKENIZATION tokenization) {
+    this(index, precision, tokenization, false);
+  }
+
+  /**
+   * Called at load time with the definition read back from the schema file, {@code planar} included (issue #10210).
+   */
+  public LSMTreeGeoIndex(final LSMTreeIndex index, final int precision, final GeoIndexMetadata.TOKENIZATION tokenization,
+      final boolean planar) {
     this.underlyingIndex = index;
     this.precision = precision;
     this.tokenization = tokenization;
-    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
+    this.planar = planar;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision, planar);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
   }
@@ -168,9 +186,19 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public LSMTreeGeoIndex(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final int precision, final GeoIndexMetadata.TOKENIZATION tokenization) {
+    this(database, name, filePath, mode, pageSize, nullStrategy, precision, tokenization, true);
+  }
+
+  /**
+   * Creation time constructor (used by factory handler and tests).
+   */
+  public LSMTreeGeoIndex(final DatabaseInternal database, final String name, final String filePath,
+      final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final int precision, final GeoIndexMetadata.TOKENIZATION tokenization, final boolean planar) {
     this.precision = precision;
     this.tokenization = tokenization;
-    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
+    this.planar = planar;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision, planar);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[]{Type.STRING}, pageSize, nullStrategy);
@@ -183,7 +211,8 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       final ComponentFile.MODE mode, final int pageSize, final int version) {
     this.precision = GeoIndexMetadata.DEFAULT_PRECISION;
     this.tokenization = GeoIndexMetadata.LEGACY_TOKENIZATION;
-    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
+    this.planar = false;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision, planar);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     try {
@@ -211,12 +240,21 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final String wkt = key0.toString();
     final Shape shape;
     try {
-      shape = GeoUtils.getSpatialContext().getFormats().getWktReader().read(wkt);
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Geospatial index: skipping invalid WKT '%s': %s", wkt, e.getMessage());
+      // the parser of the geo.* functions, so the index and a scan read a value as the same shape
+      shape = GeoUtils.parseGeometry(wkt);
+    } catch (final IllegalArgumentException e) {
+      // A write the index cannot hold is refused: skipped, the record was missing from the index while every scan that
+      // evaluated it failed, so the index answered where the scan threw (issue #10210). A build over existing records
+      // still skips one, loudly, so a database holding such a value written before can rebuild its index.
+      if (building.get() == null)
+        throw new IndexException(
+            "Geospatial index '" + getName() + "' cannot index " + Arrays.toString(rids) + ": " + e.getMessage(), e);
+      LogManager.instance().log(this, Level.WARNING, "Geospatial index '%s': skipping %s, invalid geometry: %s", getName(),
+          Arrays.toString(rids), e.getMessage());
       return;
     }
+    if (shape == null)
+      return;
 
     indexShape(shape, rids);
   }
@@ -348,7 +386,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     // Unlike the full-text and sparse-vector wrappers, there is no stored GeoIndexMetadata to hand back: this class
     // holds the two settings as plain fields. GeoIndexMetadata.from() reassembles the definition, keeping the
     // base-field copy inside the metadata hierarchy where copyCommonTo() lives.
-    return GeoIndexMetadata.from(underlyingIndex.getMetadata(), precision, tokenization);
+    return GeoIndexMetadata.from(underlyingIndex.getMetadata(), precision, tokenization, planar);
   }
 
   @Override
@@ -509,18 +547,25 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     LogManager.instance().log(this, Level.INFO, "Building geospatial index '%s'...", getName());
 
-    db.scanBucket(bucketName, record -> {
-      final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
-      db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), source);
-      total.incrementAndGet();
+    // The scan below runs on this thread and so does every put it causes: an invalid geometry is skipped only on the thread
+    // that is building, so a build that ever fanned the scan out to other threads would have to hand them this marker too
+    building.set(Boolean.TRUE);
+    try {
+      db.scanBucket(bucketName, record -> {
+        final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
+        db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), source);
+        total.incrementAndGet();
 
-      IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
 
-      if (callback != null)
-        callback.onDocumentIndexed(source, total.get());
+        if (callback != null)
+          callback.onDocumentIndexed(source, total.get());
 
-      return true;
-    });
+        return true;
+      });
+    } finally {
+      building.remove();
+    }
 
     LogManager.instance().log(this, Level.INFO, "Completed building geospatial index '%s': processed %d records in %dms",
         getName(), total.get(), System.currentTimeMillis() - startTime);
@@ -547,6 +592,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     json.put("properties", getPropertyNames());
     json.put("precision", precision);
     json.put("tokenization", tokenization.name());
+    json.put("planar", planar);
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
     return json;
@@ -564,6 +610,14 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    */
   public GeoIndexMetadata.TOKENIZATION getTokenization() {
     return tokenization;
+  }
+
+  /**
+   * Whether the index holds the cells of shapes as written on the longitude/latitude plane. A query does not use an index
+   * that does not (issue #10210): see {@link GeoIndexMetadata#isPlanar()}.
+   */
+  public boolean isPlanar() {
+    return planar;
   }
 
   @Override
@@ -584,15 +638,21 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   // ---- Private helpers ----
 
-  private static String buildUpgradeWarning(final GeoIndexMetadata.TOKENIZATION tokenization, final int precision) {
-    if (tokenization != GeoIndexMetadata.TOKENIZATION.FULL)
-      return null;
+  private static String buildUpgradeWarning(final GeoIndexMetadata.TOKENIZATION tokenization, final int precision,
+      final boolean planar) {
+    final String layout = tokenization != GeoIndexMetadata.TOKENIZATION.FULL ? null :
+        ("This geospatial index uses the legacy %s cell layout: it stores one entry per GeoHash level, so every "
+            + "indexed point costs %d entries instead of 1, and a query has to read the coarse cells shared by the whole "
+            + "dataset. It keeps working as it always did, and rebuilding it switches it to the compact %s layout "
+            + "(issue #5478)").formatted(GeoIndexMetadata.TOKENIZATION.FULL, precision,
+            GeoIndexMetadata.TOKENIZATION.FRONTIER);
+    if (planar)
+      return layout;
 
-    return ("This geospatial index uses the legacy %s cell layout: it stores one entry per GeoHash level, so every "
-        + "indexed point costs %d entries instead of 1, and a query has to read the coarse cells shared by the whole "
-        + "dataset. It keeps working as it always did, and rebuilding it switches it to the compact %s layout "
-        + "(issue #5478)").formatted(GeoIndexMetadata.TOKENIZATION.FULL, precision,
-        GeoIndexMetadata.TOKENIZATION.FRONTIER);
+    final String geometry = "This geospatial index was built before shapes were read as written on the longitude/latitude "
+        + "plane: a polygon wider than 180 degrees was tokenized as its complement, so it can miss such a record. Queries "
+        + "do not use it, they scan the type instead, until it is rebuilt (issue #10210)";
+    return layout == null ? geometry : geometry + ". " + layout;
   }
 
   /**
@@ -617,7 +677,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (obj instanceof Shape s)
       return s;
     try {
-      return GeoUtils.getSpatialContext().getFormats().getWktReader().read(obj.toString());
+      return GeoUtils.parseGeometry(obj);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Geospatial index: cannot parse shape '%s'", obj);

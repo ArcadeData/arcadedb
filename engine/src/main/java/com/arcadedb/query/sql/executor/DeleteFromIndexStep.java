@@ -222,11 +222,11 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     final boolean lowerInexact = IntegralKeyBound.isInexact(keyType, secondValue);
     final boolean upperInexact = IntegralKeyBound.isInexact(keyType, thirdValue);
     if (lowerInexact)
-      secondValue = IntegralKeyBound.ceiling(keyType, (Number) secondValue);
+      secondValue = IntegralKeyBound.ceilingKey(keyType, secondValue);
     if (upperInexact)
-      thirdValue = IntegralKeyBound.floor(keyType, (Number) thirdValue);
-    if ((lowerInexact || upperInexact) && (secondValue == null || thirdValue == null
-        || (secondValue instanceof Number lower && thirdValue instanceof Number upper && lower.longValue() > upper.longValue()))) {
+      thirdValue = IntegralKeyBound.floorKey(keyType, thirdValue);
+    if ((lowerInexact || upperInexact) && (secondValue == null || thirdValue == null || IntegralKeyBound.isEmptyRange(secondValue,
+        thirdValue))) {
       // no key lies between the bounds
       cursor = new EmptyIndexCursor();
       return;
@@ -258,9 +258,9 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       if (operator instanceof EqualsCompareOperator)
         return new EmptyIndexCursor();
       else if (operator instanceof GeOperator || operator instanceof GtOperator)
-        value = IntegralKeyBound.ceiling(keyType, (Number) value);
+        value = IntegralKeyBound.ceilingKey(keyType, value);
       else if (operator instanceof LeOperator || operator instanceof LtOperator)
-        value = IntegralKeyBound.floor(keyType, (Number) value);
+        value = IntegralKeyBound.floorKey(keyType, value);
       if (value == null)
         return new EmptyIndexCursor();
     }

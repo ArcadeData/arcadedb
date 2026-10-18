@@ -75,11 +75,30 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
   /**
+   * The {@code "METHOD path"} of every operation {@link #HA_RAFT_PATHS} declares: the method dimension a route is
+   * registered under, so a route declared {@code POST} cannot also answer {@code GET} without a test failing (issue
+   * #10157). Verified against {@link #contribute} by {@code ApiSpecPathConstantsTest} and against the plugin's actual
+   * {@code registerAPI} output by {@code RaftHAPluginRegisteredRoutesMatchApiSpecTest}.
+   */
+  public static final Set<String> HA_RAFT_OPERATIONS = Set.of(
+      "GET /api/v1/cluster", "POST /api/v1/cluster/peer", "DELETE /api/v1/cluster/peer/{peerId}",
+      "POST /api/v1/cluster/leader", "POST /api/v1/cluster/stepdown", "POST /api/v1/cluster/leave",
+      "POST /api/v1/cluster/verify/{database}", "POST /api/v1/cluster/resync/{database}",
+      "POST /api/v1/cluster/accept-copy/{database}", "POST /api/v1/cluster/accept-diverged/{database}",
+      "POST /api/v1/cluster/accept-stale-snapshot",
+      "POST /api/v1/cluster/bootstrap-state", "POST /api/v1/cluster/capabilities",
+      "POST /api/v1/cluster/security-seed",
+      "GET /api/v1/ha/snapshot/{database}", "GET /api/v1/ha/snapshot/{database}/checksums");
+
+  /**
    * The Prometheus scrape route {@code PrometheusMetricsPlugin} registers, mirrored here for the
    * same reason as {@link #HA_RAFT_PATHS}. Verified against the plugin's actual {@code registerAPI}
    * output by {@code PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest} in the metrics module.
    */
   public static final Set<String> METRICS_PATHS = Set.of("/prometheus");
+
+  /** The {@code "METHOD path"} of the operation {@link #METRICS_PATHS} declares (issue #10157). */
+  public static final Set<String> METRICS_OPERATIONS = Set.of("GET /prometheus");
 
   private static final String RAFT_REQUIRED =
       "Requires RaftHAPlugin: the route is registered on every server, but answers only where high availability is configured.";

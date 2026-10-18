@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.PluginRoutes;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -76,7 +77,8 @@ public class PrometheusMetricsPlugin implements ServerPlugin {
 
     // The CONFIGURATION travels to the handler, not the decision taken from it: the setting is authoritative
     // in the server's overlay and can be changed at runtime, so the route must read it per request (#7159).
-    routes.addExactPath("/prometheus", new GetPrometheusMetricsHandler(httpServer, registry, configuration));
+    // Declared as GET, so any other method is answered 405 before the handler runs (issue #10157).
+    new PluginRoutes(routes).get("/prometheus", new GetPrometheusMetricsHandler(httpServer, registry, configuration));
 
     LogManager.instance().log(this, Level.INFO, "Prometheus backend metrics http handler configured");
 
