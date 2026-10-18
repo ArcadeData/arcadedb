@@ -72,4 +72,36 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalize(PluginApiSpec.HA_RAFT_PATHS)))
         .isInstanceOf(AssertionError.class);
   }
+
+  /**
+   * Issue #10157: the METHOD dimension. A route registered on the raw PathHandler answers every method, so a GET ran
+   * {@code POST /api/v1/cluster/leave} and {@code DELETE /api/v1/cluster/peer/{peerId}}. Every route has to answer
+   * exactly the methods the specification declares for it, and a raw registration ("* path") matches none of them.
+   */
+  @Test
+  void registeredOperationsMatchTheDeclaredApiSpecOperations() {
+    plugin = new RaftHAPlugin();
+    final RecordingPathHandler routes = new RecordingPathHandler();
+
+    plugin.registerAPI(null, routes);
+
+    assertThat(routes.getRegisteredOperations())
+        .as("RaftHAPlugin.registerAPI() serves methods PluginApiSpec.HA_RAFT_OPERATIONS does not declare, or the reverse")
+        .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(PluginApiSpec.HA_RAFT_OPERATIONS));
+  }
+
+  /** The method check's self-test: a route registered without a method restriction fails it. */
+  @Test
+  void theMethodCheckCatchesARouteThatAnswersEveryMethod() {
+    plugin = new RaftHAPlugin();
+    final RecordingPathHandler routes = new RecordingPathHandler();
+    plugin.registerAPI(null, routes);
+    // The shape the issue reports: the declared path, re-registered on the raw PathHandler
+    routes.addExactPath("/api/v1/cluster/stepdown", (exchange) -> {
+    });
+
+    assertThatThrownBy(() -> assertThat(routes.getRegisteredOperations())
+        .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(PluginApiSpec.HA_RAFT_OPERATIONS)))
+        .isInstanceOf(AssertionError.class);
+  }
 }

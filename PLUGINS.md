@@ -226,17 +226,24 @@ This ensures proper class loading for frameworks that use the thread context cla
 
 ### HTTP Endpoint Registration
 
-Plugins can register custom HTTP endpoints:
+Plugins can register custom HTTP endpoints. Declare each route with its HTTP method through `PluginRoutes`:
 
 ```java
 @Override
 public void registerAPI(HttpServer httpServer, PathHandler routes) {
-    routes.addExactPath("/api/myplugin", exchange -> {
-        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-        exchange.getResponseSender().send("{\"status\":\"ok\"}");
-    });
+    new PluginRoutes(routes)
+        .get("/api/myplugin", exchange -> {
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+            exchange.getResponseSender().send("{\"status\":\"ok\"}");
+        })
+        // A path parameter is matched as a prefix, up to the slash before it
+        .prefix(Methods.DELETE, "/api/myplugin/items/", new DeleteItemHandler());
 }
 ```
+
+Any method a route does not declare is answered `405 Method Not Allowed` with an `Allow` header, before the handler
+runs. Do not call `routes.addExactPath`/`addPrefixPath` directly: `PathHandler` matches on the path alone, so such a
+route answers every method, `GET` included, and the server logs a warning naming it at startup.
 
 ## Troubleshooting
 

@@ -63,4 +63,41 @@ class ApiSpecPathConstantsTest {
         .as("McpApiSpec.contribute() and its MCP_PATHS constant have drifted apart")
         .containsExactlyInAnyOrderElementsOf(McpApiSpec.MCP_PATHS);
   }
+  /**
+   * Issue #10157: the method dimension. The anti-drift tests in the plugin modules compare what each plugin registers
+   * against these operation constants, so the constants have to say what the specification says.
+   */
+  @Test
+  void pluginApiSpecOperationConstantsMatchWhatContributeDeclares() {
+    final OpenAPI openAPI = new OpenAPI();
+    openAPI.setPaths(new Paths());
+    openAPI.setComponents(new Components());
+    new PluginApiSpec().contribute(openAPI);
+
+    final Set<String> expected = new HashSet<>(PluginApiSpec.HA_RAFT_OPERATIONS);
+    expected.addAll(PluginApiSpec.METRICS_OPERATIONS);
+
+    assertThat(operationsOf(openAPI))
+        .as("PluginApiSpec.contribute() and its HA_RAFT_OPERATIONS/METRICS_OPERATIONS constants have drifted apart")
+        .containsExactlyInAnyOrderElementsOf(expected);
+  }
+
+  @Test
+  void mcpApiSpecOperationConstantsMatchWhatContributeDeclares() {
+    final OpenAPI openAPI = new OpenAPI();
+    openAPI.setPaths(new Paths());
+    openAPI.setComponents(new Components());
+    new McpApiSpec().contribute(openAPI);
+
+    assertThat(operationsOf(openAPI))
+        .as("McpApiSpec.contribute() and its MCP_OPERATIONS constant have drifted apart")
+        .containsExactlyInAnyOrderElementsOf(McpApiSpec.MCP_OPERATIONS);
+  }
+
+  private static Set<String> operationsOf(final OpenAPI openAPI) {
+    final Set<String> operations = new HashSet<>();
+    openAPI.getPaths().forEach((path, item) -> item.readOperationsMap().keySet()
+        .forEach(method -> operations.add(method.name() + " " + path)));
+    return operations;
+  }
 }
