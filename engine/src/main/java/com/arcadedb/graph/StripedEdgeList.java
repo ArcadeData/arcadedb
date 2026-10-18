@@ -552,10 +552,12 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   @Override
-  public void removeEdge(final Edge edge) {
+  public boolean removeEdge(final Edge edge) {
     // The edge lives in the stripe of its neighbour (per generation); the non-owning candidate chains no-op.
+    boolean removed = false;
     for (final EdgeLinkedList chain : chainsForNeighbour(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut()))
-      chain.removeEdge(edge);
+      removed |= chain.removeEdge(edge);
+    return removed;
   }
 
   @Override

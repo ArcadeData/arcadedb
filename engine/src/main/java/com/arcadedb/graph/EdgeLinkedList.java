@@ -545,7 +545,12 @@ public class EdgeLinkedList {
     }
   }
 
-  public void removeEdge(final Edge edge) {
+  /**
+   * Removes the entry of {@code edge} from this list.
+   *
+   * @return true when an entry was removed, false when the list, as this transaction reads it, holds none
+   */
+  public boolean removeEdge(final Edge edge) {
     final RID rid = edge.getIdentity();
     final boolean byEdgeRID = rid.getPosition() > -1;
     // A lightweight edge has no record to point at, so it is located by (edge type bucket, far endpoint) instead -
@@ -574,7 +579,7 @@ public class EdgeLinkedList {
             modifiable.removeLightEdge(edgeTypeBucketId, targetVertexRID);
         if (deleted > 0) {
           updateSegment(modifiable, prevBrowsedRID);
-          break;
+          return true;
         }
       }
 
@@ -582,6 +587,7 @@ public class EdgeLinkedList {
       final RID prevRID = previousRIDOf(current, guard);
       current = prevRID == null ? null : readChunk(prevRID);
     }
+    return false;
   }
 
   public void removeEdgeRID(final RID edge) {
