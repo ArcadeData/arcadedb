@@ -180,7 +180,9 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
         "SELECT id + 100 AS id, coalesce((SELECT max(id) AS m FROM T)[0].m, 0) AS a FROM A",//
         "SELECT id + 100 AS id FROM A WHERE id IN (SELECT id FROM T)",//
         "SELECT id + 100 AS id FROM A WHERE id NOT IN ( SELECT id FROM T WHERE a = 1 )",//
-        "SELECT id + 100 AS id, $t.size() AS a FROM A LET $t = (SELECT FROM T)" };
+        "SELECT id + 100 AS id, $t.size() AS a FROM A LET $t = (SELECT FROM T)",//
+        "SELECT id + 100 AS id, ifnull((SELECT max(id) AS m FROM T WHERE a = $parent.$current.a)[0].m, 1) AS a FROM A",//
+        "SELECT id + 100 AS id FROM A LET $c = (SELECT FROM T WHERE id = $parent.$current.id) WHERE $c.size() = 0" };
     for (final String select : selects)
       try (final ResultSet rs = database.command("sql", "EXPLAIN INSERT INTO T FROM " + select)) {
         assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(select).contains("MATERIALIZE");

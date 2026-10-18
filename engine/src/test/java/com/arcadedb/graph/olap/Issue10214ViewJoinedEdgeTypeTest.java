@@ -182,6 +182,24 @@ class Issue10214ViewJoinedEdgeTypeTest {
 
   @ParameterizedTest
   @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
+  void aViewRestoredFromDiskStillRefusesAnAttachedTypeItsScanMet(final GraphAnalyticalView.UpdateMode mode) {
+    // G'S EDGES ARE IN THE LISTS THE SCAN WALKED: THE PERSISTED FILE REMEMBERS THEIR BUCKETS
+    database.getSchema().createEdgeType("G");
+    addEdges("G", 2);
+    createView(mode);
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(restored.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr()).isTrue();
+
+    final CountDownLatch gate = holdRebuilds(restored);
+    database.command("sql", "ALTER TYPE G SUPERTYPE +E").close();
+    assertNotServedUntilRebuilt(restored, mode, gate, 6);
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
   void aTypeWrittenWhileNotCoveredAfterTheScanIsNotClaimedAfterAReopen(final GraphAnalyticalView.UpdateMode mode) {
     database.getSchema().createEdgeType("G");
     createView(mode);
