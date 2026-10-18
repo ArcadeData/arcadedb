@@ -81,11 +81,14 @@ public final class GuardedRaftServer {
      * @param addressedTo the peer the request was meant for
      * @param requestor   the peer the request's header names as its sender, which is whatever the sender wrote there:
      *                    this node itself when the sender's address for {@code addressedTo} leads back to the sender,
-     *                    or when a sender merely claims so (issue #10225)
-     * @param remote      the remote address of the connection the request arrived on, which the sender cannot write,
-     *                    or {@code null} when gRPC did not report one (see {@link RemoteAddressCallInterceptor})
+     *                    or when a sender merely claims so (issue #10225), which a probe settles (issue #10299)
+     * @param remote      the remote address of the connection the request arrived on, or {@code null} when gRPC did not
+     *                    report one (see {@link RemoteAddressCallInterceptor}). Reported, never trusted: a local proxy
+     *                    or a translating hop rewrites it (issue #10299)
+     * @param callId      the call id of the request's header, which carries the nonce of a self-dial probe when the
+     *                    request is one this node sent over its own channel to {@code addressedTo} (issue #10299)
      */
-    void onMisdirectedRequest(String rpc, RaftPeerId addressedTo, RaftPeerId requestor, SocketAddress remote);
+    void onMisdirectedRequest(String rpc, RaftPeerId addressedTo, RaftPeerId requestor, SocketAddress remote, long callId);
   }
 
   private GuardedRaftServer() {
@@ -138,7 +141,7 @@ public final class GuardedRaftServer {
     final RaftPeerId requestor = header.getRequestorId().isEmpty() ? null : RaftPeerId.valueOf(header.getRequestorId());
     if (listener != null)
       try {
-        listener.onMisdirectedRequest(rpc, target, requestor, RemoteAddressCallInterceptor.remoteAddress());
+        listener.onMisdirectedRequest(rpc, target, requestor, RemoteAddressCallInterceptor.remoteAddress(), header.getCallId());
       } catch (final RuntimeException e) {
         LogManager.instance().log(GuardedRaftServer.class, Level.WARNING,
             "Error notifying a misdirected Raft %s addressed to %s: %s", rpc, target, e.toString());
