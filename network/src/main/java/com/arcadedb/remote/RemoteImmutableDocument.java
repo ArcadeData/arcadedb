@@ -207,6 +207,15 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     throw new UnsupportedOperationException("Unable to reload an immutable document");
   }
 
+  /**
+   * Through the driver: the inherited {@code delete()} calls the embedded {@code database}, which a remote record does not have,
+   * and failed with a {@link NullPointerException} for every record (issue #10230).
+   */
+  @Override
+  public void delete() {
+    remoteDatabase.deleteRecord(this);
+  }
+
   @Override
   protected boolean checkForLazyLoading() {
     return false;

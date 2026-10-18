@@ -20,6 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
@@ -121,11 +122,8 @@ class Issue10095RemoteRecordStatisticsIT extends BaseGraphServerTest {
           assertThat(remaining.hasNext()).isFalse();
         }
 
-        try {
-          db.deleteRecord(doc);
-        } catch (final RuntimeException ignore) {
-          // whether a second delete fails or matches nothing, the server deleted nothing
-        }
+        // the record is gone: the second delete fails as the embedded engine's does (issue #10230)
+        assertThatThrownBy(() -> db.deleteRecord(doc)).isInstanceOf(RecordNotFoundException.class);
         assertThat(stat(db, "deleteRecord")).as("a delete that matched no record is not counted").isEqualTo(deletes + 1);
       } finally {
         db.close();
