@@ -1150,7 +1150,8 @@ public class ServerControlPlane {
 
   /**
    * Closes the open instance of {@code databaseName} and deregisters it from this server. The files stay where they
-   * are; a later request reopens them.
+   * are; {@code open database} reopens them. An HTTP request does not (issue #10234): a database is closed on purpose, for a
+   * restore of its files or a cold backup, and stays closed until it is opened again.
    * <p>
    * Takes the per-database maintenance slot as {@link Operation#CLOSE} first (issue #7469). Closing the instance is
    * not a delete, but a backup, an export and an import all read or write THROUGH that instance, and closing it out
@@ -1173,6 +1174,8 @@ public class ServerControlPlane {
       database.getEmbedded().close();
 
       server.removeDatabase(database.getName());
+      // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234)
+      server.markClosedByCommand(database.getName());
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.CLOSE);
     }

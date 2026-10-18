@@ -30,6 +30,8 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,6 +91,59 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
 
     reopenDatabase();
     assertThat(database.query("sql", "SELECT FROM Doc").stream().count()).isEqualTo(2);
+  }
+
+  @Test
+  void commitsRacingTheReleaseOfIdleWALFilesLoseNothing() throws Exception {
+    database.getSchema().createDocumentType("Doc").createProperty("n", Type.INTEGER);
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    transactionManager.cancelHousekeepingForTesting();
+    // EVERY FILE IS IDLE AS SOON AS ITS PAGES ARE FLUSHED: THE PASSES BELOW RELEASE FILES WHILE COMMITS PICK THEM
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_IDLE_TIMEOUT, 1L);
+
+    final int threads = 4;
+    final int perThread = 300;
+    final AtomicBoolean writing = new AtomicBoolean(true);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    final Thread housekeeping = new Thread(() -> {
+      while (writing.get())
+        try {
+          transactionManager.runWALHousekeeping();
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+    }, "issue10234-housekeeping");
+
+    final List<Thread> writers = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final int base = t * perThread;
+      writers.add(new Thread(() -> {
+        try {
+          for (int i = 0; i < perThread; i++) {
+            final int n = base + i;
+            database.transaction(() -> database.newDocument("Doc").set("n", n).save());
+          }
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      }, "issue10234-writer-" + t));
+    }
+
+    housekeeping.start();
+    writers.forEach(Thread::start);
+    for (final Thread writer : writers)
+      writer.join();
+    writing.set(false);
+    housekeeping.join();
+
+    assertThat(failure.get()).isNull();
+    assertThat(database.countType("Doc", false)).isEqualTo(threads * perThread);
+
+    // AND WHAT THE RACING COMMITS WROTE IS ON DISK AFTER A REOPEN
+    reopenDatabase();
+    assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc").next().<Long>getProperty("c")).isEqualTo(
+        (long) threads * perThread);
   }
 
   @Test

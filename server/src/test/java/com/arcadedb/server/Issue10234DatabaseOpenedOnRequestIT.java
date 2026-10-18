@@ -34,11 +34,11 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #10234, the server half: a database on disk that the server did not hold open - because
- * {@code arcadedb.server.databaseLoadAtStartup} was off, or after a {@code close database} - answered "not available" over
- * HTTP until somebody opened it by hand, while the binary protocols opened it on its first request. HTTP now opens it on
- * its first request too, so a server holding thousands of databases can leave them closed at start. A name that is not a
- * database on disk is still refused, and never becomes one.
+ * Regression test for issue #10234, the server half: a database on disk that the server did not open - because
+ * {@code arcadedb.server.databaseLoadAtStartup} was off - answered "not available" over HTTP until somebody opened it by
+ * hand, while the binary protocols opened it on its first request. HTTP now opens it on its first request too, so a server
+ * holding thousands of databases can leave them closed at start. A database closed with {@code close database} stays
+ * closed until {@code open database}. A name that is not a database on disk is still refused, and never becomes one.
  * <p>
  * And issue #10218: once the server is online, the query stack is warmed in the background, so the first client request
  * does not pay for it.
@@ -48,14 +48,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
 
   @Test
-  void aClosedDatabaseIsOpenedByItsFirstRequest() throws Exception {
-    assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+  void aDatabaseTheServerDidNotOpenIsOpenedByItsFirstRequest() throws Exception {
+    // AS WITH databaseLoadAtStartup=false: ON DISK, NOT OPEN, NOT CLOSED BY ANYBODY
+    getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+    getServer(0).removeDatabase(getDatabaseName());
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
 
     final HttpResponse<String> response = postQuery(getDatabaseName(), "select count(*) as c from V1");
     assertThat(response.statusCode()).isEqualTo(200);
     assertThat(response.body()).contains("\"c\"");
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
+  }
+
+  @Test
+  void aDatabaseClosedByCommandStaysClosedUntilOpened() throws Exception {
+    // CLOSED ON PURPOSE (A RESTORE OF ITS FILES, A COLD BACKUP): A REQUEST DOES NOT REOPEN IT UNDER THE OPERATOR
+    assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    try {
+      assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isNotEqualTo(200);
+      assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
+    } finally {
+      assertThat(postServerCommand("open database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    }
+
+    assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isEqualTo(200);
   }
 
   @Test

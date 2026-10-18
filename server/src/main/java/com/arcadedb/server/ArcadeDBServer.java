@@ -256,6 +256,9 @@ public class ArcadeDBServer {
   // that plugin is enabled.
   private final       BackupCoordinator                     backupCoordinator                    = new BackupCoordinator();
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
+  // The databases a 'close database' command closed and nothing opened since: a client request does not reopen them, so a
+  // database closed for maintenance stays closed until 'open database' (issue #10234)
+  private final       Set<String>                           closedByCommand                      = ConcurrentHashMap.newKeySet();
   // Monitor serialising every check-then-act on the database registry (load, create, register, reopen). The HA
   // snapshot installer also holds it across close->file-swap->reopen so no concurrent open observes the transient
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
@@ -1415,13 +1418,17 @@ public class ArcadeDBServer {
    * Only a directory that holds a database is opened: one the operating system or the storage put in the database
    * directory must not become a database because a request named it (issue #8805). Any other name is refused as before,
    * with {@link DatabaseNotAvailableException}. The caller has already checked that the user may access the database.
+   * <p>
+   * A database a {@code close database} command closed is not reopened by a request: it was closed on purpose - a restore
+   * of its files, a cold backup - and stays closed until {@code open database} (see {@link #markClosedByCommand}).
    */
   public ServerDatabase getDatabaseForRequest(final String databaseName) {
     final ServerDatabase db = databases.get(databaseName);
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
 
-    if (databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName)) {
+    if (databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName) && !closedByCommand.contains(
+        databaseName)) {
       // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK
       checkDatabaseNameIsValid(databaseName);
       final File directory = new File(
@@ -1738,6 +1745,14 @@ public class ArcadeDBServer {
 
     notifyPlugins(databaseName, true);
     return serverDatabase;
+  }
+
+  /**
+   * Records that a {@code close database} command closed {@code databaseName}, so {@link #getDatabaseForRequest} does not
+   * reopen it (issue #10234). Cleared when anything opens it again, {@code open database} included.
+   */
+  public void markClosedByCommand(final String databaseName) {
+    closedByCommand.add(databaseName);
   }
 
   public void removeDatabase(final String databaseName) {
@@ -2158,6 +2173,7 @@ public class ArcadeDBServer {
         db = new ServerDatabase(this, embDatabase);
 
         databases.put(databaseName, db);
+        closedByCommand.remove(databaseName);
         loaded = true;
 
         // Only once the copy is open and registered on the leader: a mark dropped before an open that then failed

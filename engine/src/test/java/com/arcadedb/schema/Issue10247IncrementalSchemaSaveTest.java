@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -143,6 +144,28 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
     assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc WHERE name = 'n7'").next().<Long>getProperty("c")).isEqualTo(1L);
     assertThat(database.getSchema().existsType("Renamed")).isTrue();
     assertThat(database.getSchema().getType("Renamed").existsProperty("late")).isTrue();
+  }
+
+  @Test
+  void aliasesCustomValuesAndEscapedNamesAreWrittenAsTheFullSerialization() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    // AN ALIAS SORTS BEFORE ITS TYPE'S NAME: THE TYPE IS WRITTEN AT ITS FIRST NAME, AS THE FULL SERIALIZATION DOES
+    schema.createDocumentType("Zeta").setAliases(Set.of("Alpha", "Mid"));
+    schema.createDocumentType("Città_é中").createProperty("na\"me", Type.STRING);
+    schema.createDocumentType("Beta");
+    schema.getType("Zeta").setCustomValue("quote", "say \"hi\" \\ \n");
+    schema.getType("Zeta").createProperty("p", Type.STRING).setCustomValue("unicode", "è€");
+    assertFileIsTheFullSerialization();
+
+    // THE ORDER IS COMPUTED AGAIN WHEN THE NAMES CHANGE
+    schema.getType("Zeta").setAliases(Set.of("Omega"));
+    schema.createDocumentType("Aardvark");
+    assertFileIsTheFullSerialization();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Omega").getName()).isEqualTo("Zeta");
+    assertThat(database.getSchema().getType("Città_é中").existsProperty("na\"me")).isTrue();
+    assertThat(database.getSchema().getType("Zeta").getCustomValue("quote")).isEqualTo("say \"hi\" \\ \n");
   }
 
   @Test

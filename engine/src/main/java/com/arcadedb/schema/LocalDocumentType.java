@@ -2909,6 +2909,11 @@ public class LocalDocumentType implements DocumentType {
    * cached between two schema saves (issue #10247): a save rewrites the whole schema file, and serializing every type again
    * for a change to one of them made a DDL statement cost O(N) in the number of types. {@link LocalSchema} drops the cache
    * whenever this type may have changed.
+   * <p>
+   * Called only by the schema file write, under the schema's monitor. A recording session mutates the type under the
+   * database write lock and drops the cache when it ends, after its last mutation, so a serialization that ran in the middle
+   * of it cannot survive it; a change made without a session (a direct save, a load, a lazy change) drops the cache of every
+   * type before the next write serializes them.
    */
   String getSerializedJSON() {
     String json = serializedJSON;
