@@ -42,6 +42,8 @@ import java.util.logging.Level;
 
 public class SecurityUserFileRepository {
   public static final  String FILE_NAME        = "server-users.jsonl";
+  /** Where a {@link #FILE_NAME} that cannot be loaded is preserved before the default configuration replaces it. */
+  public static final  String ERROR_FILE_NAME  = "server-users-error.jsonl";
   private static final int    BUFFER_SIZE      = 65536 * 10;
   private final        String securityConfPath;
   // Serializes all writers (local mutations, config reload, Raft apply) so their output never interleaves.
@@ -109,6 +111,57 @@ public class SecurityUserFileRepository {
         posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
     } catch (final IOException | UnsupportedOperationException e) {
       // Non-POSIX system (e.g. Windows): skip
+    }
+  }
+
+  /**
+   * Reports that {@link #FILE_NAME} could not be turned into users and preserves it verbatim as
+   * {@link #ERROR_FILE_NAME} (issue #10321). Must run BEFORE the caller falls back to {@link #createDefault()}:
+   * the root user created from the configured password is saved over {@link #FILE_NAME}, and with it the only copy
+   * of the operator's file.
+   */
+  public void saveInError(final Exception cause) {
+    synchronized (saveLock) {
+      preserveInError(this, new File(securityConfPath, FILE_NAME), new File(securityConfPath, ERROR_FILE_NAME), cause);
+    }
+  }
+
+  /**
+   * Shared by the users and groups repositories: logs ONE SEVERE naming the file that failed and copies it, byte for
+   * byte, to {@code errorFile}. The copy is written to a temp file (created owner-only by the JDK) and renamed over the
+   * target, so the users file's password hashes are never exposed with a wider mode, not even for an instant.
+   */
+  static void preserveInError(final Object requester, final File file, final File errorFile, final Exception cause) {
+    if (!file.isFile()) {
+      LogManager.instance().log(requester, Level.SEVERE, "Error on loading file '%s', using the default configuration", cause, file.getName());
+      return;
+    }
+
+    final Path target = errorFile.toPath();
+    Path tmp = null;
+    try {
+      tmp = Files.createTempFile(target.getParent(), errorFile.getName(), ".tmp");
+      Files.write(tmp, Files.readAllBytes(file.toPath()));
+      applyOwnerOnlyPermissions(tmp);
+      try {
+        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+      }
+      LogManager.instance().log(requester, Level.SEVERE,
+          "Error on loading file '%s', using the default configuration and saving the corrupt file as '%s'", cause, file.getName(),
+          errorFile.getPath());
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(requester, Level.SEVERE,
+          "Error on loading file '%s', using the default configuration. The corrupt file could not be saved as '%s' (error=%s)", cause,
+          file.getName(), errorFile.getPath(), e.toString());
+    } finally {
+      if (tmp != null)
+        try {
+          Files.deleteIfExists(tmp);
+        } catch (final IOException ignore) {
+          // BEST EFFORT
+        }
     }
   }
 

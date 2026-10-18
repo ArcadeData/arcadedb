@@ -265,7 +265,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           newUsers.put(user.getName(), user);
         }
       } catch (final JSONException e) {
-        groupRepository.saveInError(e);
+        // The USERS repository (issue #10321): the groups one named server-groups.json in the SEVERE and wrote the
+        // valid groups document as the "corrupt" file, while the users file that failed was saved over below.
+        usersRepository.saveInError(e);
         for (final JSONObject userJson : SecurityUserFileRepository.createDefault()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
           newUsers.put(user.getName(), user);
