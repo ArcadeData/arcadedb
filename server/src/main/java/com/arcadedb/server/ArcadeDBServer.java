@@ -645,6 +645,11 @@ public class ArcadeDBServer {
 
     security = new ServerSecurity(this, configuration, serverConfigPath);
     security.startService();
+
+    // #10218: STARTED HERE, IN PARALLEL WITH THE REST OF THE START: WHAT NEEDS NO DATABASE (THE PASSWORD HASHING, THE SQL
+    // PARSER) IS WARM BY THE TIME THE SERVER IS ONLINE, AND THE REST WAITS FOR IT
+    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_QUERY_WARM_UP))
+      queryWarmUp = new QueryWarmUp(this).start();
     final ServerSecurity installedSecurity = security;
     registerExecutorPoolMetrics("security_refresh", "ServerSecurity cached-permission refresh worker",
         installedSecurity::getPermissionsRefreshPoolStats,
@@ -722,10 +727,6 @@ public class ArcadeDBServer {
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
-
-    // #10218: THE FIRST CLIENT REQUEST NO LONGER PAYS FOR LOADING THE QUERY STACK, A BACKGROUND THREAD DOES
-    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_QUERY_WARM_UP))
-      queryWarmUp = new QueryWarmUp(this).start();
 
     // A server registered with a support key registers itself as an installation of the portal (after a delay, in the background)
     if (supportService != null)
@@ -1420,7 +1421,9 @@ public class ArcadeDBServer {
    * with {@link DatabaseNotAvailableException}. The caller has already checked that the user may access the database.
    * <p>
    * A database a {@code close database} command closed is not reopened by a request: it was closed on purpose - a restore
-   * of its files, a cold backup - and stays closed until {@code open database} (see {@link #markClosedByCommand}).
+   * of its files, a cold backup - and stays closed until {@code open database} (see {@link #markClosedByCommand}). The
+   * binary protocols (Postgres, Bolt, gRPC) open databases through {@link #getDatabase(String)} and keep the behaviour
+   * they always had: they reopen it.
    */
   public ServerDatabase getDatabaseForRequest(final String databaseName) {
     final ServerDatabase db = databases.get(databaseName);
@@ -2015,7 +2018,7 @@ public class ArcadeDBServer {
     return registry;
   }
 
-  /** The background warm-up of the query stack (issue #10218), null before the server is ONLINE or when disabled. */
+  /** The background warm-up of the query stack (issue #10218), null when disabled. */
   public QueryWarmUp getQueryWarmUp() {
     return queryWarmUp;
   }

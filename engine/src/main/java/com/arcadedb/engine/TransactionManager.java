@@ -72,6 +72,7 @@ public class TransactionManager {
    * snapshot transfer ships this marker alongside the data files (issue #5277).
    */
   public static final String LAST_TX_ID_FILE_NAME = "last-tx-id.bin";
+  private static final long HOUSEKEEPING_PERIOD_MS = 1000;
 
   private final DatabaseInternal             database;
   /**
@@ -190,8 +191,8 @@ public class TransactionManager {
       // a leaked (never closed) Database must not keep the JVM alive. The housekeeping is best-effort background work;
       // the durable part of the shutdown runs in TransactionManager.close(), reached through the JVM shutdown hook
       // installed by DatabaseFactory, which completes before daemon threads are stopped.
-      housekeeping = HousekeepingScheduler.INSTANCE.scheduleWithFixedDelay(this::housekeepingTick, 1000, 1000,
-          TimeUnit.MILLISECONDS);
+      housekeeping = HousekeepingScheduler.INSTANCE.scheduleWithFixedDelay(this::housekeepingTick, HOUSEKEEPING_PERIOD_MS,
+          HOUSEKEEPING_PERIOD_MS, TimeUnit.MILLISECONDS);
     } else
       housekeeping = null;
   }
@@ -238,7 +239,13 @@ public class TransactionManager {
       if (logContext != null)
         LogManager.instance().setContext(logContext);
 
+      final long beginTime = System.nanoTime();
       runWALHousekeeping();
+      // THE SCHEDULER IS SHARED BY EVERY DATABASE: A PASS LONGER THAN THE PERIOD HOLDS BACK THE OTHERS, SAY SO
+      final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - beginTime);
+      if (elapsedMs > HOUSEKEEPING_PERIOD_MS)
+        LogManager.instance().log(this, Level.FINE, "WAL housekeeping of database '%s' took %dms, longer than its %dms period",
+            null, database.getName(), elapsedMs, HOUSEKEEPING_PERIOD_MS);
     } catch (final Throwable e) {
       // NEVER LET IT ESCAPE: AN EXCEPTION OUT OF A PERIODIC TASK SILENTLY SUPPRESSES EVERY LATER RUN OF IT
       LogManager.instance().log(this, Level.SEVERE, "Error on transaction manager task", e);

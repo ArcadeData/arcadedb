@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.JsonSerializer;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -30,16 +31,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
- * Warms the query stack in the background once the server is {@code ONLINE} (issue #10218), so the first client request
- * does not pay for it. On a fresh JVM the first SQL statement loaded about 1,250 classes - the ANTLR runtime, the SQL
+ * Warms the query stack in the background while the server starts (issue #10218), so the first client request does not
+ * pay for it. Started as soon as the security is up, in parallel with the load of the databases: the part that needs no
+ * database runs at once, and the part that runs statements waits for the server to be {@code ONLINE}. On a fresh JVM the first SQL statement loaded about 1,250 classes - the ANTLR runtime, the SQL
  * grammar and its AST, the function and method registries - and deserialized the ANTLR ATN, which made it about 60 times
  * slower than the same statement the third time, a trivial {@code SELECT 1} included.
  * <p>
- * It parses a statement that covers the common SQL clauses, which needs no database, then plans and runs a trivial
- * statement of each warmed language on one database the server holds open. Read-only and trivial: it touches no record,
- * and runs on the embedded database, so it is neither replicated nor counted as a client request. It runs once, on a
- * daemon thread of its own at the lowest priority that ends when it is done, so it delays neither the start nor a request
- * that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it. An {@link Error} is not swallowed.
+ * It hashes a throwaway password the way the first login does - the JCE provider and its HMAC loop were most of what was
+ * left of the first request once the query stack was warm - parses a statement that covers the common SQL clauses, which
+ * needs no database, then plans and runs a trivial statement of each warmed language on one database the server holds
+ * open and serializes its rows to JSON as the HTTP API does. Read-only and trivial: it touches no record, caches no
+ * credential, and runs on the embedded database, so it is neither replicated nor counted as a client request. It runs
+ * once, on a daemon thread of its own at the lowest priority that ends when it is done, so it delays neither the start nor
+ * a request that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it.
+ * An {@link Error} is not swallowed.
  * <p>
  * Disabled with {@link com.arcadedb.GlobalConfiguration#SERVER_QUERY_WARM_UP}.
  *
@@ -57,6 +62,9 @@ public class QueryWarmUp {
   static final List<String[]> EXECUTED_STATEMENTS = List.of(//
       new String[] { "sql", "SELECT 1" },//
       new String[] { "opencypher", "RETURN 1" });
+
+  // A start that takes longer than this - a long recovery - gets no warm-up of the statements: nothing waits for it anyway
+  private static final long MAX_WAIT_FOR_ONLINE_MS = 10 * 60 * 1000L;
 
   private final ArcadeDBServer server;
   private final CountDownLatch completed = new CountDownLatch(1);
@@ -93,12 +101,19 @@ public class QueryWarmUp {
     final long beginTime = System.nanoTime();
     try {
       try {
+        // FIRST: THE FIRST REQUEST OF ALL PAYS THE LOGIN, BEFORE IT EVEN REACHES A QUERY
+        server.getSecurity().warmUpPasswordHashing();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Query warm-up: error on hashing the warm-up password", e);
+      }
+
+      try {
         new SQLAntlrParser(null).parse(SQL_PARSE_ONLY_STATEMENT);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Query warm-up: error on parsing the SQL warm-up statement", e);
       }
 
-      final Database database = firstOpenDatabase();
+      final Database database = awaitOnline() ? firstOpenDatabase() : null;
       if (database != null) {
         final List<String> languages = QueryEngineManager.getInstance().getAvailableLanguages();
         for (final String[] statement : EXECUTED_STATEMENTS) {
@@ -108,8 +123,9 @@ public class QueryWarmUp {
             continue;
 
           try (final ResultSet resultSet = database.query(statement[0], statement[1])) {
+            final JsonSerializer serializer = JsonSerializer.createJsonSerializer();
             while (resultSet.hasNext())
-              resultSet.next();
+              serializer.serializeResult(database, resultSet.next());
             ++executedStatements;
           } catch (final Exception e) {
             LogManager.instance()
@@ -123,6 +139,29 @@ public class QueryWarmUp {
     } finally {
       completed.countDown();
     }
+  }
+
+  /**
+   * Waits for the start to complete, for at most {@link #MAX_WAIT_FOR_ONLINE_MS}.
+   *
+   * @return true when the server is {@code ONLINE}; false when the start failed, the server is stopping, or it took longer
+   */
+  private boolean awaitOnline() {
+    final long deadline = System.currentTimeMillis() + MAX_WAIT_FOR_ONLINE_MS;
+    while (System.currentTimeMillis() < deadline) {
+      final ArcadeDBServer.STATUS status = server.getStatus();
+      if (status == ArcadeDBServer.STATUS.ONLINE)
+        return true;
+      if (status != ArcadeDBServer.STATUS.STARTING)
+        return false;
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return false;
   }
 
   /**
