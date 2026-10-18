@@ -5865,6 +5865,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw new IOException("Unexpected end of file in sealed store '" + basePath + "' reading block data at offset " + offset
           + ": " + bytes.length + " bytes expected", e);
     }
+    // close() does not wait for readers, and it is what precedes a drop that deletes the file and may put another one at
+    // the same path. A store closed on purpose since reopenChannel() looked must not hand out what this read found, which
+    // can then be another file's bytes: any such file was put there after the close, so the flag is already up.
+    if (closed)
+      throw new FileNotFoundException(
+          "Sealed store '" + basePath + FILE_EXTENSION + "' was closed on purpose while a read was recovering from a closed channel");
   }
 
 
