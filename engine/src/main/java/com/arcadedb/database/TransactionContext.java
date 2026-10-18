@@ -174,6 +174,10 @@ public class TransactionContext implements Transaction {
   // allocated: only that corner ever fills it.
   private       Map<RID, byte[]>                     snapshotRecordContents;
   private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
+  // #10302: per (vertex, direction, edge type bucket, neighbour), how many lightweight edge entries this transaction removed
+  // from that vertex's list. A lightweight edge has no RID and its twins are indistinguishable, so a removal that finds
+  // nothing is told from a stale list by counting. Lazily allocated: only a lightweight edge delete fills it.
+  private       Map<LightEdgeEntry, int[]>            removedLightEdgeEntries;
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
@@ -3142,6 +3146,7 @@ public class TransactionContext implements Transaction {
       deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);
     else
       deletedRecordsInTx.clear();
+    removedLightEdgeEntries = null;
     newRecords.clear();
     // Reached only with callbacks left when the transaction ends without running them (a failed commit, a rollback past the
     // commit point): a commit that runs them takes them out first, see resetAndFireCallbacks()
@@ -3580,5 +3585,27 @@ public class TransactionContext implements Transaction {
    */
   public boolean isDeletedInTransaction(final RID rid) {
     return deletedRecordsInTx.contains(rid);
+  }
+
+  /**
+   * One lightweight edge entry of the edge list of {@code vertex} in direction OUT ({@code out}) or IN: the entries of
+   * one lightweight edge and of all its twins share it (#10302).
+   */
+  public record LightEdgeEntry(RID vertex, boolean out, int edgeTypeBucketId, RID neighbour) {
+  }
+
+  /** Counts {@code removed} lightweight edge entries removed by this transaction from the edge list {@code entry} names (#10302). */
+  public void lightEdgeEntriesRemoved(final LightEdgeEntry entry, final int removed) {
+    if (removedLightEdgeEntries == null)
+      removedLightEdgeEntries = new HashMap<>();
+    removedLightEdgeEntries.computeIfAbsent(entry, k -> new int[1])[0] += removed;
+  }
+
+  /** How many lightweight edge entries this transaction removed from the edge list {@code entry} names (#10302). */
+  public int getLightEdgeEntriesRemoved(final LightEdgeEntry entry) {
+    if (removedLightEdgeEntries == null)
+      return 0;
+    final int[] removed = removedLightEdgeEntries.get(entry);
+    return removed == null ? 0 : removed[0];
   }
 }

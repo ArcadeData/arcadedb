@@ -70,6 +70,13 @@ public interface EdgeSegment extends Record {
   boolean containsLightEdge(int edgeTypeBucketId, RID vertexRID);
 
   /**
+   * How many lightweight edges of the given type reaching the given vertex this segment holds: the twins of one
+   * lightweight edge are indistinguishable, so they can only be counted (#10302). See {@link #containsLightEdge} for the
+   * match.
+   */
+  int countLightEdges(int edgeTypeBucketId, RID vertexRID);
+
+  /**
    * Removes one lightweight edge of the given type reaching the given vertex. See {@link #containsLightEdge} for why
    * the match needs all three terms. Removes a single entry: duplicates of one lightweight edge are the same edge, so
    * which one goes is immaterial, and stopping at the first keeps the walk bounded.

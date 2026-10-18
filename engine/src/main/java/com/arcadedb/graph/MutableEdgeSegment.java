@@ -400,6 +400,30 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
+  public int countLightEdges(final int edgeTypeBucketId, final RID vertexRID) {
+    final int used = getUsed();
+    if (used <= CONTENT_START_POSITION)
+      return 0;
+
+    final int vertexBucketId = vertexRID.getBucketId();
+    final long vertexPosition = vertexRID.getPosition();
+
+    int count = 0;
+    buffer.position(CONTENT_START_POSITION);
+    while (buffer.position() < used) {
+      final int currEdgeBucketId = (int) buffer.getNumber();
+      final long currEdgePosition = buffer.getNumber();
+      final int currVertexBucketId = (int) buffer.getNumber();
+      final long currVertexPosition = buffer.getNumber();
+
+      if (currEdgeBucketId == edgeTypeBucketId && currEdgePosition < 0 && currVertexBucketId == vertexBucketId
+          && currVertexPosition == vertexPosition)
+        ++count;
+    }
+    return count;
+  }
+
+  @Override
   public int removeLightEdge(final int edgeTypeBucketId, final RID vertexRID) {
     int used = getUsed();
     if (used <= CONTENT_START_POSITION)
