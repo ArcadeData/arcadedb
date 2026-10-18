@@ -129,11 +129,12 @@ final class CommitOrderGate {
         }
       } finally {
         delivering.set(false);
+        // Also when an Error escapes the sink: the places already handled must not leave their callers waiting
+        if (any)
+          synchronized (waitLock) {
+            waitLock.notifyAll();
+          }
       }
-      if (any)
-        synchronized (waitLock) {
-          waitLock.notifyAll();
-        }
       // A place may have become ready between the last look at the head and the release: it was left to this thread
       final Place head = line.peek();
       if (head == null || !head.ready)
@@ -143,7 +144,7 @@ final class CommitOrderGate {
 
   private boolean isHeldBackByThisThread() {
     final Place head = line.peek();
-    return head != null && !head.ready && head.owner == Thread.currentThread();
+    return head != null && !head.ready && Thread.currentThread().equals(head.owner);
   }
 
   private void awaitHandled(final Place place) {
@@ -159,8 +160,8 @@ final class CommitOrderGate {
         final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
         if (remainingMs <= 0) {
           LogManager.instance().log(this, Level.WARNING,
-              "A committed change waited more than %d ms for the transactions committed before it to reach the Graph Analytical View: not waiting any longer",
-              MAX_WAIT_MS);
+              "A committed change waited more than %d ms for the transactions committed before it to reach the Graph Analytical View:"
+                  + " not waiting any longer", MAX_WAIT_MS);
           return;
         }
         try {

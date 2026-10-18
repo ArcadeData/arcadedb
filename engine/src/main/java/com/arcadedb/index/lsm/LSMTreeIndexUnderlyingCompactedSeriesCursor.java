@@ -40,6 +40,7 @@ import java.util.List;
  * returned entries that had been deleted (issue #10188).
  */
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
+  // The last data page of the series to visit in the direction of the scan: the highest page number going up, the lowest going down
   private final int                              lastPageNumber;
   private       LSMTreeIndexUnderlyingPageCursor pageCursor;
   private       boolean                          closed = false;

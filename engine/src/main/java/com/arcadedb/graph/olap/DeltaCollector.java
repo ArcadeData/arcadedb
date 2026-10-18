@@ -251,6 +251,7 @@ class DeltaCollector
 
     @Override
     public void onCommitPoint() {
+      // Never fails in practice (a lock-free add); if it did, the place stays null and the change is delivered unordered, as before
       place = view.getCommitOrder().takePlace();
     }
 
