@@ -61,6 +61,8 @@ surrogate pair. Text made of characters in the Basic Multilingual Plane, which i
 emojis or other characters outside the Basic Multilingual Plane (`WHERE s.length() > 140` on tweets, `s.substring(0, 280)`).
 The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they follow APOC, which counts UTF-16 code units.
 
+**Cost.** `length()` is constant time on Latin-1 text, which is how the JVM stores most of it. A position past the start of text with other characters (`charAt(i)`, `indexOf(s, i)`) is found by walking to it, so a query that reads every character of a long text of that kind by position costs more than before; `left()`, `right()` and `subString()` cost what they cut.
+
 ## Fixes
 
 - **#10249** A Graph Analytical View no longer ends up a few edges short when several threads commit at the same time and some

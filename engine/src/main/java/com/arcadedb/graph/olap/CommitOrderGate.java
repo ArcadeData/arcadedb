@@ -106,10 +106,14 @@ final class CommitOrderGate {
   void deliver(final Place place, final TxDelta delta, final Consumer<TxDelta> sink) {
     place.delta = delta;
     if (!place.state.compareAndSet(PENDING, READY)) {
-      // Evicted while it was late: the line moved on without it. Its change goes in now, after the ones that overtook it
+      // Evicted while it was late: the line moved on without it. Its change goes in now, after the ones that overtook it. Not
+      // through drain(): it may run beside a delivery in progress, which the view's merge (synchronized, as it always was for
+      // commits that reach it from several threads) allows
       try {
         if (delta != null)
           sink.accept(delta);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot deliver a committed change to the Graph Analytical View", e);
       } finally {
         place.handled = true;
       }
