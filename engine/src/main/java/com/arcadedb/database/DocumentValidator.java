@@ -187,7 +187,8 @@ public class DocumentValidator {
      */
     public boolean canBeViolatedOn(final Property p) {
       final Type type = p.getType();
-      return checkType && (isScalarType(type) || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) || min != null || max != null || regexp != null;
+      return checkType && (isScalarType(type) || type == Type.STRING || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null)
+          || min != null || max != null || regexp != null;
     }
   }
 
@@ -207,6 +208,14 @@ public class DocumentValidator {
       return;
 
     final Type type = p.getType();
+    // Every value has a string form, so converting cannot be what accepts it: an index on the property compares its keys as
+    // text, while a scan compares the stored number, date or boolean natively, and the two disagree on ranges and order
+    // (issue #10204)
+    if (type == Type.STRING && constraints.checkType() && !(stored instanceof String))
+      throwValidationException(document.getType(), p, "is declared as STRING but a stored value is a " + stored.getClass()
+          .getSimpleName() + ", not a string: " + stored + " (convert the stored values first, e.g. with UPDATE "
+          + document.getTypeName() + " SET " + p.getName() + " = " + p.getName() + ".asString())");
+
     Object value = stored;
     if (isScalarType(type)) {
       final Database database = document.getDatabase();

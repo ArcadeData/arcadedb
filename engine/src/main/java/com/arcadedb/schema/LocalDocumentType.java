@@ -274,7 +274,7 @@ public class LocalDocumentType implements DocumentType {
 
   public void fireAfterCreate(final Record record) {
     events.onAfterCreate(record);
-    if (hasTriggers())
+    if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterCreate(record);
   }
@@ -291,7 +291,7 @@ public class LocalDocumentType implements DocumentType {
 
   public void fireAfterUpdate(final Record record) {
     events.onAfterUpdate(record);
-    if (hasTriggers())
+    if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterUpdate(record);
   }
@@ -308,7 +308,7 @@ public class LocalDocumentType implements DocumentType {
 
   public void fireAfterDelete(final Record record) {
     events.onAfterDelete(record);
-    if (hasTriggers())
+    if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterDelete(record);
   }
@@ -358,6 +358,14 @@ public class LocalDocumentType implements DocumentType {
   /** One volatile read on a database without triggers, which is what keeps the walk below off every write path. */
   private boolean hasTriggers() {
     return schema != null && schema.hasTriggerListeners();
+  }
+
+  /**
+   * As {@link #hasTriggers()}, for the AFTER CREATE / UPDATE / DELETE events only, which an INCREMENTAL materialized view
+   * listens to on the same registries (issue #10205). Kept apart so that a view adds nothing to the read path.
+   */
+  private boolean hasAfterWriteListenersInLineage() {
+    return schema != null && (schema.hasTriggerListeners() || schema.hasPolymorphicViewListeners());
   }
 
   /**

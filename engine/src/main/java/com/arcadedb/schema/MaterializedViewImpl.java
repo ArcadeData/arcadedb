@@ -142,6 +142,23 @@ public class MaterializedViewImpl implements MaterializedView {
     query = newQuery;
   }
 
+  /**
+   * Appends the names this view does not list yet (issue #10205). Called before the view's listeners are registered, which walk
+   * the list, so a view loaded from a schema that tracked only its first FROM identifier is maintained by every type it reads.
+   */
+  void addSourceTypeNames(final List<String> typeNames) {
+    List<String> merged = null;
+    for (final String typeName : typeNames)
+      if (!sourceTypeNames.contains(typeName)) {
+        if (merged == null)
+          merged = new ArrayList<>(sourceTypeNames);
+        if (!merged.contains(typeName))
+          merged.add(typeName);
+      }
+    if (merged != null)
+      sourceTypeNames = List.copyOf(merged);
+  }
+
   public void setStatus(final MaterializedViewStatus status) {
     this.status = status;
   }
