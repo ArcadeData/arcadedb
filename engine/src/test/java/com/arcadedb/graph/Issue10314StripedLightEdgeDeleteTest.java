@@ -91,7 +91,7 @@ class Issue10314StripedLightEdgeDeleteTest extends TestHelper {
 
   @Test
   void deletingAnEdgeReturnedBySqlRemovesExactlyOneTwin() {
-    // A DELETE ADDRESSING THE NEIGHBOUR-KEYED ENTRY, AS A QUERY LANGUAGE DOES FOR A LIGHTWEIGHT EDGE HANDLE
+    // A LIGHTWEIGHT EDGE HANDLE MATERIALISED BY A SQL QUERY, THEN DELETED
     database.transaction(() -> {
       final Edge edge = database.query("sql", "SELECT expand(outE('L')) FROM " + v0 + " LIMIT 1").next().getEdge().get();
       edge.delete();
