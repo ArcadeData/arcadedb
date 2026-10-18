@@ -416,8 +416,11 @@ public class IndexMetadata {
 
     // bucketId -1: the per-bucket builder binds each sub-index during create().
     final IndexMetadata metadata = source.copy(typeName, propertyNames, -1);
-    if (metadata instanceof GeoIndexMetadata geoMetadata)
+    if (metadata instanceof GeoIndexMetadata geoMetadata) {
       geoMetadata.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
+      // re-tokenized from every record under the current reading of a shape (issue #10210)
+      geoMetadata.setPlanar(true);
+    }
     return metadata;
   }
 }

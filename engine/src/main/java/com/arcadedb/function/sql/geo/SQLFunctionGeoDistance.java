@@ -37,8 +37,6 @@ import java.util.Locale;
 public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
   public static final String NAME = "geo.distance";
 
-  private static final double EARTH_RADIUS_KM = 6371.0;
-
   public SQLFunctionGeoDistance() {
     super(NAME);
   }
@@ -64,19 +62,18 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 2 || iParams[0] == null || iParams[1] == null)
       return null;
 
-    final double[] p1 = extractPointCoords(iParams[0]);
-    final double[] p2 = extractPointCoords(iParams[1]);
+    final Shape shape1 = toShape(iParams[0]);
+    final Shape shape2 = toShape(iParams[1]);
 
     final String unit = iParams.length >= 3 && iParams[2] != null ? iParams[2].toString() : "m";
 
-    final double deltaLat = Math.toRadians(p2[1] - p1[1]);
-    final double deltaLon = Math.toRadians(p2[0] - p1[0]);
-
-    final double a = Math.pow(Math.sin(deltaLat / 2), 2)
-        + Math.cos(Math.toRadians(p1[1])) * Math.cos(Math.toRadians(p2[1]))
-        * Math.pow(Math.sin(deltaLon / 2), 2);
-
-    double distance = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * EARTH_RADIUS_KM;
+    final double distance;
+    if (shape1 instanceof Point p1 && shape2 instanceof Point p2)
+      distance = GeoUtils.haversineRadians(p1.getX(), p1.getY(), p2.getX(), p2.getY()) * GeoUtils.EARTH_RADIUS_KM;
+    else
+      // between the closest points of the shapes, 0 when they intersect, rather than between the centres of their
+      // bounding boxes (issue #10210)
+      distance = Math.toRadians(GeoUtils.distanceDegrees(shape1, shape2)) * GeoUtils.EARTH_RADIUS_KM;
 
     return switch (unit.toLowerCase(Locale.ROOT)) {
       case "km" -> distance;
@@ -89,23 +86,13 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
   }
 
   /**
-   * Extract [x, y] coordinates from a point given as WKT string, Shape, or Point.
+   * The shape of an argument: a Shape, a WKT string or a Cypher point map.
    */
-  private double[] extractPointCoords(final Object param) {
-    if (param instanceof Point p)
-      return new double[] { p.getX(), p.getY() };
-
-    // Parse as geometry and get center point
+  private static Shape toShape(final Object param) {
     final Shape shape = GeoUtils.parseGeometry(param);
-    if (shape instanceof Point p)
-      return new double[] { p.getX(), p.getY() };
-
-    // Fall back to bounding box center
-    final var bbox = shape.getBoundingBox();
-    return new double[] {
-        (bbox.getMinX() + bbox.getMaxX()) / 2.0,
-        (bbox.getMinY() + bbox.getMaxY()) / 2.0
-    };
+    if (shape == null)
+      throw new IllegalArgumentException("Cannot parse geometry from: " + param);
+    return shape;
   }
 
   @Override

@@ -53,7 +53,7 @@ public class SQLFunctionGeoDWithin extends SQLFunctionGeoPredicate {
   }
 
   /**
-   * geo.dWithin uses a radius distance check against the centers of the two geometries.
+   * geo.dWithin compares the great-circle distance between the two geometries (0 when they intersect) with the radius.
    * The geospatial index returns records based on geohash intersection, which does not
    * directly correspond to the distance radius. To guarantee correctness, indexed
    * execution is disabled and the predicate is evaluated inline on all records.
@@ -69,9 +69,8 @@ public class SQLFunctionGeoDWithin extends SQLFunctionGeoPredicate {
     if (params.length < 3 || params[2] == null)
       return null;
     final double distance = GeoUtils.getDoubleValue(params[2]);
-    final double actualDistance = GeoUtils.getSpatialContext()
-        .calcDistance(geom1.getCenter(), geom2.getCenter());
-    return actualDistance <= distance;
+    // the distance between the shapes, not between their centres (issue #10210)
+    return GeoUtils.distanceDegrees(geom1, geom2) <= distance;
   }
 
   @Override

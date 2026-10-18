@@ -633,12 +633,15 @@ public class LocalDocumentType implements DocumentType {
 
     final Map<Integer, String> componentNamesBefore = componentNamesOfFiles(database.getFileManager());
 
+    // the files move under the new name, the stripe pool with them, found by name: the bucket maps are rebuilt (issue #10247)
+    schema.bucketMembershipChanged();
     renameFiles(newName);
 
     final boolean[] sessionStarted = new boolean[1];
     try {
       schema.recordFileChanges(() -> {
         sessionStarted[0] = true;
+        schema.bucketMembershipChanged();
         // THE DEPENDANTS FOLLOW THE NEW NAME HERE, UNDER THE WRITE LOCK AND BEFORE THE SESSION SAVES THE SCHEMA (#10096)
         schema.carryTypeRenameToDependants(oldName, newName);
         final FileManager fileManager = database.getFileManager();
@@ -2362,11 +2365,12 @@ public class LocalDocumentType implements DocumentType {
   }
 
   protected void addBucketInternal(final Bucket bucket) {
-    for (final DocumentType cl : schema.getTypes()) {
-      if (cl.hasBucket(bucket.getName()))
-        throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name
-            + "', because the bucket is already associated to the type '" + cl.getName() + "'");
-    }
+    // One lookup in the bucket-owner map rather than a walk of every type, which made each bucket attached cost O(N) and
+    // the open of a schema of N types O(N^2) (issue #10247)
+    final LocalDocumentType owner = schema.getBucketOwner(bucket.getFileId());
+    if (owner != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name
+          + "', because the bucket is already associated to the type '" + owner.getName() + "'");
 
     // If we already have a partitioned strategy in place, growing the bucket count changes the
     // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any
@@ -2385,6 +2389,7 @@ public class LocalDocumentType implements DocumentType {
 
     bucketIds = CollectionUtils.addToUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
+    schema.bucketAttached(this, bucket);
 
     // PROPAGATE THE NEW BUCKET UP THE INHERITANCE TREE. THE SUPER TYPES ARE OFTEN LINKED BEFORE THE BUCKET EXISTS
     // (`ALTER TYPE x BUCKET +y`, GROWING AN EXISTING TYPE THROUGH THE TYPE BUILDER), AND THEIR POLYMORPHIC CACHES
@@ -2478,7 +2483,7 @@ public class LocalDocumentType implements DocumentType {
   private void ensureExternalBucketFor(final LocalBucket primary) {
     // Atomic check-and-create: two threads racing through ensureExternalBuckets()/addBucketInternal() must not
     // both attempt to allocate the paired _ext bucket and trip schema.createBucket's "already exists" guard.
-    externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
+    final Integer externalBucketId = externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
       final String extName = InternalBucketNaming.externalPropertyBucketName(primary.getName());
       final LocalBucket external;
       final LocalBucket registered = schema.lookupBucket(extName);
@@ -2517,6 +2522,9 @@ public class LocalDocumentType implements DocumentType {
       external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
       return external.getFileId();
     });
+    final LocalBucket external = schema.getBucketById(externalBucketId, false);
+    if (external != null)
+      schema.involvedBucketAttached(this, external);
   }
 
   /**
@@ -2572,6 +2580,7 @@ public class LocalDocumentType implements DocumentType {
       final Integer extBucketId = externalBucketIdByPrimaryBucketId.remove(primaryBucketId);
       if (extBucketId == null)
         continue;
+      schema.bucketMembershipChanged();
       final LocalBucket extBucket = schema.getBucketById(extBucketId, false);
       if (extBucket != null)
         schema.dropBucket(extBucket.getName());
@@ -2591,6 +2600,7 @@ public class LocalDocumentType implements DocumentType {
    */
   void restoreExternalBuckets(final Map<String, String> primaryNameToExternalName) {
     externalBucketIdByPrimaryBucketId.clear();
+    schema.bucketMembershipChanged();
     for (final Map.Entry<String, String> entry : primaryNameToExternalName.entrySet()) {
       final LocalBucket primary = schema.lookupBucket(entry.getKey());
       final LocalBucket external = schema.lookupBucket(entry.getValue());
@@ -2665,6 +2675,7 @@ public class LocalDocumentType implements DocumentType {
 
     bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
+    schema.bucketDetached(this, bucket);
 
     // SYMMETRIC TO addBucketInternal: A BUCKET BELONGS TO EXACTLY ONE TYPE, SO ONCE IT IS DETACHED FROM THIS TYPE NO
     // SUPER TYPE CAN REACH IT ANY LONGER AND EVERY POLYMORPHIC CACHE UP THE TREE MUST DROP IT (ISSUE #5297).

@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.DateUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -68,19 +69,25 @@ public class BetweenCondition extends BooleanExpression {
     // read as 11 and 3e9 wrapped around (issue #9021)
     final boolean integralValue = firstValue instanceof Integer || firstValue instanceof Long || firstValue instanceof Short
         || firstValue instanceof Byte;
+    // A DATE against a datetime bound is that day at midnight, not the bound narrowed to its day (issue #10206), so
+    // each bound may see its own widening of the value
+    Object lowerValue = firstValue;
     if (secondValue != null && !(integralValue && secondValue instanceof Number)) {
-      secondValue = Type.convertOrNull(context.getDatabase(), secondValue, firstValue.getClass());
+      lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
+      secondValue = Type.convertOrNull(context.getDatabase(), secondValue, lowerValue.getClass());
       if (secondValue == null)
         return false;
     }
+    Object upperValue = firstValue;
     if (thirdValue != null && !(integralValue && thirdValue instanceof Number)) {
-      thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, firstValue.getClass());
+      upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
+      thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, upperValue.getClass());
       if (thirdValue == null)
         return false;
     }
 
-    final Boolean lower = secondValue == null ? null : isOnTheRightSide(firstValue, secondValue, 1);
-    final Boolean upper = thirdValue == null ? null : isOnTheRightSide(firstValue, thirdValue, -1);
+    final Boolean lower = secondValue == null ? null : isOnTheRightSide(lowerValue, secondValue, 1);
+    final Boolean upper = thirdValue == null ? null : isOnTheRightSide(upperValue, thirdValue, -1);
     if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
     return lower == null || upper == null ? null : Boolean.TRUE;

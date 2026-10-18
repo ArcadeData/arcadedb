@@ -23,6 +23,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -126,14 +127,31 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     final DocumentType docType = schema.getType(typeName);
 
     // Look for a GEOSPATIAL index on the field
+    return resolveGeoIndex(docType, fieldName) != null;
+  }
+
+  /**
+   * The GEOSPATIAL index on {@code fieldName} a query can use, or null. An index built before shapes were read as written
+   * on the longitude/latitude plane is not one (issue #10210): it holds the complement of a polygon wider than 180 degrees,
+   * so it could leave out a record the predicate matches, which the check after the search cannot bring back. The query
+   * scans the type instead until the index is rebuilt.
+   */
+  private static TypeIndex resolveGeoIndex(final DocumentType docType, final String fieldName) {
     for (final TypeIndex typeIndex : TypeIndex.filterReadyForQueries(docType.getAllIndexes(true))) {
       if (typeIndex.getType() == Schema.INDEX_TYPE.GEOSPATIAL) {
         final List<String> props = typeIndex.getPropertyNames();
-        if (props != null && props.contains(fieldName))
-          return true;
+        if (props != null && props.contains(fieldName) && isPlanar(typeIndex))
+          return typeIndex;
       }
     }
-    return false;
+    return null;
+  }
+
+  private static boolean isPlanar(final TypeIndex typeIndex) {
+    for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+      if (bucketIndex instanceof LSMTreeGeoIndex geoIndex && !geoIndex.isPlanar())
+        return false;
+    return true;
   }
 
   @Override
@@ -176,16 +194,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     final DocumentType docType = schema.getType(typeName);
 
     // Resolve the GEOSPATIAL index on this field
-    TypeIndex geoTypeIndex = null;
-    for (final TypeIndex typeIndex : TypeIndex.filterReadyForQueries(docType.getAllIndexes(true))) {
-      if (typeIndex.getType() == Schema.INDEX_TYPE.GEOSPATIAL) {
-        final List<String> props = typeIndex.getPropertyNames();
-        if (props != null && props.contains(fieldName)) {
-          geoTypeIndex = typeIndex;
-          break;
-        }
-      }
-    }
+    final TypeIndex geoTypeIndex = resolveGeoIndex(docType, fieldName);
 
     if (geoTypeIndex == null)
       return List.of();

@@ -63,6 +63,7 @@ import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
+import java.time.LocalDate;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -996,9 +997,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           continue;
         if (i != rangeSlot)
           return false;
-        final Number mapped = side == 0 ?
-            IntegralKeyBound.ceiling(keyTypes[i], (Number) key[i]) :
-            IntegralKeyBound.floor(keyTypes[i], (Number) key[i]);
+        final Object mapped = side == 0 ? IntegralKeyBound.ceilingKey(keyTypes[i], key[i]) : IntegralKeyBound.floorKey(keyTypes[i], key[i]);
         if (mapped == null)
           return false;
         // a copy: the array can be the one the other side, or another seek, holds
@@ -1011,9 +1010,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
     // 11.5 < i < 11.9 maps to 12 <= i <= 11: an empty range, which the index is not asked to read backwards
     if (mappedAny && seek[0] != null && seek[1] != null && seek[0].length > rangeSlot && seek[1].length > rangeSlot
-        && seek[0][rangeSlot] instanceof Number from && seek[1][rangeSlot] instanceof Number to
-        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], from) && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], to)
-        && from.longValue() > to.longValue())
+        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], seek[0][rangeSlot])
+        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], seek[1][rangeSlot])
+        && IntegralKeyBound.isEmptyRange(seek[0][rangeSlot], seek[1][rangeSlot]))
       return false;
     return true;
   }
@@ -1040,9 +1039,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         continue;
       if (i < key.length - 1)
         return NO_MATCH;
-      final Number mapped = lower ?
-          IntegralKeyBound.ceiling(keyTypes[i], (Number) key[i]) :
-          IntegralKeyBound.floor(keyTypes[i], (Number) key[i]);
+      final Object mapped = lower ? IntegralKeyBound.ceilingKey(keyTypes[i], key[i]) : IntegralKeyBound.floorKey(keyTypes[i], key[i]);
       if (mapped == null)
         return NO_MATCH;
       key[i] = mapped;
@@ -1391,7 +1388,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final Object[] to = { third.execute((Result) null, context) };
 
     if (mapInexactIntegralBound(from, true) == NO_MATCH || mapInexactIntegralBound(to, false) == NO_MATCH
-        || (from[0] instanceof Number lower && to[0] instanceof Number upper && isIntegralKey(0) && lower.longValue() > upper.longValue()))
+        || ((from[0] instanceof Number && isIntegralKey(0) || from[0] instanceof LocalDate) && IntegralKeyBound.isEmptyRange(from[0], to[0])))
       // no integral key lies between the bounds an inexact bound maps to (#9021)
       cursor = null;
     else if (!valuesConvertToIndexKeyTypes(from) || !valuesConvertToIndexKeyTypes(to))
