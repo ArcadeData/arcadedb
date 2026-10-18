@@ -148,10 +148,7 @@ class Issue10322IsolationDowngradeSignalIT extends BaseGrpcServerTest {
     beginAndRollback(TransactionIsolation.REPEATABLE_READ);
 
     // Filtered on the downgrade message so an unrelated server WARNING during these begins cannot make this flaky
-    assertThat(published.stream()
-        .filter(r -> r.getLevel().intValue() >= Level.WARNING.intValue() && r.getMessage() != null && r.getMessage()
-            .contains("isolation"))
-        .toList()).isEmpty();
+    assertThat(downgradeWarnings()).isEmpty();
   }
 
   @Test
