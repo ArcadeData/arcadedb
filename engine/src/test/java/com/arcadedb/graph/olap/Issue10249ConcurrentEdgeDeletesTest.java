@@ -19,19 +19,17 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -49,10 +47,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * Four threads each commit 250 transactions of 1 to 6 operations: edge inserts, deletes of edges the thread created itself
  * and updates of a vertex property. Edges of one thread end on vertices another thread's edges also end on, so the commits
- * of different threads share the adjacency of those vertices.
+ * of different threads share the adjacency of those vertices. The deterministic version of the scenario is
+ * {@link Issue10249CommitOrderTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class Issue10249ConcurrentEdgeDeletesTest extends TestHelper {
   private static final int      THREADS            = 4;
   private static final int      COMMITS_PER_THREAD = 250;
@@ -124,74 +124,6 @@ class Issue10249ConcurrentEdgeDeletesTest extends TestHelper {
     awaitReady("g2");
     assertThat(answers()).as("a fresh view's answers").isEqualTo(withoutView);
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW g2");
-  }
-
-  @ParameterizedTest(name = "{0}")
-  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
-  void aCommitReachesTheViewAfterTheCommitsOfTheTransactionsItFollows(final String mode) throws Exception {
-    database.command("sql", "CREATE VERTEX TYPE V");
-    database.command("sql", "CREATE EDGE TYPE E BUCKETS 1");
-    final RID[] vertices = new RID[3];
-    final RID[] edge = new RID[1];
-    database.transaction(() -> {
-      for (int i = 0; i < vertices.length; i++)
-        vertices[i] = database.newVertex("V").save().getIdentity();
-      edge[0] = vertices[0].asVertex().newEdge("E", vertices[1].asVertex()).save().getIdentity();
-    });
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (V) EDGE TYPES (E) UPDATE MODE " + mode);
-    awaitReady("g");
-
-    final CountDownLatch deleteCommitted = new CountDownLatch(1);
-    final CountDownLatch releaseDelete = new CountDownLatch(1);
-    final ExecutorService executor = Executors.newFixedThreadPool(2);
-    try {
-      // The first transaction deletes the edge. A callback of its own, registered before the view's, holds its thread after
-      // the commit, once the locks are released and before the view hears of it: the window the commits race in
-      final Future<?> deleter = executor.submit(() -> {
-        database.begin();
-        ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> {
-          deleteCommitted.countDown();
-          try {
-            releaseDelete.await(1, TimeUnit.MINUTES);
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-          }
-        });
-        edge[0].asEdge().delete();
-        database.commit();
-      });
-      assertThat(deleteCommitted.await(1, TimeUnit.MINUTES)).as("the deletion committed").isTrue();
-
-      // The second one creates edges, and the slot the first freed is the first one the bucket hands out again: one of the new
-      // edges has the RID of the deleted one
-      final Future<Boolean> creator = executor.submit(() -> {
-        final boolean[] reused = new boolean[1];
-        database.transaction(() -> {
-          for (int i = 0; i < 3; i++)
-            reused[0] |= vertices[0].asVertex().newEdge("E", vertices[2].asVertex()).save().getIdentity().equals(edge[0]);
-        });
-        return reused[0];
-      });
-      // It is committed, but its change is not given to the view ahead of the deletion's, which came first
-      Thread.sleep(300);
-      assertThat(creator.isDone()).as("the commit that follows reaches the view after the one it follows").isFalse();
-
-      releaseDelete.countDown();
-      deleter.get(1, TimeUnit.MINUTES);
-      assertThat(creator.get(1, TimeUnit.MINUTES)).as("an edge got the RID the deleted one freed").isTrue();
-    } finally {
-      releaseDelete.countDown();
-      executor.shutdownNow();
-    }
-
-    awaitReady("g");
-    assertThat(servedByView(QUERIES[0])).as("the count is served by the view").isTrue();
-    final long edges;
-    try (final ResultSet rs = database.query("sql", "SELECT count() AS n FROM E")) {
-      edges = rs.next().<Number>getProperty("n").longValue();
-    }
-    assertThat(edges).isEqualTo(3);
-    assertThat(answers().getFirst()).as("edges the view counts").isEqualTo("3");
   }
 
   private Void writer(final int thread, final long seed, final List<RID> base, final AtomicInteger gaveUp) {

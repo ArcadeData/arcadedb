@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10249: the changes of the committed transactions reach a Graph Analytical View in the order the transactions committed,
@@ -168,6 +169,37 @@ class CommitOrderGateTest {
     // The transaction reports at last: its change is not lost
     shortWait.deliver(stuck, lost, delivered::add);
     assertThat(delivered).containsExactly(second, lost);
+  }
+
+  @Test
+  @Timeout(20)
+  void anErrorFromTheViewDoesNotLeaveTheReadyPlacesBehindItUndelivered() throws Exception {
+    final TxDelta first = new TxDelta();
+    final TxDelta second = new TxDelta();
+    final CommitOrderGate.Place firstPlace = gate.takePlace();
+    final CommitOrderGate.Place secondPlace = gate.takePlace();
+    final Consumer<TxDelta> view = delta -> {
+      if (delta == first)
+        throw new StackOverflowError("an error, not an exception");
+      delivered.add(delta);
+    };
+
+    final ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      // Ready and waiting behind the first place, on a thread of its own
+      final Future<?> secondDelivery = executor.submit(() -> gate.deliver(secondPlace, second, view));
+      Thread.sleep(100);
+
+      // The delivery of the first one ends in an Error before it reaches the second one: the waiting thread takes the line over
+      assertThatThrownBy(() -> gate.deliver(firstPlace, first, view)).isInstanceOf(StackOverflowError.class);
+
+      secondDelivery.get(1, TimeUnit.MINUTES);
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(delivered).containsExactly(second);
+    assertThat(gate.pending()).isZero();
   }
 
   @Test

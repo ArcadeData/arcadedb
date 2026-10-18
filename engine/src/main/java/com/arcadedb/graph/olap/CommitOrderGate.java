@@ -100,7 +100,8 @@ final class CommitOrderGate {
   /**
    * The transaction of {@code place} committed: delivers its change to {@code sink} after the changes ahead of it in line, and
    * returns once that has happened or the wait is over. A null {@code delta} is a transaction with nothing to deliver, which only
-   * releases its place.
+   * releases its place. When the wait ends early, because the time is up or the thread is interrupted, the change is not in the
+   * view yet but is delivered, in order, by the next thread to pass through the gate.
    */
   void deliver(final Place place, final TxDelta delta, final Consumer<TxDelta> sink) {
     place.delta = delta;
@@ -176,6 +177,10 @@ final class CommitOrderGate {
   private void awaitHandled(final Place place, final Consumer<TxDelta> sink) {
     long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxWaitMs);
     while (!place.handled) {
+      // Also takes over the delivery a thread left half done when an Error escaped the view: the places it did not reach are ready
+      drain(sink);
+      if (place.handled)
+        return;
       if (isHeldBackByThisThread())
         // A commit made by a callback of a transaction this thread is still finishing: that transaction is ahead in line
         // and delivers when the callback returns, so waiting here would be waiting for itself. The change is delivered then
