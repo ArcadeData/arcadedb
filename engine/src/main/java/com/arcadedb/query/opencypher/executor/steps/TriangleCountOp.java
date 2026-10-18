@@ -301,8 +301,9 @@ public final class TriangleCountOp implements CountOp {
                 weight = orderings(values[u], values[v], values[nu], bound);
               else
                 weight = 6;
+              // EXACT: ONCE PER TRIANGLE, AND A MULTIGRAPH'S PRODUCT OF PARALLEL RELATIONSHIPS MUST RAISE RATHER THAN WRAP
               if (weight != 0)
-                count += weight * uv * (ue - iu) * (ve - iv);
+                count = Math.addExact(count, Math.multiplyExact(Math.multiplyExact(weight * uv, ue - iu), ve - iv));
             }
             iu = ue;
             iv = ve;
