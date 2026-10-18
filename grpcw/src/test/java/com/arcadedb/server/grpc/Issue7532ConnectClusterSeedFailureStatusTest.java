@@ -26,6 +26,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
+import com.example.plugin.ForeignRetryableException;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,38 @@ class Issue7532ConnectClusterSeedFailureStatusTest {
 
     assertThat(mapped.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
     assertThat(mapped.getStatus().getDescription()).contains("Quorum 2 not reached");
+    // issue #10143: named, or the client cannot tell it from a lost connection
+    assertThat(mapped.getTrailers()).isNotNull();
+    assertThat(mapped.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(QuorumNotReachedException.class.getName());
+  }
+
+  /**
+   * Issue #10143: a retryable subtype from outside ArcadeDB is named by the arm's own type, not by a class name that would
+   * tell the client what is installed on the server.
+   */
+  @Test
+  void aForeignRetryableSubtypeIsNamedByTheArmsType() {
+    final StatusException mapped = adminService().toStatus("createUser", new ForeignRetryableException("try again"));
+
+    assertThat(mapped.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    assertThat(mapped.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(NeedRetryException.class.getName());
+  }
+
+  /**
+   * Issue #10143: the unseeded-join answer is named as a {@link NeedRetryException}, so the client rebuilds the type the
+   * {@code RemoteGrpcServer.connectCluster} javadoc promises rather than reading a lost connection.
+   */
+  @Test
+  void anUnseededJoinIsNamedAsRetryable() {
+    final StatusException status = ArcadeDbGrpcAdminService.seedFailureStatus(
+        new ServerControlPlane.ConnectClusterResult("db2:2435", List.of("users")));
+
+    assertThat(status.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    assertThat(status.getStatus().getDescription()).contains("db2:2435", "users");
+    assertThat(status.getTrailers()).isNotNull();
+    assertThat(status.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(NeedRetryException.class.getName());
+    // and toStatus passes it through untouched, which is how the RPC sends it
+    assertThat(adminService().toStatus("connectCluster", status)).isSameAs(status);
   }
 
   /**

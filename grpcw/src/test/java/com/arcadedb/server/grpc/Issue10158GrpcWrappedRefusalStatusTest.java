@@ -170,6 +170,20 @@ class Issue10158GrpcWrappedRefusalStatusTest {
   }
 
   @Test
+  void onlyAnArmThatDeclaresATrailerSendsOne() {
+    // issue #10143: the trailer is part of the arm's contract with the client, so an arm that declares none sends none
+    final ArcadeDbGrpcAdminService service = adminService(false);
+    for (final Exception refusal : adminRefusals().keySet()) {
+      final ArcadeDbGrpcAdminService.RefusalArm arm = armFor(refusal);
+      final Metadata trailers = service.toStatus("createUser", refusal).getTrailers();
+      if (arm.trailer() == null)
+        assertThat(trailers).as(refusal.getClass().getSimpleName()).isNull();
+      else
+        assertThat(trailers.get(arm.trailer())).as(refusal.getClass().getSimpleName()).isEqualTo(refusal.getClass().getName());
+    }
+  }
+
+  @Test
   void theTestCoversEveryArmOfTheLadder() {
     // A new arm added to the table without a case here fails this, so the assertion above stays over the whole ladder
     final List<Class<? extends Throwable>> covered = adminRefusals().keySet().stream()
