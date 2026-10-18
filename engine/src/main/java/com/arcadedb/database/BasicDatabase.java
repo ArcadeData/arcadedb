@@ -107,7 +107,9 @@ public interface BasicDatabase extends AutoCloseable {
    * transaction is joined.
    *
    * @param txBlock       Transaction lambda to execute
-   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
+   * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one. A joined transaction
+   *                      belongs to the caller: if the block throws, it is left active and the exception is propagated, so
+   *                      the caller decides whether to roll it back (issue #10135)
    *
    * @return true if a new transaction has been created or false if an existent transaction has been joined
    */
