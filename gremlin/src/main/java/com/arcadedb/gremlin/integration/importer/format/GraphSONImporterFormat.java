@@ -383,7 +383,7 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
           case "g:Double" -> innerValue instanceof Number ? ((Number) innerValue).doubleValue() : Double.parseDouble(innerValue.toString());
           case "g:String" -> innerValue.toString();
           // EVERY OTHER TYPED VALUE THROUGH THE SAME TYPES THE EXPORT WRITES (issue #10202): gx:Byte, gx:BigDecimal, the dates...
-          default -> ArcadeGraphSONValuesModule.readTypedValue(json.toString(), innerValue);
+          default -> ArcadeGraphSONValuesModule.readTypedValue(type, json.toString(), innerValue);
         };
       }
       return json.toString();

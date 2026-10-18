@@ -170,13 +170,15 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
    * A single typed GraphSON 3 value ({@code {"@type": ..., "@value": ...}}) read through the {@code gx} types and this module, or
    * {@code fallback} when no deserializer reads it.
    */
-  public static Object readTypedValue(final String typedJson, final Object fallback) {
+  public static Object readTypedValue(final String typeName, final String typedJson, final Object fallback) {
     final Object decoded;
     try {
       decoded = TypedValueMapperHolder.MAPPER.readValue(typedJson, Object.class);
     } catch (final IOException | RuntimeException e) {
+      // THE TYPE AND THE FAILURE, NOT THE VALUE NOR A MESSAGE THAT MAY QUOTE IT: IMPORTED DATA DOES NOT BELONG IN THE LOG
       LogManager.instance().log(ArcadeGraphSONValuesModule.class, Level.WARNING,
-          "Cannot decode the GraphSON value %s, it is imported as it is in the file: %s", null, typedJson, e.getMessage());
+          "Cannot decode a GraphSON value of type '%s' (%s): it is imported as it is in the file", null, typeName,
+          e.getClass().getSimpleName());
       return fallback;
     }
     return storable(decoded, fallback);
