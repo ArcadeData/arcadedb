@@ -77,7 +77,8 @@ class Issue10295BeginIsolationLevelIT extends BaseGraphServerTest {
     final Database.TRANSACTION_ISOLATION_LEVEL defaultLevel = getServer(0).getDatabase(getDatabaseName())
         .getTransactionIsolationLevel();
 
-    for (final String body : new String[] { null, "{}" }) {
+    // An explicit JSON null is the same as an absent member, not a value of the wrong type
+    for (final String body : new String[] { null, "{}", "{\"isolationLevel\":null}" }) {
       final HttpURLConnection connection = begin(body);
       try {
         assertThat(connection.getResponseCode()).as(String.valueOf(body)).isEqualTo(204);
