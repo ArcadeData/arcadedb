@@ -1174,11 +1174,14 @@ public class ServerControlPlane {
       // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234). MARKED BEFORE THE CLOSE, SO NO
       // REQUEST REOPENS IT WHILE IT CLOSES, AND DEREGISTERED TOGETHER WITH ITS MARK, SO NONE DOES BETWEEN THE TWO
       server.markClosedByCommand(database.getName());
+      boolean closed = false;
       try {
         database.getEmbedded().close();
-      } catch (final RuntimeException e) {
-        server.unmarkClosedByCommand(database.getName());
-        throw e;
+        closed = true;
+      } finally {
+        // WHATEVER THE CLOSE THREW, AN ERROR INCLUDED: THE DATABASE IS STILL REGISTERED, AND NOT CLOSED ON PURPOSE
+        if (!closed)
+          server.unmarkClosedByCommand(database.getName());
       }
 
       server.removeClosedDatabase(database.getName());

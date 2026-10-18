@@ -137,6 +137,18 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     }
   }
 
+  /** What a close that failed leaves: the mark is taken back, and the database is served again. */
+  @Test
+  void aMarkTakenBackServesTheDatabaseAgain() throws Exception {
+    getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+    getServer(0).removeDatabase(getDatabaseName());
+    getServer(0).markClosedByCommand(getDatabaseName());
+    assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isNotEqualTo(200);
+
+    getServer(0).unmarkClosedByCommand(getDatabaseName());
+    assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isEqualTo(200);
+  }
+
   @Test
   void aDeregistrationEndsTheCloseACommandAskedFor() throws Exception {
     // A DROP, A RESTORE, AN IMPORT OR A SNAPSHOT INSTALL REGISTERS OR REMOVES THE DATABASE: THE CLOSE NO LONGER APPLIES
