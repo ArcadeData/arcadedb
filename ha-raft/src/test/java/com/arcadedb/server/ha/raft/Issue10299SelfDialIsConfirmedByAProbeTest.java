@@ -97,7 +97,8 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     assertThat(log.countFormattedContaining(SELF_DIAL)).as("the member answered, so the request was not this node's").isZero();
     assertThat(probes.get()).isEqualTo(1);
     assertThat(raft.getMisdirectedSelfClaims()).isEqualTo(1L);
-    assertThat(raft.getSelfDialProbesUnconfirmed()).as("counted, so an operator can spot it without the log").isEqualTo(1L);
+    assertThat(raft.getSelfDialProbesUnconfirmed()).isEqualTo(1L);
+    assertThat(raft.getSelfDialProbesAnsweredByMember()).as("counted, so an operator can spot it without the log").isEqualTo(1L);
     assertThat(raft.getMisdirectedChannelResets()).isZero();
   }
 
@@ -135,7 +136,9 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     Awaitility.await("the claim is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(CLAIM, "did not come back to this node") == 1);
     assertThat(log.countFormattedContaining(SELF_DIAL)).isZero();
+    assertThat(log.countFormattedContaining("cannot be confirmed as this node's own request")).isEqualTo(1);
     assertThat(raft.getSelfDialProbesUnconfirmed()).isEqualTo(1L);
+    assertThat(raft.getSelfDialProbesAnsweredByMember()).as("a failure is no proof of an impostor").isZero();
   }
 
   /** Without a Raft server there is no channel to probe, and the claim is reported as unconfirmed. */

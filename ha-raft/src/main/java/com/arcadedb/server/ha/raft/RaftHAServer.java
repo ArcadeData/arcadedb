@@ -397,14 +397,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // claim the probe does not confirm cannot turn the report of a confirmed self-dial into a FINE line by taking its WARNING.
   private final    Map<RaftPeerId, Long>     selfClaimProbeQueuedAt         = new ConcurrentHashMap<>();
   private final    Map<RaftPeerId, Long>     selfDialWarnedAt               = new ConcurrentHashMap<>();
-  // Issue #10299: refused requests that named this node as their sender (this node's own probes excepted), and how many of
-  // the probes they caused found this node's channel to the addressed member reaching somewhere else than this node: a
-  // claim that was not this node's own, wherever it came from.
+  // Issue #10299: refused requests that named this node as their sender (this node's own probes excepted); how many of the
+  // probes they caused did not confirm a self-dial, for whatever reason; and how many of those the addressed member
+  // answered, which proves the claim was not this node's own, wherever it came from.
   private final    AtomicLong                misdirectedSelfClaims          = new AtomicLong();
   private final    AtomicLong                selfDialProbesUnconfirmed      = new AtomicLong();
+  private final    AtomicLong                selfDialProbesAnsweredByMember = new AtomicLong();
   // Issue #10299: the self-dial probes in flight, by nonce. The guard's listener looks a refused request's call id up here on
   // the gRPC handler thread, so a probe that this node's channel brought back to this node confirms the self-dial. At most
-  // one entry at a time: probes run on the single channel-recovery worker, and each removes its own entry when it is done.
+  // one entry at a time: probes run on selfDialProbeExecutor, whose single worker (max pool size 1) sends one at a time,
+  // and each removes its own entry when it is done.
   private final    Map<Long, PendingSelfDialProbe> pendingSelfDialProbes  = new ConcurrentHashMap<>();
   // Replaces the default probe transport - this node's own Raft server RPC - in tests that have no live Raft server.
   private volatile SelfDialProbeTransport    selfDialProbeTransportForTesting;
@@ -1117,13 +1119,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final String resolved = resolvePeerAddresses(addressedTo);
         if (outcome != SelfDialProbeOutcome.SELF) {
           selfDialProbesUnconfirmed.incrementAndGet();
+          if (outcome == SelfDialProbeOutcome.MEMBER)
+            selfDialProbesAnsweredByMember.incrementAndGet();
           // Reported in the strangers' slot: it repairs nothing, and a flood of them must not hold the WARNING of a real
           // report about that member
           LogManager.instance().log(this, warningOrFine(misdirectedWarnedAt, UNKNOWN_MISDIRECTED_PEER),
               "Refused a Raft %s addressed to peer '%s' that names this node as its sender, from %s (issue #10299): %s, "
-                  + "so it was not this node's own request and the channel to '%s' is left alone. Check which process "
-                  + "or cluster connects from that address writing this node's id '%s' as its own; here '%s' resolves to "
-                  + "%s.", rpc, addressedTo, remote != null ? remote : "<unknown address>",
+                  + "and the channel to '%s' is left alone. Check which process or cluster connects from that address "
+                  + "writing this node's id '%s' as its own; here '%s' resolves to %s.", rpc, addressedTo, remote != null ? remote : "<unknown address>",
               describeUnconfirmedProbe(outcome, addressedTo), addressedTo, localPeerId, addressedTo, resolved);
           return;
         }
@@ -1139,9 +1142,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Why a probe did not confirm a self-dial, for the line that reports the claim (issue #10299). */
   private static String describeUnconfirmedProbe(final SelfDialProbeOutcome outcome, final RaftPeerId addressedTo) {
     return switch (outcome) {
-      case MEMBER -> "a probe over this node's channel to '" + addressedTo + "' was answered by that peer";
-      case ELSEWHERE -> "a probe over this node's channel to '" + addressedTo + "' did not come back to this node";
-      case NOT_SENT, SELF -> "this node's channel to '" + addressedTo + "' could not be probed";
+      case MEMBER -> "a probe over this node's channel to '" + addressedTo + "' was answered by that peer, so it was not "
+          + "this node's own request";
+      case ELSEWHERE -> "a probe over this node's channel to '" + addressedTo + "' did not come back to this node (it failed, "
+          + "timed out or was answered by another node), so it cannot be confirmed as this node's own request";
+      case NOT_SENT -> "this node's channel to '" + addressedTo + "' could not be probed, so it cannot be confirmed as this "
+          + "node's own request";
+      case SELF -> throw new IllegalStateException("A confirmed self-dial is repaired, not reported as unconfirmed");
     };
   }
 
@@ -1186,7 +1193,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * (issue #10299). Runs on the gRPC handler thread, so it is one map lookup and nothing else (issue #10088).
    */
   private boolean cameBackAsSelfDialProbe(final RaftPeerId addressedTo, final long callId) {
-    if (callId == NO_PROBE_CALL_ID)
+    // Any sender can drive this path, so the common case - no probe in flight - costs no boxing of the call id
+    if (callId == NO_PROBE_CALL_ID || pendingSelfDialProbes.isEmpty())
       return false;
     final PendingSelfDialProbe probe = pendingSelfDialProbes.get(callId);
     if (probe == null || !probe.addressedTo().equals(addressedTo))
@@ -1201,7 +1209,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * any state, and whose reply is dropped here - with an unpredictable nonce as its call id. Coming back, it is refused by
    * the guard like any request addressed to another peer, and {@link #cameBackAsSelfDialProbe} notes it before the refusal
    * reaches the sender, so by the time the call returns the answer is in. Blocks for up to the Raft request timeout, which
-   * is why it runs on the channel-recovery worker only.
+   * is why it runs on {@link #selfDialProbeExecutor} only, never on the gRPC handler thread nor on the channel-recovery
+   * worker.
    */
   SelfDialProbeOutcome probeSelfDial(final RaftPeerId addressedTo) {
     final SelfDialProbeTransport transport = selfDialProbeTransport();
@@ -1392,11 +1401,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * How many self-dial probes did not come back to this node (issue #10299): each one a claim of this node's id that was
-   * not its own request - a sender on this host or elsewhere writing this node's id, or one relayed by a local proxy.
+   * How many self-dial probes did not confirm a self-dial (issue #10299), for any reason: answered by the member (see
+   * {@link #getSelfDialProbesAnsweredByMember()}), failed or timed out, or not sent because there was no Raft server RPC.
    */
   public long getSelfDialProbesUnconfirmed() {
     return selfDialProbesUnconfirmed.get();
+  }
+
+  /**
+   * How many self-dial probes the addressed member answered (issue #10299): each one proof that a claim of this node's id
+   * was not its own request - a sender on this host or elsewhere writing this node's id, or one a local proxy relayed.
+   */
+  public long getSelfDialProbesAnsweredByMember() {
+    return selfDialProbesAnsweredByMember.get();
   }
 
   /**
