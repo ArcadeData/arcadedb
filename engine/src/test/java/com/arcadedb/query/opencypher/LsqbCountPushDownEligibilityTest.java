@@ -164,6 +164,16 @@ class LsqbCountPushDownEligibilityTest {
     assertPushDown(Q3, "COUNT TRIANGLES");
   }
 
+  /** A predicate written inside a KNOWS hop is one the triangle operator cannot apply, so it must not answer (issue #10255). */
+  @Test
+  void q3WithAPredicateInsideAHopIsNotTheTrianglePushDown() {
+    final String query = Q3.replace("MATCH (p1)-[:KNOWS]-(p2)", "MATCH (p1)-[:KNOWS WHERE p1.id > 1]-(p2)");
+    assertThat(query).isNotEqualTo(Q3);
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).doesNotContain("COUNT TRIANGLES");
+    }
+  }
+
   @Test
   void q4UsesItsCountPushDown() {
     assertPushDown(Q4, "COUNT STAR JOIN");

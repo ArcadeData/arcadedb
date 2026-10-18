@@ -231,6 +231,10 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int consumed = 0;
+    // THE GROUP OF THE ROW BEFORE AND THE KEY OBJECT IT HELD: A ROW HOLDING THE VERY SAME OBJECT IS IN THAT GROUP, WITHOUT
+    // CANONICALIZING AND HASHING IT AGAIN, WHICH FOR A LIST CARRIED ON EVERY ROW COST ITS LENGTH PER ROW (ISSUE #10254)
+    Object lastKey = null;
+    SingleKeyGroupState lastGroup = null;
 
     while (prevResults.hasNext()) {
       guard.checkPeriodically(++consumed);
@@ -243,18 +247,26 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
         // Evaluate grouping key directly (no wrapper)
         final Object keyValue = evaluator.evaluate(groupingKey.expression, inputRow, context);
-        final Object canonicalKey = DistinctNumericKey.canonicalize(keyValue);
 
-        // Get or create aggregators for this group using array (not HashMap)
-        SingleKeyGroupState group = groups.get(canonicalKey);
-        if (group == null) {
-          final StatelessFunction[] aggregators = new StatelessFunction[aggCount];
-          for (int i = 0; i < aggCount; i++)
-            aggregators[i] = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
-                aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct()), heapLimit);
-          group = new SingleKeyGroupState(keyValue, aggregators);
-          groups.put(canonicalKey, group);
-          heapLimit.add(groups.size(), keyValue, groupOverhead);
+        SingleKeyGroupState group;
+        if (lastGroup != null && keyValue == lastKey)
+          group = lastGroup;
+        else {
+          final Object canonicalKey = DistinctNumericKey.canonicalize(keyValue);
+
+          // Get or create aggregators for this group using array (not HashMap)
+          group = groups.get(canonicalKey);
+          if (group == null) {
+            final StatelessFunction[] aggregators = new StatelessFunction[aggCount];
+            for (int i = 0; i < aggCount; i++)
+              aggregators[i] = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+                  aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct()), heapLimit);
+            group = new SingleKeyGroupState(keyValue, aggregators);
+            groups.put(canonicalKey, group);
+            heapLimit.add(groups.size(), keyValue, groupOverhead);
+          }
+          lastKey = keyValue;
+          lastGroup = group;
         }
 
         // Feed row to aggregators using direct array access
@@ -322,6 +334,10 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int consumed = 0;
+    // A KEY VALUE THAT IS THE OBJECT THE ROW BEFORE HELD IS NOT CANONICALIZED AND HASHED AGAIN, AND A ROW HOLDING THE SAME
+    // OBJECTS IN EVERY KEY IS IN THE GROUP OF THE ROW BEFORE (ISSUE #10254)
+    final GroupKeyValues.Builder keyBuilder = new GroupKeyValues.Builder(groupingKeys.size());
+    GroupAggregators lastGroup = null;
 
     while (prevResults.hasNext()) {
       guard.checkPeriodically(++consumed);
@@ -332,15 +348,22 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         if (context.isProfiling())
           rowCount++;
 
-        final GroupKeyValues keyValues = evaluateGroupingKey(groupingKeys, inputRow, context);
+        final Object[] values = evaluateGroupingKey(groupingKeys, inputRow, context);
 
-        GroupAggregators groupAgg = groups.get(keyValues);
-        if (groupAgg == null) {
-          groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
-          groupAgg.representativeRow = inputRow;
-          groups.put(keyValues, groupAgg);
-          // THE GROUP KEEPS ITS FIRST INPUT ROW, FOR THE COMPLEX AGGREGATION ITEMS
-          heapLimit.add(groups.size(), new Object[] { keyValues.values, inputRow }, groupOverhead);
+        GroupAggregators groupAgg;
+        if (lastGroup != null && keyBuilder.sameAsLast(values))
+          groupAgg = lastGroup;
+        else {
+          final GroupKeyValues keyValues = keyBuilder.build(values);
+          groupAgg = groups.get(keyValues);
+          if (groupAgg == null) {
+            groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
+            groupAgg.representativeRow = inputRow;
+            groups.put(keyValues, groupAgg);
+            // THE GROUP KEEPS ITS FIRST INPUT ROW, FOR THE COMPLEX AGGREGATION ITEMS
+            heapLimit.add(groups.size(), new Object[] { keyValues.values, inputRow }, groupOverhead);
+          }
+          lastGroup = groupAgg;
         }
 
         // Feed row using array-indexed access for regular aggregations
@@ -412,12 +435,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   /**
    * Evaluate grouping key expressions for a given row.
    */
-  private GroupKeyValues evaluateGroupingKey(final List<GroupingKey> keys, final Result row, final CommandContext context) {
+  private Object[] evaluateGroupingKey(final List<GroupingKey> keys, final Result row, final CommandContext context) {
     final int size = keys.size();
     final Object[] values = new Object[size];
     for (int i = 0; i < size; i++)
       values[i] = evaluator.evaluate(keys.get(i).expression, row, context);
-    return new GroupKeyValues(values);
+    return values;
   }
 
   /**

@@ -279,7 +279,7 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   /** Ordered triples of distinct loops among {@code loops}: loops * (loops - 1) * (loops - 2), exact. */
-  private static long orderedLoopTriples(final long loops) {
+  static long orderedLoopTriples(final long loops) {
     return loops < 3 ? 0L : Math.multiplyExact(Math.multiplyExact(loops, loops - 1), loops - 2);
   }
 
@@ -287,7 +287,7 @@ public final class PartitionedTriangleOp implements CountOp {
    * Triples with one loop and an ordered pair of distinct edges among the {@code run} between the loop's vertex and another
    * one, in each of the three positions the repeated vertex can take: 3 * loops * run * (run - 1), exact.
    */
-  private static long repeatedPairTriples(final long loops, final long run) {
+  static long repeatedPairTriples(final long loops, final long run) {
     return run < 2 ? 0L : Math.multiplyExact(Math.multiplyExact(3L * loops, run), run - 1);
   }
 
@@ -301,7 +301,7 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   /** End (exclusive) of the run of values equal to {@code a[from]} in the sorted range {@code [from, to)}. */
-  private static int runEnd(final int[] a, final int from, final int to) {
+  static int runEnd(final int[] a, final int from, final int to) {
     final int value = a[from];
     int end = from + 1;
     while (end < to && a[end] == value)
