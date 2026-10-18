@@ -392,6 +392,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Issue #10225: refused requests that named this node as sender from a source that is not an address of this host - an
   // impostor, or this node's own request that crossed an address-translating hop and so could not be repaired (#10299).
   private final    AtomicLong                misdirectedSelfClaimsFromElsewhere = new AtomicLong();
+  // ...and the part of those for which gRPC reported no address at all: not an impostor but an RPC Ratis served outside
+  // the call's context, on which a self-dial can no longer be repaired (see RemoteAddressCallInterceptor).
+  private final    AtomicLong                misdirectedSelfClaimsWithoutAddress = new AtomicLong();
   // Issue #10088: the ids of the live Raft configuration as this node last learnt it. The listener runs on the gRPC handler
   // thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so it
   // consults this copy, replaced as a whole. It is written wherever the configuration reaches this node without a read
@@ -1037,8 +1040,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final boolean claimFromElsewhere = claimsSelf && !fromThisHost;
     final RaftPeerId slot = !claimFromElsewhere && isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo
         : UNKNOWN_MISDIRECTED_PEER;
-    if (claimFromElsewhere)
+    if (claimFromElsewhere) {
       misdirectedSelfClaimsFromElsewhere.incrementAndGet();
+      if (remote == null)
+        misdirectedSelfClaimsWithoutAddress.incrementAndGet();
+    }
     if (!claimThrottleSlot(queuedAt, slot, System.currentTimeMillis(), MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
 
@@ -1246,6 +1252,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * How many of {@link #getMisdirectedSelfClaimsFromElsewhere()} carried no remote address at all: a non-zero value means
+   * Ratis served an RPC outside its gRPC call's context, where a self-dial cannot be repaired (issue #10225).
+   */
+  public long getMisdirectedSelfClaimsWithoutAddress() {
+    return misdirectedSelfClaimsWithoutAddress.get();
+  }
+
+  /**
    * Whether {@code address} - the remote end of an inbound Raft connection - is an address of this host: the loopback, or
    * one assigned to a local network interface. A request this node sent to itself arrives from one of these, whatever name
    * its channel dialled, and a sender on another host cannot make a TCP connection appear to come from one (issue #10225).
@@ -1284,9 +1298,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return cached.addresses();
     try {
       final Set<InetAddress> addresses = loadLocalInterfaceAddresses();
-      // A failed listing is retried after a second rather than kept for the whole TTL
-      final LocalAddresses loaded = new LocalAddresses(addresses != null ? addresses : Set.of(),
-          addresses != null ? now : now - LOCAL_ADDRESSES_TTL_NANOS + LOCAL_ADDRESSES_RETRY_NANOS);
+      // A failed listing keeps the last good set, if any, and is retried after a second rather than kept for the TTL
+      final LocalAddresses loaded = addresses != null ? new LocalAddresses(addresses, now)
+          : new LocalAddresses(cached != null ? cached.addresses() : Set.of(),
+              now - LOCAL_ADDRESSES_TTL_NANOS + LOCAL_ADDRESSES_RETRY_NANOS);
       localAddresses = loaded;
       return loaded.addresses();
     } finally {
@@ -1307,8 +1322,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             addresses.add(assigned.nextElement());
         }
     } catch (final SocketException e) {
-      // Only the loopback is recognised until the retry: a self-dial over another address waits for it, an impostor
-      // gains nothing
+      // The caller keeps the last good set; before the first one only the loopback is recognised until the retry: a
+      // self-dial over another address waits for it, an impostor gains nothing
       LogManager.instance().log(RaftHAServer.class, Level.FINE, "Cannot list this host's network interfaces: %s", e.toString());
       return null;
     }

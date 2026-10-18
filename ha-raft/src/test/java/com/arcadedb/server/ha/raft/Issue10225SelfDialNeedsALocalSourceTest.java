@@ -104,6 +104,7 @@ class Issue10225SelfDialNeedsALocalSourceTest {
     Awaitility.await("the refusal is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining("no remote address was reported for the call") == 1);
     assertThat(log.countFormattedContaining("arrived from")).isZero();
+    assertThat(raft.getMisdirectedSelfClaimsWithoutAddress()).isEqualTo(1L);
   }
 
   /**
@@ -125,6 +126,7 @@ class Issue10225SelfDialNeedsALocalSourceTest {
         .until(() -> log.countFormattedContaining(report) == 1);
     assertThat(log.formattedAt(Level.WARNING)).anyMatch(m -> m.contains(report));
     assertThat(raft.getMisdirectedSelfClaimsFromElsewhere()).isEqualTo(5L);
+    assertThat(raft.getMisdirectedSelfClaimsWithoutAddress()).as("each of them carried an address").isZero();
   }
 
   /** The repair #10016 needs still runs: this node's own request comes back over the loopback. */
