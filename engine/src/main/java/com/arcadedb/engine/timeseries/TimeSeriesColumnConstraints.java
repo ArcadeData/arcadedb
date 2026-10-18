@@ -22,12 +22,14 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.List;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -235,6 +237,8 @@ public final class TimeSeriesColumnConstraints {
           default -> unusable = "has a MIN or MAX, which is not applicable to type " + type;
           }
         } catch (final RuntimeException e) {
+          LogManager.instance().log(this, Level.FINE, "Bound '%s'/'%s' of TIMESERIES column '%s' is not usable", e, min, max,
+              column.getName());
           unusable = "has the bound '" + (min != null ? min : "") + (min != null && max != null ? "'/'" : "") + (max != null ? max : "")
               + "', which cannot be read as " + type + ". Remove it with ALTER PROPERTY ... MIN null / MAX null";
         }
@@ -267,6 +271,9 @@ public final class TimeSeriesColumnConstraints {
     }
 
     /**
+     * A column whose stored bound or pattern cannot be used refuses every VALUE, naming the constraint, as a document property does;
+     * a sample with no value for it is refused only by MANDATORY/NOTNULL, since no bound or pattern applies to no value.
+     *
      * @param value the value as the column stores it (a temporal one as its count), {@code null} for no value
      *
      * @return why the column refuses {@code value}, or {@code null} when it takes it

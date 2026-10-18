@@ -296,6 +296,27 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
     assertThat(type.getProperty("host").isMandatory()).isTrue();
   }
 
+  /**
+   * The engine hands the check of stored samples the same representation the write path stores, a temporal one as its count in the
+   * column's unit, so a date bound is checked against stored samples as against a new one.
+   */
+  @Test
+  void aTemporalBoundIsCheckedAgainstStoredSamplesInTheirOwnUnit() {
+    database.command("sql", "CREATE TIMESERIES TYPE W TIMESTAMP ts TAGS (day DATE) FIELDS (at DATETIME_MICROS, n LONG) SHARDS 1");
+    database.command("sql", "INSERT INTO W SET ts = 1, day = '2023-11-14', at = '2023-11-14 22:13:20', n = 1");
+    database.command("sql", "INSERT INTO W SET ts = 2, day = '2023-11-15', at = '2023-11-14 22:13:21', n = 2");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W.at MAX '2023-11-14 22:13:20'"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("timestamp 2").hasMessageContaining("after the MAX");
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W.day REGEXP '2023-11-14'"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("timestamp 2");
+    database.command("sql", "ALTER PROPERTY W.at MAX '2023-11-14 22:13:21'");
+    database.command("sql", "ALTER PROPERTY W.day MIN '2023-11-14'");
+    database.command("sql", "ALTER PROPERTY W.day REGEXP '2023-11-1[45]'");
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("W");
+    assertThat(type.getProperty("day").getRegexp()).isEqualTo("2023-11-1[45]");
+  }
+
   /** DEFAULT and HIDDEN are honoured by no path of a TIMESERIES type, so they are refused rather than stored for nothing. */
   @Test
   void anAttributeNoPathHonoursIsRefused() {
