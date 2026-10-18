@@ -138,6 +138,18 @@ class Issue10205IncrementalViewSourcesTest extends TestHelper {
   }
 
   @Test
+  void aBackQuotedSourceAndParentReferencesInANestedSubquery() {
+    final String query = "SELECT grp, (SELECT count(*) AS n FROM `Owner` WHERE name = $parent.$current.grp)[0].n AS owners FROM `Item`";
+    database.command("sql", "CREATE MATERIALIZED VIEW Vn AS " + query + " REFRESH INCREMENTAL");
+    // THE $ VARIABLES ARE NOT SOURCES, THE BACK-QUOTED NAMES ARE
+    assertThat(sourceTypesOf("Vn")).containsExactlyInAnyOrder("Item", "Owner");
+
+    database.transaction(() -> database.command("sql", "INSERT INTO Owner SET name = 'y'"));
+    assertSameAsQuery("Vn", query);
+    assertThat(viewRows("Vn")).containsExactly("grp=x owners=1", "grp=y owners=1");
+  }
+
+  @Test
   void writesToATypeTheQueryDoesNotReadDoNotRefresh() {
     database.command("sql", "CREATE MATERIALIZED VIEW Vo AS " + OWNED + " REFRESH INCREMENTAL");
     final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("Vo");
