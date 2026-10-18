@@ -86,6 +86,16 @@ class Issue10146TypeBuilderSetterRoundTripTest extends TestHelper {
   }
 
   /**
+   * A count chosen after a NON-empty list does not replace the instances: withTotalBuckets does not clear them, create() still uses
+   * them, so the statement must stay absent rather than render a count the builder would not honor. Pins the behavior before #10146.
+   */
+  @Test
+  void aCountAfterBucketInstancesLeavesTheTypeWithoutSqlForm() {
+    final Bucket orphan = database.getSchema().createBucket("Orphan_0");
+    assertThat(database.getSchema().buildVertexType().withName("C").withBuckets(List.of(orphan)).withTotalBuckets(3).toSQL()).isNull();
+  }
+
+  /**
    * Every setter of the builder, applied with a value that differs from the default, makes the same type through {@code toSQL()} as
    * through {@code create()}. A setter added to the builder fails this test until it is given a case here.
    */
@@ -101,11 +111,13 @@ class Issue10146TypeBuilderSetterRoundTripTest extends TestHelper {
     // withName is applied to every case: a builder without a name has nothing to create
     final Map<String, List<UnaryOperator<TypeBuilder<?>>>> anyKind = new LinkedHashMap<>();
     anyKind.put("withIgnoreIfExists", List.of(b -> b.withIgnoreIfExists(true)));
+    // withTotalBuckets(0) is a regression pin: that setter already rendered BUCKETS 0 before #10146
     anyKind.put("withTotalBuckets", List.of(b -> b.withTotalBuckets(defaultBuckets + 1), b -> b.withTotalBuckets(0)));
+    // only the EMPTY list: a non-empty one has no SQL form at all (toSQL() returns null, see
+    // aCountAfterBucketInstancesLeavesTheTypeWithoutSqlForm), so it cannot round-trip and would fail the isNotNull check below
     anyKind.put("withBuckets", List.of(b -> b.withBuckets(List.of())));
     anyKind.put("withPageSize", List.of(b -> b.withPageSize(defaultPageSize * 2)));
-    anyKind.put("withSuperType", List.of(b -> b.withSuperType(
-        b.type.equals(VertexType.class) ? "BaseV" : b.type.equals(EdgeType.class) ? "BaseE" : "BaseD")));
+    anyKind.put("withSuperType", List.of(b -> b.withSuperType(baseTypeOf(b))));
 
     final Map<String, List<UnaryOperator<TypeBuilder<?>>>> edgeOnly = new LinkedHashMap<>();
     edgeOnly.put("withBidirectional", List.of(b -> b.withBidirectional(false)));
@@ -149,6 +161,15 @@ class Issue10146TypeBuilderSetterRoundTripTest extends TestHelper {
         }
     }
     assertThat(mismatches).as("setters whose rendered statement makes a different type than the builder").isEmpty();
+  }
+
+  /** The fixture supertype of the builder's own kind: a type can only extend a type of the same kind. */
+  private static String baseTypeOf(final TypeBuilder<?> builder) {
+    if (builder.type.equals(VertexType.class))
+      return "BaseV";
+    if (builder.type.equals(EdgeType.class))
+      return "BaseE";
+    return "BaseD";
   }
 
   private static String configurationOf(final DocumentType type) {
