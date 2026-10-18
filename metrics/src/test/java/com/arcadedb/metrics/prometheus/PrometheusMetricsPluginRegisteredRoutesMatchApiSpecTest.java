@@ -19,6 +19,7 @@
 package com.arcadedb.metrics.prometheus;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.server.http.PluginRoutes;
 import com.arcadedb.server.http.RecordingPathHandler;
 import com.arcadedb.server.http.RoutePathNormalizer;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
@@ -50,7 +51,7 @@ class PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest {
     plugin.configure(null, new ContextConfiguration());
     final RecordingPathHandler routes = new RecordingPathHandler();
 
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
 
     assertThat(routes.getRegisteredPaths())
         .as("PrometheusMetricsPlugin.registerAPI() and PluginApiSpec.METRICS_PATHS have drifted apart")
@@ -64,7 +65,7 @@ class PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest {
     plugin.configure(null, new ContextConfiguration());
     final RecordingPathHandler routes = new RecordingPathHandler();
 
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
 
     assertThat(routes.getRegisteredOperations())
         .as("PrometheusMetricsPlugin.registerAPI() serves methods PluginApiSpec.METRICS_OPERATIONS does not declare")

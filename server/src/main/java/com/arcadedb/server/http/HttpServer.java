@@ -454,11 +454,19 @@ public class HttpServer implements ServerPlugin {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
-    // A plugin's route added to the PathHandler directly answers every method; PluginPathHandler names it (issue #10157)
+    // A plugin declares its routes with their methods through PluginRoutes (issue #10296). The deprecated PathHandler
+    // overload is still called for a plugin built against it; a route added there directly answers every method, and
+    // PluginPathHandler names it (issue #10157)
     for (final ServerPlugin plugin : server.getPlugins()) {
       routes.setRegisteringPlugin(plugin.getName());
       try {
-        plugin.registerAPI(this, routes);
+        plugin.registerAPI(this, new PluginRoutes(routes));
+        if (PluginPathHandler.implementsDeprecatedRegisterAPI(plugin)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Plugin '%s' implements the deprecated registerAPI(HttpServer, PathHandler), which will be removed in a future "
+                  + "release: implement registerAPI(HttpServer, PluginRoutes) instead", plugin.getName());
+          callDeprecatedRegisterAPI(plugin, routes);
+        }
       } finally {
         routes.setRegisteringPlugin(null);
       }
@@ -469,6 +477,11 @@ public class HttpServer implements ServerPlugin {
     unrestrictedPluginRoutes = routes.getUnrestrictedPluginRoutes();
 
     return routes;
+  }
+
+  @SuppressWarnings("removal")
+  private void callDeprecatedRegisterAPI(final ServerPlugin plugin, final PathHandler routes) {
+    plugin.registerAPI(this, routes);
   }
 
   private static Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> mergeWithPrefix(final String basicPrefix,

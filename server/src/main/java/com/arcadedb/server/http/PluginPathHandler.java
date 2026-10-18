@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ServerPlugin;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
 
@@ -30,11 +31,12 @@ import java.util.logging.Level;
  * The outer {@link PathHandler} {@code HttpServer} routes through, which notices a plugin route registered without a
  * method restriction (issue #10157).
  * <p>
- * {@code ServerPlugin.registerAPI} keeps handing plugins a {@link PathHandler}, so a plugin built against it keeps
- * working. But a handler added to it directly answers every HTTP method, which turned {@code GET} into a way to run
- * state-changing cluster operations. Every plugin in this repository declares its routes through {@link PluginRoutes};
- * a plugin that does not is named here, once per path, at {@code WARNING}, so the gap is visible at startup rather than
- * in a code review. Routing is unchanged: the route is served as registered.
+ * The deprecated {@code ServerPlugin.registerAPI(HttpServer, PathHandler)} keeps handing plugins a {@link PathHandler},
+ * so a plugin built against it keeps working. But a handler added to it directly answers every HTTP method, which turned
+ * {@code GET} into a way to run state-changing cluster operations. Every plugin in this repository implements
+ * {@code registerAPI(HttpServer, PluginRoutes)} instead (issue #10296); a route a plugin adds to the raw handler is named
+ * here, once per path, at {@code WARNING}, so the gap is visible at startup rather than in a code review. Routing is
+ * unchanged: the route is served as registered.
  */
 final class PluginPathHandler extends PathHandler {
   private final List<String> unrestricted = new ArrayList<>();
@@ -62,12 +64,26 @@ final class PluginPathHandler extends PathHandler {
     return List.copyOf(unrestricted);
   }
 
+  /**
+   * Whether {@code plugin}'s class (or a superclass of it) overrides the deprecated
+   * {@code registerAPI(HttpServer, PathHandler)}, rather than inheriting the interface's no-op default (issue #10296).
+   */
+  static boolean implementsDeprecatedRegisterAPI(final ServerPlugin plugin) {
+    try {
+      return plugin.getClass().getMethod("registerAPI", HttpServer.class, PathHandler.class).getDeclaringClass()
+          != ServerPlugin.class;
+    } catch (final NoSuchMethodException e) {
+      // UNREACHABLE WHILE THE INTERFACE DECLARES THE OVERLOAD
+      return false;
+    }
+  }
+
   private void audit(final String path, final HttpHandler handler) {
     if (registeringPlugin == null || handler instanceof PluginRoutes.MethodRestrictedHandler)
       return;
     unrestricted.add(registeringPlugin + " " + path);
     LogManager.instance().log(this, Level.WARNING,
         "Plugin '%s' registered the HTTP route %s without declaring its method, so it answers every method (GET included). "
-            + "Declare it through PluginRoutes instead", registeringPlugin, path);
+            + "Implement registerAPI(HttpServer, PluginRoutes) and declare it there instead", registeringPlugin, path);
   }
 }
