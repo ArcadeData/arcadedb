@@ -1132,7 +1132,10 @@ public class GraphEngine {
     if (skipEndpoint != null && (skipDirection == null || skipDirection == direction) && skipEndpoint.equals(
         direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn())) {
       if (lightweight && skipDirection != null)
-        // THE ITERATOR REMOVES THE ENTRY ITSELF (#9779): IT IS A REMOVAL BY THIS TRANSACTION ALL THE SAME (#10302)
+        // THE ITERATOR REMOVES THE ENTRY ITSELF (#9779): IT IS A REMOVAL BY THIS TRANSACTION ALL THE SAME (#10302). It walks
+        // the transaction's own view, so the entry is there to remove; the one way it finds none is a delete listener or
+        // trigger that took it out first, through this transaction. Counting it then over-counts by one, which can only
+        // hide a stale view (the delete lost, as before #10302), never invent a conflict
         lightEdgeEntriesRemoved(skipEndpoint, direction, edge, 1);
       return;
     }
@@ -1212,6 +1215,10 @@ public class GraphEngine {
    * list. A transaction that creates twins and deletes more of them than it created can therefore miss a twin committed
    * concurrently, and the delete is lost as before. Counting the creations too would cost a map entry per lightweight
    * edge created, on the bulk-load path, for this corner (#10315).
+   * <p>
+   * Cost: only a removal that found nothing gets here, and it reads the committed vertex and walks the committed chain
+   * (one stripe chain per generation on a super-node), stopping as soon as it counts more than were removed. A delete
+   * of a lightweight edge that is not there at all walks the whole chain, as the regular-edge check does.
    */
   private void checkLightEdgeListNotStale(final VertexInternal endpoint, final Vertex.DIRECTION direction, final Edge edge) {
     if (!(database.getTransactionIfExists() instanceof TransactionContext tx))
