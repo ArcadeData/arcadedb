@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -188,6 +189,11 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
   @Override
   public void setChild(final PhysicalOperator child) {
     throw new UnsupportedOperationException("NodeHashJoin has two children, use constructor");
+  }
+
+  @Override
+  public List<PhysicalOperator> getInputs() {
+    return Arrays.asList(leftChild, rightChild);
   }
 
   @Override

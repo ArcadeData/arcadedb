@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.function.BiPredicate;
@@ -276,5 +278,10 @@ public class CartesianProduct extends AbstractPhysicalOperator {
   /** The right-hand side; the left one is {@link #getChild()}. */
   public PhysicalOperator getRight() {
     return right;
+  }
+
+  @Override
+  public List<PhysicalOperator> getInputs() {
+    return Arrays.asList(getChild(), right);
   }
 }
