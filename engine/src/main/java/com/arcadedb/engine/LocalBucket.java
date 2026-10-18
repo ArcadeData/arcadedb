@@ -3325,9 +3325,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return null;
 
       recordSize = committed.readNumberAndSize(recordPositionInPage);
-    } catch (final Exception e) {
-      // The page is not there (or not readable): no record is committed at that position, as existsRecordInCommittedPage
-      return null;
+    } catch (final IOException e) {
+      // NOT "NO RECORD": THE CALLER WOULD TAKE AN UNREADABLE PAGE FOR AN ABSENT ENTRY AND COMMIT THE DELETE IT GUARDS
+      throw new DatabaseOperationException("Error on reading the committed page of record " + rid, e);
     }
 
     if (recordSize[0] == 0 || recordSize[0] == NEXT_CHUNK || isPlaceholderContent(recordSize[0]))

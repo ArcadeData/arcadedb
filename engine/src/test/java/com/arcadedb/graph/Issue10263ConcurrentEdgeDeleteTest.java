@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -84,6 +85,45 @@ class Issue10263ConcurrentEdgeDeleteTest extends TestHelper {
 
     assertEdgeListsMatchRecords(v);
     assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(2);
+  }
+
+  /**
+   * The same window on a super-node, whose list is striped: the committed list is walked along the stripe chains the
+   * neighbour's entries live in.
+   */
+  @Test
+  void deletingAnEdgeAddedAfterAStripedListWasWrittenIsAConflict() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 8);
+    try {
+      final RID[] v = createVertices(2);
+      database.command("sql", "CREATE EDGE TYPE F").close();
+      database.transaction(() -> {
+        for (int i = 0; i < 40; i++)
+          v[0].asVertex().newEdge("E", v[1].asVertex());
+      });
+      assertThat(database.lookupByRID(((VertexInternal) v[0].asVertex()).getOutEdgesHeadChunk(), true))
+          .isInstanceOf(StripeDirectory.class);
+
+      final ExecutorService other = Executors.newSingleThreadExecutor();
+      try {
+        database.begin();
+        // SAME NEIGHBOUR, SO THE SAME STRIPE CHAIN AS THE EDGE DELETED BELOW
+        v[0].asVertex().newEdge("F", v[1].asVertex());
+
+        final RID added = addEdgeInOwnTransaction(other, v[0], v[1]);
+
+        assertThatThrownBy(() -> added.asEdge().delete()).isInstanceOf(ConcurrentModificationException.class);
+        database.rollback();
+      } finally {
+        other.shutdownNow();
+      }
+
+      assertEdgeListsMatchRecords(v);
+      assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(41);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD,
+          GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getDefValue());
+    }
   }
 
   /**

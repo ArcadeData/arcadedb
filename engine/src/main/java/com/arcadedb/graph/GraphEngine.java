@@ -1215,11 +1215,17 @@ public class GraphEngine {
     if (content == null || content.size() == 0 || content.getByte(0) != Edge.RECORD_TYPE)
       return;
 
-    final ImmutableEdge current = new ImmutableEdge(database, edge.getType(), edgeRID, content.copyOfContent());
-    if (!out.equals(current.getOut()) || !in.equals(current.getIn()))
+    // THE TWO ENDPOINTS ONLY, STRAIGHT FROM THE BUFFER: NO COPY OF THE CONTENT AND NO RECORD BUILT ON EVERY EDGE DELETE
+    content.position(1); // SKIP RECORD TYPE
+    final RID currentOut = ImmutableEdge.readVertexPointer(database, content, edgeRID);
+    final RID currentIn = ImmutableEdge.readVertexPointer(database, content, edgeRID);
+    if (!out.equals(currentOut) || !in.equals(currentIn))
       throw new ConcurrentModificationException(
-          "Edge " + edgeRID + " read as " + out + "->" + in + " is now an edge " + current.getOut() + "->" + current.getIn()
+          "Edge " + edgeRID + " read as " + out + "->" + in + " is now an edge " + currentOut + "->" + currentIn
               + ": the edge read was deleted and its RID reused by a concurrent transaction. Please retry the operation");
+    // An edge reused with the SAME endpoints passes here. When its entries are then found and removed, the removal
+    // anchors and rewrites the chunks holding them, so a concurrent delete or re-creation of those entries fails this
+    // transaction's commit on the chunk pages; when nothing is found, keepEdgeRecordPageOutOfSlotMerge covers it.
   }
 
   /**
