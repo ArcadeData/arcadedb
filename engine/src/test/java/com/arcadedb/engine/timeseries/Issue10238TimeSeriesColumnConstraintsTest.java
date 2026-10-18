@@ -90,7 +90,7 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
     assertThat(report.unreadableValues()).anyMatch(r -> r.startsWith("G.i (field): ") && r.contains("MAX 10"));
     assertThat(report.unreadableValues()).anyMatch(r -> r.startsWith("G.i (field): ") && r.contains("MIN 0"));
     assertThat(report.unreadableValues()).anyMatch(r -> r.startsWith("G.s (field): ") && r.contains("REGEXP"));
-    assertThat(report.unreadableValues()).anyMatch(r -> r.startsWith("G.host (tag): ") && r.contains("NOT NULL"));
+    assertThat(report.unreadableValues()).anyMatch(r -> r.startsWith("G.host (tag): ") && r.contains("NOTNULL"));
     // the reason goes back to the client and to the log: it never repeats the value the client sent
     assertThat(report.unreadableValues()).noneMatch(r -> r.contains("50") || r.contains("'NO'"));
 
@@ -214,7 +214,7 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "INSERT INTO Q SET ts = 1, host = null, v = 1.0"))
         .isInstanceOf(ValidationException.class).hasMessageContaining("MANDATORY");
     assertThatThrownBy(() -> database.command("sql", "INSERT INTO Q SET ts = 1, host = 'a', v = null"))
-        .isInstanceOf(ValidationException.class).hasMessageContaining("NOT NULL");
+        .isInstanceOf(ValidationException.class).hasMessageContaining("NOTNULL");
 
     final Map<String, Object> noValue = new HashMap<>();
     final WriteReport report = TimeSeriesGateway.write((DatabaseInternal) database,
@@ -223,7 +223,7 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
             new Sample("Q", Map.of("host", "a"), Map.of("v", Double.NaN), 4))));
     assertThat(report.written()).isEqualTo(1);
     assertThat(report.dropped()).isEqualTo(2);
-    assertThat(report.unreadableValues()).singleElement().asString().startsWith("Q.v (field): ").contains("NOT NULL");
+    assertThat(report.unreadableValues()).singleElement().asString().startsWith("Q.v (field): ").contains("NOTNULL");
     assertThat(rows("Q")).hasSize(1);
   }
 

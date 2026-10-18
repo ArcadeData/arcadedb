@@ -67,7 +67,7 @@ public final class ExistingRecordsCheck {
       return;
     if (type instanceof LocalTimeSeriesType tsType) {
       for (final String propertyName : propertyNames)
-        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? "MANDATORY" : "NOT NULL", null, null, null,
+        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? "MANDATORY" : "NOTNULL", null, null, null,
             mandatory ? "MANDATORY" : "NOTNULL");
       return;
     }

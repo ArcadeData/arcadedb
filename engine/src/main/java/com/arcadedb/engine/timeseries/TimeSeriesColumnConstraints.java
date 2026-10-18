@@ -266,7 +266,7 @@ public final class TimeSeriesColumnConstraints {
         } catch (final PatternSyntaxException e) {
           unusable = invalidRegexp(property.getRegexp(), e);
         }
-      return new ColumnCheck(database, column, property.getType(), required, property.isMandatory() ? "MANDATORY" : "NOT NULL",
+      return new ColumnCheck(database, column, property.getType(), required, property.isMandatory() ? "MANDATORY" : "NOTNULL",
           property.getMin(), property.getMax(), pattern, unusable);
     }
 
@@ -285,6 +285,10 @@ public final class TimeSeriesColumnConstraints {
         return required ? "the column is " + requiredBy + " and the sample carries no value for it" : null;
       if (unusable != null)
         return "the column " + unusable;
+      // storableValue hands a numeric or temporal column a Number on every path; a refusal rather than a ClassCastException in the
+      // middle of a batch if that ever stopped holding
+      if (measure != Measure.NONE && measure != Measure.LENGTH && !(value instanceof Number))
+        return "the value is not a number";
 
       switch (measure) {
       case INTEGRAL, TEMPORAL -> {
