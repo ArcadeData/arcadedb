@@ -319,10 +319,11 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseLeavesNeverResolvedLinkUnchanged() throws Exception {
+  void importDatabaseClearsNeverResolvedLink() throws Exception {
     // Issue #6460 follow-up (review on PR #6654): a LINK value that references a record never present in the
-    // source stream at all (excluded via -includeTypes/-excludeTypes, or a genuinely dangling link) must be left
-    // as-is - matching pre-fix behavior for that case - and must NOT be counted as an import error.
+    // source stream at all (excluded via -includeTypes/-excludeTypes, or a genuinely dangling link) must NOT be
+    // counted as an import error. Issue #10201: nor left on its source RID, which in the target names another record or
+    // none: it is cleared and reported as a dangling link.
     Path jsonlFile = Files.createTempFile("arcadedb-link-never-resolves-import-", ".jsonl");
     try {
       Files.writeString(jsonlFile, ""
@@ -341,11 +342,11 @@ class JsonLImporterIT {
 
       assertThat(result).containsEntry("createdVertices", 1L);
       assertThat(result).doesNotContainKey("errors");
+      assertThat(result).containsEntry("danglingLinks", 1L);
 
       try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
         final Document person1 = db.iterateType("Person", true).next().asDocument(true);
-        // Never resolved: left as the original (now unreachable) source RID, exactly like pre-fix behavior.
-        assertThat(person1.get("bestFriend")).isEqualTo(new RID("#6:99"));
+        assertThat(person1.get("bestFriend")).isNull();
       }
     } finally {
       Files.deleteIfExists(jsonlFile);

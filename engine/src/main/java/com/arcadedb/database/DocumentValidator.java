@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -187,7 +188,8 @@ public class DocumentValidator {
      */
     public boolean canBeViolatedOn(final Property p) {
       final Type type = p.getType();
-      return checkType && (isScalarType(type) || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) || min != null || max != null || regexp != null;
+      return checkType && (isScalarType(type) || type == Type.STRING || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null)
+          || min != null || max != null || regexp != null;
     }
   }
 
@@ -207,6 +209,18 @@ public class DocumentValidator {
       return;
 
     final Type type = p.getType();
+    // Every value has a string form, so converting cannot be what accepts it: an index on the property compares its keys as
+    // text, while a scan compares the stored number, date or boolean natively, and the two disagree on ranges and order
+    // (issue #10204)
+    if (type == Type.STRING && constraints.checkType() && !(stored instanceof String)) {
+      final String text = String.valueOf(stored);
+      final String property = Identifier.quote(p.getName());
+      throwValidationException(document.getType(), p, "is declared as STRING but a stored value is a " + stored.getClass()
+          .getSimpleName() + ", not a string: " + (text.length() > 100 ? text.substring(0, 100) + "..." : text)
+          + " (convert the stored values first, e.g. with UPDATE " + Identifier.quote(document.getTypeName()) + " SET "
+          + property + " = " + property + ".asString())");
+    }
+
     Object value = stored;
     if (isScalarType(type)) {
       final Database database = document.getDatabase();

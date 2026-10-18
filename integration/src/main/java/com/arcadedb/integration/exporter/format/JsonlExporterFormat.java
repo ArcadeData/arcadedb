@@ -34,6 +34,7 @@ import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.misc.ValueTypeHints;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -60,7 +61,8 @@ import java.util.zip.GZIPOutputStream;
 
 public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";
-  private final static int                VERSION    = 1;
+  // 2: RECORDS CARRY THE TYPES OF THEIR UNDECLARED VALUES (issue #10201)
+  private final static int                VERSION    = 2;
   /**
    * Samples per {@code "ts"} line. One line per sample would multiply the per-line envelope by the sample count
    * (a TimeSeries type is the one place where records are counted in millions); one line for the whole type would
@@ -176,7 +178,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
             continue;
 
-          writeJsonLine("v", graphSerializer.serializeGraphElement(record));
+          writeJsonLine("v", typed(record, graphSerializer));
           context.vertices.incrementAndGet();
         } catch (Exception e) {
           context.skippedRecords.incrementAndGet();
@@ -197,7 +199,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
             continue;
 
-          writeJsonLine("e", graphSerializer.serializeGraphElement(record));
+          writeJsonLine("e", typed(record, graphSerializer));
           context.edges.incrementAndGet();
         } catch (Exception e) {
           context.skippedRecords.incrementAndGet();
@@ -270,7 +272,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           if (settings.includeRecords != null && !settings.includeRecords.contains(record.getIdentity().toString()))
             continue;
 
-          writeJsonLine("d", graphSerializer.serializeGraphElement(record));
+          writeJsonLine("d", typed(record, graphSerializer));
           context.documents.incrementAndGet();
         } catch (Exception e) {
           context.skippedRecords.incrementAndGet();
@@ -429,6 +431,16 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           database.rollback();
       }
     }
+  }
+
+  /**
+   * The record as the graph serializer writes it, plus the types of the values JSON cannot carry (issue #10201): see
+   * {@link ValueTypeHints}.
+   */
+  private static JSONObject typed(final Document record, final JsonGraphSerializer graphSerializer) {
+    final JSONObject json = graphSerializer.serializeGraphElement(record);
+    ValueTypeHints.annotate(record, json);
+    return json;
   }
 
   protected void writeJsonLine(final String type, final JSONObject json) throws IOException {

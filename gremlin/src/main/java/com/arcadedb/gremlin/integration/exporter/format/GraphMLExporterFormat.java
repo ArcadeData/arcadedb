@@ -20,13 +20,13 @@ package com.arcadedb.gremlin.integration.exporter.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.gremlin.ArcadeGraph;
+import com.arcadedb.gremlin.io.graphml.ArcadeGraphMLWriter;
 import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.serializer.json.JSONObject;
-import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -66,7 +66,8 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
       final ArcadeGraph graph = ArcadeGraph.open(database);
       try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
         try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
-          graph.io(IoCore.graphml()).writer().create().writeGraph(out, graph);
+          // ArcadeDB's writer, not TinkerPop's: a value GraphML has no type for keeps its type (issue #10202)
+          new ArcadeGraphMLWriter().writeGraph(out, graph);
         }
       }
     } finally {

@@ -20,6 +20,7 @@ package com.arcadedb.gremlin.integration.exporter.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.gremlin.ArcadeGraph;
+import com.arcadedb.gremlin.io.graphson.ArcadeGraphSONValuesModule;
 import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
@@ -66,7 +67,9 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
       final ArcadeGraph graph = ArcadeGraph.open(database);
       try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
         try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
-          graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
+          // TinkerPop's gx types and ArcadeDB's own: without them the typed writer refused the whole export at the first Byte,
+          // Short, BigDecimal, date or byte[] value (issue #10202)
+          graph.io(IoCore.graphson()).writer().mapper(ArcadeGraphSONValuesModule.mapper(graph)).create().writeGraph(out, graph);
         }
       }
     } finally {

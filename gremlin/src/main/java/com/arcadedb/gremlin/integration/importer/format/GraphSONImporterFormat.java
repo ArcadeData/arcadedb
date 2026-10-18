@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.gremlin.io.graphson.ArcadeGraphSONValuesModule;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
@@ -97,7 +98,9 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
       // transaction the reader must not commit it (issue #9783): see AbstractTinkerPopImporterFormat.
       final String content = String.join("\n", lines);
       try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
-        readGraph(is, database, context, graph -> graph.io(IoCore.graphson()).reader().create(), "GraphSON");
+        // The types the export writes (issue #10202), so a Byte, a BigDecimal or a date is read back as one
+        readGraph(is, database, context,
+            graph -> graph.io(IoCore.graphson()).reader().mapper(ArcadeGraphSONValuesModule.mapper(graph)).create(), "GraphSON");
       } catch (final IOException e) {
         throw new ImportException("Error on importing GraphSON", e);
       }
@@ -379,7 +382,8 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
           case "g:Float" -> innerValue instanceof Number ? ((Number) innerValue).floatValue() : Float.parseFloat(innerValue.toString());
           case "g:Double" -> innerValue instanceof Number ? ((Number) innerValue).doubleValue() : Double.parseDouble(innerValue.toString());
           case "g:String" -> innerValue.toString();
-          default -> innerValue;
+          // EVERY OTHER TYPED VALUE THROUGH THE SAME TYPES THE EXPORT WRITES (issue #10202): gx:Byte, gx:BigDecimal, the dates...
+          default -> ArcadeGraphSONValuesModule.readTypedValue(type, json.toString(), innerValue);
         };
       }
       return json.toString();

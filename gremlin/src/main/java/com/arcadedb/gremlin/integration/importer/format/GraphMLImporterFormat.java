@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.gremlin.io.graphml.ArcadeGraphMLReader;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
@@ -26,7 +27,6 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
-import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,7 +37,8 @@ public class GraphMLImporterFormat extends AbstractTinkerPopImporterFormat {
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
     try (final InputStream is = parser.getInputStream()) {
-      readGraph(is, database, context, graph -> graph.io(IoCore.graphml()).reader().create(), "GraphML");
+      // ArcadeDB's reader: it reads the types ArcadeGraphMLWriter writes, and any other GraphML as TinkerPop's does (issue #10202)
+      readGraph(is, database, context, graph -> new ArcadeGraphMLReader(), "GraphML");
     } catch (final IOException e) {
       throw new ImportException("Error on importing GraphML", e);
     }

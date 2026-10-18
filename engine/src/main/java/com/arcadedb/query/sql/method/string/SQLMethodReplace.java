@@ -44,8 +44,10 @@ public class SQLMethodReplace extends AbstractSQLMethod {
   @Override
   public Object execute( final Object value, final Identifiable currentRecord,
       final CommandContext context, final Object[] params) {
+    // NULL in, NULL out, as SQL's REPLACE(): returning the search string here wrote it into rows that held no value
+    // (issue #10193)
     if (value == null || params[0] == null || params[1] == null)
-      return params[0];
+      return null;
 
     return value.toString().replace(params[0].toString(), params[1].toString());
   }

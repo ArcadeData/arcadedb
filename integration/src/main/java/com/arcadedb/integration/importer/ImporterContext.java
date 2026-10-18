@@ -79,6 +79,8 @@ public class ImporterContext {
    * declined or counted as an error - is a statement about the whole run.
    */
   public final AtomicLong skippedRecords             = new AtomicLong();
+  /** Links to a record that is not part of the import, cleared rather than left on a RID that names another record (issue #10201). */
+  public final AtomicLong danglingLinks              = new AtomicLong();
   public final AtomicLong errors                     = new AtomicLong();
   public final AtomicLong warnings                   = new AtomicLong();
   /**
@@ -187,6 +189,8 @@ public class ImporterContext {
       map.put("createdEdges", createdEdges.get());
     if (createdTimeSeriesSamples.get() > 0)
       map.put("createdTimeSeriesSamples", createdTimeSeriesSamples.get());
+    if (danglingLinks.get() > 0)
+      map.put("danglingLinks", danglingLinks.get());
 
     return map;
   }

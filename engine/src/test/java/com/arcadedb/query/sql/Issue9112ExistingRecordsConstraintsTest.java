@@ -214,9 +214,19 @@ class Issue9112ExistingRecordsConstraintsTest extends TestHelper {
   @Test
   void createPlainStringPropertyOverExistingRecords() {
     database.command("sql", "CREATE DOCUMENT TYPE T");
-    insert("T", "s = 5");
+    insert("T", "s = 'abc'");
     database.command("sql", "CREATE PROPERTY T.s STRING");
     assertThat(hasProperty("T", "s")).isTrue();
+  }
+
+  /** Issue #10204: an index on a STRING property compares stored numbers as text, so a stored number is refused too. */
+  @Test
+  void createPlainStringPropertyOverStoredNumbersIsRefused() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    insert("T", "s = 5");
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.s STRING")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("STRING");
+    assertThat(hasProperty("T", "s")).isFalse();
   }
 
   @Test

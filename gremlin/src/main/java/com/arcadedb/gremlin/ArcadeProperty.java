@@ -98,10 +98,16 @@ public class ArcadeProperty<T> implements Property<T> {
     return StringFactory.propertyString(this);
   }
 
+  private static boolean isStoredAsArray(final Object value) {
+    return value instanceof byte[] || value instanceof short[] || value instanceof int[] || value instanceof long[]
+        || value instanceof float[] || value instanceof double[];
+  }
+
   public static void validateValue(final Object value) {
     if (value != null) {
-      if (value.getClass().isArray())
-        // DO NOT SUPPORT ARRAY BECAUSE ARCADE TRANSFORM THEM IMPLICITLY INTO LISTS
+      // AN ARRAY IS REFUSED WHEN ARCADEDB WOULD STORE IT AS A LIST: ONLY byte[] AND THE PRIMITIVE NUMERIC ARRAYS COME BACK AS
+      // THE ARRAY THEY WERE (BINARY, ARRAY_OF_*), WHICH A GRAPH IMPORT OF THEM NEEDS (issue #10202)
+      if (value.getClass().isArray() && !isStoredAsArray(value))
         throw new IllegalArgumentException("Array type is not supported");
       Type.validateValue(value);
     }

@@ -21,6 +21,8 @@ package com.arcadedb.integration.importer.format;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.Record;
@@ -45,6 +47,7 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.misc.ValueTypeHints;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -56,12 +59,14 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeBuilder;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.json.NonFiniteNumbers;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -70,6 +75,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -112,12 +118,24 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   // same-schema restore the source and target RID spaces overlap, so an already-correct element (now holding its
   // NEW target RID) could equal another record's OLD source RID and get silently re-pointed a second time.
   // Recording the specific old-source RIDs left unresolved lets reconciliation touch only those elements.
-  private final Map<RID, Map<String, Set<RID>>> pendingLinkReconciliation = new HashMap<>();
+  //
+  // Issue #10201: each unresolved link is recorded with its exact PATH inside the property (a list position, a map key, an
+  // embedded document's property, at any depth), so reconciliation rewrites that element and nothing else, and a link whose
+  // target never arrives - deleted before the export, or left out of it - is set to null instead of being left on its old
+  // RID, which after the import names another record.
+  private final Map<RID, List<PendingLink>> pendingLinkReconciliation = new HashMap<>();
+
+  /** A link that pass 1 could not resolve: where it is in the record, and the source RID it holds. */
+  private record PendingLink(String property, Object[] path, RID oldRid) {
+  }
 
   /**
    * Records - or TIMESERIES samples - accumulated before the periodic commit in {@link #load} fires.
    */
   private static final int COMMIT_EVERY = 1_000;
+
+  /** The most buckets one type creation takes: the rest of an exported type's buckets are added after it exists. */
+  private static final int MAX_BUCKETS_PER_CREATION = 32;
 
   /**
    * TIMESERIES samples appended since the last commit. One {@code "ts"} line carries a whole chunk of samples
@@ -279,6 +297,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     context.lastLapOn = System.currentTimeMillis();
   }
 
+  /** At most what one creation takes: the buckets past it are added after the type exists. */
+  private static <T> TypeBuilder<T> withExportedBuckets(final TypeBuilder<T> builder, final int exportedBuckets) {
+    return exportedBuckets >= 0 ? builder.withTotalBuckets(Math.min(exportedBuckets, MAX_BUCKETS_PER_CREATION)) : builder;
+  }
+
   private void loadSchema(DatabaseInternal database,
       ImporterContext context,
       ImporterSettings settings,
@@ -300,23 +323,34 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           var type = types.getJSONObject(typeName);
           var typeType = type.getString("type");
 
+          // The bucket count is the export's too (issue #10201): recreated with the default, a type spread over several
+          // buckets to take concurrent writers came back on one
+          final int exportedBuckets = type.has("buckets") ? type.getJSONArray("buckets").length() : -1;
           var docType = switch (typeType) {
-            case "v" -> databaseSchema.createVertexType(typeName);
+            case "v" -> withExportedBuckets(databaseSchema.buildVertexType().withName(typeName), exportedBuckets).create();
             // An edge type's declarations are part of the schema, not decoration: recreating it with
             // createEdgeType() alone silently turned a unidirectional type bidirectional, and would turn a
             // LIGHTWEIGHT type into a record-backed one, changing the storage shape of every imported edge.
             // UNIQUE is deliberately NOT set here - see the pass after the indexes below.
-            case "e" -> databaseSchema.buildEdgeType().withName(typeName)
+            case "e" -> withExportedBuckets(databaseSchema.buildEdgeType().withName(typeName)
                 .withBidirectional(!type.has("bidirectional") || type.getBoolean("bidirectional"))
-                .withLightweight(type.getBoolean("lightweight", false))
+                .withLightweight(type.getBoolean("lightweight", false)), exportedBuckets)
                 .create();
-            case "d" -> databaseSchema.createDocumentType(typeName);
+            case "d" -> withExportedBuckets(databaseSchema.buildDocumentType().withName(typeName), exportedBuckets).create();
             // A TIMESERIES type is exported as "t" and had no case here at all, so the switch's default threw and
             // the whole import aborted at the schema line - not a partial restore, no restore (issue #7032).
             case "t" -> createTimeSeriesType(databaseSchema, typeName, type);
             default -> throw new IllegalStateException("Unexpected value: " + typeType);
           };
 
+          // A type the export spread over more buckets than a creation takes gets the rest one by one, named as a creation
+          // names them
+          for (int i = docType.getBuckets(false).size(); !"t".equals(typeType) && i < exportedBuckets; ++i) {
+            final String bucketName = FileUtils.encode(typeName, databaseSchema.getEncoding()) + "_" + i;
+            docType.addBucket(databaseSchema.existsBucket(bucketName) ?
+                databaseSchema.getBucketByName(bucketName) :
+                databaseSchema.createBucket(bucketName));
+          }
         });
     // add properties
     types.keySet()
@@ -875,7 +909,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var properties = document.getJSONObject("p");
     var oldRid = new RID(document.getString("r"));
     var imported = database.newDocument(document.getString("t"));
-    var unresolvedLinks = loadProperties(database, imported, properties);
+    var unresolvedLinks = loadProperties(database, imported, properties, document.getJSONObject(ValueTypeHints.KEY, null));
     imported.save();
     ridIndex.put(oldRid, imported.getIdentity());
     if (!unresolvedLinks.isEmpty())
@@ -892,7 +926,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var properties = vertex.getJSONObject("p");
     var oldRid = new RID(vertex.getString("r"));
     var imported = database.newVertex(vertex.getString("t"));
-    var unresolvedLinks = loadProperties(database, imported, properties);
+    var unresolvedLinks = loadProperties(database, imported, properties, vertex.getJSONObject(ValueTypeHints.KEY, null));
     imported.save();
     ridIndex.put(oldRid, imported.getIdentity());
     if (!unresolvedLinks.isEmpty())
@@ -924,7 +958,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (!(imported instanceof LightEdge)) {
       // A lightweight edge has no record: it is already connected by newEdge, carries no properties, and
       // rejects fromMap()/save() by design.
-      var unresolvedLinks = loadProperties(database, imported, properties);
+      var unresolvedLinks = loadProperties(database, imported, properties, edge.getJSONObject(ValueTypeHints.KEY, null));
       imported.save();
       if (!unresolvedLinks.isEmpty())
         pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
@@ -957,15 +991,19 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * regular LINK-typed property was passed through untouched, so after import it silently pointed at the source
    * database's RID - now a different, unrelated record, or none.
    *
-   * @return per still-unresolved property, the OLD/source RID value(s) that could not be resolved yet because they
-   * reference a record that has not been imported so far (a forward reference); empty when every LINK value
-   * resolved immediately. The caller is expected to remember these against the record's own (new) identity so
-   * {@link #reconcileUnresolvedLinks} can revisit them once every RID mapping is known.
+   * A value the type tree ({@link ValueTypeHints}) names is read through it, an undeclared link included, which is remapped
+   * the same way at any depth of the value (issue #10201).
+   *
+   * @return every link value that could not be resolved yet because it references a record not imported so far (a forward
+   * reference), with its position in the record; empty when every link resolved immediately. The caller is expected to
+   * remember these against the record's own (new) identity so {@link #reconcileUnresolvedLinks} can revisit them once every
+   * RID mapping is known.
    */
-  private Map<String, Set<RID>> loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
-    Map<String, Object> json2map = json2map(database, properties);
+  private List<PendingLink> loadProperties(final DatabaseInternal database, final MutableDocument imported,
+      final JSONObject properties, final JSONObject hints) {
+    final Map<String, Object> json2map = json2map(database, properties, hints);
     restoreNumberFidelity(imported.getType(), properties, json2map);
-    final Map<String, Set<RID>> unresolved = remapLinkProperties(imported.getType(), json2map);
+    final List<PendingLink> unresolved = remapLinkProperties(imported.getType(), json2map, hints);
     imported.fromMap(json2map);
     return unresolved;
   }
@@ -1020,56 +1058,88 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /**
    * Remaps every LINK-typed value in {@code properties} in place, consulting {@code ridIndex} for the schema-declared
    * LINK properties of {@code type} (scalar LINK, and LIST/MAP declared {@code OF LINK}). A value that {@code
-   * ridIndex} does not (yet) know about is left untouched and its OLD/source RID is added to the returned map,
-   * keyed by property name.
+   * ridIndex} does not (yet) know about is left untouched and returned with its position in the record.
    * <p>
-   * Only schema-declared properties are inspected: without a declared type there is no reliable way to tell a LINK
-   * string ("#12:34") apart from an ordinary string that merely looks like one.
+   * An undeclared property is inspected only when the type tree names it: without a declared type or a type tree there is
+   * no reliable way to tell a LINK string ("#12:34") apart from an ordinary string that merely looks like one, while a
+   * value the tree reads as a link is a RID at any depth (issue #10201).
    */
-  private Map<String, Set<RID>> remapLinkProperties(final DocumentType type, final Map<String, Object> properties) {
-    if (type == null || properties.isEmpty())
-      return Map.of();
+  private List<PendingLink> remapLinkProperties(final DocumentType type, final Map<String, Object> properties,
+      final JSONObject hints) {
+    if (properties.isEmpty())
+      return List.of();
 
-    Map<String, Set<RID>> unresolved = null;
+    final List<PendingLink> unresolved = new ArrayList<>(0);
+    final List<Object> path = new ArrayList<>();
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final Object value = entry.getValue();
       if (value == null)
         continue;
 
-      final Property property = type.getPolymorphicPropertyIfExists(entry.getKey());
-      if (property == null)
-        continue;
+      final String name = entry.getKey();
+      final Property property = type != null ? type.getPolymorphicPropertyIfExists(name) : null;
+      final Type propertyType = property != null ? property.getType() : null;
 
-      final Type propertyType = property.getType();
-
-      final Set<RID> propertyUnresolved;
-      if (propertyType == Type.LINK) {
-        propertyUnresolved = new HashSet<>();
-        entry.setValue(remapLinkValue(value, propertyUnresolved));
-      } else if (propertyType == Type.LIST && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof List<?> list) {
-        propertyUnresolved = new HashSet<>();
+      if (propertyType == Type.LINK)
+        entry.setValue(remapLinkValue(value, name, new Object[0], unresolved));
+      else if (propertyType == Type.LIST && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof List<?> list) {
         final List<Object> remapped = new ArrayList<>(list.size());
         for (final Object item : list)
-          remapped.add(remapLinkValue(item, propertyUnresolved));
+          remapped.add(remapLinkValue(item, name, new Object[] { remapped.size() }, unresolved));
         entry.setValue(remapped);
       } else if (propertyType == Type.MAP && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof Map<?, ?> valueMap) {
-        propertyUnresolved = new HashSet<>();
         final Map<Object, Object> remapped = new HashMap<>();
         for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet())
-          remapped.put(mapEntry.getKey(), remapLinkValue(mapEntry.getValue(), propertyUnresolved));
+          remapped.put(mapEntry.getKey(),
+              remapLinkValue(mapEntry.getValue(), name, new Object[] { mapEntry.getKey() }, unresolved));
         entry.setValue(remapped);
-      } else
-        continue;
-
-      if (!propertyUnresolved.isEmpty()) {
-        if (unresolved == null)
-          unresolved = new HashMap<>();
-        unresolved.put(entry.getKey(), propertyUnresolved);
-      }
+      } else if (hints != null && hints.has(name))
+        // AN UNDECLARED LINK, AT ANY DEPTH: THE TYPE TREE MADE IT A RID, SO IT IS ONE (issue #10201)
+        entry.setValue(remapRids(value, name, path, unresolved));
     }
 
-    return unresolved == null ? Map.of() : unresolved;
+    return unresolved.isEmpty() ? List.of() : unresolved;
+  }
+
+  /**
+   * Remaps, in place, every RID inside {@code value} - a value the type tree decoded, so its lists, maps and embedded
+   * documents are this import's own mutable instances - and records the ones not resolvable yet with their path.
+   */
+  private Object remapRids(final Object value, final String property, final List<Object> path,
+      final List<PendingLink> unresolved) {
+    if (value instanceof RID rid) {
+      final RID newRid = ridIndex.get(rid);
+      if (newRid != null)
+        return newRid;
+      unresolved.add(new PendingLink(property, path.toArray(), rid));
+      return value;
+    }
+
+    if (value instanceof List<?> list) {
+      @SuppressWarnings("unchecked")
+      final List<Object> items = (List<Object>) list;
+      for (int i = 0; i < items.size(); i++) {
+        path.add(i);
+        items.set(i, remapRids(items.get(i), property, path, unresolved));
+        path.removeLast();
+      }
+    } else if (value instanceof Map<?, ?> map) {
+      @SuppressWarnings("unchecked")
+      final Map<Object, Object> entries = (Map<Object, Object>) map;
+      for (final Map.Entry<Object, Object> entry : entries.entrySet()) {
+        path.add(entry.getKey());
+        entry.setValue(remapRids(entry.getValue(), property, path, unresolved));
+        path.removeLast();
+      }
+    } else if (value instanceof MutableDocument document && document.getIdentity() == null) {
+      for (final String name : new ArrayList<>(document.getPropertyNames())) {
+        path.add(name);
+        document.set(name, remapRids(document.get(name), property, path, unresolved));
+        path.removeLast();
+      }
+    }
+    return value;
   }
 
   /**
@@ -1078,7 +1148,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * imported so far - its OLD/source RID is recorded into {@code unresolved} and the original value is returned
    * unchanged, to be revisited by {@link #reconcileUnresolvedLinks}.
    */
-  private Object remapLinkValue(final Object value, final Set<RID> unresolved) {
+  private Object remapLinkValue(final Object value, final String property, final Object[] path,
+      final List<PendingLink> unresolved) {
     if (!(value instanceof String string))
       return value;
 
@@ -1095,16 +1166,17 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (newRid != null)
       return newRid.toString();
 
-    unresolved.add(oldRid);
+    unresolved.add(new PendingLink(property, path, oldRid));
     return value;
   }
 
   /**
    * Revisits every record that {@link #loadProperties} could not fully resolve LINK values for on first pass (a
    * forward reference to a record imported later in the source stream), now that the whole file has been read and
-   * every old-to-new RID mapping is known. A property still unresolved after this (the referenced record was never
-   * imported at all - excluded from the export, or a genuinely dangling link in the source database) is left as-is,
-   * matching the pre-fix behavior for that case, and is not treated as an import error.
+   * every old-to-new RID mapping is known. A link still unresolved after this (the referenced record was never imported
+   * at all - excluded from the export, or a genuinely dangling link in the source database) is set to null, or dropped
+   * from a {@code LIST OF} / {@code MAP OF} that holds no null, and counted in {@code danglingLinks}: left on its source
+   * RID, it named whatever record of THIS database the import placed there (issue #10201).
    * <p>
    * <b>Known limitation:</b> until this method runs, an unresolved forward-reference LINK value sits in the record
    * as the raw <i>source</i>-database RID (see {@link #remapLinkValue}) rather than a null or otherwise-neutral
@@ -1124,88 +1196,53 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (pendingLinkReconciliation.isEmpty())
       return;
 
+    final long danglingBefore = context.danglingLinks.get();
     int reconciled = 0;
-    for (final Map.Entry<RID, Map<String, Set<RID>>> entry : pendingLinkReconciliation.entrySet()) {
+    for (final Map.Entry<RID, List<PendingLink>> entry : pendingLinkReconciliation.entrySet()) {
       try {
         final Record record = database.lookupByRID(entry.getKey(), true);
         if (!(record instanceof Document document))
           continue;
 
-        final DocumentType type = document.getType();
         final MutableDocument mutable = document.modify();
         // The references are rewritten from this very record's reloaded content: no stale-read refusal (#8610)
         mutable.clearBasedOnStaleRead();
         boolean changed = false;
 
-        for (final Map.Entry<String, Set<RID>> propertyEntry : entry.getValue().entrySet()) {
-          final String propertyName = propertyEntry.getKey();
-          // Issue #6795: only an element whose CURRENT value is one of the OLD/source RIDs pass 1 actually left
-          // unresolved for this property is a candidate for remapping - an element pass 1 already resolved (now
-          // holding its NEW target RID) is left untouched even if that value happens to also be a key in
-          // ridIndex, which a normal same-schema restore (overlapping source/target RID spaces) makes routine.
-          final Set<RID> stillUnresolved = propertyEntry.getValue();
+        // HIGHEST LIST POSITION FIRST: AN ELEMENT REMOVED FROM A TYPED LIST SHIFTS ONLY THE ONES AFTER IT
+        final List<PendingLink> links = new ArrayList<>(entry.getValue());
+        links.sort(JsonlImporterFormat::reconciliationOrder);
 
-          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-          if (property == null)
+        final DocumentType type = document.getType();
+        for (final PendingLink link : links) {
+          // Null when the target is not in the export: deleted before it was taken, or left out of it. Its old RID names
+          // another record of this database, or none, so it is cleared rather than kept (issue #10201)
+          final RID newRid = ridIndex.get(link.oldRid());
+          final boolean[] replaced = { false };
+          final Object current = mutable.get(link.property());
+          // A LIST OF or MAP OF holds no null element: one whose target is missing is removed from it instead
+          final Property property = type.getPolymorphicPropertyIfExists(link.property());
+          final boolean removeIfMissing = link.path().length == 1 && property != null && property.getOfType() != null
+              && (property.getType() == Type.LIST || property.getType() == Type.MAP);
+          final Object updated = replaceAt(current, link.path(), 0, link.oldRid(), newRid, removeIfMissing, replaced);
+          if (!replaced[0])
             continue;
 
-          final Object currentValue = mutable.get(propertyName);
-          if (currentValue == null)
-            continue;
-
-          if (property.getType() == Type.LINK && currentValue instanceof RID currentRid) {
-            if (stillUnresolved.contains(currentRid)) {
-              final RID newRid = ridIndex.get(currentRid);
-              if (newRid != null) {
-                mutable.set(propertyName, newRid);
-                changed = true;
-              }
-            }
-          } else if (currentValue instanceof List<?> list) {
-            final List<Object> updated = new ArrayList<>(list.size());
-            boolean listChanged = false;
-            for (final Object item : list) {
-              if (item instanceof RID itemRid && stillUnresolved.contains(itemRid)) {
-                final RID newRid = ridIndex.get(itemRid);
-                if (newRid != null) {
-                  updated.add(newRid);
-                  listChanged = true;
-                  continue;
-                }
-              }
-              updated.add(item);
-            }
-            if (listChanged) {
-              mutable.set(propertyName, updated);
-              changed = true;
-            }
-          } else if (currentValue instanceof Map<?, ?> valueMap) {
-            final Map<Object, Object> updated = new HashMap<>();
-            boolean mapChanged = false;
-            for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet()) {
-              Object mapValue = mapEntry.getValue();
-              if (mapValue instanceof RID itemRid && stillUnresolved.contains(itemRid)) {
-                final RID newRid = ridIndex.get(itemRid);
-                if (newRid != null) {
-                  mapValue = newRid;
-                  mapChanged = true;
-                }
-              }
-              updated.put(mapEntry.getKey(), mapValue);
-            }
-            if (mapChanged) {
-              mutable.set(propertyName, updated);
-              changed = true;
-            }
+          mutable.set(link.property(), updated);
+          changed = true;
+          if (newRid == null) {
+            context.danglingLinks.incrementAndGet();
+            LogManager.instance().log(this, Level.FINE, "Record %s: the link %s in property '%s' points to a record that is not in the "
+                + "export, it is set to null", null, entry.getKey(), link.oldRid(), link.property());
           }
         }
 
         if (changed)
           mutable.save();
       } catch (final Exception e) {
-        // Same per-record failure handling as the main import loop (JsonlImporterFormat.java:113-138, issue
-        // #6468): logged, counted, and either aborts the whole import or is skipped per -onRowError, exactly like
-        // any other record failure, instead of propagating raw and uncounted.
+        // Same per-record failure handling as the main import loop (issue #6468): logged, counted, and either aborts the
+        // whole import or is skipped per -onRowError, exactly like any other record failure, instead of propagating raw and
+        // uncounted. A link to a record missing from the export fails here too when its property is MANDATORY or NOT NULL.
         LogManager.instance().log(this, Level.SEVERE, "Error on reconciling forward-referenced LINK propert(y/ies) for record '%s'", e, entry.getKey());
         context.errors.incrementAndGet();
         if (!skipOnRowError)
@@ -1231,13 +1268,90 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       }
     }
 
+    final long dangling = context.danglingLinks.get() - danglingBefore;
+    if (dangling > 0) {
+      context.warnings.incrementAndGet();
+      LogManager.instance().log(this, Level.WARNING,
+          "%d link(s) point to records that are not in the export (deleted before it was taken, or excluded from it): they are "
+              + "imported as null", null, dangling);
+    }
+
     pendingLinkReconciliation.clear();
   }
 
-  private Map<String, Object> json2map(DatabaseInternal database, final JSONObject json) {
+  /**
+   * A total order over the pending links of one record: by property, then the ones whose path starts with a list position by
+   * that position, highest first, then every other one. Only the relative order of the positions in one list matters, but a
+   * comparator that answered "equal" across kinds would not be transitive, which List.sort() may refuse.
+   */
+  private static int reconciliationOrder(final PendingLink a, final PendingLink b) {
+    final int byProperty = a.property().compareTo(b.property());
+    if (byProperty != 0)
+      return byProperty;
+    final Integer x = a.path().length > 0 && a.path()[0] instanceof Integer i ? i : null;
+    final Integer y = b.path().length > 0 && b.path()[0] instanceof Integer i ? i : null;
+    if (x != null && y != null)
+      return Integer.compare(y, x);
+    if (x != null)
+      return -1;
+    return y != null ? 1 : 0;
+  }
+
+  /**
+   * {@code current} with the element at {@code path} (from position {@code depth}) replaced by {@code replacement}, when it
+   * still holds {@code expected}. Containers are copied rather than changed, since a value read from a record is not
+   * necessarily mutable; an embedded document is modified through its owner.
+   */
+  private static Object replaceAt(final Object current, final Object[] path, final int depth, final RID expected,
+      final RID replacement, final boolean removeIfMissing, final boolean[] replaced) {
+    if (depth == path.length) {
+      if (current instanceof Identifiable identifiable && expected.equals(identifiable.getIdentity())) {
+        replaced[0] = true;
+        return replacement;
+      }
+      return current;
+    }
+
+    // THE ELEMENT ITSELF, IN A CONTAINER THAT CANNOT HOLD A NULL
+    final boolean removeHere = removeIfMissing && replacement == null && depth == path.length - 1;
+
+    final Object step = path[depth];
+    if (current instanceof List<?> list && step instanceof Integer index && index < list.size()) {
+      final List<Object> copy = new ArrayList<>(list);
+      final Object element = replaceAt(list.get(index), path, depth + 1, expected, replacement, removeIfMissing, replaced);
+      if (removeHere && replaced[0])
+        copy.remove((int) index);
+      else
+        copy.set(index, element);
+      return copy;
+    }
+    if (current instanceof Map<?, ?> map && map.containsKey(step)) {
+      final Map<Object, Object> copy = new LinkedHashMap<>(map);
+      final Object element = replaceAt(map.get(step), path, depth + 1, expected, replacement, removeIfMissing, replaced);
+      if (removeHere && replaced[0])
+        copy.remove(step);
+      else
+        copy.put(step, element);
+      return copy;
+    }
+    if ((current instanceof ImmutableEmbeddedDocument || current instanceof MutableEmbeddedDocument) && step instanceof String name) {
+      final MutableEmbeddedDocument mutable = current instanceof ImmutableEmbeddedDocument immutable ?
+          immutable.modify() :
+          (MutableEmbeddedDocument) current;
+      mutable.set(name, replaceAt(mutable.get(name), path, depth + 1, expected, replacement, removeIfMissing, replaced));
+      return mutable;
+    }
+    return current;
+  }
+
+  private Map<String, Object> json2map(final DatabaseInternal database, final JSONObject json, final JSONObject hints) {
     final Map<String, Object> map = new HashMap<>();
     for (final String k : json.keySet()) {
-      final Object value = convertFromJSONType(database, json.get(k));
+      // A VALUE THE TYPE TREE NAMES IS READ THROUGH IT (issue #10201), ANY OTHER AS A FILE WITHOUT ONE IS
+      final Object hint = hints != null ? hints.opt(k) : null;
+      final Object value = hint != null ?
+          ValueTypeHints.decode(database, json.get(k), hint, v -> convertFromJSONType(database, v)) :
+          convertFromJSONType(database, json.get(k));
       map.put(k, value);
     }
     return map;

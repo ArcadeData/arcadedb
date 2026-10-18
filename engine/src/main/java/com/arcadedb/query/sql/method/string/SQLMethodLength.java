@@ -43,8 +43,9 @@ public class SQLMethodLength extends AbstractSQLMethod {
 
   @Override
   public Object execute( final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+    // The length of NULL is unknown, as SQL's LENGTH(): 0 claimed an empty string where there is no value (issue #10193)
     if (value == null)
-      return 0;
+      return null;
 
     return value.toString().length();
   }
