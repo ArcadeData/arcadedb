@@ -45,6 +45,7 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
+import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -53,9 +54,11 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
@@ -70,6 +73,7 @@ import com.arcadedb.query.opencypher.optimizer.rules.JoinOrderRule;
 import com.arcadedb.query.opencypher.optimizer.rules.OptimizationRule;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
@@ -168,6 +172,38 @@ public class CypherOptimizer {
    * operators can represent, in which case the caller falls back to the ordinary pipeline
    */
   public PhysicalPlan optimize() {
+    final PhysicalPlan plan = buildPhysicalPlan();
+    if (plan != null && !statement.isReadOnly())
+      readRangesFirstWhereWritten(plan.getRootOperator());
+    return plan;
+  }
+
+  /**
+   * Makes every index range scan of the plan whose key the statement can write read its whole range before the first row,
+   * so the statement does not meet the entries its own writes move ahead of the cursor (issue #10251, the Halloween
+   * problem), and every prefix seek of such an index serve each vertex once. A seek of a whole key is answered at once,
+   * and the seeks of a label disjunction already serve each vertex once.
+   */
+  private void readRangesFirstWhereWritten(final PhysicalOperator operator) {
+    if (operator == null)
+      return;
+    if (operator instanceof NodeIndexRangeScan rangeScan
+        && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), rangeScan.getIndexProperties()))
+      rangeScan.setReadsEntriesFirst(true);
+    else if (operator instanceof NodeIndexSeek seek
+        && CypherEagernessAnalyzer.writesAnyPropertyOf(statement.getClausesInOrder(), seek.getIndexProperties()))
+      seek.setStatementWritesKey(true);
+    if (operator instanceof NodeHashJoin join) {
+      readRangesFirstWhereWritten(join.getLeftChild());
+      readRangesFirstWhereWritten(join.getRightChild());
+    } else if (operator instanceof CartesianProduct product)
+      readRangesFirstWhereWritten(product.getRight());
+    else if (operator instanceof ValueHashJoin join)
+      readRangesFirstWhereWritten(join.getRight());
+    readRangesFirstWhereWritten(operator.getChild());
+  }
+
+  private PhysicalPlan buildPhysicalPlan() {
     // 1. Build logical plan from AST
     final LogicalPlan logicalPlan = buildLogicalPlan();
 

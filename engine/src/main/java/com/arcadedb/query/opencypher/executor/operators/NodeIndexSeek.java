@@ -74,6 +74,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
   private final List<Object> keyValues;
   /** Predicates reading only {@link #variable}, evaluated once per seeked vertex instead of once per expanded row. */
   private BooleanExpression whereFilter;
+  /** Whether the statement can write a key of the index, see {@link #setStatementWritesKey}. */
+  private boolean statementWritesKey;
 
   public NodeIndexSeek(final String variable, final String label, final String propertyName,
                       final Object propertyValue, final String indexName,
@@ -109,6 +111,17 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
   public BooleanExpression getWhereFilter() {
     return whereFilter;
+  }
+
+  /**
+   * Tells the seek that the statement can write a key of its index (issue #10251, the Halloween problem). A key shorter
+   * than the index walks the range of the entries sharing that prefix, and a write of a trailing key moves the record's
+   * entry inside that range, ahead of the cursor when the key grows: the seek then serves each vertex once, as it does
+   * across the values of an IN-list, and the entries it moved are passed over. A whole key is answered at once and needs
+   * nothing.
+   */
+  public void setStatementWritesKey(final boolean statementWritesKey) {
+    this.statementWritesKey = statementWritesKey;
   }
 
   @Override
@@ -216,6 +229,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         // (issue #9236), so there is nothing to read
         if (seekKeys.isEmpty() || (!wholeKey && !index.supportsOrderedIterations()))
           finished = true;
+        else if (seen == null && statementWritesKey && !wholeKey)
+          seen = new HashSet<>();
       }
 
       private void addSeekKey(final Object leadingValue, final List<Object> trailing) {
@@ -356,6 +371,10 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
   public String getPropertyName() {
     return propertyName;
+  }
+
+  public List<String> getIndexProperties() {
+    return indexProperties;
   }
 
   public Object getPropertyValue() {

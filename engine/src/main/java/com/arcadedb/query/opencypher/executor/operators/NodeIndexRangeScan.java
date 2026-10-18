@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
@@ -46,6 +47,7 @@ import com.arcadedb.schema.VertexType;
 
 import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -78,6 +80,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
    */
   private boolean indexOrdered;
   private boolean ascending = true;
+  /** Whether the scan reads the addresses of the whole range before it serves the first row, see {@link #setReadsEntriesFirst}. */
+  private boolean readsEntriesFirst;
   /** Where the vertices with no value for the key come in a scan that stands for a whole label, see {@link NullKeys}. */
   private NullKeys nullKeys = NullKeys.NONE;
   /**
@@ -131,6 +135,22 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   public boolean isAdaptive() {
     return adaptive;
+  }
+
+  /**
+   * Makes the scan read the record addresses of its whole range before it serves the first row, and serve them in the
+   * order it read them (issue #10251, the Halloween problem). The plan asks for it when the statement writes a key of the
+   * index: a write moves the record's entry inside the index the scan is walking, and the moved entry lands ahead of the
+   * cursor, so the statement meets the records it updated again, and again, until they leave the range - or never, on a
+   * range open on that side. Read first, the range is the one the statement started from, as SQL's UPDATE reads it
+   * (issue #8814). Only the addresses are held, an int and a long per record, never the records, and the records are loaded
+   * as they are when served: a record deleted in the meantime is skipped.
+   * <p>
+   * It turns off the adaptive serving, whose label scan and chunked second pass would read the range again after the
+   * first writes.
+   */
+  public void setReadsEntriesFirst(final boolean readsEntriesFirst) {
+    this.readsEntriesFirst = readsEntriesFirst;
   }
 
   /**
@@ -204,6 +224,13 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private boolean valuesDone = false;
       // The index is declared on a supertype: its cursor also yields the supertype's own records and the siblings' (#8834)
       private boolean inheritedIndex = false;
+      // Entries first (issue #10251): the addresses the whole range holds, in the order they are served. Collecting is
+      // true while the range is read into them, when the vertices are not loaded
+      private boolean collecting = false;
+      private int[] entryBuckets;
+      private long[] entryPositions;
+      private int entries = 0;
+      private int nextEntry = 0;
 
       @Override
       public boolean hasNext() {
@@ -237,16 +264,84 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             finished = true;
             return;
           }
+          if (readsEntriesFirst) {
+            readEntries(n);
+            serveEntries(n);
+            return;
+          }
           if (adaptive && chooseAdaptively()) {
             fetchAdaptively(n);
             return;
           }
           cursor = openCursor();
+        } else if (entryBuckets != null) {
+          serveEntries(n);
+          return;
         } else if (fetcher != null || labelScan != null) {
           fetchAdaptively(n);
           return;
         }
 
+        readRange(n);
+      }
+
+      /**
+       * Reads the addresses of the whole range, null keys included where the scan serves them, through the same passes the
+       * streaming scan takes, without loading a record.
+       */
+      private void readEntries(final int n) {
+        entryBuckets = new int[64];
+        entryPositions = new long[64];
+        collecting = true;
+        try {
+          cursor = openCursor();
+          while (!finished)
+            readRange(n);
+        } finally {
+          collecting = false;
+          if (cursor != null) {
+            cursor.close();
+            cursor = null;
+          }
+          if (nullKeyCursor != null) {
+            nullKeyCursor.close();
+            nullKeyCursor = null;
+          }
+          nullKeyScan = null;
+        }
+        finished = false;
+      }
+
+      private void serveEntries(final int n) {
+        while (buffer.size() < n && nextEntry < entries) {
+          guard.check();
+          final int i = nextEntry++;
+          try {
+            addVertex(context.getDatabase().newRID(entryBuckets[i], entryPositions[i]).asVertex());
+          } catch (final RecordNotFoundException e) {
+            // DELETED SINCE THE RANGE WAS READ: NOTHING TO MATCH
+          }
+        }
+        if (nextEntry >= entries) {
+          finished = true;
+          entryBuckets = null;
+          entryPositions = null;
+        }
+      }
+
+      private void collect(final Identifiable identifiable) {
+        final RID rid = identifiable.getIdentity();
+        if (entries == entryBuckets.length) {
+          entryBuckets = Arrays.copyOf(entryBuckets, entries << 1);
+          entryPositions = Arrays.copyOf(entryPositions, entries << 1);
+        }
+        entryBuckets[entries] = rid.getBucketId();
+        entryPositions[entries] = rid.getPosition();
+        ++entries;
+      }
+
+      /** Reads on from where the passes over the range stand, until the buffer holds n rows or the range is done. */
+      private void readRange(final int n) {
         final boolean nullKeysInIndex = nullKeys == NullKeys.SKIPPED_IN_INDEX || nullKeys == NullKeys.PLACED_FROM_INDEX;
 
         // A null key sorts lowest in the index: descending, the vertices that have one come before the values
@@ -409,10 +504,17 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private void addIndexed(final Identifiable identifiable) {
         if (inheritedIndex && !Labels.carriesLabel(context.getDatabase().getSchema(), identifiable, label))
           return;
-        addVertex(identifiable.asVertex());
+        if (collecting)
+          collect(identifiable);
+        else
+          addVertex(identifiable.asVertex());
       }
 
       private void addVertex(final Vertex vertex) {
+        if (collecting) {
+          collect(vertex);
+          return;
+        }
         final ResultInternal result = new ResultInternal();
         result.setProperty(variable, vertex);
         buffer.add(result);
@@ -612,7 +714,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         case PLACED_FROM_INDEX -> ", null keys from the index]";
         default -> "]";
       });
-    if (adaptive) {
+    if (readsEntriesFirst)
+      sb.append(" [range read first: the statement writes its key]");
+    else if (adaptive) {
       final Boolean scan = servedByScan.get();
       sb.append(scan == null ? " [physical order, or label scan on a large range]" :
           scan ? " [served by label scan: large range]" : " [served in physical order]");

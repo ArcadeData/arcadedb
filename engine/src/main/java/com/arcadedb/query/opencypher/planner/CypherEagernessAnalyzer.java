@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -314,6 +315,49 @@ public final class CypherEagernessAnalyzer {
     writePending = true;
     writeSeen = true;
     writesAnyPropertyKey = true;
+  }
+
+  /**
+   * Whether a clause of the statement can write one of {@code keys} on a record: a {@code SET} or {@code REMOVE} of one of
+   * them, a {@code SET} of a whole map or of a key computed per row, the {@code ON CREATE} / {@code ON MATCH} of a MERGE, and
+   * any clause whose writes the planner cannot see (a procedure call, a subquery). CREATE and the label writes are not
+   * counted: they get a barrier of their own, see {@link #needsBarrier(CreateClause, Set)}. An index walked by such a
+   * statement reads its whole range before the first write, or the statement meets the entries it moved (issue #10251).
+   */
+  public static boolean writesAnyPropertyOf(final List<ClauseEntry> clauses, final Collection<String> keys) {
+    if (clauses == null)
+      return false;
+    final CypherEagernessAnalyzer writes = new CypherEagernessAnalyzer();
+    if (writesUnseen(clauses, writes))
+      return true;
+    if (writes.writesAnyPropertyKey)
+      return true;
+    for (final String key : keys)
+      if (writes.writtenPropertyKeys.contains(key))
+        return true;
+    return false;
+  }
+
+  /** Folds the property writes of the clauses into {@code writes}, and answers whether one of them writes what it cannot name. */
+  private static boolean writesUnseen(final List<ClauseEntry> clauses, final CypherEagernessAnalyzer writes) {
+    for (final ClauseEntry entry : clauses) {
+      switch (entry.getType()) {
+      case SET -> writes.observeWrite((SetClause) entry.getClause());
+      case REMOVE -> writes.observeWrite((RemoveClause) entry.getClause());
+      case MERGE -> writes.observeWrite((MergeClause) entry.getClause());
+      case FOREACH -> {
+        if (writesUnseen(((ForeachClause) entry.getClause()).getInnerClauses(), writes))
+          return true;
+      }
+      case CALL, SUBQUERY -> {
+        return true;
+      }
+      default -> {
+        // reads, CREATE and DELETE write no property of a record that already exists
+      }
+      }
+    }
+    return false;
   }
 
   private void observePropertyWrite(final String property, final Expression keyExpression) {
