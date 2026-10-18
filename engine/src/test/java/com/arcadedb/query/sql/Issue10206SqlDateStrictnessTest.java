@@ -121,6 +121,7 @@ class Issue10206SqlDateStrictnessTest extends TestHelper {
       assertThat(ids("SELECT id FROM E WHERE d1 < ?", zoned)).as("pass %d", pass).containsExactly(1, 6);
       assertThat(ids("SELECT id FROM E WHERE d1 = ?", zoned)).as("pass %d", pass).isEmpty();
       assertThat(ids("SELECT id FROM E WHERE d1 >= ?", zoned)).as("pass %d", pass).containsExactly(2);
+      assertThat(ids("SELECT id FROM E WHERE d1 <= ?", zoned)).as("pass %d", pass).containsExactly(1, 6);
       assertThat(ids("SELECT id FROM E WHERE d1 <= ?", LocalDateTime.of(2021, 2, 4, 0, 0))).as("pass %d", pass)
           .containsExactly(1, 6);
       if (pass == 0)
