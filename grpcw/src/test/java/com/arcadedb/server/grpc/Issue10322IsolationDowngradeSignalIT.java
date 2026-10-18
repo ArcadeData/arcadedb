@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.ServerPlugin;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -146,7 +147,32 @@ class Issue10322IsolationDowngradeSignalIT extends BaseGrpcServerTest {
     beginAndRollback(TransactionIsolation.READ_COMMITTED);
     beginAndRollback(TransactionIsolation.REPEATABLE_READ);
 
-    assertThat(published.stream().filter(r -> r.getLevel().intValue() >= Level.WARNING.intValue()).toList()).isEmpty();
+    // Filtered on the downgrade message so an unrelated server WARNING during these begins cannot make this flaky
+    assertThat(published.stream()
+        .filter(r -> r.getLevel().intValue() >= Level.WARNING.intValue() && r.getMessage() != null && r.getMessage()
+            .contains("isolation"))
+        .toList()).isEmpty();
+  }
+
+  @Test
+  void theDowngradeWarningWindowReopensOnceItHasElapsed() {
+    final ArcadeDbGrpcService service = grpcService();
+    final long window = ArcadeDbGrpcService.SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS;
+    final long t0 = 1_000_000L;
+
+    assertThat(service.claimSerializableDowngradeWarning(t0)).isTrue();
+    assertThat(service.claimSerializableDowngradeWarning(t0 + 1)).isFalse();
+    assertThat(service.claimSerializableDowngradeWarning(t0 + window - 1)).isFalse();
+    // Once the window has elapsed the next downgrade is reported at WARNING again, and opens a new window
+    assertThat(service.claimSerializableDowngradeWarning(t0 + window)).isTrue();
+    assertThat(service.claimSerializableDowngradeWarning(t0 + window + 1)).isFalse();
+  }
+
+  private ArcadeDbGrpcService grpcService() {
+    for (final ServerPlugin plugin : getServer(0).getPlugins())
+      if (plugin instanceof GrpcServerPlugin grpcPlugin)
+        return grpcPlugin.getService();
+    throw new IllegalStateException("GrpcServerPlugin not found");
   }
 
   private List<LogRecord> downgradeWarnings() {

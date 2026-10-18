@@ -1859,15 +1859,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void logSerializableDowngrade(final String owner, final String databaseName, final String transactionId,
       final TransactionIsolation effective) {
-    final long now = System.currentTimeMillis();
-    final long last = lastSerializableDowngradeWarningMs.get();
-    final boolean warn = (last == 0L || now - last >= SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS)
-        && lastSerializableDowngradeWarningMs.compareAndSet(last, now);
+    final boolean warn = claimSerializableDowngradeWarning(System.currentTimeMillis());
     LogManager.instance().log(this, warn ? Level.WARNING : Level.FINE, """
             beginTransaction(): principal=%s requested SERIALIZABLE isolation on database '%s', which the engine does \
             not provide: transaction %s runs at %s, a weaker guarantee (logged at WARNING at most once every %ss)""",
         owner != null && !owner.isEmpty() ? owner : "<anonymous>", databaseName, transactionId, effective,
         SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS / 1000);
+  }
+
+  /**
+   * Whether a SERIALIZABLE downgrade observed at {@code nowMs} is the one let through at WARNING for the current window.
+   * Concurrent callers race on a CAS, so at most one of them wins per window. Time is a parameter so the window can be
+   * tested without waiting for it to elapse.
+   */
+  boolean claimSerializableDowngradeWarning(final long nowMs) {
+    final long last = lastSerializableDowngradeWarningMs.get();
+    return (last == 0L || nowMs - last >= SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS)
+        && lastSerializableDowngradeWarningMs.compareAndSet(last, nowMs);
   }
 
   @Override
@@ -2000,6 +2008,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Issue #10322: report the level the transaction REALLY runs at, read from the engine transaction rather than
       // recomputed from the request, so a mapped (or a future, differently-mapped) request can never be mis-reported.
+      // Fully qualified because this class imports the gRPC-generated TransactionContext of the same simple name.
       final com.arcadedb.database.TransactionContext engineTx = startedTxCtx.engineTransaction;
       final TransactionIsolation effectiveIsolation = toWireIsolation(
           engineTx != null ? engineTx.getIsolationLevel() : isolationLevel);
