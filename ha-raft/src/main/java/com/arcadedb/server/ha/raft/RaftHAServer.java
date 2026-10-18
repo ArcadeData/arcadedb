@@ -414,6 +414,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // handler thread for every refused request that claims this node's id, which any sender can write, so it must not
   // enumerate the interfaces each time. An address assigned since is recognised by the next refresh at the latest.
   private static final long                  LOCAL_ADDRESSES_TTL_NANOS      = TimeUnit.SECONDS.toNanos(30);
+  private static final long                  LOCAL_ADDRESSES_RETRY_NANOS    = TimeUnit.SECONDS.toNanos(1);
   private static final AtomicBoolean         localAddressesRefreshing       = new AtomicBoolean();
   private static volatile LocalAddresses     localAddresses;
 
@@ -1030,10 +1031,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // request (a sender can write this node's id as often as it likes).
     final boolean claimsSelf = localPeerId.equals(requestor);
     final boolean fromThisHost = claimsSelf && isAddressOfThisHost(remote);
-    if (claimsSelf && !fromThisHost)
-      misdirectedSelfClaimsFromElsewhere.incrementAndGet();
     final Map<RaftPeerId, Long> queuedAt = fromThisHost ? selfDialRepairQueuedAt : misdirectedRecoveryQueuedAt;
-    final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
+    // A claim of this node's id from elsewhere is reported in the strangers' slot: whatever it addresses, it repairs
+    // nothing, and a flood of them must not hold the slot - nor the WARNING - of a real report about that member.
+    final boolean claimFromElsewhere = claimsSelf && !fromThisHost;
+    final RaftPeerId slot = !claimFromElsewhere && isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo
+        : UNKNOWN_MISDIRECTED_PEER;
+    if (claimFromElsewhere)
+      misdirectedSelfClaimsFromElsewhere.incrementAndGet();
     if (!claimThrottleSlot(queuedAt, slot, System.currentTimeMillis(), MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
 
@@ -1045,8 +1050,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final boolean selfDial = member && fromThisHost;
         // Read here rather than when the task was queued: the worker may have been busy closing another channel.
         final Level level = claimThrottleSlot(fromThisHost ? selfDialWarnedAt : misdirectedWarnedAt,
-            member ? addressedTo : UNKNOWN_MISDIRECTED_PEER, System.currentTimeMillis(), MISDIRECTED_WARNING_INTERVAL_MS)
-            ? Level.WARNING : Level.FINE;
+            member && !claimFromElsewhere ? addressedTo : UNKNOWN_MISDIRECTED_PEER, System.currentTimeMillis(),
+            MISDIRECTED_WARNING_INTERVAL_MS) ? Level.WARNING : Level.FINE;
 
         if (!member) {
           LogManager.instance().log(this, level,
@@ -1056,7 +1061,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
 
         final String resolved = resolvePeerAddresses(addressedTo);
-        if (claimsSelf && !fromThisHost) {
+        if (claimFromElsewhere && remote == null) {
+          // Not an impostor report: gRPC handed the guard no address. Every Raft listener installs the interceptor, so
+          // this means Ratis served the RPC outside the call's context - a dispatch change in a Ratis upgrade - and a
+          // self-dial on this RPC can no longer be told from a claim, so it is refused without repair.
+          LogManager.instance().log(this, level,
+              "Refused a Raft %s addressed to peer '%s' that names this node as its sender, but no remote address was "
+                  + "reported for the call, so it cannot be confirmed as this node's own and the channel to '%s' is left "
+                  + "alone (issue #10225). If this node's own requests come back to it, the channel will not be repaired "
+                  + "on this RPC: Apache Ratis may no longer serve it inside the gRPC call's context.", rpc, addressedTo,
+              addressedTo);
+          return;
+        }
+
+        if (claimFromElsewhere) {
           LogManager.instance().log(this, level,
               "Refused a Raft %s addressed to peer '%s' that names this node as its sender but arrived from %s, which is "
                   + "not an address of this host (issue #10225): another process writes this node's id '%s' as its "
@@ -1265,7 +1283,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (cached != null && !localAddressesRefreshing.compareAndSet(false, true))
       return cached.addresses();
     try {
-      final LocalAddresses loaded = new LocalAddresses(loadLocalInterfaceAddresses(), now);
+      final Set<InetAddress> addresses = loadLocalInterfaceAddresses();
+      // A failed listing is retried after a second rather than kept for the whole TTL
+      final LocalAddresses loaded = new LocalAddresses(addresses != null ? addresses : Set.of(),
+          addresses != null ? now : now - LOCAL_ADDRESSES_TTL_NANOS + LOCAL_ADDRESSES_RETRY_NANOS);
       localAddresses = loaded;
       return loaded.addresses();
     } finally {
@@ -1274,6 +1295,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /** This host's interface addresses, or {@code null} when they cannot be listed. */
   private static Set<InetAddress> loadLocalInterfaceAddresses() {
     final Set<InetAddress> addresses = new HashSet<>();
     try {
@@ -1285,9 +1307,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             addresses.add(assigned.nextElement());
         }
     } catch (final SocketException e) {
-      // Only the loopback is recognised until the next refresh: a self-dial over another address waits for it, an
-      // impostor gains nothing
+      // Only the loopback is recognised until the retry: a self-dial over another address waits for it, an impostor
+      // gains nothing
       LogManager.instance().log(RaftHAServer.class, Level.FINE, "Cannot list this host's network interfaces: %s", e.toString());
+      return null;
     }
     return Set.copyOf(addresses);
   }
@@ -7903,8 +7926,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long maxConnectionAgeMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_MS);
     final long maxConnectionAgeGraceMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_GRPC_MAX_CONNECTION_AGE_GRACE_MS);
-    // gRPC runs the interceptor added last first, so the remote address is in the context before the allowlist sees the
-    // call. Either order works - each only reads the call's attributes - but the context must wrap the service handler.
+    // Order does not matter: each only reads the call's attributes, and the context set here wraps the service handler.
     final ServerInterceptor remoteAddress = new RemoteAddressCallInterceptor();
 
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(

@@ -54,7 +54,7 @@ class Issue10225SelfDialNeedsALocalSourceTest {
   private static final String     SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   private static final RaftPeerId MEMBER      = RaftPeerId.valueOf("localhost_2435");
   private static final String     SELF_DIAL   = "This node sent a Raft appendEntries meant for peer 'localhost_2435'";
-  private static final String     IMPOSTOR    = "names this node as its sender but arrived from";
+  private static final String     IMPOSTOR    = "names this node as its sender";
 
   private CapturingTestLogger log;
 
@@ -89,6 +89,42 @@ class Issue10225SelfDialNeedsALocalSourceTest {
     assertThat(log.countFormattedContaining(SELF_DIAL)).as("a claim the connection does not confirm is no self-dial").isZero();
     assertThat(raft.getMisdirectedChannelResets()).isZero();
     assertThat(raft.getMisdirectedSelfClaimsFromElsewhere()).as("counted, so an operator can spot it without the log").isEqualTo(1L);
+  }
+
+  /**
+   * No address at all is not an impostor: it means the RPC was served outside the call's gRPC context, so the line says
+   * that a self-dial can no longer be repaired on it rather than accusing a sender.
+   */
+  @Test
+  void aCallWithNoRemoteAddressIsReportedAsUnconfirmableNotAsAnImpostor() {
+    final RaftHAServer raft = detachedServer();
+
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null);
+
+    Awaitility.await("the refusal is looked at").atMost(10, TimeUnit.SECONDS)
+        .until(() -> log.countFormattedContaining("no remote address was reported for the call") == 1);
+    assertThat(log.countFormattedContaining("arrived from")).isZero();
+  }
+
+  /**
+   * A flood of claims of this node's id from elsewhere cannot hold the slot, nor the WARNING, of a real report about the
+   * member they address: a peer whose address for that member leads here is still reported at WARNING.
+   */
+  @Test
+  void claimsFromElsewhereDoNotSilenceARealReportAboutTheSameMember() throws Exception {
+    final RaftHAServer raft = detachedServer();
+    final InetSocketAddress foreign = new InetSocketAddress(InetAddress.getByName("192.0.2.10"), 51_000);
+
+    for (int i = 0; i < 5; i++)
+      raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), foreign);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, RaftPeerId.valueOf("localhost_2436"),
+        new InetSocketAddress(InetAddress.getByName("192.0.2.11"), 51_000));
+
+    final String report = "from peer 'localhost_2436' addressed to peer 'localhost_2435'";
+    Awaitility.await("the peer's report is looked at").atMost(10, TimeUnit.SECONDS)
+        .until(() -> log.countFormattedContaining(report) == 1);
+    assertThat(log.formattedAt(Level.WARNING)).anyMatch(m -> m.contains(report));
+    assertThat(raft.getMisdirectedSelfClaimsFromElsewhere()).isEqualTo(5L);
   }
 
   /** The repair #10016 needs still runs: this node's own request comes back over the loopback. */
