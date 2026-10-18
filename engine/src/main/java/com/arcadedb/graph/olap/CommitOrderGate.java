@@ -53,9 +53,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class CommitOrderGate {
-  // Long enough to outlast any scheduling hiccup between the commit point and the callback, which is a few instructions
-  // and the release of the locks, short enough that a thread whose predecessor died does not hang its caller for good
-  static final long MAX_WAIT_MS = 30_000L;
   // How often a waiting thread looks again at who is at the head of the line, which can change without waking it
   private static final long RECHECK_MS = 100L;
 
@@ -71,15 +68,10 @@ final class CommitOrderGate {
   // Read at every wait, so a change of the setting applies at once. 0 or less: the committing thread does not wait
   private final LongSupplier                  maxWaitMs;
 
-  CommitOrderGate() {
-    this(MAX_WAIT_MS);
-  }
-
-  CommitOrderGate(final long maxWaitMs) {
-    this(() -> maxWaitMs);
-  }
-
-  /** @param maxWaitMs how long a committing thread waits for the changes ahead of its own, asked at every wait */
+  /**
+   * @param maxWaitMs how long, in milliseconds, a committing thread waits for the changes ahead of its own, asked at every wait
+   *                  (see {@code GlobalConfiguration.GAV_COMMIT_ORDER_MAX_WAIT}); 0 or less does not wait
+   */
   CommitOrderGate(final LongSupplier maxWaitMs) {
     this.maxWaitMs = maxWaitMs;
   }
@@ -108,7 +100,8 @@ final class CommitOrderGate {
    * The transaction of {@code place} committed: delivers its change to {@code sink} after the changes ahead of it in line, and
    * returns once that has happened or the wait is over. A null {@code delta} is a transaction with nothing to deliver, which only
    * releases its place. When the wait ends early, because the time is up or the thread is interrupted, the change is not in the
-   * view yet but is delivered, in order, by the next thread to pass through the gate.
+   * view yet but is delivered, in order, by the next thread to pass through the gate. The {@code sink} is the same for every call
+   * and must be safe to call from several threads: a change of an evicted place is handed to it beside a delivery in progress.
    */
   void deliver(final Place place, final TxDelta delta, final Consumer<TxDelta> sink) {
     place.delta = delta;

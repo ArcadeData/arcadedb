@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CommitOrderGateTest {
-  private final CommitOrderGate gate      = new CommitOrderGate();
+  private final CommitOrderGate gate      = new CommitOrderGate(() -> 30_000L);
   private final List<TxDelta>   delivered = new CopyOnWriteArrayList<>();
 
   @Test
@@ -148,7 +148,7 @@ class CommitOrderGateTest {
   @Test
   @Timeout(20)
   void aPlaceThatNeverReportsIsEvictedAndItsLateChangeStillArrives() throws Exception {
-    final CommitOrderGate shortWait = new CommitOrderGate(200);
+    final CommitOrderGate shortWait = new CommitOrderGate(() -> 200L);
     final TxDelta lost = new TxDelta();
     final TxDelta second = new TxDelta();
 
@@ -206,7 +206,7 @@ class CommitOrderGateTest {
   @Test
   @Timeout(20)
   void aLateChangeDeliveredWhileAnotherDeliveryIsInProgressIsNotLost() throws Exception {
-    final CommitOrderGate shortWait = new CommitOrderGate(100);
+    final CommitOrderGate shortWait = new CommitOrderGate(() -> 100L);
     final TxDelta lost = new TxDelta();
     final TxDelta second = new TxDelta();
     final CountDownLatch inSink = new CountDownLatch(1);
@@ -249,7 +249,7 @@ class CommitOrderGateTest {
 
   @Test
   void withNoWaitACommitDoesNotWaitForTheOnesAheadButTheOrderIsKept() throws Exception {
-    final CommitOrderGate noWait = new CommitOrderGate(0);
+    final CommitOrderGate noWait = new CommitOrderGate(() -> 0L);
     final TxDelta first = new TxDelta();
     final TxDelta second = new TxDelta();
     final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -271,7 +271,7 @@ class CommitOrderGateTest {
 
   @Test
   void aPlaceThatIsAbandonedAfterItWasEvictedChangesNothing() throws Exception {
-    final CommitOrderGate shortWait = new CommitOrderGate(100);
+    final CommitOrderGate shortWait = new CommitOrderGate(() -> 100L);
     final ExecutorService executor = Executors.newSingleThreadExecutor();
     final CommitOrderGate.Place stuck;
     try {
