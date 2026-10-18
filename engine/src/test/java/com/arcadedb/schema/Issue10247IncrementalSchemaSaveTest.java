@@ -30,12 +30,15 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -474,6 +477,109 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
     reopenDatabase();
     assertThat(database.getSchema().getType("Both").getSuperTypes()).extracting(DocumentType::getName).containsExactly("Mid");
     assertThat(database.getSchema().getType("Leaf").getAllIndexes(true)).hasSize(1);
+  }
+
+  /** The public mutators of the type classes that the tests below exercise, or whose path is covered by another test. */
+  private static final Set<String> MUTATORS_ACCOUNTED_FOR = Set.of(
+      // EXERCISED ONE BY ONE BY everyMutatorOfATypeIsWrittenAsTheFullSerialization
+      "addBucket", "removeBucket", "addSuperType", "removeSuperType", "setSuperTypes", "createProperty", "dropProperty",
+      "renameProperty", "createTypeIndex", "rename", "setAliases", "setCustomValue", "setBucketSelectionStrategy",
+      "setNeedsRepartition", "ensureExternalBuckets", "setLightweight", "setUnique",
+      // CALLED BY THE DROP OF AN INDEX, COVERED BY THE BULK CHANGE THAT DROPS ONE; INTERNAL STEPS OF A SESSION THE CALLER OPENED
+      "removeBucketIndexInternal", "removeTypeIndexInternal", "ensureExternalBucketsRecursive", "alterShape",
+      "removeUniqueConstraint",
+      // END WITH THE FULL SAVE OF THE SCHEMA (saveConfiguration()), WHICH MARKS EVERY TYPE STALE
+      "reclaimEmptyExternalBuckets",
+      // TIME SERIES SETTINGS: ASSIGNED TO A TYPE NO SAVE HAS SERIALIZED YET BY ITS BUILDER, OR THROUGH recordChange(), WHICH NAMES
+      // NO TYPE
+      "addTsColumn", "setCompactionBucketIntervalMs", "setDownsamplingTiers", "setPrecision", "setRetentionMs", "setShardCount",
+      "setTimestampColumn", "drop");
+
+  /**
+   * A tripwire: a new public mutator of a type class makes this test fail until somebody has decided how it keeps the cache of
+   * the serialized type honest - the rule written on {@code LocalDocumentType.getSerializedJSON()} - and added it to the list
+   * above, exercised in {@link #everyMutatorOfATypeIsWrittenAsTheFullSerialization} or with the reason it needs no test.
+   */
+  @Test
+  void everyPublicMutatorOfATypeClassIsAccountedFor() {
+    final Set<String> found = new TreeSet<>();
+    for (final Class<?> type : new Class<?>[] { LocalDocumentType.class, LocalVertexType.class, LocalEdgeType.class,
+        LocalTimeSeriesType.class })
+      for (final Method method : type.getDeclaredMethods()) {
+        final String name = method.getName();
+        if (Modifier.isPublic(method.getModifiers()) && !method.isSynthetic() && name.matches(
+            "(set|add|remove|rename|drop|create|alter|ensure|reclaim)[A-Z].*|rename|drop"))
+          found.add(name);
+      }
+
+    assertThat(found).as("public mutators of the type classes that no test accounts for").isSubsetOf(MUTATORS_ACCOUNTED_FOR);
+  }
+
+  @Test
+  void everyMutatorOfATypeIsWrittenAsTheFullSerialization() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final LocalDocumentType parent = (LocalDocumentType) schema.createDocumentType("Parent");
+    parent.createProperty("a", Type.STRING);
+    final LocalDocumentType child = (LocalDocumentType) schema.buildDocumentType().withName("Child").withSuperType("Parent").create();
+    final LocalDocumentType plain = (LocalDocumentType) schema.createDocumentType("Plain");
+    assertFileIsTheFullSerialization();
+
+    parent.createProperty("b", Type.INTEGER);
+    assertFileIsTheFullSerialization();
+    parent.renameProperty("b", "b2");
+    assertFileIsTheFullSerialization();
+    parent.dropProperty("b2");
+    assertFileIsTheFullSerialization();
+
+    parent.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
+    assertFileIsTheFullSerialization();
+
+    child.setCustomValue("c", "v");
+    assertFileIsTheFullSerialization();
+    child.setAliases(Set.of("Kid"));
+    assertFileIsTheFullSerialization();
+
+    // A BUCKET OF ITS OWN, ATTACHED AND DETACHED
+    final Bucket bucket = schema.createBucket("extraBucket");
+    plain.addBucket(bucket);
+    assertFileIsTheFullSerialization();
+    plain.removeBucket(bucket);
+    assertFileIsTheFullSerialization();
+
+    plain.setBucketSelectionStrategy("thread");
+    assertFileIsTheFullSerialization();
+    plain.setNeedsRepartition(true);
+    assertFileIsTheFullSerialization();
+    plain.setNeedsRepartition(false);
+    assertFileIsTheFullSerialization();
+
+    // THE PAIRED BUCKET OF AN EXTERNAL PROPERTY IS A FILE OF THE TYPE
+    plain.createProperty("big", Type.STRING).setExternal(true);
+    assertFileIsTheFullSerialization();
+    plain.ensureExternalBuckets();
+    assertFileIsTheFullSerialization();
+
+    // THE SUPER TYPES AS A LIST, AND ONE AT A TIME
+    plain.setSuperTypes(List.of(parent));
+    assertFileIsTheFullSerialization();
+    plain.removeSuperType("Parent");
+    assertFileIsTheFullSerialization();
+    plain.addSuperType(parent);
+    assertFileIsTheFullSerialization();
+
+    plain.rename("Renamed");
+    assertFileIsTheFullSerialization();
+
+    // THE EDGE TYPE FLAGS
+    final LocalEdgeType edge = (LocalEdgeType) schema.createEdgeType("Knows");
+    edge.setUnique(true);
+    assertFileIsTheFullSerialization();
+    edge.setUnique(false);
+    assertFileIsTheFullSerialization();
+
+    reopenDatabase();
+    assertThat(database.getSchema().existsType("Renamed")).isTrue();
+    assertThat(database.getSchema().getType("Renamed").getSuperTypes()).hasSize(1);
   }
 
   @Test
