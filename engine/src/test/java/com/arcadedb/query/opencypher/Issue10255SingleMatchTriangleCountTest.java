@@ -78,7 +78,8 @@ class Issue10255SingleMatchTriangleCountTest extends TestHelper {
       knows(e[0], e[1]);
 
     for (final String where : new String[] { "b.id > a.id AND c.id > b.id", "c.id < a.id AND a.id < b.id",
-        "a.id < b.id AND b.id < c.id AND a.id < c.id", "c.id > b.id AND a.id < b.id" }) {
+        "a.id < b.id AND b.id < c.id AND a.id < c.id", "c.id > b.id AND a.id < b.id",
+        "a.id < b.id AND a.id < b.id AND b.id < c.id" }) {
       final String query = TRIANGLE + " WHERE " + where;
       assertThat(explain(query + " RETURN count(*) AS n")).as(where).contains(PUSHED);
       assertAllAgree(query, 4L);
