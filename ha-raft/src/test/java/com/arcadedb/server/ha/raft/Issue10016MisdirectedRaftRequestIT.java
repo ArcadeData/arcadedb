@@ -154,7 +154,7 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
       assertThat(raft.probeSelfDial(addressedToId)).isEqualTo(RaftHAServer.SelfDialProbeOutcome.SELF);
 
       // ...and a request claiming this node's id, from wherever, now leads to the repair
-      raft.onMisdirectedRaftRequest("appendEntries", addressedToId, raft.getLocalPeerId(), null);
+      raft.onMisdirectedRaftRequest("appendEntries", addressedToId, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
       Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
           .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> raft.getMisdirectedChannelResets() > resetsBefore);
     } finally {

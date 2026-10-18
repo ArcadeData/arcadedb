@@ -25,6 +25,8 @@ import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.ha.raft.RaftHAServer.SelfDialProbeOutcome;
 import org.apache.ratis.proto.RaftProtos.RequestVoteRequestProto;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.thirdparty.io.grpc.Status;
+import org.apache.ratis.thirdparty.io.grpc.StatusRuntimeException;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +43,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
@@ -87,7 +90,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     final RaftHAServer raft = detachedServer();
     final AtomicInteger probes = SelfDialChannels.reachTheirMembers(raft);
 
-    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), remote);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), remote, RaftHAServer.NO_PROBE_CALL_ID);
 
     Awaitility.await("the claim is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(CLAIM, "was answered by that peer") == 1);
@@ -109,7 +112,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     final RaftHAServer raft = detachedServer();
     SelfDialChannels.leadBackToItself(raft);
 
-    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), remote);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), remote, RaftHAServer.NO_PROBE_CALL_ID);
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(SELF_DIAL) == 1);
@@ -127,7 +130,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
       throw new IOException("UNAVAILABLE: io exception");
     });
 
-    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
 
     Awaitility.await("the claim is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(CLAIM, "did not come back to this node") == 1);
@@ -142,7 +145,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
 
     assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.NOT_SENT);
     raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(),
-        new InetSocketAddress(InetAddress.getLoopbackAddress(), 51_000));
+        new InetSocketAddress(InetAddress.getLoopbackAddress(), 51_000), RaftHAServer.NO_PROBE_CALL_ID);
 
     Awaitility.await("the claim is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(CLAIM, "could not be probed") == 1);
@@ -201,6 +204,74 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     assertThat(raft.getMisdirectedSelfClaims()).as("a spent nonce is a claim like any other").isEqualTo(2L);
   }
 
+  /** Each outcome of the probe itself, through the transport seam. */
+  @Test
+  void eachProbeOutcomeIsToldApart() {
+    final RaftHAServer raft = detachedServer();
+    assertThat(raft.probeSelfDial(MEMBER)).as("no Raft server RPC").isEqualTo(SelfDialProbeOutcome.NOT_SENT);
+
+    SelfDialChannels.leadBackToItself(raft);
+    assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.SELF);
+
+    SelfDialChannels.reachTheirMembers(raft);
+    assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.MEMBER);
+
+    // Answered under another id: the channel leads to somebody else, which proves no self-dial
+    raft.setSelfDialProbeTransportForTesting(probe -> SelfDialChannels.answeredByTheMember(probe.toBuilder()
+        .setServerRequest(probe.getServerRequest().toBuilder().setReplyId(OTHER_MEMBER.toByteString())).build()));
+    assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.ELSEWHERE);
+
+    // A probe that times out, as one to an unresponsive member does after the Raft request timeout
+    raft.setSelfDialProbeTransportForTesting(probe -> {
+      throw new StatusRuntimeException(Status.DEADLINE_EXCEEDED);
+    });
+    assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.ELSEWHERE);
+    assertThat(raft.getMisdirectedChannelResets()).isZero();
+  }
+
+  /** A claim with no call id is never taken for a probe, even while one is in flight for the same member. */
+  @Test
+  void aClaimWithoutACallIdIsNeverAProbe() {
+    final RaftHAServer raft = detachedServer();
+    raft.setSelfDialProbeTransportForTesting(probe -> {
+      raft.onMisdirectedRaftRequest("requestVote", MEMBER, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
+      return SelfDialChannels.answeredByTheMember(probe);
+    });
+
+    assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.MEMBER);
+    assertThat(raft.getMisdirectedSelfClaims()).isEqualTo(1L);
+  }
+
+  /**
+   * The review's main point: a probe waits for up to the Raft request timeout when the member does not answer, and any
+   * sender can cause one. It runs on a worker of its own, so a peer's report - and with it every channel reset and
+   * leadership hand-off the channel-recovery worker runs - goes on while a probe is stuck.
+   */
+  @Test
+  void aStuckProbeDoesNotHoldBackTheChannelRecoveryWorker() throws Exception {
+    final RaftHAServer raft = detachedServer();
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch probing = new CountDownLatch(1);
+    raft.setSelfDialProbeTransportForTesting(probe -> {
+      probing.countDown();
+      release.await();
+      return SelfDialChannels.answeredByTheMember(probe);
+    });
+    try {
+      raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
+      assertThat(probing.await(10, TimeUnit.SECONDS)).isTrue();
+
+      raft.onMisdirectedRaftRequest("appendEntries", OTHER_MEMBER, MEMBER, null, RaftHAServer.NO_PROBE_CALL_ID);
+      Awaitility.await("the peer's report is not queued behind the probe").atMost(10, TimeUnit.SECONDS)
+          .until(() -> log.countFormattedContaining("from peer 'localhost_2435' addressed to peer 'localhost_2436'") == 1);
+      assertThat(raft.getSelfDialProbePoolStats().activeThreads()).as("the probe is still waiting").isEqualTo(1);
+    } finally {
+      release.countDown();
+    }
+    Awaitility.await("the released probe is reported").atMost(10, TimeUnit.SECONDS)
+        .until(() -> log.countFormattedContaining(CLAIM, "was answered by that peer") == 1);
+  }
+
   /**
    * A flood of claims of this node's id cannot hold the slot, nor the WARNING, of a real report about the member they
    * address: a peer whose address for that member leads here is still reported at WARNING.
@@ -212,9 +283,9 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     final InetSocketAddress foreign = new InetSocketAddress(InetAddress.getByName("192.0.2.10"), 51_000);
 
     for (int i = 0; i < 5; i++)
-      raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), foreign);
+      raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), foreign, RaftHAServer.NO_PROBE_CALL_ID);
     raft.onMisdirectedRaftRequest("appendEntries", MEMBER, OTHER_MEMBER,
-        new InetSocketAddress(InetAddress.getByName("192.0.2.11"), 51_000));
+        new InetSocketAddress(InetAddress.getByName("192.0.2.11"), 51_000), RaftHAServer.NO_PROBE_CALL_ID);
 
     final String report = "from peer 'localhost_2436' addressed to peer 'localhost_2435'";
     Awaitility.await("the peer's report is looked at").atMost(10, TimeUnit.SECONDS)
@@ -234,9 +305,9 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     final AtomicInteger probes = SelfDialChannels.leadBackToItself(raft);
 
     raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(),
-        new InetSocketAddress(InetAddress.getByName("192.0.2.10"), 51_000));
+        new InetSocketAddress(InetAddress.getByName("192.0.2.10"), 51_000), RaftHAServer.NO_PROBE_CALL_ID);
     raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(),
-        new InetSocketAddress(InetAddress.getLoopbackAddress(), 51_000));
+        new InetSocketAddress(InetAddress.getLoopbackAddress(), 51_000), RaftHAServer.NO_PROBE_CALL_ID);
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(SELF_DIAL) == 1);
@@ -250,7 +321,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     final RaftHAServer raft = detachedServer();
     final AtomicInteger probes = SelfDialChannels.leadBackToItself(raft);
 
-    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, OTHER_MEMBER, null);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, OTHER_MEMBER, null, RaftHAServer.NO_PROBE_CALL_ID);
 
     Awaitility.await("the peer's report is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining("from peer 'localhost_2436' addressed to peer 'localhost_2435'") == 1);

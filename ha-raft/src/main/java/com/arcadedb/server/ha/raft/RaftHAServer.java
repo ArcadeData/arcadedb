@@ -379,6 +379,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // catches the RejectedExecutionException and decides what a drop means for it) instead of running on the caller,
   // so it can never stall replica classification - the invariant the off-thread move buys.
   private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
+  // Issue #10299: runs the self-dial probes. Deliberately NOT the channel-recovery worker: a probe blocks for up to the Raft
+  // request timeout (10 s) when the member does not answer, and any sender can cause one per member and interval by
+  // writing this node's id, so on the shared worker a black-holed member plus a flood of claims would hold back every
+  // channel reset and leadership hand-off behind them. Only a confirmed self-dial goes on to the channel-recovery worker.
+  private final    ThreadPoolExecutor        selfDialProbeExecutor   = createSelfDialProbeExecutor();
   // Issue #10016: how many inbound Raft RPCs addressed to another peer this node has refused, and when the last
   // recovery for each addressed peer was queued, so a misresolved name answering every heartbeat queues one recovery
   // per MISDIRECTED_RECOVERY_INTERVAL_MS rather than one per refused RPC.
@@ -1037,7 +1042,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * which proves the channel leads to this node whatever address the connection shows; when the member answers it, the
    * claim was somebody else's and the channel is left alone. A claim from anyone queues at most one probe per member and
    * interval, which costs the member one ignored pre-vote, and whoever takes the slot, the probe tests the real channel:
-   * no claim can hold back the repair of a self-dial by more than an interval.
+   * no claim can hold back the repair of a self-dial by more than an interval. The probes run on a worker of their own,
+   * {@link #selfDialProbeExecutor}, so one that waits for an unresponsive member delays other probes and nothing else.
+   * <p>
+   * What the nonce does not cover: it travels in clear on a Raft port without {@code ha.ssl}, so a sender that can read
+   * this node's traffic to the member while the probe is in flight could replay it to this node and force one reset of
+   * that channel. Such a sender can already inject any Raft traffic; the member the probe goes to learns the nonce too, and
+   * can only use it to reset this node's channel to itself.
    * <p>
    * <b>A request from another peer can only be reported.</b> It means that peer's address for {@code addressedTo}
    * leads here; the channel to fix is on that peer, which logs nothing about it, so the WARNING here names the peer
@@ -1080,7 +1091,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final String sender = requestor != null ? "'" + requestor + "'" : "<unknown>";
     try {
-      channelRecoveryExecutor.execute(() -> {
+      // A claim of this node's id may be probed, which may block: never on the worker that resets channels
+      (claimsSelf ? selfDialProbeExecutor : channelRecoveryExecutor).execute(() -> {
         final boolean member = isMisdirectedPeerMember(addressedTo);
         if (!member) {
           // Only a member has a channel to repair: this node never dials an id outside its own configuration.
@@ -1111,14 +1123,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
               "Refused a Raft %s addressed to peer '%s' that names this node as its sender, from %s (issue #10299): %s, "
                   + "so it was not this node's own request and the channel to '%s' is left alone. Check which process "
                   + "or cluster connects from that address writing this node's id '%s' as its own; here '%s' resolves to "
-                  + "%s.", rpc, addressedTo, remote != null ? remote : "<unknown address>", switch (outcome) {
-                case MEMBER -> "a probe over this node's channel to '" + addressedTo + "' was answered by that peer";
-                case ELSEWHERE -> "a probe over this node's channel to '" + addressedTo + "' did not come back to this node";
-                default -> "this node's channel to '" + addressedTo + "' could not be probed";
-              }, addressedTo, localPeerId, addressedTo, resolved);
+                  + "%s.", rpc, addressedTo, remote != null ? remote : "<unknown address>",
+              describeUnconfirmedProbe(outcome, addressedTo), addressedTo, localPeerId, addressedTo, resolved);
           return;
         }
 
+        repairSelfDialledChannel(rpc, addressedTo, resolved, queuedAt, slot);
+      });
+    } catch (final RejectedExecutionException e) {
+      // Counted by the executor's policy. Free to drop: release the slot so the next refused request queues it again.
+      queuedAt.remove(slot);
+    }
+  }
+
+  /** Why a probe did not confirm a self-dial, for the line that reports the claim (issue #10299). */
+  private static String describeUnconfirmedProbe(final SelfDialProbeOutcome outcome, final RaftPeerId addressedTo) {
+    return switch (outcome) {
+      case MEMBER -> "a probe over this node's channel to '" + addressedTo + "' was answered by that peer";
+      case ELSEWHERE -> "a probe over this node's channel to '" + addressedTo + "' did not come back to this node";
+      case NOT_SENT, SELF -> "this node's channel to '" + addressedTo + "' could not be probed";
+    };
+  }
+
+  /**
+   * Resets this node's channel to {@code addressedTo}, which a probe found leading back to this node (issue #10016), on
+   * the channel-recovery worker: the close can block for seconds. A saturated worker drops it and releases the slot, so
+   * the next refused request probes and repairs again.
+   */
+  private void repairSelfDialledChannel(final String rpc, final RaftPeerId addressedTo, final String resolved,
+      final Map<RaftPeerId, Long> queuedAt, final RaftPeerId slot) {
+    try {
+      channelRecoveryExecutor.execute(() -> {
         final RaftServer server = raftServer;
         final boolean reset = server != null && !shutdownRequested
             && resetPeerAppenderChannel(server.getServerRpc(), addressedTo);
@@ -1133,15 +1168,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             GlobalConfiguration.HA_SERVER_LIST.getKey());
       });
     } catch (final RejectedExecutionException e) {
-      // Counted by the executor's policy. Free to drop: release the slot so the next refused request queues it again.
       queuedAt.remove(slot);
+      LogManager.instance().log(this, Level.WARNING,
+          "Replication-channel recovery queue is saturated; the reset of the self-dialled channel to '%s' was dropped and "
+              + "is retried on the next refused request (issue #10299).", addressedTo);
     }
-  }
-
-  /** Package-private for tests whose refusals carry no probe. */
-  void onMisdirectedRaftRequest(final String rpc, final RaftPeerId addressedTo, final RaftPeerId requestor,
-      final SocketAddress remote) {
-    onMisdirectedRaftRequest(rpc, addressedTo, requestor, remote, NO_PROBE_CALL_ID);
   }
 
   /** WARNING for the first report about {@code slot} within {@link #MISDIRECTED_WARNING_INTERVAL_MS}, FINE after it. */
@@ -1722,6 +1753,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return executor;
   }
 
+  /**
+   * Single-worker pool for self-dial probes (issue #10299). Abort policy like {@link #createChannelRecoveryExecutor}: a
+   * dropped probe releases its throttle slot and the next refused request queues it again, so a refusal costs nothing
+   * but the delay, and must never run on the gRPC handler thread that submitted it.
+   */
+  private static ThreadPoolExecutor createSelfDialProbeExecutor() {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(8), r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-self-dial-probe");
+      t.setDaemon(true);
+      return t;
+    }, CountingRejectionPolicy.abort());
+    executor.allowCoreThreadTimeOut(true);
+    return executor;
+  }
+
   private static ThreadPoolExecutor createStalledResyncExecutor() {
     final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
         new ArrayBlockingQueue<>(16), r -> {
@@ -1739,6 +1786,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   PoolStats getStalledResyncPoolStats() {
     return PoolMetrics.statsOf(stalledResyncExecutor);
+  }
+
+  /** The {@code pool=self_dial_probe} executor row (issue #10299). */
+  PoolStats getSelfDialProbePoolStats() {
+    return PoolMetrics.statsOf(selfDialProbeExecutor);
+  }
+
+  /** Self-dial probes refused while the pool was running (issue #10299): each released its slot to be queued again. */
+  long getSelfDialProbeRejections() {
+    return selfDialProbeExecutor.getRejectedExecutionHandler() instanceof CountingRejectionPolicy policy ?
+        policy.getSaturations() :
+        0L;
   }
 
   /** The {@code pool=channel_recovery} executor row (issue #8856). */
@@ -3300,6 +3359,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         "Error on stopping the HA stalled-replica resync executor", true);
     CodeUtils.executeIgnoringExceptions(channelRecoveryExecutor::shutdownNow,
         "Error on stopping the HA channel-recovery executor", true);
+    CodeUtils.executeIgnoringExceptions(selfDialProbeExecutor::shutdownNow,
+        "Error on stopping the HA self-dial probe executor", true);
     // After stopCapabilityMonitor() and the two shutdownNow() above: nothing asks for these clients past this
     // point, and an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM
     // - which in the HA suites outlives many server start/stop cycles (PR #7314 review).
