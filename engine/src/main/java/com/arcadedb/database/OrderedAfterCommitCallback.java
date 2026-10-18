@@ -49,6 +49,9 @@ public interface OrderedAfterCommitCallback extends Runnable {
    * The transaction ended without running this callback, after {@link #onCommitPoint()} ran: its commit failed past that point,
    * or a callback that ran before this one threw an error. Whatever {@link #onCommitPoint()} reserved has to be released, or it
    * holds back the callbacks queued behind it. An exception it throws is logged.
+   * <p>
+   * It can follow a {@link #onCommitPoint()} that threw, or reach a callback that was registered after the commit point and was
+   * never told of it: an implementation has nothing to release then, and must cope with that.
    */
   void onAbandoned();
 }

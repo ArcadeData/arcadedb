@@ -357,9 +357,10 @@ public class TransactionContext implements Transaction {
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
-  // way out of the transaction owes each of them either its run or its abandonment, see reset(). Plain like phase2WalAppended: the
-  // phases of one commit are sequenced by whoever drives it
-  private       boolean                              commitPointReached          = false;
+  // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
+  // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
+  // per commit
+  private volatile boolean                           commitPointReached          = false;
   private       Map<String, Object>                  attachments                 = null;
   // #10040: the client opened this transaction and ends it with its own COMMIT/ROLLBACK, see setClientManaged()
   private       boolean                              clientManaged               = false;

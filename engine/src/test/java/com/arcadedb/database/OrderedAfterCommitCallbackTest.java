@@ -130,6 +130,26 @@ class OrderedAfterCommitCallbackTest extends TestHelper {
   }
 
   @Test
+  void aCallbackThatFailsTakingItsPlaceIsStillAbandonedWhenItWillNotRun() {
+    database.begin();
+    database.newDocument("Doc").set("n", 1).save();
+    transaction().addAfterCommitCallback(() -> {
+      throw new StackOverflowError("an error, not an exception");
+    });
+    transaction().addAfterCommitCallback(new Recorder("a") {
+      @Override
+      public void onCommitPoint() {
+        throw new IllegalStateException("no place");
+      }
+    });
+
+    assertThatThrownBy(() -> database.commit()).hasRootCauseInstanceOf(StackOverflowError.class);
+
+    // Told it is abandoned though it never took a place: it has nothing to release and says nothing more
+    assertThat(events).containsExactly("a:abandoned");
+  }
+
+  @Test
   void aCallbackThatFailsTakingItsPlaceIsStillRun() {
     database.transaction(() -> {
       database.newDocument("Doc").set("n", 1).save();
