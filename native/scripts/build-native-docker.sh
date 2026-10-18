@@ -411,24 +411,18 @@ if [ "$RUN_E2E" = "1" ]; then
   log "e2e battery passed"
 fi
 
-# The scratch image has no /etc/passwd and runs as UID 0 unless overridden, so the amd64 hint
-# carries a --user line; the distroless :nonroot base already runs non-root and needs none.
-# Built as a variable rather than inline in the heredoc: a $(...) substitution there emits its
-# output without a trailing newline, which would fold the --user line into the tag line.
-USER_HINT=""
-if [ "$ARCH" = "amd64" ]; then
-  USER_HINT='    --user $(id -u):$(id -g) \'$'\n'
-fi
-
+# Both images run as 1000:1000, like the JVM image, so the hint carries no --user line (issue #10319): overriding the
+# UID with the host's would leave the anonymous config/log volumes, owned by 1000:1000, unwritable.
 cat <<EOF
 
 [native-docker] done. Run it with:
 
   docker run --rm -p 2480:2480 \\
     -v "\$(pwd)/databases:/home/arcadedb/databases" \\
-${USER_HINT}    $TAG \\
+    $TAG \\
     -Darcadedb.server.rootPassword=PlayWithData123!
 
-Neither base image has a shell, so -D flags go as trailing arguments, not via
--e ARCADEDB_SETTINGS. See docs/native-image.md "Running the container".
+The image runs as UID/GID 1000:1000, so a bind-mounted directory must be writable by it
+(chown 1000:1000 databases). Neither base image has a shell, so -D flags go as trailing
+arguments, not via -e ARCADEDB_SETTINGS. See docs/native-image.md "Running the container".
 EOF

@@ -61,7 +61,10 @@ class PackagingManifestsTest {
   private static final String README      = "README.md";
   private static final String DEPENDABOT  = ".github/dependabot.yml";
 
-  private static final Pattern BASE_IMAGE  = Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
+  /** The UID and GID every ArcadeDB image runs as, so their volumes are interchangeable (issue #10319). */
+  private static final int    IMAGE_UID   = 1000;
+
+  private static final Pattern BASE_IMAGE  =Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
 
   private static final Pattern SETTING     = Pattern.compile("-D(arcadedb\\.[A-Za-z0-9.]+)=");
   private static final Pattern EXPANSION   = Pattern.compile("\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)");
@@ -228,6 +231,46 @@ class PackagingManifestsTest {
       assertThat(exposed).as("%s does not expose the Raft port", name).contains(raftPort);
       assertThat(exposed).as("2424 is the removed binary protocol port; nothing listens on it").doesNotContain("2424");
     });
+  }
+
+  @Test
+  void jvmImageRunsAsTheUidTheNativeImagesShare() {
+    // The JVM image's arcadedb user is the owner every native image's volumes are aligned to (issue #10319). Alpine's
+    // adduser hands out 1000 to the first user only by convention, so pin it: an implicit 1000 drifts silently the day
+    // the base image ships a user of its own.
+    final String code = codeOf(read(DOCKERFILE));
+    assertThat(code).as("%s must create the arcadedb user with an explicit UID", DOCKERFILE)
+        .containsPattern("(?m)^RUN adduser .*-u " + IMAGE_UID + "\\b.* arcadedb$");
+    assertThat(code).as("%s must run as the arcadedb user", DOCKERFILE).containsPattern("(?m)^USER arcadedb$");
+  }
+
+  @Test
+  void nativeImagesRunAsTheJvmImageUid() {
+    // Issue #10319: the amd64 scratch image ran as root with root-owned volumes, so `--user 1000:1000` died on
+    // ./log/arcadedb.log.0.lck, and the arm64 distroless one ran as 65532. Neither could swap volumes with the JVM
+    // image. Every image now runs as 1000:1000 and owns everything it writes under /home/arcadedb.
+    final String owner = IMAGE_UID + ":" + IMAGE_UID;
+    for (final String path : List.of(NATIVE_SCRATCH, NATIVE_DISTROLESS)) {
+      final String code = codeOf(read(path));
+
+      assertThat(code).as("%s must run as %s", path, owner).containsPattern("(?m)^USER " + owner + "$");
+      assertThat(code).as("%s must not depend on the distroless nonroot (65532) user", path).doesNotContain("65532")
+          .doesNotContain("nonroot");
+
+      final List<String> chowns = matches(Pattern.compile("chown\\s+(?:-R\\s+)?(\\S+)"), code);
+      assertThat(chowns).as("%s must pre-create its directories", path).isNotEmpty();
+      assertThat(chowns).as("%s chowns its directories to another owner", path).containsOnly(owner);
+
+      // Anonymous volumes are initialized with the ownership of the image directory, so anything the image COPYs
+      // into the home directory must land owned by the runtime UID - config included, which the server writes to.
+      final List<String> copies = matches(Pattern.compile("(?m)^(COPY .* /home/arcadedb\\S*)$"), code);
+      assertThat(copies).as("%s copies nothing into /home/arcadedb", path).isNotEmpty();
+      for (final String copy : copies)
+        assertThat(copy).as("%s: COPY into the home directory without the runtime owner", path)
+            .contains("--chown=" + owner);
+      assertThat(copies).as("%s does not copy the config directory", path)
+          .anySatisfy(copy -> assertThat(copy).endsWith(" /home/arcadedb/config"));
+    }
   }
 
   @Test
