@@ -416,13 +416,17 @@ class PostgresCatalogTest {
   }
 
   @Test
-  void aSetOperationOrAGroupByIsDeclined() {
-    // Both change what the rows are, and answering the half this catalog understands would be answering a
-    // different question.
-    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace")).isSameAs(
+  void aSetOperationAndAGroupByAreAnsweredWhole() {
+    // Both change what the rows are, so they are answered whole (issue #10228) rather than by the half this
+    // catalog used to understand - which would be answering a different question.
+    assertThat(names(resolve("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace ORDER BY 1").rows,
+        "relname")).containsExactly("Article", "Author", database.getName());
+    assertThat(names(resolve("SELECT relkind FROM pg_class GROUP BY relkind").rows, "relkind")).containsExactly("r");
+    // A set operation with an arm this catalog cannot answer is declined whole, not answered by its other arm.
+    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT proname FROM pg_proc")).isSameAs(
         PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT relkind FROM pg_class GROUP BY relkind")).isSameAs(PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT relname FROM pg_class LIMIT ALL")).isSameAs(PostgresCatalog.DECLINED);
+    // LIMIT ALL is no limit (issue #10228).
+    assertThat(names(resolve("SELECT relname FROM pg_class LIMIT ALL").rows, "relname")).containsExactly("Article", "Author");
   }
 
   @Test
@@ -534,13 +538,14 @@ class PostgresCatalogTest {
   void aPgTypeFilterThatWillNotEvenParseDeclinesToo() {
     // Parsing and evaluating are two ways to fail to read the same predicate, and only the second used to
     // decline: a WHERE written with a construct the expression parser does not implement - a scalar
-    // sub-query here - left the parse result null, which the caller read as "no filter" and answered every
-    // type with. The two have to be treated alike (issue #7180).
-    assertThat(resolveRaw("SELECT typname FROM pg_type t WHERE t.oid = (SELECT 1 FROM pg_type LIMIT 1)"))
+    // IS DISTINCT FROM here, a sub-query before sub-queries were evaluated (issue #10228) - left the parse result
+    // null, which the caller read as "no filter" and answered every type with. The two have to be treated alike
+    // (issue #7180).
+    assertThat(resolveRaw("SELECT typname FROM pg_type t WHERE t.typname IS DISTINCT FROM 'int4'"))
         .isSameAs(PostgresCatalog.DECLINED);
 
     // The same shape over a relation whose rows are the user's own types is still answered permissively.
-    assertThat(names(resolve("SELECT relname FROM pg_class WHERE oid = (SELECT 1 FROM pg_class LIMIT 1)").rows,
+    assertThat(names(resolve("SELECT relname FROM pg_class WHERE relname IS DISTINCT FROM 'Article'").rows,
         "relname")).containsExactly("Article", "Author");
   }
 
@@ -561,7 +566,8 @@ class PostgresCatalogTest {
 
     final PostgresCatalog.Answer present = resolve(PSYCOPG_TYPE_LOOKUP.formatted("'int4'::text"));
     assertThat(names(present.rows, "name")).containsExactly("int4");
-    assertThat(present.rows.get(0)).containsEntry("regtype", "int4")
+    // regtype prints the SQL name, as PostgreSQL does: 23::regtype::text is 'integer' (issue #10228).
+    assertThat(present.rows.get(0)).containsEntry("regtype", "integer")
         .containsEntry("array_oid", PostgresType.ARRAY_INT.code);
   }
 
@@ -680,7 +686,8 @@ class PostgresCatalogTest {
     final PostgresCatalog.Answer named = resolve(
         "SELECT attname, atttypid::regtype AS t FROM pg_catalog.pg_attribute WHERE attrelid = 'Author'::regclass");
 
-    assertThat(names(named.rows, "t")).containsExactly("varchar");
+    // The name PostgreSQL prints for the type, which is not its typname (issue #10228).
+    assertThat(names(named.rows, "t")).containsExactly("character varying");
 
     final PostgresCatalog.Answer filtered = resolve(
         "SELECT attname FROM pg_catalog.pg_attribute WHERE atttypid = 'int4'::regtype");
