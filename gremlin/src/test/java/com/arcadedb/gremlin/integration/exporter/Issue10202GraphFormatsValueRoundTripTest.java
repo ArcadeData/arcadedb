@@ -25,6 +25,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.io.graphml.ArcadeGraphMLReader;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
@@ -159,6 +160,14 @@ class Issue10202GraphFormatsValueRoundTripTest {
           assertThat(v.get("bin")).isEqualTo("AQID");
         }
       }
+  }
+
+  /** A LocalDate is a known value type, of the type it always resolved to. */
+  @Test
+  void aLocalDateIsAKnownDateValue() {
+    assertThat(Type.getTypeByValue(LocalDate.of(2026, 1, 2))).isEqualTo(Type.DATE);
+    assertThat(Type.getTypeByClass(LocalDate.class)).isEqualTo(Type.DATE);
+    Type.validateValue(LocalDate.of(2026, 1, 2));
   }
 
   /** The GraphML reader reads untrusted files: no DTD, so no external entity can pull a local file into a property. */

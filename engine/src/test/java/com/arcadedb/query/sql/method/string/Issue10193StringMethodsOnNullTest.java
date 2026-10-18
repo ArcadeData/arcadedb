@@ -23,6 +23,9 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -63,6 +66,31 @@ class Issue10193StringMethodsOnNullTest extends TestHelper {
       assertThat(row.<Integer>getProperty("l1")).isEqualTo(3);
       assertThat(row.<Integer>getProperty("l2")).isZero();
     }
+  }
+
+  /** NULL compares as unknown: a NULL string is neither empty nor non-empty by its length. */
+  @Test
+  void aNullLengthMatchesNoComparison() {
+    database.command("sql", "CREATE DOCUMENT TYPE W");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO W SET id = 1");
+      database.command("sql", "INSERT INTO W SET id = 2, s = ''");
+      database.command("sql", "INSERT INTO W SET id = 3, s = 'abc'");
+    });
+
+    assertThat(ids("SELECT id FROM W WHERE s.length() = 0")).containsExactly(2);
+    assertThat(ids("SELECT id FROM W WHERE s.length() > 0")).containsExactly(3);
+    assertThat(ids("SELECT id FROM W WHERE s.length() IS NULL")).containsExactly(1);
+    assertThat(ids("SELECT id FROM W WHERE ifnull(s.length(), 0) = 0 ORDER BY id")).containsExactly(1, 2);
+  }
+
+  private List<Integer> ids(final String sql) {
+    final List<Integer> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        ids.add(rs.next().<Number>getProperty("id").intValue());
+    }
+    return ids;
   }
 
   @Test

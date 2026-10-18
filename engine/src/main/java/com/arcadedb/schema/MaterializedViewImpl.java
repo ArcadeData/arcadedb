@@ -23,8 +23,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -147,15 +149,8 @@ public class MaterializedViewImpl implements MaterializedView {
    * the list, so a view loaded from a schema that tracked only its first FROM identifier is maintained by every type it reads.
    */
   void addSourceTypeNames(final List<String> typeNames) {
-    List<String> merged = null;
-    for (final String typeName : typeNames)
-      if (!sourceTypeNames.contains(typeName)) {
-        if (merged == null)
-          merged = new ArrayList<>(sourceTypeNames);
-        if (!merged.contains(typeName))
-          merged.add(typeName);
-      }
-    if (merged != null)
+    final Set<String> merged = new LinkedHashSet<>(sourceTypeNames);
+    if (merged.addAll(typeNames))
       sourceTypeNames = List.copyOf(merged);
   }
 

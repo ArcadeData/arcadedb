@@ -184,6 +184,18 @@ class Issue10205IncrementalViewSourcesTest extends TestHelper {
     assertThat(reopened.hasPolymorphicViewListeners()).isFalse();
   }
 
+  /** A source named only inside a subquery is a dependency a rename cannot carry with certainty: refused, not broken. */
+  @Test
+  void renamingASourceReadOnlyByASubqueryIsRefused() {
+    database.command("sql", "CREATE MATERIALIZED VIEW Vo AS " + OWNED + " REFRESH INCREMENTAL");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Owner NAME Owner2"))
+        .hasMessageContaining("materialized view 'Vo'");
+    assertThat(database.getSchema().existsType("Owner")).isTrue();
+    database.transaction(() -> database.command("sql", "INSERT INTO Owner SET name = 'y'"));
+    assertSameAsQuery("Vo", OWNED);
+  }
+
   @Test
   void writesToATypeTheQueryDoesNotReadDoNotRefresh() {
     database.command("sql", "CREATE MATERIALIZED VIEW Vo AS " + OWNED + " REFRESH INCREMENTAL");
