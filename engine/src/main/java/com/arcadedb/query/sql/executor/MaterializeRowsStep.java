@@ -107,7 +107,9 @@ public class MaterializeRowsStep extends AbstractExecutionStep {
       heapLimit.release();
       heapLimit = null;
     }
-    rows = null;
+    // A PULL AFTER THE CLOSE SERVES NOTHING: IT MUST NOT DRAIN THE CLOSED SOURCE AGAIN
+    rows = List.of();
+    next = 0;
     super.close();
   }
 

@@ -220,21 +220,15 @@ public class InsertExecutionPlanner {
       // FROM SELECT ... - never resolved its parameter and failed even for a bucket that exists. It had no
       // `else bucket = null` arm, so an unknown bucket lost its message to a generic SchemaException and a target
       // with neither name nor number unboxed null on getBucketNumber(). And its message named nothing.
-      final com.arcadedb.engine.Bucket bucket;
-      final String resolvedName = resolveBucketName(targetBucket, context);
-      if (resolvedName != null)
-        bucket = context.getDatabase().getSchema().getBucketByNameIfExists(resolvedName);
-      else if (targetBucket.getBucketNumber() != null)
-        bucket = context.getDatabase().getSchema().getBucketByIdIfExists(targetBucket.getBucketNumber());
-      else
-        bucket = null;
-
-      if (bucket == null)
+      final com.arcadedb.engine.Bucket bucket = findTargetBucket(context);
+      if (bucket == null) {
+        final String resolvedName = resolveBucketName(targetBucket, context);
         throw new CommandSQLParsingException(resolvedName != null ?
             "Target bucket '" + resolvedName + "' not found" :
             targetBucket.getBucketNumber() != null ?
                 "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
                 "Target bucket not specified");
+      }
 
       effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
@@ -291,10 +285,7 @@ public class InsertExecutionPlanner {
     final Schema schema = context.getDatabase().getSchema();
     final Set<Integer> bucketIds = new HashSet<>();
     if (targetBucket != null) {
-      final String name = resolveBucketName(targetBucket, context);
-      final com.arcadedb.engine.Bucket bucket = name != null ?
-          schema.getBucketByNameIfExists(name) :
-          targetBucket.getBucketNumber() != null ? schema.getBucketByIdIfExists(targetBucket.getBucketNumber()) : null;
+      final com.arcadedb.engine.Bucket bucket = findTargetBucket(context);
       if (bucket == null)
         return null;
       bucketIds.add(bucket.getFileId());
@@ -308,6 +299,17 @@ public class InsertExecutionPlanner {
     for (final com.arcadedb.engine.Bucket bucket : type.getBuckets(false))
       bucketIds.add(bucket.getFileId());
     return bucketIds;
+  }
+
+  /** The bucket the statement names as its target, by name, parameter or number, or null when it names none that exists. */
+  private com.arcadedb.engine.Bucket findTargetBucket(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
+    final String name = resolveBucketName(targetBucket, context);
+    if (name != null)
+      return schema.getBucketByNameIfExists(name);
+    if (targetBucket.getBucketNumber() != null)
+      return schema.getBucketByIdIfExists(targetBucket.getBucketNumber());
+    return null;
   }
 
   /**
