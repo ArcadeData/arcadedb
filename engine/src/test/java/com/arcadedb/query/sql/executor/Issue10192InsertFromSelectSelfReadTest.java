@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -32,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #10192: {@code INSERT INTO T FROM SELECT ... FROM T} read the rows it was inserting. An OR filter (planned as one scan per
@@ -189,6 +192,42 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
 
     assertThat(insert("INSERT INTO bucket:" + bucket + " FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3 OR b = 4")).isEqualTo(1);
     assertThat(ids("T")).containsExactly(1L, 101L);
+  }
+
+  /**
+   * The barrier holds the rows of a self-copy on the heap: past the budget all queries share, the statement is refused with the
+   * setting named, gives the heap back and inserts nothing, where it used to stream.
+   */
+  @Test
+  void aSelfCopyPastTheHeapBudgetIsRefusedCleanly() {
+    createType("T", "");
+    database.command("sql", "CREATE PROPERTY T.pad STRING").close();
+    database.transaction(() -> {
+      for (int i = 0; i < 3_000; i++)
+        database.command("sql", "INSERT INTO T SET id = ?, a = 1, pad = ?", i, "p".repeat(500)).close();
+    });
+
+    final long mb = 1024L * 1024L;
+    final long baseline = QueryHeapBudget.getReservedBytes();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(baseline / mb + 16);
+    final QueryHeapTracker others = new QueryHeapTracker();
+    try {
+      // EVERY OTHER QUERY TOGETHER LEAVES HALF A MEGABYTE: THE ~1.5 MB OF ROWS DO NOT FIT
+      others.charge(QueryHeapTracker.UNRESERVED_BYTES + QueryHeapBudget.getLimitBytes() - QueryHeapBudget.getReservedBytes() - mb / 2,
+          "other queries");
+      assertThatThrownBy(() -> insert("INSERT INTO T FROM SELECT id + 100000 AS id, a, pad FROM T"))
+          .isInstanceOf(QueryHeapBudgetExceededException.class)
+          .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_RAM.getKey());
+      assertThat(QueryHeapBudget.getReservedBytes()).as("the refused statement holds nothing")
+          .isLessThanOrEqualTo(baseline + others.getReservedBytes());
+    } finally {
+      others.close();
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.reset();
+    }
+    assertThat(ids("T")).as("nothing was inserted").hasSize(3_000);
+
+    assertThat(insert("INSERT INTO T FROM SELECT id + 100000 AS id, a, pad FROM T")).isEqualTo(3_000);
+    assertThat(ids("T")).hasSize(6_000);
   }
 
   /**
