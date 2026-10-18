@@ -915,8 +915,9 @@ public enum GlobalConfiguration {
   POLYGLOT_ENGINE_ENABLED("arcadedb.polyglotEngineEnabled", SCOPE.JVM,
       """
       Enable the GraalVM Polyglot Engine used to register scripting languages (js, python, ...) as query engines. \
-      When true (default), the shared Engine is created lazily on first use and all GraalVM languages found on \
-      the classpath are registered. When false, the Polyglot engine is not initialised and no polyglot language \
+      When true (default), the shared Engine is created lazily, the first time a script language is used or the list \
+      of the languages is asked for, and all GraalVM languages found on the classpath are registered then: a SQL or \
+      openCypher statement does not create it. When false, the Polyglot engine is not initialised and no polyglot language \
       is registered: this saves tens of MB of heap and class-loading work on small footprints. The 'low-ram' \
       profile sets this to false.""",
       Boolean.class, true),

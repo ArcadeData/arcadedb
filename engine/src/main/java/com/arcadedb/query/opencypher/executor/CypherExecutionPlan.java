@@ -140,6 +140,7 @@ import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
 import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
+import com.arcadedb.query.opencypher.executor.steps.TriangleCountOp;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.ProductCountStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
@@ -7015,6 +7016,8 @@ public class CypherExecutionPlan {
         op = tryDetectStarCountStar(context);
       if (op == null && !inlineProperties)
         op = tryDetectTriangleCountStar();
+      if (op == null && !inlineProperties)
+        op = tryDetectSingleTriangleCountStar();
       if (op == null)
         op = tryDetectPairJoinCountStar(context);
     }
@@ -8036,6 +8039,151 @@ public class CypherExecutionPlan {
     chainLabels[0] = personLabel;
 
     return new PartitionedTriangleOp(partitionEdgeTypes, partitionDirections, cycleEdgeType, chainLabels);
+  }
+
+  /**
+   * Detects a triangle written as one MATCH, with no WHERE or with one that orders the three variables strictly on one
+   * property (issue #10255):
+   * <pre>
+   *   MATCH (a:Person)-[:KNOWS]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) WHERE a.id &lt; b.id AND b.id &lt; c.id
+   *   RETURN count(*)
+   * </pre>
+   * The three hops are undirected, anonymous and of one type, and the three variables carry one label or none, so the
+   * pattern is symmetric in its variables and {@link TriangleCountOp} can count each triangle once and weigh it by the
+   * bindings it stands for. The WHERE is taken only when it is nothing but {@code <} and {@code >} comparisons of one
+   * property between two of the variables, joined by AND, that order all three in exactly one way.
+   *
+   * @return the operator, or null when the statement is not that shape
+   */
+  private CountOp tryDetectSingleTriangleCountStar() {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
+    if (matchClause.isOptional() || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    // the parser writes a MATCH's WHERE on the clause: a statement carrying one as well would have one of them ignored
+    if (matchClause.hasWhereClause() && statement.getWhereClause() != null)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    if (pathPattern.getRelationshipCount() != 3 || pathPattern.hasPathVariable())
+      return null;
+
+    // (a)-(b)-(c)-(a): the walk closes on its first variable, and the two in between are two other vertices
+    final String[] variables = new String[3];
+    for (int i = 0; i < 3; i++)
+      variables[i] = pathPattern.getNode(i).getVariable();
+    final String closing = pathPattern.getNode(3).getVariable();
+    if (variables[0] == null || variables[0].isEmpty() || !variables[0].equals(closing))
+      return null;
+    for (int i = 1; i < 3; i++)
+      if (variables[i] != null && !variables[i].isEmpty() && (variables[i].equals(variables[0])
+          || (i == 2 && variables[i].equals(variables[1]))))
+        return null;
+
+    String edgeType = null;
+    for (int i = 0; i < 3; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      // the operator intersects the undirected adjacency, so only an undirected hop is its pattern (#9387)
+      if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty()) || !rel.hasTypes()
+          || rel.getTypes().size() != 1 || rel.hasProperties() || rel.getDirection() != Direction.BOTH)
+        return null;
+      if (edgeType == null)
+        edgeType = rel.getTypes().getFirst();
+      else if (!edgeType.equals(rel.getTypes().getFirst()))
+        return null;
+    }
+
+    // One label for the three positions, or none: the operator binds any vertex of a triangle to any variable
+    String label = null;
+    boolean labelled = false;
+    for (int i = 0; i <= 3; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      if (!hasPushDownRepresentableLabel(node) || node.hasProperties() || node.hasDynamicLabels())
+        return null;
+      if (!node.hasLabels())
+        continue;
+      if (labelled && !label.equals(node.getLabels().getFirst()))
+        return null;
+      label = node.getLabels().getFirst();
+      labelled = true;
+    }
+    // the closing node repeats the first, so its label counts for that variable: every other position must carry it too
+    if (labelled)
+      for (int i = 0; i < 3; i++)
+        if (!pathPattern.getNode(i).hasLabels() && !(i == 0 && pathPattern.getNode(3).hasLabels()))
+          return null;
+
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause == null)
+      return new TriangleCountOp(edgeType, label);
+    if (whereClause.getConditionExpression() == null || variables[1] == null || variables[2] == null)
+      return null;
+
+    final List<ComparisonExpression> comparisons = new ArrayList<>();
+    if (!collectConjuncts(whereClause.getConditionExpression(), comparisons))
+      return null;
+    final int count = comparisons.size();
+    final int[] left = new int[count];
+    final int[] right = new int[count];
+    // less[x][y]: the WHERE asks x.p < y.p
+    final boolean[][] less = new boolean[3][3];
+    String property = null;
+    for (int c = 0; c < count; c++) {
+      final ComparisonExpression comparison = comparisons.get(c);
+      if (!(comparison.getLeft() instanceof PropertyAccessExpression l) || !(comparison.getRight() instanceof PropertyAccessExpression r))
+        return null;
+      if (property == null)
+        property = l.getPropertyName();
+      if (!property.equals(l.getPropertyName()) || !property.equals(r.getPropertyName()))
+        return null;
+      left[c] = indexOf(variables, l.getVariableName());
+      right[c] = indexOf(variables, r.getVariableName());
+      if (left[c] < 0 || right[c] < 0 || left[c] == right[c])
+        return null;
+      switch (comparison.getOperator()) {
+      case LESS_THAN -> less[left[c]][right[c]] = true;
+      case GREATER_THAN -> less[right[c]][left[c]] = true;
+      default -> {
+        return null;
+      }
+      }
+    }
+
+    // exactly one order of the three variables, x < y < z, has to agree with every comparison and be implied by them
+    int[] order = null;
+    for (final int[] candidate : new int[][] { { 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 }, { 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 } }) {
+      if (!less[candidate[0]][candidate[1]] || !less[candidate[1]][candidate[2]])
+        continue;
+      if (less[candidate[1]][candidate[0]] || less[candidate[2]][candidate[1]] || less[candidate[2]][candidate[0]])
+        continue;
+      if (order != null)
+        return null;
+      order = candidate;
+    }
+    if (order == null)
+      return null;
+
+    return new TriangleCountOp(edgeType, label, property,
+        new String[] { variables[order[0]], variables[order[1]], variables[order[2]] },
+        comparisons.toArray(new ComparisonExpression[0]), left, right);
+  }
+
+  /** Collects the comparisons of a condition that is nothing but comparisons joined by AND; false when it is anything else. */
+  private static boolean collectConjuncts(final BooleanExpression condition, final List<ComparisonExpression> comparisons) {
+    if (condition instanceof LogicalExpression logical)
+      return logical.getOperator() == LogicalExpression.Operator.AND && logical.getRight() != null
+          && collectConjuncts(logical.getLeft(), comparisons) && collectConjuncts(logical.getRight(), comparisons);
+    if (!(condition instanceof ComparisonExpression comparison))
+      return false;
+    comparisons.add(comparison);
+    return true;
+  }
+
+  private static int indexOf(final String[] variables, final String variable) {
+    for (int i = 0; i < variables.length; i++)
+      if (variables[i] != null && variables[i].equals(variable))
+        return i;
+    return -1;
   }
 
   /**
