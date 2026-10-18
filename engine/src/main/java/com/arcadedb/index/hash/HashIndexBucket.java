@@ -731,11 +731,9 @@ public class HashIndexBucket extends PaginatedComponent {
             return;
           }
         }
-        if (!nullKey)
-          // the one entry of the key belongs to another record. Not walking the overflow chain relies on a non-null unique key
-          // holding ONE entry in the whole chain - the same invariant the key-wide branch below returns on (unique && !nullKey)
-          return;
-        // RID not in any entry on this page - continue to overflow pages
+        // RID not in any entry on this page - continue to overflow pages. A non-null unique key should hold one entry in the
+        // whole chain, but this path is rare (a removal naming a RID that is not the key's holder) and walking on costs only
+        // reads, so a stale duplicate left by an older version is still found rather than assumed away
       } else if (pos >= 0) {
         final MutablePage page = database.getTransaction().getPageToModify(pageId, pageSize, false);
         if (specificRID != null && !unique) {
