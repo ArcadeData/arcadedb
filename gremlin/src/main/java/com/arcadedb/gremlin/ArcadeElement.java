@@ -124,12 +124,13 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
     if (state == REMOVED_COMMITTED)
       return true;
     if (state == LIVE)
-      return isDeletedInTransaction();
+      // NO PROBE UNTIL THE GRAPH HAS REMOVED SOMETHING: A READ-ONLY TRAVERSAL PAYS A FIELD READ PER ELEMENT ACCESS
+      return graph.hasRemovedElements() && isDeletedInTransaction();
     final RID rid = baseElement.getIdentity();
     if (rid == null || baseElement instanceof LightEdge || isDeletedInTransaction())
       return true;
     if (!(graph.getDatabase() instanceof DatabaseInternal)) {
-      // A REMOTE DATABASE HAS NO LOCAL TRANSACTION TO ASK: THE RECORD IS
+      // A REMOTE DATABASE HAS NO LOCAL TRANSACTION TO ASK: ITS RECORD IS, AND A RECORD STILL THERE MEANS THE DROP WAS ROLLED BACK
       if (!graph.getDatabase().existsRecord(rid))
         return true;
     }
@@ -141,7 +142,8 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
    * Refuses a write to a removed element with the exception TinkerGraph raises for it.
    */
   protected void checkNotRemoved() {
-    if (isRemoved())
+    // A WRITE ALWAYS ASKS THE TRANSACTION: THE ELEMENT MAY HAVE BEEN DELETED BY A STATEMENT RATHER THAN THROUGH THE GRAPH
+    if (isRemoved() || (removal == LIVE && isDeletedInTransaction()))
       throw elementAlreadyRemoved(this instanceof Vertex ? Vertex.class : Edge.class, id());
   }
 

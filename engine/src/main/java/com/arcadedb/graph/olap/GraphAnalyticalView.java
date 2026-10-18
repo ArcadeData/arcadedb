@@ -61,6 +61,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.logging.Level;
@@ -360,7 +361,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private record JoinedEdgeCoverage(Map<String, CSRAdjacencyIndex> scannedWith, long schemaVersion, boolean allHeld) {
   }
 
-  private volatile JoinedEdgeCoverage joinedEdgeCoverage;
+  private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -1402,7 +1403,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * <p>
    * {@link #coversEdgeType} cannot give this answer: it is the schema-only check the cached query plans rely on and the one the
    * listeners route a written edge to the overlay by, while this one depends on the edges written. So it is asked where the view
-   * is served - {@link #isReady()} - and by {@link #coversEveryEdge()}. Decided once per base CSR and schema version.
+   * is served - {@link #isReady()} - and by {@link #coversEveryEdge()}. Decided once per base CSR and schema version; the decision
+   * that finds a type unheld dispatches its rebuild, which makes this the one side effect of {@link #isReady()} besides the deferred
+   * restore.
    */
   private boolean holdsJoinedEdgeTypes() {
     if (edgeTypes == null)
@@ -1413,8 +1416,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap == null)
       return true;
     final long version = database.getSchema().getEmbedded().getVersion();
-    // A plain volatile publish: two threads missing the cache at once each compute the same verdict, which is harmless
-    final JoinedEdgeCoverage cached = joinedEdgeCoverage;
+    final JoinedEdgeCoverage cached = joinedEdgeCoverage.get();
     if (cached != null && cached.scannedWith() == snap.csrPerType && cached.schemaVersion() == version)
       return cached.allHeld();
 
@@ -1425,8 +1427,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         unheld = dt.getName();
         break;
       }
-    joinedEdgeCoverage = new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null);
-    if (unheld != null)
+    // Two threads missing the cache at once compute the same verdict; only the one that publishes it dispatches the rebuild
+    if (joinedEdgeCoverage.compareAndSet(cached, new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null)) && unheld != null)
       dispatchJoinedTypeRebuild(false, unheld);
     return unheld == null;
   }

@@ -224,6 +224,9 @@ class GraphAnalyticalViewCSRPersistence {
     final int length = in.readInt();
     if (length < 0)
       return null;
+    // READ BEFORE THE CHECKSUM: A CORRUPT HEADER MUST NOT SIZE AN ALLOCATION. ONE ENTRY PER BUCKET, SO THE FILE BOUNDS IT
+    if (length > in.available() / Integer.BYTES)
+      throw new EOFException("declared " + length + " bucket ids exceed what the file holds");
     final int[] values = new int[length];
     for (int i = 0; i < length; i++)
       values[i] = in.readInt();
