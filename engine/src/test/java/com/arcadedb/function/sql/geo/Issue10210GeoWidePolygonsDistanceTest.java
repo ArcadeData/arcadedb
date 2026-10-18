@@ -19,9 +19,16 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -150,6 +157,63 @@ class Issue10210GeoWidePolygonsDistanceTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON Legacy (coords) GEOSPATIAL");
     assertThat(coords("SELECT coords FROM Legacy WHERE geo.within(coords, geo.geomFromText(?)) = true", BOX)).containsExactly(
         "POINT (1 1)");
+  }
+
+  @Test
+  void aSelfIntersectingShapeAcrossTheAntimeridianIsNotAGeometry() {
+    // refused like any unreadable geometry, where the overlay used to leak its own exception
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newDocument("Pt").set("coords", "POLYGON ((170 0, 190 10, 190 0, 170 10, 170 0))").save()))//
+        .hasStackTraceContaining("IndexException");
+    assertThatThrownBy(() -> value("SELECT geo.within(geo.geomFromText('POINT (0 0)'), "
+        + "geo.geomFromText('POLYGON ((170 0, 190 10, 190 0, 170 10, 170 0))')) AS r"))//
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * An index built before shapes were read as written holds the complement of a polygon wider than 180 degrees, which no
+   * check after the search brings back: queries scan the type until REBUILD INDEX, and the index says so.
+   */
+  @Test
+  void anIndexBuiltBeforeIsBypassedUntilItIsRebuilt() throws Exception {
+    final String query = "SELECT coords FROM Pt WHERE geo.within(coords, geo.geomFromText('" + HUGE + "')) = true";
+    final String index = "Pt[coords]";
+
+    assertThat(planUsesIndex(query)).isTrue();
+
+    database.close();
+    final File schemaFile = new File(getDatabasePath() + "/" + LocalSchema.SCHEMA_FILE_NAME);
+    final JSONObject schema = new JSONObject(Files.readString(schemaFile.toPath()));
+    final JSONObject indexes = schema.getJSONObject("types").getJSONObject("Pt").getJSONObject("indexes");
+    for (final String indexName : indexes.keySet())
+      indexes.getJSONObject(indexName).remove("planar");
+    Files.writeString(schemaFile.toPath(), schema.toString());
+    database = factory.open();
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(index);
+    for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets()) {
+      assertThat(((LSMTreeGeoIndex) bucketIndex).isPlanar()).isFalse();
+      assertThat(bucketIndex.getUpgradeWarning()).contains("#10210");
+    }
+    assertThat(planUsesIndex(query)).isFalse();
+    assertThat(coords(query)).containsExactlyInAnyOrder("POINT (0 0)", "POINT (100 50)");
+
+    database.command("sql", "REBUILD INDEX `" + index + "`");
+
+    for (final IndexInternal bucketIndex : ((TypeIndex) database.getSchema().getIndexByName(index)).getIndexesOnBuckets()) {
+      assertThat(((LSMTreeGeoIndex) bucketIndex).isPlanar()).isTrue();
+      assertThat(bucketIndex.getUpgradeWarning()).isNull();
+    }
+    assertThat(planUsesIndex(query)).isTrue();
+    assertThat(coords(query)).containsExactlyInAnyOrder("POINT (0 0)", "POINT (100 50)");
+  }
+
+  private boolean planUsesIndex(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        rs.next();
+      return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2).contains("FETCH FROM INDEXED FUNCTION");
+    }
   }
 
   private Object value(final String sql, final Object... args) {

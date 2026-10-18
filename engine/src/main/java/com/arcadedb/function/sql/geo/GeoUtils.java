@@ -178,19 +178,20 @@ public class GeoUtils {
         || envelope.getMaxY() > 90 || envelope.getMinX() < -540 || envelope.getMaxX() > 540)
       return null;
 
-    final GeometryFactory factory = geometry.getFactory();
-    Geometry result = null;
-    for (int shift = -360; shift <= 360; shift += 360) {
-      // the part that lands inside [-180, 180] once moved by 'shift'
-      final Geometry part = geometry.intersection(factory.toGeometry(new Envelope(-180 - shift, 180 - shift, -90, 90)));
-      if (part.isEmpty())
-        continue;
-      final Geometry moved = AffineTransformation.translationInstance(shift, 0).transform(part);
-      result = result == null ? moved : result.union(moved);
-    }
     try {
+      final GeometryFactory factory = geometry.getFactory();
+      Geometry result = null;
+      for (int shift = -360; shift <= 360; shift += 360) {
+        // the part that lands inside [-180, 180] once moved by 'shift'
+        final Geometry part = geometry.intersection(factory.toGeometry(new Envelope(-180 - shift, 180 - shift, -90, 90)));
+        if (part.isEmpty())
+          continue;
+        final Geometry moved = AffineTransformation.translationInstance(shift, 0).transform(part);
+        result = result == null ? moved : result.union(moved);
+      }
       return result == null ? null : SPATIAL_CONTEXT.getShapeFactory().makeShapeFromGeometry(result);
     } catch (final RuntimeException e) {
+      // an invalid shape (a self-intersecting polygon) fails in the overlay: not a geometry, like any other unreadable one
       return null;
     }
   }

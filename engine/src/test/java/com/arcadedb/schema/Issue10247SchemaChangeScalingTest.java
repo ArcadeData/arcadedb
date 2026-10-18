@@ -20,11 +20,13 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -117,6 +119,11 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
     schema.createEdgeType("Knows");
     database.command("sql", "CREATE TRIGGER t1 BEFORE CREATE ON TYPE Person EXECUTE SQL 'SELECT 1'");
 
+    // a type is reachable under its aliases too, and still written once, where the same key would be repeated
+    schema.getType("Knows").setAliases(java.util.Set.of("AaaKnows", "ZzzKnows"));
+    schema.getType("Person").setAliases(java.util.Set.of("Human"));
+    schema.createDocumentType("Aaa").setAliases(java.util.Set.of("Zzz"));
+
     assertThat(schema.serializeSchemaForTest()).isEqualTo(schema.toJSON().toString());
 
     // and what the last change wrote is that document
@@ -136,6 +143,37 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
     reopenDatabase();
     assertThat(localSchema().getTypes()).hasSize(300);
     assertBucketMapsMatchTheTypes(localSchema());
+  }
+
+  /**
+   * The check that a bucket belongs to one type only runs during a load too, against the owners the load has attached so
+   * far: a schema file listing one bucket under two types gives it to one of them only.
+   */
+  @Test
+  void aBucketListedUnderTwoTypesInTheSchemaFileGoesToOneOfThemOnLoad() throws Exception {
+    final LocalSchema schema = localSchema();
+    schema.createDocumentType("First");
+    schema.createDocumentType("Second");
+    final String firstBucket = schema.getType("First").getBuckets(false).getFirst().getName();
+    final File file = schema.getConfigurationFile();
+    database.close();
+
+    final String text;
+    try (final FileInputStream in = new FileInputStream(file)) {
+      text = FileUtils.readStreamAsString(in, "UTF-8");
+    }
+    final JSONObject json = new JSONObject(text);
+    json.getJSONObject("types").getJSONObject("Second").getJSONArray("buckets").put(firstBucket);
+    FileUtils.writeContentToStream(file, json.toString().getBytes(StandardCharsets.UTF_8));
+
+    database = factory.open();
+    final LocalSchema reloaded = localSchema();
+    final int bucketId = reloaded.getBucketByName(firstBucket).getFileId();
+    int owners = 0;
+    for (final DocumentType type : reloaded.getTypes())
+      if (type.getBuckets(false).stream().anyMatch(b -> b.getFileId() == bucketId))
+        ++owners;
+    assertThat(owners).isLessThanOrEqualTo(1);
   }
 
   private LocalSchema localSchema() {

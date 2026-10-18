@@ -280,6 +280,14 @@ public class LocalSchema implements Schema {
    * Set when a change left the published bucket maps behind in a way only a full {@link #rebuildBucketTypeMap()} can
    * follow (a bucket detached from its type, a type dropped): the additive changes, which are what DDL makes nearly all
    * the time, update the maps in place (issue #10247). Read and written under the database write lock DDL holds.
+   * <p>
+   * THE CONTRACT OF IN-PLACE MAINTENANCE: every change of which buckets a type owns or involves reports itself here, or
+   * the maps go stale with nothing to say so outside of {@code -ea}, where every refresh compares them with a full
+   * rebuild. The reporting sites are {@code LocalDocumentType.addBucketInternal} ({@link #bucketAttached}),
+   * {@code removeBucketInternal} ({@link #bucketDetached}), the external-bucket pairing and unpairing
+   * ({@link #involvedBucketAttached}, {@link #bucketMembershipChanged}), {@code LocalVertexType.addBucketInternal} (its
+   * edge-list buckets), the type rename, {@link #dropType}, {@link #dropBucket} and a stripe-pool bucket created through
+   * {@link #createBucket}. A new way to change a type's buckets has to report itself too.
    */
   private             boolean                                bucketTypeMapsStale           = false;
   /** Length of the last schema file written, to size the buffer of the next one (issue #10247). */
@@ -3877,7 +3885,8 @@ public class LocalSchema implements Schema {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
                     // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
                     // the full ancestor chain: reading it as anything else would make put/remove miss them.
-                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
+                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON),
+                        GeoIndexMetadata.readPlanar(indexJSON));
                     publishIndexDuringLoad(registeredName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
@@ -4822,10 +4831,20 @@ public class LocalSchema implements Schema {
     final Map<String, LocalDocumentType> typesToWrite = typeMap();
     final String[] typeNames = typesToWrite.keySet().toArray(new String[0]);
     Arrays.sort(typeNames);
+    // The map also holds a type under each of its aliases: a type is written once, under its own name, at the place of the
+    // first key that reaches it - as a JSON object keyed by name did - where a streamed writer would repeat the key
+    Set<String> aliasedWritten = null;
     for (final String typeName : typeNames) {
       final DocumentType t = typesToWrite.get(typeName);
-      if (t != null)
-        consumer.accept(t.getName(), t.toJSON());
+      if (t == null)
+        continue;
+      if (!t.getAliases().isEmpty()) {
+        if (aliasedWritten == null)
+          aliasedWritten = new HashSet<>();
+        if (!aliasedWritten.add(t.getName()))
+          continue;
+      }
+      consumer.accept(t.getName(), t.toJSON());
     }
   }
 
