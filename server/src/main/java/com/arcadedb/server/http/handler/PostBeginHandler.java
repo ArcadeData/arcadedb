@@ -93,16 +93,18 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
    * {@link IllegalArgumentException} arm with a message that names the parameter and the values it accepts.
    */
   static Database.TRANSACTION_ISOLATION_LEVEL isolationLevel(final JSONObject payload) {
-    // getString(name, default) avoids the full recursive toMap() copy on this hot path; a scalar value stringifies
-    // (no ClassCastException, unlike the old (String) cast), while a JSON object/array would still be rejected.
-    final String value = payload != null ? payload.getString("isolationLevel", null) : null;
+    // opt(name) reads the one member without the full recursive toMap() copy on this hot path. Not getString(): it unwraps a
+    // one-element array, so ["READ_COMMITTED"] would have begun a transaction, while the spec declares a string
+    final Object value = payload != null ? payload.opt("isolationLevel") : null;
     if (value == null)
       return null;
-    for (final Database.TRANSACTION_ISOLATION_LEVEL level : Database.TRANSACTION_ISOLATION_LEVEL.values())
-      if (level.name().equals(value))
-        return level;
+    if (value instanceof String name)
+      for (final Database.TRANSACTION_ISOLATION_LEVEL level : Database.TRANSACTION_ISOLATION_LEVEL.values())
+        if (level.name().equals(name))
+          return level;
     throw new IllegalArgumentException(
-        "Invalid isolationLevel '" + value + "': accepted values are " + Arrays.toString(Database.TRANSACTION_ISOLATION_LEVEL.values()));
+        "Invalid isolationLevel " + (value instanceof String ? "'" + value + "'" : "of type " + value.getClass().getSimpleName())
+            + ": accepted values are " + Arrays.toString(Database.TRANSACTION_ISOLATION_LEVEL.values()));
   }
 
   @Override

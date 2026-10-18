@@ -117,6 +117,26 @@ class Issue10295BeginIsolationLevelIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void aNonStringIsolationLevelAnswers400AndOpensNoSession() throws Exception {
+    // The spec declares a string. A one-element array is the case that matters: JSONObject.getString() unwraps it, so it
+    // used to begin a transaction at the level it carried
+    final HttpSessionManager sessions = getServer(0).getHttpServer().getSessionManager();
+
+    for (final String value : new String[] { "1", "true", "{\"level\":\"READ_COMMITTED\"}", "[\"READ_COMMITTED\"]", "[]" }) {
+      final int before = sessions.getActiveSessions();
+      final HttpURLConnection connection = begin("{\"isolationLevel\":" + value + "}");
+      try {
+        assertThat(connection.getResponseCode()).as(value).isEqualTo(400);
+        assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).as(value).isNull();
+        assertThat(readError(connection)).as(value).contains("isolationLevel");
+      } finally {
+        connection.disconnect();
+      }
+      assertThat(sessions.getActiveSessions()).as(value).isEqualTo(before);
+    }
+  }
+
   private HttpSession sessionOf(final String sessionId) {
     final ServerSecurityUser root = getServer(0).getSecurity().getUser("root");
     final HttpSession session = getServer(0).getHttpServer().getSessionManager().getSessionById(root, sessionId);
