@@ -183,6 +183,23 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     assertThat(postQuery("a..b", "select 1").statusCode()).isEqualTo(unknown.statusCode());
   }
 
+  /** Encoded and separator variants of a parent-directory reference: none is opened, none creates a directory. */
+  @Test
+  void encodedNamesThatLeaveTheDatabaseDirectoryAreRefused() throws Exception {
+    final File databaseDirectory = new File(
+        getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    final String[] before = databaseDirectory.getParentFile().list();
+
+    for (final String name : new String[] { "%2e%2e", "%2E%2E%2Fescape", "..%2F..", "%5c..", "a%2f..%2fb", "%00", "..%5Cescape",
+        ".%2e" }) {
+      final HttpResponse<String> response = postQuery(name, "select 1");
+      assertThat(response.statusCode()).as("status for '%s'", name).isNotEqualTo(200);
+    }
+
+    assertThat(databaseDirectory.getParentFile().list()).containsExactlyInAnyOrder(before);
+    assertThat(getServer(0).existsDatabase("..")).isFalse();
+  }
+
   @Test
   void theQueryStackIsWarmedOnceTheServerIsOnline() throws Exception {
     final QueryWarmUp warmUp = getServer(0).getQueryWarmUp();

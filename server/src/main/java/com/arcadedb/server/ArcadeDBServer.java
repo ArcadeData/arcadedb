@@ -1432,8 +1432,10 @@ public class ArcadeDBServer {
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
 
-    if (databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName) && !closedByCommand.contains(
-        databaseName)) {
+    // ONLY WHILE THE SERVER IS ONLINE: NOT WHILE IT STARTS (THE DATABASES ARE BEING LOADED, AND THE HA PLUGIN RE-WRAPS THEM) AND
+    // NOT WHILE IT STOPS (A DATABASE OPENED THEN WOULD BE LEFT OPEN BEHIND THE SHUTDOWN)
+    if (status == STATUS.ONLINE && databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName)
+        && !closedByCommand.contains(databaseName)) {
       // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK, AND IS
       // ANSWERED AS IT ALWAYS WAS (NOT AVAILABLE), NOT WITH A NEW KIND OF ERROR
       if (isValidDatabaseName(databaseName)) {
@@ -1704,15 +1706,7 @@ public class ArcadeDBServer {
           UNVERIFIED_CLOSED_COPY_FILE, databaseName);
   }
 
-  /**
-   * Validates a caller-supplied database name before it is used to build an on-disk path, preventing path
-   * traversal outside the configured {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY} (GHSA-qwgr-2c45-63xx).
-   * A database name maps directly to a directory name under the database directory, so it must never contain
-   * filesystem path separators, parent-directory references or null bytes, and the resolved path must remain
-   * inside the configured base directory.
-   *
-   * @throws IllegalArgumentException if the name is empty or would escape the database directory
-   */
+  /** Whether {@link #checkDatabaseNameIsValid} accepts the name. */
   private boolean isValidDatabaseName(final String databaseName) {
     try {
       checkDatabaseNameIsValid(databaseName);
@@ -1722,6 +1716,15 @@ public class ArcadeDBServer {
     }
   }
 
+  /**
+   * Validates a caller-supplied database name before it is used to build an on-disk path, preventing path
+   * traversal outside the configured {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY} (GHSA-qwgr-2c45-63xx).
+   * A database name maps directly to a directory name under the database directory, so it must never contain
+   * filesystem path separators, parent-directory references or null bytes, and the resolved path must remain
+   * inside the configured base directory.
+   *
+   * @throws IllegalArgumentException if the name is empty or would escape the database directory
+   */
   public void checkDatabaseNameIsValid(final String databaseName) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Database name is empty");
