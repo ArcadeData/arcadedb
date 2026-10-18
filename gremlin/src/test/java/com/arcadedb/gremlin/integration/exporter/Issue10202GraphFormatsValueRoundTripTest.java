@@ -169,7 +169,7 @@ class Issue10202GraphFormatsValueRoundTripTest {
   @Test
   void typedValuesOfAForeignGraphSONFileAreKeptOrConverted() throws Exception {
     final File file = new File("target/issue10202-foreign.graphson");
-    Files.writeString(file.toPath(), "{\"id\":\"a\",\"label\":\"P\",\"properties\":{\"s\":[{\"id\":\"1\",\"value\":{\"@type\":\"gx:Int16\",\"@value\":7}}],\"buf\":[{\"id\":\"2\",\"value\":{\"@type\":\"gx:ByteBuffer\",\"@value\":\"AQID\"}}],\"c\":[{\"id\":\"3\",\"value\":{\"@type\":\"gx:Char\",\"@value\":\"z\"}}],\"md\":[{\"id\":\"4\",\"value\":{\"@type\":\"gx:MonthDay\",\"@value\":\"--01-02\"}}]}}\n");
+    Files.writeString(file.toPath(), "{\"id\":\"a\",\"label\":\"P\",\"properties\":{\"s\":[{\"id\":\"1\",\"value\":{\"@type\":\"gx:Int16\",\"@value\":7}}],\"buf\":[{\"id\":\"2\",\"value\":{\"@type\":\"gx:ByteBuffer\",\"@value\":\"AQID\"}}],\"c\":[{\"id\":\"3\",\"value\":{\"@type\":\"gx:Char\",\"@value\":\"z\"}}],\"md\":[{\"id\":\"4\",\"value\":{\"@type\":\"gx:MonthDay\",\"@value\":\"--01-02\"}}],\"lst\":[{\"id\":\"5\",\"value\":{\"@type\":\"g:List\",\"@value\":[{\"@type\":\"gx:MonthDay\",\"@value\":\"--03-04\"},{\"@type\":\"gx:Int16\",\"@value\":3}]}}],\"bad\":[{\"id\":\"6\",\"value\":{\"@type\":\"gx:ByteBuffer\",\"@value\":\"%%%\"}}]}}\n");
     try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
       target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath());
       try (final ResultSet rs = target.query("sql", "SELECT FROM P")) {
@@ -178,6 +178,9 @@ class Issue10202GraphFormatsValueRoundTripTest {
         assertSame("byte buffer", new byte[] { 1, 2, 3 }, p.get("buf"));
         assertSame("char", "z", p.get("c"));
         assertSame("month day", "--01-02", p.get("md"));
+        // AT ANY DEPTH, AND A VALUE THAT DOES NOT DECODE STAYS THE TEXT IT IS
+        assertSame("list", new ArrayList<>(List.of("--03-04", (short) 3)), p.get("lst"));
+        assertSame("undecodable", "%%%", p.get("bad"));
       }
     } finally {
       file.delete();

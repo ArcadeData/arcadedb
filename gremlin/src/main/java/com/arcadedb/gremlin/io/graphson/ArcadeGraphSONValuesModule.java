@@ -20,6 +20,7 @@ package com.arcadedb.gremlin.io.graphson;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.gremlin.ArcadeGraph;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.schema.Type;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
@@ -48,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.logging.Level;
 
 /**
  * The GraphSON 3 types of the property values ArcadeDB stores and neither TinkerPop's core module nor its extended
@@ -173,6 +175,8 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
     try {
       decoded = TypedValueMapperHolder.MAPPER.readValue(typedJson, Object.class);
     } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(ArcadeGraphSONValuesModule.class, Level.WARNING,
+          "Cannot decode the GraphSON value %s, it is imported as it is in the file: %s", null, typedJson, e.getMessage());
       return fallback;
     }
     return storable(decoded, fallback);
@@ -180,12 +184,26 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
 
   /**
    * {@code value} as ArcadeDB can store it: a ByteBuffer as its bytes, a Character as a string, a value of a type ArcadeDB
-   * has no storage for (a MonthDay, a Year, a Period, ...) as {@code fallback}, its text in the file. Saving such a value would
+   * has no storage for (a MonthDay, a Year, a Period, ...) as {@code fallback}, its text in the file, and the elements of a
+   * list or a map the same way, an unsupported one as its own text. Saving such a value would
    * otherwise drop the property without a word.
    */
   static Object storable(final Object value, final Object fallback) {
-    if (value == null || value instanceof UUID || value instanceof Collection || value instanceof Map)
+    if (value == null || value instanceof UUID)
       return value;
+    // THE ELEMENTS TOO: SAVED AS THEY ARE, ONE ARCADEDB CANNOT STORE WOULD BECOME A NULL
+    if (value instanceof Collection<?> collection) {
+      final List<Object> result = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        result.add(storable(item, String.valueOf(item)));
+      return result;
+    }
+    if (value instanceof Map<?, ?> map) {
+      final Map<Object, Object> result = new LinkedHashMap<>();
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        result.put(storable(entry.getKey(), String.valueOf(entry.getKey())), storable(entry.getValue(), String.valueOf(entry.getValue())));
+      return result;
+    }
     if (value instanceof ByteBuffer buffer) {
       final byte[] bytes = new byte[buffer.remaining()];
       buffer.duplicate().get(bytes);
