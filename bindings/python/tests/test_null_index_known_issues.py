@@ -11,8 +11,8 @@ the suite fails, and the test is then converted to a plain one, as the tests of 
 Each test first checks that the query it asserts on is planned through the index
 (`FETCH FROM INDEX` in SQL, `NodeIndexSeek` in openCypher), so it cannot pass by comparing a
 scan with a scan, and that the type without an index still gives the expected answer. These
-checks call `pytest.fail`, which the `xfail` marks do not absorb (`raises=AssertionError`): a
-plan that stops reading the index fails the suite instead of staying an expected failure. An
+checks call `pytest.fail`, so a plan that stops reading the index fails the suite. (While the bugs
+were open, the `xfail` marks did not absorb it: `raises=AssertionError`.) An
 exception the issue reports is turned into an answer that fails the comparison; any other
 exception fails the suite too.
 
