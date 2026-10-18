@@ -111,6 +111,9 @@ EXPOSE 50051
 # `docker run <image> -Darcadedb.server.rootPassword=... -Dfoo=bar` appends those args after this
 # ENTRYPOINT array (standard Docker ENTRYPOINT+CMD concatenation) - see docs/native-image.md for
 # a full worked `docker run` example, including how to set the root password without a shell.
+# -Duser.home: UID 1000 has no /etc/passwd entry in either base, so the JVM cannot look its home
+# directory up and would leave user.home unusable (the `%h` of a log file pattern resolves through it).
 ENTRYPOINT ["/home/arcadedb/bin/arcadedb", \
+  "-Duser.home=/home/arcadedb", \
   "-Dorg.jline.terminal.dumb=true", \
   "-Djava.util.logging.config.file=/home/arcadedb/config/arcadedb-log.properties"]

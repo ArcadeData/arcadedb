@@ -344,8 +344,9 @@ docker run --rm -p 2480:2480 -p 5432:5432 \
   for each volume. The same command is what makes those volumes usable by the JVM image.
 - Map whichever wire-protocol ports you actually enabled in addition to `2480` - `5432` (Postgres),
   `6379` (Redis), `27017` (MongoDB), `7687` (Bolt), `50051` (gRPC).
-- Both `ENTRYPOINT`s already bake in two runtime defaults ahead of any arguments you pass:
-  `-Dorg.jline.terminal.dumb=true` (the server runs non-interactively in a container, so it avoids
+- Both `ENTRYPOINT`s already bake in three runtime defaults ahead of any arguments you pass:
+  `-Duser.home=/home/arcadedb` (UID 1000 has no `/etc/passwd` entry to look the home directory up
+  from), `-Dorg.jline.terminal.dumb=true` (the server runs non-interactively in a container, so it avoids
   JLine's JNI-backed interactive terminal provider) and
   `-Djava.util.logging.config.file=/home/arcadedb/config/arcadedb-log.properties` (JUL logging
   configuration, matching the JVM image's setup).
