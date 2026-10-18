@@ -108,8 +108,11 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   private final GeohashPrefixTree                grid;
   private final RecursivePrefixTreeStrategy      strategy;
   private       TypeIndex                        typeIndex;
-  /** The thread running {@link #build}, which skips an invalid geometry where a write refuses it (issue #10210). */
-  private volatile Thread                        buildingThread;
+  /**
+   * Set on the thread running {@link #build}, which skips an invalid geometry where a write refuses it (issue #10210). Per
+   * thread, so a write from any other thread, a second build or a build that ends first cannot clear or borrow it.
+   */
+  private final ThreadLocal<Boolean>             building = new ThreadLocal<>();
 
   /**
    * Factory handler for creating LSMTreeGeoIndex instances.
@@ -243,7 +246,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       // A write the index cannot hold is refused: skipped, the record was missing from the index while every scan that
       // evaluated it failed, so the index answered where the scan threw (issue #10210). A build over existing records
       // still skips one, loudly, so a database holding such a value written before can rebuild its index.
-      if (!Thread.currentThread().equals(buildingThread))
+      if (building.get() == null)
         throw new IndexException(
             "Geospatial index '" + getName() + "' cannot index " + Arrays.toString(rids) + ": " + e.getMessage(), e);
       LogManager.instance().log(this, Level.WARNING, "Geospatial index '%s': skipping %s, invalid geometry: %s", getName(),
@@ -544,10 +547,9 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     LogManager.instance().log(this, Level.INFO, "Building geospatial index '%s'...", getName());
 
-    // The scan below runs on this thread and so does every put it causes: an invalid geometry is skipped only while the
-    // thread that put it is the one building, so a build that ever fanned the scan out to other threads would have to hand
-    // them this marker too
-    buildingThread = Thread.currentThread();
+    // The scan below runs on this thread and so does every put it causes: an invalid geometry is skipped only on the thread
+    // that is building, so a build that ever fanned the scan out to other threads would have to hand them this marker too
+    building.set(Boolean.TRUE);
     try {
       db.scanBucket(bucketName, record -> {
         final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
@@ -562,7 +564,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         return true;
       });
     } finally {
-      buildingThread = null;
+      building.remove();
     }
 
     LogManager.instance().log(this, Level.INFO, "Completed building geospatial index '%s': processed %d records in %dms",

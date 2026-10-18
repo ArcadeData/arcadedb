@@ -63,6 +63,9 @@ public class QueryEngineManager extends DedicatedThreadPool {
   // until a caller asks for a language no built-in engine answers, or for the complete list.
   private final        Supplier<Iterable<String>>                  polyglotLanguages;
   private volatile     boolean                                     polyglotLanguagesResolved;
+  // Serializes the one resolution, apart from the registry monitor: building the Engine takes long, and register() and the
+  // other resolvers must not wait behind it on the monitor of the registry itself
+  private final        Object                                      polyglotResolution = new Object();
 
   private QueryEngineManager() {
     this(PolyglotQueryEngine.PolyglotQueryEngineFactory::getSupportedLanguages);
@@ -195,15 +198,27 @@ public class QueryEngineManager extends DedicatedThreadPool {
     if (!GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean())
       return false;
 
-    synchronized (this) {
+    synchronized (polyglotResolution) {
       if (!polyglotLanguagesResolved) {
-        final Map<String, QueryEngine.QueryEngineFactory> copy = new LinkedHashMap<>(implementations);
-        for (final String language : polyglotLanguages.get())
-          copy.putIfAbsent(language.toLowerCase(Locale.ENGLISH), new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
-        implementations = copy;
+        Iterable<String> languages;
+        try {
+          languages = polyglotLanguages.get();
+        } catch (final RuntimeException e) {
+          // resolved as none, once: a lookup of an unknown name must not retry the enumeration every time
+          LogManager.instance().log(this, Level.WARNING, "Cannot list the polyglot languages: %s", e, e.getMessage());
+          languages = List.of();
+        }
+        registerAbsent(languages);
         polyglotLanguagesResolved = true;
       }
       return true;
     }
+  }
+
+  private synchronized void registerAbsent(final Iterable<String> languages) {
+    final Map<String, QueryEngine.QueryEngineFactory> copy = new LinkedHashMap<>(implementations);
+    for (final String language : languages)
+      copy.putIfAbsent(language.toLowerCase(Locale.ENGLISH), new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
+    implementations = copy;
   }
 }

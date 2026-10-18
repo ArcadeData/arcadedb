@@ -100,6 +100,22 @@ class Issue10245LazyPolyglotLanguagesTest extends TestHelper {
   }
 
   @Test
+  void aFailingEnumerationIsNotRetriedOnEveryLookup() {
+    final QueryEngineManager failing = new QueryEngineManager(() -> {
+      enumerations.incrementAndGet();
+      throw new IllegalStateException("no GraalVM");
+    });
+    try {
+      assertThat(failing.isLanguageRegistered("js")).isFalse();
+      assertThat(failing.isLanguageRegistered("lang12345")).isFalse();
+      assertThat(failing.getAvailableLanguages()).contains("sql");
+      assertThat(enumerations.get()).isEqualTo(1);
+    } finally {
+      failing.close();
+    }
+  }
+
+  @Test
   void disabledPolyglotNeverEnumeratesAndCanBeEnabledLater() {
     GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.setValue(false);
 
