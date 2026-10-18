@@ -183,7 +183,7 @@ public class QueryEngineManager extends DedicatedThreadPool {
             copy.putIfAbsent(language.toLowerCase(Locale.ENGLISH), new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
           implementations = copy;
         }
-      } catch (final RuntimeException e) {
+      } catch (final RuntimeException | LinkageError e) {
         LogManager.instance().log(this, Level.WARNING, "Unable to register the polyglot languages: no script language is available", e);
       } finally {
         polyglotResolved = true;

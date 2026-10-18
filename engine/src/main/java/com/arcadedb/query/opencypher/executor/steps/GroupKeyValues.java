@@ -88,6 +88,8 @@ final class GroupKeyValues {
 
     /** Whether every value is the very object the last key built held: the row is that key's group. */
     boolean sameAsLast(final Object[] values) {
+      if (values.length != lastValues.length)
+        return false;
       for (int i = 0; i < values.length; i++)
         if (values[i] != lastValues[i])
           return false;
