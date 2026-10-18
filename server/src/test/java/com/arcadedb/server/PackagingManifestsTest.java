@@ -265,6 +265,10 @@ class PackagingManifestsTest {
 
       // Anonymous volumes are initialized with the ownership of the image directory, so anything the image COPYs
       // into the home directory must land owned by the runtime UID - config included, which the server writes to.
+      // Only the single-line shell form of COPY is parsed, so refuse the JSON-array and continued forms rather than
+      // let one slip past the check unread.
+      for (final String copy : matches(Pattern.compile("(?m)^(COPY .*)$"), code))
+        assertThat(copy).as("%s: COPY form this check cannot read", path).doesNotContain(" [\"").doesNotEndWith("\\");
       final List<String> copies = matches(Pattern.compile("(?m)^(COPY .* /home/arcadedb\\S*)$"), code);
       assertThat(copies).as("%s copies nothing into /home/arcadedb", path).isNotEmpty();
       for (final String copy : copies)
@@ -273,6 +277,11 @@ class PackagingManifestsTest {
       assertThat(copies).as("%s does not copy the config directory", path)
           .anySatisfy(copy -> assertThat(copy).endsWith(" /home/arcadedb/config"));
     }
+
+    // scratch ships no /tmp at all; the image materializes one, and it must stay world-writable (sticky) so a
+    // `--user <uid>` override other than 1000 can still write temporary files. Distroless inherits the base's /tmp.
+    assertThat(codeOf(read(NATIVE_SCRATCH))).as("%s must ship a sticky, world-writable /tmp", NATIVE_SCRATCH)
+        .containsPattern("(?m)^COPY .*--chmod=1777 \\S+ /tmp$");
   }
 
   @Test
