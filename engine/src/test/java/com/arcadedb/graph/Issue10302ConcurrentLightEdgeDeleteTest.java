@@ -197,6 +197,40 @@ class Issue10302ConcurrentLightEdgeDeleteTest extends TestHelper {
     assertThat(countLightEdges(v[1], Vertex.DIRECTION.IN)).isZero();
   }
 
+  /**
+   * The removals are counted per transaction: those of a committed transaction must not carry over to the next one on
+   * the same context, where they would hide its stale view.
+   */
+  @Test
+  void removalsOfAnEndedTransactionDoNotHideAStaleView() throws Exception {
+    final RID[] v = createVertices(2);
+    database.transaction(() -> {
+      for (int i = 0; i < 2; i++)
+        v[0].asVertex().newEdge("L", v[1].asVertex());
+    });
+    // TWO REMOVALS COUNTED FOR (v0, OUT, L, v1), THEN THE TRANSACTION COMMITS
+    database.transaction(() -> {
+      final Edge twin = lightEdge(v[0], v[1]);
+      twin.delete();
+      twin.delete();
+    });
+
+    final ExecutorService other = Executors.newSingleThreadExecutor();
+    try {
+      database.begin();
+      v[0].asVertex().newEdge("F", v[1].asVertex());
+
+      final Edge added = addLightEdgeInOwnTransaction(other, v[0], v[1]);
+
+      assertThatThrownBy(added::delete).isInstanceOf(ConcurrentModificationException.class);
+      database.rollback();
+    } finally {
+      other.shutdownNow();
+    }
+
+    assertThat(countLightEdges(v[0], Vertex.DIRECTION.OUT)).isEqualTo(1);
+  }
+
   private RID[] createVertices(final int count) {
     database.command("sql", "CREATE VERTEX TYPE V").close();
     database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT").close();

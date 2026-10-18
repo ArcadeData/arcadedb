@@ -1214,7 +1214,9 @@ public class GraphEngine {
    * Limit: twins this transaction CREATED and then removed count as removed, though they were never in the committed
    * list. A transaction that creates twins and deletes more of them than it created can therefore miss a twin committed
    * concurrently, and the delete is lost as before. Counting the creations too would cost a map entry per lightweight
-   * edge created, on the bulk-load path, for this corner (#10315).
+   * edge created, on the bulk-load path, for this corner (#10315). The removals are counted for the whole transaction,
+   * up to its commit or rollback: a removal undone by a part of the transaction failing and being retried within it stays
+   * counted. Both over-count, which can only hide a stale view, never invent a conflict.
    * <p>
    * Cost: only a removal that found nothing gets here, and it reads the committed vertex and walks the committed chain
    * (one stripe chain per generation on a super-node), stopping as soon as it counts more than were removed. A delete
