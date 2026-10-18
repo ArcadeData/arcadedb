@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -43,8 +44,10 @@ import java.util.logging.Level;
  * {@link #deliver} when the transaction committed, or {@link #abandon} when it did not.
  * <p>
  * {@link #deliver} returns once the change has been handed over, whichever thread did it, so a {@code SYNCHRONOUS} commit still
- * returns with its change in the view. The wait is bounded: a change whose predecessor takes longer than {@link #MAX_WAIT_MS} to
- * get to the view is delivered by that predecessor when it does, the committing thread having stopped waiting for it.
+ * returns with its change in the view. The wait is bounded, and a place that stays at the head of the line for that long is
+ * evicted, so a transaction that never reported (its thread died between the commit point and the callback) costs the commits
+ * behind it one wait and not one wait each, for as long as the view lives. Should that transaction report later, its change is
+ * delivered then, out of order, which only a stall of that length can cause.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -55,20 +58,34 @@ final class CommitOrderGate {
   // How often a waiting thread looks again at who is at the head of the line, which can change without waking it
   private static final long RECHECK_MS = 100L;
 
-  private final ConcurrentLinkedQueue<Place> line      = new ConcurrentLinkedQueue<>();
+  private static final int PENDING = 0;
+  private static final int READY   = 1;
+  private static final int EVICTED = 2;
+
+  private final ConcurrentLinkedQueue<Place> line       = new ConcurrentLinkedQueue<>();
   // One thread delivers at a time, so the changes reach the view one by one in the order of the line; the others leave what
   // they have to it. Not a lock: the delivery runs the view's merge, and a thread must not wait for it while holding anything
   private final AtomicBoolean                delivering = new AtomicBoolean();
   private final Object                       waitLock   = new Object();
+  private final long                         maxWaitMs;
+
+  CommitOrderGate() {
+    this(MAX_WAIT_MS);
+  }
+
+  CommitOrderGate(final long maxWaitMs) {
+    this.maxWaitMs = maxWaitMs;
+  }
 
   /** A transaction's place in line. */
   static final class Place {
     // The thread that took the place: the committing one, which is the one that delivers the change
-    private final    Thread  owner = Thread.currentThread();
-    // The change to deliver, or null for a place with nothing to deliver. Written before ready
-    private volatile TxDelta delta;
-    private volatile boolean ready;
-    private volatile boolean handled;
+    private final    Thread        owner = Thread.currentThread();
+    // PENDING until the transaction reports, then READY (deliver or abandon) or EVICTED (the line moved on without it)
+    private final    AtomicInteger state = new AtomicInteger(PENDING);
+    // The change to deliver, or null for a place with nothing to deliver. Written before the state leaves PENDING
+    private volatile TxDelta       delta;
+    private volatile boolean       handled;
   }
 
   /**
@@ -82,22 +99,31 @@ final class CommitOrderGate {
 
   /**
    * The transaction of {@code place} committed: delivers its change to {@code sink} after the changes ahead of it in line, and
-   * returns once that has happened or {@link #MAX_WAIT_MS} has passed. A null {@code delta} is a transaction with nothing to
-   * deliver, which only releases its place.
+   * returns once that has happened or the wait is over. A null {@code delta} is a transaction with nothing to deliver, which only
+   * releases its place.
    */
   void deliver(final Place place, final TxDelta delta, final Consumer<TxDelta> sink) {
     place.delta = delta;
-    place.ready = true;
+    if (!place.state.compareAndSet(PENDING, READY)) {
+      // Evicted while it was late: the line moved on without it. Its change goes in now, after the ones that overtook it
+      try {
+        if (delta != null)
+          sink.accept(delta);
+      } finally {
+        place.handled = true;
+      }
+      return;
+    }
     drain(sink);
-    awaitHandled(place);
+    awaitHandled(place, sink);
   }
 
   /**
    * The transaction of {@code place} did not commit: releases its place so the changes behind it are delivered.
    */
   void abandon(final Place place, final Consumer<TxDelta> sink) {
-    place.ready = true;
-    drain(sink);
+    if (place.state.compareAndSet(PENDING, READY))
+      drain(sink);
   }
 
   /** The number of places not yet released, for tests. */
@@ -113,10 +139,10 @@ final class CommitOrderGate {
       boolean any = false;
       try {
         Place head;
-        while ((head = line.peek()) != null && head.ready) {
+        while ((head = line.peek()) != null && head.state.get() != PENDING) {
           line.poll();
           try {
-            final TxDelta delta = head.delta;
+            final TxDelta delta = head.state.get() == READY ? head.delta : null;
             if (delta != null)
               sink.accept(delta);
           } catch (final RuntimeException e) {
@@ -137,33 +163,34 @@ final class CommitOrderGate {
       }
       // A place may have become ready between the last look at the head and the release: it was left to this thread
       final Place head = line.peek();
-      if (head == null || !head.ready)
+      if (head == null || head.state.get() == PENDING)
         return;
     }
   }
 
   private boolean isHeldBackByThisThread() {
     final Place head = line.peek();
-    return head != null && !head.ready && Thread.currentThread().equals(head.owner);
+    return head != null && head.state.get() == PENDING && Thread.currentThread().equals(head.owner);
   }
 
-  private void awaitHandled(final Place place) {
-    if (place.handled)
-      return;
-    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(MAX_WAIT_MS);
-    synchronized (waitLock) {
-      while (!place.handled) {
-        if (isHeldBackByThisThread())
-          // A commit made by a callback of a transaction this thread is still finishing: that transaction is ahead in line
-          // and delivers when the callback returns, so waiting here would be waiting for itself. The change is delivered then
+  private void awaitHandled(final Place place, final Consumer<TxDelta> sink) {
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxWaitMs);
+    while (!place.handled) {
+      if (isHeldBackByThisThread())
+        // A commit made by a callback of a transaction this thread is still finishing: that transaction is ahead in line
+        // and delivers when the callback returns, so waiting here would be waiting for itself. The change is delivered then
+        return;
+      final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+      if (remainingMs <= 0) {
+        if (!evictHead(place, sink))
           return;
-        final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-        if (remainingMs <= 0) {
-          LogManager.instance().log(this, Level.WARNING,
-              "A committed change waited more than %d ms for the transactions committed before it to reach the Graph Analytical View:"
-                  + " not waiting any longer", MAX_WAIT_MS);
+        // The line moved: wait for what is left in front of this place
+        deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxWaitMs);
+        continue;
+      }
+      synchronized (waitLock) {
+        if (place.handled)
           return;
-        }
         try {
           waitLock.wait(Math.min(remainingMs, RECHECK_MS));
         } catch (final InterruptedException e) {
@@ -172,5 +199,22 @@ final class CommitOrderGate {
         }
       }
     }
+  }
+
+  /**
+   * Gives up on the place at the head of the line, which has held back {@code waiter} for the whole wait, and delivers what was
+   * waiting behind it.
+   *
+   * @return whether a place was evicted
+   */
+  private boolean evictHead(final Place waiter, final Consumer<TxDelta> sink) {
+    final Place head = line.peek();
+    if (head == null || head == waiter || !head.state.compareAndSet(PENDING, EVICTED))
+      return false;
+    LogManager.instance().log(this, Level.WARNING,
+        "A transaction did not report its change to the Graph Analytical View in %d ms after it committed: the commits behind it go"
+            + " ahead, and its change is delivered out of order if it comes", maxWaitMs);
+    drain(sink);
+    return true;
   }
 }

@@ -264,6 +264,9 @@ class DeltaCollector
 
     @Override
     public void onCommitPoint() {
+      // A place already taken stays: it is the earlier one, and a second would be left unreleased at the head of the line
+      if (place != null)
+        return;
       // Never fails in practice (a lock-free add); if it did, the place stays null and the change is delivered unordered, as before
       place = view.getCommitOrder().takePlace();
     }

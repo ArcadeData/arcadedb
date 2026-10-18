@@ -345,6 +345,10 @@ public final class CypherFunctionHelper {
   /**
    * The UTF-16 offset of the code point at index {@code codePointIndex}, clamped to the string: an index at or below 0 is 0 and an
    * index past the last code point is the string length. A surrogate that is not part of a pair counts as one code point.
+   * <p>
+   * The cost is that of the position, not of the string, and constant for Latin-1 text. Text with other characters is walked up to
+   * the position, so a loop that reads every character of a long one by position is quadratic; such a loop is better off with
+   * {@code codePoints()}.
    */
   public static int charOffsetOfCodePoint(final String str, final int codePointIndex) {
     if (codePointIndex <= 0)

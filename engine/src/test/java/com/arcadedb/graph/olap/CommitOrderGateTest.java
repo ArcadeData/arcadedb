@@ -144,6 +144,52 @@ class CommitOrderGateTest {
   }
 
   @Test
+  @Timeout(20)
+  void aPlaceThatNeverReportsIsEvictedAndItsLateChangeStillArrives() throws Exception {
+    final CommitOrderGate shortWait = new CommitOrderGate(200);
+    final TxDelta lost = new TxDelta();
+    final TxDelta second = new TxDelta();
+
+    // Taken by a thread of its own, like the transaction of a thread that dies before it reports
+    final ExecutorService executor = Executors.newSingleThreadExecutor();
+    final CommitOrderGate.Place stuck;
+    try {
+      stuck = executor.submit(shortWait::takePlace).get(1, TimeUnit.MINUTES);
+    } finally {
+      executor.shutdownNow();
+    }
+    final CommitOrderGate.Place secondPlace = shortWait.takePlace();
+
+    // The wait is over: the stuck place is evicted, and the change behind it goes in
+    shortWait.deliver(secondPlace, second, delivered::add);
+    assertThat(delivered).containsExactly(second);
+    assertThat(shortWait.pending()).isZero();
+
+    // The transaction reports at last: its change is not lost
+    shortWait.deliver(stuck, lost, delivered::add);
+    assertThat(delivered).containsExactly(second, lost);
+  }
+
+  @Test
+  void aPlaceThatIsAbandonedAfterItWasEvictedChangesNothing() throws Exception {
+    final CommitOrderGate shortWait = new CommitOrderGate(100);
+    final ExecutorService executor = Executors.newSingleThreadExecutor();
+    final CommitOrderGate.Place stuck;
+    try {
+      stuck = executor.submit(shortWait::takePlace).get(1, TimeUnit.MINUTES);
+    } finally {
+      executor.shutdownNow();
+    }
+    final TxDelta second = new TxDelta();
+    shortWait.deliver(shortWait.takePlace(), second, delivered::add);
+
+    shortWait.abandon(stuck, delivered::add);
+
+    assertThat(delivered).containsExactly(second);
+    assertThat(shortWait.pending()).isZero();
+  }
+
+  @Test
   void aChangeTheViewCannotTakeDoesNotHoldBackTheOnesBehindIt() throws Exception {
     final TxDelta first = new TxDelta();
     final TxDelta second = new TxDelta();

@@ -171,6 +171,19 @@ class Issue10248SqlStringMethodsCodePointsTest extends TestHelper {
   }
 
   @Test
+  void anEmptySearchStringIsFoundAtTheBoundariesOnlyAndNeverInsideAPair() {
+    final String text = "a" + EMOJI;
+    assertThat(literal(text, "indexOf('')")).isEqualTo(0);
+    assertThat(literal(text, "indexOf('', 1)")).isEqualTo(1);
+    assertThat(literal(text, "indexOf('', 2)")).isEqualTo(2);
+    assertThat(literal(text, "indexOf('', 5)")).isEqualTo(2);
+    assertThat(literal(text, "lastIndexOf('')")).isEqualTo(2);
+    assertThat(literal(text, "lastIndexOf('', 1)")).isEqualTo(1);
+    assertThat(literal(text, "lastIndexOf('', 5)")).isEqualTo(2);
+    assertThat(literal(text, "lastIndexOf('', -1)")).isEqualTo(-1);
+  }
+
+  @Test
   void textAfterSeveralPairsIsIndexedByCharacter() {
     final String text = "a" + EMOJI + "b" + EMOJI + EMOJI + "c";
     assertThat(literal(text, "length()")).isEqualTo(6);
