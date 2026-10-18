@@ -507,6 +507,8 @@ public class GraphEngine {
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
+    if (edge instanceof LightEdge)
+      lightEdgeEntryAppended(fromVertex.getIdentity(), Vertex.DIRECTION.OUT, edge.getIdentity().getBucketId(), toVertex.getIdentity());
     recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
     // EVERY LIGHTWEIGHT EDGE IS CREATED THROUGH HERE (Java API, SQL, Cypher, async): A REGULAR ONE WAS ALREADY REPORTED
     // BY ITS RECORD'S save(). A LISTENER THAT THROWS FAILS THE CREATION, AS A RECORD LISTENER DOES: THE APPEND ABOVE IS
@@ -618,6 +620,23 @@ public class GraphEngine {
     // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
     // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
     getOrCreateEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+    if (edgeRID.getPosition() < 0)
+      lightEdgeEntryAppended(toVertex.getIdentity(), Vertex.DIRECTION.IN, edgeRID.getBucketId(), fromVertexRID);
+  }
+
+  /**
+   * Counts a lightweight edge entry appended by this transaction to the edge list of {@code vertex} in {@code direction}, so
+   * that removing it again is not taken for the removal of a committed twin (#10315, see {@link #checkLightEdgeListNotStale}).
+   * An entry with an endpoint this transaction created is not counted: no concurrent commit can append a twin of it, the
+   * other transaction cannot reach that vertex, so its removals can never hide a stale view. That keeps a bulk load of new
+   * vertices and their edges out of the map.
+   */
+  private void lightEdgeEntryAppended(final RID vertex, final Vertex.DIRECTION direction, final int edgeTypeBucketId,
+      final RID neighbour) {
+    if (database.getTransactionIfExists() instanceof TransactionContext tx && !tx.isCreatedInTransaction(vertex)
+        && !tx.isCreatedInTransaction(neighbour))
+      tx.lightEdgeEntryAppended(new TransactionContext.LightEdgeEntry(vertex, direction == Vertex.DIRECTION.OUT, edgeTypeBucketId,
+          neighbour));
   }
 
   /**
@@ -1202,8 +1221,8 @@ public class GraphEngine {
 
   /**
    * Refuses, with a retryable {@link ConcurrentModificationException}, the delete of a lightweight edge that the list
-   * this transaction reads does not hold while the committed list holds more of its entries than this transaction removed
-   * (#10302, the lightweight half of #10263). The transaction read the list before a concurrent commit appended the
+   * this transaction reads does not hold while the committed list holds more of its entries than the list this
+   * transaction read held (#10302, the lightweight half of #10263). The transaction read the list before a concurrent commit appended the
    * entry, so nothing was removed and no page was anchored: the commit would go through and the delete would be lost,
    * one lightweight edge too many. A retry reads the list again.
    * <p>
@@ -1211,12 +1230,14 @@ public class GraphEngine {
    * sides are counted rather than matched: an entry in the committed list that this transaction has itself removed is
    * not a sign of a stale view, and deleting more twins than there are stays the no-op it always was.
    * <p>
-   * Limit: twins this transaction CREATED and then removed count as removed, though they were never in the committed
-   * list. A transaction that creates twins and deletes more of them than it created can therefore miss a twin committed
-   * concurrently, and the delete is lost as before. Counting the creations too would cost a map entry per lightweight
-   * edge created, on the bulk-load path, for this corner (#10315). The removals are counted for the whole transaction,
-   * up to its commit or rollback: a removal undone by a part of the transaction failing and being retried within it stays
-   * counted. Both over-count, which can only hide a stale view, never invent a conflict.
+   * Twins this transaction CREATED and then removed count as removed, though they were never in the committed list, so
+   * its appends to the list are netted out (#10315): the list as this transaction read it held {@code removed - appended}
+   * twins, and the view is stale when the committed list holds more, {@code committed > removed - appended}. An append
+   * with an endpoint this transaction created is not counted, as no concurrent commit can add a twin of it (see
+   * {@link #lightEdgeEntryAppended}), and a committed list holding no twin at all is never stale whatever the counts say.
+   * The counts run for the whole transaction, up to its commit or rollback: a removal or an append undone by a part of
+   * the transaction failing and being retried within it stays counted. An extra removal can only hide a stale view; an
+   * extra append can raise a conflict a retry, which starts from fresh counts, clears.
    * <p>
    * Cost: only a removal that found nothing gets here, and it reads the committed vertex and walks the committed chain
    * (one stripe chain per generation on a super-node), stopping as soon as it counts more than were removed. A delete
@@ -1228,9 +1249,11 @@ public class GraphEngine {
     final RID neighbour = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
     if (neighbour == null)
       return;
-    final int removed = tx.getLightEdgeEntriesRemoved(lightEdgeEntry(endpoint.getIdentity(), direction, edge));
-    final int committed = committedLightEdgeCount(endpoint, direction, edge.getIdentity().getBucketId(), neighbour, removed + 1);
-    if (committed > removed)
+    final TransactionContext.LightEdgeEntry entry = lightEdgeEntry(endpoint.getIdentity(), direction, edge);
+    // HOW MANY TWINS THE LIST HELD WHEN THIS TRANSACTION READ IT: THOSE IT REMOVED, LESS THOSE IT APPENDED ITSELF (#10315)
+    final int read = Math.max(0, tx.getLightEdgeEntriesRemoved(entry) - tx.getLightEdgeEntriesAppended(entry));
+    final int committed = committedLightEdgeCount(endpoint, direction, edge.getIdentity().getBucketId(), neighbour, read + 1);
+    if (committed > read)
       throw new ConcurrentModificationException(
           "Lightweight edge " + edge.getOut() + "->" + edge.getIn() + " of type " + edge.getTypeName() + " is in the committed "
               + direction + " edge list of vertex " + endpoint.getIdentity() + " but not in the one this transaction read: "

@@ -175,9 +175,15 @@ public class TransactionContext implements Transaction {
   private       Map<RID, byte[]>                     snapshotRecordContents;
   private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   // #10302: per (vertex, direction, edge type bucket, neighbour), how many lightweight edge entries this transaction removed
-  // from that vertex's list. A lightweight edge has no RID and its twins are indistinguishable, so a removal that finds
-  // nothing is told from a stale list by counting. Lazily allocated: only a lightweight edge delete fills it.
-  private       Map<LightEdgeEntry, int[]>            removedLightEdgeEntries;
+  // from that vertex's list ([REMOVED]) and appended to it ([APPENDED], #10315). A lightweight edge has no RID and its twins
+  // are indistinguishable, so a removal that finds nothing is told from a stale list by counting. Lazily allocated: only a
+  // lightweight edge delete, or the append of one between two vertices that both predate the transaction, fills it.
+  private       Map<LightEdgeEntry, int[]>            lightEdgeEntryChanges;
+  private static final int                           REMOVED               = 0;
+  private static final int                           APPENDED              = 1;
+  // #10315: the RIDs of newRecords, hashed the first time a lightweight edge append asks, then kept up to date by
+  // registerNewRecord(). Never shrinks: a record unregistered keeps reading as created here, which only skips counting.
+  private       RidHashSet                            newRecordRIDs;
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
@@ -582,6 +588,8 @@ public class TransactionContext implements Transaction {
    */
   public void registerNewRecord(final Record record) {
     newRecords.add(record);
+    if (newRecordRIDs != null)
+      newRecordRIDs.add(record.getIdentity());
   }
 
   /**
@@ -3146,7 +3154,8 @@ public class TransactionContext implements Transaction {
       deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);
     else
       deletedRecordsInTx.clear();
-    removedLightEdgeEntries = null;
+    lightEdgeEntryChanges = null;
+    newRecordRIDs = null;
     newRecords.clear();
     // Reached only with callbacks left when the transaction ends without running them (a failed commit, a rollback past the
     // commit point): a commit that runs them takes them out first, see resetAndFireCallbacks()
@@ -3596,16 +3605,51 @@ public class TransactionContext implements Transaction {
 
   /** Counts {@code removed} lightweight edge entries removed by this transaction from the edge list {@code entry} names (#10302). */
   public void lightEdgeEntriesRemoved(final LightEdgeEntry entry, final int removed) {
-    if (removedLightEdgeEntries == null)
-      removedLightEdgeEntries = new HashMap<>();
-    removedLightEdgeEntries.computeIfAbsent(entry, k -> new int[1])[0] += removed;
+    lightEdgeEntryCounters(entry)[REMOVED] += removed;
   }
 
   /** How many lightweight edge entries this transaction removed from the edge list {@code entry} names (#10302). */
   public int getLightEdgeEntriesRemoved(final LightEdgeEntry entry) {
-    if (removedLightEdgeEntries == null)
+    return lightEdgeEntryCounter(entry, REMOVED);
+  }
+
+  /**
+   * Counts one lightweight edge entry appended by this transaction to the edge list {@code entry} names (#10315): a twin
+   * this transaction created and then removed was never in the committed list, so its removal is netted out by its
+   * append. The caller skips an entry with an endpoint created by this transaction, see {@link #isCreatedInTransaction}.
+   */
+  public void lightEdgeEntryAppended(final LightEdgeEntry entry) {
+    ++lightEdgeEntryCounters(entry)[APPENDED];
+  }
+
+  /** How many lightweight edge entries this transaction appended to the edge list {@code entry} names (#10315). */
+  public int getLightEdgeEntriesAppended(final LightEdgeEntry entry) {
+    return lightEdgeEntryCounter(entry, APPENDED);
+  }
+
+  /**
+   * Whether {@code rid} is a document this transaction created (#10315). Hashes the records created so far on the first
+   * call, then keeps the set current as records are created, so a bulk load asking once per edge stays linear.
+   */
+  public boolean isCreatedInTransaction(final RID rid) {
+    if (newRecordRIDs == null) {
+      newRecordRIDs = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size() * 2));
+      for (int i = 0; i < newRecords.size(); i++)
+        newRecordRIDs.add(newRecords.get(i).getIdentity());
+    }
+    return newRecordRIDs.contains(rid);
+  }
+
+  private int[] lightEdgeEntryCounters(final LightEdgeEntry entry) {
+    if (lightEdgeEntryChanges == null)
+      lightEdgeEntryChanges = new HashMap<>();
+    return lightEdgeEntryChanges.computeIfAbsent(entry, k -> new int[2]);
+  }
+
+  private int lightEdgeEntryCounter(final LightEdgeEntry entry, final int counter) {
+    if (lightEdgeEntryChanges == null)
       return 0;
-    final int[] removed = removedLightEdgeEntries.get(entry);
-    return removed == null ? 0 : removed[0];
+    final int[] counters = lightEdgeEntryChanges.get(entry);
+    return counters == null ? 0 : counters[counter];
   }
 }
