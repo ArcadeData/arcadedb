@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue10088MisdirectedListenerDoesNotBlockTest {
 
   private static final String SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
-  // Every call below arrives from this host, as a request this node sent to itself does (issue #10225)
+  // Every call below arrives from this host; whether one is this node's own is settled by a probe (issue #10299)
   private static final InetSocketAddress FROM_THIS_HOST = new InetSocketAddress(InetAddress.getLoopbackAddress(), 40_000);
   private static final String UNREADABLE  = "Cannot read the live Raft configuration";
 
@@ -241,6 +241,8 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     final Field field = RaftHAServer.class.getDeclaredField("raftServer");
     field.setAccessible(true);
     field.set(raft, ratis);
+    // The stand-in Raft server has no channels: this node's own requests come back to it (issue #10299)
+    SelfDialChannels.leadBackToItself(raft);
     return raft;
   }
 }

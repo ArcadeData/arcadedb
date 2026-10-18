@@ -62,7 +62,7 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
   private static final String   SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   private static final RaftPeer JOINED      = RaftPeer.newBuilder().setId("joined_peer").setAddress("localhost:2439").build();
   private static final RaftPeer LEAVING     = RaftPeer.newBuilder().setId("leaving_peer").setAddress("localhost:2440").build();
-  // This node's own requests arrive from this host, as a request it sent itself does (issue #10225)
+  // Where a request comes from no longer decides whether it is this node's own: a probe does (issue #10299)
   private static final InetSocketAddress FROM_THIS_HOST = new InetSocketAddress(InetAddress.getLoopbackAddress(), 40_000);
   // A stranger is somewhere else (TEST-NET-1, RFC 5737): a request claiming this node's id from there is no self-dial
   private static final InetSocketAddress FROM_ELSEWHERE = new InetSocketAddress("192.0.2.10", 40_000);
@@ -292,6 +292,8 @@ class Issue10144MisdirectedSlotIgnoresRequestorTest {
     final Field field = RaftHAServer.class.getDeclaredField("raftServer");
     field.setAccessible(true);
     field.set(raft, ratis);
+    // The stand-in Raft server has no channels: this node's own requests come back to it (issue #10299)
+    SelfDialChannels.leadBackToItself(raft);
     return raft;
   }
 }
