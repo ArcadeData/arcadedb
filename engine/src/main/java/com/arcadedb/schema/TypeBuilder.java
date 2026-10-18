@@ -41,7 +41,8 @@ import java.util.logging.Level;
 public class TypeBuilder<T> {
   // EVERY field below that describes the type must be rendered by toSQL(), which a replica sends to the leader in place of creating
   // the type itself (issue #10067): a field left out would make the leader create a different type than the caller asked for, with no
-  // compile-time signal. Issue10067TypeBuilderToSQLTest fails when a field is added here without being listed there.
+  // compile-time signal. Issue10067TypeBuilderToSQLTest fails when a field is added here without being listed there, and
+  // Issue10146TypeBuilderSetterRoundTripTest when a setter is added without a case proving its statement makes the same type.
   final DatabaseInternal database;
   final Class<T>         type;
   boolean                 ignoreIfExists    = false;
@@ -344,6 +345,9 @@ public class TypeBuilder<T> {
   public TypeBuilder<T> withBuckets(final List<Bucket> bucketInstances) {
     this.bucketInstances = bucketInstances;
     this.buckets = 0;
+    // CHOSEN: the caller asked for no buckets of the builder's own, so an empty list renders BUCKETS 0 and the node that runs the
+    // statement does not give the type its default count (issue #10146). A non-empty list has no SQL form at all
+    this.bucketsChosen = true;
     return this;
   }
 
