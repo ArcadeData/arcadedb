@@ -28,6 +28,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.text.ParsePosition;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -38,6 +39,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.Temporal;
@@ -103,6 +105,10 @@ public class DateUtils {
    * second to qualify, and an offset only where there is a time for it to offset. A stray
    * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456, and a bare
    * {@code '2024-02-29+01:00'} rather than as midnight in that offset.
+   * <p>
+   * Resolved {@link ResolverStyle#STRICT STRICT}ly, like the ISO formats it follows: a formatter built here does not
+   * inherit the resolver style of the {@link DateTimeFormatter#ISO_LOCAL_DATE} it appends, so it resolved SMARTly and
+   * moved {@code 2021-02-30} to {@code 2021-02-28} instead of refusing it (issue #10206).
    */
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
@@ -118,7 +124,8 @@ public class DateUtils {
       .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)//
       .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)//
       .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)//
-      .toFormatter(Locale.ENGLISH);
+      .toFormatter(Locale.ENGLISH)//
+      .withResolverStyle(ResolverStyle.STRICT);
 
   public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision,
       final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {
@@ -945,6 +952,51 @@ public class DateUtils {
         || obj instanceof ZonedDateTime || obj instanceof OffsetDateTime || obj instanceof Instant;
   }
 
+  /**
+   * The instant a date/time value denotes, reading a zone-less value at UTC as the engine's DATETIME is anchored, or
+   * {@code null} for a value that is not one (a number, a string).
+   */
+  public static Instant toInstant(final Object value) {
+    return switch (value) {
+      case Date date -> date.toInstant();
+      case Calendar calendar -> calendar.toInstant();
+      case LocalDateTime localDateTime -> localDateTime.toInstant(ZoneOffset.UTC);
+      case LocalDate localDate -> localDate.atStartOfDay(ZoneOffset.UTC).toInstant();
+      case ZonedDateTime zonedDateTime -> zonedDateTime.toInstant();
+      case OffsetDateTime offsetDateTime -> offsetDateTime.toInstant();
+      case Instant instant -> instant;
+      case null, default -> null;
+    };
+  }
+
+  /**
+   * {@code left - right} of two date/time values, exactly. Subtracting their epoch counts at the finer precision of the
+   * two overflowed a {@code long} for a gap past 292 years at nanosecond precision (issue #10206), although a
+   * {@link Duration} holds any gap between two instants.
+   *
+   * @return null when either operand is not a date/time value, for the caller to fall back to its numeric arithmetic
+   */
+  public static Duration difference(final Object left, final Object right) {
+    final Instant leftInstant = toInstant(left);
+    if (leftInstant == null)
+      return null;
+    final Instant rightInstant = toInstant(right);
+    return rightInstant == null ? null : Duration.between(rightInstant, leftInstant);
+  }
+
+  /**
+   * The value a comparison operand takes against {@code other}: a {@link LocalDate} compared with a value that carries a
+   * time of day is that day at midnight, as SQL compares a DATE with a TIMESTAMP. Any other pair answers {@code value}
+   * unchanged.
+   * <p>
+   * The comparison operators convert their right operand to the class of the left one, which narrows a datetime on the
+   * right to its day, so {@code d1 = t1} held for {@code d1 = 2021-02-03} and {@code t1 = 2021-02-03T12:00} while
+   * {@code t1 = d1}, which widens, did not (issue #10206). Widening the date instead makes the two orders agree.
+   */
+  public static Object dateAsMidnightAgainst(final Object value, final Object other) {
+    return value instanceof LocalDate date && !(other instanceof LocalDate) && isDate(other) ? date.atStartOfDay() : value;
+  }
+
   public static ChronoUnit getHigherPrecision(final Object... objs) {
     if (objs == null || objs.length == 0)
       return null;
@@ -994,6 +1046,10 @@ public class DateUtils {
       // anchor used everywhere else in this class (see dateTime() and dateTimeToTimestamp()), so
       // `arcadedb.dateTimeImplementation=java.time.Instant` renders exactly like LocalDateTime.
       return getFormatter(format).format(LocalDateTime.ofInstant(instant, timeZone != null ? ZoneId.of(timeZone) : UTC_ZONE_ID));
+    else if (obj instanceof LocalDate date)
+      // A DATE is the day at midnight, as the java.util.Date implementation of the same type always rendered it, so a
+      // time field formats as 00 instead of throwing UnsupportedTemporalTypeException (issue #10206)
+      return format(date.atStartOfDay(), format, timeZone);
     else if (obj instanceof TemporalAccessor accessor)
       return getFormatter(format).format(accessor);
     return null;
@@ -1008,11 +1064,7 @@ public class DateUtils {
     if (cached != null)
       return cached;
 
-    // A storage format must render and parse the same bytes on every server: the locale is pinned so a textual field
-    // (MMM, EEE) never follows the JVM default, which the cache would otherwise freeze at the first caller's (issue #7112).
-    final DateTimeFormatter formatter = new DateTimeFormatterBuilder().appendPattern(format)
-        .parseDefaulting(ChronoField.HOUR_OF_DAY, 0).parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)
-        .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter(Locale.ENGLISH);
+    final DateTimeFormatter formatter = buildFormatter(format);
 
     // Bounded rather than evicting: the working set is a handful of schema formats that all fit, so an LRU would only
     // add a lock on a hot path to reorder entries nothing ever evicts. A slight overshoot when several threads race
@@ -1021,6 +1073,64 @@ public class DateUtils {
       CACHED_FORMATTERS.putIfAbsent(format, formatter);
 
     return formatter;
+  }
+
+  /**
+   * Builds the formatter of a user or schema pattern.
+   * <ul>
+   *   <li>The locale is pinned, so a storage format renders and parses the same bytes on every server: a textual field
+   *   (MMM, EEE) never follows the JVM default, which the cache would otherwise freeze at the first caller's
+   *   (issue #7112).</li>
+   *   <li>It resolves {@link ResolverStyle#STRICT STRICT}ly: the default SMART resolver moved an impossible date to
+   *   a possible one ({@code 2021-02-30} read as {@code 2021-02-28}, {@code 24:00:00} as midnight of the next day), so
+   *   a typo became a different, valid value instead of a refusal (issue #10206).</li>
+   *   <li>{@code y} (year-of-era) is read as {@code u} (proleptic year) unless the pattern names the era ({@code G}).
+   *   STRICT cannot resolve a year-of-era without an era, and year-of-era has no year 0, so {@code 'yyyy-MM-dd'}
+   *   refused {@code 0000-01-01} that the ISO formats accept, and rendered year 0 as {@code 0001}, which read back
+   *   as a different year. The two letters agree on every year of the common era.</li>
+   *   <li>A missing hour defaults to midnight, as it always did, but only when the pattern has no hour field at all:
+   *   the 12-hour fields ({@code h}, {@code K}) derive the hour of the day from the AM/PM marker, and an unconditional
+   *   default of that same hour conflicted with it, so no pattern with {@code hh ... a} ever parsed. A 12-hour field
+   *   without a marker reads as AM.</li>
+   * </ul>
+   */
+  private static DateTimeFormatter buildFormatter(final String format) {
+    boolean quoted = false;
+    boolean era = false;
+    boolean hourOfDay = false;
+    boolean hourOfAmPm = false;
+    for (int i = 0; i < format.length(); i++) {
+      final char c = format.charAt(i);
+      if (c == '\'')
+        quoted = !quoted;
+      else if (!quoted) {
+        if (c == 'G')
+          era = true;
+        else if (c == 'H' || c == 'k')
+          hourOfDay = true;
+        else if (c == 'h' || c == 'K')
+          hourOfAmPm = true;
+      }
+    }
+
+    String pattern = format;
+    if (!era && format.indexOf('y') >= 0) {
+      final char[] chars = format.toCharArray();
+      quoted = false;
+      for (int i = 0; i < chars.length; i++) {
+        if (chars[i] == '\'')
+          quoted = !quoted;
+        else if (!quoted && chars[i] == 'y')
+          chars[i] = 'u';
+      }
+      pattern = new String(chars);
+    }
+
+    final DateTimeFormatterBuilder builder = new DateTimeFormatterBuilder().appendPattern(pattern);
+    if (!hourOfDay)
+      builder.parseDefaulting(hourOfAmPm ? ChronoField.AMPM_OF_DAY : ChronoField.HOUR_OF_DAY, 0);
+    return builder.parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)
+        .toFormatter(Locale.ENGLISH).withResolverStyle(ResolverStyle.STRICT);
   }
 
   /**

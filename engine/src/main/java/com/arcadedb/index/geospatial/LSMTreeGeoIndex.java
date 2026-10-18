@@ -106,6 +106,8 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   private final GeohashPrefixTree                grid;
   private final RecursivePrefixTreeStrategy      strategy;
   private       TypeIndex                        typeIndex;
+  /** The thread running {@link #build}, which skips an invalid geometry where a write refuses it (issue #10210). */
+  private volatile Thread                        buildingThread;
 
   /**
    * Factory handler for creating LSMTreeGeoIndex instances.
@@ -211,12 +213,21 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final String wkt = key0.toString();
     final Shape shape;
     try {
-      shape = GeoUtils.getSpatialContext().getFormats().getWktReader().read(wkt);
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Geospatial index: skipping invalid WKT '%s': %s", wkt, e.getMessage());
+      // the parser of the geo.* functions, so the index and a scan read a value as the same shape
+      shape = GeoUtils.parseGeometry(wkt);
+    } catch (final IllegalArgumentException e) {
+      // A write the index cannot hold is refused: skipped, the record was missing from the index while every scan that
+      // evaluated it failed, so the index answered where the scan threw (issue #10210). A build over existing records
+      // still skips one, loudly, so a database holding such a value written before can rebuild its index.
+      if (Thread.currentThread() != buildingThread)
+        throw new IndexException(
+            "Geospatial index '" + getName() + "' cannot index " + Arrays.toString(rids) + ": " + e.getMessage(), e);
+      LogManager.instance().log(this, Level.WARNING, "Geospatial index '%s': skipping %s, invalid geometry: %s", getName(),
+          Arrays.toString(rids), e.getMessage());
       return;
     }
+    if (shape == null)
+      return;
 
     indexShape(shape, rids);
   }
@@ -509,18 +520,23 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     LogManager.instance().log(this, Level.INFO, "Building geospatial index '%s'...", getName());
 
-    db.scanBucket(bucketName, record -> {
-      final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
-      db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), source);
-      total.incrementAndGet();
+    buildingThread = Thread.currentThread();
+    try {
+      db.scanBucket(bucketName, record -> {
+        final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
+        db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), source);
+        total.incrementAndGet();
 
-      IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
 
-      if (callback != null)
-        callback.onDocumentIndexed(source, total.get());
+        if (callback != null)
+          callback.onDocumentIndexed(source, total.get());
 
-      return true;
-    });
+        return true;
+      });
+    } finally {
+      buildingThread = null;
+    }
 
     LogManager.instance().log(this, Level.INFO, "Completed building geospatial index '%s': processed %d records in %dms",
         getName(), total.get(), System.currentTimeMillis() - startTime);
@@ -617,7 +633,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (obj instanceof Shape s)
       return s;
     try {
-      return GeoUtils.getSpatialContext().getFormats().getWktReader().read(obj.toString());
+      return GeoUtils.parseGeometry(obj);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Geospatial index: cannot parse shape '%s'", obj);

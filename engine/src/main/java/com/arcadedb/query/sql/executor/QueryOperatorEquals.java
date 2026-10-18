@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.DateUtils;
 
 import java.util.Arrays;
 import java.util.Calendar;
@@ -87,6 +88,8 @@ public class QueryOperatorEquals {
     try {
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
       // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.
+      // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206)
+      left = DateUtils.dateAsMidnightAgainst(left, right);
       right = Type.convertOrNull(null, right, left.getClass());
       if (right == null)
         return false;
