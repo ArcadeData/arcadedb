@@ -3336,7 +3336,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     if (recordSize[0] == RECORD_PLACEHOLDER_POINTER || isChunkHead(recordSize[0]))
       try {
-        return getRecordInternal(rid, false);
+        // AN INTERNAL PROBE: NO BEFORE-READ EVENT, WHICH COULD ALSO VETO THE READ AND MAKE IT ANSWER "NO RECORD"
+        return getRecordInternal(rid, false, false);
       } catch (final RecordNotFoundException e) {
         return null;
       }

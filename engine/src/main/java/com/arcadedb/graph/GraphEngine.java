@@ -1215,7 +1215,8 @@ public class GraphEngine {
     if (content == null || content.size() == 0 || content.getByte(0) != Edge.RECORD_TYPE)
       return;
 
-    // THE TWO ENDPOINTS ONLY, STRAIGHT FROM THE BUFFER: NO COPY OF THE CONTENT AND NO RECORD BUILT ON EVERY EDGE DELETE
+    // THE TWO ENDPOINTS ONLY, STRAIGHT FROM THE BUFFER: NO COPY OF THE CONTENT AND NO RECORD BUILT ON EVERY EDGE DELETE.
+    // Moving the position is safe: getRecord hands out a view of its own over the page, never a shared one
     content.position(1); // SKIP RECORD TYPE
     final RID currentOut = ImmutableEdge.readVertexPointer(database, content, edgeRID);
     final RID currentIn = ImmutableEdge.readVertexPointer(database, content, edgeRID);
@@ -1252,6 +1253,11 @@ public class GraphEngine {
    * <p>
    * A striped list is walked only along the chains the edge can be in, one per generation, as
    * {@link StripedEdgeList#removeEdge} does.
+   * <p>
+   * Limit: a record that does not fit its page (a placeholder, or a multi-page record) is read through the transaction
+   * instead, see {@link LocalBucket#getRecordFromCommittedPage}. An edge-list chunk never takes those shapes (chunks are
+   * capped well below a page); a vertex whose properties outgrow its page does, and for such a vertex the head pointer
+   * is the one the transaction sees.
    */
   private boolean committedEdgeListHolds(final VertexInternal vertex, final Vertex.DIRECTION direction, final Edge edge) {
     final RID vertexRID = vertex.getIdentity();
