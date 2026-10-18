@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -35,6 +36,7 @@ import io.swagger.v3.oas.models.parameters.RequestBody;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -199,6 +201,7 @@ public class CoreApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("CommandRequest", createCommandRequestSchema());
     openAPI.getComponents().addSchemas("ServerCommandResponse", createServerCommandResponseSchema());
     openAPI.getComponents().addSchemas("RunningQuery", createRunningQuerySchema());
+    openAPI.getComponents().addSchemas("BeginRequest", createBeginRequestSchema());
     openAPI.getComponents().addSchemas("TransactionSession", createTransactionSessionSchema());
     openAPI.getComponents().addSchemas("TerminationStatus", createTerminationStatusSchema());
     openAPI.getComponents().addSchemas("ErrorResponse", createErrorResponseSchema());
@@ -483,6 +486,10 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BEGIN_SESSION_REQUEST_DESCRIPTION, false));
     postOp.addParametersItem(SpecBuilders.queryTagHeaderParam());
+    // PostBeginHandler reads an optional 'isolationLevel' from this body; with no body, or one that omits it, the
+    // transaction runs at the database's default isolation (issue #10295)
+    postOp.setRequestBody(SpecBuilders.jsonBody("Optional transaction settings. Omit the body to begin at the database's "
+        + "default isolation level", "BeginRequest", false));
     postOp.setResponses(createBeginResponses());
     pathItem.setPost(postOp);
 
@@ -815,7 +822,21 @@ public class CoreApiSpec implements OpenApiContributor {
         of every subsequent call that belongs to this transaction.""".formatted(SESSION_HEADER)));
     responses.addApiResponse("409", SpecBuilders.errorResponse(
         "A transaction is already open on this session"));
+    // The 400 is begin's own wording: commit and rollback share createTransactionResponses() and take no body (issue #10295)
+    responses.addApiResponse("400", SpecBuilders.errorResponse(
+        "Bad request, including an 'isolationLevel' that is not one of the values the request body declares"));
     return responses;
+  }
+
+  private Schema<?> createBeginRequestSchema() {
+    final Schema<Object> schema = SpecBuilders.object("Begin transaction request object");
+    final Schema<String> isolationLevel = SpecBuilders.string("Isolation level of the transaction. Optional: when absent "
+        + "the transaction runs at the database's default isolation level. The value is case-sensitive, and any other "
+        + "value is refused with 400.");
+    // Taken from the engine enum PostBeginHandler resolves the value against, so the two cannot drift apart
+    isolationLevel.setEnum(Arrays.stream(Database.TRANSACTION_ISOLATION_LEVEL.values()).map(Enum::name).toList());
+    schema.addProperty("isolationLevel", isolationLevel);
+    return schema;
   }
 
   private Schema<?> createQueryRequestSchema() {
