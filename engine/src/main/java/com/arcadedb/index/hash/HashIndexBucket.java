@@ -732,7 +732,8 @@ public class HashIndexBucket extends PaginatedComponent {
           }
         }
         if (!nullKey)
-          // the one entry of the key belongs to another record
+          // the one entry of the key belongs to another record. Not walking the overflow chain relies on a non-null unique key
+          // holding ONE entry in the whole chain - the same invariant the key-wide branch below returns on (unique && !nullKey)
           return;
         // RID not in any entry on this page - continue to overflow pages
       } else if (pos >= 0) {
