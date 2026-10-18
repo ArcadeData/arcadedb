@@ -44,6 +44,7 @@ class Issue10314StripedLightEdgeDeleteTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 8);
     database.command("sql", "CREATE VERTEX TYPE V").close();
     database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT").close();
+    database.command("sql", "CREATE EDGE TYPE R").close();
     database.transaction(() -> {
       v0 = database.newVertex("V").set("id", 0).save().getIdentity();
       v1 = database.newVertex("V").set("id", 1).save().getIdentity();
@@ -96,6 +97,22 @@ class Issue10314StripedLightEdgeDeleteTest extends TestHelper {
       edge.delete();
     });
     assertCount(TWINS - 1);
+  }
+
+  @Test
+  void deletingARegularEdgeOnTheStripedListRemovesExactlyThatEdge() {
+    final RID[] regular = new RID[2];
+    database.transaction(() -> {
+      regular[0] = v0.asVertex().newEdge("R", v1.asVertex()).getIdentity();
+      regular[1] = v0.asVertex().newEdge("R", v1.asVertex()).getIdentity();
+    });
+
+    database.transaction(() -> regular[0].asEdge().delete());
+
+    assertThat(v0.asVertex().countEdges(Vertex.DIRECTION.OUT, "R")).isEqualTo(1);
+    assertThat(v1.asVertex().countEdges(Vertex.DIRECTION.IN, "R")).isEqualTo(1);
+    assertThat(v0.asVertex().getEdges(Vertex.DIRECTION.OUT, "R").iterator().next().getIdentity()).isEqualTo(regular[1]);
+    assertCount(TWINS);
   }
 
   private void assertCount(final int expected) {

@@ -557,9 +557,11 @@ public class StripedEdgeList extends EdgeLinkedList {
     // first chain that removed an entry: a regular edge's RID is in one chain only, and a lightweight edge is located by
     // (edge type bucket, neighbour), which every generation holding a twin matches - walking on would remove one twin per
     // generation instead of the single entry the classic layout removes (#10314).
-    for (final EdgeLinkedList chain : chainsForNeighbour(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut()))
-      if (chain.removeEdge(edge) > 0)
-        return 1;
+    for (final EdgeLinkedList chain : chainsForNeighbour(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut())) {
+      final int removed = chain.removeEdge(edge);
+      if (removed > 0)
+        return removed;
+    }
     return 0;
   }
 
