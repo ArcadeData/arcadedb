@@ -211,6 +211,24 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
     assertBucketMapsMatchTheTypes(schema);
   }
 
+  /** A change that already attached a bucket when it fails: the first of two buckets is taken, the second is refused. */
+  @Test
+  void aSchemaChangeThatFailsAfterAttachingABucketLeavesTheBucketMapsRight() {
+    final LocalSchema schema = localSchema();
+    schema.createDocumentType("Owner");
+    final String ownerBucket = schema.getType("Owner").getBuckets(false).getFirst().getName();
+    database.command("sql", "CREATE BUCKET Free");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE Partial BUCKET Free," + ownerBucket))//
+        .hasMessageContaining("already associated");
+
+    assertThat(schema.getTypeByBucketId(schema.getBucketByName(ownerBucket).getFileId()).getName()).isEqualTo("Owner");
+    assertBucketMapsMatchTheTypes(schema);
+    // and the next change sees the same maps
+    schema.createDocumentType("After");
+    assertBucketMapsMatchTheTypes(schema);
+  }
+
   /**
    * The check that a bucket belongs to one type only runs during a load too, against the owners the load has attached so
    * far: a schema file listing one bucket under two types gives it to one of them only.

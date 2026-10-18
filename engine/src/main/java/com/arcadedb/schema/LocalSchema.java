@@ -288,6 +288,12 @@ public class LocalSchema implements Schema {
    * ({@link #involvedBucketAttached}, {@link #bucketMembershipChanged}), {@code LocalVertexType.addBucketInternal} (its
    * edge-list buckets), the type rename, {@link #dropType}, {@link #dropBucket} and a stripe-pool bucket created through
    * {@link #createBucket}. A new way to change a type's buckets has to report itself too.
+   * <p>
+   * THE GUARANTEE TO READERS. Readers resolve a bucket lock-free, but only the transactions that resolve one are excluded
+   * from DDL: every site above runs under the database write lock (a DDL frame, or a load that stages its own maps), which
+   * a transaction's reads and writes take shared. So no reader works on a bucket between the two puts of an attach - the
+   * type map first, the involved-bucket map second - and the same lock is what makes the flag and the rebuild that
+   * publishes a new generation single-writer.
    */
   private volatile    boolean                                bucketTypeMapsStale           = false;
   /** Length of the last schema file written, to size the buffer of the next one (issue #10247). */
@@ -5459,6 +5465,9 @@ public class LocalSchema implements Schema {
                 rebuildBucketTypeMap();
               } catch (final RuntimeException e) {
                 // stays stale: the next lookup or save rebuilds it, and the exception to report is the change's own
+                LogManager.instance().log(this, Level.WARNING,
+                    "Cannot rebuild the bucket-to-type maps after a failed schema change on database '%s': %s", e,
+                    database.getName(), e.getMessage());
               }
               if (pending)
                 keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
