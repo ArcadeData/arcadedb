@@ -1291,10 +1291,8 @@ public class GraphEngine {
    * A striped list is walked only along the chains the edge can be in, one per generation, as
    * {@link StripedEdgeList#removeEdge} does.
    * <p>
-   * Limit: a record that does not fit its page (a placeholder, or a multi-page record) is read through the transaction
-   * instead, see {@link LocalBucket#getRecordFromCommittedPage}. An edge-list chunk never takes those shapes (chunks are
-   * capped well below a page); a vertex whose properties outgrow its page does, and for such a vertex the head pointer
-   * is the one the transaction sees.
+   * A vertex whose properties outgrow its page (a placeholder, or a multi-page record) is read from the committed pages
+   * too, head pointers included (#10304), see {@link LocalBucket#getRecordFromCommittedPage}.
    */
   private boolean committedEdgeListHolds(final VertexInternal vertex, final Vertex.DIRECTION direction, final Edge edge) {
     final RID vertexRID = vertex.getIdentity();
