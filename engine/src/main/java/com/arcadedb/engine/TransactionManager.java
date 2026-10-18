@@ -469,14 +469,15 @@ public class TransactionManager {
       // arcadedb.txWalFiles=1 it took down the database's whole commit path.
       boolean writtenElsewhere = false;
       for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
-        if (i != slot) {
-          // AN EMPTY SLOT IS OPENED FOR THE FALLBACK TOO (#10234): WITH THE FILES OPENED ON DEMAND, THE OTHER SLOTS ARE OFTEN
-          // EMPTY, AND SKIPPING THEM WOULD LEAVE A COMMIT WHOSE OWN SLOT IS UNUSABLE NOTHING TO FALL BACK TO
-          WALFile other = pool[i];
-          if (other == null)
-            other = openWALFileForSlot(pool, i);
-          writtenElsewhere = tryWriteTransactionToWALFile(other, pages, sync, txId, bufferChanges);
-        }
+        if (i != slot && pool[i] != null)
+          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges);
+
+      // AN EMPTY SLOT IS OPENED FOR THE FALLBACK TOO (#10234), BUT ONLY WHEN NO FILE ALREADY OPEN TOOK THE WRITE: WITH THE FILES
+      // OPENED ON DEMAND, THE OTHER SLOTS ARE OFTEN ALL EMPTY, AND SKIPPING THEM WOULD LEAVE A COMMIT WHOSE OWN SLOT IS UNUSABLE
+      // NOTHING TO FALL BACK TO; A TRANSIENT REFUSAL ON A MOSTLY IDLE DATABASE MUST NOT OPEN A FILE IN EVERY SLOT
+      for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
+        if (i != slot && pool[i] == null)
+          writtenElsewhere = tryWriteTransactionToWALFile(openWALFileForSlot(pool, i), pages, sync, txId, bufferChanges);
 
       if (writtenElsewhere)
         break;

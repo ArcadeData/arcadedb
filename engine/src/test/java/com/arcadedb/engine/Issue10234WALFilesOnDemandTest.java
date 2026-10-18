@@ -290,6 +290,42 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
     assertThat(database.countType("Doc", false)).isEqualTo(1);
   }
 
+  /** A refusal of the slot of a commit takes the write to a file already open before it opens another one. */
+  @Test
+  void theFallbackPrefersAFileThatIsAlreadyOpen() throws Exception {
+    database.close();
+
+    final Object previousWalFiles = GlobalConfiguration.TX_WAL_FILES.getValue();
+    GlobalConfiguration.TX_WAL_FILES.setValue(3);
+    try {
+      database = factory.open();
+      database.getSchema().getOrCreateDocumentType("Doc");
+      final LocalDatabase db = (LocalDatabase) database;
+      final TransactionManager transactionManager = db.getTransactionManager();
+      transactionManager.cancelHousekeepingForTesting();
+
+      // ONE OTHER SLOT HOLDS A FILE, THE THIRD IS EMPTY, AND THE SLOT OF THIS THREAD REFUSES WRITES
+      final int ownSlot = (int) (Thread.currentThread().threadId() % 3);
+      final int openSlot = (ownSlot + 1) % 3;
+      transactionManager.openWALFileForTesting(openSlot);
+      final WALFile retired = new WALFile(db.getDatabasePath() + File.separator + "txlog_10234_refuses.wal");
+      retired.setActive(false);
+      final WALFile displaced = transactionManager.replaceActiveWALFileForTesting(ownSlot, retired);
+      final int openBefore = transactionManager.getOpenWALFileCountForTesting();
+
+      try {
+        database.transaction(() -> database.newDocument("Doc").set("k", "x").save());
+        // THE FILE ALREADY OPEN TOOK IT: NO THIRD FILE WAS OPENED
+        assertThat(transactionManager.getOpenWALFileCountForTesting()).isEqualTo(openBefore);
+      } finally {
+        retired.drop();
+        transactionManager.replaceActiveWALFileForTesting(ownSlot, displaced);
+      }
+    } finally {
+      GlobalConfiguration.TX_WAL_FILES.setValue(previousWalFiles);
+    }
+  }
+
   @Test
   void anActiveWALFileIsKept() {
     database.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);

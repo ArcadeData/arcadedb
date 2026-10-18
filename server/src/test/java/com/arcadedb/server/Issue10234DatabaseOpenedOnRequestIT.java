@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #10234, the server half: a database on disk that the server did not open - because
@@ -182,6 +183,14 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     } finally {
       directory.delete();
     }
+  }
+
+  @Test
+  void aNullOrBlankNameGetsTheAnswerItAlwaysDid() {
+    assertThatThrownBy(() -> getServer(0).getDatabaseForRequest(null)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid database name");
+    assertThatThrownBy(() -> getServer(0).getDatabaseForRequest("  ")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> getServer(0).getDatabaseForRequest("")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

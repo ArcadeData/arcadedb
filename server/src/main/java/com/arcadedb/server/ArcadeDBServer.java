@@ -1428,14 +1428,17 @@ public class ArcadeDBServer {
    * they always had: they reopen it.
    */
   public ServerDatabase getDatabaseForRequest(final String databaseName) {
+    // A NULL OR BLANK NAME GETS THE ANSWER IT ALWAYS DID (IllegalArgumentException), NOT A NullPointerException OUT OF THE MAP
+    if (databaseName == null || databaseName.isBlank())
+      return getDatabase(databaseName, false, false);
+
     final ServerDatabase db = databases.get(databaseName);
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
 
     // ONLY WHILE THE SERVER IS ONLINE: NOT WHILE IT STARTS (THE DATABASES ARE BEING LOADED, AND THE HA PLUGIN RE-WRAPS THEM) AND
     // NOT WHILE IT STOPS (A DATABASE OPENED THEN WOULD BE LEFT OPEN BEHIND THE SHUTDOWN)
-    if (status == STATUS.ONLINE && databaseName != null && !databaseName.isBlank() && !isReservedDatabaseName(databaseName)
-        && !closedByCommand.contains(databaseName)) {
+    if (status == STATUS.ONLINE && !isReservedDatabaseName(databaseName) && !closedByCommand.contains(databaseName)) {
       // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK, AND IS
       // ANSWERED AS IT ALWAYS WAS (NOT AVAILABLE), NOT WITH A NEW KIND OF ERROR
       if (isValidDatabaseName(databaseName)) {
