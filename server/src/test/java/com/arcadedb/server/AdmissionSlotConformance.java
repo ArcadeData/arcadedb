@@ -70,8 +70,9 @@ public final class AdmissionSlotConformance {
   public static void assertGivesItsSlotBack(final Database database, final String typeName, final String surface,
       final Callable<?> request) throws Exception {
     final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
-    final Object savedMaxConcurrent = GlobalConfiguration.QUERY_MAX_CONCURRENT.getValue();
-    final Object savedQueueTimeout = GlobalConfiguration.QUERY_QUEUE_TIMEOUT.getValue();
+    // NULL WHEN THE SETTING WAS NOT CHANGED: IT IS RESET RATHER THAN WRITTEN BACK AS AN EXPLICIT VALUE
+    final Object savedMaxConcurrent = GlobalConfiguration.QUERY_MAX_CONCURRENT.isChanged() ? GlobalConfiguration.QUERY_MAX_CONCURRENT.getValue() : null;
+    final Object savedQueueTimeout = GlobalConfiguration.QUERY_QUEUE_TIMEOUT.isChanged() ? GlobalConfiguration.QUERY_QUEUE_TIMEOUT.getValue() : null;
     final DocumentType type = database.getSchema().getType(typeName);
     final Probe probe = new Probe(gate);
     final ExecutorService client = Executors.newSingleThreadExecutor(r -> new Thread(r, "admission-conformance-" + surface));
@@ -117,10 +118,17 @@ public final class AdmissionSlotConformance {
         client.awaitTermination(TIMEOUT_MS, TimeUnit.MILLISECONDS);
       } finally {
         // THE GATE IS JVM-WIDE: LEFT ENABLED, IT WOULD GATE EVERY TEST THAT RUNS AFTER THIS ONE
-        GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(savedMaxConcurrent);
-        GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(savedQueueTimeout);
+        restore(GlobalConfiguration.QUERY_MAX_CONCURRENT, savedMaxConcurrent);
+        restore(GlobalConfiguration.QUERY_QUEUE_TIMEOUT, savedQueueTimeout);
       }
     }
+  }
+
+  private static void restore(final GlobalConfiguration setting, final Object saved) {
+    if (saved == null)
+      setting.reset();
+    else
+      setting.setValue(saved);
   }
 
   private static void awaitCondition(final BooleanSupplier condition, final String what) throws InterruptedException {
@@ -132,7 +140,11 @@ public final class AdmissionSlotConformance {
     }
   }
 
-  /** Gives the slot back on the first record created, as a statement about to wait does, then waits for the test. */
+  /**
+   * Gives the slot back on the first record created, as a statement about to wait does, then waits for the test. Only the
+   * first: a record the request creates afterwards, or a retry of its statement, runs without the hold, and the check has
+   * already read what the first one saw.
+   */
   private static final class Probe implements BeforeRecordCreateListener {
     private final QueryAdmissionGate gate;
     private final AtomicBoolean      armed   = new AtomicBoolean(true);
@@ -157,8 +169,8 @@ public final class AdmissionSlotConformance {
       try {
         proceed.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
       } catch (final InterruptedException e) {
-        // ONLY ON TEARDOWN: THE RECORD IS STILL CREATED, THE CHECK HAS ALREADY FAILED OR PASSED
-        Thread.currentThread().interrupt();
+        // ONLY ON TEARDOWN, WHEN THE CHECK HAS ALREADY FAILED OR PASSED: THE FLAG IS NOT RESTORED, BECAUSE THIS SERVER THREAD
+        // GOES ON TO WRITE THE RECORD, AND AN INTERRUPTED THREAD WOULD CLOSE THE FILE CHANNEL IT WRITES TO
       }
       return true;
     }

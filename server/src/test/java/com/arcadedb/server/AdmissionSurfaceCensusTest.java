@@ -37,9 +37,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every surface has a conformance test built on {@link AdmissionSlotConformance}. A surface added later - or one that moves
  * its admission to another class - fails here until its test exists, instead of shipping a statement whose release of the
  * slot before a wait silently gives nothing back (#10140).
+ * <p>
+ * The census is textual, so it guards against the likely mistake and no more: a surface is a class of the main sources
+ * that names {@code QueryAdmissionGate} and calls {@code .admit(}, and its test passes when it calls the check. Which entry
+ * points of a surface are driven is the per-surface test's business: each one lists its own.
  */
 class AdmissionSurfaceCensusTest {
-  /** The reactor root: the parent of the {@code server} module, wherever the JVM that runs this class was started. */
+  /**
+   * The reactor root: the parent of the {@code server} module. Surefire sets {@code basedir} to the module; a runner that
+   * does not (an IDE) starts in the module directory too. Either way the assertion on {@link #GATE_CLASS} fails loudly if not.
+   */
   private static final Path    REACTOR_ROOT = Path.of(System.getProperty("basedir", System.getProperty("user.dir"))).resolve("..")
       .normalize();
   private static final String  GATE_CLASS   = "engine/src/main/java/com/arcadedb/query/sql/executor/QueryAdmissionGate.java";
