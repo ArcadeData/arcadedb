@@ -400,8 +400,8 @@ databases
 # postgresw, ...) left its generated security files untracked-but-visible and they were easy to `git add -A` in
 **/config/server-users.jsonl
 **/config/server-groups.json
-# ... but the copies under package/ are the defaults the distribution ships (#9981)
-!/package/src/main/config/server-users.jsonl
+# ... but the copy under package/ is the default the distribution ships (#9981). There is no shipped
+# server-users.jsonl: a missing file makes the server create its default root user (#10320)
 !/package/src/main/config/server-groups.json
 gremlin/file:/
 gremlin-it/file:/
