@@ -108,9 +108,9 @@ class Issue10214ViewJoinedEdgeTypeTest {
   @ParameterizedTest
   @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS", "ASYNCHRONOUS" })
   void edgesWrittenAfterTheBuildWhileTheTypeWasNotCoveredAreNotClaimed(final GraphAnalyticalView.UpdateMode mode) {
-    // EMPTY WHEN THE VIEW IS BUILT: THE SCAN MEETS NONE OF ITS EDGES, ONLY THE LISTENERS HEAR THE ONES WRITTEN SINCE
-    database.getSchema().createEdgeType("G");
+    // CREATED AFTER THE VIEW STARTED LISTENING: THE SCAN MEETS NONE OF ITS EDGES, ONLY THE LISTENERS HEAR THE ONES WRITTEN SINCE
     final GraphAnalyticalView view = createView(mode);
+    database.getSchema().createEdgeType("G");
     addEdges("G", 2);
     assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
     assertServedAndRight(view, 4);
@@ -122,13 +122,14 @@ class Issue10214ViewJoinedEdgeTypeTest {
 
   @ParameterizedTest
   @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "OFF", "SYNCHRONOUS", "ASYNCHRONOUS" })
-  void anEmptyEdgeTypeAttachedAfterTheBuildIsServedAtOnce(final GraphAnalyticalView.UpdateMode mode) {
+  void anEmptyEdgeTypeThatExistedWhenTheViewStartedIsRebuiltOnceWhenAttached(final GraphAnalyticalView.UpdateMode mode) {
+    // EMPTY AS FAR AS ANY COUNT SHOWS, BUT IT EXISTED WHEN THE LISTENERS WERE ARMED: A TRANSACTION OPEN THEN MAY HOLD ITS EDGES
     database.getSchema().createEdgeType("G");
     final GraphAnalyticalView view = createView(mode);
 
+    final CountDownLatch gate = holdRebuilds(view);
     database.command("sql", "ALTER TYPE G SUPERTYPE +E").close();
-    assertThat(view.isReady()).as("G holds no edge: nothing to rebuild").isTrue();
-    assertServedAndRight(view, 4);
+    assertNotServedUntilRebuilt(view, mode, gate, 4);
 
     if (mode != GraphAnalyticalView.UpdateMode.OFF) {
       // ITS EDGES WRITTEN FROM NOW ON REACH THE OVERLAY
@@ -136,6 +137,47 @@ class Issue10214ViewJoinedEdgeTypeTest {
       assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
       assertServedAndRight(view, 6);
     }
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "OFF", "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void anEmptyEdgeTypeCreatedAfterTheViewStartedIsServedAtOnceWhenAttached(final GraphAnalyticalView.UpdateMode mode) {
+    final GraphAnalyticalView view = createView(mode);
+    database.getSchema().createEdgeType("G");
+
+    database.command("sql", "ALTER TYPE G SUPERTYPE +E").close();
+    assertThat(view.isReady()).as("every edge of G would have been heard: nothing to rebuild").isTrue();
+    assertServedAndRight(view, 4);
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
+  void anEdgeCreatedInATransactionOpenBeforeTheViewExistedIsNotClaimed(final GraphAnalyticalView.UpdateMode mode)
+      throws Exception {
+    database.getSchema().createEdgeType("G");
+    final CountDownLatch created = new CountDownLatch(1);
+    final CountDownLatch built = new CountDownLatch(1);
+    // CREATED BEFORE ANY LISTENER EXISTS, COMMITTED AFTER THE VIEW'S SCAN: NEITHER THE SCAN NOR THE LISTENERS SEE IT
+    final Thread writer = new Thread(() -> database.transaction(() -> {
+      final Vertex from = database.select().fromType("V").where().property("pid").eq().value(0).vertices().next();
+      final Vertex to = database.select().fromType("V").where().property("pid").eq().value(2).vertices().next();
+      from.newEdge("G", to);
+      created.countDown();
+      try {
+        built.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }));
+    writer.start();
+    assertThat(created.await(30, TimeUnit.SECONDS)).isTrue();
+    final GraphAnalyticalView view = createView(mode);
+    built.countDown();
+    writer.join(30_000);
+
+    final CountDownLatch gate = holdRebuilds(view);
+    database.command("sql", "ALTER TYPE G SUPERTYPE +E").close();
+    assertNotServedUntilRebuilt(view, mode, gate, 5);
   }
 
   @ParameterizedTest
@@ -219,9 +261,10 @@ class Issue10214ViewJoinedEdgeTypeTest {
   @ParameterizedTest
   @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS" })
   void anEdgeCreatedBeforeTheScanButCommittedAfterItIsNotClaimed(final GraphAnalyticalView.UpdateMode mode) throws Exception {
-    database.getSchema().createEdgeType("G");
-    // A VIEW TRACKING CHANGES FIRST, SO THE CREATION OF THE G EDGE BELOW IS COUNTED BEFORE THE REBUILD SAMPLES ITS MARK
+    // A VIEW TRACKING CHANGES FIRST, AND G CREATED AFTER IT, SO THE CREATION OF THE G EDGE BELOW IS HEARD BEFORE THE REBUILD
+    // SAMPLES ITS MARK: ONLY THE COMMIT, AFTER THAT SCAN, CAN TELL IT WAS NOT READ
     final GraphAnalyticalView view = createView(mode);
+    database.getSchema().createEdgeType("G");
 
     final CountDownLatch created = new CountDownLatch(1);
     final CountDownLatch scanned = new CountDownLatch(1);

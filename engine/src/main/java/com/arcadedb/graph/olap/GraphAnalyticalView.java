@@ -54,6 +54,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -362,6 +363,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
+  // The edge types that existed when the listeners were armed (issue #10214). A transaction already open then may have created
+  // edges of one of them that no listener heard, and committed after any scan since: only a scan that materialized such a type
+  // proves the CSR holds it. A type created later has every edge heard
+  private volatile Set<String>                      edgeTypesWhenArmed = Set.of();
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -1434,15 +1439,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Whether the CSR holds the edges of {@code type}, a sub-type of a listed edge type: the scan materialized it, or proves it held
-   * no edge the CSR lacks - it met none of its buckets among the edges it did not materialize, and none was written while the
-   * type was not covered since the scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record.
+   * Whether the CSR holds the edges of {@code type}, a sub-type of a listed edge type: the scan materialized it, or the type was
+   * created after the listeners were armed - so every edge of it was heard - and is proven to hold no edge the CSR lacks: the scan
+   * met none of its buckets among the edges it did not materialize, and none was written while the type was not covered since the
+   * scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record, and a transaction still open
+   * holds edges no count shows yet.
    */
   private boolean holdsJoinedEdgeType(final DocumentType type, final Snapshot snap) {
     final String name = type.getName();
     if (snap.csrPerType.containsKey(name) || (snap.scannedEdgeTypes != null && snap.scannedEdgeTypes.contains(name)))
       return true;
-    if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null)
+    if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null || edgeTypesWhenArmed.contains(name))
       return false;
     for (final int bucketId : type.getBucketIds(false))
       if (snap.uncoveredEdgeBuckets.contains(bucketId))
@@ -3706,6 +3713,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private void registerChangeListeners() {
+    // A MODE SWITCH ARMS THE NEW COLLECTOR BEFORE IT DROPS THE OLD ONE: NO GAP, SO THE TYPES OF THE FIRST ARMING STILL HOLD
+    final boolean firstArming = deltaCollector == null;
     deltaCollector = new DeltaCollector(this);
     database.getEvents().registerListener((AfterRecordCreateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordUpdateListener) deltaCollector);
@@ -3713,6 +3722,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // A lightweight edge has no record, so its creation reaches no record listener, and GraphBatch writes edges in
     // bulk without record events (issue #9572)
     ((DatabaseInternal) database).getGraphEngine().registerEdgeWriteListener(deltaCollector);
+    if (firstArming) {
+      // READ AFTER THE LISTENERS ARE ARMED: A TYPE CREATED IN BETWEEN IS COUNTED AS EXISTING, WHICH IS THE SAFE SIDE
+      final Set<String> edgeTypeNames = new HashSet<>();
+      for (final DocumentType dt : database.getSchema().getTypes())
+        if (dt instanceof EdgeType)
+          edgeTypeNames.add(dt.getName());
+      edgeTypesWhenArmed = edgeTypeNames;
+    }
   }
 
   private void unregisterChangeListeners() {
