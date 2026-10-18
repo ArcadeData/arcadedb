@@ -109,6 +109,27 @@ class Issue10296PluginRoutesRegisterApiTest extends BaseGraphServerTest {
     })).isTrue();
   }
 
+  @Test
+  void anOverrideInheritedFromASubInterfaceDefaultIsStillDetected() {
+    final ServerPlugin plugin = new LegacySubInterface() {
+      @Override
+      public void startService() {
+        // NO-OP
+      }
+    };
+
+    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(plugin)).isTrue();
+    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(plugin)).isFalse();
+  }
+
+  @SuppressWarnings("removal")
+  private interface LegacySubInterface extends ServerPlugin {
+    @Override
+    default void registerAPI(final HttpServer httpServer, final PathHandler routes) {
+      // NO-OP
+    }
+  }
+
   @SuppressWarnings("removal")
   private static final class BothOverloadsPlugin implements ServerPlugin {
     @Override
