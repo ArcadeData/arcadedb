@@ -32,6 +32,7 @@ import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -5828,13 +5829,48 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       readExactly(indexChannel, buf, offset, "block data");
     } catch (final ClosedChannelException e) {
-      // THE LAMBDA IS ALLOCATED ON THE RECOVERY PATH ONLY (issue #9621)
-      retryAfterReopen("read", () -> {
-        buf.clear();
-        readExactly(indexChannel, buf, offset, "block data");
-      });
+      // ON THE RECOVERY PATH ONLY (issues #9621, #10223)
+      readAfterChannelClosed(buf.array(), offset);
     }
     return buf.array();
+  }
+
+  /**
+   * Completes a read the shared channel failed on because it was found closed (issues #9621, #10223). The shared channel
+   * is repaired first, for the callers that follow, and the read itself goes through a handle of its own.
+   * <p>
+   * Retrying on the shared channel, as {@link #retryAfterReopen} does for the operations that hold the directory WRITE
+   * lock, loses to other readers: an interrupt on ANY thread blocked in an I/O on it closes it for all of them, so a
+   * reader whose reopen is followed by someone else's interrupt before its read fails again, and enough of those in a
+   * row used up the retry budget and surfaced a {@link ClosedChannelException} from a scan no interrupt of its own had
+   * touched. A plain {@link RandomAccessFile} read is not interruptible, so no interrupt, this thread's own included,
+   * can fail it, and the read does not depend on how many times the shared channel is closed meanwhile. The interrupt
+   * flag is left as it is, so the caller still sees the cancellation, as with {@link #retryAfterReopen}.
+   * <p>
+   * The handle is opened read-only, which never re-creates a file that was dropped meanwhile, and only after
+   * {@link #reopenChannel()} has refused a store closed on purpose or whose file is gone. It reads the file at
+   * {@code basePath}, which is the one the shared channel is on because every caller of {@link #readBytes} holds the
+   * directory lock (READ for a scan, WRITE for a rewrite), and a file swap runs under the WRITE lock.
+   * <p>
+   * Cost: one open, seek, read and close per call. While other threads keep closing the shared channel, every
+   * {@link #readBytes} takes this path, so a storm of cancelled queries is one {@code open()} per block read - acceptable
+   * for a path that is rare by construction, and what buys a read that cannot be failed by anyone else's interrupt.
+   */
+  private void readAfterChannelClosed(final byte[] bytes, final long offset) throws IOException {
+    reopenChannel();
+    try (final RandomAccessFile reader = new RandomAccessFile(basePath + FILE_EXTENSION, "r")) {
+      reader.seek(offset);
+      reader.readFully(bytes);
+    } catch (final EOFException e) {
+      throw new IOException("Unexpected end of file in sealed store '" + basePath + "' reading block data at offset " + offset
+          + ": " + bytes.length + " bytes expected", e);
+    }
+    // close() does not wait for readers, and it is what precedes a drop that deletes the file and may put another one at
+    // the same path. A store closed on purpose since reopenChannel() looked must not hand out what this read found, which
+    // can then be another file's bytes: any such file was put there after the close, so the flag is already up.
+    if (closed)
+      throw new FileNotFoundException(
+          "Sealed store '" + basePath + FILE_EXTENSION + "' was closed on purpose while a read was recovering from a closed channel");
   }
 
 
