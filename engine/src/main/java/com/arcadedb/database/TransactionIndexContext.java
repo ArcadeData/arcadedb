@@ -1179,7 +1179,10 @@ public class TransactionIndexContext {
               // oldRid is the committed RID a REPLACE, or a REMOVE that displaced one (issue #8961), stands for
               final IndexKey value = entry.getValue();
               final Set<RID> deletedRids = entries.computeIfAbsent(new ComparableKey(value.keyValues), k -> new HashSet<>(2));
-              deletedRids.add(value.oldRid != null ? value.oldRid : value.rid);
+              // A REPLACE removes only its oldRid: a RID-less one (the cross-bucket check) removes nothing, and its rid is the
+              // new claimant, which must not be exempted
+              if (value.oldRid != null)
+                deletedRids.add(value.oldRid);
               if (value.operation == IndexKey.IndexKeyOperation.REMOVE && value.rid != null)
                 deletedRids.add(value.rid);
             }

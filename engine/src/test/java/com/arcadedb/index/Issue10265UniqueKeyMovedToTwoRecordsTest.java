@@ -357,4 +357,17 @@ class Issue10265UniqueKeyMovedToTwoRecordsTest extends TestHelper {
     });
     assertKeyHeldBy(1, 1);
   }
+
+  /**
+   * A removal naming a RID that does not hold the key is a no-op at commit, on HASH as on LSM: before #10265 the HASH bucket
+   * ignored the RID of a unique key and dropped the holder's entry with it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "UNIQUE", "UNIQUE_HASH" })
+  void removalNamingAnotherRidLeavesTheHolderIndexed(final String kind) {
+    fresh(kind, 1, true);
+    database.transaction(() -> database.getSchema().getIndexByName(type + "[k]").remove(new Object[] { 1 }, y));
+    assertKeyHeldBy(1, 1);
+    assertThat(indexGetRid(1)).isEqualTo(x);
+  }
 }
