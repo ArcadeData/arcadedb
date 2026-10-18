@@ -84,10 +84,15 @@ public final class AdmissionSlotConformance {
       type.getEvents().registerListener(probe);
       final Future<?> answer = client.submit(request);
 
-      if (!probe.entered.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-        if (answer.isDone())
+      // A REQUEST THAT ENDS WITHOUT REACHING THE HOOK FAILS AT ONCE, WITH ITS OWN ERROR WHEN IT HAS ONE
+      final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS);
+      while (!probe.entered.await(10, TimeUnit.MILLISECONDS)) {
+        if (answer.isDone()) {
           answer.get();
-        fail(surface + ": the request never created a " + typeName + " record");
+          fail(surface + ": the request completed without creating a " + typeName + " record");
+        }
+        if (System.nanoTime() - deadline > 0)
+          fail(surface + ": the request never created a " + typeName + " record");
       }
 
       assertThat(probe.runningAtEntry).as(surface + ": the statement runs admitted, holding the only slot").isEqualTo(1);
@@ -108,6 +113,8 @@ public final class AdmissionSlotConformance {
         probe.proceed.countDown();
         type.getEvents().unregisterListener(probe);
         client.shutdownNow();
+        // A REQUEST LEFT BEHIND BY A FAILED ASSERTION GIVES ITS SLOT BACK BEFORE THE GATE IS RESET, NOT IN THE NEXT TEST
+        client.awaitTermination(TIMEOUT_MS, TimeUnit.MILLISECONDS);
       } finally {
         // THE GATE IS JVM-WIDE: LEFT ENABLED, IT WOULD GATE EVERY TEST THAT RUNS AFTER THIS ONE
         GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(savedMaxConcurrent);
@@ -150,6 +157,7 @@ public final class AdmissionSlotConformance {
       try {
         proceed.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
       } catch (final InterruptedException e) {
+        // ONLY ON TEARDOWN: THE RECORD IS STILL CREATED, THE CHECK HAS ALREADY FAILED OR PASSED
         Thread.currentThread().interrupt();
       }
       return true;

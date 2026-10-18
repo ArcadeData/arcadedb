@@ -58,9 +58,8 @@ class AdmissionSlotConformanceGremlinTest extends AbstractGremlinServerIT {
     final Cluster cluster = Cluster.build().enableSsl(false).addContactPoint("localhost").port(getGremlinPort())
         .credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
         .serializer(new GraphBinaryMessageSerializerV1(new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()))).create();
-    try {
-      final GraphTraversalSource g = AnonymousTraversalSource.traversal()
-          .withRemote(DriverRemoteConnection.using(cluster, getDatabaseName()));
+    try (final GraphTraversalSource g = AnonymousTraversalSource.traversal()
+        .withRemote(DriverRemoteConnection.using(cluster, getDatabaseName()))) {
       AdmissionSlotConformance.assertGivesItsSlotBack(database, TYPE, "Gremlin traversal",
           () -> g.addV(TYPE).property("id", 1).iterate());
 
