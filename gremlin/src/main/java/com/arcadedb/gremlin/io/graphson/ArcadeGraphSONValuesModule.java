@@ -21,6 +21,7 @@ package com.arcadedb.gremlin.io.graphson;
 import com.arcadedb.database.RID;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.schema.Type;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONMapper;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONVersion;
@@ -38,11 +39,14 @@ import org.apache.tinkerpop.shaded.jackson.databind.ser.std.StdScalarSerializer;
 import org.apache.tinkerpop.shaded.jackson.databind.ser.std.StdSerializer;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Function;
 
 /**
@@ -165,11 +169,31 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
    * {@code fallback} when no deserializer reads it.
    */
   public static Object readTypedValue(final String typedJson, final Object fallback) {
+    final Object decoded;
     try {
-      return TypedValueMapperHolder.MAPPER.readValue(typedJson, Object.class);
+      decoded = TypedValueMapperHolder.MAPPER.readValue(typedJson, Object.class);
     } catch (final IOException | RuntimeException e) {
       return fallback;
     }
+    return storable(decoded, fallback);
+  }
+
+  /**
+   * {@code value} as ArcadeDB can store it: a ByteBuffer as its bytes, a Character as a string, a value of a type ArcadeDB
+   * has no storage for (a MonthDay, a Year, a Period, ...) as {@code fallback}, its text in the file. Saving such a value would
+   * otherwise drop the property without a word.
+   */
+  static Object storable(final Object value, final Object fallback) {
+    if (value == null || value instanceof UUID || value instanceof Collection || value instanceof Map)
+      return value;
+    if (value instanceof ByteBuffer buffer) {
+      final byte[] bytes = new byte[buffer.remaining()];
+      buffer.duplicate().get(bytes);
+      return bytes;
+    }
+    if (value instanceof Character c)
+      return c.toString();
+    return Type.getTypeByValue(value) != null ? value : fallback;
   }
 
   private static final class TypedValueMapperHolder {

@@ -162,6 +162,28 @@ class Issue10202GraphFormatsValueRoundTripTest {
       }
   }
 
+  /**
+   * A GraphSON file with ids that are not RIDs is read value by value: a typed value is kept when ArcadeDB can store what it
+   * decodes to, converted when it has a stored equivalent, and kept as its text otherwise, never dropped.
+   */
+  @Test
+  void typedValuesOfAForeignGraphSONFileAreKeptOrConverted() throws Exception {
+    final File file = new File("target/issue10202-foreign.graphson");
+    Files.writeString(file.toPath(), "{\"id\":\"a\",\"label\":\"P\",\"properties\":{\"s\":[{\"id\":\"1\",\"value\":{\"@type\":\"gx:Int16\",\"@value\":7}}],\"buf\":[{\"id\":\"2\",\"value\":{\"@type\":\"gx:ByteBuffer\",\"@value\":\"AQID\"}}],\"c\":[{\"id\":\"3\",\"value\":{\"@type\":\"gx:Char\",\"@value\":\"z\"}}],\"md\":[{\"id\":\"4\",\"value\":{\"@type\":\"gx:MonthDay\",\"@value\":\"--01-02\"}}]}}\n");
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath());
+      try (final ResultSet rs = target.query("sql", "SELECT FROM P")) {
+        final Document p = rs.next().getElement().get();
+        assertSame("short", (short) 7, p.get("s"));
+        assertSame("byte buffer", new byte[] { 1, 2, 3 }, p.get("buf"));
+        assertSame("char", "z", p.get("c"));
+        assertSame("month day", "--01-02", p.get("md"));
+      }
+    } finally {
+      file.delete();
+    }
+  }
+
   /** A LocalDate is a known value type, of the type it always resolved to. */
   @Test
   void aLocalDateIsAKnownDateValue() {
