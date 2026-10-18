@@ -3289,6 +3289,63 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The content of the record at {@code rid} in the CURRENT COMMITTED state of its page, ignoring the calling
+   * transaction's own image of that page and its record caches, or null when no record is committed there. The
+   * companion of {@link #existsRecordInCommittedPage} for a caller that needs the bytes too.
+   * <p>
+   * Only a record stored in place is answered from the committed page. A placeholder pointer or a multi-page record
+   * is assembled from more than one page, which is what {@link #getRecord} does with the validation that requires, so
+   * for those shapes this answers what {@link #getRecord} would, from the transaction's own view.
+   * <p>
+   * Used by the edge removal (#10263) to tell an entry that is genuinely missing from a vertex's edge list from one
+   * this transaction cannot see because the list it read is older than the edge being deleted.
+   */
+  public Binary getRecordFromCommittedPage(final RID rid) {
+    final long position = rid.getPosition();
+    if (position < 0)
+      return null;
+
+    final int pageNumber = (int) (position / maxRecordsInPage);
+    if (pageNumber >= pageCount.get())
+      // A page no commit has published yet: reading it would load it from the file ahead of its commit
+      return null;
+    final int positionInPage = (int) (position % maxRecordsInPage);
+    final long[] recordSize;
+    final int recordPositionInPage;
+    final BasePage committed;
+    try {
+      committed = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+      if (committed == null || positionInPage >= committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return null;
+
+      recordPositionInPage = getRecordPositionInPage(committed, positionInPage);
+      if (recordPositionInPage == 0)
+        // FREE SLOT (NEVER USED OR DELETED)
+        return null;
+
+      recordSize = committed.readNumberAndSize(recordPositionInPage);
+    } catch (final IOException e) {
+      // NOT "NO RECORD": THE CALLER WOULD TAKE AN UNREADABLE PAGE FOR AN ABSENT ENTRY AND COMMIT THE DELETE IT GUARDS
+      throw new DatabaseOperationException("Error on reading the committed page of record " + rid, e);
+    }
+
+    if (recordSize[0] == 0 || recordSize[0] == NEXT_CHUNK || isPlaceholderContent(recordSize[0]))
+      // DELETED, OR NOT A RECORD OF ITS OWN
+      return null;
+
+    if (recordSize[0] == RECORD_PLACEHOLDER_POINTER || isChunkHead(recordSize[0]))
+      try {
+        // AN INTERNAL PROBE: NO BEFORE-READ EVENT, WHICH COULD ALSO VETO THE READ AND MAKE IT ANSWER "NO RECORD"
+        return getRecordInternal(rid, false, false);
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+
+    return committed.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
+  }
+
+  /**
    * Releases one slot claimed by {@link #reserveInsertSlot}. Called for every reservation when the owning
    * transaction ends, whatever the outcome (commit, rollback or kill), from {@code TransactionContext.reset()}.
    */

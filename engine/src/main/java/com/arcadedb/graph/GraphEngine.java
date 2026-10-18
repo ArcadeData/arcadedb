@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -1087,6 +1088,8 @@ public class GraphEngine {
         && tx.getUnidirectionalEdgeChangesIfAny() instanceof UnidirectionalEdgeChanges changes && changes.isRecording())
       changes.edgeDeleted(edge.getIdentity());
 
+    checkEdgeRecordNotReplaced(edge);
+
     disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint, skipDirection);
     disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint, skipDirection);
 
@@ -1111,7 +1114,11 @@ public class GraphEngine {
         final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edge.getIdentity().getBucketId());
         bucket.deleteRecord(edge.getIdentity());
       } catch (final RecordNotFoundException e) {
-        // ALREADY DELETED: IGNORE IT
+        // ALREADY DELETED: IGNORE IT, unless a concurrent transaction deleted the edge this one READ (#10263, as #8984 does
+        // for a document). The caller counts the delete in the bucket's record counter, so a delete of a record that is no
+        // longer there drifts count(*) one behind the bucket for good. Retrying re-reads the data and no longer sees it
+        if (wasDeletedConcurrently(edge))
+          throw concurrentEdgeDelete(edgeRID, e);
       }
   }
 
@@ -1148,8 +1155,203 @@ public class GraphEngine {
               edge.getIdentity(), direction, endpoint.getIdentity());
       return;
     }
-    if (list != null)
-      list.removeEdge(edge);
+    if (list != null && list.removeEdge(edge))
+      return;
+
+    if (direction == Vertex.DIRECTION.IN && edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional())
+      // A UNIDIRECTIONAL EDGE IS NEVER IN THE IN LIST: NOTHING WAS MISSED
+      return;
+
+    if (edge instanceof LightEdge || edge.getIdentity().getPosition() < 0)
+      // A LIGHTWEIGHT EDGE HAS NO RECORD TO OUTLIVE ITS ENTRY OR TO REUSE ITS RID, AND ITS TWINS (SAME TYPE, SAME NEIGHBOUR)
+      // ARE INDISTINGUISHABLE: AN ENTRY IN THE COMMITTED LIST CAN BE ONE THIS TRANSACTION HAS ALREADY REMOVED
+      return;
+
+    if (database.getTransactionIfExists() instanceof TransactionContext tx && tx.isDeletedInTransaction(edge.getIdentity()))
+      // THIS TRANSACTION HAS ALREADY DELETED THE EDGE, AND REMOVED THE ENTRY WITH IT: THE COMMITTED LIST STILL HOLDS IT
+      return;
+
+    if (committedEdgeListHolds(endpoint, direction, edge))
+      // #10263: the list this transaction reads does not hold the entry, the committed one does. The transaction read
+      // the vertex or a chunk of its list before a concurrent commit added the entry (READ_COMMITTED keeps what a
+      // transaction read in its own cache), so nothing was removed and no page was anchored: the commit went through
+      // and the edge record was deleted under an entry that survived it, which turned into an entry naming another
+      // edge, or a duplicate, once the bucket handed the freed RID to a new edge. A retry reads the list again
+      throw new ConcurrentModificationException(
+          "Edge " + edge.getIdentity() + " is in the committed " + direction + " edge list of vertex " + endpoint.getIdentity()
+              + " but not in the one this transaction read: the list changed after it was read");
+
+    keepEdgeRecordPageOutOfSlotMerge(edge);
+  }
+
+  /**
+   * A removal that found no entry, in the list this transaction reads or in the committed one, leaves two readings: an
+   * edge whose entries are genuinely missing (an orphan record, which the delete has to be able to clear), or an edge
+   * that a concurrent transaction deleted after this one anchored its record (see {@link #checkEdgeRecordNotReplaced}).
+   * The second can come back as a byte-identical edge on the same RID - same endpoints, no properties - which the
+   * pre-image check of the slot merge cannot tell from the record anchored here, and the delete would take it out
+   * while its entries stay (#10263). Excluding the page from the slot merge leaves the plain page-version check: the
+   * commit goes through only when nothing committed on the record's page since the anchor, which is the orphan case.
+   * <p>
+   * The price is paid by this rare path only: a commit of an UNRELATED record on the same page in that window now fails
+   * the orphan delete with a retryable conflict too, which the slot merge would have absorbed.
+   */
+  private void keepEdgeRecordPageOutOfSlotMerge(final Edge edge) {
+    if (edge instanceof LightEdge)
+      return;
+    final RID edgeRID = edge.getIdentity();
+    if (edgeRID == null || edgeRID.getPosition() < 0 || !(database.getTransactionIfExists() instanceof TransactionContext tx))
+      return;
+    try {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edgeRID.getBucketId());
+      tx.poisonSlotRebasePage(bucket.getFileId(), (int) (edgeRID.getPosition() / bucket.getMaxRecordsInPage()));
+    } catch (final SchemaException e) {
+      // NO BUCKET, NO RECORD TO DELETE
+    }
+  }
+
+  /**
+   * Refuses, with a retryable {@link ConcurrentModificationException}, the delete of an edge whose RID a concurrent
+   * commit has given to ANOTHER edge since this transaction read it (#10263). The edge is deleted by RID: once the edge
+   * read here was deleted and its RID handed to a new edge between other vertices, removing the entries from the
+   * endpoints this image names finds nothing, and the record delete takes out the new edge while its entries stay in
+   * its own endpoints' lists.
+   * <p>
+   * The record's page is anchored in the transaction BEFORE it is read, and the record delete below writes through the
+   * same anchored page: what is compared here is exactly what the delete removes, and a commit that changes the slot
+   * after the anchor fails this transaction's commit (the page-version check, or the pre-image check of the slot merge,
+   * which captures the very bytes compared here). A record that is not there at all is a concurrent delete when this
+   * transaction read the edge (see {@link #wasDeletedConcurrently}), and otherwise an edge already gone, left to the
+   * delete below as before.
+   */
+  private void checkEdgeRecordNotReplaced(final Edge edge) {
+    if (edge instanceof LightEdge)
+      return;
+    final RID edgeRID = edge.getIdentity();
+    if (edgeRID == null || edgeRID.getPosition() < 0)
+      return;
+    final RID out = edge.getOut();
+    final RID in = edge.getIn();
+    if (out == null || in == null)
+      return;
+
+    final Binary content;
+    try {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edgeRID.getBucketId());
+      bucket.fetchPageInTransaction(edgeRID);
+      content = bucket.getRecord(edgeRID);
+    } catch (final RecordNotFoundException e) {
+      if (wasDeletedConcurrently(edge))
+        throw concurrentEdgeDelete(edgeRID, e);
+      return;
+    } catch (final SchemaException e) {
+      return;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on loading the page of edge " + edgeRID, e);
+    }
+    if (content == null || content.size() == 0 || content.getByte(0) != Edge.RECORD_TYPE)
+      return;
+
+    // THE TWO ENDPOINTS ONLY, STRAIGHT FROM THE BUFFER: NO COPY OF THE CONTENT AND NO RECORD BUILT ON EVERY EDGE DELETE.
+    // Moving the position is safe: getRecord hands out a view of its own over the page, never a shared one
+    content.position(1); // SKIP RECORD TYPE
+    final RID currentOut = ImmutableEdge.readVertexPointer(database, content, edgeRID);
+    final RID currentIn = ImmutableEdge.readVertexPointer(database, content, edgeRID);
+    if (!out.equals(currentOut) || !in.equals(currentIn))
+      throw new ConcurrentModificationException(
+          "Edge " + edgeRID + " read as " + out + "->" + in + " is now an edge " + currentOut + "->" + currentIn
+              + ": the edge read was deleted and its RID reused by a concurrent transaction. Please retry the operation");
+    // An edge reused with the SAME endpoints passes here. When its entries are then found and removed, the removal
+    // anchors and rewrites the chunks holding them, so a concurrent delete or re-creation of those entries fails this
+    // transaction's commit on the chunk pages; when nothing is found, keepEdgeRecordPageOutOfSlotMerge covers it.
+  }
+
+  /**
+   * Whether the record of {@code edge}, found missing, was deleted by a concurrent transaction after this one READ it,
+   * as {@code LocalDatabase} decides for a document (#8984). Only an edge loaded from its bucket in this transaction
+   * proves that: a lazy handle or a RID held past a delete names an edge that may have been gone all along.
+   */
+  private boolean wasDeletedConcurrently(final Edge edge) {
+    return edge instanceof ImmutableDocument document && database.getTransactionIfExists() instanceof TransactionContext tx
+        && !tx.isDeletedInTransaction(edge.getIdentity()) && document.wasLoadedInTransaction(tx.getBeginSequence());
+  }
+
+  private static ConcurrentModificationException concurrentEdgeDelete(final RID edgeRID, final RecordNotFoundException cause) {
+    return new ConcurrentModificationException(
+        "Edge " + edgeRID + " was deleted by a concurrent transaction after it was read in this transaction. Please retry the operation",
+        cause);
+  }
+
+  /**
+   * Whether the COMMITTED edge list of {@code vertex} in {@code direction} holds an entry for {@code edge}, read from
+   * the committed pages and not through the transaction, whose record caches can hold an older image of the vertex
+   * and of the list's chunks (#10263). Reached only after a removal found nothing to remove, which is rare, so the
+   * walk pays for reading every chunk afresh.
+   * <p>
+   * A striped list is walked only along the chains the edge can be in, one per generation, as
+   * {@link StripedEdgeList#removeEdge} does.
+   * <p>
+   * Limit: a record that does not fit its page (a placeholder, or a multi-page record) is read through the transaction
+   * instead, see {@link LocalBucket#getRecordFromCommittedPage}. An edge-list chunk never takes those shapes (chunks are
+   * capped well below a page); a vertex whose properties outgrow its page does, and for such a vertex the head pointer
+   * is the one the transaction sees.
+   */
+  private boolean committedEdgeListHolds(final VertexInternal vertex, final Vertex.DIRECTION direction, final Edge edge) {
+    final RID vertexRID = vertex.getIdentity();
+    final Binary vertexContent = committedRecordContent(vertexRID);
+    if (vertexContent == null || vertexContent.getByte(0) != Vertex.RECORD_TYPE)
+      return false;
+
+    final ImmutableVertex committedVertex = new ImmutableVertex(database, vertex.getType(), vertexRID, vertexContent);
+    final RID headRID = direction == Vertex.DIRECTION.OUT ?
+        committedVertex.getOutEdgesHeadChunk() :
+        committedVertex.getInEdgesHeadChunk();
+    if (headRID == null)
+      return false;
+
+    final Binary headContent = committedRecordContent(headRID);
+    if (headContent == null)
+      return false;
+
+    final RID neighbour = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+    if (headContent.getByte(0) == StripeDirectory.RECORD_TYPE) {
+      final StripeDirectory directory = new StripeDirectory(database, headRID, headContent);
+      for (int g = 0; g < directory.getGenerationCount(); g++)
+        if (committedChainHolds(directory.getHead(g, StripeDirectory.stripeOf(neighbour, directory.getStripes(g))),
+            edge.getIdentity()))
+          return true;
+      return false;
+    }
+    return committedChainHolds(headRID, edge.getIdentity());
+  }
+
+  private boolean committedChainHolds(final RID headRID, final RID edgeRID) {
+    final ChainCycleGuard guard = new ChainCycleGuard(headRID);
+    RID chunkRID = headRID;
+    while (chunkRID != null) {
+      final Binary content = committedRecordContent(chunkRID);
+      if (content == null || content.getByte(0) != EdgeSegment.RECORD_TYPE)
+        return false;
+
+      final EdgeSegment chunk = new MutableEdgeSegment(database, chunkRID, content);
+      if (chunk.containsEdge(edgeRID))
+        return true;
+
+      final RID previousRID = chunk.getPreviousRID();
+      chunkRID = previousRID == null || previousRID.equals(chunkRID) || guard.revisits(previousRID) ? null : previousRID;
+    }
+    return false;
+  }
+
+  /** A private copy of the content of {@code rid} as committed, or null when no record is committed there. */
+  private Binary committedRecordContent(final RID rid) {
+    final Binary content;
+    try {
+      content = ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getRecordFromCommittedPage(rid);
+    } catch (final SchemaException e) {
+      return null;
+    }
+    return content == null || content.size() == 0 ? null : content.copyOfContent();
   }
 
   /**
