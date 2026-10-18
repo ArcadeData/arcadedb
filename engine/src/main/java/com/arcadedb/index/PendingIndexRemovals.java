@@ -37,9 +37,9 @@ import java.util.Set;
  * <p>
  * The rules, per entry:
  * <ol>
- *   <li>{@code REMOVE} with a RID hides that RID.</li>
- *   <li>{@code REMOVE} with no RID ({@code remove(keys)}), or ANY {@code REMOVE} on a unique index (the key holds at
- *   most one RID), hides the whole key.</li>
+ *   <li>{@code REMOVE} with a RID hides that RID, and its {@code oldRid} when it carries one: a REMOVE that displaced a
+ *   {@code REPLACE} keeps the committed RID the REPLACE was retiring, and {@code commit()} removes that one too (#8961).</li>
+ *   <li>{@code REMOVE} with no RID ({@code remove(keys)}) hides the whole key.</li>
  *   <li>{@code REPLACE} with a non-null {@code oldRid} hides {@code oldRid}: it is a same-key REMOVE + ADD merged into
  *   one entry by {@code TransactionIndexContext.addIndexKeyLock}, and {@code TransactionIndexContext.commit()} replays
  *   exactly that removal. A {@code REPLACE} whose {@code oldRid} is null (today only the cross-bucket duplicate check)
@@ -47,6 +47,12 @@ import java.util.Set;
  * </ol>
  * These must stay in step with the replay in {@code TransactionIndexContext.commit()}: if the merge rules ever
  * produce a new operation shape, this is the class to re-audit.
+ * <p>
+ * A {@code REMOVE} with a RID on a UNIQUE index is NOT key-wide, although the key holds at most one committed RID
+ * (issue #10265). The RID it carries need not be that holder: a record that claimed the key inside the transaction
+ * and gave it back ({@code INSERT k = 1} then {@code UPDATE k = 2} or {@code DELETE}) leaves a {@code REMOVE} of
+ * itself, and hiding the whole key then hid the committed holder from the transaction's own reads, while the commit
+ * (which removes by RID) kept it. Hiding exactly what the commit removes is what keeps the two in step.
  * <p>
  * The point lookups ({@code LSMTreeIndex.get()}, {@code HashIndex.get()}) answer a whole-key removal on a unique
  * index with an empty cursor before calling {@link #accumulate}, because nothing on disk or in the overlay survives
@@ -67,27 +73,29 @@ public final class PendingIndexRemovals {
   /**
    * Folds one overlay entry into the removals collected so far for its key.
    * <p>
-   * The caller must always reassign the returned reference ({@code removals = accumulate(removals, entry, unique)}):
+   * The caller must always reassign the returned reference ({@code removals = accumulate(removals, entry)}):
    * the first removal of a key creates the instance, so ignoring the result while {@code current} is still null
    * silently loses that removal.
    *
    * @param current the removals collected so far for this key, or null when none yet
    * @param value   the next overlay entry of this key
-   * @param unique  whether the index is unique
    *
    * @return the updated removals: {@code current} itself (possibly still null) when the entry hides nothing, else a
    * non-null instance
    */
-  public static PendingIndexRemovals accumulate(final PendingIndexRemovals current, final IndexKey value, final boolean unique) {
+  public static PendingIndexRemovals accumulate(final PendingIndexRemovals current, final IndexKey value) {
     final RID hidden;
+    RID alsoHidden = null;
     if (value.operation == IndexKeyOperation.REMOVE) {
-      if (removesWholeKey(value, unique)) {
+      if (removesWholeKey(value)) {
         final PendingIndexRemovals result = current != null ? current : new PendingIndexRemovals();
         result.keyWide = true;
         result.rids = null;
         return result;
       }
       hidden = value.rid;
+      if (value.oldRid != null && !value.oldRid.equals(hidden))
+        alsoHidden = value.oldRid;
     } else if (value.operation == IndexKeyOperation.REPLACE && value.oldRid != null)
       hidden = value.oldRid;
     else
@@ -98,16 +106,15 @@ public final class PendingIndexRemovals {
       if (result.rids == null)
         result.rids = new HashSet<>();
       result.rids.add(hidden);
+      if (alsoHidden != null)
+        result.rids.add(alsoHidden);
     }
     return result;
   }
 
-  /**
-   * Rule 2: true when the overlay entry hides every disk RID of its key - a {@code REMOVE} carrying no RID, or any
-   * {@code REMOVE} on a unique index, whose key holds at most one RID.
-   */
-  public static boolean removesWholeKey(final IndexKey value, final boolean unique) {
-    return value.operation == IndexKeyOperation.REMOVE && (value.rid == null || unique);
+  /** Rule 2: true when the overlay entry hides every disk RID of its key - a {@code REMOVE} carrying no RID. */
+  public static boolean removesWholeKey(final IndexKey value) {
+    return value.operation == IndexKeyOperation.REMOVE && value.rid == null;
   }
 
   /** True when every disk RID of the key is hidden. */

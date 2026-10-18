@@ -718,19 +718,25 @@ public class HashIndexBucket extends PaginatedComponent {
       final int overflowPage = readPage.readInt(BUCKET_OVERFLOW_PAGE);
 
       final int pos = findNextEntry(readPage, entryCount, serializedKey, tag, 0);
-      if (pos >= 0) {
-        final MutablePage page = database.getTransaction().getPageToModify(pageId, pageSize, false);
-        if (specificRID != null && unique && nullKey) {
-          // the entries of an all-null key belong to different records: only the one of this RID goes away
-          for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
-            final int offset = readSlot(page, p);
-            if (specificRID.equals(readCompressedRID(page, offset + computeKeyLengthFromPage(page, offset)))) {
-              updateTotalEntries(-removeEntryFromPage(page, entryCount, p));
-              return;
-            }
+      if (pos >= 0 && specificRID != null && unique) {
+        // the entries of an all-null key belong to different records: only the one of this RID goes away. A non-null
+        // unique key has one entry, and it goes away only when it is THIS record's: a transaction whose record claimed
+        // the key and gave it back replays a removal of its own RID, which must not take the committed holder's entry
+        // with it (issue #10265). Matched on the read image, so a page whose entry is someone else's is not modified
+        for (int p = pos; p >= 0; p = findNextEntry(readPage, entryCount, serializedKey, tag, p + 1)) {
+          final int offset = readSlot(readPage, p);
+          if (specificRID.equals(readCompressedRID(readPage, offset + computeKeyLengthFromPage(readPage, offset)))) {
+            final MutablePage page = database.getTransaction().getPageToModify(pageId, pageSize, false);
+            updateTotalEntries(-removeEntryFromPage(page, entryCount, p));
+            return;
           }
-          // RID not in any entry on this page - continue to overflow pages
-        } else if (specificRID != null && !unique) {
+        }
+        // RID not in any entry on this page - continue to overflow pages. A non-null unique key should hold one entry in the
+        // whole chain, but this path is rare (a removal naming a RID that is not the key's holder) and walking on costs only
+        // reads, so a stale duplicate left by an older version is still found rather than assumed away
+      } else if (pos >= 0) {
+        final MutablePage page = database.getTransaction().getPageToModify(pageId, pageSize, false);
+        if (specificRID != null && !unique) {
           // Search all matching entries on this page (entries for the same key may be split). No re-scan is needed after a
           // removal: the loop returns on the first one.
           for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
