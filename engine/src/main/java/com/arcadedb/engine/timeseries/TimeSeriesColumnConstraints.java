@@ -273,13 +273,9 @@ public final class TimeSeriesColumnConstraints {
      */
     public String check(final Object value, final long deadline) {
       // NaN is how a FLOAT/DOUBLE column stores no value, the absent marker every aggregate skips (TimeSeriesNaN): it is no value
-      // for MANDATORY/NOTNULL either, or a stored sample with no value would satisfy them
-      if (value == null || value instanceof Double d && d.isNaN() || value instanceof Float f && f.isNaN()) {
-        if (required)
-          return "the column is " + requiredBy + " and the sample carries no value for it";
-        if (value == null)
-          return null;
-      }
+      // here either, so MANDATORY/NOTNULL refuse it and every other constraint lets it through, as a null
+      if (value == null || value instanceof Double d && d.isNaN() || value instanceof Float f && f.isNaN())
+        return required ? "the column is " + requiredBy + " and the sample carries no value for it" : null;
       if (unusable != null)
         return "the column " + unusable;
 

@@ -227,6 +227,29 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
     assertThat(rows("Q")).hasSize(1);
   }
 
+  /**
+   * NaN is no value in a FLOAT/DOUBLE column, so a column that does not require one takes it whatever its other constraints: a
+   * sample with no value for a field, which the storage keeps as NaN, must not be refused by a pattern its text "NaN" cannot match.
+   */
+  @Test
+  void aNaNIsNoValueForAColumnThatDoesNotRequireOne() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE V TIMESTAMP ts FIELDS (d DOUBLE, f FLOAT) SHARDS 1");
+    database.command("sql", "ALTER PROPERTY V.d REGEXP '[0-9.]+'");
+    database.command("sql", "ALTER PROPERTY V.d MIN 0");
+    database.command("sql", "ALTER PROPERTY V.f REGEXP '[0-9.]+'");
+
+    final WriteReport report = TimeSeriesGateway.write((DatabaseInternal) database,
+        new ArrayList<>(List.of(new Sample("V", Map.of(), Map.of("d", Double.NaN, "f", Float.NaN), 1),
+            new Sample("V", Map.of(), Map.of("d", 1.5d, "f", 2.5f), 2))));
+    assertThat(report.unreadableValues()).isEmpty();
+    assertThat(report.written()).isEqualTo(2);
+
+    // a stored sample whose field is NaN does not stop a pattern from being declared either
+    database.command("sql", "ALTER PROPERTY V.f REGEXP null");
+    database.command("sql", "ALTER PROPERTY V.f REGEXP '[0-9.]+'");
+    assertThat(rows("V")).hasSize(2);
+  }
+
   @Test
   void theTimestampColumnIsBoundedToo() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts FIELDS (v DOUBLE) SHARDS 1");

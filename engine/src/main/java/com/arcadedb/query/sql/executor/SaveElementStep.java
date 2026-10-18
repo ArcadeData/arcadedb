@@ -107,7 +107,9 @@ public class SaveElementStep extends AbstractExecutionStep {
       // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
       private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());
 
-      // the column constraints of the TIMESERIES type written, read once per execution and type instead of once per row (issue #10238)
+      // the column constraints of the TIMESERIES type written, read once per execution and type instead of once per row (issue
+      // #10238). This result set lives for one pull of one execution, never across statements: an ALTER PROPERTY between two
+      // statements is always seen, and a cached plan builds a new result set on every execution
       private LocalTimeSeriesType         constrainedType;
       private TimeSeriesColumnConstraints constraints;
 

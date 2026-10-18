@@ -30,9 +30,8 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.io.IOException;
-import java.util.List;
-
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * Refuses to declare a constraint over records that already violate it (#8943, #9112). A record written before the
