@@ -83,6 +83,12 @@ public class GeoIndexMetadata extends IndexMetadata {
 
   private int          precision    = DEFAULT_PRECISION;
   private TOKENIZATION tokenization = DEFAULT_TOKENIZATION;
+  /**
+   * Whether the index tokenizes a shape as it is written on the longitude/latitude plane (issue #10210). An index
+   * created before 26.11.1 read a polygon wider than 180 degrees as the complement of the area it encloses, so it holds
+   * cells a scan no longer agrees with: it is not used to answer a query until it is rebuilt. A new index is planar.
+   */
+  private boolean      planar       = true;
 
   /**
    * Creates a new GeoIndexMetadata instance.
@@ -101,6 +107,7 @@ public class GeoIndexMetadata extends IndexMetadata {
       super.fromJSON(metadata);
     this.precision = metadata.getInt("precision", DEFAULT_PRECISION);
     this.tokenization = readTokenization(metadata);
+    this.planar = readPlanar(metadata);
   }
 
   /**
@@ -114,13 +121,15 @@ public class GeoIndexMetadata extends IndexMetadata {
    * @param precision    geohash resolution of the index
    * @param tokenization storage layout of the index
    */
-  public static GeoIndexMetadata from(final IndexMetadata base, final int precision, final TOKENIZATION tokenization) {
+  public static GeoIndexMetadata from(final IndexMetadata base, final int precision, final TOKENIZATION tokenization,
+      final boolean planar) {
     final GeoIndexMetadata metadata = base != null ?
         base.copyCommonTo(new GeoIndexMetadata(base.typeName, base.propertyNames.toArray(new String[0]),
             base.associatedBucketId)) :
         new GeoIndexMetadata(null, new String[0], -1);
     metadata.setPrecision(precision);
     metadata.setTokenization(tokenization);
+    metadata.planar = planar;
     return metadata;
   }
 
@@ -135,6 +144,7 @@ public class GeoIndexMetadata extends IndexMetadata {
     final GeoIndexMetadata copy = copyCommonTo(new GeoIndexMetadata(typeName, propertyNames, bucketId));
     copy.precision = precision;
     copy.tokenization = tokenization;
+    copy.planar = planar;
     return copy;
   }
 
@@ -186,6 +196,14 @@ public class GeoIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Reads whether a PERSISTED index definition tokenizes planar shapes (issue #10210). A definition without the field was
+   * written by a build that read a polygon wider than 180 degrees as its complement, so it is not.
+   */
+  public static boolean readPlanar(final JSONObject indexJSON) {
+    return indexJSON.getBoolean("planar", false);
+  }
+
+  /**
    * Serializes geospatial-specific metadata into the provided JSON object.
    *
    * @param json the JSON object to write metadata into
@@ -193,6 +211,7 @@ public class GeoIndexMetadata extends IndexMetadata {
   public void toJSON(final JSONObject json) {
     json.put("precision", precision);
     json.put("tokenization", tokenization.name());
+    json.put("planar", planar);
   }
 
   /**
@@ -213,6 +232,16 @@ public class GeoIndexMetadata extends IndexMetadata {
     if (precision < 1 || precision > 12)
       throw new IllegalArgumentException("Geospatial index precision must be between 1 and 12, got: " + precision);
     this.precision = precision;
+  }
+
+  /** Whether the index tokenizes shapes as written on the longitude/latitude plane, see the field. */
+  public boolean isPlanar() {
+    return planar;
+  }
+
+  /** Only a rebuild may mark an index planar: it re-tokenizes every record. */
+  public void setPlanar(final boolean planar) {
+    this.planar = planar;
   }
 
   /**

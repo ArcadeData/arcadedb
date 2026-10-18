@@ -430,11 +430,16 @@ public class MathExpression extends SimpleNode {
         if (left instanceof Number number && right instanceof Number number1) {
           result = apply(number, this, number1);
         } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
-          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
-          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
-          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
-          final Number r = apply(leftAsLong, rightAsLong);
-          result = Duration.of(r.longValue(), highestPrecision);
+          // two date/time values: their exact difference, which no epoch count at nanosecond precision holds past a
+          // 292-year gap (issue #10206)
+          result = DateUtils.difference(left, right);
+          if (result == null) {
+            final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+            final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+            final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+            final Number r = apply(leftAsLong, rightAsLong);
+            result = Duration.of(r.longValue(), highestPrecision);
+          }
         } else if (left instanceof Collection<?> leftColl) {
           final Collection<Object> coll = copyOf(leftColl);
           coll.remove(right);

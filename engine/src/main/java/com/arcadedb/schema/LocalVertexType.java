@@ -215,7 +215,11 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   @Override
   protected void addBucketInternal(final Bucket bucket) {
     super.addBucketInternal(bucket);
-    additionalBuckets.addAll(
-        ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexAdditionalBuckets((LocalBucket) bucket));
+    final List<Bucket> edgeBuckets = ((DatabaseInternal) schema.getDatabase()).getGraphEngine()
+        .createVertexAdditionalBuckets((LocalBucket) bucket);
+    additionalBuckets.addAll(edgeBuckets);
+    // the edge-list buckets are among the type's involved buckets (issue #10247)
+    for (final Bucket edgeBucket : edgeBuckets)
+      schema.involvedBucketAttached(this, edgeBucket);
   }
 }
