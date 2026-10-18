@@ -77,7 +77,8 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   @Override
   public void delete() {
-    remoteDatabase.command("sql", "delete from " + rid);
+    // through the driver's delete, so an edge deletes, counts and fails as every other remote record does (issue #10230)
+    remoteDatabase.deleteRecord(this);
   }
 
   private Vertex loadVertex(final RID rid) {

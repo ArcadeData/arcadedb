@@ -1579,8 +1579,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       final var el = db.lookupByRID(new RID(ridStr), false);
-      el.delete();
+      // what the engine answered, which el.delete() throws away: a delete a before-delete listener vetoed was replied as
+      // deleted, so the client counted it and returned normally (issue #10230)
+      final boolean deleted = ((DatabaseInternal) db).deleteRecordReportingVeto(el);
 
+      // committed even after a veto: the vetoed delete left nothing in the transaction, so the commit writes nothing
       if (beganHere) {
         if (hasTx && req.getTransaction().getRollback())
           db.rollback();
@@ -1588,7 +1591,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.commit();
       }
 
-      return DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build();
+      // Both false for a vetoed delete, as for a vetoed update: the clients read either as "the record was deleted"
+      return DeleteRecordResponse.newBuilder().setSuccess(deleted).setDeleted(deleted).build();
     } catch (Exception e) {
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
