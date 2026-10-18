@@ -150,7 +150,20 @@ public class SecurityUserFileRepository {
     Path tmp = null;
     try {
       tmp = Files.createTempFile(target.getParent(), errorFile.getName(), ".tmp");
-      Files.write(tmp, Files.readAllBytes(file.toPath()));
+      // Streamed channel to channel, then fsynced before the rename, as save() does: once the default users replace
+      // FILE_NAME this copy is the only one left, and a crash after an unsynced rename could leave it empty.
+      try (final FileChannel source = FileChannel.open(file.toPath(), StandardOpenOption.READ);
+          final FileChannel copy = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+        final long size = source.size();
+        long position = 0;
+        while (position < size) {
+          final long transferred = copy.transferFrom(source, position, size - position);
+          if (transferred <= 0)
+            break;
+          position += transferred;
+        }
+        copy.force(true);
+      }
       applyOwnerOnlyPermissions(tmp);
       try {
         Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);

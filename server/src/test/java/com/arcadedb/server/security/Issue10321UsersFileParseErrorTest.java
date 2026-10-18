@@ -98,7 +98,7 @@ class Issue10321UsersFileParseErrorTest {
 
       final List<String> lines = logged(security::loadUsers);
 
-      final List<String> severe = lines.stream().filter(l -> isLoadFailure(l)).toList();
+      final List<String> severe = lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList();
       assertThat(severe).as("one SEVERE for the users file, naming it and where it was preserved").hasSize(1);
       assertThat(severe.getFirst()).contains(SecurityUserFileRepository.FILE_NAME).contains("server-users-error.jsonl")
           .doesNotContain(SecurityGroupFileRepository.FILE_NAME);
@@ -129,7 +129,7 @@ class Issue10321UsersFileParseErrorTest {
     try {
       final List<String> lines = logged(security::loadUsers);
 
-      assertThat(lines.stream().filter(l -> isLoadFailure(l)).toList()).hasSize(1).first().asString()
+      assertThat(lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList()).hasSize(1).first().asString()
           .contains(SecurityUserFileRepository.FILE_NAME);
       assertThat(Files.readString(Path.of(CONFIG_PATH, "server-users-error.jsonl"), StandardCharsets.UTF_8)).isEqualTo(content);
       assertThat(Path.of(CONFIG_PATH, "server-groups-error.json")).doesNotExist();
@@ -152,7 +152,7 @@ class Issue10321UsersFileParseErrorTest {
     try {
       final List<String> lines = logged(repository::getGroups);
 
-      final List<String> severe = lines.stream().filter(l -> isLoadFailure(l)).toList();
+      final List<String> severe = lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList();
       assertThat(severe).hasSize(1);
       assertThat(severe.getFirst()).contains(SecurityGroupFileRepository.FILE_NAME).contains("server-groups-error.json");
 
@@ -178,7 +178,7 @@ class Issue10321UsersFileParseErrorTest {
       final ServerSecurity reloaded = new ServerSecurity(null, new ContextConfiguration(), CONFIG_PATH);
       try {
         final List<String> lines = logged(reloaded::loadUsers);
-        assertThat(lines.stream().filter(l -> isLoadFailure(l)).toList()).isEmpty();
+        assertThat(lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList()).isEmpty();
         assertThat(Path.of(CONFIG_PATH, "server-users-error.jsonl")).doesNotExist();
       } finally {
         reloaded.stopService();
