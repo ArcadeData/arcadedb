@@ -349,6 +349,23 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   /**
+   * Whether a value set on a document of this type under {@code propertyName} must reach the append UNCONVERTED, because
+   * {@link ColumnDefinition#storableValue} is its only conversion (issue #10137). That holds for a non-temporal TAG or FIELD column:
+   * the document layer's {@code Type.convert} would otherwise coerce the value first - a number into a BOOLEAN column to
+   * {@code true}, a number into a STRING column to its text - and {@code storableValue}, which refuses both on the line protocol,
+   * gRPC and Prometheus remote write, would only ever see a value of the right class.
+   * <p>
+   * The TIMESTAMP column and the DATE/DATETIME columns keep the document conversion: a number written by SQL into a datetime is
+   * epoch MILLIS whatever the column's precision, the contract issues #9643 and #9724 pinned, where the other surfaces read it as a
+   * count in the column's own unit. Every other type a column can have ({@code TimeSeriesTypeBuilder} accepts BOOLEAN, STRING and
+   * the numeric types) has its own rule in {@code storableValue}.
+   */
+  public boolean skipsDocumentConversion(final String propertyName) {
+    final ColumnDefinition col = getTsColumn(propertyName);
+    return col != null && col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP && !col.isTemporal();
+  }
+
+  /**
    * The declared column names, in declaration order, for error messages that have to tell the user what the type
    * actually accepts.
    */
