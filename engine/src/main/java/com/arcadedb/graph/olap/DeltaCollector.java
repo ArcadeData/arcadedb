@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.OrderedAfterCommitCallback;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordCreateListener;
@@ -220,31 +221,72 @@ class DeltaCollector
   // The callback captures the live `delta` reference, not a snapshot. Subsequent record events
   // in the same transaction append to the same delta. addAfterCommitCallbackIfAbsent ensures
   // the callback is registered only once (keyed by callbackKey), and the frozen copy is made
-  // at commit time — after all record events have fired — so it captures the complete delta set.
+  // at commit time - after all record events have fired - so it captures the complete delta set.
   private void scheduleSyncCallback(final TxDelta delta) {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
-      if (dbInternal.isTransactionActive()) {
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, () -> {
-          final TxDelta frozen = new TxDelta();
-          frozen.addedVertices.addAll(delta.addedVertices);
-          frozen.deletedVertices.addAll(delta.deletedVertices);
-          frozen.addedEdges.addAll(delta.addedEdges);
-          frozen.deletedEdges.addAll(delta.deletedEdges);
-          frozen.updatedProperties.putAll(delta.updatedProperties);
-          frozen.updatedEdges.putAll(delta.updatedEdges);
-          frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
-          delta.clear();
-          perThreadDeltas.remove(Thread.currentThread().threadId());
-          inFlightEdgeSources.remove(Thread.currentThread().threadId());
-          if (!frozen.isEmpty())
-            view.onCommittedDelta(frozen);
-        });
-      }
+      if (dbInternal.isTransactionActive())
+        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, new CommittedDeltaCallback(delta));
     } catch (final DatabaseIsClosedException e) {
       LogManager.instance().log(this, Level.FINE, "Delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
+    }
+  }
+
+  /**
+   * Reports the transaction's delta to the view once it committed, in the order the transactions committed (issue #10249): the
+   * transaction takes its place in the view's {@link CommitOrderGate} at the commit point, while it still holds its file locks,
+   * and delivers through it. A transaction that never reaches the commit point (it had nothing to write) has no place and
+   * delivers straight away.
+   */
+  private final class CommittedDeltaCallback implements OrderedAfterCommitCallback {
+    private final TxDelta                delta;
+    // Written at the commit point, by the thread publishing the pages, and read by the committing thread afterwards
+    private volatile CommitOrderGate.Place place;
+
+    private CommittedDeltaCallback(final TxDelta delta) {
+      this.delta = delta;
+    }
+
+    @Override
+    public void onCommitPoint() {
+      place = view.getCommitOrder().takePlace();
+    }
+
+    @Override
+    public void onAbandoned() {
+      final CommitOrderGate.Place abandoned = place;
+      if (abandoned != null) {
+        place = null;
+        view.getCommitOrder().abandon(abandoned, view::onCommittedDelta);
+      }
+    }
+
+    @Override
+    public void run() {
+      final TxDelta frozen = new TxDelta();
+      frozen.addedVertices.addAll(delta.addedVertices);
+      frozen.deletedVertices.addAll(delta.deletedVertices);
+      frozen.addedEdges.addAll(delta.addedEdges);
+      frozen.deletedEdges.addAll(delta.deletedEdges);
+      frozen.updatedProperties.putAll(delta.updatedProperties);
+      frozen.updatedEdges.putAll(delta.updatedEdges);
+      frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
+      delta.clear();
+      final long threadId = Thread.currentThread().threadId();
+      perThreadDeltas.remove(threadId);
+      try {
+        final CommitOrderGate.Place taken = place;
+        if (taken != null)
+          view.getCommitOrder().deliver(taken, frozen.isEmpty() ? null : frozen, view::onCommittedDelta);
+        else if (!frozen.isEmpty())
+          view.onCommittedDelta(frozen);
+      } finally {
+        // Only now: until the view has the change, a build that opens its watch must still take this transaction's sources as
+        // in flight (see registerInFlightEdgeSources), as it may wait behind the changes committed before it
+        inFlightEdgeSources.remove(threadId);
+      }
     }
   }
 

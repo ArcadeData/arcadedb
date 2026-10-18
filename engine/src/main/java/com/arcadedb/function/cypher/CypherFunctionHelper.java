@@ -343,6 +343,77 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * The UTF-16 offset of the code point at index {@code codePointIndex}, clamped to the string: an index at or below 0 is 0 and an
+   * index past the last code point is the string length. A surrogate that is not part of a pair counts as one code point.
+   */
+  public static int charOffsetOfCodePoint(final String str, final int codePointIndex) {
+    final int size = str.length();
+    int offset = 0;
+    for (int i = 0; i < codePointIndex && offset < size; i++)
+      offset += Character.charCount(str.codePointAt(offset));
+    return offset;
+  }
+
+  /**
+   * The code point at index {@code codePointIndex} as a one-character string, or {@code null} when the index is out of range; never
+   * returns half of a surrogate pair.
+   */
+  public static String charAtCodePoint(final String str, final int codePointIndex) {
+    if (codePointIndex < 0)
+      return null;
+    final int offset = charOffsetOfCodePoint(str, codePointIndex);
+    if (offset >= str.length())
+      return null;
+    return str.substring(offset, offset + Character.charCount(str.codePointAt(offset)));
+  }
+
+  /**
+   * Index, counted in code points, of the first occurrence of {@code toFind} at or after code point {@code fromCodePoint}, or -1.
+   * A match never starts or ends inside a surrogate pair.
+   */
+  public static int indexOfCodePoints(final String str, final String toFind, final int fromCodePoint) {
+    int from = charOffsetOfCodePoint(str, fromCodePoint);
+    while (true) {
+      final int index = str.indexOf(toFind, from);
+      if (index < 0)
+        return -1;
+      if (!splitsSurrogatePair(str, index, index + toFind.length()))
+        return str.codePointCount(0, index);
+      from = index + 1;
+    }
+  }
+
+  /**
+   * Index, counted in code points, of the last occurrence of {@code toFind} starting at or before code point {@code fromCodePoint}
+   * (pass {@link Integer#MAX_VALUE} for "anywhere"), or -1. A match never starts or ends inside a surrogate pair.
+   */
+  public static int lastIndexOfCodePoints(final String str, final String toFind, final int fromCodePoint) {
+    if (fromCodePoint < 0)
+      return -1;
+    int from = charOffsetOfCodePoint(str, fromCodePoint);
+    while (true) {
+      final int index = str.lastIndexOf(toFind, from);
+      if (index < 0)
+        return -1;
+      if (!splitsSurrogatePair(str, index, index + toFind.length()))
+        return str.codePointCount(0, index);
+      from = index - 1;
+      if (from < 0)
+        return -1;
+    }
+  }
+
+  /**
+   * Answers whether cutting {@code str} at {@code begin} or at {@code end} (UTF-16 offsets) would separate the two halves of a
+   * surrogate pair.
+   */
+  private static boolean splitsSurrogatePair(final String str, final int begin, final int end) {
+    final int size = str.length();
+    return begin > 0 && begin < size && Character.isLowSurrogate(str.charAt(begin)) && Character.isHighSurrogate(str.charAt(begin - 1))
+        || end > 0 && end < size && Character.isHighSurrogate(str.charAt(end - 1)) && Character.isLowSurrogate(str.charAt(end));
+  }
+
+  /**
    * Answers whether an optional argument was written as an explicit {@code null} rather than left out, so that a
    * function can propagate it instead of falling back on its default.
    * <p>
