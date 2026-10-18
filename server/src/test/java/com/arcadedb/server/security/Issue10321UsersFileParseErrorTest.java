@@ -38,6 +38,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -165,6 +166,59 @@ class Issue10321UsersFileParseErrorTest {
     } finally {
       repository.stop();
     }
+  }
+
+  /** A second failure replaces the earlier error file, and the copy leaves no temp file behind. */
+  @Test
+  void aLaterFailureReplacesTheErrorFileAndLeavesNoTempFile() throws Exception {
+    final File file = new File(CONFIG_PATH, SecurityUserFileRepository.FILE_NAME);
+    final File errorFile = new File(CONFIG_PATH, SecurityUserFileRepository.ERROR_FILE_NAME);
+    Files.writeString(errorFile.toPath(), "an older failure that is much longer than the new one\n", StandardCharsets.UTF_8);
+    Files.writeString(file.toPath(), "{bad\n", StandardCharsets.UTF_8);
+
+    final List<String> lines = logged(
+        () -> SecurityUserFileRepository.preserveInError(this, file, errorFile, new RuntimeException("parse")));
+
+    assertThat(lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList()).hasSize(1).first().asString()
+        .contains("saving the corrupt file as");
+    assertThat(Files.readString(errorFile.toPath(), StandardCharsets.UTF_8)).isEqualTo("{bad\n");
+    try (final Stream<Path> files = Files.list(Path.of(CONFIG_PATH))) {
+      assertThat(files.map(p -> p.getFileName().toString()).filter(n -> n.endsWith(".tmp")).toList()).isEmpty();
+    }
+  }
+
+  /** When the copy cannot be written the SEVERE says so, rather than claiming the file was saved. */
+  @Test
+  void aCopyThatCannotBeWrittenIsReportedAsNotSaved() throws Exception {
+    final File file = new File(CONFIG_PATH, SecurityUserFileRepository.FILE_NAME);
+    Files.writeString(file.toPath(), "{bad\n", StandardCharsets.UTF_8);
+    // A non-empty directory where the error file should go: the publishing rename cannot replace it.
+    final File errorFile = new File(CONFIG_PATH, SecurityUserFileRepository.ERROR_FILE_NAME);
+    assertThat(errorFile.mkdirs()).isTrue();
+    assertThat(new File(errorFile, "occupied").createNewFile()).isTrue();
+
+    final List<String> lines = logged(
+        () -> SecurityUserFileRepository.preserveInError(this, file, errorFile, new RuntimeException("parse")));
+
+    assertThat(lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList()).hasSize(1).first().asString()
+        .contains("could not be saved as").doesNotContain("saving the corrupt file as");
+    try (final Stream<Path> files = Files.list(Path.of(CONFIG_PATH))) {
+      assertThat(files.map(p -> p.getFileName().toString()).filter(n -> n.endsWith(".tmp")).toList()).isEmpty();
+    }
+  }
+
+  /** The file vanished between the failed load and the report: nothing to copy, and the SEVERE says so. */
+  @Test
+  void aFileThatIsGoneIsReportedAsNothingSaved() {
+    final File file = new File(CONFIG_PATH, SecurityUserFileRepository.FILE_NAME);
+    final File errorFile = new File(CONFIG_PATH, SecurityUserFileRepository.ERROR_FILE_NAME);
+
+    final List<String> lines = logged(
+        () -> SecurityUserFileRepository.preserveInError(this, file, errorFile, new RuntimeException("parse")));
+
+    assertThat(lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList()).hasSize(1).first().asString()
+        .contains("nothing was saved");
+    assertThat(errorFile).doesNotExist();
   }
 
   /** Control: a well-formed users file logs nothing and leaves no error file. */

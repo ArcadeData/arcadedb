@@ -129,7 +129,8 @@ public class SecurityUserFileRepository {
   /**
    * Shared by the users and groups repositories: logs ONE SEVERE naming the file that failed and copies it, byte for
    * byte, to {@code errorFile}. The copy is written to a temp file (created owner-only by the JDK) and renamed over the
-   * target, so the users file's password hashes are never exposed with a wider mode, not even for an instant.
+   * target, so the users file's password hashes are never exposed with a wider mode, not even for an instant (the
+   * groups file carries none, and gets the same owner-only mode as a harmless side effect of sharing the code).
    * <p>
    * An existing {@code errorFile} is REPLACED: it always holds the most recent file that failed to load. Keeping every
    * failure would need a rotation policy for a directory operators hand-edit; the latest bad file is the one the SEVERE
@@ -162,6 +163,9 @@ public class SecurityUserFileRepository {
             break;
           position += transferred;
         }
+        // A short copy renamed into place would be logged as "saved" while missing the tail of the operator's file.
+        if (position != size)
+          throw new IOException("Copied only " + position + " of " + size + " bytes");
         copy.force(true);
       }
       applyOwnerOnlyPermissions(tmp);
