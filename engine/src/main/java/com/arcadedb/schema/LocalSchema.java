@@ -4848,7 +4848,8 @@ public class LocalSchema implements Schema {
    *                          O(N) per DDL statement (issue #10247) - would find them as they are
    */
   private synchronized void saveConfiguration(final boolean ignoreOpenTransaction, final boolean bucketMapsCurrent) {
-    if (bucketMapsCurrent) {
+    // THE SWITCH THAT TURNS THE PER-TYPE JSON CACHE OFF TURNS THIS SHORTCUT OFF TOO: BOTH RELY ON THE SAME ATTRIBUTION
+    if (bucketMapsCurrent && database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SCHEMA_INCREMENTAL_SERIALIZATION)) {
       typesChanged();
       if (VERIFY_INCREMENTAL_SERIALIZATION)
         verifyBucketTypeMaps();
@@ -4992,7 +4993,8 @@ public class LocalSchema implements Schema {
    * spent inserting the types one by one into the sorted tree of a single object.
    */
   private synchronized String serializeForFile(final long schemaVersion) {
-    if (allTypesSerializationStale) {
+    if (allTypesSerializationStale || !database.getConfiguration()
+        .getValueAsBoolean(GlobalConfiguration.SCHEMA_INCREMENTAL_SERIALIZATION)) {
       // CLEARED BEFORE THE TYPES ARE SERIALIZED, NOT AFTER: A CHANGE THAT MARKS THEM STALE WHILE THIS RUNS IS NOT LOST
       allTypesSerializationStale = false;
       for (final LocalDocumentType type : typeMap().values())

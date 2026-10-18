@@ -18,17 +18,22 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,6 +149,68 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
     assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc WHERE name = 'n7'").next().<Long>getProperty("c")).isEqualTo(1L);
     assertThat(database.getSchema().existsType("Renamed")).isTrue();
     assertThat(database.getSchema().getType("Renamed").existsProperty("late")).isTrue();
+  }
+
+  @Test
+  void theSwitchTurnsTheCacheOff() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    schema.createDocumentType("A");
+    schema.createDocumentType("B");
+    final String json = schema.getType("A").getSerializedJSON();
+
+    database.getConfiguration().setValue(GlobalConfiguration.SCHEMA_INCREMENTAL_SERIALIZATION, false);
+    try {
+      schema.getType("B").createProperty("p", Type.STRING);
+      // EVERY TYPE SERIALIZED AGAIN, AS BEFORE THE CACHE EXISTED
+      assertThat(schema.getType("A").getSerializedJSON()).isNotSameAs(json).isEqualTo(json);
+      assertFileIsTheFullSerialization();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.SCHEMA_INCREMENTAL_SERIALIZATION, true);
+    }
+  }
+
+  @Test
+  void concurrentSchemaChangesAreWrittenAsTheFullSerialization() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    schema.createDocumentType("Base").createProperty("id", Type.LONG);
+    schema.getType("Base").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+
+    // EVERY SAVE OF EVERY THREAD IS VERIFIED AGAINST THE FULL SERIALIZATION: A DIFFERENCE FAILS THE DDL STATEMENT
+    final int threads = 4;
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final List<Thread> workers = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final int thread = t;
+      workers.add(new Thread(() -> {
+        try {
+          for (int i = 0; i < 15; i++) {
+            final String name = "C" + thread + "_" + i;
+            final DocumentType type = schema.buildDocumentType().withName(name).withSuperType("Base").create();
+            type.createProperty("p", Type.STRING);
+            if (i % 3 == 0)
+              type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "p");
+            if (i % 5 == 0)
+              type.setCustomValue("k", "v" + i);
+            if (i % 7 == 0)
+              schema.dropType(name);
+          }
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      }, "issue10247-ddl-" + t));
+    }
+    workers.forEach(Thread::start);
+    for (final Thread worker : workers)
+      worker.join();
+
+    assertThat(failure.get()).isNull();
+    assertFileIsTheFullSerialization();
+
+    final String before = schema.toJSON().toString();
+    reopenDatabase();
+    // THE SCHEMA READ BACK IS THE ONE THAT WAS WRITTEN, VERSION APART
+    assertThat(((LocalSchema) database.getSchema()).toJSON().getJSONObject("types").toString()).isEqualTo(
+        new JSONObject(before).getJSONObject("types").toString());
   }
 
   @Test

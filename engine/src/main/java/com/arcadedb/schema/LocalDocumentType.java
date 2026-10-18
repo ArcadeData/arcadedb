@@ -2918,6 +2918,8 @@ public class LocalDocumentType implements DocumentType {
   String getSerializedJSON() {
     String json = serializedJSON;
     if (json == null) {
+      // GSON DIRECTLY, NOT JSONObject.toString(): THE MEMBER IS SPLICED INTO THE FILE, SO ITS NAME HAS TO BE ESCAPED BY THE
+      // SAME WRITER, WITH THE SAME SETTINGS, AS THE FULL SERIALIZATION ESCAPES IT
       final Gson gson = JSONFactory.INSTANCE.getGson();
       json = gson.toJson(new JsonPrimitive(name)) + ":" + gson.toJson(toJSON().getInternal());
       serializedJSON = json;

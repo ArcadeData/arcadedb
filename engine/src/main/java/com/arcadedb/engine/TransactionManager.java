@@ -200,7 +200,10 @@ public class TransactionManager {
    * The scheduler every {@link TransactionManager} of the JVM runs its WAL housekeeping on (issue #10234), created on
    * first use. A pass is short - a size check per WAL file, and a data fsync only when a file is retired - so a couple of
    * threads serve any number of databases; there are two so that one database's fsync does not hold back the passes of
-   * all the others. The cancelled task of a closed database is removed from the queue at once.
+   * all the others. The trade-off is accepted on purpose: the work is best effort, and a pass held back by another database
+   * only lets a WAL file grow past its rotation size, or stay open past its idle timeout, for that long. The cancelled task
+   * of a closed database is removed from the queue at once. Never shut down: its threads are daemon, so they end with the
+   * JVM, and an embedded application opening and closing databases keeps reusing them.
    */
   private static final class HousekeepingScheduler {
     private static final int                         THREADS  = 2;

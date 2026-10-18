@@ -39,7 +39,7 @@ import java.util.logging.Level;
  * statement of each warmed language on one database the server holds open. Read-only and trivial: it touches no record,
  * and runs on the embedded database, so it is neither replicated nor counted as a client request. It runs once, on a
  * daemon thread of its own at the lowest priority that ends when it is done, so it delays neither the start nor a request
- * that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it.
+ * that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it. An {@link Error} is not swallowed.
  * <p>
  * Disabled with {@link com.arcadedb.GlobalConfiguration#SERVER_QUERY_WARM_UP}.
  *
@@ -94,7 +94,7 @@ public class QueryWarmUp {
     try {
       try {
         new SQLAntlrParser(null).parse(SQL_PARSE_ONLY_STATEMENT);
-      } catch (final Throwable e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Query warm-up: error on parsing the SQL warm-up statement", e);
       }
 
@@ -111,7 +111,7 @@ public class QueryWarmUp {
             while (resultSet.hasNext())
               resultSet.next();
             ++executedStatements;
-          } catch (final Throwable e) {
+          } catch (final Exception e) {
             LogManager.instance()
                 .log(this, Level.FINE, "Query warm-up: error on executing '%s' in %s", e, statement[1], statement[0]);
           }
@@ -135,7 +135,7 @@ public class QueryWarmUp {
         final ServerDatabase database = server.getDatabase(name, false, false);
         if (database != null && database.isOpen())
           return database.getEmbedded();
-      } catch (final Throwable e) {
+      } catch (final Exception e) {
         // NOT OPEN (ANY MORE): TRY THE NEXT ONE
       }
     }

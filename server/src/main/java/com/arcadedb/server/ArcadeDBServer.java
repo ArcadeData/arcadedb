@@ -1576,6 +1576,7 @@ public class ArcadeDBServer {
 
       // FORCE LOADING INTO THE SERVER
       databases.put(databaseName, serverDatabase);
+      closedByCommand.remove(databaseName);
     }
 
     notifyPlugins(databaseName, true);
@@ -1741,6 +1742,7 @@ public class ArcadeDBServer {
         throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
       serverDatabase = new ServerDatabase(this, wrapForHA(database));
       databases.put(databaseName, serverDatabase);
+      closedByCommand.remove(databaseName);
     }
 
     notifyPlugins(databaseName, true);
@@ -1749,7 +1751,9 @@ public class ArcadeDBServer {
 
   /**
    * Records that a {@code close database} command closed {@code databaseName}, so {@link #getDatabaseForRequest} does not
-   * reopen it (issue #10234). Cleared when anything opens it again, {@code open database} included.
+   * reopen it (issue #10234). Cleared when anything opens, registers (a restore, an import, a snapshot install) or removes it
+   * (a drop), {@code open database} included. Held in memory only: after a restart the database is opened at start, or on
+   * its first request when {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} is off.
    */
   public void markClosedByCommand(final String databaseName) {
     closedByCommand.add(databaseName);
@@ -1759,6 +1763,8 @@ public class ArcadeDBServer {
     final ServerDatabase removed;
     synchronized (databasesLock) {
       removed = databases.remove(databaseName);
+      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR: 'close database' MARKS THE NAME AGAIN RIGHT AFTER
+      closedByCommand.remove(databaseName);
     }
 
     if (removed != null)

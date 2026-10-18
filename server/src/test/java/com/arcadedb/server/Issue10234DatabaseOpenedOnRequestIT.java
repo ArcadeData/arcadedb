@@ -75,6 +75,18 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aDeregistrationEndsTheCloseACommandAskedFor() throws Exception {
+    // A DROP, A RESTORE, AN IMPORT OR A SNAPSHOT INSTALL REGISTERS OR REMOVES THE DATABASE: THE CLOSE NO LONGER APPLIES
+    assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isNotEqualTo(200);
+
+    getServer(0).removeDatabase(getDatabaseName());
+
+    assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isEqualTo(200);
+    assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
+  }
+
+  @Test
   void aNameThatIsNotADatabaseOnDiskIsStillRefused() throws Exception {
     final String name = getDatabaseName() + "_10234_missing";
     final File directory = new File(
