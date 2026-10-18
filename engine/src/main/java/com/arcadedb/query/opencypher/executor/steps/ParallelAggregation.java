@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
-import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
@@ -213,6 +212,9 @@ final class ParallelAggregation {
     private final OperationHeapLimit   heapLimit;
     private final int                  overhead;
     private       int                  groupCount;
+    // THE KEY OBJECTS OF THE ROW BEFORE AND ITS GROUP (ISSUE #10254)
+    private final GroupKeyValues.Builder keyBuilder = new GroupKeyValues.Builder(keys.length);
+    private       Group                  lastGroup;
     // GUARDED BY this: SET BY THE CALLER, WHICH RELEASES THE HEAP OF A WORKER A FAILURE CANCELLED WHILE IT MAY STILL RUN
     private       boolean              heapReleased;
 
@@ -253,21 +255,27 @@ final class ParallelAggregation {
         final Object[] values = new Object[keys.length];
         for (int i = 0; i < values.length; i++)
           values[i] = evaluator.evaluate(keys[i], row, context);
-        // THE SAME KEY THE SEQUENTIAL STEPS GROUP BY: ONE LOGICAL NUMBER IS ONE GROUP WHATEVER ITS JAVA TYPE (#5789, #6676)
-        final Object key = keys.length == 1 ? DistinctNumericKey.canonicalize(values[0]) : new GroupKeyValues(values);
-        final Map<Object, Group> groups = partitions[Math.floorMod(key == null ? 0 : key.hashCode(), partitions.length)];
-        Group existing = groups.get(key);
-        if (existing == null) {
-          existing = new Group(values, newAggregators(), position);
-          groups.put(key, existing);
-          ++groupCount;
-          // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
-          synchronized (this) {
-            if (!heapReleased)
-              heapLimit.add(groupCount, values, overhead);
+        // THE SAME OBJECTS AS THE ROW BEFORE IN EVERY KEY: THE SAME GROUP, NOT CANONICALIZED AND HASHED AGAIN (ISSUE #10254)
+        if (lastGroup != null && keyBuilder.sameAsLast(values))
+          group = lastGroup;
+        else {
+          // THE SAME KEY THE SEQUENTIAL STEPS GROUP BY: ONE LOGICAL NUMBER IS ONE GROUP WHATEVER ITS JAVA TYPE (#5789, #6676)
+          final Object key = keys.length == 1 ? keyBuilder.canonical(values[0]) : keyBuilder.build(values);
+          final Map<Object, Group> groups = partitions[Math.floorMod(key == null ? 0 : key.hashCode(), partitions.length)];
+          Group existing = groups.get(key);
+          if (existing == null) {
+            existing = new Group(values, newAggregators(), position);
+            groups.put(key, existing);
+            ++groupCount;
+            // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
+            synchronized (this) {
+              if (!heapReleased)
+                heapLimit.add(groupCount, values, overhead);
+            }
           }
+          group = existing;
+          lastGroup = existing;
         }
-        group = existing;
       }
 
       for (int i = 0; i < aggregates.length; i++) {

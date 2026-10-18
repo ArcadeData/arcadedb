@@ -679,16 +679,13 @@ public class CSRBuilder {
       if (column == null)
         continue;
 
-      // Skip values whose runtime type doesn't match the detected column type
-      // (e.g., LocalDateTime in a property detected as LONG from schema or sampling)
-      switch (entry.getValue()) {
-      case INT:
-      case LONG:
-      case DOUBLE:
-        if (!(value instanceof Number))
-          continue;
-        break;
-      }
+      // Skip values the column cannot hand back as they are (e.g., LocalDateTime in a property detected as LONG from schema
+      // or sampling): the column stays null for the node, and a read of it falls back to the record. A schemaless property
+      // takes its type from the first values sampled, so a 2.5 in a LONG column read back as 2, a NaN as 0, a FLOAT as its
+      // binary double and a number in a STRING column as its text, and every reader through the view, the row pipeline
+      // included, compared what the record does not hold (issue #10255)
+      if (!roundTrips(entry.getValue(), value))
+        continue;
 
       switch (entry.getValue()) {
       case INT:
@@ -705,6 +702,16 @@ public class CSRBuilder {
         break;
       }
     }
+  }
+
+  /** Whether a node column of {@code type} reads {@code value} back as the same Cypher value. */
+  static boolean roundTrips(final Column.Type type, final Object value) {
+    return switch (type) {
+      case INT -> value instanceof Integer || value instanceof Short || value instanceof Byte;
+      case LONG -> value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte;
+      case DOUBLE -> value instanceof Double;
+      case STRING -> value instanceof String;
+    };
   }
 
   private ColumnStore[] createEmptyBucketColumns(final NodeIdMapping mapping) {
