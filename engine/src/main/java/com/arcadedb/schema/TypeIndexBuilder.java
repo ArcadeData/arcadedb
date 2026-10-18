@@ -474,7 +474,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     type.beginIndexConstruction(metadata.propertyNames);
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
-      schema.recordFileChanges(() -> {
+      schema.recordFileChangesThroughType(() -> {
         // AN INDEX OF THE TYPE, WITH ITS SUB-INDEXES ON THE BUCKETS OF ITS HIERARCHY: THE OTHER TYPES KEEP THEIR JSON (#10247)
         schema.typeChangedInRecordingSession(type);
 

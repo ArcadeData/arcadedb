@@ -499,6 +499,11 @@ public class LocalSchema implements Schema {
    */
   private             Set<LocalDocumentType>                 sessionChangedTypes;
   private             boolean                                sessionScopeOpen;
+  // Whether the outermost frame of the session was opened through a type (recordFileChangesThroughType): a session opened by
+  // the schema itself - a bulk change, a drop, an index drop - may change types it never names, whatever frames nest in it
+  private             boolean                                sessionOpenedThroughType;
+  // Set around the call that opens a frame through a type, read where the outermost frame opens, on the same thread
+  private final       ThreadLocal<Boolean>                   openingThroughType            = new ThreadLocal<>();
   /**
    * Compares every schema file written from the per-type cache with the full serialization, and refuses a write that
    * differs (issue #10247). For the test suites, which run with it on: a change that reaches a type's JSON without passing
@@ -2277,6 +2282,8 @@ public class LocalSchema implements Schema {
 
             if (index.getTypeName() != null) {
               final LocalDocumentType type = getType(index.getTypeName());
+              // THE INDEX IS PART OF THE JSON OF ITS TYPE, WHICHEVER SESSION DROPS IT (#10247)
+              invalidateSerializedHierarchy(type);
               if (index instanceof TypeIndex typeIndex)
                 type.removeTypeIndexInternal(typeIndex);
               else {
@@ -4914,6 +4921,7 @@ public class LocalSchema implements Schema {
   private void openSessionSerializationScope() {
     sessionChangedTypes = null;
     sessionScopeOpen = true;
+    sessionOpenedThroughType = Boolean.TRUE.equals(openingThroughType.get());
   }
 
   /**
@@ -4944,8 +4952,9 @@ public class LocalSchema implements Schema {
     sessionScopeOpen = false;
     final Set<LocalDocumentType> changed = sessionChangedTypes;
     sessionChangedTypes = null;
-    if (changed == null) {
-      // A SESSION NOT OPENED THROUGH ANY TYPE (A BUCKET, AN INDEX, A DROP TYPE, A BULK CHANGE...): IT NAMES NOTHING
+    if (changed == null || !sessionOpenedThroughType) {
+      // A SESSION NOT OPENED THROUGH A TYPE (A BUCKET, AN INDEX, A DROP TYPE, A BULK CHANGE...) CHANGES WHAT IT NAMES NOT: A
+      // TYPE FRAME NESTED IN IT, A BULK CHANGE THAT DROPS AN INDEX AND ADDS A PROPERTY TO ANOTHER TYPE, DOES NOT MAKE IT ONE
       markAllTypesSerializationStale();
       return false;
     }
@@ -5001,6 +5010,9 @@ public class LocalSchema implements Schema {
         type.invalidateSerializedJSON();
     }
 
+    // THE FULL SERIALIZATION THE VERIFICATION COMPARES WITH, TAKEN FIRST: SEE verifyAgainstFullSerialization()
+    final String fullBefore = VERIFY_INCREMENTAL_SERIALIZATION ? toJSON(schemaVersion).toString() : null;
+
     final Gson gson = JSONFactory.INSTANCE.getGson();
     final JSONObject root = toJSON(schemaVersion, false);
     final StringBuilder content = new StringBuilder(Math.max(1024, lastSerializedSchemaLength + 1024));
@@ -5023,14 +5035,26 @@ public class LocalSchema implements Schema {
     final String result = content.toString();
     lastSerializedSchemaLength = result.length();
 
-    if (VERIFY_INCREMENTAL_SERIALIZATION) {
-      final String expected = toJSON(schemaVersion).toString();
-      if (!expected.equals(result))
-        throw new IllegalStateException(
-            "The schema serialized from the per-type cache differs from the full serialization of database '" + database.getName()
-                + "' (issue #10247): " + describeFirstDifference(expected, result));
-    }
+    if (VERIFY_INCREMENTAL_SERIALIZATION)
+      verifyAgainstFullSerialization(schemaVersion, fullBefore, result);
     return result;
+  }
+
+  /**
+   * Fails when what the per-type cache wrote differs from the full serialization (issue #10247). Only a comparison made while
+   * the schema held still counts: an index compaction swaps the file of an index under the lock of that index, not under this
+   * schema's monitor, so a swap between the two serializations makes them differ with nothing wrong with the cache - the
+   * swapping thread saves the schema right after, and that save is the one to verify. The full serialization is therefore
+   * taken before and after the cached one, and a difference between those two means the comparison proves nothing.
+   */
+  private void verifyAgainstFullSerialization(final long schemaVersion, final String fullBefore, final String result) {
+    if (fullBefore.equals(result))
+      return;
+    final String fullAfter = toJSON(schemaVersion).toString();
+    if (fullBefore.equals(fullAfter))
+      throw new IllegalStateException(
+          "The schema serialized from the per-type cache differs from the full serialization of database '" + database.getName()
+              + "' (issue #10247): " + describeFirstDifference(fullBefore, result));
   }
 
   private int                 lastSerializedSchemaLength;
@@ -5651,6 +5675,24 @@ public class LocalSchema implements Schema {
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
     return recordFileChanges(callback, false);
+  }
+
+  /**
+   * Opens a recording frame on behalf of a type (or of the type builder, which names the type it creates inside the
+   * callback through {@link #typeChangedInRecordingSession}): when it is the outermost frame, the session it opens is
+   * type-scoped and its save serializes only the types it named (issue #10247).
+   */
+  <RET> RET recordFileChangesThroughType(final Callable<Object> callback, final boolean deferIntermediateSchemaSaves) {
+    final Boolean previous = openingThroughType.get();
+    openingThroughType.set(Boolean.TRUE);
+    try {
+      return recordFileChanges(callback, deferIntermediateSchemaSaves);
+    } finally {
+      if (previous == null)
+        openingThroughType.remove();
+      else
+        openingThroughType.set(previous);
+    }
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback,

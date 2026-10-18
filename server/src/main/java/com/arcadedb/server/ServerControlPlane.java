@@ -1171,11 +1171,17 @@ public class ServerControlPlane {
     beginExclusive(databaseName, Operation.CLOSE);
     try {
       final ServerDatabase database = server.getDatabase(databaseName);
-      database.getEmbedded().close();
-
-      server.removeDatabase(database.getName());
-      // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234)
+      // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234). MARKED BEFORE THE CLOSE, SO NO
+      // REQUEST REOPENS IT WHILE IT CLOSES, AND DEREGISTERED TOGETHER WITH ITS MARK, SO NONE DOES BETWEEN THE TWO
       server.markClosedByCommand(database.getName());
+      try {
+        database.getEmbedded().close();
+      } catch (final RuntimeException e) {
+        server.unmarkClosedByCommand(database.getName());
+        throw e;
+      }
+
+      server.removeClosedDatabase(database.getName());
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.CLOSE);
     }

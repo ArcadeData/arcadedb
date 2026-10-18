@@ -267,7 +267,7 @@ public class TypeBuilder<T> {
     if (typeName.contains(","))
       throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
 
-    return schema.recordFileChanges(() -> {
+    return schema.recordFileChangesThroughType(() -> {
       // BEFORE ANYTHING IS CREATED: the type is registered in the schema and given its buckets before its super types are
       // linked, so the check addSuperType makes would refuse it with a half-built type left behind (issue #9846)
       if (edgeLightweight && superTypes != null)
@@ -312,7 +312,7 @@ public class TypeBuilder<T> {
       schema.updateSecurity();
 
       return c;
-    });
+    }, false);
   }
 
   public TypeBuilder<T> withName(final String typeName) {

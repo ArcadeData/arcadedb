@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
@@ -42,9 +43,11 @@ import java.util.logging.Level;
  * left of the first request once the query stack was warm - parses a statement that covers the common SQL clauses, which
  * needs no database, then plans and runs a trivial statement of each warmed language on one database the server holds
  * open and serializes its rows to JSON as the HTTP API does. Read-only and trivial: it touches no record, caches no
- * credential, and runs on the embedded database, so it is neither replicated nor counted as a client request. It runs
- * once, on a daemon thread of its own that ends when it is done, at the lowest priority (a hint the operating system may
- * ignore, so the start does share its cores with it), so it delays no request that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it.
+ * credential, and runs on the embedded database through the query engine itself, so it is neither replicated nor counted as
+ * a client request - no tracing span, no query metric, no statistic of the database. It runs once, on a daemon thread of its
+ * own that ends when it is done, at the lowest priority (a hint the operating system may ignore, so the start does share
+ * its cores with it), so it delays no request that arrives first; whatever it fails on is logged at {@code FINE} and
+ * skipped, because nothing depends on it.
  * An {@link Error} is not swallowed.
  * <p>
  * Disabled with {@link com.arcadedb.GlobalConfiguration#SERVER_QUERY_WARM_UP}.
@@ -123,7 +126,9 @@ public class QueryWarmUp {
           if (!languages.contains(statement[0]))
             continue;
 
-          try (final ResultSet resultSet = database.query(statement[0], statement[1])) {
+          // THE ENGINE, NOT database.query(): THAT ONE OPENS A TRACING SPAN, RECORDS arcadedb.query.duration AND COUNTS THE QUERY IN
+          // THE STATISTICS OF THE DATABASE, AND A STATEMENT NOBODY ASKED FOR MUST SHOW IN NONE OF THEM
+          try (final ResultSet resultSet = database.getQueryEngine(statement[0]).query(statement[1], new ContextConfiguration())) {
             final JsonSerializer serializer = JsonSerializer.createJsonSerializer();
             while (resultSet.hasNext())
               serializer.serializeResult(database, resultSet.next());

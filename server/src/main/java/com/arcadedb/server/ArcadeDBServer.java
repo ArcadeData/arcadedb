@@ -572,6 +572,8 @@ public class ArcadeDBServer {
     if (status != STATUS.OFFLINE)
       return;
 
+    // A NEW LIFECYCLE OF THIS INSTANCE: A DATABASE A COMMAND CLOSED BEFORE THE LAST STOP IS NOT CLOSED ANY MORE (#10234)
+    closedByCommand.clear();
     status = STATUS.STARTING;
 
     // A (re)start has not been held by the security-convergence gate yet (issue #8446).
@@ -1437,7 +1439,7 @@ public class ArcadeDBServer {
       final File directory = new File(
           configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
       if (holdsDatabase(directory))
-        return getDatabase(databaseName, false, true);
+        return getDatabase(databaseName, false, true, false, true);
     }
     return getDatabase(databaseName, false, false);
   }
@@ -1762,12 +1764,35 @@ public class ArcadeDBServer {
     closedByCommand.add(databaseName);
   }
 
+  /**
+   * Ends the mark of a failed {@code close database}: the database was marked before it was closed, and stays open
+   * (issue #10234).
+   */
+  public void unmarkClosedByCommand(final String databaseName) {
+    closedByCommand.remove(databaseName);
+  }
+
   public void removeDatabase(final String databaseName) {
+    removeDatabase(databaseName, false);
+  }
+
+  /**
+   * Deregisters a database a {@code close database} command has closed, and keeps its mark: the registry and the mark change
+   * together under {@link #databasesLock}, so no request can reopen it between the two (issue #10234).
+   */
+  public void removeClosedDatabase(final String databaseName) {
+    removeDatabase(databaseName, true);
+  }
+
+  private void removeDatabase(final String databaseName, final boolean keepClosedByCommandMark) {
     final ServerDatabase removed;
     synchronized (databasesLock) {
       removed = databases.remove(databaseName);
-      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR: 'close database' MARKS THE NAME AGAIN RIGHT AFTER
-      closedByCommand.remove(databaseName);
+      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      if (keepClosedByCommandMark)
+        closedByCommand.add(databaseName);
+      else
+        closedByCommand.remove(databaseName);
     }
 
     if (removed != null)
@@ -2057,6 +2082,16 @@ public class ArcadeDBServer {
 
   private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
       final boolean allowLoad, final boolean underSnapshotRecovery) {
+    return getDatabase(databaseName, createIfNotExists, allowLoad, underSnapshotRecovery, false);
+  }
+
+  /**
+   * @param refuseIfClosedByCommand {@code true} for a client request (issue #10234): a database a {@code close database}
+   *                                command closed is not opened for it. Checked under {@link #databasesLock}, where the
+   *                                command deregisters the database, so a request cannot reopen it between the two.
+   */
+  private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
+      final boolean allowLoad, final boolean underSnapshotRecovery, final boolean refuseIfClosedByCommand) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
@@ -2102,6 +2137,10 @@ public class ArcadeDBServer {
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
+
+        if (refuseIfClosedByCommand && closedByCommand.contains(databaseName))
+          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
+              + "'close database' command and stays closed until 'open database'");
 
         checkDatabaseNameIsValid(databaseName);
 

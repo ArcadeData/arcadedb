@@ -2896,12 +2896,12 @@ public class LocalDocumentType implements DocumentType {
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
-    return schema.recordFileChanges(() -> {
+    return schema.recordFileChangesThroughType(() -> {
       // A CHANGE MADE THROUGH THIS TYPE: THE SAVE THAT ENDS THE SESSION SERIALIZES THIS TYPE AND ITS HIERARCHY AGAIN, AND
       // WRITES THE OTHER TYPES AS THE LAST SAVE SERIALIZED THEM (ISSUE #10247)
       schema.typeChangedInRecordingSession(this);
       return callback.call();
-    });
+    }, false);
   }
 
   /**

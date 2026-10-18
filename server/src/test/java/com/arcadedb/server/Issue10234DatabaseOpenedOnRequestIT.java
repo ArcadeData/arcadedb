@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.QueryTracer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -30,6 +31,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -72,6 +75,32 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     }
 
     assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isEqualTo(200);
+  }
+
+  @Test
+  void requestsRacingTheCloseCommandNeverLeaveTheDatabaseOpen() throws Exception {
+    final AtomicBoolean running = new AtomicBoolean(true);
+    final Thread requests = new Thread(() -> {
+      while (running.get())
+        try {
+          postQuery(getDatabaseName(), "select 1");
+        } catch (final Exception e) {
+          // THE SERVER ANSWERS OR REFUSES: THE ASSERTION IS ON WHAT THE CLOSE LEFT BEHIND
+        }
+    }, "issue10234-requests");
+    requests.start();
+    try {
+      for (int i = 0; i < 5; i++) {
+        assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+        // THE REQUESTS KEEP COMING: NONE OF THEM REOPENS A DATABASE THE COMMAND CLOSED
+        Thread.sleep(20);
+        assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
+        assertThat(postServerCommand("open database " + getDatabaseName()).statusCode()).isEqualTo(200);
+      }
+    } finally {
+      running.set(false);
+      requests.join();
+    }
   }
 
   @Test
@@ -122,6 +151,32 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     assertThat(warmUp.awaitCompletion(60, TimeUnit.SECONDS)).isTrue();
     // SQL AND OPENCYPHER, ON THE DATABASE THE FIXTURE OPENED
     assertThat(warmUp.getExecutedStatements()).isEqualTo(QueryWarmUp.EXECUTED_STATEMENTS.size());
+  }
+
+  /**
+   * The statements of the warm-up are nobody's request: they must show in no tracing span (and so in no
+   * {@code arcadedb.query.duration} metric), where a span tagged {@code internal} made the tracing and the Redis metrics
+   * integration tests see a query they had not run.
+   */
+  @Test
+  void theWarmUpIsSeenByNoTracerAndNoMetric() throws Exception {
+    final QueryWarmUp warmUp = getServer(0).getQueryWarmUp();
+    assertThat(warmUp.awaitCompletion(60, TimeUnit.SECONDS)).isTrue();
+
+    final QueryTracer previous = QueryTracer.Holder.get();
+    final AtomicInteger spans = new AtomicInteger();
+    QueryTracer.Holder.register((protocol, database, language, type, query) -> {
+      spans.incrementAndGet();
+      return QueryTracer.Span.NO_OP;
+    });
+    try {
+      final QueryWarmUp second = new QueryWarmUp(getServer(0));
+      second.run();
+      assertThat(second.getExecutedStatements()).isEqualTo(QueryWarmUp.EXECUTED_STATEMENTS.size());
+      assertThat(spans.get()).as("spans opened by the warm-up").isZero();
+    } finally {
+      QueryTracer.Holder.register(previous);
+    }
   }
 
   private HttpResponse<String> postQuery(final String database, final String query) throws Exception {

@@ -33,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -195,6 +196,135 @@ class Issue10247IncrementalSchemaSaveTest extends TestHelper {
     schema.getType("B").createProperty("q", Type.STRING);
     assertFileIsTheFullSerialization();
     assertThat(Files.readString(schema.getConfigurationFile().toPath(), StandardCharsets.UTF_8)).contains("fromLeader");
+  }
+
+  @Test
+  void aBulkChangeThatDropsAnIndexAndChangesAnotherTypeIsWrittenAsTheFullSerialization() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    schema.createDocumentType("T1").createProperty("x", Type.STRING);
+    schema.createDocumentType("T2").createProperty("x", Type.STRING);
+    schema.getType("T2").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "x");
+    final String indexName = schema.getType("T2").getAllIndexes(false).iterator().next().getName();
+
+    // THE SESSION IS OPENED BY THE SCHEMA, NOT BY A TYPE: THE TYPE FRAME NESTED IN IT DOES NOT MAKE IT TYPE-SCOPED, AND THE
+    // INDEX DROP CHANGES T2, WHICH THE SESSION NEVER NAMES
+    schema.bulkChange(() -> {
+      schema.dropIndex(indexName);
+      schema.getType("T1").createProperty("y", Type.STRING);
+    });
+
+    assertFileIsTheFullSerialization();
+    assertThat(schema.getType("T2").getAllIndexes(false)).isEmpty();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("T2").getAllIndexes(false)).isEmpty();
+    assertThat(database.getSchema().getType("T1").existsProperty("y")).isTrue();
+  }
+
+  /**
+   * A seeded random sequence of schema changes - create (with super types), property, index, custom value, alias, rename,
+   * link and unlink a super type, drop - each followed by a check that the file is the full serialization (and the save
+   * itself checked by the verification the test JVM runs with). A step that the schema refuses is skipped: what matters
+   * is that no step the schema accepts leaves a stale member in the file.
+   */
+  @Test
+  void randomSchemaChangesAreWrittenAsTheFullSerialization() throws Exception {
+    for (final long seed : new long[] { 10247L, 42L, 7L }) {
+      final Random random = new Random(seed);
+      final LocalSchema schema = (LocalSchema) database.getSchema();
+      final List<String> types = new ArrayList<>();
+      int counter = 0;
+
+      for (int step = 0; step < 120; step++) {
+        final String description;
+        try {
+          final int operation = types.isEmpty() ? 0 : random.nextInt(10);
+          switch (operation) {
+          case 0, 1 -> {
+            final String name = "S" + seed + "_T" + counter++;
+            final String parent = !types.isEmpty() && random.nextBoolean() ? types.get(random.nextInt(types.size())) : null;
+            description = "create " + name + (parent != null ? " under " + parent : "");
+            if (parent != null)
+              schema.buildDocumentType().withName(name).withSuperType(parent).create();
+            else
+              schema.createDocumentType(name);
+            types.add(name);
+          }
+          case 2, 3 -> {
+            final String name = types.get(random.nextInt(types.size()));
+            final String property = "p" + counter++;
+            description = "property " + property + " on " + name;
+            schema.getType(name).createProperty(property, Type.STRING);
+          }
+          case 4 -> {
+            final String name = types.get(random.nextInt(types.size()));
+            final DocumentType type = schema.getType(name);
+            final List<String> own = new ArrayList<>(type.getPropertyNames());
+            description = "index on " + name;
+            if (!own.isEmpty()) {
+              final String property = own.get(random.nextInt(own.size()));
+              if (type.getPolymorphicIndexByProperties(property) == null)
+                type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, property);
+            }
+          }
+          case 5 -> {
+            final String name = types.get(random.nextInt(types.size()));
+            description = "custom value on " + name;
+            schema.getType(name).setCustomValue("k" + random.nextInt(3), "v" + counter++);
+          }
+          case 6 -> {
+            final String name = types.get(random.nextInt(types.size()));
+            description = "alias on " + name;
+            schema.getType(name).setAliases(Set.of("A" + counter++));
+          }
+          case 7 -> {
+            final String name = types.get(random.nextInt(types.size()));
+            final String renamed = "S" + seed + "_R" + counter++;
+            description = "rename " + name + " to " + renamed;
+            schema.getType(name).rename(renamed);
+            types.set(types.indexOf(name), renamed);
+          }
+          case 8 -> {
+            final String child = types.get(random.nextInt(types.size()));
+            final String parent = types.get(random.nextInt(types.size()));
+            description = "link " + child + " under " + parent;
+            if (!child.equals(parent) && !schema.getType(child).isSubTypeOf(parent) && !schema.getType(parent).isSubTypeOf(child))
+              schema.getType(child).addSuperType(parent);
+          }
+          default -> {
+            final String name = types.get(random.nextInt(types.size()));
+            description = "drop " + name;
+            final DocumentType type = schema.getType(name);
+            if (type.getSubTypes().isEmpty()) {
+              for (final DocumentType parent : new ArrayList<>(type.getSuperTypes()))
+                type.removeSuperType(parent);
+              schema.dropType(name);
+              types.remove(name);
+            }
+          }
+          }
+        } catch (final SchemaException | IllegalArgumentException e) {
+          continue;
+        }
+
+        final String onDisk = Files.readString(schema.getConfigurationFile().toPath(), StandardCharsets.UTF_8);
+        assertThat(onDisk).as("seed %d step %d (%s)", seed, step, description).isEqualTo(schema.toJSON().toString());
+      }
+
+      final String types0 = schema.toJSON().getJSONObject("types").toString();
+      reopenDatabase();
+      assertThat(((LocalSchema) database.getSchema()).toJSON().getJSONObject("types").toString()).as("seed %d after a reopen", seed)
+          .isEqualTo(types0);
+
+      // EVERY DATABASE OF THE TEST IS DROPPED BY THE FIXTURE; THE NEXT SEED STARTS ON AN EMPTY SCHEMA
+      while (!database.getSchema().getTypes().isEmpty())
+        for (final DocumentType type : new ArrayList<>(database.getSchema().getTypes()))
+          if (database.getSchema().existsType(type.getName()) && type.getSubTypes().isEmpty()) {
+            for (final DocumentType parent : new ArrayList<>(type.getSuperTypes()))
+              type.removeSuperType(parent);
+            database.getSchema().dropType(type.getName());
+          }
+    }
   }
 
   @Test
