@@ -38,6 +38,10 @@ import java.util.List;
  * values of a key are always returned together, oldest first. Handed out in parts, the merge of the cursors of an index
  * ({@link LSMTreeIndexCursor}) resolved the tombstones of the newer cursors against the first part only, and the later parts
  * returned entries that had been deleted (issue #10188).
+ * <p>
+ * The key is read on the first {@link #getKeys()} or {@link #getValue()} after {@link #next()}, and from then on
+ * {@link #getCurrentPageId()} and {@link #getCurrentPositionInPage()} name the end of the key, the entry {@link #next()} steps
+ * past. Callers read the key before asking for the position.
  */
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   // The last data page of the series to visit in the direction of the scan: the highest page number going up, the lowest going down

@@ -347,7 +347,15 @@ public final class CypherFunctionHelper {
    * index past the last code point is the string length. A surrogate that is not part of a pair counts as one code point.
    */
   public static int charOffsetOfCodePoint(final String str, final int codePointIndex) {
+    if (codePointIndex <= 0)
+      return 0;
     final int size = str.length();
+    final int limit = Math.min(codePointIndex, size);
+    // No surrogate pair before the limit, and none straddling it: a unit per code point, so the answer is the limit itself. The
+    // count is a constant-time answer for Latin-1 text, which is how the JVM stores most of it
+    if (str.codePointCount(0, limit) == limit && !(limit < size && Character.isHighSurrogate(str.charAt(limit - 1))
+        && Character.isLowSurrogate(str.charAt(limit))))
+      return limit;
     int offset = 0;
     for (int i = 0; i < codePointIndex && offset < size; i++)
       offset += Character.charCount(str.codePointAt(offset));

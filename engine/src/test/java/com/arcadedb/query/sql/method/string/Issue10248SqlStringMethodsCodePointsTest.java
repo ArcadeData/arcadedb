@@ -134,9 +134,40 @@ class Issue10248SqlStringMethodsCodePointsTest extends TestHelper {
     assertThat(literal("foobar", "lastIndexOf('o', 1)")).isEqualTo(1);
     assertThat(literal("foobar", "lastIndexOf('o', -1)")).isEqualTo(-1);
     assertThat(literal("foobar", "lastIndexOf('o', 30)")).isEqualTo(2);
+    assertThat(literal("foobar", "lastIndexOf('')")).isEqualTo(6);
+    assertThat(literal("foobar", "lastIndexOf('', 3)")).isEqualTo(3);
+    assertThat(literal("foobar", "lastIndexOf('', 30)")).isEqualTo(6);
+    assertThat(literal("foobar", "lastIndexOf('', -1)")).isEqualTo(-1);
+    assertThat(literal("foobar", "lastIndexOf('o', 2)")).isEqualTo(2);
+    assertThat(literal("foobar", "lastIndexOf('o', 1000000)")).isEqualTo(2);
+    assertThat(literal("foobar", "lastIndexOf('o', -1000000)")).isEqualTo(-1);
+    assertThat(literal("foobar", "indexOf('o', 1000000)")).isEqualTo(-1);
     assertThat(literal("foobar", "charAt(3)")).isEqualTo("b");
     assertThat(literal("foobar", "charAt(6)")).isNull();
     assertThat(literal("foobar", "charAt(-1)")).isNull();
+  }
+
+  @Test
+  void aNullSearchStringAnswersNull() {
+    try (final ResultSet rs = database.query("sql",
+        "SELECT 'foobar'.indexOf(null) AS i, 'foobar'.lastIndexOf(null) AS l")) {
+      final Result row = rs.next();
+      assertThat(row.<Object>getProperty("i")).isNull();
+      assertThat(row.<Object>getProperty("l")).isNull();
+    }
+  }
+
+  @Test
+  void aPositionRightAfterAPairIsNotInsideIt() {
+    // the unit before the position is the high half of a pair whose low half is at the position: the position is past the pair
+    final String text = "a" + EMOJI + "b";
+    assertThat(literal(text, "indexOf('b', 2)")).isEqualTo(2);
+    assertThat(literal(text, "indexOf('b', 1)")).isEqualTo(2);
+    assertThat(literal(text, "lastIndexOf('b', 2)")).isEqualTo(2);
+    assertThat(literal(text, "lastIndexOf('" + EMOJI + "', 1)")).isEqualTo(1);
+    assertThat(literal(text, "lastIndexOf('a', 1)")).isEqualTo(0);
+    assertThat(literal(text, "charAt(2)")).isEqualTo("b");
+    assertThat(literal(text, "charAt(1)")).isEqualTo(EMOJI);
   }
 
   @Test

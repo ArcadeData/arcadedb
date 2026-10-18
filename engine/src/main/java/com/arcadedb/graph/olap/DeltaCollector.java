@@ -249,6 +249,19 @@ class DeltaCollector
       this.delta = delta;
     }
 
+    private TxDelta freeze() {
+      final TxDelta frozen = new TxDelta();
+      frozen.addedVertices.addAll(delta.addedVertices);
+      frozen.deletedVertices.addAll(delta.deletedVertices);
+      frozen.addedEdges.addAll(delta.addedEdges);
+      frozen.deletedEdges.addAll(delta.deletedEdges);
+      frozen.updatedProperties.putAll(delta.updatedProperties);
+      frozen.updatedEdges.putAll(delta.updatedEdges);
+      frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
+      delta.clear();
+      return frozen;
+    }
+
     @Override
     public void onCommitPoint() {
       // Never fails in practice (a lock-free add); if it did, the place stays null and the change is delivered unordered, as before
@@ -266,15 +279,14 @@ class DeltaCollector
 
     @Override
     public void run() {
-      final TxDelta frozen = new TxDelta();
-      frozen.addedVertices.addAll(delta.addedVertices);
-      frozen.deletedVertices.addAll(delta.deletedVertices);
-      frozen.addedEdges.addAll(delta.addedEdges);
-      frozen.deletedEdges.addAll(delta.deletedEdges);
-      frozen.updatedProperties.putAll(delta.updatedProperties);
-      frozen.updatedEdges.putAll(delta.updatedEdges);
-      frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
-      delta.clear();
+      final TxDelta frozen;
+      try {
+        frozen = freeze();
+      } catch (final Throwable t) {
+        // Its place must not stay at the head of the line, or every change behind it waits for it for as long as the view lives
+        onAbandoned();
+        throw t;
+      }
       final long threadId = Thread.currentThread().threadId();
       perThreadDeltas.remove(threadId);
       try {
