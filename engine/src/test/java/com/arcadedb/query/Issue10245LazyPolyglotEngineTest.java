@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.polyglot.PolyglotEngineManager;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -116,19 +117,19 @@ class Issue10245LazyPolyglotEngineTest extends TestHelper {
     command.add(FirstStatementsProbe.class.getName());
     command.add(directory.resolve("db").toString());
 
-    final Process process = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.INHERIT).start();
+    // stdout to a file, so a child that hangs without closing it cannot block the read past the wait below
+    final File stdout = directory.resolve("stdout.txt").toFile();
+    final Process process = new ProcessBuilder(command).redirectOutput(stdout).redirectError(ProcessBuilder.Redirect.INHERIT).start();
     try {
-      final String output;
-      try (final var in = process.getInputStream()) {
-        output = new String(in.readAllBytes(), StandardCharsets.US_ASCII).trim();
-      }
       // A hang detector, not a latency bound
-      assertThat(process.waitFor(120, TimeUnit.SECONDS)).as("the forked JVM must terminate; it printed: %s", output).isTrue();
+      final boolean exited = process.waitFor(120, TimeUnit.SECONDS);
+      final String output = Files.readString(stdout.toPath(), StandardCharsets.US_ASCII).trim();
+      assertThat(exited).as("the forked JVM must terminate; it printed: %s", output).isTrue();
       assertThat(process.exitValue()).as("the forked JVM failed; it printed: %s", output).isZero();
       assertThat(output).endsWith("afterStatements=false afterScript=true");
     } finally {
       process.destroyForcibly();
-      Files.deleteIfExists(directory);
+      FileUtils.deleteRecursively(directory.toFile());
     }
   }
 

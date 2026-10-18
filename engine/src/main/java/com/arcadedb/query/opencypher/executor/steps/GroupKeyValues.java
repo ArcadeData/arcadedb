@@ -68,6 +68,10 @@ final class GroupKeyValues {
    * every row, built once by the {@code collect()} upstream: walking it again per row made the grouping quadratic (issue
    * #10254). A value that is the object the row before held reuses that row's canonical form and hash, and the canonical
    * form being the same object too, the key equals the group's own in one reference comparison per value.
+   * <p>
+   * The memory is by reference, which holds because a value a row carries is not changed afterwards: a list or a map is
+   * built by the clause that produces it (a {@code collect()} hands over its list when the group is complete, a literal or a
+   * parameter is never written to), so the same object is the same value on every row it reaches.
    */
   static final class Builder {
     private static final Object   NONE = new Object();

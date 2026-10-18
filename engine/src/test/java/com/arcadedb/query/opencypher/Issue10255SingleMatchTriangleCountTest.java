@@ -140,6 +140,37 @@ class Issue10255SingleMatchTriangleCountTest extends TestHelper {
   }
 
   @Test
+  void longsPastTwoToTheFiftyThirdNextToDoublesAreComparedByTheWhere() throws InterruptedException {
+    // 2^53 + 1 and 2^53 as a double collapse in double precision: only the exact comparison of the WHERE tells them apart
+    final long twoTo53 = 1L << 53;
+    final Object[] ids = { twoTo53 + 1, twoTo53 + 2, (double) twoTo53, twoTo53 + 3, 1.5d, twoTo53 - 1 };
+    createPersons(ids.length, i -> ids[i]);
+    for (int x = 0; x < ids.length; x++)
+      for (int y = x + 1; y < ids.length; y++)
+        knows(x, y);
+
+    final long expected = countWithRowPipeline(ORDERED);
+    assertThat(expected).isEqualTo(20L);
+    assertAllAgree(ORDERED, expected);
+  }
+
+  /**
+   * A schemaless property whose first values are doubles gets a DOUBLE column. A FLOAT next to them used to be stored as its
+   * binary double, which the comparison of the record (by its decimal form, #7609) does not see: {@code 0.1f} ties with
+   * {@code 0.1} on the record and did not through the view.
+   */
+  @Test
+  void viewColumnReadsBackWhatTheRecordHolds() throws InterruptedException {
+    final Object[] ids = { 0.1d, 0.3d, 0.1f, 0.2d, 7, 0.25f };
+    createPersons(ids.length, i -> ids[i]);
+    for (int x = 0; x < ids.length; x++)
+      for (int y = x + 1; y < ids.length; y++)
+        knows(x, y);
+
+    assertAllAgree(ORDERED, countWithRowPipeline(ORDERED));
+  }
+
+  @Test
   void unlabelledTriangleCountsEveryVertex() throws InterruptedException {
     createPersons(8, i -> (long) (i % 4));
     database.transaction(() -> {
