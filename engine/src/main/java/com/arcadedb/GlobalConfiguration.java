@@ -234,8 +234,9 @@ public enum GlobalConfiguration {
   TX_WAL_IDLE_TIMEOUT("arcadedb.txWalIdleTimeout", SCOPE.DATABASE, """
       Milliseconds a WAL file of the pool can stay without writes before the WAL housekeeping closes and removes it, \
       once all its pages reached the data files. A WAL file is opened on the first commit that needs it, so a database \
-      that is only read, or not written for this long, holds no WAL file open. 0 or a negative value keeps every WAL \
-      file open until the database is closed""",
+      that is only read, or not written for this long, holds no WAL file open. A database written less often than this \
+      creates, locks and deletes a WAL file per write, and its WAL file counter grows with them. 0 or a negative value \
+      keeps every WAL file open until the database is closed""",
       Long.class, 60_000L),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,

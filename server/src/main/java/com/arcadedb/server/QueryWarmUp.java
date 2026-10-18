@@ -33,17 +33,18 @@ import java.util.logging.Level;
 /**
  * Warms the query stack in the background while the server starts (issue #10218), so the first client request does not
  * pay for it. Started as soon as the security is up, in parallel with the load of the databases: the part that needs no
- * database runs at once, and the part that runs statements waits for the server to be {@code ONLINE}. On a fresh JVM the first SQL statement loaded about 1,250 classes - the ANTLR runtime, the SQL
- * grammar and its AST, the function and method registries - and deserialized the ANTLR ATN, which made it about 60 times
- * slower than the same statement the third time, a trivial {@code SELECT 1} included.
+ * database runs at once, and the part that runs statements waits for the server to be {@code ONLINE}. On a fresh JVM the
+ * first SQL statement loaded about 1,250 classes - the ANTLR runtime, the SQL grammar and its AST, the function and method
+ * registries - and deserialized the ANTLR ATN, which made it about 60 times slower than the same statement the third time,
+ * a trivial {@code SELECT 1} included.
  * <p>
  * It hashes a throwaway password the way the first login does - the JCE provider and its HMAC loop were most of what was
  * left of the first request once the query stack was warm - parses a statement that covers the common SQL clauses, which
  * needs no database, then plans and runs a trivial statement of each warmed language on one database the server holds
  * open and serializes its rows to JSON as the HTTP API does. Read-only and trivial: it touches no record, caches no
  * credential, and runs on the embedded database, so it is neither replicated nor counted as a client request. It runs
- * once, on a daemon thread of its own at the lowest priority that ends when it is done, so it delays neither the start nor
- * a request that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it.
+ * once, on a daemon thread of its own that ends when it is done, at the lowest priority (a hint the operating system may
+ * ignore, so the start does share its cores with it), so it delays no request that arrives first; whatever it fails on is logged at {@code FINE} and skipped, because nothing depends on it.
  * An {@link Error} is not swallowed.
  * <p>
  * Disabled with {@link com.arcadedb.GlobalConfiguration#SERVER_QUERY_WARM_UP}.

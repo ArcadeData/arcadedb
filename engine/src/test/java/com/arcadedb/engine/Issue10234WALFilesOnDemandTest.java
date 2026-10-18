@@ -177,6 +177,51 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
     database.close();
   }
 
+  /**
+   * The fallback of a commit whose own slot is unusable opens a file for an empty slot, and the #7479 check applies there
+   * as it does for the slot of the commit itself: a name another live instance holds fences the database and fails the
+   * commit loudly, instead of the commit going on to write to a file it shares.
+   */
+  @Test
+  void aFallbackSlotWhoseWALFileAnotherInstanceHoldsFencesTheDatabase() throws Exception {
+    database.close();
+
+    final Object previousWalFiles = GlobalConfiguration.TX_WAL_FILES.getValue();
+    GlobalConfiguration.TX_WAL_FILES.setValue(2);
+    try {
+      database = factory.open();
+      database.getSchema().getOrCreateDocumentType("Doc");
+      final LocalDatabase db = (LocalDatabase) database;
+      final TransactionManager transactionManager = db.getTransactionManager();
+      transactionManager.cancelHousekeepingForTesting();
+
+      // THE SLOT OF THIS THREAD HOLDS A FILE THAT REFUSES WRITES, THE OTHER SLOT IS EMPTY
+      final int ownSlot = (int) (Thread.currentThread().threadId() % 2);
+      final WALFile retired = new WALFile(db.getDatabasePath() + File.separator + "txlog_10234_retired.wal");
+      retired.setActive(false);
+      final WALFile displaced = transactionManager.replaceActiveWALFileForTesting(ownSlot, retired);
+
+      final String collidingPath =
+          db.getDatabasePath() + File.separator + "txlog_" + transactionManager.getLogFileCounterForTesting() + ".wal";
+      final WALFile anotherInstanceWAL = new WALFile(collidingPath);
+      try {
+        assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Doc").set("k", "x").save()))
+            .hasMessageContaining("already open by another process or database instance");
+        assertThat(db.isFencedForRecovery()).isTrue();
+      } finally {
+        anotherInstanceWAL.close();
+        new File(collidingPath).delete();
+        retired.drop();
+        if (displaced != null)
+          transactionManager.replaceActiveWALFileForTesting(ownSlot, displaced);
+      }
+
+      database.close();
+    } finally {
+      GlobalConfiguration.TX_WAL_FILES.setValue(previousWalFiles);
+    }
+  }
+
   @Test
   void anActiveWALFileIsKept() {
     database.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);
