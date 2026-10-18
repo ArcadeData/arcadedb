@@ -313,7 +313,7 @@ public final class TriangleCountOp implements CountOp {
 
       // THE WALKS OVER A SELF LOOP OF u, ONLY WITHOUT A WHERE: A STRICT ORDER BINDS THREE DISTINCT VERTICES
       if (values == null && family == null && Arrays.binarySearch(nbrs, uStart, uEnd, u) >= 0)
-        count += loopTerm(nbrs, uStart, uEnd, u, accepted, loops.loopsOf(u));
+        count = Math.addExact(count, loopTerm(nbrs, uStart, uEnd, u, accepted, loops.loopsOf(u)));
     }
     return count;
   }
