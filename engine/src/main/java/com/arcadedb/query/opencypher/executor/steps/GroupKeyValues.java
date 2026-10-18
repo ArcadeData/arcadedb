@@ -94,7 +94,10 @@ final class GroupKeyValues {
       return true;
     }
 
-    /** The canonical form of the value of a single key, the one the row before computed when it is the same object. */
+    /**
+     * The canonical form of the value of a single key, the one the row before computed when it is the same object. A builder
+     * serves either this or {@link #build(Object[])}, never both: this one keeps no hash, which a single key leaves to the map.
+     */
     Object canonical(final Object value) {
       if (value != lastValues[0]) {
         lastValues[0] = value;

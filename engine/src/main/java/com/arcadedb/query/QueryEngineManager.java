@@ -174,6 +174,8 @@ public class QueryEngineManager extends DedicatedThreadPool {
     synchronized (this) {
       if (polyglotResolved)
         return;
+      // RESOLVED ONCE, AS THE CONSTRUCTOR DID: AN ENGINE THAT CANNOT START (getSupportedLanguages() LOGS AND ANSWERS NONE) DOES
+      // NOT START LATER EITHER, AND RETRYING WOULD PAY ITS FAILED START-UP ON EVERY LOOKUP OF AN UNKNOWN LANGUAGE
       try {
         if (GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean()) {
           final Map<String, QueryEngine.QueryEngineFactory> copy = new LinkedHashMap<>(implementations);
@@ -181,6 +183,8 @@ public class QueryEngineManager extends DedicatedThreadPool {
             copy.putIfAbsent(language.toLowerCase(Locale.ENGLISH), new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
           implementations = copy;
         }
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Unable to register the polyglot languages: no script language is available", e);
       } finally {
         polyglotResolved = true;
       }

@@ -84,6 +84,23 @@ class Issue10245LazyPolyglotEngineTest extends TestHelper {
   }
 
   @Test
+  void aFailingListingLeavesTheBuiltInEnginesAndIsNotRetried() {
+    final AtomicInteger listings = new AtomicInteger();
+    final QueryEngineManager manager = new QueryEngineManager(() -> {
+      listings.incrementAndGet();
+      throw new IllegalStateException("no engine");
+    });
+    try {
+      assertThatThrownBy(() -> manager.getEngine("js", (DatabaseInternal) database)).isInstanceOf(IllegalArgumentException.class);
+      assertThatThrownBy(() -> manager.getEngine("js", (DatabaseInternal) database)).isInstanceOf(IllegalArgumentException.class);
+      assertThat(manager.getEngine("sql", (DatabaseInternal) database)).isInstanceOf(SQLQueryEngine.class);
+      assertThat(listings.get()).isEqualTo(1);
+    } finally {
+      manager.close();
+    }
+  }
+
+  @Test
   void availableLanguagesListThePolyglotOnes() {
     final AtomicInteger listings = new AtomicInteger();
     final QueryEngineManager manager = new QueryEngineManager(() -> {
