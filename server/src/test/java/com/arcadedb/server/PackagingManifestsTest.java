@@ -64,7 +64,7 @@ class PackagingManifestsTest {
   /** The UID and GID every ArcadeDB image runs as, so their volumes are interchangeable (issue #10319). */
   private static final int    IMAGE_UID   = 1000;
 
-  private static final Pattern BASE_IMAGE  =Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
+  private static final Pattern BASE_IMAGE  = Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
 
   private static final Pattern SETTING     = Pattern.compile("-D(arcadedb\\.[A-Za-z0-9.]+)=");
   private static final Pattern EXPANSION   = Pattern.compile("\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)");
@@ -257,6 +257,8 @@ class PackagingManifestsTest {
       assertThat(code).as("%s must not depend on the distroless nonroot (65532) user", path).doesNotContain("65532")
           .doesNotContain("nonroot");
 
+      // The home directory itself and bin/ are covered through the dirs stage: it creates them under /skel, chowns the
+      // whole tree, and the `COPY --from=dirs` checked below lands it on /home/arcadedb with the same owner.
       final List<String> chowns = matches(Pattern.compile("chown\\s+(?:-R\\s+)?(\\S+)"), code);
       assertThat(chowns).as("%s must pre-create its directories", path).isNotEmpty();
       assertThat(chowns).as("%s chowns its directories to another owner", path).containsOnly(owner);
