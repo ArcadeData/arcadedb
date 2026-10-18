@@ -768,7 +768,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     }
     // a DELETE matches zero records both when the RID no longer exists and when a before-delete listener vetoed it. The first
     // fails with RecordNotFoundException as the embedded engine and the gRPC remote do, the second with RecordVetoedException,
-    // as the update arm of saveRecord does (issue #10230): the probe tells them apart, on the refusal path only
+    // as the update arm of saveRecord does (issue #10230): the probe tells them apart, on the refusal path only. It is the same
+    // heuristic as saveRecord's (see recordExistsUncounted): a record another client deletes or recreates between the DELETE and
+    // the probe is reported as it stands at the probe. A probe that fails (network, permission) raises its own error, the only
+    // one there is: the DELETE raised nothing
     if (deleted == 0) {
       if (recordExistsUncounted(record.getIdentity()))
         throw RecordVetoedException.ofDelete(record.getIdentity());
@@ -1942,8 +1945,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   /**
    * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} and
-   * {@link #deleteRecord(Record)} to tell a veto from a missing record. Not counted in any statistic: the caller made no read, and the statistics count what the caller did (issue
-   * #10095). It runs in the caller's session, so inside a remote transaction it sees that transaction's records.
+   * {@link #deleteRecord(Record)} to tell a veto from a missing record. Not counted in any statistic: the caller made no read,
+   * and the statistics count what the caller did (issue #10095). It runs in the caller's session, so inside a remote
+   * transaction it sees that transaction's records.
    * <p>
    * A heuristic, as an UPDATE that matched nothing says no more: a record deleted by someone else between the UPDATE and this
    * probe reads as missing, which it is by then, and a record the UPDATE could not change for any other reason that leaves it

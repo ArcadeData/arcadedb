@@ -1583,6 +1583,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // deleted, so the client counted it and returned normally (issue #10230)
       final boolean deleted = ((DatabaseInternal) db).deleteRecordReportingVeto(el);
 
+      // committed even after a veto: the vetoed delete left nothing in the transaction, so the commit writes nothing
       if (beganHere) {
         if (hasTx && req.getTransaction().getRollback())
           db.rollback();

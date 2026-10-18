@@ -627,6 +627,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
   }
 
+  /**
+   * Deletes the record {@code rid} with its own deadline. Unlike {@link #deleteRecord(Record)}, which throws
+   * {@link RecordVetoedException}, a delete a before-delete listener vetoed answers {@code false} here (issue #10230). A missing
+   * record still fails with {@link RecordNotFoundException}.
+   */
   public boolean deleteRecord(final String rid, final long timeoutMs) {
     checkDatabaseIsOpen();
 
