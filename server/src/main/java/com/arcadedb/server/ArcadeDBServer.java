@@ -1833,10 +1833,18 @@ public class ArcadeDBServer {
    * {@link #databasesLock} as one step.
    */
   public void dropLocalDatabase(final DatabaseInternal embedded, final String databaseName) {
+    // Taken without databasesLock, and that is enough: a load only runs for a name whose registry entry is absent or closed,
+    // and the caller holds this database open, so no load of it can be in flight when the hold is taken. getDatabase reads the
+    // hold under the lock, after seeing the entry closed by the drop, so every load that starts later meets it
     final boolean held = beingDropped.add(databaseName);
     try {
       embedded.drop();
       removeDatabase(databaseName);
+    } catch (final RuntimeException e) {
+      // The instance is closed and its files may be partly deleted: say so where an operator looks, the next request reopens it
+      LogManager.instance().log(this, Level.SEVERE,
+          "Drop of database '%s' failed: its instance is closed and its files may be partly deleted", e, databaseName);
+      throw e;
     } finally {
       // Only the hold taken here: a drop that overlapped another, which the maintenance slot does not allow, must not end its hold
       if (held)

@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.ServerPlugin;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -130,7 +131,7 @@ class Issue10386GrpcRefusesUnsupportedIsolationIT extends BaseGrpcServerTest {
   }
 
   private ArcadeDbGrpcService grpcService() {
-    for (final var plugin : getServer(0).getPlugins())
+    for (final ServerPlugin plugin : getServer(0).getPlugins())
       if (plugin instanceof GrpcServerPlugin grpcPlugin)
         return grpcPlugin.getService();
     throw new IllegalStateException("GrpcServerPlugin not found");

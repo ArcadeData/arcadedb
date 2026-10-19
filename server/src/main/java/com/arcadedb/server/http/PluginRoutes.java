@@ -63,7 +63,9 @@ import java.util.Map;
  * semantics: {@link #prefix} is for a route whose path carries a parameter ({@code /api/v1/cluster/peer/{peerId}}), which
  * {@link PathHandler} can only match as a prefix.
  * <p>
- * Registration is meant to happen once, from {@code registerAPI}, before the listener serves requests.
+ * Registration is meant to happen once, from {@code registerAPI}, before the listener serves requests. Every read and write of
+ * the shared table, and the registration on the {@link PathHandler} that goes with it, happens under one lock on the table, so
+ * plugins registering from different threads cannot interleave a lookup and the entry it creates.
  */
 public final class PluginRoutes {
   private static final String UNNAMED_PLUGIN = "a plugin";
