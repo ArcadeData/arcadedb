@@ -1217,7 +1217,7 @@ public class GraphEngine {
     final int removed = list == null ? 0 : list.removeEdge(edge);
     if (removed > 0) {
       if (lightweight)
-        // ONE PER CHAIN THAT HELD A TWIN: A STRIPED LIST CAN REMOVE ONE IN EACH GENERATION (#10314)
+        // ONE ENTRY AT MOST, STRIPED OR NOT (#10314)
         lightEdgeEntriesRemoved(endpoint.getIdentity(), direction, edge, removed);
       return;
     }
