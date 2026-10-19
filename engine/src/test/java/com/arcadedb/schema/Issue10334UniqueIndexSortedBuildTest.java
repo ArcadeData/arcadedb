@@ -93,8 +93,10 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
     createPopulatedType("Work", 3, 5_000);
     database.transaction(() -> database.newDocument("Work").set("id", workId(2_500)).save());
 
+    // Reported as the record-at-a-time build reports it: the index, the key and the record already holding it
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close())
-        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class)
+        .rootCause().hasMessageContaining("Duplicated key [" + workId(2_500) + "] found on index 'Work[id]' already assigned to record #");
 
     assertThat(sortedBuilds).isEmpty();
     assertThat(database.getSchema().getType("Work").getIndexByProperties("id")).isNull();

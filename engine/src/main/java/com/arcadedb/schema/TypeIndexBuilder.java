@@ -813,6 +813,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * Never chosen where the sorted build cannot run: on a replicated database, and inside a transaction with pending changes,
    * which the build has to see and which only the record-at-a-time build reads. The record count is the buckets' cached
    * counters, polymorphic like the build itself, so asking costs nothing.
+   * <p>
+   * The guards must stay the ones {@link #validateSortedBuildPreconditions()} enforces: a build chosen here is validated there
+   * next, and a guard missing here would turn a DEFAULT build into a refused one instead of a record-at-a-time one.
    */
   private boolean isSortedBuildChosenFor(final List<Bucket> buckets) {
     if (buildMode != IndexBuildMode.DEFAULT || !unique || indexType != Schema.INDEX_TYPE.LSM_TREE)
