@@ -527,6 +527,9 @@ public class DeferredExistenceChecks {
         // writes the transaction counted for it (the creation, those updates, this delete) are given back, and a caller that goes on
         // after the ValidationException is not told that part of the statement is left behind (issue #10379)
         final Integer updates = deferredUpdates != null ? deferredUpdates.remove(rid) : null;
+        // The two writes every provisional record counted besides its tallied updates: its creation, counted when LocalDatabase
+        // created it (createRecordNoLock), and the delete just made, counted by deleteRecordInternal. The test
+        // Issue10379FailedStatementInCallerTransactionTest pins that the counter is where it was after the take-back.
         // Never below what the transaction had counted when the statement started. In another transaction than the statement started
         // in nothing is given back: the commit is refused, as for any half-applied statement
         final TransactionContext tx = database.getTransaction();

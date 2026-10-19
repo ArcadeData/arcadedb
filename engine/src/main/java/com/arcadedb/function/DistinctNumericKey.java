@@ -72,7 +72,9 @@ import java.util.function.Function;
  * keys unless something stands in for them (issue #10380). A BINARY value ({@code byte[]}) is one value, compared by its bytes, and
  * canonicalizes to a {@link BinaryKey}. Any other array ({@code ARRAY_OF_SHORTS}, {@code ARRAY_OF_INTEGERS}, ...) is a sequence,
  * which Cypher's {@code =} compares element by element as it does a list, so it canonicalizes to the list of its canonicalized
- * elements and shares a key with the list of the same numbers.
+ * elements and shares a key with the list of the same numbers. That costs one boxed element per array element and per row, which is
+ * the price of the shared key: a {@code DISTINCT} or {@code GROUP BY} over long vectors pays it, and a key made of the primitive array
+ * itself would not share a key with the equal list or with the array of another number type, as {@code =} says they are.
  * <p>
  * Other values pass through unchanged.
  */

@@ -221,6 +221,8 @@ class Issue10380ArrayValuesAsKeysTest extends TestHelper {
     insert("D", "y", 0.1d);
     assertThat(scalar("MATCH (a:S), (b:D) RETURN a.p = b.p AS v")).isEqualTo(true);
     assertThat(scalar("MATCH (n) WHERE n:S OR n:D RETURN count(DISTINCT n.p) AS v")).isEqualTo(1L);
+    assertThat(counts("MATCH (n) WHERE n:S OR n:D RETURN n.p AS k, count(*) AS v")).containsExactly(2L);
+    assertThat(counts("MATCH (n) WHERE n:A OR n:B RETURN n.p AS k, count(*) AS v")).containsExactly(2L);
   }
 
   @Test
