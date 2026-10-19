@@ -252,8 +252,9 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
     // BY COUNT, SO A NEW CALL ON A NAME ALREADY LISTED FAILS TOO
     for (final Map.Entry<String, Map<String, Integer>> entry : found.entrySet())
       assertThat(entry.getValue())
-          .as("records %s hands updateRecord directly, and how many times: a segment rewrite must use "
-              + "EdgeLinkedList.updateRewrittenSegment", entry.getKey())
+          .as("records %s hands updateRecord directly, and how many times. A segment rewrite must use "
+              + "EdgeLinkedList.updateRewrittenSegment; a call that is a tracked append, or writes no segment, is added to "
+              + "DIRECT_UPDATES with a comment saying which", entry.getKey())
           .isEqualTo(DIRECT_UPDATES.getOrDefault(entry.getKey(), Map.of()));
   }
 
