@@ -840,6 +840,10 @@ public class BinarySerializer {
 
       if (value instanceof JSONObject object)
         value = object.toMap();
+      else if (value instanceof Result result)
+        // COMING FROM A QUERY: BinaryTypes.getTypeFromValue() types a Result that is not a record as a map, and a projected
+        // SELECT subquery hands a list of them to a CREATE MATERIALIZED VIEW or an INSERT ... FROM (issue #10264)
+        value = result.toMap();
 
       final Map<Object, Object> map = (Map<Object, Object>) value;
       final int mapSize = map.size();

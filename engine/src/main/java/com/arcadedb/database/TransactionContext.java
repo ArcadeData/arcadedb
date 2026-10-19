@@ -331,6 +331,8 @@ public class TransactionContext implements Transaction {
    * goes through (issue #8053).
    */
   private       String                               rollbackOnlyReason    = null;
+  /** Monotonic: only the difference across a statement is read, see {@link #countCompletedRecordWrite()}. */
+  private       long                                 completedRecordWrites = 0L;
   /**
    * The write refusal ({@link LocalDatabase#refuseWrites}) in force when this transaction began, or {@code null}
    * (issue #8270). A transaction begun on a database that was still waiting to be wrapped for replication is refused
@@ -620,6 +622,41 @@ public class TransactionContext implements Transaction {
   /** Why {@link #commit1stPhase(boolean)} will refuse this transaction, or {@code null} when it will not. */
   public String getRollbackOnlyReason() {
     return rollbackOnlyReason;
+  }
+
+  /**
+   * Counts a record create, update or delete that completed in this transaction: the body written or queued, the indexes
+   * updated, nothing refused. A refusal that retracts its own record (a duplicated key, a failed validation) is never counted,
+   * so the difference of {@link #getCompletedRecordWrites()} across a failed statement says whether it left part of its work in
+   * the transaction (issue #10194). Plain field: a transaction belongs to one thread. Written by the create, update and delete
+   * paths of {@code LocalDatabase}, which cost one increment, and read only by {@link #refuseCommitIfWrittenSince}.
+   */
+  public void countCompletedRecordWrite() {
+    ++completedRecordWrites;
+  }
+
+  public long getCompletedRecordWrites() {
+    return completedRecordWrites;
+  }
+
+  /**
+   * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
+   * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
+   * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no
+   * longer be committed: the caller's error handling reaches the rollback that discards it, the same answer a half-applied
+   * delete already gets (#9305). A statement that failed before writing anything, or whose only write was a record that
+   * retracted itself, completed no write and leaves the transaction usable.
+   * <p>
+   * The class of the failure only, not its message: a duplicated-key message carries the key values, and this text
+   * resurfaces in the exception of {@link #commit()}, which can be logged or shown somewhere the original error never was.
+   *
+   * @param writesBefore {@link #getCompletedRecordWrites()} when the statement started
+   * @param cause        what the statement failed with
+   */
+  public void refuseCommitIfWrittenSince(final long writesBefore, final Throwable cause) {
+    if (completedRecordWrites != writesBefore)
+      setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName()
+          + "), and the transaction has no savepoint to take it back to");
   }
 
   /**
