@@ -53,6 +53,8 @@ import java.util.regex.PatternSyntaxException;
  * no difference between a column a writer left out and one it set to null (a line protocol point has no null at all), so a
  * MANDATORY column that took a null would store the very row MANDATORY exists to refuse. A NaN in a FLOAT/DOUBLE column is no value
  * either: it is the marker that column stores for an absent value ({@link TimeSeriesNaN})</li>
+ * <li>A STRING column, tag or field, stores an absent value as the empty text and reads it back so: MIN and REGEXP judge that
+ * text, which is what keeps a constraint declared before the samples and one declared after them in agreement (issue #10336)</li>
  * </ul>
  * A refusal is a reason that names the constraint and never the value, because on the gateway paths the value comes from the
  * client and the reason goes back to it and to the log; SQL prefixes the value itself.
@@ -272,7 +274,9 @@ public final class TimeSeriesColumnConstraints {
 
     /**
      * A column whose stored bound or pattern cannot be used refuses every VALUE, naming the constraint, as a document property does;
-     * a sample with no value for it is refused only by MANDATORY/NOTNULL, since no bound or pattern applies to no value.
+     * a sample with no value for it is refused by MANDATORY/NOTNULL, and otherwise only where the column stores something in its
+     * place: a STRING column stores the empty text (issue #10336), so its MIN and REGEXP judge that text, as {@code ALTER PROPERTY}
+     * judges it on the samples already stored. A numeric or temporal column keeps no value as no value, so no bound applies.
      *
      * @param value the value as the column stores it (a temporal one as its count), {@code null} for no value
      *
@@ -281,8 +285,18 @@ public final class TimeSeriesColumnConstraints {
     public String check(final Object value, final long deadline) {
       // NaN is how a FLOAT/DOUBLE column stores no value, the absent marker every aggregate skips (TimeSeriesNaN): it is no value
       // here either, so MANDATORY/NOTNULL refuse it and every other constraint lets it through, as a null
-      if (value == null || value instanceof Double d && d.isNaN() || value instanceof Float f && f.isNaN())
-        return required ? "the column is " + requiredBy + " and the sample carries no value for it" : null;
+      if (value == null || value instanceof Double d && d.isNaN() || value instanceof Float f && f.isNaN()) {
+        if (required)
+          return "the column is " + requiredBy + " and the sample carries no value for it";
+        if (value != null || column.getDataType() != Type.STRING)
+          return null;
+        final String reason = checkValue("", deadline);
+        return reason == null ? null : "the sample carries no value for it, which the column stores as the empty text, and " + reason;
+      }
+      return checkValue(value, deadline);
+    }
+
+    private String checkValue(final Object value, final long deadline) {
       if (unusable != null)
         return "the column " + unusable;
       // storableValue hands a numeric or temporal column a Number on every path; a refusal rather than a ClassCastException in the

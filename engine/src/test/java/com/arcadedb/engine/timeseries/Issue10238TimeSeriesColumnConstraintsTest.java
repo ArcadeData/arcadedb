@@ -139,17 +139,20 @@ class Issue10238TimeSeriesColumnConstraintsTest extends TestHelper {
         .hasMessageContaining("fewer characters than the MIN 2");
     assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, s = 'abcde'")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("more characters than the MAX 4");
-    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, d = -1.6")).isInstanceOf(ValidationException.class)
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, s = 'abc', d = -1.6")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("less than the MIN -1.5");
-    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, f = 0.6")).isInstanceOf(ValidationException.class)
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, s = 'abc', f = 0.6")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("greater than the MAX 0.5");
     // compared exactly as a long, not through a double, where 2^53 + 2 and 2^53 + 1 are the same number
-    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, l = 9007199254740994"))
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 1, s = 'abc', l = 9007199254740994"))
         .isInstanceOf(ValidationException.class).hasMessageContaining("greater than the MAX 9007199254740993");
 
     database.command("sql", "INSERT INTO L SET ts = 2, s = 'abcd', d = -1.5, f = 0.5, l = 9007199254740993");
-    // a column with no value is not bounded, only a MANDATORY/NOTNULL one requires one
-    database.command("sql", "INSERT INTO L SET ts = 3");
+    // a numeric column with no value is not bounded, only a MANDATORY/NOTNULL one requires one; a STRING column stores the empty
+    // text for no value, and its MIN judges that text (issue #10336)
+    database.command("sql", "INSERT INTO L SET ts = 3, s = 'ab'");
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO L SET ts = 4")).isInstanceOf(ValidationException.class)
+        .hasMessageContaining("empty text").hasMessageContaining("fewer characters than the MIN 2");
     assertThat(rows("L")).hasSize(2);
   }
 
