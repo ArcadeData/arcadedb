@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ChannelReopenLog;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
@@ -60,7 +61,6 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
@@ -194,6 +194,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #retryAfterReopen} instead of leaving the store unreadable until a swap happens to replace the file
    * (issue #9621). Volatile because a reopen runs under the directory READ lock, which orders nothing between two
    * readers.
+   * <p>
+   * The channel is made non-interruptible where the JVM allows it (issue #10372), exactly as every page file is, so on a
+   * server started with {@code --add-opens java.base/java.nio.channels.spi} an interrupt no longer closes it at all and
+   * the recovery below is never entered. Without that option the recovery is split by lock: the operations holding the
+   * directory WRITE lock retry on the shared channel ({@link #retryAfterReopen}, which refuses any other caller), and
+   * the ones holding only the READ lock never depend on it to recover - a block read goes through a handle of its own
+   * ({@link #readAfterChannelClosed}) and the file length is read off the path ({@link #fileLength()}).
    */
   private volatile RandomAccessFile  indexFile;
   private volatile FileChannel       indexChannel;
@@ -219,11 +226,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   static volatile UnaryOperator<FileChannel> TEST_CHANNEL_DECORATOR = null;
 
+  /**
+   * Test seam (issue #10372): when set, the channels this store opens are left interruptible, as they are on a JVM started
+   * without {@code --add-opens java.base/java.nio.channels.spi}, so the tests of the recovery from a channel an interrupt
+   * closed can still drive it with real interrupts. Read once per channel open.
+   */
+  static volatile boolean TEST_INTERRUPTIBLE_CHANNEL = false;
+
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
   // In-memory block directory (loaded at open) — protected by directoryLock
   private final List<BlockEntry>    blockDirectory = new ArrayList<>();
-  private final ReadWriteLock       directoryLock  = new ReentrantReadWriteLock();
+  private final ReentrantReadWriteLock directoryLock = new ReentrantReadWriteLock();
   // Bumped, under the directory write lock, by every change to blockDirectory: what tells a cached view derived from it
   // (see maxTimestampPrefix) that it is stale
   private          int              directoryVersion;
@@ -525,6 +539,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     this.indexFile = new RandomAccessFile(f, "rw");
     this.indexChannel = channelOf(indexFile);
 
+    // Under the WRITE lock although nothing else can see the store yet: it is what lets the load and the first header
+    // write recover a closed channel on the shared one (see retryAfterReopen)
+    directoryLock.writeLock().lock();
     try {
       if (exists && fileLength() >= HEADER_SIZE)
         loadDirectory();
@@ -535,6 +552,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       try { indexChannel.close(); } catch (final IOException ignored) {}
       try { indexFile.close(); } catch (final IOException ignored) {}
       throw e;
+    } finally {
+      directoryLock.writeLock().unlock();
     }
   }
 
@@ -5190,6 +5209,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private static FileChannel channelOf(final RandomAccessFile file) {
     final FileChannel channel = file.getChannel();
+    // AN INTERRUPT ON ANY THREAD IN AN I/O ON THE CHANNEL WOULD CLOSE IT FOR EVERY THREAD (issues #9621, #10223, #10372)
+    if (!TEST_INTERRUPTIBLE_CHANNEL)
+      PaginatedComponentFile.doNotCloseOnInterrupt(channel);
     final UnaryOperator<FileChannel> decorator = TEST_CHANNEL_DECORATOR;
     return decorator != null ? decorator.apply(channel) : channel;
   }
@@ -5879,14 +5901,25 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
 
   /**
-   * The file length, recovering a channel another thread's interrupt closed (issue #9621). {@link RandomAccessFile}
-   * shares its descriptor with the channel, so once the channel is closed every {@code indexFile} call fails with a
-   * plain {@code IOException("Stream Closed")} rather than a {@link ClosedChannelException}: the channel's state, not
-   * the exception type, says whether this is a closed channel. Every path that then writes or reads through
-   * {@code indexFile} ({@link #appendBlock}, {@link #readWholeSealedFile}, {@link #checkIntegrity}) starts here, under a
-   * directory lock that keeps every reader off the channel for the rest of its sequence.
+   * The file length, which no other thread's interrupt can fail (issues #9621, #10372).
+   * <p>
+   * Under the directory READ lock ({@link #getFileSizeBytes}, {@link #readWholeSealedFile}, a reporting
+   * {@link #checkIntegrity}) it is read off the path, not off the shared descriptor: other readers share that descriptor,
+   * and a reopen of theirs followed by another interrupt fails a retry on it as surely as it failed the block reads of
+   * #10223. No file swap can run under the READ lock, so the file at the path is the one the channel is on.
+   * <p>
+   * Under the WRITE lock ({@link #appendBlock}, the open, {@link #installSealedFile}, a repairing {@link #checkIntegrity}
+   * and the directory load they run) no other thread does I/O on the channel, and the caller goes on to write through
+   * {@code indexFile}, so the length comes from the descriptor and a closed channel is recovered on it.
+   * {@link RandomAccessFile} shares its descriptor with the channel, so once the channel is closed every
+   * {@code indexFile} call fails with a plain {@code IOException("Stream Closed")} rather than a
+   * {@link ClosedChannelException}: the channel's state, not the exception type, says whether this is a closed channel,
+   * and under the WRITE lock nobody else can reopen it and change that answer.
    */
   private long fileLength() throws IOException {
+    if (!directoryLock.isWriteLockedByCurrentThread())
+      return fileLengthOnDisk();
+
     final RandomAccessFile file = indexFile;
     try {
       return file.length();
@@ -5900,16 +5933,40 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * The single recovery policy for a channel found closed (issue #9621), the same as {@code PaginatedComponentFile}'s
-   * (#9306): reopen the channel and repeat {@code operation} from its start, a bounded number of times, because this
+   * The length of the file at {@code basePath}, read without any descriptor, for the callers holding only the directory
+   * READ lock (issue #10372). It refuses what a reopen of the shared channel would have refused: a store closed on
+   * purpose, and a file that no longer exists, which {@link File#length()} would otherwise report as an empty one - and
+   * the HA ship would send that to every follower.
+   */
+  private long fileLengthOnDisk() throws IOException {
+    final File file = new File(basePath + FILE_EXTENSION);
+    final long length = file.length();
+    if (closed)
+      throw new FileNotFoundException("Sealed store '" + file.getPath() + "' was closed on purpose, refusing to read its length");
+    if (length == 0L && !file.exists())
+      throw new FileNotFoundException("Sealed store '" + file.getPath() + "' no longer exists on disk");
+    return length;
+  }
+
+  /**
+   * The recovery policy for a channel found closed by an operation holding the directory WRITE lock (issue #9621), the
+   * same as {@code PaginatedComponentFile}'s (#9306): reopen the channel and repeat {@code operation} from its start, a bounded number of times, because this
    * thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
    * so the reopened channel is not closed at once, and restored afterwards so the caller still sees the cancellation.
    * Only a reopen that is REFUSED - the store was closed on purpose, or its file no longer exists - is a real failure.
    * <p>
    * So an interrupt does NOT cancel a sealed-store read: the read completes and the flag is left set for the caller to
    * act on at its next cancellation point, the same deferral #9306 chose for the page file.
+   * <p>
+   * The WRITE lock is required, not advised (issue #10372): under the READ lock another reader's interrupt can close the
+   * channel between this reopen and the operation, and another reader's reopen can make a closed channel look open to
+   * the check below, which then rethrows on the first attempt. A READ-lock caller recovers without the shared channel
+   * instead ({@link #readAfterChannelClosed}, {@link #fileLengthOnDisk}).
    */
   private void retryAfterReopen(final String operation, final ChannelOperation channelOperation) throws IOException {
+    if (!directoryLock.isWriteLockedByCurrentThread())
+      throw new IllegalStateException(
+          "Sealed store '" + basePath + FILE_EXTENSION + "': the " + operation + " retries on the shared channel without holding the directory WRITE lock");
     boolean wasInterrupted = false;
     try {
       for (int attempt = 1; ; attempt++) {
