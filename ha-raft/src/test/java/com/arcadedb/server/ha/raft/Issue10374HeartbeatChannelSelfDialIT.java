@@ -88,7 +88,11 @@ class Issue10374HeartbeatChannelSelfDialIT extends BaseRaftHATest {
       loop.shutdownNow();
     }
 
-    // The proxy rebuilt by the reset reaches the follower over every channel again
+    // The reset dropped the self-dialled proxy: the one the leader holds now has two channels of its own, neither the loop
+    final RaftPeerChannels.Census rebuilt = RaftPeerChannels.of(proxyOf(leaderRaft, followerId));
+    assertThat(rebuilt.channels()).hasSize(2).doesNotContain(loop);
+    assertThat(rebuilt.complete()).isTrue();
+
     Awaitility.await("the cluster settles").atMost(60, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
         .until(() -> findLeaderIndex() >= 0);
   }

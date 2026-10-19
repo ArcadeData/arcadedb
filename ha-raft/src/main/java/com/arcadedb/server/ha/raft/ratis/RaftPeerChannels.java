@@ -90,6 +90,7 @@ public final class RaftPeerChannels {
     return new Census(List.copyOf(walk.channels), complete, null);
   }
 
+  /** By identity, with a linear scan: a peer has two to a handful of channels. */
   private static boolean containsSame(final List<ManagedChannel> channels, final Channel channel) {
     for (final ManagedChannel c : channels)
       if (c == channel)
