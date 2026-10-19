@@ -409,6 +409,10 @@ public class GraphEngine {
    * otherwise one slot lookup in the page the transaction reads anyway at commit.
    */
   private void checkUnidirectionalDestinationExists(final TransactionContext tx, final RID toVertexRID) {
+    if (toVertexRID == null)
+      throw new IllegalArgumentException("Target vertex is not persistent. Call save() on vertex first");
+    // A destination this transaction deleted was refused before this, by checkEndpointsNotDeletedInTransaction: a cached copy is a
+    // live record
     if (tx != null && tx.getRecordFromCache(toVertexRID) != null)
       return;
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(toVertexRID.getBucketId(), false);

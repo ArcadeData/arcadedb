@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
@@ -46,12 +48,14 @@ public class DeleteStep extends AbstractExecutionStep {
       protected Result process(final Result result) {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          // A ROW THAT IS NOT A RECORD (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS
-          // DELETED AND KEPT (issue #10336)
-          if (!result.isElement())
-            throw new CommandExecutionException("Cannot DELETE a row of the source that is not a record (a projection or a TIMESERIES "
-                + "sample): there is nothing to delete. Select the records themselves (SELECT FROM <type> WHERE ...) as the source");
-          return database.deleteRecordReportingVeto(result.getElement().get()) ? result : null;
+          if (result.isElement())
+            return database.deleteRecordReportingVeto(result.getElement().get()) ? result : null;
+          // A PROJECTION THAT CARRIES THE @rid OF A RECORD DELETES THAT RECORD, AS UPDATE WRITES TO IT (ConvertToUpdatableResultStep).
+          // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
+          // (issue #10336)
+          if (result.getProperty("@rid") instanceof Identifiable identifiable && identifiable.getRecord() instanceof Record record)
+            return database.deleteRecordReportingVeto(record) ? result : null;
+          throw new CommandExecutionException(ConvertToUpdatableResultStep.NOT_A_RECORD);
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;

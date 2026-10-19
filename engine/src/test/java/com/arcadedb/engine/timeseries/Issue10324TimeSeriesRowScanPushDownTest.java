@@ -191,6 +191,48 @@ class Issue10324TimeSeriesRowScanPushDownTest extends TestHelper {
     });
   }
 
+  @Test
+  void duplicatedColumnsCaseAndLiteralsTheTagFilterDoesNotModel() {
+    forEachState(1, () -> {
+      // THE SAME COLUMN TWICE, UNDER ITS NAME AND AN ALIAS
+      assertThat(plan("SELECT uu, uu AS b, host, uu FROM T WHERE " + RANGE)).contains("PROJECTED");
+      assertSameAsTheTwin("SELECT uu, uu AS b, host, uu FROM X WHERE " + RANGE);
+      assertThat(columnNames("SELECT uu, uu AS b, host FROM T WHERE " + RANGE)).containsExactly("uu", "b", "host");
+      // A NAME THAT IS NOT A COLUMN AS WRITTEN (NAMES ARE CASE-SENSITIVE) IS LEFT TO THE PROJECTION STEP, WHICH ANSWERS NULL
+      assertThat(plan("SELECT HOST, uu FROM T WHERE " + RANGE)).doesNotContain("PROJECTED");
+      assertSameAsTheTwin("SELECT HOST, uu FROM X WHERE " + RANGE);
+      // A NULL TAG LITERAL IS NO EXACT FILTER, A LITERAL OF ANOTHER CASE IS ONE THAT MATCHES NOTHING: BOTH ANSWER AS THE TWIN
+      assertThat(plan("SELECT host FROM T WHERE host = null AND " + RANGE)).contains("FILTER ITEMS");
+      assertThat(rows("SELECT host FROM T WHERE host = null AND " + RANGE)).isEqualTo(rows("SELECT host FROM D WHERE host = null AND " + RANGE));
+      assertThat(plan("SELECT host FROM T WHERE host = 'HOST_1'")).doesNotContain("FILTER ITEMS");
+      assertThat(rows("SELECT host FROM T WHERE host = 'HOST_1'")).isEmpty();
+      assertThat(rows("SELECT host FROM D WHERE host = 'HOST_1'")).isEmpty();
+    });
+  }
+
+  @Test
+  void aTimestampReadsBackAsTheSameDateTimeAcrossDayBoundariesAndBefore1970() {
+    database.command("sql", "CREATE TIMESERIES TYPE B TIMESTAMP ts FIELDS (v LONG) SHARDS 1");
+    final long day = 86_400_000L;
+    final long[] stamps = { -day - 1, -day, -1, 0, 1, day - 1, day, 3 * day + 12_345, T0 };
+    for (final long ts : stamps)
+      database.command("sql", "INSERT INTO B SET ts = ?, v = ?", ts, ts);
+    for (int pass = 0; pass < 2; pass++) {
+      try (final ResultSet rs = database.query("sql", "SELECT ts, v FROM B ORDER BY ts")) {
+        int n = 0;
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          final long ts = r.<Number>getProperty("v").longValue();
+          assertThat(r.<LocalDateTime>getProperty("ts")).as("ts " + ts)
+              .isEqualTo(LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(ts), ZoneOffset.UTC));
+          n++;
+        }
+        assertThat(n).isEqualTo(stamps.length);
+      }
+      database.command("sql", "COMPACT TIMESERIES TYPE B");
+    }
+  }
+
   private List<String> columnNames(final String sql) {
     try (final ResultSet rs = database.query("sql", sql)) {
       return new ArrayList<>(rs.next().getPropertyNames());

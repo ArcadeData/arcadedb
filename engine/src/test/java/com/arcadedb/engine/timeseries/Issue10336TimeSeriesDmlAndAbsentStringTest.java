@@ -112,6 +112,47 @@ class Issue10336TimeSeriesDmlAndAbsentStringTest extends TestHelper {
   }
 
   @Test
+  void updateOverASubqueryOfRowsThatAreNotRecordsIsRefused() {
+    // THE ROWS OF A TIMESERIES SCAN: NOTHING TO WRITE TO, WHICH USED TO BE REPORTED AS count 0
+    assertThatThrownBy(() -> database.command("sql", "UPDATE (SELECT FROM D1) SET i = 6").close())
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not a record");
+    assertThat(rows("D1")).isEqualTo(SAMPLES);
+
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+    database.transaction(() -> database.command("sql", "INSERT INTO Doc SET name = 'a'"));
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "UPDATE (SELECT name FROM Doc) SET x = 1").close()))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not a record");
+    // A PROJECTION THAT CARRIES THE @rid OF A RECORD WRITES TO THAT RECORD, AS BEFORE
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "UPDATE (SELECT @rid FROM Doc) SET x = 1")) {
+        assertThat(rs.next().<Number>getProperty("count").longValue()).isEqualTo(1L);
+      }
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT x FROM Doc")) {
+      assertThat(rs.next().<Number>getProperty("x").intValue()).isEqualTo(1);
+    }
+  }
+
+  @Test
+  void deleteOverASubqueryOfRidsDeletesTheRecords() {
+    // THE SHAPE UPDATE ALREADY HONOURED: THE @rid OF THE ROW NAMES THE RECORD. DELETE USED TO COUNT IT AND DELETE NOTHING
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Doc SET name = 'a'");
+      database.command("sql", "INSERT INTO Doc SET name = 'b'");
+    });
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "DELETE FROM (SELECT @rid FROM Doc WHERE name = 'a')")) {
+        assertThat(rs.next().<Number>getProperty("count").longValue()).isEqualTo(1L);
+      }
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT name FROM Doc")) {
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("b");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
   void theAlterRefusalNamesARemedyThatWorks() {
     database.command("sql", "INSERT INTO D1 SET ts = 3000, t = 'h', s = 'x', i = 3");
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY D1.s MIN 2").close())
