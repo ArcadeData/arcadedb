@@ -121,6 +121,61 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
   }
 
   @Test
+  void nullAndCompositeKeysGiveTheSameIndexAsTheRecordAtATimeBuild() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
+    final DocumentType type = database.getSchema().buildDocumentType().withName("Paper").withTotalBuckets(3).create();
+    type.createProperty("id", Type.STRING);
+    type.createProperty("a", Type.INTEGER);
+    type.createProperty("b", Type.INTEGER);
+    database.transaction(() -> {
+      for (int i = 0; i < 3_000; i++)
+        // Every other id is NULL, which a UNIQUE index accepts any number of times; "a" repeats, the (a, b) pair does not
+        database.newDocument("Paper").set("id", i % 2 == 0 ? null : workId(i)).set("a", i % 10).set("b", i).save();
+    });
+
+    final long[] sorted = buildBoth("Paper");
+    assertThat(sortedBuilds).hasSize(2);
+
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 0L);
+    final long[] recordAtATime = buildBoth("Paper");
+    assertThat(sortedBuilds).hasSize(2);
+
+    assertThat(sorted).containsExactly(recordAtATime);
+
+    // A duplicated (a, b) pair is refused by both builds
+    database.transaction(() -> database.newDocument("Paper").set("id", "extra").set("a", 7).set("b", 7).save());
+    for (final long minRecords : new long[] { 1_000L, 0L }) {
+      database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, minRecords);
+      assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Paper (a, b) UNIQUE").close())
+          .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+      assertThat(database.getSchema().getType("Paper").getIndexByProperties("a", "b")).isNull();
+    }
+  }
+
+  @Test
+  void emptyCallerTransactionIsHandedBackUsable() {
+    createPopulatedType("Work", 2, 12_000);
+
+    // The shape of an HTTP command: CREATE INDEX inside a transaction that has written nothing yet
+    database.begin();
+    database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
+    assertThat(sortedBuilds).hasSize(1);
+    assertThat(database.isTransactionActive()).isTrue();
+
+    database.newDocument("Work").set("id", "after-index").save();
+    database.commit();
+
+    final TypeIndex index = database.getSchema().getType("Work").getIndexByProperties("id");
+    assertThat(count(index.get(new Object[] { "after-index" }))).isEqualTo(1);
+    assertThat(index.countEntries()).isEqualTo(12_001);
+
+    // ...and the same transaction shape keeps refusing duplicates through the new index
+    database.begin();
+    database.newDocument("Work").set("id", workId(42)).save();
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
   void typeBelowTheThresholdKeepsTheRecordAtATimeBuild() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
     createPopulatedType("Work", 2, 999);
@@ -182,6 +237,19 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
     final TypeIndex index = database.getSchema().getType("Work").getIndexByProperties("id");
     assertThat(index.countEntries()).isEqualTo(12_001);
     assertThat(count(index.get(new Object[] { "uncommitted" }))).isEqualTo(1);
+  }
+
+  /** Builds the UNIQUE indexes on Paper.id and Paper(a, b), answers their entry counts and drops them again. */
+  private long[] buildBoth(final String typeName) {
+    database.command("sql", "CREATE INDEX ON " + typeName + " (id) UNIQUE").close();
+    database.command("sql", "CREATE INDEX ON " + typeName + " (a, b) UNIQUE").close();
+    final DocumentType type = database.getSchema().getType(typeName);
+    final TypeIndex byId = type.getIndexByProperties("id");
+    final TypeIndex byPair = type.getIndexByProperties("a", "b");
+    final long[] entries = { byId.countEntries(), byPair.countEntries(), count(byPair.get(new Object[] { 7, 1_007 })) };
+    database.getSchema().dropIndex(byId.getName());
+    database.getSchema().dropIndex(byPair.getName());
+    return entries;
   }
 
   private void createPopulatedType(final String typeName, final int buckets, final int records) {

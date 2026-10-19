@@ -795,12 +795,26 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   private void validateSortedBuildPreconditions() {
+    final String refusal = sortedBuildRefusal();
+    if (refusal != null)
+      throw new IndexException(refusal);
+  }
+
+  /**
+   * Why the sorted build cannot run here, or null when it can. The one list of guards, asked both by an explicit
+   * {@link IndexBuildMode#SORTED} request, which is refused with the reason, and by the automatic choice of
+   * {@link #isSortedBuildChosenFor}, which falls back to the record-at-a-time build instead: a guard known to one and not the
+   * other would turn a DEFAULT build into a refused one.
+   */
+  private String sortedBuildRefusal() {
     if (indexType != Schema.INDEX_TYPE.LSM_TREE)
-      throw new IndexException("Sorted build currently supports only LSM_TREE indexes");
+      return "Sorted build currently supports only LSM_TREE indexes";
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
-      throw new IndexException("Sorted build is not supported on replicated databases");
+      return "Sorted build is not supported on replicated databases";
     if (callerTransactionHasChanges(database))
-      throw new IndexException("Sorted build requires no pending changes in the current transaction");
+      // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction
+      return "Sorted build requires no pending changes in the current transaction";
+    return null;
   }
 
   /**
@@ -810,20 +824,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * reads every page written so far - nothing compacts an index while it is built - so the build time grows with the square of
    * the record count. The sorted build refuses a duplicate key in its sorted stream instead, within a bounded memory budget.
    * <p>
-   * Never chosen where the sorted build cannot run: on a replicated database, and inside a transaction with pending changes,
-   * which the build has to see and which only the record-at-a-time build reads. The record count is the buckets' cached
-   * counters, polymorphic like the build itself, so asking costs nothing.
-   * <p>
-   * The guards must stay the ones {@link #validateSortedBuildPreconditions()} enforces: a build chosen here is validated there
-   * next, and a guard missing here would turn a DEFAULT build into a refused one instead of a record-at-a-time one.
+   * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal()}). The record count is the buckets' cached
+   * counters, polymorphic like the build itself, so asking costs nothing; a counter that is off after an unclean shutdown only
+   * picks the other build, which produces the same index.
    */
   private boolean isSortedBuildChosenFor(final List<Bucket> buckets) {
-    if (buildMode != IndexBuildMode.DEFAULT || !unique || indexType != Schema.INDEX_TYPE.LSM_TREE)
+    if (buildMode != IndexBuildMode.DEFAULT || !unique || sortedBuildRefusal() != null)
       return false;
 
     final long minRecords = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS);
-    if (minRecords <= 0 || database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated()
-        || callerTransactionHasChanges(database))
+    if (minRecords <= 0)
       return false;
 
     long records = 0;
