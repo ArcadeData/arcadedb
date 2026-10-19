@@ -116,11 +116,20 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
           .toList()).isEmpty();
     }
 
+    // Refused inside an empty caller transaction, that transaction is handed back active and usable
+    database.begin();
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close())
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).isTrue();
+    database.newDocument("Work").set("id", "after-refusal").save();
+    database.commit();
+    assertThat(database.getSchema().getType("Work").getIndexByProperties("id")).isNull();
+
     // Fixing the data lets the same statement succeed
     database.transaction(() -> database.command("sql", "DELETE FROM Work WHERE id = ? LIMIT 1", workId(2_500)).close());
     database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
     assertThat(sortedBuilds).hasSize(1);
-    assertThat(database.getSchema().getType("Work").getIndexByProperties("id").countEntries()).isEqualTo(5_000);
+    assertThat(database.getSchema().getType("Work").getIndexByProperties("id").countEntries()).isEqualTo(5_001);
   }
 
   @Test
