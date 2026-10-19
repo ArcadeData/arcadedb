@@ -226,11 +226,6 @@ public enum GlobalConfiguration {
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
-  SCHEMA_INCREMENTAL_SERIALIZATION("arcadedb.schema.incrementalSerialization", SCOPE.DATABASE, """
-      Writes the schema file reusing the JSON of the types a schema change did not touch, so a change costs the same \
-      whatever the number of types. false serializes every type again at every schema save, as before version 26.11.1""",
-      Boolean.class, true),
-
   TX_WAL_IDLE_TIMEOUT("arcadedb.txWalIdleTimeout", SCOPE.DATABASE, """
       Milliseconds a WAL file of the pool can stay without writes before the WAL housekeeping closes and removes it, \
       once all its pages reached the data files. A WAL file is opened on the first commit that needs it, so a database \

@@ -358,9 +358,6 @@
                     <forkCount>1</forkCount>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
-                        <!-- Every schema file written from the per-type JSON cache is compared with the full
-                             serialization, and a difference fails the save (issue #10247) -->
-                        <arcadedb.schema.verifyIncrementalSerialization>true</arcadedb.schema.verifyIncrementalSerialization>
                     </systemPropertyVariables>
                     <argLine>
                         @{argLine}
@@ -418,9 +415,6 @@
                     <forkCount>1</forkCount>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
-                        <!-- Every schema file written from the per-type JSON cache is compared with the full
-                             serialization, and a difference fails the save (issue #10247) -->
-                        <arcadedb.schema.verifyIncrementalSerialization>true</arcadedb.schema.verifyIncrementalSerialization>
                     </systemPropertyVariables>
                     <argLine>
                         @{itCoverageAgent}
