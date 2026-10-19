@@ -76,6 +76,27 @@ public abstract class ContainersTestTemplate {
    */
   public static final String                    IMAGE      = System.getProperty("arcadedb.test.image",
       "arcadedata/arcadedb:latest");
+  /**
+   * Whether {@link #IMAGE} runs the GraalVM native binary: {@code -Darcadedb.test.native=true|false}, else guessed from
+   * the image TAG only ({@code latest-native}, {@code <version>-native-<arch>}), so a repository name containing
+   * "native" does not count. The native entrypoint is the binary itself, with no {@code server.sh} to expand
+   * {@code JAVA_OPTS} or {@code ARCADEDB_OPTS_MEMORY}: see {@link #configureServer}.
+   */
+  public static final boolean                   NATIVE     = Boolean.parseBoolean(
+      System.getProperty("arcadedb.test.native", String.valueOf(isNativeTag(IMAGE))));
+  /**
+   * Runs the privileged cleanup. Not {@link #IMAGE}: the native images ship no {@code rm} (amd64 is FROM scratch).
+   * Same pin as the native Dockerfiles.
+   */
+  static final        String                    CLEANUP_IMAGE =
+      "busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94";
+
+  static {
+    // which image a run tested must be visible in its log, the native leg must never silently test the JVM image
+    LoggerFactory.getLogger(ContainersTestTemplate.class).info("ArcadeDB test image: {}{}", IMAGE, NATIVE ? " (native)" : "");
+  }
+
+
   public static final String                    PASSWORD   = "playwithdata";
   public static final String                    DATABASE   = "playwithpictures";
   protected           LoggingMeterRegistry      loggingMeterRegistry;
@@ -274,12 +295,13 @@ public abstract class ContainersTestTemplate {
   /**
    * Removes the bind-mounted state directories from inside a short-lived container running as root,
    * which can unlink files the build user cannot. The paths are passed literally rather than as globs
-   * so this can only ever touch the three directories the scenarios own.
+   * so this can only ever touch the three directories the scenarios own. Runs {@link #CLEANUP_IMAGE}, not the image
+   * under test, which may be a native one without {@code rm}.
    */
   private void deleteContainersDirectoriesFromContainer() {
     final String targetPath = Path.of("./target").toAbsolutePath().normalize().toString();
 
-    try (final GenericContainer<?> cleaner = new GenericContainer<>(IMAGE)
+    try (final GenericContainer<?> cleaner = new GenericContainer<>(CLEANUP_IMAGE)
         .withFileSystemBind(targetPath, "/cleanup", BindMode.READ_WRITE)
         .withCreateContainerCmdModifier(cmd -> cmd.withUser("root"))
         .withCommand("rm", "-rf", "/cleanup/databases", "/cleanup/replication")
@@ -288,6 +310,50 @@ public abstract class ContainersTestTemplate {
     } catch (final Exception e) {
       logger.warn("Privileged cleanup container failed: {}", e.getMessage());
     }
+  }
+
+  /** Whether the tag of an image reference (what follows the last ':' after the last '/') names a native build. */
+  static boolean isNativeTag(final String image) {
+    final int colon = image.lastIndexOf(':');
+    return colon > image.lastIndexOf('/') && image.substring(colon + 1).contains("native");
+  }
+
+  /**
+   * Configures the server the same way for both images. Every setting is an environment variable named after it, which
+   * {@code GlobalConfiguration} reads in both. Heap options go to {@code ARCADEDB_OPTS_MEMORY} for the JVM image, whose
+   * {@code server.sh} expands it (a command would replace that script), and to the native binary as arguments.
+   */
+  static GenericContainer<?> configureServer(final GenericContainer<?> container, final Map<String, String> settings,
+      final String memoryOpts, final boolean nativeImage) {
+    settings.forEach(container::withEnv);
+    if (!nativeImage)
+      container.withEnv("ARCADEDB_OPTS_MEMORY", memoryOpts);
+    else if (!memoryOpts.isBlank())
+      container.withCommand(memoryOpts.trim().split("\\s+"));
+    return container;
+  }
+
+  /** The settings every server gets, in or out of a cluster. */
+  private static Map<String, String> baseSettings(final String name) {
+    final Map<String, String> settings = new LinkedHashMap<>();
+    settings.put("arcadedb.server.rootPassword", PASSWORD);
+    settings.put("arcadedb.server.plugins", "GrpcServerPlugin,PrometheusMetricsPlugin");
+    settings.put("arcadedb.server.name", name);
+    settings.put("arcadedb.backup.enabled", "false");
+    settings.put("arcadedb.typeDefaultBuckets", "10");
+    return settings;
+  }
+
+  /** {@link #baseSettings} plus the Raft HA settings of a cluster member. */
+  private static Map<String, String> haSettings(final String name, final String quorum, final String serverList) {
+    final Map<String, String> settings = baseSettings(name);
+    settings.put("arcadedb.ha.enabled", "true");
+    settings.put("arcadedb.ha.quorum", quorum);
+    settings.put("arcadedb.server.readinessRequiresHA", "true");
+    settings.put("arcadedb.ha.raft.port", "2434");
+    settings.put("arcadedb.ha.serverList", serverList);
+    settings.put("arcadedb.server.restoreImportAllowLocalUrls", "true");
+    return settings;
   }
 
   private void makeContainersDirectories(String name) {
@@ -488,21 +554,13 @@ public abstract class ContainersTestTemplate {
   protected GenericContainer<?> createArcadeContainer(String name, Network network) {
     makeContainersDirectories(name);
 
-    GenericContainer<?> container = new GenericContainer<>(IMAGE)
+    GenericContainer<?> container = configureServer(new GenericContainer<>(IMAGE), baseSettings(name), "-Xms2G -Xmx2G", NATIVE)
         .withExposedPorts(2480, 5432, 50051)
         .withNetwork(network)
         .withNetworkAliases(name)
         .withStartupTimeout(Duration.ofSeconds(90))
         .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
         .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
-        .withEnv("JAVA_OPTS", String.format("""
-            -Darcadedb.server.rootPassword=playwithdata
-            -Darcadedb.server.plugins=GrpcServerPlugin,PrometheusMetricsPlugin
-            -Darcadedb.server.name=%s
-            -Darcadedb.backup.enabled=false
-            -Darcadedb.typeDefaultBuckets=10
-            """, name))
-        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
         .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
@@ -527,7 +585,8 @@ public abstract class ContainersTestTemplate {
 
     makeContainersDirectories(name);
 
-    GenericContainer<?> container = new GenericContainer<>(IMAGE)
+    GenericContainer<?> container = configureServer(new GenericContainer<>(IMAGE), haSettings(name, quorum, serverList),
+        "-Xms2G -Xmx2G", NATIVE)
         .withExposedPorts(2480, 2434, 5432, 50051)
         .withNetwork(network)
         .withNetworkAliases(name)
@@ -535,21 +594,6 @@ public abstract class ContainersTestTemplate {
         .withCopyToContainer(MountableFile.forHostPath("./target/databases/" + name, 0777), "/home/arcadedb/databases")
         .withCopyToContainer(MountableFile.forHostPath("./target/replication/" + name, 0777), "/home/arcadedb/replication")
         .withCopyToContainer(MountableFile.forHostPath("./target/logs/" + name, 0777), "/home/arcadedb/logs")
-
-        .withEnv("JAVA_OPTS", String.format("""
-            -Darcadedb.server.rootPassword=playwithdata
-            -Darcadedb.server.plugins=GrpcServerPlugin,PrometheusMetricsPlugin
-            -Darcadedb.server.name=%s
-            -Darcadedb.backup.enabled=false
-            -Darcadedb.typeDefaultBuckets=10
-            -Darcadedb.ha.enabled=true
-            -Darcadedb.ha.quorum=%s
-            -Darcadedb.server.readinessRequiresHA=true
-            -Darcadedb.ha.raft.port=2434
-            -Darcadedb.ha.serverList=%s
-            -Darcadedb.server.restoreImportAllowLocalUrls=true
-            """, name, quorum, serverList))
-        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
         .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
@@ -587,7 +631,8 @@ public abstract class ContainersTestTemplate {
     final String replPath = Path.of("./target/replication/" + name).toAbsolutePath().toString();
     final String logPath = Path.of("./target/logs/" + name).toAbsolutePath().toString();
 
-    final GenericContainer<?> container = new GenericContainer<>(IMAGE)
+    final GenericContainer<?> container = configureServer(new GenericContainer<>(IMAGE), haSettings(name, quorum, serverList),
+        memoryOpts, NATIVE)
         .withExposedPorts(2480, 2434, 5432, 50051)
         .withNetwork(network)
         .withNetworkAliases(name)
@@ -595,25 +640,13 @@ public abstract class ContainersTestTemplate {
         .withFileSystemBind(dbPath, "/home/arcadedb/databases", BindMode.READ_WRITE)
         .withFileSystemBind(replPath, "/home/arcadedb/replication", BindMode.READ_WRITE)
         .withFileSystemBind(logPath, "/home/arcadedb/logs", BindMode.READ_WRITE)
-        .withEnv("JAVA_OPTS", String.format("""
-            -Darcadedb.server.rootPassword=playwithdata
-            -Darcadedb.server.plugins=GrpcServerPlugin,PrometheusMetricsPlugin
-            -Darcadedb.server.name=%s
-            -Darcadedb.backup.enabled=false
-            -Darcadedb.typeDefaultBuckets=10
-            -Darcadedb.ha.enabled=true
-            -Darcadedb.server.readinessRequiresHA=true
-            -Darcadedb.ha.quorum=%s
-            -Darcadedb.ha.raft.port=2434
-            -Darcadedb.ha.serverList=%s
-            -Darcadedb.server.restoreImportAllowLocalUrls=true
-            """, name, quorum, serverList))
-        .withEnv("ARCADEDB_OPTS_MEMORY", memoryOpts)
-        // Issue #9549: an OutOfMemoryError heap dump goes to the bind-mounted ./target/logs/<name>, which the CI jobs
-        // upload, instead of the image's anonymous log volume, where it was lost with the container
-        .withEnv("ARCADEDB_HEAP_DUMP_DIR", "/home/arcadedb/logs")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(containerMemoryBytes))
         .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
+    // Issue #9549: an OutOfMemoryError heap dump goes to the bind-mounted ./target/logs/<name>, which the CI jobs
+    // upload, instead of the image's anonymous log volume, where it was lost with the container. server.sh reads this
+    // variable, so the JVM image only: the native image runs with its defaults, untuned for now
+    if (!NATIVE)
+      container.withEnv("ARCADEDB_HEAP_DUMP_DIR", "/home/arcadedb/logs");
     containers.add(container);
     return container;
   }
