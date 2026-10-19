@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.CommittedReadScope;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
@@ -812,10 +813,20 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       return "Sorted build currently supports only LSM_TREE indexes";
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
       return "Sorted build is not supported on replicated databases";
-    if (callerTransactionHasChanges(database))
+    if (anyCallerTransactionHasChanges())
       // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction
-      return "Sorted build requires no pending changes in the current transaction";
+      return "Sorted build requires no pending changes in any active transaction";
     return null;
+  }
+
+  /**
+   * Asks EVERY transaction stacked on this thread, not only the innermost one {@link #callerTransactionHasChanges} answers for: the
+   * sorted build sets the whole stack aside ({@link CommittedReadScope}), so an empty nested transaction over an outer one that
+   * wrote a record would hide that record from the scan - and nothing would add it to the index when the outer one commits.
+   */
+  private boolean anyCallerTransactionHasChanges() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return context != null && context.hasActiveTransactionWithChanges();
   }
 
   /**

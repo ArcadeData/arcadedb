@@ -20,6 +20,8 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexCursor;
@@ -33,6 +35,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
@@ -188,6 +192,28 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
   }
 
   @Test
+  void pendingChangesInAnOuterTransactionKeepTheRecordAtATimeBuild() {
+    createPopulatedType("Work", 2, 12_000);
+
+    // The sorted build sets the WHOLE transaction stack aside, so a nested empty transaction must not hide what the outer one
+    // wrote: the scan would miss the outer record, and nothing would add it to the index when the outer transaction commits
+    database.begin();
+    database.newDocument("Work").set("id", "outer-pending").save();
+    database.begin();
+    assertThat(((TransactionContext) ((DatabaseInternal) database).getTransaction()).hasChanges()).isFalse();
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withBuildMode(IndexBuildMode.SORTED).withUnique(true).create())
+        .hasMessageContaining("Sorted build requires no pending changes");
+
+    database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
+    assertThat(sortedBuilds).isEmpty();
+
+    database.commit();
+    database.commit();
+  }
+
+  @Test
   void writerStartedDuringTheSortedBuildCannotSlipADuplicateIn() throws Exception {
     createPopulatedType("Work", 2, 12_000);
 
@@ -195,11 +221,13 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
     // inside the scan inserts a key the type already holds: it has to wait for the build and then be refused by the new index.
     // Had it committed during the scan, the duplicate would either fail the build or end up in the index undetected.
     final AtomicReference<Throwable> writerOutcome = new AtomicReference<>();
+    final CountDownLatch writerAtInsert = new CountDownLatch(1);
     final Thread[] writer = new Thread[1];
     database.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
         .withCallback((document, totalIndexed) -> {
           if (writer[0] == null) {
             writer[0] = new Thread(() -> {
+              writerAtInsert.countDown();
               try {
                 database.transaction(() -> database.newDocument("Work").set("id", workId(9_999)).save());
               } catch (final Throwable t) {
@@ -207,6 +235,13 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
               }
             });
             writer[0].start();
+            // The scan goes on only once the writer is at its insert, so the insert is attempted while the build runs
+            try {
+              assertThat(writerAtInsert.await(30, TimeUnit.SECONDS)).isTrue();
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+              throw new IllegalStateException(e);
+            }
           }
         }).create();
 
