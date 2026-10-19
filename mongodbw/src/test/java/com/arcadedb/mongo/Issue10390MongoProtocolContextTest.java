@@ -28,6 +28,7 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.bson.BinData;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.exception.MongoServerException;
 import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MessageHeader;
 import de.bwaldvogel.mongo.wire.message.MongoMessage;
@@ -45,10 +46,12 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10390: the module's one {@code ProtocolContext.set("mongo")} sat inside {@code MongoDBDatabaseWrapper.handleCommand},
@@ -91,10 +94,13 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
   @Test
   void everyRequestCarryingEntryPointIsOverriddenAndDrivenHere() {
     final Set<String> requestCarrying = new TreeSet<>();
+    final Map<String, Method> byName = new TreeMap<>();
     for (final Method method : MongoBackend.class.getMethods())
       if (!Modifier.isStatic(method.getModifiers()) && Arrays.stream(method.getParameterTypes())
-          .anyMatch(t -> t == Channel.class || t == MongoQuery.class || t == MongoMessage.class))
+          .anyMatch(t -> t == Channel.class || t == MongoQuery.class || t == MongoMessage.class)) {
         requestCarrying.add(method.getName());
+        byName.put(method.getName(), method);
+      }
 
     assertThat(requestCarrying).as("the library's request-carrying entry points, enumerated from its interface")
         .containsAll(DRIVEN_HERE).containsAll(REACHES_NO_DATABASE.keySet());
@@ -104,8 +110,9 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
         continue;
       assertThat(DRIVEN_HERE).as("a new MongoBackend entry point '%s' must be tagged in MongoDBBackend and driven here",
           name).contains(name);
-      assertThat(Arrays.stream(MongoDBBackend.class.getDeclaredMethods()).anyMatch(m -> m.getName().equals(name)))
-          .as("MongoDBBackend overrides '%s' to tag the thread", name).isTrue();
+      // THE SAME SIGNATURE, NOT ONLY THE SAME NAME: AN OVERLOAD WOULD LEAVE THE LIBRARY'S CALL UNTAGGED
+      final Method declared = findDeclared(name, byName.get(name).getParameterTypes());
+      assertThat(declared).as("MongoDBBackend overrides '%s' to tag the thread", name).isNotNull();
     }
   }
 
@@ -164,6 +171,35 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
     assertThat(ProtocolContext.get()).isEqualTo(ProtocolContext.INTERNAL);
   }
 
+  /**
+   * The {@code renameCollection} door: an admin command, so it enters through {@code handleCommand} with no
+   * authentication, and the library resolves the source collection on the user database before anything else. With
+   * ArcadeDB's wrapper that lookup answers {@code null}, so the rename stops there with "source namespace does not exist":
+   * the lookup must still run tagged, and the failure must not leave the tag behind on the pooled thread.
+   */
+  @Test
+  void aRenameCollectionResolvesUnderTheMongoTagAndAFailureLeavesNoTagBehind() {
+    backend.resolveDatabase(getDatabaseName());
+
+    final Document rename = new Document("renameCollection", getDatabaseName() + ".Person");
+    rename.put("to", getDatabaseName() + ".People");
+    assertThatThrownBy(() -> backend.handleCommand(channel, "admin", "renameCollection", rename)).isInstanceOf(
+        MongoServerException.class).hasMessageContaining("source namespace does not exist");
+
+    assertThat(backend.recorded("resolveCollection")).isEqualTo(MongoDBBackend.MONGO_PROTOCOL);
+    assertThat(ProtocolContext.get()).as("a failed command clears the tag too").isEqualTo(ProtocolContext.INTERNAL);
+  }
+
+  @Test
+  void aFailedOpQueryLeavesNoTagBehind() {
+    assertThatThrownBy(() -> backend.handleQuery(
+        new MongoQuery(channel, new MessageHeader(1, 0), getDatabaseName() + "." + RecordingDatabase.FAILING, 0, 0,
+            new Document(), null))).isInstanceOf(MongoServerException.class);
+
+    assertThat(backend.recorded("handleQuery")).isEqualTo(MongoDBBackend.MONGO_PROTOCOL);
+    assertThat(ProtocolContext.get()).isEqualTo(ProtocolContext.INTERNAL);
+  }
+
   /** A caller that already tagged the thread gets its own tag back, not INTERNAL. */
   @Test
   void anEnclosingTagIsRestored() {
@@ -174,6 +210,14 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
 
     assertThat(backend.recorded("handleQuery")).isEqualTo(MongoDBBackend.MONGO_PROTOCOL);
     assertThat(ProtocolContext.get()).isEqualTo("http");
+  }
+
+  private static Method findDeclared(final String name, final Class<?>[] parameterTypes) {
+    try {
+      return MongoDBBackend.class.getDeclaredMethod(name, parameterTypes);
+    } catch (final NoSuchMethodException e) {
+      return null;
+    }
   }
 
   private void authenticate() {
@@ -203,6 +247,9 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
   }
 
   private record RecordingDatabase(String name, Map<String, String> tags) implements MongoDatabase {
+    /** A collection whose OP_QUERY fails, to drive the error path of the entry point. */
+    static final String FAILING = "Failing";
+
     private void record(final String method) {
       tags.put(method, ProtocolContext.get());
     }
@@ -229,6 +276,8 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
     @Override
     public QueryResult handleQuery(final MongoQuery query) {
       record("handleQuery");
+      if (FAILING.equals(query.getCollectionName()))
+        throw new MongoServerException("the query failed");
       return new QueryResult();
     }
 
@@ -244,6 +293,8 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
 
     @Override
     public MongoCollection<?> resolveCollection(final String collectionName, final boolean throwIfNotFound) {
+      record("resolveCollection");
+      // LIKE MongoDBDatabaseWrapper.resolveCollection
       return null;
     }
 
