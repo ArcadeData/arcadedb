@@ -66,6 +66,7 @@ class PackagingManifestsTest {
   private static final String FULL_ASSEMBLY      = "package/src/main/assembly/full.xml";
   private static final String NATIVE_WORKFLOW    = ".github/workflows/native-image.yml";
   private static final String NATIVE_DOCKER_SH   = "native/scripts/build-native-docker.sh";
+  private static final String BUILDER_README     = "package/README-BUILDER.md";
 
   /** The UID and GID every ArcadeDB image runs as, so their volumes are interchangeable (issue #10319). */
   private static final int    IMAGE_UID   = 1000;
@@ -77,6 +78,8 @@ class PackagingManifestsTest {
   private static final Pattern EXPANSION   = Pattern.compile("\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)");
   private static final Pattern ENTRY_NAME  = Pattern.compile("^\\s*- name: (\\S+)\\s*$");
   private static final Pattern MOUNT_PATH  = Pattern.compile("^\\s*mountPath: (\\S+)\\s*$", Pattern.MULTILINE);
+  private static final Pattern VOLUME      = Pattern.compile("^VOLUME\\s*\\[(.*)]\\s*$", Pattern.MULTILINE);
+  private static final Pattern QUOTED      = Pattern.compile("\"([^\"]+)\"");
 
   @Test
   void statefulSetUsesOnlyTheVariableFormKubernetesExpands() {
@@ -305,6 +308,60 @@ class PackagingManifestsTest {
   }
 
   @Test
+  void everyImageDeclaresTheSameVolumes() {
+    // Issue #10387: the images were aligned on one owner so a volume written by one opens in another (#10319, #10330),
+    // but the custom-distribution image declared only databases, backups and log. Its config (where the server writes
+    // server-users.jsonl, server-groups.json and server-api-tokens.json) and replication (HA state) lived in the
+    // container layer and were lost on `docker rm`, while the official images keep them. The JVM image is the reference.
+    final Set<String> reference = declaredVolumes(DOCKERFILE, read(DOCKERFILE));
+    assertThat(reference).as("%s declares no volumes", DOCKERFILE)
+        .contains("/home/arcadedb/config", "/home/arcadedb/databases", "/home/arcadedb/replication",
+            "/home/arcadedb/backups", "/home/arcadedb/log");
+
+    allDockerfiles().forEach((name, dockerfile) -> assertThat(declaredVolumes(name, dockerfile))
+        .as("%s declares a different set of volumes than %s", name, DOCKERFILE).containsExactlyInAnyOrderElementsOf(reference));
+  }
+
+  @Test
+  void builderUpgradeNoteNamesEveryVolumeTheImageDeclares() {
+    // Issue #10387: the #10330 upgrade note told operators to chown databases, backups and log only. A config or
+    // replication directory mounted by hand stayed owned by 100:101 and the 1000:1000 image could not write to it.
+    final String readme = read(BUILDER_README);
+    final int section = readme.indexOf("### Docker image user");
+    assertThat(section).as("%s no longer documents the Docker image user", BUILDER_README).isNotNegative();
+    final int end = readme.indexOf("\n#", section + 1);
+    final String note = readme.substring(section, end < 0 ? readme.length() : end);
+
+    for (final String volume : declaredVolumes(BUILDER + " (generated)", generatedDockerfile())) {
+      final String directory = volume.substring(volume.lastIndexOf('/') + 1);
+      assertThat(note).as("the %s upgrade note does not name the '%s' volume", BUILDER_README, directory)
+          .contains("`" + directory + "`");
+    }
+  }
+
+  @Test
+  void builderGeneratedImageOwnsEveryDirectoryItDeclaresAsAVolume() {
+    // A VOLUME whose directory the image does not contain is created by Docker owned by root, which the 1000:1000 user
+    // cannot write to. The builder therefore creates each declared directory in the distribution before the
+    // `COPY --chown` that hands it to the runtime user.
+    final String builder = read(BUILDER);
+    final int start = builder.indexOf("\ngenerate_dockerfile() {");
+    assertThat(start).as("%s no longer defines generate_dockerfile", BUILDER).isNotNegative();
+    final int heredoc = builder.indexOf("<<'EOF'", start);
+    assertThat(heredoc).as("%s: generate_dockerfile no longer writes a heredoc", BUILDER).isNotNegative();
+    // Only the part of the function that runs before the heredoc is written, so a mkdir elsewhere cannot satisfy it.
+    final String code = codeOf(builder.substring(start, heredoc));
+    for (final String volume : declaredVolumes(BUILDER + " (generated)", generatedDockerfile())) {
+      final String directory = volume.substring(volume.lastIndexOf('/') + 1);
+      assertThat(code).as("%s does not create the '%s' directory it declares as a volume", BUILDER, directory)
+          .containsPattern("mkdir -p .*\\b" + Pattern.quote(directory) + "\\b");
+    }
+    assertThat(expandArgDefaults(codeOf(generatedDockerfile())))
+        .as("%s must copy the distribution owned by the runtime user", BUILDER)
+        .containsPattern("(?m)^COPY --chown=arcadedb:arcadedb \\. /home/arcadedb$");
+  }
+
+  @Test
   void quickstartsPassDatabaseSettingsThroughArcadedbSettings() {
     for (final String file : List.of(COMPOSE, README)) {
       final String content = read(file);
@@ -481,6 +538,23 @@ class PackagingManifestsTest {
     final int to = builder.indexOf("\nEOF\n", from);
     assertThat(to).as("unterminated Dockerfile heredoc in %s", BUILDER).isNotNegative();
     return builder.substring(from, to + 1);
+  }
+
+  /**
+   * The paths a Dockerfile declares through {@code VOLUME [ ... ]}, across every such line, with the {@code ARG}
+   * defaults expanded so the builder's {@code ${ARCADEDB_HOME}/config} compares equal to {@code /home/arcadedb/config}.
+   */
+  private static Set<String> declaredVolumes(final String name, final String dockerfile) {
+    final String code = expandArgDefaults(codeOf(dockerfile));
+    for (final String line : code.split("\n"))
+      if (line.startsWith("VOLUME"))
+        assertThat(line).as("%s: VOLUME form this check cannot read", name).matches("^VOLUME\\s*\\[.*]\\s*$");
+
+    final Set<String> found = new LinkedHashSet<>();
+    for (final String list : matches(VOLUME, code))
+      found.addAll(matches(QUOTED, list));
+    assertThat(found).as("%s declares no volumes", name).isNotEmpty();
+    return found;
   }
 
   /**

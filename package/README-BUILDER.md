@@ -210,11 +210,14 @@ The builder creates:
 ### Docker image user
 
 The generated image runs as the `arcadedb` user with UID/GID `1000:1000`, the same owner as the official JVM and
-native images, so their `databases`, `backups` and `log` volumes are interchangeable.
+native images, so their volumes are interchangeable. It declares the same five volumes as the official images:
+`config` (users, groups and API tokens the server writes at runtime), `databases`, `replication` (HA state), `backups`
+and `log`. Mount all five to keep that state across container recreation.
 
-**Upgrading a custom image built before 26.11.1:** older builder versions created a system user (`100:101`). Change
-the owner of each existing volume (`databases`, `backups` and `log`) once before starting the new image, for example
-by running this for every volume:
+**Upgrading a custom image built before 26.11.1:** older builder versions created a system user (`100:101`) and
+declared only `databases`, `backups` and `log` as volumes. Change the owner of each existing volume or bind mount
+(`config`, `databases`, `replication`, `backups` and `log`, including any you mounted by hand) once before starting the
+new image, for example by running this for every one of them:
 
 ```bash
 docker run --rm -u 0 -v <volume>:/data alpine chown -R 1000:1000 /data
