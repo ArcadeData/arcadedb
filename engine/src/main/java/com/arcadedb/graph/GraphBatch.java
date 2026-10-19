@@ -2072,7 +2072,8 @@ public class GraphBatch implements AutoCloseable {
         // no segment this path writes has, because it neither tracks nor runs inside a caller's transaction whose
         // EdgeLinkedList.add could have tracked one. That last condition is load-bearing: a segment carrying tracked
         // appends is declared as a whole, rewrites included (#10375), so a bulk write that could reach one must go
-        // through EdgeLinkedList.updateRewrittenSegment instead. See docs/supernode.md §3.
+        // through EdgeLinkedList.updateRewrittenSegment instead. The refusal is pinned by
+        // Issue9242GraphBatchCallerTransactionTest. See docs/supernode.md §3.
         if (lastSegmentPromoted) {
           // #5667: the vertex is already a promoted super-node - route this group through the standard,
           // MVCC-safe StripedEdgeList write path instead of the bulk segment path.

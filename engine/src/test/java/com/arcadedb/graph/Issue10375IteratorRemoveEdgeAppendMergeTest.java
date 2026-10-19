@@ -37,9 +37,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -213,13 +211,13 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
    * another method, or a call split over several lines, goes unseen. Every argument expression is compared, a cast or a
    * method call included, and the subpackages are scanned too.
    */
-  private static final Map<String, Set<String>> DIRECT_UPDATES = Map.of(
+  private static final Map<String, Map<String, Integer>> DIRECT_UPDATES = Map.of(
       // add(): THE TRACKED IN-CHUNK APPEND; updateRewrittenSegment(): THE ONE DOOR FOR EVERY OTHER SEGMENT WRITE
-      "EdgeLinkedList.java", Set.of("lastSegment", "segment"),
+      "EdgeLinkedList.java", Map.of("lastSegment", 1, "segment", 1),
       // append(): THE TRACKED IN-CHUNK APPEND; updateSlot(): THE STRIPE DIRECTORY, WHICH POISONS ITS OWN PAGE
-      "StripedEdgeList.java", Set.of("chunk", "dir"),
+      "StripedEdgeList.java", Map.of("chunk", 1, "dir", 1),
       // ITS OWN TRANSACTIONS ONLY, WHICH TRACK NO APPEND: SEE THE NOTE ON THE EDGE-APPEND MERGE IN THE CLASS
-      "GraphBatch.java", Set.of("vertex", "outChunk", "inChunk", "currentSegment"));
+      "GraphBatch.java", Map.of("vertex", 5, "outChunk", 2, "inChunk", 2, "currentSegment", 6));
 
   private static final Pattern UPDATE_RECORD = Pattern.compile("\\.updateRecord\\((.+?)\\);");
 
@@ -227,7 +225,10 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
   void everySegmentRewriteGoesThroughTheDoorThatExcludesItsPage() throws IOException {
     // RESOLVED RELATIVE TO THE MODULE ROOT, THE WAY SUREFIRE RUNS
     final Path graphSources = Path.of("src/main/java/com/arcadedb/graph");
-    final Map<String, Set<String>> found = new TreeMap<>();
+    assertThat(graphSources).as("the graph sources, read from the engine module's directory (run the test from engine/)")
+        .isDirectory();
+
+    final Map<String, Map<String, Integer>> found = new TreeMap<>();
     try (final Stream<Path> files = Files.walk(graphSources)) {
       for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
         final List<String> lines = Files.readAllLines(file);
@@ -239,7 +240,8 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
             continue;
           final Matcher matcher = UPDATE_RECORD.matcher(code);
           while (matcher.find())
-            found.computeIfAbsent(file.getFileName().toString(), k -> new TreeSet<>()).add(matcher.group(1).strip());
+            found.computeIfAbsent(file.getFileName().toString(), k -> new TreeMap<>())
+                .merge(matcher.group(1).strip(), 1, Integer::sum);
         }
       }
     }
@@ -247,11 +249,12 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
     assertThat(found).as("direct updateRecord calls in the graph sources that handle edge segments").isNotEmpty();
     // THE ITERATORS IN PARTICULAR: THEIR remove() IS THE WRITE #10375 FOUND UNEXCLUDED
     assertThat(found).doesNotContainKey("ResettableIteratorBase.java");
-    for (final Map.Entry<String, Set<String>> entry : found.entrySet())
+    // BY COUNT, SO A NEW CALL ON A NAME ALREADY LISTED FAILS TOO
+    for (final Map.Entry<String, Map<String, Integer>> entry : found.entrySet())
       assertThat(entry.getValue())
-          .as("records %s hands updateRecord directly: a segment rewrite must use EdgeLinkedList.updateRewrittenSegment",
-              entry.getKey())
-          .isSubsetOf(DIRECT_UPDATES.getOrDefault(entry.getKey(), Set.of()));
+          .as("records %s hands updateRecord directly, and how many times: a segment rewrite must use "
+              + "EdgeLinkedList.updateRewrittenSegment", entry.getKey())
+          .isEqualTo(DIRECT_UPDATES.getOrDefault(entry.getKey(), Map.of()));
   }
 
   /**
