@@ -600,7 +600,6 @@ public class DeferredExistenceChecks {
     }
   }
 
-
   private static DatabaseInternal databaseOf(final MutableDocument document) {
     final Database database = document.getDatabase();
     return database instanceof DatabaseInternal internal ? internal : null;

@@ -124,7 +124,9 @@ are Java arrays, which Java compares by identity, so two records holding the ver
 element by element like a list. Comparing two embedded documents with `=` no longer fails with a `NullPointerException`.
 
 **Who sees a different answer.** A query that counted or grouped such values and got one row per record, and `ORDER BY` over an
-`ARRAY_OF_*` property, whose order changed from one run to the next.
+`ARRAY_OF_*` property, whose order changed from one run to the next. A `FLOAT` value, alone or in an array, is now keyed by its
+decimal form, as `=` reads it, so `DISTINCT` and `GROUP BY` put `0.1` stored as a `FLOAT` and `0.1` stored as a `DOUBLE` in one
+group (they were two, though `=` called them equal).
 
 ### SQL and openCypher: `text.charAt()`, `text.indexOf()`, `text.lpad()`, `text.rpad()` and the `size()` method count characters (#10378)
 
