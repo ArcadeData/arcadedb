@@ -69,7 +69,7 @@ class Issue10267SortedBuildRunSizingTest extends TestHelper {
     assertOnePass(ROWS * 3);
     assertThat(index.countEntries()).isEqualTo(ROWS * 3L);
     try (final ResultSet resultSet = database.query("sql",
-        "SELECT count(*) AS c FROM LineItem WHERE k >= '1994-01-01' AND k < '1995-01-01'")) {
+        "SELECT count() AS c FROM LineItem WHERE k >= '1994-01-01' AND k < '1995-01-01'")) {
       assertThat(resultSet.next().<Number>getProperty("c").longValue()).isEqualTo(expectedInYear(ROWS * 3, first));
     }
   }
