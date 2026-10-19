@@ -45,7 +45,10 @@ ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
 
 RUN apk -U upgrade && rm -rf /var/cache/apk/*
 
-RUN adduser -D -h /home/arcadedb -s /bin/sh arcadedb
+# UID/GID 1000 is pinned, not left to adduser's first-free pick: the native images run as 1000:1000
+# too (native/src/main/docker/Dockerfile.native.*), so a volume written by one image can be mounted
+# by another with no re-chown (issue #10319).
+RUN adduser -D -u 1000 -h /home/arcadedb -s /bin/sh arcadedb
 
 WORKDIR /home/arcadedb
 

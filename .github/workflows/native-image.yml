@@ -434,7 +434,7 @@ jobs:
   # by the `build` job above into minimal Docker images, one per arch, each built natively on a
   # runner of that architecture (no QEMU cross-emulation). See native/src/main/docker/
   # Dockerfile.native.scratch (amd64, FROM scratch) and Dockerfile.native.distroless (arm64,
-  # FROM gcr.io/distroless/base-debian12:nonroot) for why the two arches need different bases.
+  # FROM gcr.io/distroless/base-debian12) for why the two arches need different bases.
   #
   # Push gating: this workflow has no `push:` trigger at all (only workflow_dispatch, release and
   # schedule), so a plain branch push can never reach this job. Every run builds with --load into
