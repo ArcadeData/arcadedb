@@ -799,6 +799,19 @@ public class TransactionIndexContext {
                 // PROPAGATE THE OLD RID FROM THE PREVIOUS REPLACE OPERATION (e.g. REMOVE → ADD → ADD)
                 v.oldRid = entry.oldRid;
             }
+          } else {
+            // A NON-UNIQUE KEY (or an all-null one, which is exempt from uniqueness) IS TRACKED PER RID, SO THIS ADD IS WHAT
+            // RETIRES A REMOVE OF THE VERY SAME (KEY, RID): A RECORD WHOSE KEY WENT AWAY AND CAME BACK IN THE TRANSACTION
+            // (issue #10269). KEEPING ONLY THE ADD WOULD REPLAY A PUT OF AN ENTRY THE INDEX ALREADY HOLDS, AND AN INDEX THAT
+            // APPENDS A RID WITHOUT ASKING IF IT IS THERE (THE HASH ONE) THEN LISTS THE RECORD TWICE: THE LATER DELETE OR KEY
+            // CHANGE REMOVES ONE ENTRY AND LEAVES THE OTHER UNDER A KEY THE RECORD NO LONGER HOLDS. A REPLACE OF ITS OWN RID
+            // REPLAYS EXACTLY "REMOVE THE ENTRY, THEN PUT IT", WHICH LEAVES ONE WHETHER OR NOT THE COMMITTED INDEX HELD IT, AND
+            // THE READS ALREADY HIDE THE OLD RID OF A REPLACE (PendingIndexRemovals).
+            final IndexKey entry = values.get(v);
+            if (entry != null && entry.operation == IndexKey.IndexKeyOperation.REMOVE) {
+              v.operation = IndexKey.IndexKeyOperation.REPLACE;
+              v.oldRid = rid;
+            }
           }
         } else if (v.operation == IndexKey.IndexKeyOperation.REMOVE && index.isUnique()) {
           // THE REMOVE DISPLACES A REPLACE: KEEP THE COMMITTED RID THE REPLACE WAS GOING TO REMOVE, OR NOTHING LEFT IN THE

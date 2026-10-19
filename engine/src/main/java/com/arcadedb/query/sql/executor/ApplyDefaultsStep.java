@@ -30,9 +30,16 @@ import com.arcadedb.schema.DocumentType;
  * @since Issue #1814
  */
 public class ApplyDefaultsStep extends AbstractExecutionStep {
+  private final boolean fillExplicitNulls;
 
-  public ApplyDefaultsStep(final CommandContext context) {
+  /**
+   * @param fillExplicitNulls true for {@code UPDATE ... APPLY DEFAULTS}, which fills the properties that are null as well as the
+   *                          missing ones; false when the record is about to be created and a property set to NULL on purpose
+   *                          must stay NULL (issue #10194)
+   */
+  public ApplyDefaultsStep(final CommandContext context, final boolean fillExplicitNulls) {
     super(context);
+    this.fillExplicitNulls = fillExplicitNulls;
   }
 
   @Override
@@ -86,7 +93,7 @@ public class ApplyDefaultsStep extends AbstractExecutionStep {
       return;
     }
 
-    type.applyDefaultValues(mutableDoc);
+    type.applyDefaultValues(mutableDoc, fillExplicitNulls);
   }
 
   @Override

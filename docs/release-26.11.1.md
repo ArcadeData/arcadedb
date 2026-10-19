@@ -63,8 +63,48 @@ The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they fol
 
 **Cost.** `length()` is constant time on Latin-1 text, which is how the JVM stores most of it. A position past the start of text with other characters (`charAt(i)`, `indexOf(s, i)`) is found by walking to it, so a query that reads every character of a long text of that kind by position costs more than before; `left()`, `right()` and `subString()` cost what they cut.
 
+### SQL: `UPDATE ... SET` reads the row as it was before the statement (#10194)
+
+Every right-hand side of a `SET` reads the record as it was before the statement, as in SQL, instead of the record with the
+earlier items already applied: `UPDATE T SET a = b, b = a` swaps the two columns (it left both equal to `b`), and
+`UPDATE T SET b = 7, a = b` gives `a` the old value of `b`. A statement with a single `SET` item, and one whose items do not
+read a property another item writes, answers exactly as before.
+
+**Who sees a different answer.** A statement that relied on a later item seeing an earlier one (`SET b = 7, a = b` meaning
+"both seven"). Write the value twice (`SET b = 7, a = 7`) or run two statements.
+
+### SQL: an explicit `NULL` is stored as `NULL`, a default fills only a property that is left out (#10194)
+
+`INSERT INTO T SET id = 1, df = null`, `INSERT INTO T (id, df) VALUES (1, null)`, `INSERT INTO T CONTENT {"id": 1, "df": null}`,
+`INSERT INTO T FROM SELECT ...` of a `NULL`, and the Java `set("df", null)` store `NULL` on a property that has a `DEFAULT`
+(they stored the default). Leaving the property out still stores the default, and `UPDATE ... SET ... APPLY DEFAULTS` still
+fills the properties that are null, as that is what it asks for.
+
+**Who sees a different answer.** An insert that passed `NULL` to get the default, and a `NOTNULL` property with a default,
+which now refuses an explicit `NULL` ("cannot be null") instead of silently filling it. Leave the column out of the statement,
+or run `UPDATE ... APPLY DEFAULTS` afterwards.
+
+### SQL: a transaction cannot be committed after a statement failed halfway (#10194)
+
+A multi-row `INSERT`, `UPDATE` or `DELETE` that fails after part of its records were written, inside a transaction the caller
+keeps (for example `INSERT INTO T (id, k) VALUES (1, 7), (2, 7)` on a unique `k`, whose error the caller catches), used to leave
+the rows written before the error, and the commit published half a statement. The engine has no savepoint to take the statement
+back to, so the transaction is now marked rollback-only: `commit()` throws a `TransactionException` ("Transaction cannot be
+committed: a statement failed after part of its records were written ...") and nothing of the transaction is published. A
+statement that fails having written nothing, which includes every single-row refusal because the refused record retracts
+itself, leaves the transaction usable. A statement that owns its transaction (auto-transaction mode) rolls back whole, as before.
+
+**Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes
+on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+
 ## Fixes
 
+- **#10264** A projection holding a `SELECT` subquery (`SELECT id, (SELECT count(*) FROM Owner) AS oc FROM Base`) can be stored:
+  `CREATE MATERIALIZED VIEW` (default refresh or `REFRESH INCREMENTAL`) and `INSERT ... FROM` kept failing with a
+  `ClassCastException` on the subquery's rows, which are now stored as a list of maps.
+- **#10269** A `NOTUNIQUE_HASH` index no longer lists a record twice when its key changed away and back in one transaction
+  (`1 -> 4 -> 1`), which left the record under a key it no longer held after a later delete or key change
+  (`SELECT k FROM T WHERE k = 1` returned a record with `k = 2`). A single or composite key alike.
 - **#10255** openCypher: a triangle written as one `MATCH` (`MATCH (a)--(b)--(c)--(a) RETURN count(*)`, with no `WHERE` or
   with an order on one property such as `a.id < b.id AND b.id < c.id`) is counted by a sorted intersection of the adjacency
   lists, in parallel over the query pool: 5 ms on a Graph Analytical View and about 40 ms without one, where it took about

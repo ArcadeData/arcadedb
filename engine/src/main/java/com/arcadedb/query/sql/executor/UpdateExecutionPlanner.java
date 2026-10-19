@@ -180,7 +180,7 @@ public class UpdateExecutionPlanner {
   private void handleApplyDefaults(final UpdateExecutionPlan plan, final CommandContext context,
       final boolean applyDefaults) {
     if (applyDefaults) {
-      plan.chain(new ApplyDefaultsStep(context));
+      plan.chain(new ApplyDefaultsStep(context, true));
     }
   }
 

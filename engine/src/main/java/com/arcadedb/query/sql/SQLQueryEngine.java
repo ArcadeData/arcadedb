@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -119,20 +120,57 @@ public class SQLQueryEngine implements QueryEngine {
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters,
       final CommandContext context) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Object[] parameters,
       final CommandContext context) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
+  }
+
+  /**
+   * The transaction a write statement joins, or {@code null} when the statement cannot leave a half-applied write in one: a
+   * read, or a write that owns an implicit transaction of its own, which is rolled back whole when the statement fails.
+   */
+  private static TransactionContext writeScope(final Statement statement, final Database database) {
+    if (statement.isIdempotent() || !database.isTransactionActive() || !(database instanceof DatabaseInternal internal))
+      return null;
+    return internal.getTransaction();
+  }
+
+  /**
+   * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
+   * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
+   * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no
+   * longer be committed: the caller's error handling reaches the rollback that discards it, the same answer a half-applied
+   * delete already gets (#9305). A statement that failed before writing anything, or whose only write was a record that
+   * retracted itself, completed no write and leaves the transaction usable.
+   */
+  private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final long writesBefore,
+      final Throwable cause) {
+    if (tx != null && tx.getCompletedRecordWrites() != writesBefore)
+      tx.setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName() + ": "
+          + cause.getMessage() + "), and the transaction has no savepoint to take it back to");
   }
 
   @Override

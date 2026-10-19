@@ -324,6 +324,8 @@ public class TransactionContext implements Transaction {
    * goes through (issue #8053).
    */
   private       String                               rollbackOnlyReason    = null;
+  /** Monotonic: only the difference across a statement is read, see {@link #countCompletedRecordWrite()}. */
+  private       long                                 completedRecordWrites = 0L;
   /**
    * The write refusal ({@link LocalDatabase#refuseWrites}) in force when this transaction began, or {@code null}
    * (issue #8270). A transaction begun on a database that was still waiting to be wrapped for replication is refused
@@ -611,6 +613,20 @@ public class TransactionContext implements Transaction {
   /** Why {@link #commit1stPhase(boolean)} will refuse this transaction, or {@code null} when it will not. */
   public String getRollbackOnlyReason() {
     return rollbackOnlyReason;
+  }
+
+  /**
+   * Counts a record create, update or delete that completed in this transaction: the body written or queued, the indexes
+   * updated, nothing refused. A refusal that retracts its own record (a duplicated key, a failed validation) is never counted,
+   * so the difference of {@link #getCompletedRecordWrites()} across a failed statement says whether it left part of its work in
+   * the transaction (issue #10194). Plain field: a transaction belongs to one thread.
+   */
+  public void countCompletedRecordWrite() {
+    ++completedRecordWrites;
+  }
+
+  public long getCompletedRecordWrites() {
+    return completedRecordWrites;
   }
 
   /**
