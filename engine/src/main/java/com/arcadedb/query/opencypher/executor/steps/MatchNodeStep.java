@@ -28,6 +28,8 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.ConsistentKeyLookup;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -38,6 +40,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
@@ -49,6 +52,7 @@ import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -56,6 +60,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
@@ -63,9 +68,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -557,6 +564,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * is not something {@code tryFindAndUseIndexFromWhere} can act on either, so it must not disqualify caching.
    */
   private boolean whereFilterHasEqualityPredicateOnOwnVariable(final BooleanExpression expr) {
+    // An IN-list on the own variable is a set of equalities, which tryInListIndexSeek can seek per row
+    if (expr instanceof InExpression in)
+      return isPropertyAccessOnOwnVariable(in.getExpression());
     if (expr instanceof ComparisonExpression comp) {
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
         return false;
@@ -936,7 +946,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     extractEqualityPredicates(whereFilter, equalityPredicates, currentInputResult);
 
     if (equalityPredicates.isEmpty())
-      return null;
+      return tryInListIndexSeek(type, label, currentInputResult);
 
     // Find the best matching index
     TypeIndex bestIndex = null;
@@ -977,7 +987,139 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return lookupByKey(bestIndex, label, propertyNames, propertyValues);
     }
 
+    return tryInListIndexSeek(type, label, currentInputResult);
+  }
+
+  /**
+   * Answers a {@code variable.property IN <list>} predicate of the WHERE filter's top-level AND chain with one seek per
+   * distinct list element on a single-property index, as the optimizer's {@code NodeIndexSeek} does for an IN-list anchor.
+   * Every query with an OPTIONAL MATCH runs here, and without this a {@code WHERE n.id IN $ids} scanned the whole type and
+   * compared each record against every element. The WHERE filter still runs on every record the seek yields, so the seek
+   * only narrows the candidates; anything it cannot answer exactly (an element that is a list or a map, a right side that
+   * is not a list, a concurrent index drop) returns null and leaves the scan in charge.
+   */
+  private Iterator<Identifiable> tryInListIndexSeek(final DocumentType type, final String label,
+      final Result currentInputResult) {
+    final List<InExpression> inPredicates = new ArrayList<>();
+    extractInListPredicates(whereFilter, inPredicates);
+
+    for (final InExpression in : inPredicates) {
+      final String propertyName = ((PropertyAccessExpression) in.getExpression()).getPropertyName();
+      final TypeIndex index = singlePropertyIndex(type, propertyName);
+      if (index == null)
+        continue;
+
+      final List<Object[]> keys = resolveInListKeys(in, currentInputResult);
+      if (keys == null)
+        continue;
+
+      usedIndexName = index.getTypeName() + "[" + propertyName + "]";
+      // No element can equal anything (an empty list, or only nulls): the predicate is never true
+      if (keys.isEmpty())
+        return Collections.emptyIterator();
+
+      return seekKeys(index, label, keys);
+    }
     return null;
+  }
+
+  private void extractInListPredicates(final BooleanExpression expr, final List<InExpression> predicates) {
+    if (expr instanceof InExpression in && isPropertyAccessOnOwnVariable(in.getExpression()))
+      predicates.add(in);
+    else if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      extractInListPredicates(logical.getLeft(), predicates);
+      extractInListPredicates(logical.getRight(), predicates);
+    }
+  }
+
+  private TypeIndex singlePropertyIndex(final DocumentType type, final String propertyName) {
+    for (final TypeIndex index : polymorphicIndexesOf(type)) {
+      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+      if (indexProperties != null && indexProperties.size() == 1 && indexProperties.getFirst().equals(propertyName))
+        return index;
+    }
+    return null;
+  }
+
+  /**
+   * The distinct index keys of the IN-list's elements, evaluated as {@code InExpression} evaluates them; null elements are
+   * dropped because they equal nothing. Null when the list cannot be resolved here or holds an element that is not a plain
+   * scalar, so the scan and the WHERE filter answer it (and raise the error a non-list right side deserves).
+   */
+  private List<Object[]> resolveInListKeys(final InExpression in, final Result currentInputResult) {
+    final List<Expression> list = in.getList();
+    final List<Object> elements = new ArrayList<>();
+    try {
+      if (list.size() == 1) {
+        final Object listValue = evaluator.evaluate(list.getFirst(), currentInputResult, context);
+        if (listValue instanceof Collection<?> collection)
+          elements.addAll(collection);
+        else if (MultiValue.isSequenceArray(listValue))
+          elements.addAll(MultiValue.getMultiValueAsList(listValue));
+        else
+          return null;
+      } else
+        for (final Expression element : list)
+          elements.add(evaluator.evaluate(element, currentInputResult, context));
+    } catch (final Exception e) {
+      // An element only an input row can answer (a leading MATCH has none): the scan and the WHERE filter answer it
+      return null;
+    }
+
+    final Set<Object> distinct = new LinkedHashSet<>();
+    for (final Object element : elements) {
+      if (element == null)
+        continue;
+      if (element instanceof Collection<?> || element instanceof Map<?, ?> || element.getClass().isArray())
+        return null;
+      distinct.add(TemporalUtil.toIndexKey(element));
+    }
+
+    final List<Object[]> keys = new ArrayList<>(distinct.size());
+    for (final Object key : distinct)
+      keys.add(new Object[] { key });
+    return keys;
+  }
+
+  /**
+   * Every record the keys select, each once, read against one committed state when there are few enough entries
+   * ({@link ConsistentKeyLookup}); null when a concurrent DDL dropped or rebuilt the index meanwhile, for the scan to answer.
+   */
+  private Iterator<Identifiable> seekKeys(final TypeIndex index, final String label, final List<Object[]> keys) {
+    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
+    final List<Identifiable> found = new ArrayList<>();
+    final RidHashSet seen = new RidHashSet();
+    try {
+      final IndexCursor consistent = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, keys);
+      if (consistent != null)
+        collectDistinct(consistent, found, seen);
+      else
+        for (final Object[] key : keys)
+          collectDistinct(index.get(key), found, seen);
+      if (!index.isUnchangedSince(subIndexes))
+        return null;
+    } catch (final IndexException e) {
+      return null;
+    } catch (final IllegalArgumentException e) {
+      if (TypeIndex.isStaleRead(index, e) || !index.isReadyForQueries())
+        return null;
+      throw e;
+    }
+    return Labels.isInheritedIndex(index, label) ?
+        Labels.filterByLabel(found.iterator(), context.getDatabase(), label) :
+        found.iterator();
+  }
+
+  private static void collectDistinct(final IndexCursor cursor, final List<Identifiable> found, final RidHashSet seen) {
+    try {
+      while (cursor.hasNext()) {
+        final Identifiable identifiable = cursor.next();
+        if (seen.add(identifiable.getIdentity()))
+          found.add(identifiable);
+      }
+    } finally {
+      cursor.close();
+    }
   }
 
   /**
