@@ -28,8 +28,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -88,7 +92,7 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
   }
 
   @Test
-  void duplicateKeyIsRefusedAndLeavesNoIndex() {
+  void duplicateKeyIsRefusedAndLeavesNoIndex() throws IOException {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
     createPopulatedType("Work", 3, 5_000);
     database.transaction(() -> database.newDocument("Work").set("id", workId(2_500)).save());
@@ -101,6 +105,13 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
     assertThat(sortedBuilds).isEmpty();
     assertThat(database.getSchema().getType("Work").getIndexByProperties("id")).isNull();
     assertThat(database.getSchema().getIndexes()).isEmpty();
+    // Nothing of the refused build is left on disk: no index file, no spill run, no recovery marker
+    try (final Stream<Path> files = Files.list(Path.of(database.getDatabasePath()))) {
+      assertThat(files.map(path -> path.getFileName().toString())
+          .filter(name -> name.endsWith("mtidx") || name.endsWith("ctidx") || name.startsWith(".arcadedb-sorted-index-build-")
+              || name.startsWith(".arcadedb-index-sort-"))
+          .toList()).isEmpty();
+    }
 
     // Fixing the data lets the same statement succeed
     database.transaction(() -> database.command("sql", "DELETE FROM Work WHERE id = ? LIMIT 1", workId(2_500)).close());
