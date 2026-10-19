@@ -70,7 +70,15 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
    * database, with the reason. Every other request-carrying method must tag the thread.
    */
   private static final Map<String, String> REACHES_NO_DATABASE = Map.of("getCurrentOperations",
-      "AbstractMongoBackend answers it with an empty list and reads nothing");
+      "AbstractMongoBackend answers it with an empty list and reads nothing (checked against mongo-java-server-core 1.47.0)");
+
+  /**
+   * The {@link MongoBackend} methods that carry no client request, so the request-carrying filter below does not see
+   * them. They are listed so that a library upgrade adding a method in any shape - one taking a cursor id or a bare
+   * database name, say - fails here and gets a decision instead of slipping past the filter.
+   */
+  private static final Set<String> CARRIES_NO_REQUEST = Set.of("dropDatabase", "getServerStatus", "close", "closeCursors",
+      "getClock", "enableOplog", "disableOplog", "resolveDatabase", "version");
 
   /** The request-carrying entry points this class drives, and proves tagged, one test each. */
   private static final Set<String> DRIVEN_HERE = Set.of("handleCommand", "handleQuery", "handleMessage", "handleClose");
@@ -82,6 +90,7 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
   void openTheBackend() {
     backend = new RecordingBackend(this);
     channel = new EmbeddedChannel();
+    // AN UNTAGGED THREAD READS ProtocolContext.INTERNAL (ITS THREAD-LOCAL DEFAULT): EVERY "RESTORED" ASSERTION BELOW RELIES ON IT
     ProtocolContext.clear();
   }
 
@@ -104,6 +113,15 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
 
     assertThat(requestCarrying).as("the library's request-carrying entry points, enumerated from its interface")
         .containsAll(DRIVEN_HERE).containsAll(REACHES_NO_DATABASE.keySet());
+
+    final Set<String> everyMethod = new TreeSet<>();
+    for (final Method method : MongoBackend.class.getMethods())
+      if (!Modifier.isStatic(method.getModifiers()))
+        everyMethod.add(method.getName());
+    final Set<String> accountedFor = new TreeSet<>(requestCarrying);
+    accountedFor.addAll(CARRIES_NO_REQUEST);
+    assertThat(everyMethod).as("every MongoBackend method is either request-carrying (and tagged or exempted) or listed in "
+        + "CARRIES_NO_REQUEST: a new one needs a decision").isEqualTo(accountedFor);
 
     for (final String name : requestCarrying) {
       if (REACHES_NO_DATABASE.containsKey(name))

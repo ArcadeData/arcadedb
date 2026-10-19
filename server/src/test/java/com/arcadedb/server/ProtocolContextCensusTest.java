@@ -86,8 +86,9 @@ class ProtocolContextCensusTest {
       "grpcw", new ExpectedTags(17, "4 in GrpcProtocolContextInterceptor (tag and restore around every call and its "
           + "listener callbacks), 13 in ArcadeDbGrpcService on the handlers whose work continues on a thread of its own"),
       "mcp", new ExpectedTags(2, "MCPDispatcher, around the dispatch of a request, and the restore of its enclosing tag"),
-      "mongodbw", new ExpectedTags(2, "MongoDBBackend.tagAsMongo() and its restore, called by every MongoBackend entry point "
-          + "the library makes with a client's request: Issue10390MongoProtocolContextTest enumerates them by reflection"),
+      "mongodbw", new ExpectedTags(2, "MongoDBBackend.tagAsMongo() and the set() branch of restoreProtocol() (its other "
+          + "branch is a clear(), which this count does not see), called by every MongoBackend entry point the library makes "
+          + "with a client's request: Issue10390MongoProtocolContextTest enumerates them by reflection"),
       "postgresw", new ExpectedTags(1, "PostgresNetworkExecutor.run(), the one loop that serves a connection"),
       "redisw", new ExpectedTags(1, "RedisNetworkExecutor.run(), the one loop that serves a connection"));
 
