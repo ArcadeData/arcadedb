@@ -158,6 +158,20 @@ class Issue10335ViewRemovedPropertyTest extends TestHelper {
     assertThat(view.getProperty(view.getNodeId(rids[1]), "name")).isEqualTo("renamed");
   }
 
+  @Test
+  void aPropertyOutsideTheFilterRemovedLeavesTheFilteredOnesAlone() {
+    final GraphAnalyticalView view = createView("SYNCHRONOUS", "PROPERTIES (id)");
+    database.transaction(() -> {
+      final MutableVertex vertex = rids[1].asVertex().modify();
+      vertex.remove("name");
+      vertex.save();
+    });
+
+    assertThat(view.getProperty(view.getNodeId(rids[1]), "id")).isEqualTo(3L);
+    assertThat(view.getProperty(view.getNodeId(rids[1]), "name")).isNull();
+    assertThat(rows()).containsExactlyInAnyOrder("[xi=2, yi=3]", "[xi=3, yi=4]");
+  }
+
   /** The path 2 -> 3 -> 4 after the middle vertex lost its id: [2 -> null] and [null -> 4], and no pair compares as less than. */
   private void assertRemoved(final GraphAnalyticalView view) {
     assertThat(view.getProperty(view.getNodeId(rids[1]), "id")).as("the view's own value").isNull();

@@ -128,6 +128,45 @@ class Issue10340ViewDegreeOfDeletedTargetTest extends TestHelper {
     assertDegreesMatchTheRecords(view, 0);
   }
 
+  /** A self-loop is an edge of an overflow vertex at both ends: it goes with the vertex, and so does the edge to its neighbour. */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aSelfLoopOnAnOverflowVertexDeletedInTheSameTransaction(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+
+    final MutableVertex[] v = new MutableVertex[2];
+    database.transaction(() -> {
+      v[0] = database.newVertex("P").set("id", 1L).save();
+      v[1] = database.newVertex("P").set("id", 2L).save();
+    });
+    database.transaction(() -> {
+      v[0].newEdge("L", v[0]);
+      v[0].newEdge("L", v[1]);
+      v[0].delete();
+    });
+    awaitMerged(view);
+
+    assertDegreesMatchTheRecords(view, 0);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aSelfLoopOnAnOverflowVertexIsCountedOnceAndLeavesWithIt(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+
+    final MutableVertex[] v = new MutableVertex[1];
+    database.transaction(() -> v[0] = database.newVertex("P").set("id", 1L).save());
+    database.transaction(() -> v[0].newEdge("L", v[0]));
+    awaitMerged(view);
+
+    assertDegreesMatchTheRecords(view, 1);
+
+    database.transaction(() -> v[0].delete());
+    awaitMerged(view);
+
+    assertDegreesMatchTheRecords(view, 0);
+  }
+
   /** A target that survives keeps the edge, whichever side of the build it was created on. */
   @ParameterizedTest
   @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
