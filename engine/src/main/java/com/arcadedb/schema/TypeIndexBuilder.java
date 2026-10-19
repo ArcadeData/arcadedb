@@ -41,10 +41,13 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -599,9 +602,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       restoreReplacedIndex(replaced[0], e);
       // Carry the root cause into the message: this exception is what the SQL/HTTP layers report back, and
       // without the reason a configuration mistake (a missing vector 'dimensions', an incompatible property
-      // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607).
+      // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607). The whole
+      // cause chain is read, not one level, so no wrapper in between can hide the reason again (issue #10382).
       throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
-          + (e.getMessage() != null ? ": " + e.getMessage() : ""), e);
+          + describeFailure(e), e);
     } finally {
       type.endIndexConstruction(metadata.propertyNames);
     }
@@ -760,6 +764,26 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * Renders why a build failed as the suffix of the reported message: {@code ": <message>"} for the failure and each cause
+   * under it that says something the text so far does not, so a wrapper that only names the step ("Cannot build sorted
+   * index") cannot hide the reason sitting below it. A cause whose message is already contained in the text, as for a
+   * {@code RuntimeException} built around another exception, adds nothing and is skipped. Identity-based, so a cyclic
+   * chain ends.
+   *
+   * @return the suffix, empty when no message in the chain says anything
+   */
+  private static String describeFailure(final Throwable failure) {
+    final StringBuilder description = new StringBuilder();
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable current = failure; current != null && visited.add(current); current = current.getCause()) {
+      final String message = current.getMessage();
+      if (message != null && description.indexOf(message) < 0)
+        description.append(": ").append(message);
+    }
+    return description.toString();
+  }
+
+  /**
    * Puts back the index that {@link #withReplaceIfIncompatible(boolean)} took away, so a replacement the stored data
    * could not satisfy - the reason the implicit rebuild was removed in the first place (issue #5675) - costs the caller
    * an error instead of an index.
@@ -888,7 +912,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       indexesByBucket.put(index.getAssociatedBucketId(), lsmIndex);
     }
 
-    final String logicalIndexName = metadata.typeName + metadata.propertyNames;
+    // The canonical name of the TypeIndex, as the record-at-a-time build and the SQL layer spell it (no space after the
+    // comma), so a refusal names the same index whichever build raised it (issue #10382)
+    final String logicalIndexName = metadata.typeName + metadata.propertyNames.toString().replace(" ", "");
     final AtomicLong scannedRecords = new AtomicLong();
     final LSMTreeIndexBulkLoader.BuildOutcome outcome;
     final LSMTreeIndexBulkLoader.StageMetrics stageMetrics;
