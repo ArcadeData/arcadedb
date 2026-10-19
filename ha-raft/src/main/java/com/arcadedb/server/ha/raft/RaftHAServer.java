@@ -29,6 +29,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ratis.GuardedRaftServer;
+import com.arcadedb.server.ha.raft.ratis.RaftPeerChannels;
 import com.arcadedb.server.ha.raft.ratis.RatisMisdirectedRequestFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
@@ -56,6 +57,7 @@ import org.apache.ratis.proto.RaftProtos.RaftRpcRequestProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteReplyProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteRequestProto;
 import org.apache.ratis.proto.RaftProtos.TermIndexProto;
+import org.apache.ratis.proto.grpc.RaftServerProtocolServiceGrpc;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.protocol.Message;
@@ -78,6 +80,7 @@ import org.apache.ratis.server.raftlog.RaftLogBase;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.codahale.metrics.MetricRegistry;
 import org.apache.ratis.thirdparty.com.codahale.metrics.Timer;
+import org.apache.ratis.thirdparty.io.grpc.ManagedChannel;
 import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor;
 import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
 import org.apache.ratis.util.LifeCycle;
@@ -410,6 +413,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<Long, PendingSelfDialProbe> pendingSelfDialProbes  = new ConcurrentHashMap<>();
   // Replaces the default probe transport - this node's own Raft server RPC - in tests that have no live Raft server.
   private volatile SelfDialProbeTransport    selfDialProbeTransportForTesting;
+  // Replaces the default probe channels, one transport per connection, in tests that say which connection leads where.
+  private volatile SelfDialProbeChannels     selfDialProbeChannelsForTesting;
   // Issue #10088: the ids of the live Raft configuration as this node last learnt it. The listener runs on the gRPC handler
   // thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so it
   // consults this copy, replaced as a whole. It is written wherever the configuration reaches this node without a read
@@ -438,8 +443,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   enum SelfDialProbeOutcome {
     /** The probe came back to this node: its channel to the member leads here, and is reset. */
     SELF,
-    /** The addressed member answered the probe: the channel reaches it, so the claim was not this node's own request. */
+    /**
+     * The addressed member answered the probe over every connection this node holds for it: none of them leads here, so
+     * the claim was not this node's own request.
+     */
     MEMBER,
+    /**
+     * The addressed member answered the probe over every connection that could be probed, but this node could not list
+     * every connection Ratis holds for it (issue #10374): the one that carried the refused request may be among those
+     * left out, so the claim is neither confirmed nor ruled out.
+     */
+    MEMBER_ON_SOME_CHANNELS,
     /** The probe failed, or was answered by somebody else: the channel does not lead here, or not provably. */
     ELSEWHERE,
     /** No probe could be sent: there is no Raft server RPC to send it over. */
@@ -459,6 +473,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   @FunctionalInterface
   interface SelfDialProbeTransport {
     RequestVoteReplyProto send(RequestVoteRequestProto probe) throws Exception;
+  }
+
+  /**
+   * The connections a self-dial probe goes over, one transport each, and whether they are every connection this node holds
+   * for the member (issue #10374). Ratis keeps several gRPC channels per peer - the primary one, a separate one for the
+   * heartbeat stream by default, a pool for {@code readIndex} - each resolving the peer's name on its own, so a refused
+   * heartbeat can travel on a channel that leads back here while a probe over the primary one reaches the member.
+   */
+  record SelfDialProbeChannels(List<SelfDialProbeTransport> transports, boolean complete) {
   }
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
@@ -951,14 +974,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@link ClusterMonitor} on the leader's lag-monitor thread once the follower has stayed continuously
    * unreachable (no successful RPC) for {@link GlobalConfiguration#HA_PEER_CHANNEL_RESET_DURATION}.
    * <p>
-   * Ratis keeps one outbound {@code GrpcServerProtocolClient} (wrapping a gRPC {@code ManagedChannel})
-   * per follower in the leader's server-RPC {@code PeerProxyMap}. When the follower's pod IP changes,
-   * grpc-java can keep returning the stale/negative DNS result on that cached channel indefinitely -
-   * Ratis's own error path only calls {@code resetConnectBackoff()}, which never recreates the channel
-   * or re-resolves DNS - so the appender never reconnects. {@code resetProxy} closes that one channel
-   * and drops it from the map; the appender's next send rebuilds a fresh channel against the same peer
-   * DNS name, which re-resolves to the follower's current IP. Only this one follower's channel is
-   * touched and leadership is unchanged, so there is no flapping risk (unlike a leadership transfer).
+   * Ratis keeps one outbound {@code GrpcServerProtocolClient} per follower in the leader's server-RPC
+   * {@code PeerProxyMap}. It wraps more than one gRPC {@code ManagedChannel} (issue #10374): the primary
+   * one and, by Ratis default, a separate one for the heartbeat stream. When the follower's pod IP changes,
+   * grpc-java can keep returning the stale/negative DNS result on those cached channels indefinitely -
+   * Ratis's own error path only calls {@code resetConnectBackoff()}, which never recreates a channel
+   * or re-resolves DNS - so the appender never reconnects. {@code resetProxy} closes that client, every
+   * channel of it, and drops it from the map; the appender's next send rebuilds fresh channels against
+   * the same peer DNS name, which re-resolve to the follower's current IP. Only this one follower's
+   * channels are touched and leadership is unchanged, so there is no flapping risk (unlike a leadership
+   * transfer).
    * <p>
    * This is the automatic, less-disruptive alternative to the manual {@code transferLeadership} lever
    * that Gap 1 was previously left to; when its bounded retry budget is exhausted the monitor escalates
@@ -1121,6 +1146,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           selfDialProbesUnconfirmed.incrementAndGet();
           if (outcome == SelfDialProbeOutcome.MEMBER)
             selfDialProbesAnsweredByMember.incrementAndGet();
+          if (outcome == SelfDialProbeOutcome.MEMBER_ON_SOME_CHANNELS) {
+            // Not a claim from somebody else as far as anyone can tell (issue #10374): sending the operator to look for the
+            // process that wrote this node's id would be sending them after one that may not exist
+            LogManager.instance().log(this, warningOrFine(misdirectedWarnedAt, UNKNOWN_MISDIRECTED_PEER),
+                "Refused a Raft %s addressed to peer '%s' that names this node as its sender, from %s (issue #10374): %s, "
+                    + "and the channel to '%s' is left alone. If this persists, the channel that carries it may still lead "
+                    + "back to this node; here '%s' resolves to %s.", rpc, addressedTo,
+                remote != null ? remote : "<unknown address>", describeUnconfirmedProbe(outcome, addressedTo), addressedTo,
+                addressedTo, resolved);
+            return;
+          }
           // Reported in the strangers' slot: it repairs nothing, and a flood of them must not hold the WARNING of a real
           // report about that member
           LogManager.instance().log(this, warningOrFine(misdirectedWarnedAt, UNKNOWN_MISDIRECTED_PEER),
@@ -1142,7 +1178,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Why a probe did not confirm a self-dial, for the line that reports the claim (issue #10299). */
   private static String describeUnconfirmedProbe(final SelfDialProbeOutcome outcome, final RaftPeerId addressedTo) {
     return switch (outcome) {
-      case MEMBER -> "a probe over this node's channel to '" + addressedTo + "' was answered by that peer, so it was not "
+      case MEMBER -> "a probe over each of this node's channels to '" + addressedTo + "' was answered by that peer, so it "
+          + "was not this node's own request";
+      case MEMBER_ON_SOME_CHANNELS -> "a probe over this node's channels to '" + addressedTo + "' was answered by that peer, "
+          + "but not every connection this node holds for it could be probed, so it is neither confirmed nor ruled out as "
           + "this node's own request";
       case ELSEWHERE -> "a probe over this node's channel to '" + addressedTo + "' did not come back to this node (it failed, "
           + "timed out or was answered by another node), so it cannot be confirmed as this node's own request";
@@ -1206,19 +1245,40 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Finds out whether this node's channel to {@code addressedTo} leads back to this node (issue #10299), by sending over
-   * it a request this node can recognise when it arrives: a pre-vote for term 0 - which a peer rejects without changing
-   * any state, and whose reply is dropped here - with an unpredictable nonce as its call id. Coming back, it is refused by
-   * the guard like any request addressed to another peer, and {@link #cameBackAsSelfDialProbe} notes it before the refusal
-   * reaches the sender, so by the time the call returns the answer is in. Blocks for up to the Raft request timeout, which
-   * is why it runs on {@link #selfDialProbeExecutor} only, never on the gRPC handler thread nor on the channel-recovery
-   * worker.
+   * Finds out whether a channel of this node's to {@code addressedTo} leads back to this node (issue #10299), by sending
+   * over it a request this node can recognise when it arrives: a pre-vote for term 0 - which a peer rejects without
+   * changing any state, and whose reply is dropped here - with an unpredictable nonce as its call id. Coming back, it is
+   * refused by the guard like any request addressed to another peer, and {@link #cameBackAsSelfDialProbe} notes it before
+   * the refusal reaches the sender, so by the time the call returns the answer is in.
+   * <p>
+   * One probe goes over EACH connection this node holds for the member (issue #10374), because each resolves the member's
+   * name on its own: the misdirected requests are typically heartbeats, which Ratis sends over a channel of their own, and
+   * a probe over the primary channel alone could reach the member while the heartbeat channel still led here. Any probe
+   * coming back confirms the self-dial; the member is credited only when it answered over every one of them.
+   * <p>
+   * Blocks for up to the Raft request timeout per connection, which is why it runs on {@link #selfDialProbeExecutor} only,
+   * never on the gRPC handler thread nor on the channel-recovery worker.
    */
   SelfDialProbeOutcome probeSelfDial(final RaftPeerId addressedTo) {
-    final SelfDialProbeTransport transport = selfDialProbeTransport();
-    if (transport == null)
+    final SelfDialProbeChannels channels = selfDialProbeChannels(addressedTo);
+    if (channels == null || channels.transports().isEmpty())
       return SelfDialProbeOutcome.NOT_SENT;
 
+    int answeredByMember = 0;
+    for (final SelfDialProbeTransport transport : channels.transports()) {
+      final SelfDialProbeOutcome outcome = probeOneChannel(transport, addressedTo);
+      if (outcome == SelfDialProbeOutcome.SELF)
+        return SelfDialProbeOutcome.SELF;
+      if (outcome == SelfDialProbeOutcome.MEMBER)
+        ++answeredByMember;
+    }
+    if (answeredByMember < channels.transports().size())
+      return SelfDialProbeOutcome.ELSEWHERE;
+    return channels.complete() ? SelfDialProbeOutcome.MEMBER : SelfDialProbeOutcome.MEMBER_ON_SOME_CHANNELS;
+  }
+
+  /** Sends one self-dial probe over {@code transport}: {@code SELF}, {@code MEMBER} or {@code ELSEWHERE}. */
+  private SelfDialProbeOutcome probeOneChannel(final SelfDialProbeTransport transport, final RaftPeerId addressedTo) {
     long nonce;
     do
       nonce = SELF_DIAL_PROBE_NONCES.nextLong();
@@ -1252,19 +1312,50 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return SelfDialProbeOutcome.ELSEWHERE;
   }
 
-  /** The transport a self-dial probe goes over: this node's own Raft server RPC, or {@code null} when there is none. */
-  private SelfDialProbeTransport selfDialProbeTransport() {
+  /**
+   * The connections a self-dial probe to {@code addressedTo} goes over, or {@code null} when there is no Raft server RPC
+   * (issue #10374): one transport per gRPC channel the Ratis proxy for that member holds, as {@link RaftPeerChannels}
+   * lists them. When they cannot be listed, the probe goes over this node's Raft server RPC, which is the primary channel
+   * alone, and the result says it is incomplete so that the member's answer is not taken as covering the others.
+   */
+  private SelfDialProbeChannels selfDialProbeChannels(final RaftPeerId addressedTo) {
+    final SelfDialProbeChannels channelsForTesting = selfDialProbeChannelsForTesting;
+    if (channelsForTesting != null)
+      return channelsForTesting;
     final SelfDialProbeTransport forTesting = selfDialProbeTransportForTesting;
     if (forTesting != null)
-      return forTesting;
+      return new SelfDialProbeChannels(List.of(forTesting), true); // a stand-in is one connection by construction
     final RaftServer server = raftServer;
     final RaftServerRpc rpc = server != null ? server.getServerRpc() : null;
-    return rpc != null ? rpc::requestVote : null;
+    if (rpc == null)
+      return null;
+
+    if (rpc instanceof RaftServerRpcWithProxy<?, ?> withProxy && withProxy.getProxies() != null)
+      try {
+        final RaftPeerChannels.Census census = RaftPeerChannels.of(withProxy.getProxies().getProxy(addressedTo));
+        if (!census.channels().isEmpty()) {
+          final TimeDuration timeout = RaftServerConfigKeys.Rpc.requestTimeout(server.getProperties());
+          final List<SelfDialProbeTransport> transports = new ArrayList<>(census.channels().size());
+          for (final ManagedChannel channel : census.channels())
+            transports.add(probe -> RaftServerProtocolServiceGrpc.newBlockingStub(channel)
+                .withDeadlineAfter(timeout.getDuration(), timeout.getUnit()).requestVote(probe));
+          return new SelfDialProbeChannels(transports, census.complete());
+        }
+      } catch (final IOException | RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE, "Could not list the channels to '%s' for a self-dial probe: %s",
+            addressedTo, e.toString());
+      }
+    return new SelfDialProbeChannels(List.of(rpc::requestVote), false);
   }
 
   /** Stands in for this node's Raft server RPC when a self-dial probe is sent; {@code null} restores it. For tests. */
   void setSelfDialProbeTransportForTesting(final SelfDialProbeTransport transport) {
     this.selfDialProbeTransportForTesting = transport;
+  }
+
+  /** Stands in for every connection a self-dial probe is sent over; {@code null} restores them. For tests (issue #10374). */
+  void setSelfDialProbeChannelsForTesting(final SelfDialProbeChannels channels) {
+    this.selfDialProbeChannelsForTesting = channels;
   }
 
   /**
