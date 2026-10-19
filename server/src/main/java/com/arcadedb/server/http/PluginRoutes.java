@@ -122,10 +122,11 @@ public final class PluginRoutes {
    * and the {@code Allow} header already set; it writes the body, and must not act on the request.
    */
   public PluginRoutes onMethodNotAllowed(final String path, final HttpHandler rejection) {
+    final String key = PluginPathHandler.normalize(path);
     synchronized (table) {
-      MethodRestrictedHandler restricted = table.exactPaths.get(path);
+      MethodRestrictedHandler restricted = table.exactPaths.get(key);
       if (restricted == null)
-        restricted = table.prefixPaths.get(path);
+        restricted = table.prefixPaths.get(key);
       if (restricted == null)
         throw new IllegalArgumentException("No route is declared at " + path);
 
@@ -145,8 +146,11 @@ public final class PluginRoutes {
       throw new IllegalArgumentException("A plugin route needs a method, a path and a handler");
 
     final String owner = owner();
+    // Keyed the way PathHandler keys it, so a path declared with a trailing slash (RaftHAPlugin's prefixes) and the same path
+    // without one are one entry. The handler keeps the path as it was first declared, for the messages that name it
+    final String key = PluginPathHandler.normalize(path);
     synchronized (table) {
-      final MethodRestrictedHandler existing = registered.get(path);
+      final MethodRestrictedHandler existing = registered.get(key);
       if (existing != null) {
         existing.allow(method, handler, owner);
         return;
@@ -159,7 +163,7 @@ public final class PluginRoutes {
         paths.addPrefixPath(path, restricted);
       else
         paths.addExactPath(path, restricted);
-      registered.put(path, restricted);
+      registered.put(key, restricted);
     }
   }
 

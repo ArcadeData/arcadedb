@@ -109,6 +109,8 @@ at `READ_COMMITTED`) and answer success, which is the one failure a client canno
 was told the transaction started. HTTP, SQL, openCypher and PostgreSQL already refused a level the engine cannot provide, and
 they now parse it through one `IsolationLevels.parse()` in the engine, so SQL `BEGIN ISOLATION SERIALIZABLE` no longer
 fails with the JVM's `No enum constant ...` and openCypher `START TRANSACTION ISOLATION SERIALIZABLE` says the same words.
+The openCypher message is no longer prefixed with "Invalid transaction isolation level", and the level is reported
+upper-cased whatever the case it was typed in: a client that matches the old wording has to match the new one.
 `READ_UNCOMMITTED`, the proto default, still begins at the stronger `READ_COMMITTED`, reported in `effective_isolation`. The
 throttled server-side warning #10322 added for `SERIALIZABLE` is gone with the case it reported.
 

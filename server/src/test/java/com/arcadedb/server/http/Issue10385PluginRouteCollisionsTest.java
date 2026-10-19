@@ -99,6 +99,37 @@ class Issue10385PluginRouteCollisionsTest {
   }
 
   @Test
+  void aTrailingSlashNamesTheSamePathAsWithoutIt() throws Exception {
+    // PathHandler keys a path without its trailing slash, and RaftHAPlugin declares its prefixes with one: the table has to as well
+    plugin("PluginA", routes -> routes.prefix(Methods.DELETE, "/api/v1/cluster/peer/", say("PLUGIN-A delete")));
+    plugin("PluginB", routes -> routes.prefix(Methods.POST, "/api/v1/cluster/peer", say("PLUGIN-B post")));
+    startListener();
+
+    assertThat(send("DELETE", "/api/v1/cluster/peer/node2").body()).isEqualTo("PLUGIN-A delete");
+    assertThat(send("POST", "/api/v1/cluster/peer/node2").body()).isEqualTo("PLUGIN-B post");
+    assertThat(send("GET", "/api/v1/cluster/peer/node2").headers().firstValue("Allow")).hasValue("DELETE, POST");
+  }
+
+  @Test
+  void theSameMethodOnTheSamePathWithAndWithoutATrailingSlashIsRefused() {
+    plugin("PluginA", routes -> routes.get("/shared/", UNUSED));
+
+    assertThatThrownBy(() -> plugin("PluginB", routes -> routes.get("/shared", UNUSED)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("PluginA")
+        .hasMessageContaining("PluginB")
+        .hasMessageContaining("GET /shared");
+  }
+
+  @Test
+  void aRejectionIsFoundWhateverTheTrailingSlashOfThePathItIsAskedFor() {
+    plugin("PluginA", routes -> routes.prefix(Methods.POST, "/rpc/", UNUSED));
+
+    plugin("PluginA", routes -> routes.onMethodNotAllowed("/rpc", exchange -> exchange.getResponseSender().send("custom")));
+    plugin("PluginA", routes -> routes.onMethodNotAllowed("/rpc/", exchange -> exchange.getResponseSender().send("custom")));
+  }
+
+  @Test
   void aPluginDeclaringTheSameMethodTwiceIsRefused() {
     assertThatThrownBy(() -> plugin("PluginA", routes -> routes.get("/x", UNUSED).get("/x", UNUSED)))
         .isInstanceOf(IllegalStateException.class)

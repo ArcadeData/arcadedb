@@ -1825,7 +1825,9 @@ public class ArcadeDBServer {
    * {@link #removeDatabase(String)} then deregistered behind its back, which kept its path and refused the name when it was
    * created again. The name is therefore held from before the drop starts until the files are gone: {@link #getDatabase} refuses
    * to open it for any caller, under {@link #databasesLock}, and so does {@link #createDatabase}. The hold is released when the
-   * drop ends, however it ends, so a drop that failed leaves the name as it was.
+   * drop ends, however it ends, so a failed drop does not leave the name refused. It does not undo what {@code drop()} had done
+   * by then: the instance is closed, and stays registered closed with whatever files the delete left, so the next request opens
+   * it again from them.
    * <p>
    * A replicated database is dropped through the cluster instead, which closes, deregisters and renames its directory aside under
    * {@link #databasesLock} as one step.

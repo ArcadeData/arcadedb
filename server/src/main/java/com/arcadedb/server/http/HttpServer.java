@@ -454,7 +454,9 @@ public class HttpServer implements ServerPlugin {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
-    // The routes the two routers above answer: a plugin path that would shadow one is refused, not served instead (issue #10385)
+    // The routes the two routers above answer: a plugin path that would shadow one is refused, not served instead (issue #10385).
+    // What the server registered directly on this handler (/ws, /api/v1, /api/v1/ai and the Studio mount /) needs no entry
+    // here: PluginPathHandler records those paths as the server's own when they are added, and refuses a plugin claim on them
     routes.reserveServerRoutes("/api/v1", basicRoutes.getRegisteredRoutes());
     routes.reserveServerRoutes("/api/v1/ai", aiRoutes.getRegisteredRoutes());
 

@@ -203,8 +203,11 @@ final class PluginPathHandler extends PathHandler {
     return "/".equals(normalizedPath) ? new String[0] : normalizedPath.substring(1).split("/");
   }
 
-  /** A path as {@link PathHandler} keys it: a leading slash and no trailing one. */
-  private static String normalize(final String path) {
+  /**
+   * A path as {@link PathHandler} keys it: a leading slash and no trailing one. {@link PluginRoutes} keys its table the same
+   * way, so {@code /api/v1/cluster/peer/} and {@code /api/v1/cluster/peer} are one entry there as they are one path here.
+   */
+  static String normalize(final String path) {
     String normalized = path.startsWith("/") ? path : "/" + path;
     while (normalized.length() > 1 && normalized.endsWith("/"))
       normalized = normalized.substring(0, normalized.length() - 1);
