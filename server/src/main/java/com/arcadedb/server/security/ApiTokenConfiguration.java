@@ -51,15 +51,15 @@ import java.util.logging.Level;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 public class ApiTokenConfiguration {
-  public static final  String                                FILE_NAME    = "server-api-tokens.json";
+  public static final  String       FILE_NAME       = "server-api-tokens.json";
   /** Where a {@link #FILE_NAME} that cannot be loaded is preserved. */
-  public static final  String                                ERROR_FILE_NAME = "server-api-tokens-error.json";
+  public static final  String       ERROR_FILE_NAME = "server-api-tokens-error.json";
   /** Prefix of the watcher thread's name; the watched file's path is appended to it. See {@link #startWatching}. */
-  public static final  String                                WATCHER_PREFIX  = "arcadedb-api-tokens-watcher";
-  private static final String                                TOKEN_PREFIX = "at-";
-  private static final int                                   SUFFIX_LEN   = 4;
-  private static final int                                   TOKEN_BYTES  = 32;
-  private static final SecureRandom                          SECURE_RANDOM = new SecureRandom();
+  public static final  String       WATCHER_PREFIX  = "arcadedb-api-tokens-watcher";
+  private static final String       TOKEN_PREFIX    = "at-";
+  private static final int          SUFFIX_LEN      = 4;
+  private static final int          TOKEN_BYTES     = 32;
+  private static final SecureRandom SECURE_RANDOM   = new SecureRandom();
   private final        String                                filePath;
   // Volatile reference to a map that is REPLACED, never cleared in place, whenever the whole token set is
   // rebuilt (load, and the replicated apply of issue #7373). Readers - authenticateByApiToken, on Undertow
@@ -139,8 +139,8 @@ public class ApiTokenConfiguration {
       fileLastUpdated = file.lastModified();
       LogManager.instance().log(this, Level.WARNING,
           "File '%s' changed, but the API tokens in force have not been written to it yet (the last write failed); %s. Make the "
-              + "configuration directory writable again: the next successful write lifts this, or restart the server to read "
-              + "the file as it is", FILE_NAME, keeping);
+              + "configuration directory writable again: the next successful write lifts this, and it writes the tokens in force "
+              + "OVER this edit. To apply the edit instead, restart the server once the directory is writable", FILE_NAME, keeping);
       return false;
     }
 

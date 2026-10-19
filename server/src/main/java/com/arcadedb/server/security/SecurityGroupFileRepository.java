@@ -218,14 +218,7 @@ public class SecurityGroupFileRepository {
       synchronized (this) {
         cfg = latestGroupConfiguration;
         if (cfg == null) {
-          try {
-            load();
-          } catch (final Exception e) {
-            // saveInError() logs the failure, naming the file it was preserved as. BEFORE the default is saved over
-            // the operator's file: from then on the copy is the only one left (issue #10321).
-            saveInError(e);
-            installDefault();
-          }
+          firstLoad();
           cfg = latestGroupConfiguration;
         }
       }
@@ -347,12 +340,7 @@ public class SecurityGroupFileRepository {
   synchronized boolean reload() {
     final JSONObject current = latestGroupConfiguration;
     if (current == null) {
-      try {
-        load();
-      } catch (final Exception e) {
-        saveInError(e);
-        installDefault();
-      }
+      firstLoad();
       return true;
     }
 
@@ -423,6 +411,18 @@ public class SecurityGroupFileRepository {
     if (!json.has("version"))
       return "it carries no 'version'";
     return null;
+  }
+
+  /** The first load with its fallback: the one place a file that cannot be used is replaced by the default. */
+  private void firstLoad() {
+    try {
+      load();
+    } catch (final Exception e) {
+      // saveInError() logs the failure, naming the file it was preserved as. BEFORE the default is saved over the
+      // operator's file: from then on the copy is the only one left (issue #10321).
+      saveInError(e);
+      installDefault();
+    }
   }
 
   /** Publishes the default document and saves it. Reached only by a FIRST load that found nothing it could use. */
