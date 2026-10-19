@@ -236,7 +236,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
    * Removes the element the last {@link #next()} returned from the source that produced it (#10377). It used to refuse
    * unconditionally, and every walk of a promoted super-node's edge list is one of these, so pruning an adjacency entry -
    * through the public API or by {@code CHECK DATABASE} - stopped working the moment a vertex crossed the promotion
-   * threshold. A source that cannot remove still refuses, with its own exception.
+   * threshold. A source that cannot remove still refuses, with its own exception. {@link #getBrowsed()} keeps counting the
+   * element (it was browsed), and limit/skip are about browsed elements, so neither moves.
    *
    * @throws IllegalStateException when {@link #next()} has not returned an element since the last removal
    */

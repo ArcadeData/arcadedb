@@ -102,6 +102,26 @@ class Issue10377CompositeIteratorRemoveTest {
   }
 
   @Test
+  void multiIteratorRemoveAfterResetIsIllegalState() {
+    final MultiIterator<String> it = new MultiIterator<>();
+    it.addIterator(new ArrayList<>(List.of("a1", "a2")));
+    it.next();
+    it.reset();
+    assertThatThrownBy(it::remove).isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void multiIteratorKeepsTheSourceWhenItRefusesTheRemoval() {
+    final Iterator<String> refusing = List.of("a1").iterator();
+    final MultiIterator<String> it = new MultiIterator<>();
+    it.addIterator(refusing);
+    it.next();
+    assertThatThrownBy(it::remove).isInstanceOf(UnsupportedOperationException.class);
+    // A caller that knows the source better (CHECK DATABASE's keep-the-edge prune) can still reach it
+    assertThat(it.getLastReturnedSource()).isSameAs(refusing);
+  }
+
+  @Test
   void multiIteratorOverACollectionSourceRemovesFromIt() {
     final List<String> a = new ArrayList<>(List.of("a1", "a2"));
     final MultiIterator<String> it = new MultiIterator<>();
