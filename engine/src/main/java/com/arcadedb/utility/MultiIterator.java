@@ -50,6 +50,9 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
   // NOTE THE PROMISE IS ONLY EVER READ BY next(): hasNext() STILL RE-EVALUATES THE DEADLINE ON EVERY CALL, SO
   // REPEATED hasNext() WITHOUT AN INTERVENING next() REPORTS THE EXPIRY AS BEFORE (#6816)
   private       boolean promised           = false;
+  // #10377: THE SOURCE THAT PRODUCED THE ELEMENT THE LAST next() RETURNED. NOT partialIterator: A hasNext() IN BETWEEN
+  // CAN ALREADY HAVE MOVED THAT ONTO THE NEXT SOURCE, AND remove() MUST REACH THE ONE THE ELEMENT CAME FROM
+  private       Iterator<T> lastReturnedSource;
 
   public MultiIterator() {
     sources = new ArrayList<>();
@@ -118,6 +121,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
     promised = false;
     browsed++;
+    lastReturnedSource = partialIterator;
     return partialIterator.next();
   }
 
@@ -128,6 +132,14 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
    */
   public Iterator<T> getLastSource() {
     return partialIterator;
+  }
+
+  /**
+   * The source iterator that produced the element the last {@link #next()} returned, whatever {@link #hasNext()} did since:
+   * the one {@link #remove()} delegates to. Null before the first {@link #next()} and after a {@link #reset()}.
+   */
+  public Iterator<T> getLastReturnedSource() {
+    return lastReturnedSource;
   }
 
   @Override
@@ -150,6 +162,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
     browsed = 0;
     skipped = 0;
     promised = false;
+    lastReturnedSource = null;
   }
 
   @Override
@@ -216,9 +229,19 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
     return browsed;
   }
 
+  /**
+   * Removes the element the last {@link #next()} returned from the source that produced it (#10377). It used to refuse
+   * unconditionally, and every walk of a promoted super-node's edge list is one of these, so pruning an adjacency entry -
+   * through the public API or by {@code CHECK DATABASE} - stopped working the moment a vertex crossed the promotion
+   * threshold. A source that cannot remove still refuses, with its own exception.
+   *
+   * @throws IllegalStateException when {@link #next()} has not returned an element yet
+   */
   @Override
   public void remove() {
-    throw new UnsupportedOperationException("MultiIterator.remove()");
+    if (lastReturnedSource == null)
+      throw new IllegalStateException("No element to remove: next() has not been called");
+    lastReturnedSource.remove();
   }
 
   public long getLimit() {

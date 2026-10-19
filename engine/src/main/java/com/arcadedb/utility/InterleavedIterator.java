@@ -243,6 +243,20 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
   }
 
   /**
+   * Removes the entry the last {@link #next()} returned from the source that produced it (#10377): the striped super-node
+   * edge list serves its read walks through this class, and refusing here made an adjacency entry impossible to prune once
+   * its vertex was promoted. A source that cannot remove still refuses, with its own exception.
+   *
+   * @throws IllegalStateException when {@link #next()} has not returned an entry yet
+   */
+  @Override
+  public void remove() {
+    if (lastSource == null)
+      throw new IllegalStateException("No entry to remove: next() has not been called");
+    lastSource.remove();
+  }
+
+  /**
    * Total entries across every source, whether or not the rotation has already consumed them - the same
    * "size of the whole thing" semantics {@link MultiIterator#countEntries()} has, and it is summed from the
    * sources rather than from the rotation so an exhausted-and-dropped source still counts.
