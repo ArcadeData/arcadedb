@@ -372,7 +372,10 @@ trap 'rm -rf "$CTX"' EXIT
 mkdir -p "$CTX/config"
 cp "$REPO_ROOT/native/target/$BIN_NAME" "$CTX/arcadedb"
 chmod 0755 "$CTX/arcadedb"
-cp -R "$REPO_ROOT/package/src/main/config/." "$CTX/config/"
+# The same include set as the JVM assemblies' config fileSet (package/src/main/assembly/full.xml): a
+# wholesale copy shipped files the JVM distribution filters out (#10320).
+cp "$REPO_ROOT"/package/src/main/config/*.yaml "$REPO_ROOT"/package/src/main/config/*.json \
+  "$REPO_ROOT"/package/src/main/config/*.groovy "$REPO_ROOT"/package/src/main/config/*.properties "$CTX/config/"
 if [ "$ARCH" = "amd64" ]; then
   # scratch has no trust store at all, so the scratch Dockerfile COPYs one in. CI takes the
   # runner's /etc/ssl/certs/ca-certificates.crt; a macOS host has no such file, so take it from

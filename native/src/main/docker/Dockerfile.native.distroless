@@ -54,7 +54,8 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 # Build-time inputs staged into the build context by native-image.yml's `docker` job (see its
 # "Stage build context" step, arm64 leg):
 #   ./arcadedb -> the linux/arm64 mostly-static binary, from artifact arcadedb-native-linux-arm64
-#   ./config   -> config templates, copied verbatim from package/src/main/config
+#   ./config   -> config templates from package/src/main/config, with the JVM
+#                 assemblies' include set
 COPY --chown=nonroot:nonroot config /home/arcadedb/config
 COPY --chown=nonroot:nonroot --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
 COPY --from=dirs --chown=65532:65532 /skel/ /home/arcadedb/
