@@ -143,6 +143,21 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     assertThat(plan(seek, params)).contains("[index: Person[code]]");
   }
 
+  @Test
+  void moreEntriesThanOneConsistentReadStreamKeyByKey() {
+    database.transaction(() -> {
+      for (int i = 1000; i < 1300; i++)
+        database.command("opencypher", "CREATE (p:Person {id: $i, idCopy: $i, code: 'bulk', codeCopy: 'bulk'})", Map.of("i", i));
+    });
+    final Map<String, Object> params = Map.of("codes", List.of("bulk", "c1", "bulk"));
+    final String seek = "MATCH (p:Person) WHERE p.code IN $codes" + OPTIONAL_TAIL;
+
+    assertThat(ids(seek, params)).hasSize(305)
+        .isEqualTo(ids("MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
+    assertThat(plan(seek, params)).contains("[index: Person[code]]");
+    assertThat(ids(seek + " LIMIT 3", params)).hasSize(3);
+  }
+
   private List<Integer> ids(final String cypher, final Map<String, Object> params) {
     final List<Integer> ids = new ArrayList<>();
     try (final ResultSet rs = params != null ? database.query("opencypher", cypher, params) : database.query("opencypher", cypher)) {
