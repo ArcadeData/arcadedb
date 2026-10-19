@@ -3978,9 +3978,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * builds coalesce, and each rebuild reads the graph fresh.
    */
   private synchronized void rebuildForUnmergedDelta(final RuntimeException e) {
-    LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
+    // A view that is closing has nothing to rebuild, nor a failure worth a stack trace
     if (shutDown)
       return;
+    LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
     // A build in flight publishes its own status: it reads the flag once it has published, and the scan it starts then is after this commit
     if (buildWatch == null)
       status = Status.STALE;
