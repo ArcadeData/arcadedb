@@ -395,11 +395,13 @@ message BeginTransactionRequest {
 }
 
 // The engine provides two isolation levels, READ_COMMITTED and REPEATABLE_READ. The other two values are accepted
-// and silently mapped to the nearest level the engine provides, with no error and no signal in the response:
+// and mapped to the nearest level the engine provides:
 //   READ_UNCOMMITTED -> READ_COMMITTED (it is also the proto default, so an unset field begins at READ_COMMITTED)
 //   SERIALIZABLE     -> REPEATABLE_READ (a WEAKER level than the one asked for)
-// A caller that needs serializable isolation does not get it. The HTTP API (POST /api/v1/begin/{database}) accepts
-// only READ_COMMITTED and REPEATABLE_READ and refuses any other value with 400.
+// A caller that needs serializable isolation does not get it. The level the transaction really runs at is reported in
+// BeginTransactionResponse.effective_isolation, and the server logs a SERIALIZABLE downgrade at WARNING (throttled).
+// The HTTP API (POST /api/v1/begin/{database}) accepts only READ_COMMITTED and REPEATABLE_READ and refuses any other
+// value with 400.
 enum TransactionIsolation {
   READ_UNCOMMITTED = 0;  // runs as READ_COMMITTED
   READ_COMMITTED = 1;
@@ -410,6 +412,10 @@ enum TransactionIsolation {
 message BeginTransactionResponse {
   string transaction_id = 1;
   int64 timestamp = 2;
+  // The isolation level the transaction really runs at: READ_COMMITTED or REPEATABLE_READ, never the requested value
+  // when the engine had to map it (see TransactionIsolation). A server that predates this field leaves it unset, which
+  // reads as READ_UNCOMMITTED (the proto default) - a value a current server never reports, so it means "unknown".
+  TransactionIsolation effective_isolation = 3;
 }
 
 message CommitTransactionRequest {

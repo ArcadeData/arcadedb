@@ -141,6 +141,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -299,6 +300,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private final int                            maxConcurrentTransactionsPerPrincipal;
   private final AtomicInteger                  globalTransactionCount     = new AtomicInteger();
   private final Map<String, AtomicInteger>     perPrincipalTransactionCount = new ConcurrentHashMap<>();
+
+  // Issue #10322: a SERIALIZABLE begin runs at REPEATABLE_READ, a WEAKER guarantee than the one asked for, so it is
+  // logged at WARNING - but at most once per window, or a client that always asks for it writes one line per
+  // transaction. 0 means "never warned": System.currentTimeMillis() is never 0, and unlike a Long.MIN_VALUE sentinel
+  // the subtraction below cannot overflow.
+  static final  long       SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS = 60_000L;
+  private final AtomicLong lastSerializableDowngradeWarningMs       = new AtomicLong();
 
   public ArcadeDbGrpcService(String databasePath, ArcadeDBServer server) {
     this(databasePath, server, DEFAULT_TX_MAX_IDLE_MS, DEFAULT_TX_MAX_AGE_MS, DEFAULT_TX_REAPER_PERIOD_MS);
@@ -1822,7 +1830,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /**
    * Maps the wire-protocol {@link TransactionIsolation} to the engine {@link Database.TRANSACTION_ISOLATION_LEVEL}.
    * ArcadeDB only supports READ_COMMITTED and REPEATABLE_READ, so weaker/stronger levels collapse to the closest match.
-   * Unset (proto default, old clients) maps to READ_COMMITTED to preserve the previous behavior.
+   * Unset (proto default, old clients) maps to READ_COMMITTED to preserve the previous behavior. The mapped level is
+   * reported back in {@code BeginTransactionResponse.effective_isolation}, and a SERIALIZABLE downgrade is logged
+   * (issue #10322).
    */
   private static Database.TRANSACTION_ISOLATION_LEVEL mapIsolationLevel(final TransactionIsolation isolation) {
     if (isolation == null)
@@ -1831,6 +1841,41 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case REPEATABLE_READ, SERIALIZABLE -> Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
       default -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
     };
+  }
+
+  /**
+   * The wire-protocol value of the level an engine transaction runs at. The engine provides only these two levels.
+   */
+  private static TransactionIsolation toWireIsolation(final Database.TRANSACTION_ISOLATION_LEVEL level) {
+    return level == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ ?
+        TransactionIsolation.REPEATABLE_READ :
+        TransactionIsolation.READ_COMMITTED;
+  }
+
+  /**
+   * Logs a SERIALIZABLE request downgraded to REPEATABLE_READ (issue #10322): at WARNING once per
+   * {@link #SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS}, at FINE in between. READ_UNCOMMITTED is not logged: it is the
+   * proto default, sent by every client that leaves the field unset, and it gets a STRONGER level than asked for.
+   */
+  private void logSerializableDowngrade(final String owner, final String databaseName, final String transactionId,
+      final TransactionIsolation effective) {
+    final boolean warn = claimSerializableDowngradeWarning(System.currentTimeMillis());
+    LogManager.instance().log(this, warn ? Level.WARNING : Level.FINE, """
+            beginTransaction(): principal=%s requested SERIALIZABLE isolation on database '%s', which the engine does \
+            not provide: transaction %s runs at %s, a weaker guarantee (logged at WARNING at most once every %ss)""",
+        owner != null && !owner.isEmpty() ? owner : "<anonymous>", databaseName, transactionId, effective,
+        SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS / 1000);
+  }
+
+  /**
+   * Whether a SERIALIZABLE downgrade observed at {@code nowMs} is the one let through at WARNING for the current window.
+   * Concurrent callers race on a CAS, so at most one of them wins per window. Time is a parameter so the window can be
+   * tested without waiting for it to elapse.
+   */
+  boolean claimSerializableDowngradeWarning(final long nowMs) {
+    final long last = lastSerializableDowngradeWarningMs.get();
+    return (last == 0L || nowMs - last >= SERIALIZABLE_DOWNGRADE_WARNING_WINDOW_MS)
+        && lastSerializableDowngradeWarningMs.compareAndSet(last, nowMs);
   }
 
   @Override
@@ -1961,8 +2006,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .log(this, Level.FINE, "beginTransaction(): started txId=%s for db=%s activeTxCount(after)=%s", transactionId,
               database != null ? database.getName() : "<null>", activeTransactions.size());
 
+      // Issue #10322: report the level the transaction REALLY runs at, read from the engine transaction rather than
+      // recomputed from the request, so a mapped (or a future, differently-mapped) request can never be mis-reported.
+      // Fully qualified because this class imports the gRPC-generated TransactionContext of the same simple name.
+      final com.arcadedb.database.TransactionContext engineTx = startedTxCtx.engineTransaction;
+      final TransactionIsolation effectiveIsolation = toWireIsolation(
+          engineTx != null ? engineTx.getIsolationLevel() : isolationLevel);
+      if (request.getIsolation() == TransactionIsolation.SERIALIZABLE)
+        logSerializableDowngrade(owner, database != null ? database.getName() : reqDb, transactionId, effectiveIsolation);
+
       final BeginTransactionResponse response = BeginTransactionResponse.newBuilder().setTransactionId(transactionId)
-          .setTimestamp(System.currentTimeMillis()).build();
+          .setTimestamp(System.currentTimeMillis()).setEffectiveIsolation(effectiveIsolation).build();
 
       responseObserver.onNext(response);
       responded = true;
