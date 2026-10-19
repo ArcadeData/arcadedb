@@ -66,13 +66,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
 
   /**
-   * The {@link MongoBackend} methods the library's Netty handler calls with a client's request but that reach no
-   * database, with the reason. Every other request-carrying method must tag the thread.
-   */
-  private static final Map<String, String> REACHES_NO_DATABASE = Map.of("getCurrentOperations",
-      "AbstractMongoBackend answers it with an empty list and reads nothing (checked against mongo-java-server-core 1.47.0)");
-
-  /**
    * The {@link MongoBackend} methods that carry no client request, so the request-carrying filter below does not see
    * them. They are listed so that a library upgrade adding a method in any shape - one taking a cursor id or a bare
    * database name, say - fails here and gets a decision instead of slipping past the filter.
@@ -81,7 +74,8 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
       "getClock", "enableOplog", "disableOplog", "resolveDatabase", "version");
 
   /** The request-carrying entry points this class drives, and proves tagged, one test each. */
-  private static final Set<String> DRIVEN_HERE = Set.of("handleCommand", "handleQuery", "handleMessage", "handleClose");
+  private static final Set<String> DRIVEN_HERE = Set.of("handleCommand", "handleQuery", "handleMessage", "handleClose",
+      "getCurrentOperations");
 
   private RecordingBackend backend;
   private Channel          channel;
@@ -112,7 +106,7 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
       }
 
     assertThat(requestCarrying).as("the library's request-carrying entry points, enumerated from its interface")
-        .containsAll(DRIVEN_HERE).containsAll(REACHES_NO_DATABASE.keySet());
+        .containsAll(DRIVEN_HERE);
 
     final Set<String> everyMethod = new TreeSet<>();
     for (final Method method : MongoBackend.class.getMethods())
@@ -124,8 +118,6 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
         + "CARRIES_NO_REQUEST: a new one needs a decision").isEqualTo(accountedFor);
 
     for (final String name : requestCarrying) {
-      if (REACHES_NO_DATABASE.containsKey(name))
-        continue;
       assertThat(DRIVEN_HERE).as("a new MongoBackend entry point '%s' must be tagged in MongoDBBackend and driven here",
           name).contains(name);
       // THE SAME SIGNATURE, NOT ONLY THE SAME NAME: AN OVERLOAD WOULD LEAVE THE LIBRARY'S CALL UNTAGGED
@@ -216,6 +208,21 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
 
     assertThat(backend.recorded("handleQuery")).isEqualTo(MongoDBBackend.MONGO_PROTOCOL);
     assertThat(ProtocolContext.get()).isEqualTo(ProtocolContext.INTERNAL);
+  }
+
+  /**
+   * AbstractMongoBackend answers it with an empty list today and reads nothing, so there is no door to record at: it is
+   * tagged anyway, so that a library version that starts reading a database there does not run untagged. What can be
+   * observed is that it gives the thread its tag back.
+   */
+  @Test
+  void aCurrentOperationsRequestRestoresTheEnclosingTag() {
+    ProtocolContext.set("http");
+
+    backend.getCurrentOperations(new MongoQuery(channel, new MessageHeader(1, 0), "admin.$cmd.sys.inprog", 0, 0,
+        new Document(), null));
+
+    assertThat(ProtocolContext.get()).isEqualTo("http");
   }
 
   /** A caller that already tagged the thread gets its own tag back, not INTERNAL. */

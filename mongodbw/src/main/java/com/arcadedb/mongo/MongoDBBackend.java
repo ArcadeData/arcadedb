@@ -40,6 +40,7 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,6 +118,20 @@ public class MongoDBBackend extends AbstractMongoBackend {
     final String enclosing = tagAsMongo();
     try {
       return super.handleMessage(message);
+    } finally {
+      restoreProtocol(enclosing);
+    }
+  }
+
+  /**
+   * Reads no database today ({@code AbstractMongoBackend} answers with an empty list), and is tagged anyway so that a
+   * library version that starts reading one here does not run untagged.
+   */
+  @Override
+  public Collection<Document> getCurrentOperations(final MongoQuery query) {
+    final String enclosing = tagAsMongo();
+    try {
+      return super.getCurrentOperations(query);
     } finally {
       restoreProtocol(enclosing);
     }
@@ -242,7 +257,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   private static void restoreProtocol(final String enclosing) {
     if (ProtocolContext.INTERNAL.equals(enclosing))
-      // THE NETTY THREAD IS POOLED: LEAVE NOTHING BEHIND ON IT
+      // THE SAME VALUE AS set(INTERNAL), WHICH IS THE THREAD-LOCAL'S DEFAULT, BUT WITHOUT AN ENTRY LEFT ON THE POOLED NETTY THREAD
       ProtocolContext.clear();
     else
       ProtocolContext.set(enclosing);
