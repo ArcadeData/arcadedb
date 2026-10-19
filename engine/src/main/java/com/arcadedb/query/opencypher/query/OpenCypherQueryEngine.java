@@ -27,6 +27,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.ExistingRecordsCheck;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
@@ -92,7 +93,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.StringJoiner;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -1318,13 +1318,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (isolationLevel != null) {
         final Database.TRANSACTION_ISOLATION_LEVEL level;
         try {
-          level = Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel.toUpperCase(Locale.ENGLISH));
+          // A level the engine cannot provide is refused, with the words every surface refuses it with (issue #10386)
+          level = IsolationLevels.parse(isolationLevel.toUpperCase(Locale.ENGLISH));
         } catch (final IllegalArgumentException e) {
-          final StringJoiner validLevels = new StringJoiner(", ");
-          for (final Database.TRANSACTION_ISOLATION_LEVEL l : Database.TRANSACTION_ISOLATION_LEVEL.values())
-            validLevels.add(l.name());
-          throw new CommandParsingException(
-              "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: " + validLevels);
+          throw new CommandParsingException(e.getMessage());
         }
         txDatabase.begin(level);
       } else

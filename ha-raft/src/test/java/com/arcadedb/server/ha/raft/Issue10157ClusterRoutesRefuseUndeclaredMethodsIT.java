@@ -116,7 +116,8 @@ class Issue10157ClusterRoutesRefuseUndeclaredMethodsIT extends BaseRaftHATest {
       throws Exception {
     final Response response = call(serverIndex, method, path);
     assertThat(response.status).as("%s %s", method, path).isEqualTo(405);
-    assertThat(response.allow).as("Allow header of %s %s", method, path).isEqualTo(allowed);
+    // A route declared GET also answers HEAD, and the Allow header says so (issue #10384)
+    assertThat(response.allow).as("Allow header of %s %s", method, path).isEqualTo("GET".equals(allowed) ? "GET, HEAD" : allowed);
   }
 
   private record Response(int status, String allow) {

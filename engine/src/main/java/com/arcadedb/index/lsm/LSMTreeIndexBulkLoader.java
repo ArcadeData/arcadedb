@@ -204,10 +204,16 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     } catch (final InterruptedException error) {
       Thread.currentThread().interrupt();
       throw new IndexException("Sorted build for '" + indexName + "' was interrupted", error);
-    } catch (final IndexException error) {
+    } catch (final IndexException | DuplicatedKeyException error) {
+      // The typed failures keep their own message and type. DuplicatedKeyException is not an IndexException, and it is
+      // the one this build exists to raise: wrapped, the key and the record holding it would be two levels down the cause
+      // chain instead of in the message the caller reads (issue #10382)
       throw error;
     } catch (final Exception error) {
-      throw new IndexException("Cannot build sorted index '" + indexName + "'", error);
+      // The reason travels in the message too: a full spill directory is an IOException that would otherwise read as a
+      // bare "Cannot build sorted index"
+      throw new IndexException("Cannot build sorted index '" + indexName + "'"
+          + (error.getMessage() != null ? ": " + error.getMessage() : ""), error);
     } finally {
       if (!success)
         for (final BucketWriter writer : writers.values())

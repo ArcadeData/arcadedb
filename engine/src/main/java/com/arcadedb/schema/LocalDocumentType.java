@@ -678,10 +678,14 @@ public class LocalDocumentType implements DocumentType {
     final Map<Integer, String> names = new LinkedHashMap<>();
     for (final Bucket bucket : getInvolvedBuckets())
       putComponentName(fileManager, bucket.getFileId(), names);
-    for (final TypeIndex index : getAllIndexes(false))
+    final List<Integer> ownBucketIds = getBucketIds(false);
+    // The sub-indexes on this type's own buckets, of the indexes it declares and of the ones it inherits: those are the ones a
+    // rename moves, and the ones on the buckets of a sub type are that sub type's files (issue #10317)
+    for (final TypeIndex index : getAllIndexes(true))
       for (final IndexInternal subIndex : index.getIndexesOnBuckets())
-        for (final Integer fileId : subIndex.getFileIds())
-          putComponentName(fileManager, fileId, names);
+        if (ownBucketIds.contains(subIndex.getAssociatedBucketId()))
+          for (final Integer fileId : subIndex.getFileIds())
+            putComponentName(fileManager, fileId, names);
     return names;
   }
 
@@ -699,6 +703,7 @@ public class LocalDocumentType implements DocumentType {
 
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
+    final List<TypeIndex> renamedInheritedIndexes = new ArrayList<>();
 
     try {
       for (Bucket bucket : buckets) {
@@ -733,10 +738,20 @@ public class LocalDocumentType implements DocumentType {
 
       // Registered before the call, not after: updateTypeName() walks the index's own per-bucket sub-indexes, so a
       // failure part way through leaves that index half renamed and it has to be rolled back too.
-      for (TypeIndex idx : getAllIndexes(false)) {
+      final Collection<TypeIndex> ownIndexes = getAllIndexes(false);
+      for (TypeIndex idx : ownIndexes) {
         renamedIndexes.add(idx);
         idx.updateTypeName(newName);
       }
+
+      // THE INDEXES A SUPER TYPE DECLARES HAVE A SUB-INDEX ON EACH BUCKET OF THIS TYPE TOO, NAMING THIS TYPE AND NAMED AFTER IT. They
+      // belong to the index of the super type, not to one of this type's own, so the loop above never reached them: a DROP TYPE of
+      // the super type then could not find the type they named (issue #10317). Registered before the call, as above
+      for (final TypeIndex idx : getAllIndexes(true))
+        if (!ownIndexes.contains(idx)) {
+          renamedInheritedIndexes.add(idx);
+          idx.updateTypeNameOfSubIndexesOn(this, newName);
+        }
 
       schema.saveConfiguration();
 
@@ -767,6 +782,14 @@ public class LocalDocumentType implements DocumentType {
 
       // Unwound in reverse: indexes were renamed last, so they are restored first. 'name' is already back to the
       // old value above, which is what TypeIndex.updateTypeName() recomputes its logic name from.
+      for (TypeIndex idx : renamedInheritedIndexes) {
+        try {
+          idx.updateTypeNameOfSubIndexesOn(this, oldName);
+        } catch (Exception ex) {
+          corrupted = true;
+        }
+      }
+
       for (TypeIndex idx : renamedIndexes) {
         try {
           idx.updateTypeName(oldName);
@@ -2367,10 +2390,7 @@ public class LocalDocumentType implements DocumentType {
   protected void addBucketInternal(final Bucket bucket) {
     // One lookup in the bucket-owner map rather than a walk of every type, which made each bucket attached cost O(N) and
     // the open of a schema of N types O(N^2) (issue #10247)
-    final LocalDocumentType owner = schema.getBucketOwner(bucket.getFileId());
-    if (owner != null)
-      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name
-          + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+    schema.checkBucketIsFree(name, bucket);
 
     // If we already have a partitioned strategy in place, growing the bucket count changes the
     // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any

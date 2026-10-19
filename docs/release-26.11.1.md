@@ -141,7 +141,51 @@ as `size()` also serves collections, where a missing one has size 0; use `length
 and similarity functions (`text.hammingDistance()`, `text.levenshteinDistance()`, `text.jaroWinklerDistance()`,
 `text.sorensenDiceSimilarity()`) still compare UTF-16 code units (#10417).
 
+### gRPC: `BeginTransaction` refuses `SERIALIZABLE` (#10386)
+
+A gRPC `BeginTransaction` that asks for `SERIALIZABLE`, or for an isolation value this server does not know (a newer client's
+enum constant), is refused with `INVALID_ARGUMENT` and the message the other surfaces use: `Invalid isolationLevel
+'SERIALIZABLE': accepted values are [READ_COMMITTED, REPEATABLE_READ]`. It used to begin at `REPEATABLE_READ` (an unknown value
+at `READ_COMMITTED`) and answer success, which is the one failure a client cannot detect: it asked for write-skew prevention and
+was told the transaction started. HTTP, SQL, openCypher and PostgreSQL already refused a level the engine cannot provide, and
+they now parse it through one `IsolationLevels.parse()` in the engine, so SQL `BEGIN ISOLATION SERIALIZABLE` no longer
+fails with the JVM's `No enum constant ...` and openCypher `START TRANSACTION ISOLATION SERIALIZABLE` says the same words.
+The openCypher message is no longer prefixed with "Invalid transaction isolation level", and the level is reported
+upper-cased whatever the case it was typed in: a client that matches the old wording has to match the new one.
+`READ_UNCOMMITTED`, the proto default, still begins at the stronger `READ_COMMITTED`, reported in `effective_isolation`. The
+throttled server-side warning #10322 added for `SERIALIZABLE` is gone with the case it reported.
+
+**Who sees a different answer.** A hand-written gRPC client that sends `SERIALIZABLE`. The first-party `RemoteGrpcDatabase` never
+did. Ask for `REPEATABLE_READ`.
+
+### Plugins: a route another plugin or the server already holds fails the server start (#10385)
+
+`PluginRoutes` is one namespace for every plugin now. A second plugin declaring ANOTHER method on a path merges into the same
+entry. Declaring a method already declared on that path, a path that fills a route the server registers for itself (`GET
+/api/v1/server`, `/api/v1/query/mydb`), or a prefix equal to one of the server's mounts (`/api/v1`, `/api/v1/ai`, `/ws`), throws
+an `IllegalStateException` naming both parties from `registerAPI`, so the server does not start. It used to replace the first
+plugin's route silently, which then answered `405` naming the other plugin's method, or shadow a core route, or replace the whole
+core router, with no log line: the audit skipped every handler `PluginRoutes` produces. A plugin still implementing the
+deprecated `registerAPI(HttpServer, PathHandler)` is held to the same rule.
+
+**Who sees a different answer.** A third-party plugin that relied on replacing a route. The plugins shipped with ArcadeDB are
+unaffected.
+
 ## Fixes
+
+- **#10384** A route a plugin declares `GET` answers `HEAD` too, with the same handler, and its `405` names `GET, HEAD` in `Allow`.
+  `HEAD /prometheus` was a `405` since #10157, so the `wget --spider` style healthcheck the core routes were fixed to pass (#8133)
+  failed on the scrape endpoint. A plugin that declares `HEAD` itself keeps its own handler. The plugin conformance tests now
+  assert that every route answering `GET` answers `HEAD`, and the two core probe routes keep their `HEAD` registrations.
+- **#10388** A request no longer reopens a database whose files are being deleted. `drop database` (not replicated) and the drop
+  an overwrite restore performs closed the instance and then deleted its directory, and until the delete reached `schema.json`
+  the directory still held a database: a request in that window loaded it, answering a torn-database error, serving a database
+  whose files vanished, or leaving an open instance deregistered behind its back that refused the name when it was created
+  again. The name is now held from before the drop starts until the files are gone: a request is answered `404`, and so is every
+  other caller, and a create of the name is refused with a `409`. A request is also refused while a restore holds the name it
+  would open, the way a create already was. A replicated drop already closed, deregistered and renamed the directory aside under
+  the registry lock. A drop that fails halfway still leaves the closed instance registered, with the files the delete left, for
+  the next request to reopen, as before; it is now logged at `SEVERE`.
 
 - **#10264** A projection holding a `SELECT` subquery (`SELECT id, (SELECT count(*) FROM Owner) AS oc FROM Base`) can be stored:
   `CREATE MATERIALIZED VIEW` (default refresh or `REFRESH INCREMENTAL`) and `INSERT ... FROM` kept failing with a
