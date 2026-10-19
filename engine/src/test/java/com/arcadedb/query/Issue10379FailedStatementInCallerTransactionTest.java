@@ -180,7 +180,7 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
     }, false, 0);
 
     assertThat(values()).containsExactly(100, 101, 500);
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Req")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM Req")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
   }
