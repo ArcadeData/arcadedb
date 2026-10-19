@@ -38,6 +38,9 @@ class TxDelta {
   final Set<RID>                   deletedVertices  = new HashSet<>();
   final List<EdgeDelta>            addedEdges       = new ArrayList<>();
   final List<EdgeDelta>            deletedEdges     = new ArrayList<>();
+  // The updated vertices' properties, per vertex. Each map is the vertex's COMPLETE state after the update, whatever the view's
+  // property filter: DeltaOverlay.merge() replaces what it holds with it, so a property the vertex no longer has reads as missing
+  // (issue #10335). A producer must never report only the properties it changed. One entry per vertex: the last update wins.
   final Map<RID, Map<String, Object>> updatedProperties = new HashMap<>();
 
   // Covered edges whose properties changed, with the values they changed to. An edge THIS overlay window
