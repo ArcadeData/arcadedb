@@ -207,6 +207,20 @@ class Issue10385PluginRouteCollisionsTest {
   }
 
   @Test
+  void aRegistrationThePathHandlerRefusesLeavesNoClaimBehind() {
+    paths.setRegisteringPlugin("PluginA");
+    try {
+      // PathHandler itself refuses a route with no handler
+      assertThatThrownBy(() -> paths.addExactPath("/refused", null)).isInstanceOf(RuntimeException.class);
+    } finally {
+      paths.setRegisteringPlugin(null);
+    }
+
+    // the path is free: it was never registered, so another plugin is not told it is taken
+    plugin("PluginB", routes -> routes.get("/refused", UNUSED));
+  }
+
+  @Test
   void aPathIsKeyedTheWayPathHandlerKeysIt() {
     assertThat(PluginPathHandler.normalize("/a/b")).isEqualTo("/a/b");
     assertThat(PluginPathHandler.normalize("/a/b/")).isEqualTo("/a/b");

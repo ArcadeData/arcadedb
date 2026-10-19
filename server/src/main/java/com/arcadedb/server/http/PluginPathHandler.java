@@ -97,14 +97,18 @@ final class PluginPathHandler extends PathHandler {
 
   @Override
   public synchronized PathHandler addExactPath(final String path, final HttpHandler handler) {
-    audit(path, handler, false);
-    return super.addExactPath(path, handler);
+    judge(path, false);
+    final PathHandler result = super.addExactPath(path, handler);
+    record(path, handler, false);
+    return result;
   }
 
   @Override
   public synchronized PathHandler addPrefixPath(final String path, final HttpHandler handler) {
-    audit(path, handler, true);
-    return super.addPrefixPath(path, handler);
+    judge(path, true);
+    final PathHandler result = super.addPrefixPath(path, handler);
+    record(path, handler, true);
+    return result;
   }
 
   /** The {@code plugin path} of every plugin route registered without a method restriction, in registration order. */
@@ -137,19 +141,27 @@ final class PluginPathHandler extends PathHandler {
     }
   }
 
-  private void audit(final String path, final HttpHandler handler, final boolean isPrefix) {
+  /** Refuses a plugin's claim on a name that is taken, before the {@link PathHandler} sees it. The server's own are never judged. */
+  private void judge(final String path, final boolean isPrefix) {
     final String owner = registeringPlugin;
-    final String key = normalize(path);
+    if (owner != null)
+      refuseIfTaken("plugin '" + owner + "'", path, normalize(path), isPrefix);
+  }
+
+  /**
+   * Records who holds a path once the {@link PathHandler} has accepted it, so a registration it refuses leaves no claim behind,
+   * and names a plugin route that was added without its methods.
+   */
+  private void record(final String path, final HttpHandler handler, final boolean isPrefix) {
+    final String owner = registeringPlugin;
     final Map<String, String> claims = isPrefix ? prefixClaims : exactClaims;
     if (owner == null) {
-      // The server's own mounts: recorded so a plugin cannot claim them, never judged
-      claims.put(key, SERVER);
+      // The server's own mounts: recorded so a plugin cannot claim them
+      claims.put(normalize(path), SERVER);
       return;
     }
 
-    final String claimant = "plugin '" + owner + "'";
-    refuseIfTaken(claimant, path, key, isPrefix);
-    claims.put(key, claimant);
+    claims.put(normalize(path), "plugin '" + owner + "'");
 
     // A route declared through PluginRoutes carries its methods, which is what the warning below is about
     if (handler instanceof PluginRoutes.MethodRestrictedHandler)
