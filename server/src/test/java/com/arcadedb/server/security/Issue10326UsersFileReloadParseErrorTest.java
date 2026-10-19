@@ -91,9 +91,11 @@ class Issue10326UsersFileReloadParseErrorTest {
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 50);
     final ServerSecurity security = startWithRootAndBob(configuration);
     try {
-      final List<String> lines = logged(() -> {
+      final List<String> lines = logged(captured -> {
         handEdit(MALFORMED);
-        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(20)).until(() -> Files.exists(errorFile));
+        // On the SEVERE, not on the error file: it is logged after the file is renamed into place, on the watcher thread.
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(20))
+            .until(() -> captured.stream().anyMatch(Issue10326UsersFileReloadParseErrorTest::isLoadFailure));
       });
 
       assertUsersInForce(security);
@@ -152,6 +154,31 @@ class Issue10326UsersFileReloadParseErrorTest {
   }
 
   /**
+   * A record of an unexpected shape ("databases" not an object) on reload keeps the users in force and leaves the
+   * watcher alive, whatever exception the record raises.
+   */
+  @Test
+  void aReloadWithARecordOfAnUnexpectedShapeKeepsTheUsersInForce() throws Exception {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 50);
+    final ServerSecurity security = startWithRootAndBob(configuration);
+    try {
+      final String validFile = Files.readString(usersFile, StandardCharsets.UTF_8);
+      final String content = "{\"name\":\"bob\",\"databases\":5}\n";
+      handEdit(content);
+      await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(20))
+          .until(() -> Files.exists(errorFile) && Files.readString(errorFile, StandardCharsets.UTF_8).equals(content));
+      assertUsersInForce(security);
+
+      // The watcher survived: a later valid edit is still applied.
+      handEdit(validFile.lines().filter(l -> !l.contains("\"bob\"")).reduce("", (a, l) -> a + l + "\n"));
+      await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(20)).until(() -> !security.existsUser("bob"));
+    } finally {
+      security.stopService();
+    }
+  }
+
+  /**
    * The same-shape sibling: a file caught EMPTY - an editor that truncates before it writes, observed by the watcher
    * between the two - used to take the same {@code createDefault()} fallback inside the repository.
    */
@@ -161,11 +188,11 @@ class Issue10326UsersFileReloadParseErrorTest {
     try {
       handEdit("");
 
-      final List<String> lines = logged(security::loadUsers);
+      final List<String> lines = logged(captured -> security.loadUsers());
 
       assertUsersInForce(security);
       assertThat(Files.readString(usersFile, StandardCharsets.UTF_8)).as("the empty file was not replaced by a root-only one").isEmpty();
-      assertThat(lines.stream().filter(l -> l.startsWith("WARNING") && l.contains("is empty")).toList()).hasSize(1);
+      assertThat(lines.stream().filter(l -> l.startsWith("WARNING") && l.contains("is missing or empty")).toList()).hasSize(1);
     } finally {
       security.stopService();
     }
@@ -185,7 +212,7 @@ class Issue10326UsersFileReloadParseErrorTest {
       view.setPermissions(Set.of());
       assumeTrue(!Files.isReadable(usersFile), "the file is still readable (running as a superuser?)");
 
-      final List<String> lines = logged(security::loadUsers);
+      final List<String> lines = logged(captured -> security.loadUsers());
 
       view.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
       assertUsersInForce(security);
@@ -243,8 +270,8 @@ class Issue10326UsersFileReloadParseErrorTest {
     return line.startsWith("SEVERE") && line.contains("Error on loading file");
   }
 
-  /** Runs {@code action} capturing everything logged as "LEVEL message args". */
-  private static List<String> logged(final ThrowingRunnable action) throws Exception {
+  /** Runs {@code action} capturing everything logged as "LEVEL message args"; the action can watch the lines as they arrive. */
+  private static List<String> logged(final CapturingAction action) throws Exception {
     final List<String> lines = Collections.synchronizedList(new ArrayList<>());
     final Logger previous = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new Logger() {
@@ -271,7 +298,7 @@ class Issue10326UsersFileReloadParseErrorTest {
       }
     });
     try {
-      action.run();
+      action.run(lines);
     } finally {
       LogManager.instance().setLogger(previous);
     }
@@ -279,7 +306,7 @@ class Issue10326UsersFileReloadParseErrorTest {
   }
 
   @FunctionalInterface
-  private interface ThrowingRunnable {
-    void run() throws Exception;
+  private interface CapturingAction {
+    void run(List<String> captured) throws Exception;
   }
 }

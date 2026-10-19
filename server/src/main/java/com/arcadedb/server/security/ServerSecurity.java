@@ -255,6 +255,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     groupRepository.startWatching();
   }
 
+  /**
+   * Loads {@code server-users.jsonl} into the users in force, and schedules the watcher that calls this again when the
+   * file changes.
+   * <p>
+   * The first load falls back to the default configuration (a single {@code root}) when the file cannot be loaded. A
+   * RELOAD never does (issue #10326): an unreadable, malformed, missing or empty file keeps the users already in force,
+   * and the bad file is preserved as {@code server-users-error.jsonl}. Two consequences an operator should know: emptying
+   * the file by hand does not drop every user (it only logs a WARNING), and until the file is fixed the users in memory
+   * differ from the file on disk - a restart would fall back to the default, and the next user change made through the
+   * server saves the users in force over the bad file.
+   */
   public void loadUsers() {
     try {
       final Map<String, ServerSecurityUser> previousUsers = this.users;
@@ -273,20 +284,23 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           final List<JSONObject> records = usersRepository.loadRecords();
           if (records.isEmpty())
             // Typically an editor caught between truncating the file and writing it: the next tick sees the content.
-            LogManager.instance().log(this, Level.WARNING, "File '%s' is empty, keeping the %d users already in force",
+            LogManager.instance().log(this, Level.WARNING, "File '%s' is missing or empty, keeping the %d users already in force",
                 SecurityUserFileRepository.FILE_NAME, previousUsers.size());
           else
             newUsers = toUsers(records);
         }
-      } catch (final JSONException | IOException e) {
+      } catch (final RuntimeException | IOException e) {
         // The USERS repository (issue #10321): the groups one named server-groups.json in the SEVERE and wrote the
         // valid groups document as the "corrupt" file, while the users file that failed was saved over below.
         if (reload)
+          // ANY failure on reload, not only JSONException: whatever a record of an unexpected shape throws must neither
+          // replace the users in force nor escape into the watcher's java.util.Timer, which an uncaught exception kills.
           usersRepository.saveInError(e, "keeping the " + previousUsers.size() + " users already in force");
-        else {
+        else if (e instanceof JSONException) {
           usersRepository.saveInError(e);
           newUsers = toUsers(SecurityUserFileRepository.createDefault());
-        }
+        } else
+          throw e;
       }
 
       if (newUsers != null) {
