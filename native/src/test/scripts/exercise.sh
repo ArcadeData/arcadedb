@@ -152,6 +152,13 @@ sql_expect "CREATE PROPERTY" 'body' "CREATE PROPERTY SmokeDoc.body STRING"
 sql_expect "FULL_TEXT analyzer" 'SmokeDoc' "CREATE INDEX ON SmokeDoc (body) FULL_TEXT METADATA {\\\"analyzer\\\": \\\"org.apache.lucene.analysis.en.EnglishAnalyzer\\\"}"
 sql_expect "FULL_TEXT insert" 'running' "INSERT INTO SmokeDoc SET body = 'running foxes'"
 sql_expect "FULL_TEXT stemmed" 'running' "SELECT body FROM SmokeDoc WHERE SEARCH_INDEX('SmokeDoc[body]', 'run') = true"
+# spatial4j builds its shape factory, codec and WKT/GeoJSON readers and writers by reflection, so a GEOSPATIAL index used to fail
+# here while the JVM was fine (#10423)
+sql_expect "CREATE TYPE" 'SmokePlace' "CREATE DOCUMENT TYPE SmokePlace"
+sql_expect "CREATE PROPERTY" 'location' "CREATE PROPERTY SmokePlace.location STRING"
+sql_expect "GEOSPATIAL index" 'SmokePlace' "CREATE INDEX ON SmokePlace (location) GEOSPATIAL"
+sql_expect "GEOSPATIAL insert" 'Rome' "INSERT INTO SmokePlace SET name = 'Rome', location = 'POINT (12.4964 41.9028)'"
+sql_expect "GEOSPATIAL query" 'Rome' "SELECT name FROM SmokePlace WHERE geo.within(location, geo.geomFromText('POLYGON ((12 41, 13 41, 13 42, 12 42, 12 41))')) = true"
 
 echo "[exercise] Cypher round-trip"
 OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
