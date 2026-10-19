@@ -73,7 +73,7 @@ class Issue10269HashIndexKeyRoundTripTest extends TestHelper {
   }
 
   private long count(final String type, final int k) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + type + " WHERE k = ?", k)) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM " + type + " WHERE k = ?", k)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

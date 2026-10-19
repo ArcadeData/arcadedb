@@ -99,7 +99,7 @@ class Issue10264ProjectedSubqueryStoreTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT wrapped FROM M")) {
       assertThat(rs.hasNext()).isTrue();
       final Map<String, Object> wrapped = rs.next().getProperty("wrapped");
-      assertThat(wrapped).containsKey("owners");
+      assertThat(wrapped.get("owners")).isEqualTo(List.of(Map.of("count(*)", 2L)));
     }
   }
 
@@ -107,7 +107,7 @@ class Issue10264ProjectedSubqueryStoreTest extends TestHelper {
   void theControlWithoutASubqueryKeepsWorking() {
     database.command("sql", "CREATE MATERIALIZED VIEW vc AS SELECT id, n FROM Base WHERE n < 3 REFRESH INCREMENTAL").close();
 
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM vc")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM vc")) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(3L);
     }
   }

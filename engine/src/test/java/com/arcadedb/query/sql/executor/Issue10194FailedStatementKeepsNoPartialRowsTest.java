@@ -21,9 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.query.QueryEngine;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,7 +51,7 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
   }
 
   private long rows() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T")) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }
@@ -181,6 +183,25 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(() -> {
       try {
         database.command("sql", "INSERT INTO T FROM SELECT id, k FROM Src ORDER BY id").close();
+      } catch (final DuplicatedKeyException e) {
+        caught.set(e);
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(caught.get()).isInstanceOf(DuplicatedKeyException.class);
+    assertThat(rows()).isZero();
+  }
+
+  @Test
+  void aWriteRunThroughAnalyzeIsGuardedLikeCommand() {
+    // analyze().execute() is the entry the MCP command tool runs writes through, and it takes no CommandContext
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("INSERT INTO T (id, k) VALUES (30, 23), (31, 23)");
+    assertThat(analyzed.isIdempotent()).isFalse();
+
+    final AtomicReference<Throwable> caught = new AtomicReference<>();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        analyzed.execute(Map.of()).close();
       } catch (final DuplicatedKeyException e) {
         caught.set(e);
       }

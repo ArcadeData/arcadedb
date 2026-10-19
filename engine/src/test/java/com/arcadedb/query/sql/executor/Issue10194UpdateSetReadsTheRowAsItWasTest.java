@@ -84,6 +84,26 @@ class Issue10194UpdateSetReadsTheRowAsItWasTest extends TestHelper {
   }
 
   @Test
+  void aRecordBeingCreatedHasNoRowToRead() {
+    // a record that is being created has no row as it was: its items are evaluated against nothing, as before this change
+    // (INSERT and CREATE EDGE build their record from the evaluated items), so the snapshot is for existing records only
+    database.command("sql", "CREATE VERTEX TYPE V").close();
+    database.command("sql", "CREATE EDGE TYPE E").close();
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX V SET n = 1").close();
+      database.command("sql", "CREATE VERTEX V SET n = 2").close();
+    });
+
+    update("CREATE EDGE E FROM (SELECT FROM V WHERE n = 1) TO (SELECT FROM V WHERE n = 2) SET w = 5, z = w");
+
+    try (final ResultSet rs = database.query("sql", "SELECT w, z FROM E")) {
+      final Result edge = rs.next();
+      assertThat(edge.<Number>getProperty("w").intValue()).isEqualTo(5);
+      assertThat(edge.<Object>getProperty("z")).isNull();
+    }
+  }
+
+  @Test
   void expressionsReadTheOldRow() {
     update("UPDATE T SET a = a + b, b = a * 10");
 

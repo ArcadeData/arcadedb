@@ -189,7 +189,7 @@ public class UpdateExecutionPlanner {
       for (final UpdateOperations op : ops) {
         switch (op.getType()) {
         case UpdateOperations.TYPE_SET:
-          plan.chain(new UpdateSetStep(op.getUpdateItems(), context));
+          plan.chain(UpdateSetStep.forExistingRecord(op.getUpdateItems(), context));
           break;
         case UpdateOperations.TYPE_REMOVE:
           plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), context));

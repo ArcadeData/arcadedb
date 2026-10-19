@@ -102,19 +102,34 @@ public class SQLQueryEngine implements QueryEngine {
         "The statement is nested or chained too deeply to be executed (the thread stack overflowed while building the plan)", e);
   }
 
+  // The overloads without a context serve query() and analyze().execute(), which the MCP command tool runs writes through: a
+  // write there is a statement of the caller's transaction like one of command() (issue #10194). writeScope() answers null for
+  // an idempotent statement, so the read path pays one virtual call.
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Object[] parameters) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
   }
 
