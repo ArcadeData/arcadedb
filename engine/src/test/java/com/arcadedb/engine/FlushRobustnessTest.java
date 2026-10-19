@@ -243,6 +243,8 @@ class FlushRobustnessTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
     db.getSchema().createDocumentType("AckDoc");
     db.transaction(() -> db.newDocument("AckDoc").set("v", 1).save());
+    // The commit's own pages are flushed asynchronously and ack the same WAL file: let them settle, or their ack lands between the two reads below
+    db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
     final Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
     poolField.setAccessible(true);
