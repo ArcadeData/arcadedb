@@ -20,7 +20,11 @@ package com.arcadedb.schema;
 
 /** Selects how an index is populated when it is created over existing records. */
 public enum IndexBuildMode {
-  /** Uses the established record-at-a-time mutable LSM build. */
+  /**
+   * Lets the engine choose: the record-at-a-time mutable LSM build, except for a UNIQUE LSM_TREE index over a type holding at
+   * least {@code arcadedb.index.buildSortedUniqueMinRecords} records, which takes the {@link #SORTED} build when it can run
+   * (issue #10334).
+   */
   DEFAULT,
 
   /** Uses a bounded external sort and writes the ordered stream into compacted LSM pages. */

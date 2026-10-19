@@ -18,6 +18,9 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CommittedReadScope;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
@@ -56,6 +59,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   private static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
   private static final long MIN_SORTED_BUILD_MEMORY_BUDGET    = 1L << 20;
+  private static final long SORTED_BUILD_PROGRESS_INTERVAL    = 1_000_000L;
 
   // When set, lets {@link #create()} accept properties that aren't declared on the type yet:
   // the index is materialised with this Type as the key serialisation, while the property
@@ -426,7 +430,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
     final List<Bucket> buckets = type.getBuckets(true);
     final Index[] indexes = new Index[buckets.size()];
-    final boolean sortedBuild = buildMode == IndexBuildMode.SORTED;
+    final boolean sortedBuild = buildMode == IndexBuildMode.SORTED || isSortedBuildChosenFor(buckets);
     final SortedIndexBuildRecoveryMarker[] recoveryMarker = new SortedIndexBuildRecoveryMarker[1];
     final SortedIndexBuildMetrics[] sortedBuildMetrics = new SortedIndexBuildMetrics[1];
     final long sortedBuildStarted = sortedBuild ? System.nanoTime() : 0L;
@@ -506,9 +510,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
 
         if (sortedBuild) {
-          recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
-              buildSpillDirectory);
-          sortedBuildMetrics[0] = createWithSortedBuild(schema, type, keyTypes, buckets, indexes, recoveryMarker[0]);
+          // The sorted build writes its pages outside any transaction, so the caller's - empty, see
+          // validateSortedBuildPreconditions - is set aside for its duration and given back untouched. An HTTP command
+          // always arrives inside the auto-commit transaction of its handler, which is how CREATE INDEX from Studio runs
+          // (issue #10334). Reading outside a transaction misses nothing: no other transaction can commit while the build
+          // holds the database write lock taken by recordFileChanges, and the async workers are quiesced above.
+          try (final CommittedReadScope outsideCallerTransaction = CommittedReadScope.open(database)) {
+            recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
+                buildSpillDirectory);
+            sortedBuildMetrics[0] = createWithSortedBuild(schema, type, keyTypes, buckets, indexes, recoveryMarker[0]);
+          }
         } else
           for (int idx = 0; idx < buckets.size(); ++idx) {
             final int finalIdx = idx;
@@ -786,12 +797,76 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   private void validateSortedBuildPreconditions() {
+    final String refusal = sortedBuildRefusal();
+    if (refusal != null)
+      throw new IndexException(refusal);
+  }
+
+  /**
+   * Why the sorted build cannot run here, or null when it can. The one list of guards, asked both by an explicit
+   * {@link IndexBuildMode#SORTED} request, which is refused with the reason, and by the automatic choice of
+   * {@link #isSortedBuildChosenFor}, which falls back to the record-at-a-time build instead: a guard known to one and not the
+   * other would turn a DEFAULT build into a refused one.
+   */
+  private String sortedBuildRefusal() {
     if (indexType != Schema.INDEX_TYPE.LSM_TREE)
-      throw new IndexException("Sorted build currently supports only LSM_TREE indexes");
+      return "Sorted build currently supports only LSM_TREE indexes";
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
-      throw new IndexException("Sorted build is not supported on replicated databases");
-    if (database.isTransactionActive())
-      throw new IndexException("Sorted build requires no active transaction");
+      return "Sorted build is not supported on replicated databases";
+    if (anyCallerTransactionHasChanges())
+      // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction
+      return "Sorted build requires no pending changes in any active transaction";
+    return null;
+  }
+
+  /**
+   * Asks EVERY transaction stacked on this thread, not only the innermost one {@link #callerTransactionHasChanges} answers for: the
+   * sorted build sets the whole stack aside ({@link CommittedReadScope}), so an empty nested transaction over an outer one that
+   * wrote a record would hide that record from the scan - and nothing would add it to the index when the outer one commits.
+   */
+  private boolean anyCallerTransactionHasChanges() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return context != null && context.hasActiveTransactionWithChanges();
+  }
+
+  /**
+   * Whether a build asked for in the DEFAULT mode takes the sorted build all the same (issue #10334): a UNIQUE LSM_TREE index
+   * over a type holding at least {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS} records. The record-at-a-time
+   * build commits every batch through the uniqueness check, which looks each key up in the index being built, and that lookup
+   * reads every page written so far - nothing compacts an index while it is built - so the build time grows with the square of
+   * the record count. The sorted build refuses a duplicate key in its sorted stream instead, within a bounded memory budget.
+   * <p>
+   * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal()}). The record count is the buckets' cached
+   * counters, polymorphic like the build itself, so asking costs nothing; a counter that is off after an unclean shutdown only
+   * picks the other build, which produces the same index.
+   */
+  private boolean isSortedBuildChosenFor(final List<Bucket> buckets) {
+    if (buildMode != IndexBuildMode.DEFAULT || !unique || indexType != Schema.INDEX_TYPE.LSM_TREE)
+      return false;
+
+    final long minRecords = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS);
+    if (minRecords <= 0)
+      return false;
+
+    long records = 0;
+    for (final Bucket bucket : buckets)
+      records += bucket.count();
+    if (records < minRecords)
+      return false;
+
+    final String refusal = sortedBuildRefusal();
+    if (refusal != null) {
+      // Said out loud: on a type this large the record-at-a-time build is the slow one, and this is the only place that knows why
+      LogManager.instance().log(this, Level.INFO,
+          "Building unique index on %s%s over %,d records one record at a time, which slows down as the index grows: %s",
+          metadata.typeName, metadata.propertyNames, records, refusal);
+      return false;
+    }
+
+    LogManager.instance().log(this, Level.INFO, "Building unique index on %s%s over %,d records with the sorted build (%s=%,d)",
+        metadata.typeName, metadata.propertyNames, records, GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS.getKey(),
+        minRecords);
+    return true;
   }
 
   private SortedIndexBuildMetrics createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type,
@@ -831,6 +906,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
           bulkLoader.add(bucketIndex, record);
           final long total = scannedRecords.incrementAndGet();
+          if (total % SORTED_BUILD_PROGRESS_INTERVAL == 0)
+            LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records (%,.0f records/sec)...",
+                logicalIndexName, total, total / Math.max(0.001, (System.nanoTime() - sourceScanStarted) / 1e9));
           if (callback != null)
             callback.onDocumentIndexed(record, total);
           return true;
@@ -840,6 +918,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           throw new IndexException("Error collecting sorted index entry at record " + rid, exception);
         }), false, maxAttempts, null, null);
       sourceScanNanos = System.nanoTime() - sourceScanStarted;
+      LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records in %,dms, writing the index...",
+          logicalIndexName, scannedRecords.get(), sourceScanNanos / 1_000_000);
 
       outcome = bulkLoader.writeCompacted();
       logicalEntries = bulkLoader.size();
