@@ -436,6 +436,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Issue #10299: the nonces of the self-dial probes. Unpredictable, because a nonce is what tells this node's own request
   // apart from one that merely claims to be: a sender that could guess it could still make this node reset a channel.
   private static final SecureRandom          SELF_DIAL_PROBE_NONCES         = new SecureRandom();
+  // Issue #10374: whether this JVM already said that the channels of a peer could not be listed for a self-dial probe.
+  private static final AtomicBoolean         SELF_DIAL_CENSUS_FALLBACK_LOGGED = new AtomicBoolean();
   // Issue #10299: the call id of a refused request that carries no probe.
   static final     long                      NO_PROBE_CALL_ID               = 0L;
 
@@ -1183,9 +1185,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       case MEMBER_ON_SOME_CHANNELS -> "a probe over this node's channels to '" + addressedTo + "' was answered by that peer, "
           + "but not every connection this node holds for it could be probed, so it is neither confirmed nor ruled out as "
           + "this node's own request";
-      case ELSEWHERE -> "a probe over this node's channel to '" + addressedTo + "' did not come back to this node (it failed, "
+      case ELSEWHERE -> "the probes over this node's channels to '" + addressedTo + "' did not come back to this node (one failed, "
           + "timed out or was answered by another node), so it cannot be confirmed as this node's own request";
-      case NOT_SENT -> "this node's channel to '" + addressedTo + "' could not be probed, so it cannot be confirmed as this "
+      case NOT_SENT -> "this node's channels to '" + addressedTo + "' could not be probed, so it cannot be confirmed as this "
           + "node's own request";
       case SELF -> throw new IllegalStateException("A confirmed self-dial is repaired, not reported as unconfirmed");
     };
@@ -1256,8 +1258,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * a probe over the primary channel alone could reach the member while the heartbeat channel still led here. Any probe
    * coming back confirms the self-dial; the member is credited only when it answered over every one of them.
    * <p>
-   * Blocks for up to the Raft request timeout per connection, which is why it runs on {@link #selfDialProbeExecutor} only,
-   * never on the gRPC handler thread nor on the channel-recovery worker.
+   * Blocks for up to the Raft request timeout per connection, the probes going one after the other: two connections on
+   * the default configuration, plus the {@code readIndex} pool when one is configured. That is why it runs on
+   * {@link #selfDialProbeExecutor} only, never on the gRPC handler thread nor on the channel-recovery worker; its single
+   * worker and short queue reject what does not fit, and a rejected claim releases its slot so the next refused request
+   * queues it again. A connection that fails or times out proves nothing either way: the others are still probed, and
+   * any of them coming back confirms the self-dial, but when none comes back and any failed, the outcome is
+   * {@code ELSEWHERE} and nothing is reset - conservative on purpose, since only a probe that came back proves this node
+   * sent the request.
    */
   SelfDialProbeOutcome probeSelfDial(final RaftPeerId addressedTo) {
     final SelfDialProbeChannels channels = selfDialProbeChannels(addressedTo);
@@ -1345,6 +1353,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         LogManager.instance().log(this, Level.FINE, "Could not list the channels to '%s' for a self-dial probe: %s",
             addressedTo, e.toString());
       }
+    // Once per JVM: the reason (reflection blocked on the module path, missing native-image metadata) does not change
+    if (SELF_DIAL_CENSUS_FALLBACK_LOGGED.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.INFO,
+          "Could not list the gRPC channels Ratis holds for peer '%s': self-dial probes go over the primary channel only, "
+              + "and a probe the peer answers is reported as inconclusive rather than as proof of another sender", addressedTo);
     return new SelfDialProbeChannels(List.of(rpc::requestVote), false);
   }
 

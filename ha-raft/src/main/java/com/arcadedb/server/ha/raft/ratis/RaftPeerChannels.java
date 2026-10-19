@@ -28,8 +28,11 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Lists the gRPC connections Apache Ratis holds for one peer (issue #10374), so that a self-dial probe can be sent over
@@ -95,6 +98,9 @@ public final class RaftPeerChannels {
   private static final class Walk {
     private final List<ManagedChannel> channels = new ArrayList<>(2);
     private final List<AbstractStub<?>> stubs    = new ArrayList<>(4);
+    // Every object walked into, by identity: a cycle through a collection or an array, which do not count towards the
+    // depth, ends here instead of in a StackOverflowError
+    private final Set<Object>          visited  = Collections.newSetFromMap(new IdentityHashMap<>());
     private       boolean              complete = true;
 
     private void fieldsOf(final Object owner, final int depth) throws IllegalAccessException {
@@ -102,6 +108,8 @@ public final class RaftPeerChannels {
         complete = false;
         return;
       }
+      if (!visited.add(owner))
+        return;
       for (Class<?> c = owner.getClass(); c != null && c != Object.class; c = c.getSuperclass())
         for (final Field field : c.getDeclaredFields()) {
           if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive())
@@ -127,10 +135,11 @@ public final class RaftPeerChannels {
         if (supplier.isInitialized())
           value(supplier.get(), depth);
       } else if (value instanceof Collection<?> collection) {
-        for (final Object element : collection)
-          value(element, depth);
+        if (visited.add(collection))
+          for (final Object element : collection)
+            value(element, depth);
       } else if (value.getClass().isArray()) {
-        if (!value.getClass().getComponentType().isPrimitive())
+        if (!value.getClass().getComponentType().isPrimitive() && visited.add(value))
           for (int i = 0; i < Array.getLength(value); i++)
             value(Array.get(value, i), depth);
       } else if (value.getClass().getName().startsWith(RATIS_GRPC_PACKAGE))

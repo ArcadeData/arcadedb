@@ -46,6 +46,7 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -61,6 +62,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the probe reached the member, was reported as somebody else's claim, and the self-dialled heartbeat channel was never
  * repaired. A probe now goes over every connection Ratis holds for the member, and the member is credited only when it
  * answered over all of them.
+ * <p>
+ * The tests that build a {@code GrpcServerProtocolClient} read its private fields ({@code channel}, {@code hbChannel},
+ * {@code pool}) and call {@code GrpcStubPool.acquire()} by name, as written against <b>Ratis 3.3.1</b>. A
+ * {@code NoSuchFieldException} or {@code NoSuchMethodException} here after a Ratis upgrade means those internals moved:
+ * re-read {@code GrpcServerProtocolClient} and check that {@link RaftPeerChannels} still finds every channel.
  */
 class Issue10374SelfDialProbeCoversEveryChannelTest {
 
@@ -155,6 +161,19 @@ class Issue10374SelfDialProbeCoversEveryChannelTest {
     } finally {
       listed.shutdownNow();
       unlisted.shutdownNow();
+    }
+  }
+
+  /** A collection that holds itself ends the walk instead of overflowing the stack. */
+  @Test
+  void aCycleThroughACollectionEndsTheWalk() {
+    final ManagedChannel channel = NettyChannelBuilder.forTarget("127.0.0.1:1").usePlaintext().build();
+    try {
+      final RaftPeerChannels.Census census = RaftPeerChannels.of(new WithACycle(channel));
+      assertThat(census.channels()).containsExactly(channel);
+      assertThat(census.complete()).isTrue();
+    } finally {
+      channel.shutdownNow();
     }
   }
 
@@ -258,6 +277,17 @@ class Issue10374SelfDialProbeCoversEveryChannelTest {
     private WithAStubOverAnUnlistedChannel(final ManagedChannel channel, final ManagedChannel unlisted) {
       this.channel = channel;
       this.stub = RaftServerProtocolServiceGrpc.newStub(unlisted);
+    }
+  }
+
+  private static final class WithACycle {
+    private final ManagedChannel channel;
+    private final List<Object>   cycle = new ArrayList<>();
+
+    private WithACycle(final ManagedChannel channel) {
+      this.channel = channel;
+      cycle.add(cycle);
+      cycle.add(new Object[] { cycle, channel });
     }
   }
 

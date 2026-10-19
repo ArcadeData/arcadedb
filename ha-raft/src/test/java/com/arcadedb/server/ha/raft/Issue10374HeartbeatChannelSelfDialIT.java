@@ -38,6 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * then fixed leaves behind, since a busy heartbeat stream never resolves the name again. The leader refuses its own
  * heartbeats; before the fix its probe went over the primary channel only, was answered by the follower, and the
  * heartbeat channel was never repaired. Now the probe goes over every channel and the self-dial is repaired.
+ * <p>
+ * The swap sets the private {@code hbChannel} and {@code hbAsyncStub} fields of Ratis 3.3.1's
+ * {@code GrpcServerProtocolClient} by name: a {@code NoSuchFieldException} after a Ratis upgrade means they moved.
  */
 class Issue10374HeartbeatChannelSelfDialIT extends BaseRaftHATest {
 
