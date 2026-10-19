@@ -512,7 +512,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           // The sorted build writes its pages outside any transaction, so the caller's - empty, see
           // validateSortedBuildPreconditions - is set aside for its duration and given back untouched. An HTTP command
           // always arrives inside the auto-commit transaction of its handler, which is how CREATE INDEX from Studio runs
-          // (issue #10334).
+          // (issue #10334). Reading outside a transaction misses nothing: no other transaction can commit while the build
+          // holds the database write lock taken by recordFileChanges, and the async workers are quiesced above.
           try (final CommittedReadScope outsideCallerTransaction = CommittedReadScope.open(database)) {
             recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
                 buildSpillDirectory);

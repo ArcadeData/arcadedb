@@ -72,6 +72,8 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
     final PageManager.PPageManagerStats after = PageManager.INSTANCE.getStats();
 
+    // The counters are JVM-wide, so the bound is deliberately loose: the quadratic build reads ~3x the record count here, the
+    // sorted one a few dozen pages, and records/4 sits between them with room for anything else running. Do not tighten it
     final long pageAccesses = (after.cacheHits + after.cacheMiss) - (before.cacheHits + before.cacheMiss);
     assertThat(pageAccesses).as("index pages read by the build of a UNIQUE index over %d records", records)
         .isLessThan(records / 4);
