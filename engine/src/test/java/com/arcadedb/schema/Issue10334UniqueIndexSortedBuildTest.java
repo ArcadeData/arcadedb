@@ -33,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -175,6 +176,39 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
     database.begin();
     database.newDocument("Work").set("id", workId(42)).save();
     assertThatThrownBy(() -> database.commit()).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void writerStartedDuringTheSortedBuildCannotSlipADuplicateIn() throws Exception {
+    createPopulatedType("Work", 2, 12_000);
+
+    // The sorted build reads outside any transaction, so it relies on nobody committing while it runs. A writer started from
+    // inside the scan inserts a key the type already holds: it has to wait for the build and then be refused by the new index.
+    // Had it committed during the scan, the duplicate would either fail the build or end up in the index undetected.
+    final AtomicReference<Throwable> writerOutcome = new AtomicReference<>();
+    final Thread[] writer = new Thread[1];
+    database.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+        .withCallback((document, totalIndexed) -> {
+          if (writer[0] == null) {
+            writer[0] = new Thread(() -> {
+              try {
+                database.transaction(() -> database.newDocument("Work").set("id", workId(9_999)).save());
+              } catch (final Throwable t) {
+                writerOutcome.set(t);
+              }
+            });
+            writer[0].start();
+          }
+        }).create();
+
+    assertThat(sortedBuilds).hasSize(1);
+    writer[0].join(60_000);
+    assertThat(writer[0].isAlive()).isFalse();
+    assertThat(writerOutcome.get()).isInstanceOf(DuplicatedKeyException.class);
+
+    final TypeIndex index = database.getSchema().getType("Work").getIndexByProperties("id");
+    assertThat(index.countEntries()).isEqualTo(12_000);
+    assertThat(count(index.get(new Object[] { workId(9_999) }))).isEqualTo(1);
   }
 
   @Test
