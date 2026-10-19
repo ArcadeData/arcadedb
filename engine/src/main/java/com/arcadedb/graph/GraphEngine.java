@@ -284,6 +284,8 @@ public class GraphEngine {
     checkEndpointsNotDeletedInTransaction(database, fromVertexRID, toVertex.getIdentity());
 
     final EdgeType edgeType = getEdgeType(database, edgeTypeName);
+    if (!edgeType.isBidirectional())
+      checkUnidirectionalDestinationExists(database.getTransactionIfExists(), toVertex.getIdentity());
 
     checkLightEdgeUniqueness(fromVertex, edgeType, toVertex.getIdentity());
 
@@ -398,6 +400,23 @@ public class GraphEngine {
       throw deletedEndpoint(toVertexRID, "destination");
   }
 
+  /**
+   * Refuses an edge of a unidirectional type whose destination does not exist when the edge is created (issue #10325). Such an
+   * edge never loads its destination - it writes no incoming side - so nothing refused it up front, and the commit-time check of
+   * #8986 read the missing target as a concurrent delete: a retryable conflict that no retry can satisfy. The answer is the
+   * not-found a bidirectional type gives when it loads the destination; the commit keeps the retryable refusal for a target that
+   * existed here and was deleted concurrently. A destination this transaction created or loaded is answered from its cache;
+   * otherwise one slot lookup in the page the transaction reads anyway at commit.
+   */
+  private void checkUnidirectionalDestinationExists(final TransactionContext tx, final RID toVertexRID) {
+    if (tx != null && tx.getRecordFromCache(toVertexRID) != null)
+      return;
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(toVertexRID.getBucketId(), false);
+    if (bucket == null || !bucket.isRecordPresent(toVertexRID))
+      throw new VertexNotFoundException("Cannot create an edge whose destination vertex " + toVertexRID + " does not exist",
+          toVertexRID, null);
+  }
+
   private static VertexNotFoundException deletedEndpoint(final RID vertexRID, final String side) {
     return new VertexNotFoundException(
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
@@ -436,6 +455,8 @@ public class GraphEngine {
       bucketName = null;
 
     final EdgeType type = getEdgeType(database, edgeTypeName);
+    if (!type.isBidirectional())
+      checkUnidirectionalDestinationExists(database.getTransactionIfExists(), toVertex.getIdentity());
 
     if (type.isLightweight()) {
       // The storage shape is a property of the type, not of the call: on a LIGHTWEIGHT type every edge is stored
@@ -573,6 +594,9 @@ public class GraphEngine {
           edges.add(lightEdge);
         continue;
       }
+
+      if (!edgeType.isBidirectional())
+        checkUnidirectionalDestinationExists(tx, destinationVertex.getIdentity());
 
       final MutableEdge edge = new MutableEdge(database, edgeType, sourceVertexRID, destinationVertex.getIdentity());
 

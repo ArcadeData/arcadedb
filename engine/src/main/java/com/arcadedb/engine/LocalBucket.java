@@ -655,6 +655,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public boolean existsRecord(final RID rid) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    return isRecordPresent(rid);
+  }
+
+  /**
+   * {@link #existsRecord(RID)} without the READ_RECORD check, for the engine's own integrity checks that never hand the record
+   * out: the endpoint of a unidirectional edge is not read to create the edge (issue #10325), so asking whether it exists must
+   * not need a grant the creation itself never needed. Reads the slot through the transaction, so a record this transaction
+   * created is found.
+   */
+  public boolean isRecordPresent(final RID rid) {
+    if (rid.getPosition() < 0)
+      return false;
 
     try {
       // #6196: FIRST_CHUNK and not isChunkHead(), deliberately. A record EXISTS at this RID when the slot holds one of

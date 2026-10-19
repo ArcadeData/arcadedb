@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 /**
@@ -45,7 +46,12 @@ public class DeleteStep extends AbstractExecutionStep {
       protected Result process(final Result result) {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          return !result.isElement() || database.deleteRecordReportingVeto(result.getElement().get()) ? result : null;
+          // A ROW THAT IS NOT A RECORD (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS
+          // DELETED AND KEPT (issue #10336)
+          if (!result.isElement())
+            throw new CommandExecutionException("Cannot DELETE a row of the source that is not a record (a projection or a TIMESERIES "
+                + "sample): there is nothing to delete. Select the records themselves (SELECT FROM <type> WHERE ...) as the source");
+          return database.deleteRecordReportingVeto(result.getElement().get()) ? result : null;
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
