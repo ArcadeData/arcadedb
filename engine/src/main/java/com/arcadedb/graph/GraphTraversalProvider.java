@@ -165,6 +165,21 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * This provider fixed at the graph it serves now, for a caller that asks it several questions whose answers have to
+   * belong together: which IDs are live, then the RID of each, then their neighbours. Asked one at a time, each question
+   * is answered by whatever the provider serves at that moment, and a rebuild in between numbers the nodes afresh, so the
+   * later answers read the earlier IDs as other records - the RID of one past the new end comes back null - without
+   * failing (issue #10350).
+   * <p>
+   * A provider pinned this way answers every question from the same graph however long the caller takes, the changes
+   * committed since included or not, all together. The default is the provider itself, for one whose answers never change
+   * numbering underneath a caller.
+   */
+  default GraphTraversalProvider pinned() {
+    return this;
+  }
+
+  /**
    * Returns neighbor dense node IDs for a given node, direction, and edge types.
    * This is the primary acceleration method — O(1) array access vs O(n) linked list traversal.
    */

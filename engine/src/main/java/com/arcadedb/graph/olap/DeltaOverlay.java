@@ -474,6 +474,11 @@ class DeltaOverlay {
       else if (alreadyInFreshBase != null && alreadyInFreshBase.contains(ed.rid)) {
         // Nothing to do: the freshly built base CSR scanned this edge after the transaction that made both
         // the add and this update committed, so its columns already hold the value this update set.
+      } else if (isOutsideView(ed, baseMapping, newOverflowIds, newDeleted, overflowDeletedNow)) {
+        // Nothing to do either: the view does not hold this edge, so it has no column to be out of step with. Dirtying the
+        // type forced a full rebuild for nothing, on every commit that saved an edge to a vertex the view does not cover, and
+        // for the `newEdge(...).save()` of a vertex its own transaction deleted, whose rebuild was then raced by the queries
+        // that followed the commit (issue #10350)
       } else if (isSoleBaseEdge(ed, baseMapping, baseForUpdates, newOverflowIds, newDeleted)) {
         final int srcId = baseMapping.getGlobalId(ed.source);
         final int tgtId = baseMapping.getGlobalId(ed.target);
@@ -666,6 +671,24 @@ class DeltaOverlay {
         ed.target))
       return false;
     return csr.forwardEdgeCount(srcId, tgtId) == 1;
+  }
+
+  /**
+   * Whether the view holds no edge between the ends of {@code ed}: one of them is a vertex the view does not cover, a deleted
+   * base vertex, whose edges the view no longer serves, or an overflow vertex the same delta deleted, whose edges never reach
+   * the overlay (see the additions in {@link #merge}).
+   */
+  private static boolean isOutsideView(final TxDelta.EdgeDelta ed, final NodeIdMapping baseMapping,
+      final Map<RID, Integer> overflowIds, final BitSet deletedBase, final Map<RID, Integer> overflowDeletedNow) {
+    if (overflowDeletedNow != null && (overflowDeletedNow.containsKey(ed.source) || overflowDeletedNow.containsKey(ed.target)))
+      return true;
+    return isOutsideView(resolveNodeId(ed.source, baseMapping, overflowIds, deletedBase), deletedBase)
+        || isOutsideView(resolveNodeId(ed.target, baseMapping, overflowIds, deletedBase), deletedBase);
+  }
+
+  private static boolean isOutsideView(final int nodeId, final BitSet deletedBase) {
+    // a reused base slot resolves to its overflow node, past every id the deleted base nodes are kept under
+    return nodeId < 0 || deletedBase.get(nodeId);
   }
 
   private static LongObjectHashMap<Object[]> copy(final LongObjectHashMap<Object[]> source) {

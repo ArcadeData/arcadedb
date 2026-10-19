@@ -762,6 +762,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * ready provider that covers every edge type and every vertex type, the same terms as the
    * exact-match lookup: a view over a subset of the vertex types would run the algorithm on part
    * of the graph and answer as if it were the whole.
+   * <p>
+   * The provider is {@linkplain GraphTraversalProvider#pinned() pinned}: an algorithm asks it which nodes are live, then their
+   * neighbours, then the RID of each, and a view rebuilt between two of those questions numbers its nodes afresh, so the later
+   * answers would name other vertices (issue #10350).
    *
    * @param db       the database
    * @param relTypes edge types to filter by (null = any provider)
@@ -770,7 +774,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes, final CommandContext context) {
     final GraphTraversalProvider provider = findReadyProvider(db, relTypes);
     if (provider != null)
-      return provider;
+      return provider.pinned();
     // The first isReady() above dispatches a view's deferred restore-from-disk and answers false for that call (#6641),
     // so the first whole-graph call after a reopen would take the record-by-record scan, which costs far more than the
     // restore it did not wait for (#9220). Wait for the views that cover the request and are restoring, within the
@@ -784,7 +788,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // Ask again whatever the wait reported: the restore runs on another thread and can finish between the first lookup
     // and the moment the wait samples it. It then has nothing to wait for, yet the view is ready, and answering null
     // here would send this call down the record-by-record path anyway. The lookup is a few volatile reads.
-    return findReadyProvider(db, relTypes);
+    final GraphTraversalProvider restored = findReadyProvider(db, relTypes);
+    return restored != null ? restored.pinned() : null;
   }
 
   private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {

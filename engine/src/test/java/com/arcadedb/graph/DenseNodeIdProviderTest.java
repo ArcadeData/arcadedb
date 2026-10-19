@@ -85,8 +85,13 @@ class DenseNodeIdProviderTest {
 
   @Test
   void aCompactProviderIsHandedBackUnwrapped() {
-    // Nothing pending, so the view's IDs are already 0..getNodeCount(): wrapping would only cost a translation.
-    assertThat(DenseNodeIdProvider.wrap(view)).isSameAs(view);
+    // Nothing pending, so the view's IDs are already 0..getNodeCount(): wrapping would only cost a translation. The view is
+    // still pinned, so a rebuild cannot renumber what the caller reads (issue #10350)
+    final GraphTraversalProvider compact = DenseNodeIdProvider.wrap(view);
+    assertThat(compact).isNotInstanceOf(DenseNodeIdProvider.class);
+    assertThat(compact).isInstanceOf(GraphAnalyticalView.Pinned.class);
+    assertThat(((GraphAnalyticalView.Pinned) compact).getView()).isSameAs(view);
+    assertThat(DenseNodeIdProvider.wrap(compact)).isSameAs(compact);
     assertThat(DenseNodeIdProvider.wrap(null)).isNull();
   }
 

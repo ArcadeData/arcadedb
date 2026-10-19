@@ -1604,14 +1604,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
-    return getVertices(nodeId, direction, edgeTypes);
+    return getVertices(checkBuilt(), nodeId, direction, edgeTypes);
   }
 
   @Override
   public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+    getDegrees(checkBuilt(), degrees, direction, edgeType);
+  }
+
+  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
     final String[] resolved = expandEdgeType(edgeType);
     if (resolved.length == 1) {
-      degreesOfSlice(degrees, direction, resolved[0]);
+      degreesOfSlice(snap, degrees, direction, resolved[0]);
       return;
     }
 
@@ -1619,15 +1623,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     Arrays.fill(degrees, 0);
     final int[] slice = new int[degrees.length];
     for (final String concrete : resolved) {
-      degreesOfSlice(slice, direction, concrete);
+      degreesOfSlice(snap, slice, direction, concrete);
       for (int v = 0; v < degrees.length; v++)
         degrees[v] += slice[v];
     }
   }
 
   /** The degrees of ONE concrete slice and its overlay, with no type expansion. */
-  private void degreesOfSlice(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    final Snapshot snap = checkBuilt();
+  private static void degreesOfSlice(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction,
+      final String edgeType) {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     final DeltaOverlay ov = snap.overlay;
     final int n = Math.min(degrees.length, snap.nodeMapping.size());
@@ -1671,7 +1675,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return getNeighborView(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
+  private NeighborView getNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
@@ -1823,32 +1830,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns the dense node ID for a given RID, or -1 if not in the view.
    */
   public int getNodeId(final RID rid) {
-    final Snapshot snap = checkBuilt();
-    final DeltaOverlay ov = snap.overlay;
-    if (ov != null)
-      return ov.resolveNodeId(rid, snap.nodeMapping);
-    return snap.nodeMapping.getGlobalId(rid);
+    return nodeIdOf(checkBuilt(), rid);
   }
 
   /**
    * Returns the RID for a given dense node ID.
    */
   public RID getRID(final int nodeId) {
-    final Snapshot snap = checkBuilt();
-    if (nodeId >= snap.nodeMapping.size()) {
-      final DeltaOverlay ov = snap.overlay;
-      if (ov != null)
-        return ov.getOverflowRID(nodeId);
-      return null;
-    }
-    return snap.nodeMapping.getRID(database, nodeId);
+    return ridOf(checkBuilt(), nodeId);
   }
 
   @Override
   public int getBucketId(final int nodeId) {
+    return nodeId < 0 ? -1 : bucketIdOf(checkBuilt(), nodeId);
+  }
+
+  private static int bucketIdOf(final Snapshot snap, final int nodeId) {
     if (nodeId < 0)
       return -1;
-    final Snapshot snap = checkBuilt();
     if (nodeId >= snap.nodeMapping.size()) {
       final DeltaOverlay ov = snap.overlay;
       final RID rid = ov != null ? ov.getOverflowRID(nodeId) : null;
@@ -1898,7 +1897,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Vertex.countEdges(DIRECTION, String...)}.
    */
   public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return countEdges(checkBuilt(), nodeId, direction, requestedEdgeTypes);
+  }
+
+  private long countEdges(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     long total = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
@@ -1918,7 +1921,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public long countAllEdges(final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return countAllEdges(checkBuilt(), requestedEdgeTypes);
+  }
+
+  private long countAllEdges(final Snapshot snap, final String... requestedEdgeTypes) {
     if (hasActiveOverlay(snap))
       return -1;
 
@@ -1965,7 +1971,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Vertex.getVertices(DIRECTION, String...)}.
    */
   public int[] getVertices(final int nodeId, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return getVertices(checkBuilt(), nodeId, direction, requestedEdgeTypes);
+  }
+
+  private int[] getVertices(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     if (edgeTypes != null && edgeTypes.length == 1) {
@@ -2020,7 +2030,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** The slice of {@code edgeType} alone, overlay included, with no type expansion (issue #10213). */
   @Override
   public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
-    final Snapshot snap = checkBuilt();
+    return getNeighborIdsOfSlice(checkBuilt(), nodeId, direction, edgeType);
+  }
+
+  private int[] getNeighborIdsOfSlice(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType) {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     if (csr == null && snap.overlay == null)
       return EMPTY_INT;
@@ -2037,7 +2051,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** The zero-copy view of the slice of {@code edgeType} alone, with no type expansion (issue #10213). */
   @Override
   public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
-    final Snapshot snap = checkBuilt();
+    return getNeighborViewOfSlice(checkBuilt(), direction, edgeType);
+  }
+
+  private static NeighborView getNeighborViewOfSlice(final Snapshot snap, final Vertex.DIRECTION direction,
+      final String edgeType) {
     // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
     if (hasActiveOverlay(snap))
       return null;
@@ -2071,7 +2089,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return isConnectedTo(checkBuilt(), nodeA, nodeB, direction, requestedEdgeTypes);
+  }
+
+  private boolean isConnectedTo(final Snapshot snap, final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String edgeType : edgeTypes)
@@ -2101,7 +2123,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   @Override
   public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return countEdgesBetween(checkBuilt(), nodeA, nodeB, direction, requestedEdgeTypes);
+  }
+
+  private long countEdgesBetween(final Snapshot snap, final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     long total = 0;
     final Iterable<String> types = edgeTypes != null && edgeTypes.length > 0 ?
@@ -2134,7 +2160,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public double getMeanEdgesPerConnectedPair(final String edgeType) {
-    final Snapshot snap = checkBuilt();
+    return getMeanEdgesPerConnectedPair(checkBuilt(), edgeType);
+  }
+
+  private double getMeanEdgesPerConnectedPair(final Snapshot snap, final String edgeType) {
     if (snap.overlay != null)
       return MULTIPLICITY_UNKNOWN;
     // A type answers for its sub-types too, whose slices this measures one at a time: say unknown rather than guess
@@ -2194,7 +2223,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Document.get(String)}.
    */
   public Object getProperty(final int nodeId, final String propertyName) {
-    final Snapshot snap = checkBuilt();
+    return getProperty(checkBuilt(), nodeId, propertyName);
+  }
+
+  private static Object getProperty(final Snapshot snap, final int nodeId, final String propertyName) {
     // Check overlay first (overrides and overflow nodes)
     final DeltaOverlay ov = snap.overlay;
     if (ov != null) {
@@ -2260,6 +2292,223 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** The snapshot being served, or null before the first build; unlike {@link #captureSnapshot()} it never waits. */
   Snapshot currentSnapshot() {
     return snapshot;
+  }
+
+  /**
+   * This view fixed at the snapshot it serves now: {@link #captureSnapshot()} for a caller outside this package, a query or
+   * an algorithm, behind the provider SPI. Every answer it gives belongs to that one snapshot, its overlay included, however
+   * many commits are merged and however many times the view is rebuilt meanwhile (issue #10350). Costs one object: the
+   * snapshot is immutable, and pinning only keeps it reachable for as long as the caller holds the result.
+   */
+  @Override
+  public Pinned pinned() {
+    return new Pinned(this, checkBuilt());
+  }
+
+  /**
+   * A {@link GraphAnalyticalView} fixed at one snapshot, see {@link #pinned()}. It reads, and nothing else: building,
+   * dropping and the status of the view are the view's own. What does not depend on the snapshot - the types the view
+   * covers, how a type expands into the slices of its sub-types - is asked of the view.
+   */
+  public static final class Pinned implements GraphTraversalProvider {
+    private final GraphAnalyticalView view;
+    private final Snapshot            snap;
+
+    private Pinned(final GraphAnalyticalView view, final Snapshot snap) {
+      this.view = view;
+      this.snap = snap;
+    }
+
+    /** The view this snapshot was pinned from. */
+    public GraphAnalyticalView getView() {
+      return view;
+    }
+
+    /** The snapshot itself, for a kernel of this package that reads its arrays directly. */
+    Snapshot snapshot() {
+      return snap;
+    }
+
+    @Override
+    public Pinned pinned() {
+      return this;
+    }
+
+    /** The CSR of one concrete edge type in this snapshot, or null when it holds none. */
+    public CSRAdjacencyIndex getCSRIndex(final String edgeType) {
+      return snap.csrPerType.get(edgeType);
+    }
+
+    /** The node mapping of this snapshot's base, which the ids past it extend while an overlay holds new vertices. */
+    public NodeIdMapping getNodeMapping() {
+      return snap.nodeMapping;
+    }
+
+    /** The edge types this snapshot answers for, the ones only its overlay holds included. */
+    public Set<String> getEdgeTypes() {
+      return edgeTypesOf(snap);
+    }
+
+    @Override
+    public int getNodeCount() {
+      return nodeCountOf(snap);
+    }
+
+    @Override
+    public int getNodeIdUpperBound() {
+      return nodeIdUpperBoundOf(snap);
+    }
+
+    @Override
+    public boolean isNodeLive(final int nodeId) {
+      return view.isNodeLive(snap, nodeId);
+    }
+
+    @Override
+    public boolean hasPendingChanges() {
+      return hasActiveOverlay(snap);
+    }
+
+    /** Always: a snapshot that was served once answers for as long as it is pinned. */
+    @Override
+    public boolean isReady() {
+      return true;
+    }
+
+    /** Whether the view this snapshot was pinned from is behind the graph. */
+    @Override
+    public boolean isStale() {
+      return view.isStale();
+    }
+
+    @Override
+    public String getName() {
+      return view.getName();
+    }
+
+    @Override
+    public boolean coversVertexType(final String typeName) {
+      return view.coversVertexType(typeName);
+    }
+
+    @Override
+    public boolean coversEdgeType(final String edgeTypeName) {
+      return view.coversEdgeType(edgeTypeName);
+    }
+
+    @Override
+    public int getNodeId(final RID rid) {
+      return view.nodeIdOf(snap, rid);
+    }
+
+    @Override
+    public RID getRID(final int nodeId) {
+      return view.ridOf(snap, nodeId);
+    }
+
+    @Override
+    public int getBucketId(final int nodeId) {
+      return bucketIdOf(snap, nodeId);
+    }
+
+    @Override
+    public Object getNodeIdSpace() {
+      return snap.nodeMapping;
+    }
+
+    @Override
+    public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.getVertices(snap, nodeId, direction, edgeTypes);
+    }
+
+    @Override
+    public String[] resolveEdgeTypes(final String... edgeTypes) {
+      return view.resolveEdgeTypes(edgeTypes);
+    }
+
+    @Override
+    public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+      return view.getNeighborIdsOfSlice(snap, nodeId, direction, edgeType);
+    }
+
+    @Override
+    public long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+        final String edgeType) {
+      return view.countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+    }
+
+    @Override
+    public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+      return GraphAnalyticalView.getNeighborViewOfSlice(snap, direction, edgeType);
+    }
+
+    @Override
+    public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.countEdges(snap, nodeId, direction, edgeTypes);
+    }
+
+    @Override
+    public long countAllEdges(final String... edgeTypes) {
+      return view.countAllEdges(snap, edgeTypes);
+    }
+
+    @Override
+    public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.isConnectedTo(snap, nodeA, nodeB, direction, edgeTypes);
+    }
+
+    @Override
+    public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.countEdgesBetween(snap, nodeA, nodeB, direction, edgeTypes);
+    }
+
+    @Override
+    public Object getProperty(final int nodeId, final String propertyName) {
+      return GraphAnalyticalView.getProperty(snap, nodeId, propertyName);
+    }
+
+    @Override
+    public double getMeanEdgesPerConnectedPair(final String edgeType) {
+      return view.getMeanEdgesPerConnectedPair(snap, edgeType);
+    }
+
+    @Override
+    public String[] getMaterializedEdgeTypes() {
+      return materializedEdgeTypesOf(snap);
+    }
+
+    @Override
+    public boolean hasEdgeProperties() {
+      return GraphAnalyticalView.hasEdgeProperties(snap);
+    }
+
+    @Override
+    public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
+      return view.hasEdgeProperty(snap, edgeType, propertyName);
+    }
+
+    @Override
+    public NodeEdgeWeights edgeWeightsForSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType,
+        final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint) {
+      return view.edgeWeightsForSlice(snap, nodeId, direction, edgeType, propertyName, defaultWeight, edgeCheckpoint);
+    }
+
+    @Override
+    public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.getNeighborView(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+      view.getDegrees(snap, degrees, direction, edgeType);
+    }
+
+    @Override
+    public String toString() {
+      return "Pinned(" + view.getName() + ")";
+    }
   }
 
   /** {@link #getNodeId(RID)} asked of a captured snapshot. */
@@ -2575,7 +2824,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public Set<String> getEdgeTypes() {
-    final Snapshot snap = checkBuilt();
+    return edgeTypesOf(checkBuilt());
+  }
+
+  private static Set<String> edgeTypesOf(final Snapshot snap) {
     final Collection<String> all = allEdgeTypes(snap);
     return Collections.unmodifiableSet(all instanceof Set<String> set ? set : new LinkedHashSet<>(all));
   }
@@ -2586,7 +2838,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public int getNodeCount() {
-    final Snapshot snap = checkBuilt();
+    return nodeCountOf(checkBuilt());
+  }
+
+  private static int nodeCountOf(final Snapshot snap) {
     final DeltaOverlay ov = snap.overlay;
     if (ov != null)
       return ov.getTotalNodeCount();
@@ -2600,7 +2855,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public int getNodeIdUpperBound() {
-    final Snapshot snap = checkBuilt();
+    return nodeIdUpperBoundOf(checkBuilt());
+  }
+
+  private static int nodeIdUpperBoundOf(final Snapshot snap) {
     final DeltaOverlay ov = snap.overlay;
     if (ov != null)
       return ov.getNodeIdUpperBound();
@@ -2616,13 +2874,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public boolean isNodeLive(final int nodeId) {
-    if (nodeId < 0)
-      return false;
-    final Snapshot snap = checkBuilt();
-    final DeltaOverlay ov = snap.overlay;
-    if (ov == null)
-      return nodeId < snap.nodeMapping.size();
-    return nodeId < ov.getNodeIdUpperBound() && !ov.isDeleted(nodeId);
+    return nodeId >= 0 && isNodeLive(checkBuilt(), nodeId);
   }
 
   /**
@@ -2848,7 +3100,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public String[] getMaterializedEdgeTypes() {
-    final Snapshot snap = this.snapshot;
+    return materializedEdgeTypesOf(this.snapshot);
+  }
+
+  private static String[] materializedEdgeTypesOf(final Snapshot snap) {
     return snap == null ? null : allEdgeTypes(snap).toArray(new String[0]);
   }
 
@@ -2878,14 +3133,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public boolean hasEdgeProperties() {
-    final Snapshot snap = this.snapshot;
+    return hasEdgeProperties(this.snapshot);
+  }
+
+  private static boolean hasEdgeProperties(final Snapshot snap) {
     return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty()
         && !hasStaleEdgeColumns(snap);
   }
 
   @Override
   public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
-    final Snapshot snap = this.snapshot;
+    return hasEdgeProperty(this.snapshot, edgeType, propertyName);
+  }
+
+  private boolean hasEdgeProperty(final Snapshot snap, final String edgeType, final String propertyName) {
     if (snap == null || snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
       return false;
     // The columns are per slice: a type with sub-types spans several, which a caller cannot be handed as one
@@ -2930,8 +3191,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // BOTH has no adjacency slice of its own to be aligned with; edgeWeightsOf() splits it before calling here.
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
       return null;
+    return edgeWeightsForSlice(checkBuilt(), nodeId, direction, edgeType, propertyName, defaultWeight, edgeCheckpoint);
+  }
 
-    final Snapshot snap = checkBuilt();
+  private NodeEdgeWeights edgeWeightsForSlice(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType, final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint) {
+    // BOTH has no adjacency slice of its own to be aligned with; edgeWeightsOf() splits it before calling here.
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      return null;
     // Per slice, like hasEdgeProperty(): a type with sub-types cannot be served as one, the caller reads the records
     if (expandEdgeType(edgeType).length > 1)
       return null;

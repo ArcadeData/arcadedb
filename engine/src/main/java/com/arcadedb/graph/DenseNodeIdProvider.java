@@ -67,10 +67,15 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    * Asking is one comparison, so a caller that may be handed either shape calls this unconditionally rather than
    * testing for a Graph Analytical View, or for an overlay, at the call site: the question is about the ID space,
    * not about who produced it.
+   * <p>
+   * The provider is {@linkplain GraphTraversalProvider#pinned() pinned} first, compact or not: the renumbering is read once
+   * and answered for as long as the caller holds it, which only holds if every later question is put to the snapshot it was
+   * read from. A view rebuilt meanwhile numbers its nodes afresh (issue #10350).
    */
-  public static GraphTraversalProvider wrap(final GraphTraversalProvider provider) {
-    if (provider == null)
+  public static GraphTraversalProvider wrap(final GraphTraversalProvider live) {
+    if (live == null)
       return null;
+    final GraphTraversalProvider provider = live.pinned();
     final int bound = provider.getNodeIdUpperBound();
     if (bound == provider.getNodeCount())
       // Compact already: every ID below the bound is a live node, which is the space this class would build.
