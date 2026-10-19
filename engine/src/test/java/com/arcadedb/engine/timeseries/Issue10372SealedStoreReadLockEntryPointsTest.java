@@ -26,12 +26,14 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -125,6 +127,7 @@ class Issue10372SealedStoreReadLockEntryPointsTest {
    * first. {@code Issue9621SealedStoreChannelReopenTest} covers them against a close.
    */
   @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES) // A HANG DETECTOR, NOT A LATENCY BOUND: THE CLOSER AND CALLERS SPIN
   void everyReadLockEntryPointSurvivesOtherThreadsClosingTheSharedChannel() throws Exception {
     final File sealed = new File(BASE_PATH + TimeSeriesSealedStore.FILE_EXTENSION);
     final long expectedLength = sealed.length();
