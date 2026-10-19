@@ -724,7 +724,7 @@ public class PaginatedComponentFile extends ComponentFile {
    * Keeps an interrupt landing on a thread doing I/O on {@code fc} from closing the channel for every thread using it.
    * Needs {@code --add-opens java.base/java.nio.channels.spi}; without it the channel stays interruptible and its users
    * fall back to reopening it. Shared with the snapshot shadow's spill file (#9444) and the time series sealed store
-   * (#10372).
+   * (#10372). Public only so the engine's own sub-packages can reach it: it is internal, not an API.
    */
   public static void doNotCloseOnInterrupt(final FileChannel fc) {
     try {

@@ -5940,9 +5940,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private long fileLengthOnDisk() throws IOException {
     final File file = new File(basePath + FILE_EXTENSION);
-    final long length = file.length();
     if (closed)
       throw new FileNotFoundException("Sealed store '" + file.getPath() + "' was closed on purpose, refusing to read its length");
+    final long length = file.length();
     if (length == 0L && !file.exists())
       throw new FileNotFoundException("Sealed store '" + file.getPath() + "' no longer exists on disk");
     return length;
@@ -5950,8 +5950,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * The recovery policy for a channel found closed by an operation holding the directory WRITE lock (issue #9621), the
-   * same as {@code PaginatedComponentFile}'s (#9306): reopen the channel and repeat {@code operation} from its start, a bounded number of times, because this
-   * thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
+   * same as {@code PaginatedComponentFile}'s (#9306): reopen the channel and repeat {@code operation} from its start, a
+   * bounded number of times, because this thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
    * so the reopened channel is not closed at once, and restored afterwards so the caller still sees the cancellation.
    * Only a reopen that is REFUSED - the store was closed on purpose, or its file no longer exists - is a real failure.
    * <p>

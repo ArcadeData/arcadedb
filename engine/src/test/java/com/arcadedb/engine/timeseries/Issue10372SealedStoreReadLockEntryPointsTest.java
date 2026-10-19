@@ -235,6 +235,42 @@ class Issue10372SealedStoreReadLockEntryPointsTest {
   }
 
   /**
+   * The WRITE-lock side of the split: a repairing integrity check holds the WRITE lock, so it still recovers a closed
+   * channel on the shared one, and {@code retryAfterReopen}'s new requirement of that lock does not refuse it. Closing the
+   * store afterwards flushes the header through the same path.
+   */
+  @Test
+  void aWriteLockEntryPointStillRecoversOnTheSharedChannel() throws Exception {
+    store.getIndexChannelForTest().close();
+    assertThat(store.checkIntegrity(TimeSeriesIntegrity.Options.fixOnly()).problems()).isEmpty();
+    assertThat(store.getIndexChannelForTest().isOpen()).isTrue();
+
+    store.getIndexChannelForTest().close();
+    appendBlock(store, BASE_TS + (long) BLOCKS * SAMPLES * 1_000L);
+    store.getIndexChannelForTest().close();
+    store.close();
+
+    store = new TimeSeriesSealedStore(BASE_PATH, columns, 0L);
+    assertThat(store.getBlockCount()).isEqualTo(BLOCKS + 1);
+    assertThat(store.checkIntegrity(TimeSeriesIntegrity.Options.deepOnly()).problems()).isEmpty();
+  }
+
+  /**
+   * A store closed on purpose is not asked for its size even though its file is still there: the refusal comes from the
+   * flag, not from the file having gone.
+   */
+  @Test
+  void theLengthOfAStoreClosedOnPurposeIsRefusedWithItsFileIntact() throws Exception {
+    final TimeSeriesSealedStore closedStore = store;
+    store = null;
+    closedStore.close();
+
+    assertThat(new File(BASE_PATH + TimeSeriesSealedStore.FILE_EXTENSION).exists()).isTrue();
+    assertThatThrownBy(closedStore::getFileSizeBytes).isInstanceOf(IOException.class).hasMessageContaining("closed on purpose");
+    assertThatThrownBy(closedStore::readWholeSealedFile).isInstanceOf(IOException.class);
+  }
+
+  /**
    * The file length no longer comes from the shared descriptor, so the refusals that the reopen used to make on behalf of
    * a READ-lock caller are made by the length read itself: a store closed on purpose is not asked for its size, and a
    * file that is gone is not reported as an empty one, which the HA ship would otherwise send to every follower.
