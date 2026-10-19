@@ -65,6 +65,15 @@ The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they fol
 
 ## Fixes
 
+- **#10255** openCypher: a triangle written as one `MATCH` (`MATCH (a)--(b)--(c)--(a) RETURN count(*)`, with no `WHERE` or
+  with an order on one property such as `a.id < b.id AND b.id < c.id`) is counted by a sorted intersection of the adjacency
+  lists, in parallel over the query pool: 5 ms on a Graph Analytical View and about 40 ms without one, where it took about
+  1,750 ms. The count keeps the pattern's own semantics (parallel edges, self-loop walks, and equal, null, `NaN` or
+  mixed-type values drop the triangle). A Graph Analytical View node column no longer converts a value it cannot hold as it
+  is (a `2.5` or a `NaN` in an integer column, a `FLOAT` in a double one, a number in a string one): the value is read from
+  the record instead.
+- **#10254** openCypher: a list kept next to an aggregate (`WITH r1, collect(DISTINCT b) AS r2`), or in a `DISTINCT`, is no
+  longer canonicalized and hashed again on every row, which made the grouping quadratic in the size of the list.
 - **#10249** A Graph Analytical View no longer ends up a few edges short when several threads commit at the same time and some
   of the commits delete edges. A transaction reported its change to the view after releasing its locks, so two commits that
   conflicted could reach the view in the opposite order, and an edge created in the record slot a deleted one had just freed

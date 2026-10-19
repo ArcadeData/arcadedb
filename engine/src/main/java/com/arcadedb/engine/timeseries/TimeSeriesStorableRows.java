@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -38,7 +39,8 @@ import java.util.Set;
  * second one by hand).
  * <p>
  * A row is refused at its FIRST unreadable column, in schema order, and the columns after it are not read: one reason per refused
- * row.
+ * row. A value the column can store but a constraint declared on the column refuses (MANDATORY, NOTNULL, MIN, MAX, REGEXP, see
+ * {@link TimeSeriesColumnConstraints}) refuses its row the same way, the reason naming the constraint (issue #10238).
  * <p>
  * <b>This is the only way the client-facing paths reach the engine's raw-grid {@code appendBatch}</b> (issue #10107): the grid
  * {@link #convert} builds is appended with {@link #appendTo}, and no production code outside this class and the engine calls
@@ -83,11 +85,13 @@ public final class TimeSeriesStorableRows {
   }
 
   /**
-   * Converts {@code rows} rows into the grid the engine appends.
+   * Converts {@code rows} rows of {@code type} into the grid the engine appends, holding every converted value to the constraints
+   * the type's columns declare now (issue #10238): a row that violates one is refused like a row carrying a value its column cannot
+   * store, and reported the same way.
    *
    * @param database    the database the type lives in, which reads a DATE/DATETIME value given as text
    * @param measurement the name the reasons are reported under
-   * @param columns     the full column list of the type, timestamp column included
+   * @param type        the type the rows are appended to
    * @param timestamps  the timestamp of every row, at least {@code rows} long. Compacted IN PLACE when a row is refused, so the
    *                    caller must not read it afterwards: {@link #timestamps()} is the array to append
    * @param rows        how many rows the batch holds
@@ -96,29 +100,51 @@ public final class TimeSeriesStorableRows {
    * @param unreadable  where the reasons of the refused rows are added, up to {@link TimeSeriesGateway#MAX_REPORTED_UNREADABLE_VALUES}
    *                    entries in all
    */
-  public static TimeSeriesStorableRows convert(final Database database, final String measurement, final List<ColumnDefinition> columns,
+  public static TimeSeriesStorableRows convert(final Database database, final String measurement, final LocalTimeSeriesType type,
       final long[] timestamps, final int rows, final boolean sharedTags, final RawValues raw, final Set<String> unreadable) {
+    return convert(database, measurement, type.getTsColumns(), TimeSeriesColumnConstraints.of(database, type), timestamps, rows,
+        sharedTags, raw, unreadable);
+  }
+
+  /**
+   * {@link #convert(Database, String, LocalTimeSeriesType, long[], int, boolean, RawValues, Set)} over a bare column list.
+   *
+   * @param columns     the full column list of the type, timestamp column included
+   * @param constraints the constraints of the columns, {@code null} for none
+   */
+  static TimeSeriesStorableRows convert(final Database database, final String measurement, final List<ColumnDefinition> columns,
+      final TimeSeriesColumnConstraints constraints, final long[] timestamps, final int rows, final boolean sharedTags,
+      final RawValues raw, final Set<String> unreadable) {
+    ColumnDefinition timestampColumn = null;
     final ColumnDefinition[] valueColumns = new ColumnDefinition[columns.size() - 1]; // exclude timestamp
     int next = 0;
     for (final ColumnDefinition col : columns)
       if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
         valueColumns[next++] = col;
+      else
+        timestampColumn = col;
 
     final Object[][] columnValues = new Object[valueColumns.length][rows];
 
     // Shared columns first: a refusal there refuses the whole batch, so no row is read at all
     Object[] sharedValues = null;
     if (sharedTags) {
+      final long deadline = constraints != null ? constraints.sampleDeadline() : 0L;
       for (int c = 0; c < valueColumns.length; c++) {
         final ColumnDefinition col = valueColumns[c];
         if (col.getRole() != ColumnDefinition.ColumnRole.TAG)
           continue;
         if (sharedValues == null)
           sharedValues = new Object[valueColumns.length];
+        String reason;
         try {
           sharedValues[c] = col.storableValue(database, raw.get(0, c, col));
+          reason = constraints != null ? constraints.check(c, sharedValues[c], deadline) : null;
         } catch (final IllegalArgumentException e) {
-          addReason(unreadable, measurement, col, e);
+          reason = e.getMessage();
+        }
+        if (reason != null) {
+          addReason(unreadable, measurement, col, reason);
           return new TimeSeriesStorableRows(new long[0], new Object[valueColumns.length][0], 0, rows, true);
         }
       }
@@ -128,17 +154,30 @@ public final class TimeSeriesStorableRows {
     // because every non-shared column is assigned on every pass, a null included, so keep it so
     int valid = 0;
     for (int row = 0; row < rows; row++) {
+      final long deadline = constraints != null ? constraints.sampleDeadline() : 0L;
       boolean refused = false;
+      if (constraints != null) {
+        final String reason = constraints.checkTimestamp(timestamps[row], deadline);
+        if (reason != null) {
+          addReason(unreadable, measurement, timestampColumn, reason);
+          continue;
+        }
+      }
       for (int c = 0; c < valueColumns.length; c++) {
         final ColumnDefinition col = valueColumns[c];
         if (sharedValues != null && col.getRole() == ColumnDefinition.ColumnRole.TAG)
           continue;
         final Object value = raw.get(row, c, col);
         // Only the conversion is guarded: an IllegalArgumentException from the caller's RawValues is not a column problem
+        String reason;
         try {
           columnValues[c][valid] = col.storableValue(database, value);
+          reason = constraints != null ? constraints.check(c, columnValues[c][valid], deadline) : null;
         } catch (final IllegalArgumentException e) {
-          addReason(unreadable, measurement, col, e);
+          reason = e.getMessage();
+        }
+        if (reason != null) {
+          addReason(unreadable, measurement, col, reason);
           refused = true;
           break;
         }
@@ -165,11 +204,14 @@ public final class TimeSeriesStorableRows {
   }
 
   private static void addReason(final Set<String> unreadable, final String measurement, final ColumnDefinition col,
-      final IllegalArgumentException e) {
-    // The reason names the column and its type, never the value, which comes from the client
+      final String reason) {
+    // The reason names the column and its type, or the constraint, never the value, which comes from the client
     if (unreadable.size() < TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES)
-      unreadable.add(measurement + "." + col.getName() + " (" + (col.getRole() == ColumnDefinition.ColumnRole.TAG ? "tag" : "field")
-          + "): " + e.getMessage());
+      unreadable.add(measurement + "." + col.getName() + " (" + switch (col.getRole()) {
+        case TAG -> "tag";
+        case TIMESTAMP -> "timestamp";
+        default -> "field";
+      } + "): " + reason);
   }
 
   /**

@@ -28,7 +28,6 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -43,6 +42,8 @@ import java.util.logging.Level;
 
 public class SecurityGroupFileRepository {
   public static final String                     FILE_NAME       = "server-groups.json";
+  /** Where a {@link #FILE_NAME} that cannot be loaded is preserved before the default document replaces it. */
+  public static final String                     ERROR_FILE_NAME = "server-groups-error.json";
   /** Prefix of the watcher thread's name; the watched document's path is appended to it. See {@link #startWatching()}. */
   public static final String                     WATCHER_PREFIX  = "arcadedb-security-groups-watcher";
   private final       String                     securityConfPath;
@@ -189,29 +190,17 @@ public class SecurityGroupFileRepository {
     }
   }
 
+  /**
+   * Reports that {@link #FILE_NAME} could not be loaded and preserves it verbatim as {@link #ERROR_FILE_NAME}.
+   * <p>
+   * It copies the file on DISK (issue #10321). It used to write {@code latestGroupConfiguration} instead, which is
+   * {@code null} on the one path that reaches here - {@link #getGroups()}'s first load failed, so nothing was published
+   * - and the method returned without preserving anything; {@link #createDefault()} then saved the default document
+   * over the operator's file. When the document WAS published, what it wrote was the valid in-memory one, not the
+   * corrupt file the message claimed to save.
+   */
   public synchronized void saveInError(final Exception e) {
-    if (latestGroupConfiguration == null)
-      return;
-
-    LogManager.instance().log(this, Level.SEVERE,
-        "Error on loading file '%s', using the default configuration and saving the corrupt file as 'config/server-groups-error.json'",
-        e, FILE_NAME);
-
-    final String fileName = securityConfPath + FILE_NAME;
-    final int pos = fileName.lastIndexOf(".");
-    final String errorFileName = fileName.substring(0, pos) + "-error.json";
-
-    final File file = new File(errorFileName);
-    if (!file.exists())
-      file.getParentFile().mkdirs();
-
-    try {
-      try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
-        writer.write(latestGroupConfiguration.toString());
-      }
-    } catch (final Exception e2) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration in error in config/security-error.json", e2);
-    }
+    SecurityUserFileRepository.preserveInError(this, file, new File(securityConfPath, ERROR_FILE_NAME), e);
   }
 
   public JSONObject getGroups() {
@@ -225,7 +214,7 @@ public class SecurityGroupFileRepository {
           try {
             load();
           } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on loading file '%s', using default configuration", e, FILE_NAME);
+            // saveInError() logs the failure, naming the file it was preserved as.
             saveInError(e);
             latestGroupConfiguration = createDefault();
           }

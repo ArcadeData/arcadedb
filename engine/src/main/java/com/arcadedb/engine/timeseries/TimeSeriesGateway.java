@@ -288,7 +288,6 @@ public final class TimeSeriesGateway {
         // so this can never actually throw, but getEngine() alone would silently reintroduce the "no engine"
         // possibility at the type level if that filtering were ever changed.
         final TimeSeriesEngine engine = batch.type().requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-        final List<ColumnDefinition> columns = batch.type().getTsColumns();
         final List<Sample> group = batch.samples();
         final int count = group.size();
         if (count == 0)
@@ -301,9 +300,10 @@ public final class TimeSeriesGateway {
 
         // A sample whose value a column cannot store is left out HERE, before anything of it reaches the engine, and named: the
         // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). The
-        // conversion is the one the Prometheus remote write shares (issue #10030)
-        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.getFirst().getMeasurement(), columns, timestamps,
-            count, false, (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
+        // conversion is the one the Prometheus remote write shares (issue #10030), and so is the check of the column constraints
+        // (issue #10238)
+        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.getFirst().getMeasurement(), batch.type(),
+            timestamps, count, false, (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
                 group.get(row).getTags().get(col.getName()) :
                 group.get(row).getFields().get(col.getName()), unreadableValues);
 

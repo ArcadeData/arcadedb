@@ -48,7 +48,8 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 # "Stage build context" step, amd64 leg):
 #   ./arcadedb              -> the linux/amd64 static-musl binary, from artifact
 #                               arcadedb-native-linux-amd64
-#   ./config                -> config templates, copied verbatim from package/src/main/config
+#   ./config                -> config templates from package/src/main/config, with the JVM
+#                               assemblies' include set
 #   ./ca-certificates.crt   -> CA bundle. scratch ships no trust store of any kind, and the
 #                               server's HTTPS import/replication/MCP-client code paths need one
 #                               at runtime. NOTE: GraalVM Native Image bakes a snapshot of the

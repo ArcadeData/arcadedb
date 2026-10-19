@@ -103,7 +103,8 @@ class DeltaOverlay {
   private final Map<String, IntIntHashMap> deletedOutEdgeCounts;
   private final Map<String, IntIntHashMap> deletedInEdgeCounts;
 
-  // Property overrides for base nodes: globalId -> (propName -> value)
+  // Property overrides for base nodes: globalId -> (propName -> value). The map is the vertex's complete state as of its last
+  // update, not a patch: a property it lacks reads as missing, whatever the base columns still hold (issue #10335)
   private final Map<Integer, Map<String, Object>> propertyOverrides;
 
   private final int baseNodeCount;
@@ -397,6 +398,13 @@ class DeltaOverlay {
     // Process added edges
     Set<RID> alreadyInFreshBase = null;
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
+      // An edge of an overflow vertex this same delta deletes is gone with it, so it never reaches the overlay and the deletion
+      // reported beside it (below) has nothing to withdraw. Asked by RID before the ends are resolved: the vertex has left the
+      // overflow by now, and a RID that sits on a reused base slot (#8948) then names the deleted base node, so the edge was added
+      // against that node while its deletion named the overflow one. A regular edge was withdrawn by its own RID anyway, but a
+      // lightweight edge is withdrawn by its ends and stayed in the view for good (issue #10339)
+      if (overflowDeletedNow != null && (overflowDeletedNow.containsKey(ed.source) || overflowDeletedNow.containsKey(ed.target)))
+        continue;
       final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds, newDeleted);
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds, newDeleted);
       if (srcId < 0 || tgtId < 0)
@@ -545,6 +553,13 @@ class DeltaOverlay {
       if (!newDeletedEdgeRIDs.computeIfAbsent(ed.edgeType, k -> new HashSet<>()).add(ed.rid))
         continue;
 
+      // An edge with an overflow vertex at either end is not in the base CSR, which holds base nodes only: the overlay held it as an
+      // addition, withdrawn above, or never did, the edge having been created and deleted by one transaction. Either way there is
+      // no run of the base to spend an exclusion budget against, and recording one subtracted an edge nobody had counted from the
+      // degree of its other end, a negative one (issue #10340), and from the delta edge counter
+      if (srcId >= baseNodeCount || tgtId >= baseNodeCount)
+        continue;
+
       // Post-compaction re-application, deletion side (issue #7042). The exclusion budget recorded below is
       // spent against the FRESHLY scanned base run for the pair, so it may only be recorded for a deletion
       // that run still carries. The scan is read-committed and non-atomic: a deletion that committed before
@@ -595,11 +610,11 @@ class DeltaOverlay {
           ? newOverflowIds.get(updatedRid) : null;
       if (overflowId != null) {
         final int idx = overflowId - baseNodeCount;
-        final Map<String, Object> merged = new HashMap<>(overflowPropsList.get(idx));
-        merged.putAll(entry.getValue());
-        overflowPropsList.set(idx, merged);
+        // The reported values are the vertex's complete state, so they replace the old ones: a property the vertex no longer has
+        // is not among them, and applied over the old values it kept the value it was removed with (issue #10335)
+        overflowPropsList.set(idx, new HashMap<>(entry.getValue()));
       } else if (baseId >= 0)
-        newPropOverrides.merge(baseId, entry.getValue(), (old, nw) -> { old.putAll(nw); return old; });
+        newPropOverrides.put(baseId, new HashMap<>(entry.getValue()));
     }
 
     // Build secondary neighbor indexes for O(1) lookup
@@ -965,9 +980,10 @@ class DeltaOverlay {
       }
       return UNSET;
     }
-    // Base node override
+    // Base node override: the vertex's complete state as of its last update, so what it does not hold is missing, and not what the
+    // base columns still say (a property the update removed, issue #10335)
     final Map<String, Object> overrides = propertyOverrides.get(globalId);
-    if (overrides != null && overrides.containsKey(propertyName))
+    if (overrides != null)
       return overrides.get(propertyName);
     return UNSET;
   }
@@ -1043,12 +1059,13 @@ class DeltaOverlay {
     if (nodeId >= csr.getNodeCount())
       return 0;
     int count = 0;
-    for (int i = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId); i < end; i++) {
+    // The accessors take an index within the node's own run and add its offset themselves (issue #10338)
+    for (int i = 0, end = csr.outDegree(nodeId); i < end; i++) {
       final int other = csr.outNeighbor(nodeId, i);
       if (other == nodeId || !isReadded(other, baseMapping, overflowIds, deletedBase))
         count++;
     }
-    for (int i = csr.inOffset(nodeId), end = csr.inOffsetEnd(nodeId); i < end; i++) {
+    for (int i = 0, end = csr.inDegree(nodeId); i < end; i++) {
       final int other = csr.inNeighbor(nodeId, i);
       if (other != nodeId && !isReadded(other, baseMapping, overflowIds, deletedBase))
         count++;
