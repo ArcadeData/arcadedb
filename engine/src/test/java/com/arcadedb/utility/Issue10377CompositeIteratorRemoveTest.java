@@ -80,6 +80,28 @@ class Issue10377CompositeIteratorRemoveTest {
   }
 
   @Test
+  void multiIteratorSecondRemoveForTheSameElementIsIllegalState() {
+    final List<String> a = new ArrayList<>(List.of("a1", "a2"));
+    final MultiIterator<String> it = new MultiIterator<>();
+    it.addIterator(a.iterator());
+    it.next();
+    it.remove();
+    assertThatThrownBy(it::remove).isInstanceOf(IllegalStateException.class);
+    assertThat(a).containsExactly("a2");
+  }
+
+  @Test
+  void interleavedIteratorSecondRemoveForTheSameEntryIsIllegalState() {
+    final List<String> a = new ArrayList<>(List.of("a1", "a2"));
+    @SuppressWarnings("unchecked") final Iterator<String>[] sources = new Iterator[] { a.iterator() };
+    final InterleavedIterator<String> it = new InterleavedIterator<>(sources);
+    it.next();
+    it.remove();
+    assertThatThrownBy(it::remove).isInstanceOf(IllegalStateException.class);
+    assertThat(a).containsExactly("a2");
+  }
+
+  @Test
   void multiIteratorOverACollectionSourceRemovesFromIt() {
     final List<String> a = new ArrayList<>(List.of("a1", "a2"));
     final MultiIterator<String> it = new MultiIterator<>();

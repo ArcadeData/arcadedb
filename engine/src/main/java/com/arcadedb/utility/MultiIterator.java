@@ -121,8 +121,10 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
     promised = false;
     browsed++;
+    final T value = partialIterator.next();
+    // ONLY ONCE THE SOURCE HAS ACTUALLY PRODUCED THE ELEMENT: A next() THAT THREW LEAVES NOTHING FOR remove() TO ACT ON
     lastReturnedSource = partialIterator;
-    return partialIterator.next();
+    return value;
   }
 
   /**
@@ -136,7 +138,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
   /**
    * The source iterator that produced the element the last {@link #next()} returned, whatever {@link #hasNext()} did since:
-   * the one {@link #remove()} delegates to. Null before the first {@link #next()} and after a {@link #reset()}.
+   * the one {@link #remove()} delegates to. Null before the first {@link #next()}, after a {@link #reset()} and after a
+   * {@link #remove()} that succeeded; still set after one that threw, so a caller can act on the source itself.
    */
   public Iterator<T> getLastReturnedSource() {
     return lastReturnedSource;
@@ -235,13 +238,14 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
    * through the public API or by {@code CHECK DATABASE} - stopped working the moment a vertex crossed the promotion
    * threshold. A source that cannot remove still refuses, with its own exception.
    *
-   * @throws IllegalStateException when {@link #next()} has not returned an element yet
+   * @throws IllegalStateException when {@link #next()} has not returned an element since the last removal
    */
   @Override
   public void remove() {
     if (lastReturnedSource == null)
-      throw new IllegalStateException("No element to remove: next() has not been called");
+      throw new IllegalStateException("No element to remove: next() has not been called since the last remove()");
     lastReturnedSource.remove();
+    lastReturnedSource = null;
   }
 
   public long getLimit() {

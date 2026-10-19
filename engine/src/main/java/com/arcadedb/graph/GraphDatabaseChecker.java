@@ -1599,7 +1599,8 @@ public class GraphDatabaseChecker {
     if (head == null)
       return;
 
-    boolean complete = true;
+    // THE FIRST FAILURE IS KEPT FOR THE WARNING: IT NAMES THE CHUNK OR STRIPE THAT COULD NOT BE READ
+    String firstError = null;
     final List<RID> chainHeads = new ArrayList<>();
     try {
       if (database.lookupByRID(head, true) instanceof StripeDirectory directory) {
@@ -1612,7 +1613,7 @@ public class GraphDatabaseChecker {
       } else
         chainHeads.add(head);
     } catch (final Exception e) {
-      complete = false;
+      firstError = describe(e);
     }
 
     final Schema schema = database.getSchema();
@@ -1628,14 +1629,15 @@ public class GraphDatabaseChecker {
             target.add(vertexRID, edgeRID, other);
         }
       } catch (final Exception e) {
-        complete = false;
+        if (firstError == null)
+          firstError = describe(e);
       }
     }
 
-    if (!complete) {
+    if (firstError != null) {
       ++report.unsalvageableEdgeLists;
-      report.warn("vertex " + vertexRID + " " + direction + " edge list could not be read in full before the rebuild: a "
-          + "lightweight edge stored in its unreadable part has no record to rebuild it from and is lost");
+      report.warn("vertex " + vertexRID + " " + direction + " edge list could not be read in full before the rebuild (error: "
+          + firstError + "): a lightweight edge stored in its unreadable part has no record to rebuild it from and is lost");
     }
   }
 
