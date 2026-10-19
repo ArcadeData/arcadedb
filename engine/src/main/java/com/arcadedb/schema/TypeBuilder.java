@@ -231,6 +231,10 @@ public class TypeBuilder<T> {
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
       if (t.buckets.size() < buckets) {
+        // A bucket another type owns is refused by addBucket, but only after the ones before it are attached: the refused growth
+        // would keep them (issue #10317)
+        checkAutoNamedBucketsAreFree(schema, t.buckets.size());
+
         // CREATE MISSING BUCKETS
         for (int i = t.buckets.size(); i < buckets; ++i) {
           final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
@@ -275,6 +279,13 @@ public class TypeBuilder<T> {
         for (final LocalDocumentType sup : superTypes)
           LocalEdgeType.checkCanBeLightweight(typeName, sup);
 
+      // The same for a bucket another type owns, or one listed twice: addBucket refuses it, but only after the type is registered,
+      // which left the type behind with the buckets before it (issue #10317)
+      if (bucketInstances.isEmpty())
+        checkAutoNamedBucketsAreFree(schema, 0);
+      else
+        checkBucketInstancesAreFree(schema);
+
       final LocalDocumentType c;
       if (type.equals(VertexType.class))
         c = new LocalVertexType(schema, typeName);
@@ -312,6 +323,34 @@ public class TypeBuilder<T> {
 
       return c;
     });
+  }
+
+  /**
+   * Refuses, before the schema is touched, a {@code <type>_<n>} bucket from {@code firstBucket} on that exists and belongs to a
+   * type: the type would reuse it ("Reusing found bucket") and {@code addBucket} would refuse it.
+   */
+  private void checkAutoNamedBucketsAreFree(final LocalSchema schema, final int firstBucket) {
+    for (int i = firstBucket; i < buckets; ++i) {
+      final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
+      if (schema.existsBucket(bucketName))
+        schema.checkBucketIsFree(typeName, schema.getBucketByName(bucketName));
+    }
+  }
+
+  /**
+   * Refuses, before the schema is touched, a bucket passed with {@link #withBuckets} that belongs to a type, or that is passed
+   * twice: the second one is already the new type's by the time {@code addBucket} looks at it. The lists are a handful of
+   * buckets, so the pairs are compared in place rather than collected in a set.
+   */
+  private void checkBucketInstancesAreFree(final LocalSchema schema) {
+    for (int i = 0; i < bucketInstances.size(); ++i) {
+      final Bucket bucket = bucketInstances.get(i);
+      schema.checkBucketIsFree(typeName, bucket);
+      for (int j = 0; j < i; ++j)
+        if (bucketInstances.get(j).getFileId() == bucket.getFileId())
+          throw new SchemaException(
+              "Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName + "' twice: it is listed more than once");
+    }
   }
 
   public TypeBuilder<T> withName(final String typeName) {

@@ -720,11 +720,26 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return associatedIndex;
   }
 
+  /**
+   * The type this index is declared on has been renamed: its logic name follows, and so do the sub-indexes on its own buckets. The
+   * sub-indexes on the buckets of its sub types name those sub types, which the rename did not touch (issue #10317).
+   */
   @Override
   public void updateTypeName(final String newTypeName) {
     logicName = getTypeName() + getPropertyNames().toString().replace(" ", "");
-    for (IndexInternal idx : indexesOnBuckets)
-      idx.updateTypeName(newTypeName);
+    updateTypeNameOfSubIndexesOn(type, newTypeName);
+  }
+
+  /**
+   * Gives the sub-indexes sitting on the buckets of {@code renamedType} its new name, and leaves the others alone. For the
+   * sub-indexes of an index {@code renamedType} inherits, which are not part of an index it declares, and which the rename of
+   * the type that declares the index must not touch (issue #10317).
+   */
+  public void updateTypeNameOfSubIndexesOn(final DocumentType renamedType, final String newTypeName) {
+    final List<Integer> bucketIds = renamedType.getBucketIds(false);
+    for (final IndexInternal idx : indexesOnBuckets)
+      if (bucketIds.contains(idx.getAssociatedBucketId()))
+        idx.updateTypeName(newTypeName);
   }
 
   public void setAssociatedIndex(final IndexInternal associatedIndex) {
