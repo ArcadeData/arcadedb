@@ -40,11 +40,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -207,6 +208,10 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
    * segment write that is not an in-chunk append must go through {@link EdgeLinkedList#updateRewrittenSegment}, which
    * excludes the page from the edge-append merge: a new direct {@code updateRecord} of a segment fails this census, so
    * whoever adds one has to say which of the two it is.
+   * <p>
+   * A tripwire, not a proof: it reads the sources line by line, so a write that reaches {@code updateRecord} through
+   * another method, or a call split over several lines, goes unseen. Every argument expression is compared, a cast or a
+   * method call included, and the subpackages are scanned too.
    */
   private static final Map<String, Set<String>> DIRECT_UPDATES = Map.of(
       // add(): THE TRACKED IN-CHUNK APPEND; updateRewrittenSegment(): THE ONE DOOR FOR EVERY OTHER SEGMENT WRITE
@@ -216,14 +221,14 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
       // ITS OWN TRANSACTIONS ONLY, WHICH TRACK NO APPEND: SEE THE NOTE ON THE EDGE-APPEND MERGE IN THE CLASS
       "GraphBatch.java", Set.of("vertex", "outChunk", "inChunk", "currentSegment"));
 
-  private static final Pattern UPDATE_RECORD = Pattern.compile("\\.updateRecord\\(\\s*(\\w+)\\s*\\)");
+  private static final Pattern UPDATE_RECORD = Pattern.compile("\\.updateRecord\\((.+?)\\);");
 
   @Test
   void everySegmentRewriteGoesThroughTheDoorThatExcludesItsPage() throws IOException {
     // RESOLVED RELATIVE TO THE MODULE ROOT, THE WAY SUREFIRE RUNS
     final Path graphSources = Path.of("src/main/java/com/arcadedb/graph");
     final Map<String, Set<String>> found = new TreeMap<>();
-    try (final Stream<Path> files = Files.list(graphSources)) {
+    try (final Stream<Path> files = Files.walk(graphSources)) {
       for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
         final List<String> lines = Files.readAllLines(file);
         if (lines.stream().noneMatch(line -> line.contains("EdgeSegment")))
@@ -234,7 +239,7 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
             continue;
           final Matcher matcher = UPDATE_RECORD.matcher(code);
           while (matcher.find())
-            found.computeIfAbsent(file.getFileName().toString(), k -> new TreeSet<>()).add(matcher.group(1));
+            found.computeIfAbsent(file.getFileName().toString(), k -> new TreeSet<>()).add(matcher.group(1).strip());
         }
       }
     }
@@ -274,8 +279,9 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
 
   private void appendInOwnTransaction(final ExecutorService other) {
     try {
+      // BOUNDED, SO A STALLED COMMIT FAILS THE TEST INSTEAD OF HANGING THE SUITE
       other.submit(() -> database.transaction(() -> source.asVertex().newEdge("E", targets[COMMITTED_EDGES + 1].asVertex())))
-          .get();
+          .get(60, TimeUnit.SECONDS);
     } catch (final Exception e) {
       throw new RuntimeException(e);
     }

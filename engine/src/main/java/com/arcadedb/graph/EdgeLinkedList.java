@@ -538,9 +538,12 @@ public class EdgeLinkedList {
       // A vertex is in the set for its head pointer only: its own bookkeeping, which no listener hears (issue #10207)
       if (r instanceof MutableVertex)
         database.updateRecordWithoutEvents(r);
+      else if (r instanceof EdgeSegment segment)
+        updateRewrittenSegment(database, segment);
       else
         // THE SET HOLDS NOTHING BUT THE VERTEX AND THE SEGMENTS THE BATCH WROTE TO
-        updateRewrittenSegment(database, (EdgeSegment) r);
+        throw new IllegalStateException("Unexpected record " + r.getIdentity() + " in the batch of edge list " + direction
+            + " of vertex " + vertex.getIdentity());
     }
   }
 
