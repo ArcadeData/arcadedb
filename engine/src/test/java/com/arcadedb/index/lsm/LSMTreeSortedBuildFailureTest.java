@@ -127,6 +127,9 @@ class LSMTreeSortedBuildFailureTest extends TestHelper {
           .withUnique(false)
           .create())
           .isInstanceOf(IndexException.class)
+          // The reason is in the MESSAGE the caller reads, not only two levels down the cause chain (issue #10382)
+          .hasMessageContaining("Cannot build sorted index")
+          .hasMessageContaining("injected failure after first attachment")
           .hasStackTraceContaining("injected failure after first attachment");
     } finally {
       LSMTreeIndexBulkLoader.setBuildTestHook(null);
