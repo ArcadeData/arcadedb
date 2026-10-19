@@ -213,7 +213,8 @@ The generated image runs as the `arcadedb` user with UID/GID `1000:1000`, the sa
 native images, so their `databases`, `backups` and `log` volumes are interchangeable.
 
 **Upgrading a custom image built before 26.11.1:** older builder versions created a system user (`100:101`). Change
-the owner of the existing volumes once before starting the new image, for example:
+the owner of each existing volume (`databases`, `backups` and `log`) once before starting the new image, for example
+by running this for every volume:
 
 ```bash
 docker run --rm -u 0 -v <volume>:/data alpine chown -R 1000:1000 /data

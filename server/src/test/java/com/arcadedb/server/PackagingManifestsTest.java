@@ -71,6 +71,7 @@ class PackagingManifestsTest {
   private static final int    IMAGE_UID   = 1000;
 
   private static final Pattern BASE_IMAGE  = Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
+  private static final Pattern ARG_DEFAULT = Pattern.compile("^ARG ([A-Za-z_][A-Za-z0-9_]*)=(\\S+)\\s*$", Pattern.MULTILINE);
 
   private static final Pattern SETTING     = Pattern.compile("-D(arcadedb\\.[A-Za-z0-9.]+)=");
   private static final Pattern EXPANSION   = Pattern.compile("\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)");
@@ -247,6 +248,8 @@ class PackagingManifestsTest {
     // the same owner (issue #10330): it created a system user, which Alpine resolves to 100:101, so its volumes could
     // not be opened by the official images without a chown.
     jvmDockerfiles().forEach((name, dockerfile) -> {
+      // The builder-generated Dockerfile names its user through ARG ARCADEDB_USER=arcadedb; once its default is expanded
+      // it must still read "arcadedb", so a renamed default fails here too.
       final String code = expandArgDefaults(codeOf(dockerfile));
       assertThat(code).as("%s must create the arcadedb user with an explicit UID", name)
           .containsPattern("(?m)^RUN (?:.*&& )?adduser .*-u " + IMAGE_UID + "\\b.* arcadedb(?: &&.*)?$");
@@ -548,7 +551,7 @@ class PackagingManifestsTest {
    */
   private static String expandArgDefaults(final String dockerfile) {
     String expanded = dockerfile;
-    final Matcher m = Pattern.compile("(?m)^ARG ([A-Za-z_][A-Za-z0-9_]*)=(\\S+)\\s*$").matcher(dockerfile);
+    final Matcher m = ARG_DEFAULT.matcher(dockerfile);
     while (m.find())
       expanded = expanded.replace("${" + m.group(1) + "}", m.group(2));
     return expanded;
