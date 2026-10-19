@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
@@ -45,6 +46,7 @@ public class SecurityUserFileRepository {
   /** Where a {@link #FILE_NAME} that cannot be loaded is preserved before the default configuration replaces it. */
   public static final  String ERROR_FILE_NAME  = "server-users-error.jsonl";
   private static final int    BUFFER_SIZE      = 65536 * 10;
+  private static final String DEFAULT_FALLBACK = "using the default configuration";
   private final        String securityConfPath;
   // Serializes all writers (local mutations, config reload, Raft apply) so their output never interleaves.
   private final        Object saveLock         = new Object();
@@ -121,8 +123,17 @@ public class SecurityUserFileRepository {
    * of the operator's file.
    */
   public void saveInError(final Exception cause) {
+    saveInError(cause, DEFAULT_FALLBACK);
+  }
+
+  /**
+   * As {@link #saveInError(Exception)}, with {@code outcome} saying in the SEVERE what the caller does instead of loading
+   * the file: a reload on a running server keeps the users already in force rather than using the default configuration
+   * (issue #10326).
+   */
+  public void saveInError(final Exception cause, final String outcome) {
     synchronized (saveLock) {
-      preserveInError(this, new File(securityConfPath, FILE_NAME), new File(securityConfPath, ERROR_FILE_NAME), cause);
+      preserveInError(this, new File(securityConfPath, FILE_NAME), new File(securityConfPath, ERROR_FILE_NAME), cause, outcome);
     }
   }
 
@@ -140,10 +151,15 @@ public class SecurityUserFileRepository {
    * repository monitor in {@link SecurityGroupFileRepository#saveInError}).
    */
   static void preserveInError(final Object requester, final File file, final File errorFile, final Exception cause) {
+    preserveInError(requester, file, errorFile, cause, DEFAULT_FALLBACK);
+  }
+
+  static void preserveInError(final Object requester, final File file, final File errorFile, final Exception cause,
+      final String outcome) {
     if (!file.isFile()) {
       LogManager.instance().log(requester, Level.SEVERE,
-          "Error on loading file '%s', using the default configuration. The file is no longer there, so nothing was saved as '%s'", cause,
-          file.getName(), errorFile.getPath());
+          "Error on loading file '%s', %s. The file is no longer there, so nothing was saved as '%s'", cause, file.getName(),
+          outcome, errorFile.getPath());
       return;
     }
 
@@ -175,12 +191,12 @@ public class SecurityUserFileRepository {
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
       }
       LogManager.instance().log(requester, Level.SEVERE,
-          "Error on loading file '%s', using the default configuration and saving the corrupt file as '%s'", cause, file.getName(),
+          "Error on loading file '%s', %s and saving the corrupt file as '%s'", cause, file.getName(), outcome,
           errorFile.getPath());
     } catch (final IOException | RuntimeException e) {
       LogManager.instance().log(requester, Level.SEVERE,
-          "Error on loading file '%s', using the default configuration. The corrupt file could not be saved as '%s' (error=%s)", cause,
-          file.getName(), errorFile.getPath(), e.toString());
+          "Error on loading file '%s', %s. The corrupt file could not be saved as '%s' (error=%s)", cause, file.getName(),
+          outcome, errorFile.getPath(), e.toString());
     } finally {
       if (tmp != null)
         try {
@@ -206,6 +222,22 @@ public class SecurityUserFileRepository {
   }
 
   protected List<JSONObject> load() throws IOException {
+    final List<JSONObject> resultSet = loadRecords();
+    if (!resultSet.isEmpty())
+      return resultSet;
+    return createDefault();
+  }
+
+  /**
+   * The records in {@link #FILE_NAME} as they are, WITHOUT the {@link #createDefault()} substitution {@link #load()} makes
+   * for a missing or empty file: an empty list then. A reload on a running server (issue #10326) has users in force to
+   * keep, so an empty file - typically an editor caught between truncating and writing it - must not turn into a
+   * root-only configuration there.
+   *
+   * @throws IOException   if the file cannot be read
+   * @throws JSONException if a line is not a JSON object
+   */
+  List<JSONObject> loadRecords() throws IOException {
     final File file = new File(securityConfPath, FILE_NAME);
 
     final List<JSONObject> resultSet = new ArrayList<>();
@@ -218,10 +250,7 @@ public class SecurityUserFileRepository {
           resultSet.add(new JSONObject(reader.readLine()));
       }
     }
-
-    if (!resultSet.isEmpty())
-      return resultSet;
-    return createDefault();
+    return resultSet;
   }
 
   public static List<JSONObject> createDefault() {
