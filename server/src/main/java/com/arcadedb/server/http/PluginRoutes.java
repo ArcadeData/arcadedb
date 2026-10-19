@@ -81,7 +81,11 @@ public final class PluginRoutes {
     this.table = serverPaths != null ? serverPaths.getRouteTable() : new RouteTable();
   }
 
-  /** Declares {@code GET} on the exact {@code path}, which answers {@code HEAD} too (issue #10384). */
+  /**
+   * Declares {@code GET} on the exact {@code path}, which answers {@code HEAD} too (issue #10384). {@code HEAD} runs this
+   * handler in full and the connector discards the body, so a handler that does heavy work for a probe to hit declares
+   * {@link #exact} with {@code Methods.HEAD} for a cheaper answer.
+   */
   public PluginRoutes get(final String path, final HttpHandler handler) {
     return exact(Methods.GET, path, handler);
   }
