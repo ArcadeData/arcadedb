@@ -90,7 +90,7 @@ class DenseNodeIdProviderTest {
     final GraphTraversalProvider compact = DenseNodeIdProvider.wrap(view);
     assertThat(compact).isNotInstanceOf(DenseNodeIdProvider.class);
     assertThat(compact).isInstanceOf(GraphAnalyticalView.Pinned.class);
-    assertThat(((GraphAnalyticalView.Pinned) compact).getView()).isSameAs(view);
+    assertThat(compact.getName()).isEqualTo(view.getName());
     assertThat(DenseNodeIdProvider.wrap(compact)).isSameAs(compact);
     assertThat(DenseNodeIdProvider.wrap(null)).isNull();
   }

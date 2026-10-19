@@ -2298,7 +2298,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * This view fixed at the snapshot it serves now: {@link #captureSnapshot()} for a caller outside this package, a query or
    * an algorithm, behind the provider SPI. Every answer it gives belongs to that one snapshot, its overlay included, however
    * many commits are merged and however many times the view is rebuilt meanwhile (issue #10350). Costs one object: the
-   * snapshot is immutable, and pinning only keeps it reachable for as long as the caller holds the result.
+   * snapshot is immutable, and pinning only keeps it reachable for as long as the caller holds the result - a long algorithm
+   * keeps a superseded base in memory until it ends. The Cypher MATCH operators do not read through a pin yet (issue #10365).
    */
   @Override
   public Pinned pinned() {
@@ -2317,11 +2318,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     private Pinned(final GraphAnalyticalView view, final Snapshot snap) {
       this.view = view;
       this.snap = snap;
-    }
-
-    /** The view this snapshot was pinned from. */
-    public GraphAnalyticalView getView() {
-      return view;
     }
 
     /** The snapshot itself, for a kernel of this package that reads its arrays directly. */
@@ -2369,13 +2365,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return hasActiveOverlay(snap);
     }
 
-    /** Always: a snapshot that was served once answers for as long as it is pinned. */
+    /** Always: a snapshot that was served once answers for as long as it is pinned, whatever the view does meanwhile. */
     @Override
     public boolean isReady() {
       return true;
     }
 
-    /** Whether the view this snapshot was pinned from is behind the graph. */
+    /** Never: a pinned snapshot is already in memory, there is nothing left to restore. */
+    @Override
+    public boolean isRestoring() {
+      return false;
+    }
+
+    /**
+     * Whether the view this snapshot was pinned from is behind the graph NOW: a status of the view, not of the pinned data,
+     * which is as current as it was when pinned. No consumer acts on it once it holds a pin.
+     */
     @Override
     public boolean isStale() {
       return view.isStale();

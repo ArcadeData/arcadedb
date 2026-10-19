@@ -32,9 +32,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -187,6 +190,96 @@ class Issue10350ViewSnapshotSwapTest extends TestHelper {
         answered.add(nodeOf(rs.next()));
     }
     assertThat(answered).doesNotContainNull().doesNotHaveDuplicates().containsExactlyInAnyOrderElementsOf(live);
+  }
+
+  /**
+   * Every question the view answers itself, rather than through the SPI's default, the pinned view answers from its snapshot
+   * too: a default would fall back to whatever it is written against, and the pin would erode as the SPI grows.
+   */
+  @Test
+  void aPinnedViewOverridesEveryMethodTheViewOverrides() throws NoSuchMethodException {
+    final List<String> missing = new ArrayList<>();
+    for (final Method spi : GraphTraversalProvider.class.getMethods()) {
+      if (Modifier.isStatic(spi.getModifiers()))
+        continue;
+      final Method inView = GraphAnalyticalView.class.getMethod(spi.getName(), spi.getParameterTypes());
+      final Method inPinned = GraphAnalyticalView.Pinned.class.getMethod(spi.getName(), spi.getParameterTypes());
+      if (inView.getDeclaringClass() == GraphAnalyticalView.class && inPinned.getDeclaringClass() != GraphAnalyticalView.Pinned.class)
+        missing.add(spi.getName());
+    }
+    assertThat(missing).as("SPI methods the view overrides and the pinned view leaves to the default").isEmpty();
+  }
+
+  // The four below merge synthetic deltas: one bucket, the position of a RID being its node id, no database involved
+
+  /** An update to an edge whose end the view does not cover touches no column. */
+  @Test
+  void anUpdateToAnEdgeWithAnUncoveredEndDirtiesNothing() {
+    final NodeIdMapping mapping = mapping(3);
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(updateOf(new RID(1, 0), new RID(9, 0)), mapping);
+    assertThat(overlay.isEdgePropertiesDirty()).isFalse();
+  }
+
+  /** A base vertex deleted earlier: the view no longer serves its edges, so an update of one touches no column. */
+  @Test
+  void anUpdateToAnEdgeOfADeletedBaseVertexDirtiesNothing() {
+    final NodeIdMapping mapping = mapping(3);
+    final TxDelta delete = new TxDelta();
+    delete.deletedVertices.add(new RID(1, 2));
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(delete, mapping)
+        .merge(updateOf(new RID(1, 0), new RID(1, 2)), mapping);
+    assertThat(overlay.isEdgePropertiesDirty()).isFalse();
+  }
+
+  /**
+   * The slot of that deleted vertex taken by a new one: the RID names a vertex of the view again, in the overflow, so an edge
+   * update the overlay cannot place is still one the columns may be out of step with.
+   */
+  @Test
+  void anUpdateToAnEdgeOfAVertexOnAReusedSlotIsStillInTheView() {
+    final NodeIdMapping mapping = mapping(3);
+    final RID reused = new RID(1, 2);
+    final TxDelta delete = new TxDelta();
+    delete.deletedVertices.add(reused);
+    final TxDelta add = new TxDelta();
+    add.addedVertices.add(new TxDelta.VertexDelta(reused, Map.of()));
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(delete, mapping).merge(add, mapping)
+        .merge(updateOf(new RID(1, 0), reused), mapping);
+    assertThat(overlay.isDeleted(2)).as("precondition: the base node stays deleted").isTrue();
+    assertThat(overlay.isEdgePropertiesDirty("L")).isTrue();
+  }
+
+  /** The reporter's delta: an edge created, saved and gone with its overflow source, all in one transaction. */
+  @Test
+  void anEdgeGoneWithItsOverflowSourceDirtiesNothing() {
+    final NodeIdMapping mapping = mapping(3);
+    final RID source = new RID(1, 5);
+    final TxDelta create = new TxDelta();
+    create.addedVertices.add(new TxDelta.VertexDelta(source, Map.of()));
+    final TxDelta linkAndDelete = updateOf(source, new RID(1, 0));
+    final TxDelta.EdgeDelta edge = linkAndDelete.updatedEdges.values().iterator().next();
+    linkAndDelete.addedEdges.add(edge);
+    linkAndDelete.deletedEdges.add(edge);
+    linkAndDelete.deletedVertices.add(source);
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(create, mapping).merge(linkAndDelete, mapping);
+    assertThat(overlay.isEdgePropertiesDirty()).isFalse();
+    assertThat(overlay.getDeltaEdgeCount()).isZero();
+  }
+
+  private static TxDelta updateOf(final RID source, final RID target) {
+    final TxDelta delta = new TxDelta();
+    final RID edge = new RID(5, 0);
+    delta.updatedEdges.put(edge, new TxDelta.EdgeDelta("L", source, target, edge));
+    return delta;
+  }
+
+  private static NodeIdMapping mapping(final int nodes) {
+    final NodeIdMapping mapping = new NodeIdMapping(1);
+    final int bucket = mapping.registerBucket(1, "P", nodes);
+    for (int i = 0; i < nodes; i++)
+      mapping.addNode(bucket, i);
+    mapping.compact();
+    return mapping;
   }
 
   private static RID nodeOf(final Result row) {

@@ -502,10 +502,7 @@ public final class GraphAlgorithms {
     return rank;
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static double[] pageRank(final GraphAnalyticalView view, final double damping, final int iterations,
       final double tolerance, final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
     return pageRank(view.pinned(), damping, iterations, tolerance, direction, checkpoint, edgeTypes);
@@ -572,10 +569,7 @@ public final class GraphAlgorithms {
     return connectedComponents(n, allFwdOffsets, allFwdNeighbors, allBwdOffsets, allBwdNeighbors);
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static int[] connectedComponents(final GraphAnalyticalView view, final String... edgeTypes) {
     return connectedComponents(view.pinned(), edgeTypes);
   }
@@ -822,10 +816,7 @@ public final class GraphAlgorithms {
     return -1;
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static int shortestPath(final GraphAnalyticalView view, final int source, final int target,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
     return shortestPath(view.pinned(), source, target, direction, edgeTypes);
@@ -1294,10 +1285,7 @@ public final class GraphAlgorithms {
     return dist;
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
     return shortestPathAll(view.pinned(), source, direction, edgeTypes);
@@ -1457,10 +1445,7 @@ public final class GraphAlgorithms {
     return dist;
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
       final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
     return dijkstraSingleSource(view.pinned(), source, weightProperty, direction, edgeTypes);
@@ -1726,10 +1711,7 @@ public final class GraphAlgorithms {
     return labels;
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters, final int[] rank,
       final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
     return labelPropagation(view.pinned(), maxIters, rank, direction, checkpoint, edgeTypes);
@@ -1802,10 +1784,7 @@ public final class GraphAlgorithms {
     return lccBuildAndIntersect(view, types, n, checkpoint);
   }
 
-  /**
-   * As the overload taking a {@link GraphAnalyticalView.Pinned}, on the snapshot {@code view} serves now: every part the kernel
-   * reads belongs to that one snapshot, whatever the view publishes meanwhile (issue #10350).
-   */
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
   public static double[] localClusteringCoefficient(final GraphAnalyticalView view, final WorkCheckpoint checkpoint,
       final String... edgeTypes) {
     return localClusteringCoefficient(view.pinned(), checkpoint, edgeTypes);
