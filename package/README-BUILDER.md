@@ -214,7 +214,8 @@ native images, so their volumes are interchangeable. It declares the same five v
 `config` (users, groups and API tokens the server writes at runtime), `databases`, `replication` (HA state), `backups`
 and `log`. Mount all five to keep that state across container recreation. A named volume mounted on `config` is seeded
 with the image's default configuration files on first use; a bind mount starts out empty and hides them, so copy the
-defaults into the host directory first.
+defaults into the host directory first. Either way, once `config` holds state it is no longer refreshed from the image:
+a default configuration file added by a later release does not appear in an existing `config` volume.
 
 **Upgrading a custom image built before 26.11.1:** older builder versions created a system user (`100:101`) and
 declared only `databases`, `backups` and `log` as volumes. Change the owner of each existing volume or bind mount

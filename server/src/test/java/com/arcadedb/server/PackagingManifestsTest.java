@@ -329,8 +329,10 @@ class PackagingManifestsTest {
     final String readme = read(BUILDER_README);
     final int section = readme.indexOf("### Docker image user");
     assertThat(section).as("%s no longer documents the Docker image user", BUILDER_README).isNotNegative();
-    final int end = readme.indexOf("\n#", section + 1);
-    final String note = readme.substring(section, end < 0 ? readme.length() : end);
+    // The next Markdown heading ends the section; a `#` comment inside a fenced shell block must not.
+    final Matcher heading = Pattern.compile("(?m)^#{1,3} ").matcher(readme);
+    final int end = heading.find(section + 1) ? heading.start() : readme.length();
+    final String note = readme.substring(section, end);
 
     for (final String volume : declaredVolumes(BUILDER + " (generated)", generatedDockerfile())) {
       final String directory = volume.substring(volume.lastIndexOf('/') + 1);
