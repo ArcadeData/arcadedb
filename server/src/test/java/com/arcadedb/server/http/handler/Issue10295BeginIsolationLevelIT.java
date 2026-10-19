@@ -91,6 +91,21 @@ class Issue10295BeginIsolationLevelIT extends BaseGraphServerTest {
   }
 
   @Test
+  void malformedJsonAnswers400AndOpensNoSession() throws Exception {
+    final HttpSessionManager sessions = getServer(0).getHttpServer().getSessionManager();
+    final int before = sessions.getActiveSessions();
+    final HttpURLConnection connection = begin("{\"isolationLevel\":");
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).isNull();
+      assertThat(readError(connection)).contains("Invalid JSON payload").contains("valid JSON object");
+    } finally {
+      connection.disconnect();
+    }
+    assertThat(sessions.getActiveSessions()).as("a malformed body must not leave a session behind").isEqualTo(before);
+  }
+
+  @Test
   void anUnknownIsolationLevelAnswers400AndOpensNoSession() throws Exception {
     final HttpSessionManager sessions = getServer(0).getHttpServer().getSessionManager();
 
