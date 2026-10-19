@@ -36,7 +36,6 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Timer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -149,9 +148,8 @@ class RecoveryHousekeepingTest extends TestHelper {
     manager.checkIntegrity();
     assertThat(manager.replayed).containsExactly(FIRST_TX, FIRST_TX + 1);
 
-    final Field field = TransactionManager.class.getDeclaredField("activeWALFilePool");
-    field.setAccessible(true);
-    final WALFile active = ((WALFile[]) field.get(manager))[0];
+    // THE SLOT IS EMPTY UNTIL A COMMIT NEEDS A FILE (#10234): OPEN IT AS THAT COMMIT WOULD
+    final WALFile active = manager.openWALFileForTesting(0);
     final Path runtimeWal = Path.of(active.getFilePath());
     try (FileChannel channel = FileChannel.open(runtimeWal, StandardOpenOption.WRITE)) {
       writeFully(channel, transaction(FIRST_TX + 2, LARGE_DELTA));
@@ -195,7 +193,10 @@ class RecoveryHousekeepingTest extends TestHelper {
   private void assertStopWaitsForInFlightPass(final Consumer<TransactionManager> stop) throws Exception {
     final ObservingManager manager = installManager();
     final ProbeWALFile parked = new ProbeWALFile(Path.of(database.getDatabasePath(), "txlog_parked_test.wal"), true);
-    manager.replaceActiveWALFileForTesting(0, parked).close();
+    // THE SLOT MAY HOLD NO FILE YET: ONE IS OPENED BY THE FIRST COMMIT THAT NEEDS IT (#10234)
+    final WALFile previous = manager.replaceActiveWALFileForTesting(0, parked);
+    if (previous != null)
+      previous.close();
 
     final Thread pass = new Thread(manager::runWALHousekeeping, "recovery-housekeeping-pass-test");
     pass.setDaemon(true);
@@ -316,9 +317,7 @@ class RecoveryHousekeepingTest extends TestHelper {
 
     ObservingManager(final DatabaseInternal db) throws Exception {
       super(db);
-      final Field field = TransactionManager.class.getDeclaredField("task");
-      field.setAccessible(true);
-      ((Timer) field.get(this)).cancel();
+      cancelHousekeepingForTesting();
     }
 
     @Override

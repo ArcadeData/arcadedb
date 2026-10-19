@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
-import java.util.Timer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.atLeastOnce;
@@ -104,12 +103,7 @@ class Issue4509WALRotationFsyncTest extends TestHelper {
   // --- reflection helpers ---
 
   private static void cancelTransactionManagerTimer(final DatabaseInternal db) throws Exception {
-    final TransactionManager txManager = db.getTransactionManager();
-    final Field taskField = TransactionManager.class.getDeclaredField("task");
-    taskField.setAccessible(true);
-    final Timer task = (Timer) taskField.get(txManager);
-    if (task != null)
-      task.cancel();
+    db.getTransactionManager().cancelHousekeepingForTesting();
   }
 
   private static void swapFileManager(final DatabaseInternal db, final FileManager fileManager) throws Exception {

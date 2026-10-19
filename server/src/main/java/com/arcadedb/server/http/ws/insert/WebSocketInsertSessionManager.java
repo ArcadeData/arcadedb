@@ -193,7 +193,7 @@ public class WebSocketInsertSessionManager {
       if (afterClaimHook != null)
         afterClaimHook.run();
 
-      database = server.getDatabase(databaseName, false, false);
+      database = server.getDatabaseForRequest(databaseName);
       session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession,
           () -> ErrorConcealment.isConcealing(server), server.getRunningQueries());
       // Before it is registered, not after: a session the sweep can see must already know where to send its

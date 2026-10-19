@@ -26,7 +26,6 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.util.Timer;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,12 +90,8 @@ class Issue8923WALDropAfterSingleFsyncTest extends TestHelper {
     // The once-a-second housekeeping timer runs the same pass on the same pool: stop it so it cannot drop the files
     // seeded below between the test's own passes.
     try {
-      final Field taskField = TransactionManager.class.getDeclaredField("task");
-      taskField.setAccessible(true);
-      final Timer task = (Timer) taskField.get(((DatabaseInternal) database).getTransactionManager());
-      if (task != null)
-        task.cancel();
-    } catch (final ReflectiveOperationException e) {
+      ((DatabaseInternal) database).getTransactionManager().cancelHousekeepingForTesting();
+    } catch (final RuntimeException e) {
       throw new IllegalStateException(e);
     }
   }

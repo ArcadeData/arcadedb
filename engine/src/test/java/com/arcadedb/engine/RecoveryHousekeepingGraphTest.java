@@ -42,7 +42,6 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Timer;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -307,22 +306,18 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
     }
   }
 
-  private static void cancelTimer(final TransactionManager manager) throws Exception {
-    final Field field = TransactionManager.class.getDeclaredField("task");
-    field.setAccessible(true);
-    ((Timer) field.get(manager)).cancel();
+  private static void cancelTimer(final TransactionManager manager) {
+    manager.cancelHousekeepingForTesting();
   }
 
-  private static void assertTimerStopped(final BoundaryManager manager) throws Exception {
-    for (final Thread thread : manager.timerThreads) {
-      thread.join(60_000);
-      assertThat(thread.isAlive()).as("retired manager's timer must terminate").isFalse();
-    }
+  private static void assertTimerStopped(final BoundaryManager manager) {
+    // The housekeeping runs on the scheduler every manager of the JVM shares (#10234): what has to stop is this manager's
+    // periodic task, not a thread of its own
+    assertThat(manager.isHousekeepingScheduled()).as("retired manager's housekeeping must stop").isFalse();
   }
 
   private static final class BoundaryManager extends TransactionManager {
     private final DatabaseInternal owner;
-    private final List<Thread> timerThreads;
     private final boolean failFirstRead;
     private final Runnable applyFailure;
     private int firstReadChecks;
@@ -333,9 +328,7 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
       owner = db;
       failFirstRead = failRead;
       this.applyFailure = applyFailure;
-      timerThreads = Thread.getAllStackTraces().keySet().stream()
-          .filter(thread -> thread.getName().equals("ArcadeDB TransactionManager " + db.getName())).toList();
-      assertThat(timerThreads).isNotEmpty();
+      assertThat(isHousekeepingScheduled()).isTrue();
     }
 
     @Override

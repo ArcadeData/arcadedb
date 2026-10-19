@@ -1122,6 +1122,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return encodePassword(userPassword, ServerSecurity.generateRandomSalt());
   }
 
+  /**
+   * Hashes a random throwaway password with the configured iterations, and caches nothing: the code the first login of a
+   * server runs - the JCE provider and its HMAC loop - is then loaded and compiled before a client waits on it (issue
+   * #10218). Called by the background warm-up only.
+   */
+  public void warmUpPasswordHashing() {
+    getEncodedHash(generateRandomSalt(), generateRandomSalt(), saltIteration);
+  }
+
   public boolean passwordMatch(final String password, final String hashedPassword) {
     // hashedPassword consist of: ALGORITHM, ITERATIONS_NUMBER, SALT and
     // HASH; parts are joined with dollar character ("$")

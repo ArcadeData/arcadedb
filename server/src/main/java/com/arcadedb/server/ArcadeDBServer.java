@@ -248,12 +248,17 @@ public class ArcadeDBServer {
   // The statements this server is running, listed and terminated by the "list queries" / "terminate query" commands
   // (issue #9680). One per server rather than per JVM: each node answers for its own work.
   private final       RunningQueryRegistry                  runningQueries = newRunningQueryRegistry();
+  // The background warm-up of the query stack started once the server is ONLINE, null when disabled (issue #10218)
+  private volatile    QueryWarmUp                           queryWarmUp;
   // Admission for backups of a database, shared by every entry point that can start one on this server: the
   // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
   // that plugin is enabled.
   private final       BackupCoordinator                     backupCoordinator                    = new BackupCoordinator();
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
+  // The databases a 'close database' command closed and nothing opened since: a client request does not reopen them, so a
+  // database closed for maintenance stays closed until 'open database' (issue #10234)
+  private final       Set<String>                           closedByCommand                      = ConcurrentHashMap.newKeySet();
   // Monitor serialising every check-then-act on the database registry (load, create, register, reopen). The HA
   // snapshot installer also holds it across close->file-swap->reopen so no concurrent open observes the transient
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
@@ -567,6 +572,8 @@ public class ArcadeDBServer {
     if (status != STATUS.OFFLINE)
       return;
 
+    // A NEW LIFECYCLE OF THIS INSTANCE: A DATABASE A COMMAND CLOSED BEFORE THE LAST STOP IS NOT CLOSED ANY MORE (#10234)
+    closedByCommand.clear();
     status = STATUS.STARTING;
 
     // A (re)start has not been held by the security-convergence gate yet (issue #8446).
@@ -640,6 +647,11 @@ public class ArcadeDBServer {
 
     security = new ServerSecurity(this, configuration, serverConfigPath);
     security.startService();
+
+    // #10218: STARTED HERE, IN PARALLEL WITH THE REST OF THE START: WHAT NEEDS NO DATABASE (THE PASSWORD HASHING, THE SQL
+    // PARSER) IS WARM BY THE TIME THE SERVER IS ONLINE, AND THE REST WAITS FOR IT
+    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_QUERY_WARM_UP))
+      queryWarmUp = new QueryWarmUp(this).start();
     final ServerSecurity installedSecurity = security;
     registerExecutorPoolMetrics("security_refresh", "ServerSecurity cached-permission refresh worker",
         installedSecurity::getPermissionsRefreshPoolStats,
@@ -1399,6 +1411,46 @@ public class ArcadeDBServer {
     return getDatabase(databaseName, true, true);
   }
 
+  /**
+   * The database a client request names, opened now when it is on disk but not open (issue #10234): with
+   * {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} off, or after a {@code close database}, a database was
+   * reachable over the binary protocols - which have always opened it on demand - but not over HTTP, which answered that
+   * it was not available until somebody opened it by hand. A server holding thousands of databases can now leave them
+   * closed at start and open each on its first request.
+   * <p>
+   * Only a directory that holds a database is opened: one the operating system or the storage put in the database
+   * directory must not become a database because a request named it (issue #8805). Any other name is refused as before,
+   * with {@link DatabaseNotAvailableException}. The caller has already checked that the user may access the database.
+   * <p>
+   * A database a {@code close database} command closed is not reopened by a request: it was closed on purpose - a restore
+   * of its files, a cold backup - and stays closed until {@code open database} (see {@link #markClosedByCommand}). The
+   * binary protocols (Postgres, Bolt, gRPC) open databases through {@link #getDatabase(String)} and keep the behaviour
+   * they always had: they reopen it.
+   */
+  public ServerDatabase getDatabaseForRequest(final String databaseName) {
+    // A NULL OR BLANK NAME GETS THE ANSWER IT ALWAYS DID (IllegalArgumentException), NOT A NullPointerException OUT OF THE MAP
+    if (databaseName == null || databaseName.isBlank())
+      return getDatabase(databaseName, false, false);
+
+    final ServerDatabase db = databases.get(databaseName);
+    if (status == STATUS.ONLINE && db != null && db.isOpen())
+      return db;
+
+    // ONLY WHILE THE SERVER IS ONLINE: NOT WHILE IT STARTS (THE DATABASES ARE BEING LOADED, AND THE HA PLUGIN RE-WRAPS THEM) AND
+    // NOT WHILE IT STOPS (A DATABASE OPENED THEN WOULD BE LEFT OPEN BEHIND THE SHUTDOWN)
+    if (status == STATUS.ONLINE && !isReservedDatabaseName(databaseName) && !closedByCommand.contains(databaseName)) {
+      // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK, AND IS
+      // ANSWERED AS IT ALWAYS WAS (NOT AVAILABLE), NOT WITH A NEW KIND OF ERROR
+      if (isValidDatabaseName(databaseName)) {
+        final File directory = new File(
+            configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
+        if (holdsDatabase(directory))
+          return getDatabase(databaseName, false, true, false, true);
+      }
+    }
+    return getDatabase(databaseName, false, false);
+  }
+
   public FileServerEventLog getEventLog() {
     return eventLog;
   }
@@ -1536,6 +1588,7 @@ public class ArcadeDBServer {
 
       // FORCE LOADING INTO THE SERVER
       databases.put(databaseName, serverDatabase);
+      closedByCommand.remove(databaseName);
     }
 
     notifyPlugins(databaseName, true);
@@ -1656,6 +1709,16 @@ public class ArcadeDBServer {
           UNVERIFIED_CLOSED_COPY_FILE, databaseName);
   }
 
+  /** Whether {@link #checkDatabaseNameIsValid} accepts the name. */
+  private boolean isValidDatabaseName(final String databaseName) {
+    try {
+      checkDatabaseNameIsValid(databaseName);
+      return true;
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+  }
+
   /**
    * Validates a caller-supplied database name before it is used to build an on-disk path, preventing path
    * traversal outside the configured {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY} (GHSA-qwgr-2c45-63xx).
@@ -1701,16 +1764,52 @@ public class ArcadeDBServer {
         throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
       serverDatabase = new ServerDatabase(this, wrapForHA(database));
       databases.put(databaseName, serverDatabase);
+      closedByCommand.remove(databaseName);
     }
 
     notifyPlugins(databaseName, true);
     return serverDatabase;
   }
 
+  /**
+   * Records that a {@code close database} command closed {@code databaseName}, so {@link #getDatabaseForRequest} does not
+   * reopen it (issue #10234). Cleared when anything opens, registers (a restore, an import, a snapshot install) or removes it
+   * (a drop), {@code open database} included. Held in memory only: after a restart the database is opened at start, or on
+   * its first request when {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} is off.
+   */
+  public void markClosedByCommand(final String databaseName) {
+    closedByCommand.add(databaseName);
+  }
+
+  /**
+   * Ends the mark of a failed {@code close database}: the database was marked before it was closed, and stays open
+   * (issue #10234).
+   */
+  public void unmarkClosedByCommand(final String databaseName) {
+    closedByCommand.remove(databaseName);
+  }
+
   public void removeDatabase(final String databaseName) {
+    removeDatabase(databaseName, false);
+  }
+
+  /**
+   * Deregisters a database a {@code close database} command has closed, and keeps its mark: the registry and the mark change
+   * together under {@link #databasesLock}, so no request can reopen it between the two (issue #10234).
+   */
+  public void removeClosedDatabase(final String databaseName) {
+    removeDatabase(databaseName, true);
+  }
+
+  private void removeDatabase(final String databaseName, final boolean keepClosedByCommandMark) {
     final ServerDatabase removed;
     synchronized (databasesLock) {
       removed = databases.remove(databaseName);
+      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      if (keepClosedByCommandMark)
+        closedByCommand.add(databaseName);
+      else
+        closedByCommand.remove(databaseName);
     }
 
     if (removed != null)
@@ -1961,6 +2060,11 @@ public class ArcadeDBServer {
     return registry;
   }
 
+  /** The background warm-up of the query stack (issue #10218), null when disabled. */
+  public QueryWarmUp getQueryWarmUp() {
+    return queryWarmUp;
+  }
+
   /** The statements this server is running (issue #9680). */
   public RunningQueryRegistry getRunningQueries() {
     return runningQueries;
@@ -1995,6 +2099,16 @@ public class ArcadeDBServer {
 
   private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
       final boolean allowLoad, final boolean underSnapshotRecovery) {
+    return getDatabase(databaseName, createIfNotExists, allowLoad, underSnapshotRecovery, false);
+  }
+
+  /**
+   * @param refuseIfClosedByCommand {@code true} for a client request (issue #10234): a database a {@code close database}
+   *                                command closed is not opened for it. Checked under {@link #databasesLock}, where the
+   *                                command deregisters the database, so a request cannot reopen it between the two.
+   */
+  private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
+      final boolean allowLoad, final boolean underSnapshotRecovery, final boolean refuseIfClosedByCommand) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
@@ -2040,6 +2154,10 @@ public class ArcadeDBServer {
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
+
+        if (refuseIfClosedByCommand && closedByCommand.contains(databaseName))
+          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
+              + "'close database' command and stays closed until 'open database'");
 
         checkDatabaseNameIsValid(databaseName);
 
@@ -2120,6 +2238,7 @@ public class ArcadeDBServer {
         db = new ServerDatabase(this, embDatabase);
 
         databases.put(databaseName, db);
+        closedByCommand.remove(databaseName);
         loaded = true;
 
         // Only once the copy is open and registered on the leader: a mark dropped before an open that then failed

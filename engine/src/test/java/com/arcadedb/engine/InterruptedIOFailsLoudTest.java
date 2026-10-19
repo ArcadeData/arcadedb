@@ -27,6 +27,7 @@ import com.arcadedb.exception.TransactionException;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.InterruptedIOException;
 import java.lang.reflect.Field;
 import java.util.Collections;
@@ -93,7 +94,11 @@ class InterruptedIOFailsLoudTest extends TestHelper {
     final Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
     poolField.setAccessible(true);
     final WALFile[] original = (WALFile[]) poolField.get(tm);
-    poolField.set(tm, new WALFile[] { null });
+    // A RETIRED FILE, NOT AN EMPTY SLOT: AN EMPTY SLOT IS GIVEN A FRESH FILE BY THE FIRST COMMIT THAT NEEDS IT (#10234), A
+    // RETIRED ONE REFUSES THE WRITE
+    final WALFile retired = new WALFile(db.getDatabasePath() + File.separator + "interrupted-test.wal");
+    retired.setActive(false);
+    poolField.set(tm, new WALFile[] { retired });
 
     Thread.currentThread().interrupt();
     try {
@@ -103,6 +108,7 @@ class InterruptedIOFailsLoudTest extends TestHelper {
     } finally {
       poolField.set(tm, original);
       Thread.interrupted();
+      retired.drop();
     }
   }
 }
