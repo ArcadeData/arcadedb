@@ -92,6 +92,12 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
       assertThatThrownBy(() -> server.createDatabase(NAME, ComponentFile.MODE.READ_WRITE))
           .isInstanceOf(ServerControlPlane.OperationInProgressException.class).hasMessageContaining("being dropped");
 
+      // A second drop of the name is refused, and never ends the hold of the one running
+      assertThatThrownBy(() -> server.dropLocalDatabase(created.getEmbedded(), NAME))
+          .isInstanceOf(ServerControlPlane.OperationInProgressException.class).hasMessageContaining("already being dropped");
+      assertThatThrownBy(() -> server.getDatabase(NAME)).as("the refused second drop left the first one's hold in place")
+          .isInstanceOf(DatabaseNotAvailableException.class);
+
       release.countDown();
       drop.get(30, TimeUnit.SECONDS);
     } finally {

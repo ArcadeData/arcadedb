@@ -1831,12 +1831,23 @@ public class ArcadeDBServer {
    * <p>
    * A replicated database is dropped through the cluster instead, which closes, deregisters and renames its directory aside under
    * {@link #databasesLock} as one step.
+   * <p>
+   * The caller holds {@code embedded} open and registered under {@code databaseName}: the control plane resolves it through
+   * {@link #getDatabase(String)} after taking the maintenance slot of the drop, and the startup restore does the same. That is
+   * what makes the hold safe to take without {@link #databasesLock}, see below.
+   *
+   * @throws ServerControlPlane.OperationInProgressException when the name is already being dropped, which the maintenance slot
+   *                                                         does not allow either: a second drop is refused, never allowed to end
+   *                                                         the hold of the first
    */
   public void dropLocalDatabase(final DatabaseInternal embedded, final String databaseName) {
     // Taken without databasesLock, and that is enough: a load only runs for a name whose registry entry is absent or closed,
     // and the caller holds this database open, so no load of it can be in flight when the hold is taken. getDatabase reads the
     // hold under the lock, after seeing the entry closed by the drop, so every load that starts later meets it
-    final boolean held = beingDropped.add(databaseName);
+    if (!beingDropped.add(databaseName))
+      throw new ServerControlPlane.OperationInProgressException(
+          "Cannot drop database '" + databaseName + "': it is already being dropped");
+
     try {
       embedded.drop();
       removeDatabase(databaseName);
@@ -1846,9 +1857,7 @@ public class ArcadeDBServer {
           "Drop of database '%s' failed: its instance is closed and its files may be partly deleted", e, databaseName);
       throw e;
     } finally {
-      // Only the hold taken here: a drop that overlapped another, which the maintenance slot does not allow, must not end its hold
-      if (held)
-        beingDropped.remove(databaseName);
+      beingDropped.remove(databaseName);
     }
   }
 

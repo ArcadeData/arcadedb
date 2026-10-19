@@ -184,6 +184,39 @@ class Issue10385PluginRouteCollisionsTest {
   }
 
   @Test
+  void aParameterAtTheMountBoundaryAndTheRootAreJudgedByTheSameRule() {
+    // /api/v1/query/{database} is POST-only on the core router: a path that fills the parameter is the core route, a path that
+    // stops before it is not, and a prefix that stops before it still covers it
+    assertThatThrownBy(() -> plugin("PluginA", routes -> routes.post("/api/v1/query/anything", UNUSED)))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("/api/v1/query/{database}");
+    assertThatThrownBy(() -> plugin("PluginA", routes -> routes.prefix(Methods.POST, "/api/v1/query", UNUSED)))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("/api/v1/query/{database}");
+    plugin("PluginA", routes -> routes.post("/api/v1/query", UNUSED));
+
+    // the root prefix is free until the server mounts Studio on it, and then it is the server's
+    plugin("PluginB", routes -> routes.prefix(Methods.GET, "/", UNUSED));
+    final PluginPathHandler withStudio = serverPaths();
+    withStudio.addPrefixPath("/", UNUSED);
+    withStudio.setRegisteringPlugin("PluginB");
+    try {
+      assertThatThrownBy(() -> new PluginRoutes(withStudio).prefix(Methods.GET, "/", UNUSED))
+          .isInstanceOf(IllegalStateException.class).hasMessageContaining("the server");
+    } finally {
+      withStudio.setRegisteringPlugin(null);
+    }
+  }
+
+  @Test
+  void aPathIsKeyedTheWayPathHandlerKeysIt() {
+    assertThat(PluginPathHandler.normalize("/a/b")).isEqualTo("/a/b");
+    assertThat(PluginPathHandler.normalize("/a/b/")).isEqualTo("/a/b");
+    assertThat(PluginPathHandler.normalize("/a/b//")).isEqualTo("/a/b");
+    assertThat(PluginPathHandler.normalize("a/b")).isEqualTo("/a/b");
+    assertThat(PluginPathHandler.normalize("/")).isEqualTo("/");
+    assertThat(PluginPathHandler.normalize("//")).isEqualTo("/");
+  }
+
+  @Test
   void aPluginCannotTakeOverTheApiPrefixOrAnotherServerMount() {
     // the issue's third collision: a prefix equal to the core mount REPLACES the core RoutingHandler
     assertThatThrownBy(() -> plugin("PluginC", routes -> routes.prefix(Methods.GET, "/api/v1", UNUSED)))

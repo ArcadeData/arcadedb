@@ -143,7 +143,8 @@ unaffected.
   again. The name is now held from before the drop starts until the files are gone: a request is answered `404`, and so is every
   other caller, and a create of the name is refused with a `409`. A request is also refused while a restore holds the name it
   would open, the way a create already was. A replicated drop already closed, deregistered and renamed the directory aside under
-  the registry lock.
+  the registry lock. A drop that fails halfway still leaves the closed instance registered, with the files the delete left, for
+  the next request to reopen, as before; it is now logged at `SEVERE`.
 
 - **#10264** A projection holding a `SELECT` subquery (`SELECT id, (SELECT count(*) FROM Owner) AS oc FROM Base`) can be stored:
   `CREATE MATERIALIZED VIEW` (default refresh or `REFRESH INCREMENTAL`) and `INSERT ... FROM` kept failing with a
