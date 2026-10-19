@@ -2647,7 +2647,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return engine;
   }
 
-  /** The transaction the caller has open on this thread, or {@code null}: what a statement joins instead of owning one. */
+  /**
+   * The transaction the caller has open on this thread, or {@code null}: what a statement joins instead of owning one. Every
+   * {@code command()} and {@code query()} overload carries the check built on it, see
+   * {@link #refuseCommitOfHalfAppliedStatement}: a new overload has to as well. It covers what the call runs, and the engines of this
+   * module run a write statement to its end inside the call; an engine whose result runs the statement while it is read (a Gremlin
+   * traversal) carries the check on its result. {@link #execute} routes a script through {@code command()}.
+   */
   private TransactionContext activeTransaction() {
     final TransactionContext tx = getTransactionIfExists();
     return tx != null && tx.isActive() ? tx : null;

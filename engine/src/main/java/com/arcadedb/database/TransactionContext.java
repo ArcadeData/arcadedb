@@ -643,9 +643,13 @@ public class TransactionContext implements Transaction {
    * Gives back writes counted by {@link #countCompletedRecordWrite()} that no longer stand, because the statement that made them took
    * them back itself: a record it created and deleted again leaves nothing of the statement behind (issue #10379). Only for such a
    * caller: a count given back for a write that does stand lets a half-applied statement through.
+   *
+   * @param count the writes to give back
+   * @param floor what {@link #getCompletedRecordWrites()} held when the statement started: a statement can only give back what it
+   *              counted itself, so the counter never goes below it, whatever the caller got wrong about its own count
    */
-  public void retractCompletedRecordWrites(final long count) {
-    completedRecordWrites -= count;
+  public void retractCompletedRecordWrites(final long count, final long floor) {
+    completedRecordWrites = Math.max(floor, completedRecordWrites - count);
   }
 
   /**

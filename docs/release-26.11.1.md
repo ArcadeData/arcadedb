@@ -108,8 +108,10 @@ transaction the caller keeps, failed after their first row and the caller's comm
 `database.command()` and `database.query()` dispatch every language, so any engine, including a later one, answers the same:
 `commit()` throws a `TransactionException` and nothing of the transaction is published. A statement that fails having written
 nothing leaves the transaction usable, and so does an openCypher statement whose own existence-constraint check took back every
-record it had created (#7945). A `sqlscript` that concludes its own transaction, such as a `BEGIN ... COMMIT RETRY n` block, is
-unchanged.
+record it had created (#7945). A `sqlscript` whose writes are all inside a `BEGIN ... COMMIT RETRY n` block, which rolls back its
+failed attempts and answers the failure in its `ELSE` branch, is unchanged; a write outside such a block is covered. The SQL,
+openCypher and script engines run a write statement to its end inside the call; a Gremlin traversal runs while its result is read,
+so its result carries the same check.
 
 **Who sees a different answer.** A caller that catches the error of a multi-row openCypher or script statement inside its own
 transaction and goes on to commit. Roll the transaction back and retry, or issue the rows as separate statements.

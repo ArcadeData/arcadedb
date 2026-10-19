@@ -147,6 +147,10 @@ public class DeferredExistenceChecks {
    */
   private Map<RID, Integer> deferredUpdates;
 
+  /** The transaction the statement ran in when this scope was opened, and what it had counted by then: see {@link #deleteProvisionalRecord}. */
+  private TransactionContext txAtOpen;
+  private long               writesAtOpen;
+
   /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */
   private boolean active = false;
 
@@ -192,6 +196,8 @@ public class DeferredExistenceChecks {
       return null;
 
     scope.active = true;
+    scope.txAtOpen = database.getTransactionIfExists();
+    scope.writesAtOpen = scope.txAtOpen != null ? scope.txAtOpen.getCompletedRecordWrites() : 0L;
     return scope;
   }
 
@@ -209,6 +215,7 @@ public class DeferredExistenceChecks {
     unresolved.clear();
     pending.clear();
     deferredUpdates = null;
+    txAtOpen = null;
     patternCreateDepth = 0;
     sweepAt = SWEEP_THRESHOLD;
     disarm();
@@ -520,7 +527,11 @@ public class DeferredExistenceChecks {
         // writes the transaction counted for it (the creation, those updates, this delete) are given back, and a caller that goes on
         // after the ValidationException is not told that part of the statement is left behind (issue #10379)
         final Integer updates = deferredUpdates != null ? deferredUpdates.remove(rid) : null;
-        database.getTransaction().retractCompletedRecordWrites(2L + (updates != null ? updates : 0));
+        // Never below what the transaction had counted when the statement started. In another transaction than the statement started
+        // in nothing is given back: the commit is refused, as for any half-applied statement
+        final TransactionContext tx = database.getTransaction();
+        if (tx == txAtOpen)
+          tx.retractCompletedRecordWrites(2L + (updates != null ? updates : 0), writesAtOpen);
       }
       return true;
     } catch (final RecordNotFoundException e) {
