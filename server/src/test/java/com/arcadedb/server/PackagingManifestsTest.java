@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,6 +62,10 @@ class PackagingManifestsTest {
   private static final String COMPOSE     = "docker-compose.yml";
   private static final String README      = "README.md";
   private static final String DEPENDABOT  = ".github/dependabot.yml";
+  private static final String CONFIG_DIR  = "package/src/main/config";
+  private static final String FULL_ASSEMBLY      = "package/src/main/assembly/full.xml";
+  private static final String NATIVE_WORKFLOW    = ".github/workflows/native-image.yml";
+  private static final String NATIVE_DOCKER_SH   = "native/scripts/build-native-docker.sh";
 
   private static final Pattern BASE_IMAGE  = Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
 
@@ -255,6 +261,91 @@ class PackagingManifestsTest {
         .doesNotContain("\nversion:");
     assertThat(compose).as("without a healthcheck a crash-looping container still reports as running")
         .contains("healthcheck:");
+  }
+
+  @Test
+  void everyConfigTemplateIsShippedByTheJvmDistribution() {
+    // A file under package/src/main/config that no assembly ships is never exercised by the JVM build,
+    // so nothing notices when it rots - which is how a pretty-printed 2021 server-users.jsonl outlived
+    // its format and then reached the native image, where it failed to parse on every boot (issue #10320).
+    final Set<String> includes = configIncludes();
+    for (final String file : configFiles())
+      assertThat(includes).as("%s/%s is shipped by no JVM distribution (%s ships %s)", CONFIG_DIR, file, FULL_ASSEMBLY,
+          includes).anySatisfy(glob -> assertThat(file).endsWith(glob.substring(1)));
+  }
+
+  @Test
+  void nativeImageStagesTheSameConfigFilesAsTheJvmDistribution() {
+    // Both native staging steps used to copy the whole directory, so a file the JVM assemblies filter out
+    // still landed in /home/arcadedb/config of the native image (issue #10320).
+    final Set<String> includes = configIncludes();
+    for (final String stager : List.of(NATIVE_WORKFLOW, NATIVE_DOCKER_SH)) {
+      final List<String> copies = configCopyCommands(read(stager));
+      assertThat(copies).as("%s no longer stages %s", stager, CONFIG_DIR).isNotEmpty();
+
+      final Set<String> staged = new LinkedHashSet<>();
+      for (final String copy : copies) {
+        assertThat(copy).as("%s copies %s wholesale instead of the assemblies' include set: %s", stager, CONFIG_DIR, copy)
+            .doesNotContainPattern("config/[\"]?(\\*|\\.)[\"]?(\\s|$)");
+        staged.addAll(matches(Pattern.compile("config/[\"]?\\*(\\.[A-Za-z0-9]+)"), copy).stream().map(ext -> "*" + ext).toList());
+      }
+      assertThat(staged).as("%s stages a different include set than %s", stager, FULL_ASSEMBLY)
+          .containsExactlyInAnyOrderElementsOf(includes);
+    }
+  }
+
+  @Test
+  void shippedJsonConfigTemplatesParseTheWayTheServerReadsThem() {
+    // server-groups.json is read as one document, server-users.jsonl as one object per line: a template
+    // that does not parse makes the server log a SEVERE and fall back to its defaults on every boot.
+    for (final String file : configFiles()) {
+      final String content = read(CONFIG_DIR + "/" + file);
+      if (file.endsWith(".json"))
+        assertThat(new JSONObject(content).isEmpty()).as("%s is an empty document", file).isFalse();
+      else if (file.endsWith(".jsonl"))
+        for (final String line : content.split("\n"))
+          if (!line.isBlank())
+            assertThat(new JSONObject(line).isEmpty()).as("%s holds an empty record", file).isFalse();
+    }
+  }
+
+  /**
+   * The {@code <include>} globs of the fileSet that ships {@code src/main/config} in the full assembly.
+   */
+  private static Set<String> configIncludes() {
+    final Matcher fileSet = Pattern.compile("<directory>\\$\\{basedir}/src/main/config</directory>(.*?)</fileSet>",
+        Pattern.DOTALL).matcher(read(FULL_ASSEMBLY));
+    assertThat(fileSet.find()).as("%s no longer ships %s", FULL_ASSEMBLY, CONFIG_DIR).isTrue();
+    final Set<String> includes = new LinkedHashSet<>(
+        matches(Pattern.compile("<include>([^<]+)</include>"), fileSet.group(1)));
+    assertThat(includes).as("the config fileSet of %s has no include filter", FULL_ASSEMBLY).isNotEmpty()
+        .allSatisfy(glob -> assertThat(glob).matches("\\*\\.[A-Za-z0-9]+"));
+    return includes;
+  }
+
+  /**
+   * Names of the files committed under {@link #CONFIG_DIR}.
+   */
+  private static List<String> configFiles() {
+    try (final Stream<Path> files = Files.list(repositoryRoot().resolve(CONFIG_DIR))) {
+      return files.filter(Files::isRegularFile).map(p -> p.getFileName().toString()).sorted().toList();
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  /**
+   * The {@code cp} commands of a shell script (or of a workflow's {@code run:} block) that read from
+   * {@link #CONFIG_DIR}, with backslash continuations joined.
+   */
+  private static List<String> configCopyCommands(final String script) {
+    final List<String> found = new ArrayList<>();
+    for (final String line : script.replace("\\\n", " ").split("\n")) {
+      final String command = line.strip();
+      if (command.startsWith("cp ") && command.contains(CONFIG_DIR + "/"))
+        found.add(command);
+    }
+    return found;
   }
 
   /**

@@ -497,7 +497,10 @@ jobs:
           fi
           tar xzf "$TARBALL" -C ctx
           mv "ctx/$BIN_BASENAME" ctx/arcadedb
-          cp -r package/src/main/config/* ctx/config/
+          # The same include set as the JVM assemblies' config fileSet (package/src/main/assembly/full.xml):
+          # a wholesale copy shipped files the JVM distribution filters out (#10320).
+          cp package/src/main/config/*.yaml package/src/main/config/*.json \
+            package/src/main/config/*.groovy package/src/main/config/*.properties ctx/config/
           if [ "${{ matrix.arch }}" = "amd64" ]; then
             cp /etc/ssl/certs/ca-certificates.crt ctx/ca-certificates.crt
           fi
