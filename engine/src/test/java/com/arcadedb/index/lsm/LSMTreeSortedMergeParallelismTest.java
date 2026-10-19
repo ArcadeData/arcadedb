@@ -27,6 +27,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -45,6 +46,13 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class LSMTreeSortedMergeParallelismTest extends TestHelper {
   private static final int RECORDS = 25_000;
   private static final long MEMORY_BUDGET = 24L << 20;
+  /** Four runs of the table: what the budget used to give (24 MB at 3,072 bytes an entry), which the merge groups need. */
+  private static final int ENTRIES_PER_RUN = (int) (MEMORY_BUDGET / 3_072L);
+
+  @AfterEach
+  void clearEntriesPerRunLimit() {
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(0);
+  }
 
   @Test
   void admitsMergeWorkersAgainstCpuHeapAndFileDescriptors() {
@@ -203,6 +211,8 @@ class LSMTreeSortedMergeParallelismTest extends TestHelper {
   }
 
   private TypeIndex build(final String typeName, final boolean unique, final Path spillParent) {
+    // The runs are sized by what their entries retain (issue #10267), and 25,000 keys retain far less than the budget
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(ENTRIES_PER_RUN);
     final var builder = database.getSchema().buildTypeIndex(typeName, new String[] { "lookupKey" })
         .withType(Schema.INDEX_TYPE.LSM_TREE)
         .withBuildMode(IndexBuildMode.SORTED)

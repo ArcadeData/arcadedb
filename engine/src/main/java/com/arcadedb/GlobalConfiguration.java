@@ -1199,6 +1199,18 @@ public enum GlobalConfiguration {
       one of an HTTP command) does not stop the switch. 0 disables the switch.""",
       Long.class, 10_000L),
 
+  INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedNonUniqueMinRecords", SCOPE.DATABASE,
+      """
+      Minimum number of records a type must hold for CREATE INDEX ... NOTUNIQUE (LSM_TREE, default build mode) to be built \
+      with the sorted build instead of the record-at-a-time one (issue #10267). The record-at-a-time build adds every key \
+      through the transaction bookkeeping of a write, which a bulk build over existing records does not need; the sorted \
+      build sorts the keys and writes the index pages directly, and when the keys fit its memory budget it takes about \
+      two thirds of the time. Unlike the UNIQUE case (arcadedb.index.buildSortedUniqueMinRecords) the record-at-a-time \
+      build is not quadratic here, so the switch is left to the sizes where the saving is felt. The same conditions apply: \
+      builds inside a transaction with pending changes and on replicated databases keep the record-at-a-time build. \
+      0 disables the switch.""",
+      Long.class, 1_000_000L),
+
   INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
       """
       Timeout in ms a bulk index build waits for the file locks of ONE of its chunk commits, replacing \
