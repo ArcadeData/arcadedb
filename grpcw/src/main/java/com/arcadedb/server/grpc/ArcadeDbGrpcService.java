@@ -67,6 +67,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -576,6 +577,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // The RPC's registry entry, published on the gRPC thread by GrpcAdmissionInterceptor: the statement runs on the
     // transaction's thread, so the entry goes with it there, where its checks and its commits read it (issue #9689)
     final RunningQuery runningQuery = RunningQuery.current();
+    // The RPC's admission slot, taken on the gRPC thread by GrpcAdmissionInterceptor: the statement runs on the
+    // transaction's thread, so the slot goes with it there, where a forward to the leader or a wait on an explicit lock
+    // gives it back (issue #10140). Left behind, those releases read an empty thread and hold the slot for the whole wait
+    final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -586,9 +591,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
         ProtocolContext.set(GRPC_PROTOCOL);
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
+        final QueryAdmissionGate.Adoption adoption = admission.adopt();
         try {
           return task.call();
         } finally {
+          adoption.close();
           if (binding != null)
             binding.close();
           if (runningQuery != null && runningQuery.isTerminated())
@@ -1572,8 +1579,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       final var el = db.lookupByRID(new RID(ridStr), false);
-      el.delete();
+      // what the engine answered, which el.delete() throws away: a delete a before-delete listener vetoed was replied as
+      // deleted, so the client counted it and returned normally (issue #10230)
+      final boolean deleted = ((DatabaseInternal) db).deleteRecordReportingVeto(el);
 
+      // committed even after a veto: the vetoed delete left nothing in the transaction, so the commit writes nothing
       if (beganHere) {
         if (hasTx && req.getTransaction().getRollback())
           db.rollback();
@@ -1581,7 +1591,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.commit();
       }
 
-      return DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build();
+      // Both false for a vetoed delete, as for a vetoed update: the clients read either as "the record was deleted"
+      return DeleteRecordResponse.newBuilder().setSuccess(deleted).setDeleted(deleted).build();
     } catch (Exception e) {
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
@@ -2033,6 +2044,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           commitTransaction(): committing txId=%s on db=%s (on dedicated \
           thread)""", txId, txCtx.db.getName());
 
+      // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
+      // submitToActiveTransaction
+      final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
         // A statement of this transaction was terminated while this commit waited behind it: what it wrote was rolled
@@ -2042,7 +2056,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               "Transaction " + txId + " was ended: a statement running in it was terminated, and everything it wrote rolled back");
         // A client request, on a thread no listener callback runs on (issue #8363): see submitToActiveTransaction.
         ProtocolContext.set(GRPC_PROTOCOL);
-        try {
+        try (final QueryAdmissionGate.Adoption ignored = admission.adopt()) {
           txCtx.db.commit();
         } finally {
           ProtocolContext.clear();

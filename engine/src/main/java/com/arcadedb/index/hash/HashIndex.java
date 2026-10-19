@@ -207,12 +207,12 @@ public class HashIndex implements IndexInternal {
           pendingEntries = values.size();
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (unique && PendingIndexRemovals.removesWholeKey(value, true))
+              if (unique && PendingIndexRemovals.removesWholeKey(value))
                 // ON A UNIQUE INDEX NOTHING SURVIVES A WHOLE-KEY REMOVAL: ANSWER BEFORE ALLOCATING THE FILTER
                 return EMPTY_CURSOR;
 
               // #6970: which disk RIDs a pending entry hides is decided by PendingIndexRemovals
-              removals = PendingIndexRemovals.accumulate(removals, value, unique);
+              removals = PendingIndexRemovals.accumulate(removals, value);
               if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
                 continue;
 

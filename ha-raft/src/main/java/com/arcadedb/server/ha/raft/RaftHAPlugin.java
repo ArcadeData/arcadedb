@@ -32,11 +32,13 @@ import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.PluginRoutes;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import io.undertow.server.handlers.PathHandler;
+import io.undertow.util.Methods;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -550,11 +552,15 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
+  public void registerAPI(final HttpServer httpServer, final PathHandler paths) {
+    // Every route is declared with its method, so any other method is answered 405 before a handler runs: these
+    // operations change the cluster, and GET is the method link prefetchers, crawlers and a browser replaying the
+    // operator's cached credentials send (issue #10157).
+    final PluginRoutes routes = new PluginRoutes(paths);
     // Always register the endpoint - it returns 503 when Raft is not yet started.
     // Note: registerAPI is called before configure()/startService() for AFTER_HTTP_ON plugins,
     // so isRaftEnabled() cannot be checked here.
-    routes.addExactPath("/api/v1/cluster", new GetClusterHandler(httpServer, this));
+    routes.get("/api/v1/cluster", new GetClusterHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
     // Close a previous handler before replacing it: registerAPI() is expected to run once per plugin
     // instance (a fresh RaftHAPlugin is created on every server start), but closing defensively here
@@ -563,36 +569,36 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (snapshotHttpHandler != null)
       snapshotHttpHandler.close();
     snapshotHttpHandler = new SnapshotHttpHandler(httpServer);
-    routes.addPrefixPath("/api/v1/ha/snapshot/", snapshotHttpHandler);
+    routes.prefix(Methods.GET, "/api/v1/ha/snapshot/", snapshotHttpHandler);
     LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
-    routes.addExactPath("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, this));
-    routes.addPrefixPath("/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
-    routes.addExactPath("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
+    routes.post("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, this));
+    routes.prefix(Methods.DELETE, "/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, this));
+    routes.post("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
+    routes.post("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
+    routes.post("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
     // Same defensive close as snapshotHttpHandler above (issue #5890).
     if (postVerifyDatabaseHandler != null)
       postVerifyDatabaseHandler.close();
     postVerifyDatabaseHandler = new PostVerifyDatabaseHandler(httpServer, this);
-    routes.addPrefixPath("/api/v1/cluster/verify/", postVerifyDatabaseHandler);
-    routes.addPrefixPath("/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));
+    routes.prefix(Methods.POST, "/api/v1/cluster/verify/", postVerifyDatabaseHandler);
+    routes.prefix(Methods.POST, "/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));
     // Issue #8641: the operator's audited override of a leader's refusal to reopen a closed copy it cannot verify.
-    routes.addPrefixPath(PostAcceptCopyHandler.ROUTE, new PostAcceptCopyHandler(httpServer, this));
+    routes.prefix(Methods.POST, PostAcceptCopyHandler.ROUTE, new PostAcceptCopyHandler(httpServer, this));
     // Issue #9449: the operator's audited override of a quarantine a sole voter can never resync away.
-    routes.addPrefixPath(PostAcceptDivergedHandler.ROUTE, new PostAcceptDivergedHandler(httpServer, this));
+    routes.prefix(Methods.POST, PostAcceptDivergedHandler.ROUTE, new PostAcceptDivergedHandler(httpServer, this));
     // Issue #9498: the same override for the node-wide stale-snapshot read floor (issue #6111).
-    routes.addExactPath(PostAcceptStaleSnapshotHandler.ROUTE, new PostAcceptStaleSnapshotHandler(httpServer, this));
+    routes.post(PostAcceptStaleSnapshotHandler.ROUTE, new PostAcceptStaleSnapshotHandler(httpServer, this));
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
-    routes.addExactPath("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));
+    routes.post("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));
     // Issue #7219: peer-capability advertisement RPC, polled by the leader so it can decide for itself whether
     // an optional wire-format section is safe to write. A node predating this route answers 404, and that 404 is
     // the answer - see PostCapabilitiesHandler.
-    routes.addExactPath("/api/v1/cluster/capabilities", new PostCapabilitiesHandler(httpServer, this));
+    routes.post("/api/v1/cluster/capabilities", new PostCapabilitiesHandler(httpServer, this));
     // Issues #7833/#7834: the one place a cluster security seed is asked for - by the node that admitted a peer
     // and wants the outcome to report, and by a node that came back still a member and has to be put back in
     // step. Both reach the leader's single seeder through it.
-    routes.addExactPath(PostSecuritySeedHandler.ROUTE, new PostSecuritySeedHandler(httpServer, this));
+    routes.post(PostSecuritySeedHandler.ROUTE, new PostSecuritySeedHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster management endpoints registered");
   }
 

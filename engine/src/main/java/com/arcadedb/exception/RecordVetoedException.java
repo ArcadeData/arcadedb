@@ -27,7 +27,8 @@ import com.arcadedb.database.RID;
  * rather than as a broken server. A writer that can report the refusal - {@code saveReportingVeto()}, {@code createRecordReportingVeto()},
  * {@code GraphEngine.newEdgeReportingVeto()} - answers it as a value instead, which is what a caller that counts the records it
  * wrote must use. The remote drivers raise it from {@code save()} for a create or an update the server reported as vetoed, and
- * answer it as {@code false} from {@code saveReportingVeto()} (issue #10161).
+ * answer it as {@code false} from {@code saveReportingVeto()} (issue #10161). They raise it from {@code deleteRecord()} and
+ * {@code delete()} for a vetoed delete as well (issue #10230).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -44,5 +45,10 @@ public class RecordVetoedException extends ValidationException {
   /** The refusal of an update of an existing record. */
   public static RecordVetoedException ofUpdate(final String typeName, final RID rid) {
     return new RecordVetoedException("Cannot update record " + rid + " of type '" + typeName + "': a listener vetoed it");
+  }
+
+  /** The refusal of a delete of an existing record, raised by the remote drivers (issue #10230). */
+  public static RecordVetoedException ofDelete(final RID rid) {
+    return new RecordVetoedException("Cannot delete record " + rid + ": a listener vetoed it");
   }
 }

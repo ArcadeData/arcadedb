@@ -245,6 +245,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // configuration entry rewrites only the settings it names, so a held one is superseded only when every one of them has
   // been written again. One structure per database, replaced whole, so the hold and the settings it waits for never disagree.
   private final    ConcurrentHashMap<String, HeldConfiguration> heldConfigurations = new ConcurrentHashMap<>();
+  // The clock the write of a held configuration is retried on (issue #10124), so a test can advance it rather than wait
+  private          LongSupplier                                configurationRetryClock = System::nanoTime;
+  // When the held configurations are next written again, and how many retries failed in a row. Plain, not volatile: read
+  // and written on the Raft apply thread only, by applyDatabaseConfigurationEntry and retryHeldConfigurationsIfDue
+  private          long                                        nextConfigurationRetryNanos;
+  private          int                                         failedConfigurationRetries;
   private static final long              HELD_REMINDER_INTERVAL_MS = 300_000L;
   // When takeSnapshot() last reminded that a hold keeps the Raft log from being purged, so a hold that lasts is not forgotten
   private volatile long                      heldCheckpointReminderMs;
@@ -2029,6 +2035,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final ArcadeDBServer srv = this.server;
       if (srv != null)
         securityDurabilityFloor.retryIfDue(srv.getSecurity());
+      // The same for a database configuration whose configuration.json could not be written (issue #10124)
+      retryHeldConfigurationsIfDue();
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -2974,7 +2982,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final List<RaftPeerId> oldPeers = new ArrayList<>(newRaftConfiguration.getOldPeersCount());
       for (final RaftProtos.RaftPeerProto peer : newRaftConfiguration.getOldPeersList())
         oldPeers.add(RaftPeerId.valueOf(peer.getId()));
+
       runtimeJoinDetector.onConfiguration(getId(), peers, oldPeers, index);
+
+      // The misdirected-request listener learns a peer joined after start here, before this node can dial it, so the
+      // repair of a channel to it never shares the slot strangers' refusals take (issue #10144)
+      if (membershipHolder != null)
+        membershipHolder.onRaftConfigurationApplied(peers, oldPeers);
 
       membershipSecuritySeeder.onConfigurationChanged(term, index, peers);
     } catch (final Throwable t) {
@@ -7404,10 +7418,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Applied on every node, the one that submitted it included, where it changes nothing in memory. Every setting the
    * entry does not name keeps its value, so changes made concurrently on different nodes to different settings both
    * survive, and to the same setting the later commit wins on every node. A failure to WRITE the file leaves the
-   * change in force in memory, and fails this entry's apply with a {@link ReplicationException}, logged SEVERE, exactly
-   * as the security documents do: the node stays up rather than halting, which would turn a full or read-only volume
-   * into a crash loop. A restart before the volume is fixed reads the previous file back, so the remedy is to reissue
-   * the change.
+   * change in force in memory, and fails this entry's apply, logged SEVERE, exactly as the security documents do: the node
+   * stays up rather than halting, which would turn a full or read-only volume into a crash loop. The entry is then held for
+   * the replay (issue #10086): no snapshot checkpoint covers it, so a restart replays it and writes the file, and nothing
+   * has to be reissued (issue #10124). The hold lifts once the file carries every setting the held entries named, whether
+   * a later entry wrote them or {@link #retryHeldConfigurationsIfDue} did.
    */
   // @VisibleForTesting
   void applyDatabaseConfigurationEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
@@ -7430,8 +7445,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
           LocalDatabase.CONFIGURATION_FILE_NAME);
       // In force in memory and not on disk: the entry is held for the replay until the file carries every setting it
       // named (issue #10086), as it is for the security documents
-      final HeldConfiguration held = heldConfigurations.merge(decoded.databaseName(),
-          new HeldConfiguration(index, settingsNamedBy(payload)), HeldConfiguration::and);
+      if (heldConfigurations.isEmpty()) {
+        // The write that just failed was the first attempt, so the first retry is one interval away. Only when nothing
+        // was held yet: one retry pass writes every held database, so another failing while one is held keeps the schedule
+        nextConfigurationRetryNanos = configurationRetryClock.getAsLong() + TimeUnit.MILLISECONDS.toNanos(
+            SecurityDurabilityFloor.RETRY_INTERVAL_MS);
+        failedConfigurationRetries = 0;
+      }
+      final HeldConfiguration held = heldConfigurations.merge(decoded.databaseName(), HeldConfiguration.of(index, payload),
+          HeldConfiguration::and);
       throw heldEntry("config:" + decoded.databaseName(), index, held.index() == index,
           "Failed to persist the replicated configuration of database '" + decoded.databaseName() + "' locally", e);
     }
@@ -7455,20 +7477,125 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * index of the entries that could not be written and the settings they named. Immutable and replaced whole, so the hold and
    * the settings it waits for are one value.
    */
-  private record HeldConfiguration(long index, Set<String> settings) {
-    /** What is outstanding once {@code other} failed as well: the lowest index and every setting either named. */
-    HeldConfiguration and(final HeldConfiguration other) {
-      final Set<String> both = new HashSet<>(settings);
-      both.addAll(other.settings);
-      return new HeldConfiguration(Math.min(index, other.index), both);
+  private record HeldConfiguration(long index, String changes) {
+    /**
+     * The entry at {@code index} that could not be written. {@code changes} is in the shape the entry carries and
+     * {@code LocalDatabase.writeConfigurationChanges} takes: what the file is missing, with the value the cluster
+     * committed for each setting, so a retry can write it without reading the configuration in memory (issue #10124).
+     */
+    static HeldConfiguration of(final long index, final String payload) {
+      final JSONObject entry = new JSONObject(payload);
+      return new HeldConfiguration(index, document(entry.getJSONObject("configuration", new JSONObject()),
+          entry.getJSONArray("removed", new JSONArray())));
+    }
+
+    /**
+     * What is outstanding once {@code later}, a later entry of the same database, failed as well: the lowest index and
+     * every setting either named, with the later entry's value where both named one, as the replay would leave it.
+     */
+    HeldConfiguration and(final HeldConfiguration later) {
+      final JSONObject merged = new JSONObject(changes);
+      final JSONObject changed = merged.getJSONObject("configuration", new JSONObject());
+      final Set<String> removed = removedOf(merged);
+      final JSONObject next = new JSONObject(later.changes);
+      final JSONObject laterChanged = next.getJSONObject("configuration", new JSONObject());
+      for (final String key : laterChanged.keySet()) {
+        changed.put(key, laterChanged.get(key));
+        removed.remove(key);
+      }
+      for (final String key : removedOf(next)) {
+        changed.remove(key);
+        removed.add(key);
+      }
+      return new HeldConfiguration(Math.min(index, later.index), document(changed, new JSONArray(removed)));
     }
 
     /** What is outstanding after an entry wrote {@code written}, or {@code null} when every setting is written again. */
     HeldConfiguration without(final Set<String> written) {
-      final Set<String> remaining = new HashSet<>(settings);
-      remaining.removeAll(written);
-      return remaining.isEmpty() ? null : new HeldConfiguration(index, remaining);
+      final JSONObject outstanding = new JSONObject(changes);
+      final JSONObject changed = outstanding.getJSONObject("configuration", new JSONObject());
+      final Set<String> removed = removedOf(outstanding);
+      for (final String key : written) {
+        changed.remove(key);
+        removed.remove(key);
+      }
+      if (changed.keySet().isEmpty() && removed.isEmpty())
+        return null;
+      return new HeldConfiguration(index, document(changed, new JSONArray(removed)));
     }
+
+    private static Set<String> removedOf(final JSONObject document) {
+      final JSONArray removed = document.getJSONArray("removed", new JSONArray());
+      final Set<String> keys = new HashSet<>();
+      for (int i = 0; i < removed.length(); i++)
+        keys.add(removed.getString(i));
+      return keys;
+    }
+
+    private static String document(final JSONObject changed, final JSONArray removed) {
+      return new JSONObject().put("configuration", changed).put("removed", removed).toString();
+    }
+  }
+
+  /**
+   * Writes every held database configuration to its {@code configuration.json} again, at most once per
+   * {@link SecurityDurabilityFloor#RETRY_INTERVAL_MS} (issue #10124), so a volume that takes the write again stops holding
+   * the Raft log without waiting for a later entry to name every setting the held one did - which, on a database whose
+   * configuration rarely changes, may never come. Costs one map check while nothing is held.
+   * <p>
+   * What is written is what the held entries committed, not the configuration in memory: memory may also hold a change
+   * made on this node that is still on its way through the replication, and writing it ahead of its own entry would both
+   * put a value on disk the cluster may refuse and hide the change from the difference between memory and file that
+   * {@code RaftReplicatedDatabase} submits. On the apply thread, like every other write of a replicated configuration, so
+   * no apply of the same database can interleave with it.
+   * <p>
+   * Driven by applied entries, as {@link SecurityDurabilityFloor#retryIfDue} is: on a cluster that applies nothing the hold
+   * waits for the next entry, which costs nothing, since an entry applied is also the only thing that grows the Raft log.
+   * Blocking included, like that retry: a volume that HANGS the write stalls the apply once per interval, and would stall
+   * the apply of the next configuration entry of that database just the same.
+   */
+  private void retryHeldConfigurationsIfDue() {
+    if (heldConfigurations.isEmpty())
+      return;
+
+    final long now = configurationRetryClock.getAsLong();
+    if (now - nextConfigurationRetryNanos < 0)
+      return;
+    nextConfigurationRetryNanos = now + TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
+
+    final List<String> failed = new ArrayList<>(0);
+    String lastFailure = null;
+    for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet()) {
+      final String databaseName = entry.getKey();
+      final HeldConfiguration held = entry.getValue();
+      try {
+        ((LocalDatabase) databaseFor(databaseName).getEmbedded()).writeConfigurationChanges(held.changes());
+        if (heldConfigurations.remove(databaseName, held))
+          LogManager.instance().log(this, Level.INFO,
+              "The replicated configuration of database '%s' held since index %d is written to '%s' again; snapshot "
+                  + "checkpoints may cover it (issue #10124)", databaseName, held.index(),
+              LocalDatabase.CONFIGURATION_FILE_NAME);
+      } catch (final IOException | RuntimeException e) {
+        // Runs inside applyTransaction, whose catch-all halts the node: a retry that cannot run is a retry for later
+        failed.add(databaseName);
+        lastFailure = databaseName + ": " + e;
+        LogManager.instance().log(this, Level.FINE, "Could not write the held configuration of database '%s' again: %s",
+            databaseName, e.getMessage());
+      }
+    }
+    if (lastFailure == null)
+      failedConfigurationRetries = 0;
+    else if (++failedConfigurationRetries % SecurityDurabilityFloor.REPORT_EVERY_RETRIES == 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Replicated database configurations are still not written to disk on this node after %d retries (%s): the Raft "
+              + "log is not compacted past the lowest held entry, and grows until the database directory takes the write "
+              + "again (issue #10124). Last failure: %s", failedConfigurationRetries, failed, lastFailure);
+  }
+
+  /** Paces {@link #retryHeldConfigurationsIfDue} on {@code clock} instead of {@link System#nanoTime()}, for a test. */
+  // @VisibleForTesting
+  void setConfigurationRetryClock(final LongSupplier clock) {
+    this.configurationRetryClock = clock;
   }
 
   /**

@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -314,6 +315,58 @@ public final class CypherEagernessAnalyzer {
     writePending = true;
     writeSeen = true;
     writesAnyPropertyKey = true;
+  }
+
+  /**
+   * The property writes of a statement's clauses, read once for the whole plan: a {@code SET} or {@code REMOVE} of a key,
+   * a {@code SET} of a whole map or of a key computed per row, the {@code ON CREATE} / {@code ON MATCH} of a MERGE, the
+   * clauses of a FOREACH, and any clause whose writes the planner cannot see (a procedure call, a subquery), which counts as
+   * writing every key. CREATE and the label writes are not counted: they get a barrier of their own, see
+   * {@link #needsBarrier(CreateClause, Set)}. An index walked by such a statement reads its whole range before the first
+   * write, or the statement meets the entries it moved (issue #10251), so {@link #writesAnyPropertyOf} is asked once per
+   * index read of the plan.
+   * <p>
+   * The opaque clauses are counted conservatively: a read-only subquery or procedure then costs the range scans of the
+   * statement their streaming, never a wrong answer. The optimizer, the only caller, plans no statement with a subquery
+   * (see {@code CypherExecutionPlan.canUseOptimizedPhysicalPlan()}) nor with a procedure call, so this does not arise there today.
+   */
+  public static CypherEagernessAnalyzer ofPropertyWrites(final List<ClauseEntry> clauses) {
+    final CypherEagernessAnalyzer writes = new CypherEagernessAnalyzer();
+    if (clauses != null && writesUnseen(clauses, writes))
+      writes.writesAnyPropertyKey = true;
+    return writes;
+  }
+
+  /** Whether the writes folded in can write one of {@code keys}, see {@link #ofPropertyWrites(List)}. */
+  public boolean writesAnyPropertyOf(final Collection<String> keys) {
+    if (writesAnyPropertyKey)
+      return true;
+    for (final String key : keys)
+      if (writtenPropertyKeys.contains(key))
+        return true;
+    return false;
+  }
+
+  /** Folds the property writes of the clauses into {@code writes}, and answers whether one of them writes what it cannot name. */
+  private static boolean writesUnseen(final List<ClauseEntry> clauses, final CypherEagernessAnalyzer writes) {
+    for (final ClauseEntry entry : clauses) {
+      switch (entry.getType()) {
+      case SET -> writes.observeWrite((SetClause) entry.getClause());
+      case REMOVE -> writes.observeWrite((RemoveClause) entry.getClause());
+      case MERGE -> writes.observeWrite((MergeClause) entry.getClause());
+      case FOREACH -> {
+        if (writesUnseen(((ForeachClause) entry.getClause()).getInnerClauses(), writes))
+          return true;
+      }
+      case CALL, SUBQUERY -> {
+        return true;
+      }
+      default -> {
+        // reads, CREATE and DELETE write no property of a record that already exists
+      }
+      }
+    }
+    return false;
   }
 
   private void observePropertyWrite(final String property, final Expression keyExpression) {

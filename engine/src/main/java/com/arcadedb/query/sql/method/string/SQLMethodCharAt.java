@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -48,11 +49,9 @@ public class SQLMethodCharAt extends AbstractSQLMethod {
     }
 
     final int index = indexArgument(params[0], "position");
-    final String valueAsString = value.toString();
     // Out of range (including negative) has no character to return: null rather than letting
-    // charAt() throw StringIndexOutOfBoundsException (#5885).
-    if (index < 0 || index >= valueAsString.length())
-      return null;
-    return "" + valueAsString.charAt(index);
+    // charAt() throw StringIndexOutOfBoundsException (#5885). The position counts Unicode code points, so a
+    // character outside the BMP is returned whole instead of as half of a surrogate pair (#10248).
+    return CypherFunctionHelper.charAtCodePoint(value.toString(), index);
   }
 }

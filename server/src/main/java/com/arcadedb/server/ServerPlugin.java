@@ -44,6 +44,16 @@ public interface ServerPlugin {
     // DEFAULT IMPLEMENTATION
   }
 
+  /**
+   * Registers the plugin's HTTP routes on the server's outer {@link PathHandler}.
+   * <p>
+   * Declare each route through {@link com.arcadedb.server.http.PluginRoutes} ({@code new PluginRoutes(routes).post(path,
+   * handler)}), never with {@code routes.addExactPath}/{@code addPrefixPath} directly: {@link PathHandler} matches on the
+   * path alone, so a handler added to it answers EVERY method, and a state-changing route becomes reachable by a plain
+   * {@code GET} (issue #10157). {@code PluginRoutes} answers an undeclared method {@code 405} with an {@code Allow} header
+   * before the handler runs. A route registered directly still works, and is named at {@code WARNING} when the server
+   * starts.
+   */
   default void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     // DEFAULT IMPLEMENTATION
   }

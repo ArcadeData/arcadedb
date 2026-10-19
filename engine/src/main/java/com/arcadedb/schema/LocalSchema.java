@@ -81,16 +81,17 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONFactory;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
-
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
+import com.google.gson.stream.JsonWriter;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.StringWriter;
+import java.io.UncheckedIOException;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -99,6 +100,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.logging.Level;
 
 /**
@@ -112,6 +114,7 @@ public class LocalSchema implements Schema {
   public static final String                                 SCHEMA_PREV_FILE_NAME         = "schema.prev.json";
   public static final String                                 CACHED_COUNT_FILE_NAME_LEGACY = "cached-count.json"; // DEPRECATED FROM v25.2.1
   public static final String                                 STATISTICS_FILE_NAME          = "statistics.json";
+  private static final String                                TYPES                         = "types";
   /**
    * Format version of {@link #STATISTICS_FILE_NAME}, written as a reserved top-level key and bumped whenever a
    * value the file carries stops being trustworthy when written by an older build. Version 1 means "the cached
@@ -219,26 +222,15 @@ public class LocalSchema implements Schema {
    * reader that has taken the reference: the maps are replaced wholesale by a load, never edited in place by one.
    * <p>
    * The type map itself stays mutable - ordinary DDL adds and removes types through {@link #typeMap()} without
-   * going near a load - so what this makes immutable is WHICH maps a generation consists of, not their contents.
+   * going near a load - so what this makes immutable is WHICH maps a generation consists of, not their contents. The
+   * bucket maps are concurrent for the same reason: a bucket attached by DDL is added to them in place rather than by a
+   * rebuild over every type (issue #10247), with readers resolving buckets lock-free meanwhile.
    */
-  private record SchemaState(Map<String, LocalDocumentType> types, LocalDocumentType[] bucketId2TypeMap,
-                             LocalDocumentType[] bucketId2InvolvedTypeMap) {
+  private record SchemaState(Map<String, LocalDocumentType> types, Map<Integer, LocalDocumentType> bucketId2TypeMap,
+                             Map<Integer, LocalDocumentType> bucketId2InvolvedTypeMap) {
     private static SchemaState empty() {
-      return new SchemaState(new ConcurrentHashMap<>(), NO_BUCKET_TYPES, NO_BUCKET_TYPES);
+      return new SchemaState(new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     }
-  }
-
-  /**
-   * The bucket-to-type maps are arrays indexed by file id rather than {@code HashMap<Integer, ...>} (issue #10247): file
-   * ids are dense, every schema change rebuilds both maps over every type, and with tens of thousands of types the boxed
-   * entries made that rebuild a quarter of the cost of a DDL statement.
-   */
-  private static final LocalDocumentType[] NO_BUCKET_TYPES = new LocalDocumentType[0];
-
-  private static final String TYPES_MEMBER = "types";
-
-  private static LocalDocumentType typeAt(final LocalDocumentType[] bucketId2Type, final int bucketId) {
-    return bucketId >= 0 && bucketId < bucketId2Type.length ? bucketId2Type[bucketId] : null;
   }
 
   /**
@@ -277,13 +269,37 @@ public class LocalSchema implements Schema {
    * still answers with the previous graph, and would publish the involved-bucket map security reads through a
    * generation early. They are published in the same step as the graph they describe instead.
    */
-  private             LocalDocumentType[]                    stagedBucketId2TypeMap;
-  private             LocalDocumentType[]                    stagedBucketId2InvolvedTypeMap;
+  private             Map<Integer, LocalDocumentType>        stagedBucketId2TypeMap;
+  private             Map<Integer, LocalDocumentType>        stagedBucketId2InvolvedTypeMap;
   /**
-   * The bucket each type a load in flight has restored so far owns, by file id: what {@link #getBucketOwner} answers from
-   * while the staged maps are not built yet, so a load does not compare every bucket against every type (issue #10247).
+   * The owner of every bucket the load in flight has attached to a type of the graph it assembles, so the check that a
+   * bucket belongs to one type only answers in one lookup instead of walking every type: once per bucket, it made opening
+   * a schema of N types O(N^2) (issue #10247). Reachable by the staging thread only, like the graph it describes.
    */
   private final       Map<Integer, LocalDocumentType>        stagedBucketOwners            = new HashMap<>();
+  /**
+   * Set when a change left the published bucket maps behind in a way only a full {@link #rebuildBucketTypeMap()} can
+   * follow (a bucket detached from its type, a type dropped): the additive changes, which are what DDL makes nearly all
+   * the time, update the maps in place (issue #10247). Read and written under the database write lock DDL holds.
+   * <p>
+   * THE CONTRACT OF IN-PLACE MAINTENANCE: every change of which buckets a type owns or involves reports itself here, or
+   * the maps go stale with nothing to say so outside of {@code -ea}, where every refresh compares them with a full
+   * rebuild. The reporting sites are {@code LocalDocumentType.addBucketInternal} ({@link #bucketAttached}),
+   * {@code removeBucketInternal} ({@link #bucketDetached}), the external-bucket pairing and unpairing
+   * ({@link #involvedBucketAttached}, {@link #bucketMembershipChanged}), {@code LocalVertexType.addBucketInternal} (its
+   * edge-list buckets), the type rename, {@link #dropType}, {@link #dropBucket} and a stripe-pool bucket created through
+   * {@link #createBucket}. A new way to change a type's buckets has to report itself too.
+   * <p>
+   * THE GUARANTEE TO READERS. Readers resolve a bucket lock-free, but only the transactions that resolve one are excluded
+   * from DDL: every site above runs under the database write lock (a DDL frame, or a load that stages its own maps), which
+   * a transaction's reads and writes take shared. So no reader works on a bucket between the two puts of an attach - the
+   * type map first, the involved-bucket map second - and the same lock is what makes the flag and the rebuild that
+   * publishes a new generation single-writer.
+   */
+  private volatile    boolean                                bucketTypeMapsStale           = false;
+  /** Length of the last schema file written, to size the buffer of the next one (issue #10247). */
+  private             int                                    lastSchemaFileLength          = 0;
+  private             long                                   bucketTypeMapRebuilds         = 0;
 
   /**
    * The graph {@link #commitStagedPublication()} published, so {@link #endStagedPublication()} can tell an abort
@@ -485,32 +501,6 @@ public class LocalSchema implements Schema {
    * and written by the frame's thread under the database write lock only.
    */
   private             boolean                                recordingSavePending          = false;
-  /**
-   * Whether the next save has to serialize every type afresh rather than reuse the JSON each type kept from the last one
-   * (issue #10247): set by every change that does not name the types it touched - a direct
-   * {@link #saveConfiguration()}, {@link #markDirty()}, a load, a recording session not opened through a type - and
-   * cleared by the save that honours it.
-   */
-  private volatile    boolean                                allTypesSerializationStale    = true;
-  /**
-   * The types the outermost recording session on {@link #recordingThread} was opened through, or through which a session
-   * nested in it was (issue #10247): what its save serializes afresh, with their hierarchies. Null when none was, and the
-   * session then serializes every type. Read and written by the session's thread under the database write lock only.
-   */
-  private             Set<LocalDocumentType>                 sessionChangedTypes;
-  private             boolean                                sessionScopeOpen;
-  // Whether the outermost frame of the session was opened through a type (recordFileChangesThroughType): a session opened by
-  // the schema itself - a bulk change, a drop, an index drop - may change types it never names, whatever frames nest in it
-  private             boolean                                sessionOpenedThroughType;
-  // Set around the call that opens a frame through a type, read where the outermost frame opens, on the same thread
-  private final       ThreadLocal<Boolean>                   openingThroughType            = new ThreadLocal<>();
-  /**
-   * Compares every schema file written from the per-type cache with the full serialization, and refuses a write that
-   * differs (issue #10247). For the test suites, which run with it on: a change that reaches a type's JSON without passing
-   * through a recording session opened through that type, or a full invalidation, fails the first save after it.
-   */
-  static final        boolean                                VERIFY_INCREMENTAL_SERIALIZATION =
-      Boolean.getBoolean("arcadedb.schema.verifyIncrementalSerialization");
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private volatile    UnidirectionalFlag                     unidirectionalFlag;
   private final       AtomicLong                             typesChangeSerial             = new AtomicLong();
@@ -1110,9 +1100,9 @@ public class LocalSchema implements Schema {
     stagedIndexMap.clear();
     publishedFromStaging = null;
     stagedTypes.clear();
+    stagedBucketOwners.clear();
     stagedBucketId2TypeMap = null;
     stagedBucketId2InvolvedTypeMap = null;
-    stagedBucketOwners.clear();
     supersededTypes = null;
     stagingThread.set(null);
   }
@@ -1938,6 +1928,11 @@ public class LocalSchema implements Schema {
         registerFile((Component) bucket);
         publishBucketDuringLoad(bucketName, bucket);
 
+        if (bucketName.contains(InternalBucketNaming.Convention.SUPER_NODE_STRIPE.suffix()))
+          // A super-node stripe pool is among the involved buckets of the vertex type it is named after, found by its name
+          // alone: the bucket maps are rebuilt from the types when this frame ends (issue #10247)
+          bucketMembershipChanged();
+
         return bucket;
 
       } catch (final IOException e) {
@@ -2282,8 +2277,6 @@ public class LocalSchema implements Schema {
 
             if (index.getTypeName() != null) {
               final LocalDocumentType type = getType(index.getTypeName());
-              // THE INDEX IS PART OF THE JSON OF ITS TYPE, WHICHEVER SESSION DROPS IT (#10247)
-              invalidateSerializedHierarchy(type);
               if (index instanceof TypeIndex typeIndex)
                 type.removeTypeIndexInternal(typeIndex);
               else {
@@ -3007,114 +3000,17 @@ public class LocalSchema implements Schema {
 
   @Override
   public DocumentType getTypeByBucketId(final int bucketId) {
-    return typeAt(published.bucketId2TypeMap(), bucketId);
+    return published.bucketId2TypeMap().get(bucketId);
   }
 
   @Override
   public DocumentType getInvolvedTypeByBucketId(final int bucketId) {
-    return typeAt(published.bucketId2InvolvedTypeMap(), bucketId);
+    return published.bucketId2InvolvedTypeMap().get(bucketId);
   }
 
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    return typeAt(published.bucketId2TypeMap(), getBucketByName(bucketName).getFileId());
-  }
-
-  /**
-   * The type of the graph this thread sees that owns {@code bucket}, or null when none does: what
-   * {@link LocalDocumentType#addBucketInternal} checks before attaching a bucket, which used to ask every type in turn and
-   * made restoring N types cost O(N^2) (issue #10247).
-   * <p>
-   * A load in flight answers from the owners it has restored so far. Anybody else answers from the bucket map, which every
-   * attach and detach updates as it happens ({@link #bucketAttached}, {@link #bucketDetached}), so it holds every bucket
-   * attached before this call. The owner it names is checked against the type itself, because a type dropped inside the
-   * current frame is still in the map until the save that ends the frame rebuilds it.
-   */
-  LocalDocumentType getBucketOwner(final Bucket bucket) {
-    if (isStagingPublication()) {
-      final LocalDocumentType restored = stagedBucketOwners.get(bucket.getFileId());
-      if (restored != null)
-        return restored;
-      // AN INCREMENTAL LOAD CARRIES THE TYPES IT DID NOT TOUCH OVER INTO THE STAGED GRAPH AS THEY ARE, WITHOUT ATTACHING
-      // THEIR BUCKETS AGAIN: THE PUBLISHED MAP STILL NAMES THEM
-    }
-
-    final LocalDocumentType owner = typeAt(published.bucketId2TypeMap(), bucket.getFileId());
-    if (owner != null && typeMap().get(owner.getName()) == owner && owner.hasBucket(bucket.getName()))
-      return owner;
-    return null;
-  }
-
-  /**
-   * Makes {@code bucket}, just attached to {@code owner}, resolve to it in the bucket maps at once (issue #10247): the
-   * steps that follow in the same schema change look the type of a new bucket up, and the full rebuild of the maps waits
-   * for the end of the outermost frame. A load in flight records it among the owners it has restored instead: it builds
-   * and publishes its own maps when it is done.
-   * <p>
-   * Under this schema's monitor, the one {@link #saveConfiguration} rebuilds the maps under, so the two never publish over
-   * each other.
-   */
-  synchronized void bucketAttached(final Bucket bucket, final LocalDocumentType owner) {
-    if (isStagingPublication()) {
-      stagedBucketOwners.put(bucket.getFileId(), owner);
-      return;
-    }
-
-    final int bucketId = bucket.getFileId();
-    final LocalDocumentType[] bucketId2Type = withSlot(published.bucketId2TypeMap(), bucketId);
-    final LocalDocumentType[] bucketId2InvolvedType = withSlot(published.bucketId2InvolvedTypeMap(), bucketId);
-    bucketId2Type[bucketId] = owner;
-    // A TYPE'S OWN BUCKET ANSWERS TO THAT TYPE IN THE INVOLVED MAP TOO, AS THE FULL REBUILD DECIDES (ISSUE #9780)
-    bucketId2InvolvedType[bucketId] = owner;
-    publishBucketTypeMaps(bucketId2Type, bucketId2InvolvedType);
-    // WHAT A NESTED FRAME'S REBUILD OF THE MAPS DID BEFORE #10247: AN ANSWER DERIVED FROM THE TYPES IS NOT SERVED AGAIN
-    typesChanged();
-  }
-
-  /** The reverse of {@link #bucketAttached}, for a bucket detached from {@code owner}. */
-  synchronized void bucketDetached(final Bucket bucket, final LocalDocumentType owner) {
-    if (isStagingPublication()) {
-      stagedBucketOwners.remove(bucket.getFileId(), owner);
-      return;
-    }
-
-    final int bucketId = bucket.getFileId();
-    final LocalDocumentType[] current = published.bucketId2TypeMap();
-    final LocalDocumentType[] currentInvolved = published.bucketId2InvolvedTypeMap();
-    if (typeAt(current, bucketId) != owner && typeAt(currentInvolved, bucketId) != owner)
-      return;
-
-    final LocalDocumentType[] bucketId2Type = withSlot(current, bucketId);
-    final LocalDocumentType[] bucketId2InvolvedType = withSlot(currentInvolved, bucketId);
-    if (bucketId2Type[bucketId] == owner)
-      bucketId2Type[bucketId] = null;
-    if (bucketId2InvolvedType[bucketId] == owner)
-      bucketId2InvolvedType[bucketId] = null;
-    publishBucketTypeMaps(bucketId2Type, bucketId2InvolvedType);
-    typesChanged();
-  }
-
-  /**
-   * Makes {@code bucketId}, a bucket {@code owner} has just paired with one of its own as the bucket of its EXTERNAL
-   * values, resolve to {@code owner} in the involved map at once, unless another type owns it: see {@link #bucketAttached}.
-   */
-  synchronized void involvedBucketAttached(final int bucketId, final LocalDocumentType owner) {
-    if (isStagingPublication())
-      return;
-
-    final LocalDocumentType primaryOwner = typeAt(published.bucketId2TypeMap(), bucketId);
-    if ((primaryOwner != null && primaryOwner != owner) || typeAt(published.bucketId2InvolvedTypeMap(), bucketId) == owner)
-      return;
-
-    final LocalDocumentType[] bucketId2InvolvedType = withSlot(published.bucketId2InvolvedTypeMap(), bucketId);
-    bucketId2InvolvedType[bucketId] = owner;
-    publishBucketTypeMaps(published.bucketId2TypeMap(), bucketId2InvolvedType);
-    typesChanged();
-  }
-
-  /** A copy of {@code bucketId2Type} long enough to hold {@code bucketId}: the published arrays are never written in place. */
-  private static LocalDocumentType[] withSlot(final LocalDocumentType[] bucketId2Type, final int bucketId) {
-    return Arrays.copyOf(bucketId2Type, Math.max(bucketId2Type.length, bucketId + 1));
+    return published.bucketId2TypeMap().get(getBucketByName(bucketName).getFileId());
   }
 
   public boolean existsType(final String typeName) {
@@ -3224,6 +3120,9 @@ public class LocalSchema implements Schema {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
           multipleUpdate = false;
+        // The type's edge-list and stripe buckets went with it without being detached one by one, and it left the type map
+        // after the last refresh: the bucket maps are rebuilt from the types (issue #10247)
+        bucketMembershipChanged();
         saveConfiguration();
         updateSecurity();
       }
@@ -3429,12 +3328,11 @@ public class LocalSchema implements Schema {
         multipleUpdate = true;
 
       try {
-        for (final LocalDocumentType type : typeMap().values()) {
-          if (type.buckets.contains(bucket))
-            throw new SchemaException(
-                "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName()
-                    + "'. Remove the association first");
-        }
+        final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
+        if (owner != null)
+          throw new SchemaException(
+              "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + owner.getName()
+                  + "'. Remove the association first");
 
         // Drop the dependent sub-indexes BEFORE deleting the bucket file. This ordering matters for crash
         // consistency: these steps are not atomic, so if the process dies mid-drop the surviving on-disk state
@@ -3457,6 +3355,8 @@ public class LocalSchema implements Schema {
         removeFile(bucket.getFileId());
 
         removeBucketDuringLoad(bucketName);
+        // it can be a bucket a type involves without owning it (an edge-list, external or stripe bucket)
+        bucketMembershipChanged();
 
         return null;
 
@@ -3731,9 +3631,14 @@ public class LocalSchema implements Schema {
     // fallback in TransactionIndexContext.getIndexKeyLanes is: a third caller must not silently inherit the
     // staging assumption. It is NOT covered by a test, so anything relying on it needs to bring one.
     final Map<String, LocalDocumentType> graph = typeMap();
-    if (graph == published.types())
+    if (graph == published.types()) {
       retireTimeSeriesTypesOf(graph);
+      // the bucket maps describe the graph being emptied: rebuilt from the new one as it is assembled
+      bucketTypeMapsStale = true;
+    }
     graph.clear();
+    if (isStagingPublication())
+      stagedBucketOwners.clear();
 
     loadInRamCompleted = false;
     readingFromFile = true;
@@ -3994,7 +3899,8 @@ public class LocalSchema implements Schema {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
                     // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
                     // the full ancestor chain: reading it as anything else would make put/remove miss them.
-                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
+                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON),
+                        GeoIndexMetadata.readPlanar(indexJSON));
                     publishIndexDuringLoad(registeredName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
@@ -4238,8 +4144,6 @@ public class LocalSchema implements Schema {
     } finally {
       readingFromFile = false;
       loadInRamCompleted = true;
-      // WHAT A LOAD RESTORED IS SERIALIZED AFRESH BY THE NEXT SAVE, INCLUDING THE TYPES AN INCREMENTAL LOAD KEPT (#10247)
-      markAllTypesSerializationStale();
 
       // Never over a schema file that could not be read: what is in memory is the fragment that got as far as the
       // error, and writing it out would destroy the file the operator has to fix (issue #8230).
@@ -4767,13 +4671,7 @@ public class LocalSchema implements Schema {
       MaterializedViewBuilder.unregisterListeners(this, previous);
   }
 
-  /**
-   * Saves the schema, or marks it dirty when an open transaction or a recording session postpones the save. The caller
-   * names no type it changed, so the save serializes every type afresh (issue #10247): only the end of a recording session
-   * opened through a type knows which types its change can have touched.
-   */
   public synchronized void saveConfiguration() {
-    markAllTypesSerializationStale();
     saveConfiguration(false);
   }
 
@@ -4785,8 +4683,6 @@ public class LocalSchema implements Schema {
     // A database opened read-only never writes its schema: the change stays in memory, as it did before it could be marked
     if (database.getMode() == ComponentFile.MODE.READ_ONLY)
       return;
-    // A CHANGE THAT NAMES NO TYPE: THE NEXT SAVE SERIALIZES THEM ALL (#10247)
-    markAllTypesSerializationStale();
     dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
   }
 
@@ -4846,22 +4742,7 @@ public class LocalSchema implements Schema {
    *                              commit of the outermost transaction, right before its durable phase
    */
   private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
-    saveConfiguration(ignoreOpenTransaction, false);
-  }
-
-  /**
-   * @param bucketMapsCurrent {@code true} for the save that ends a recording session opened through a type: every bucket it
-   *                          attached or detached updated the bucket maps as it went, so rebuilding them over every type -
-   *                          O(N) per DDL statement (issue #10247) - would find them as they are
-   */
-  private synchronized void saveConfiguration(final boolean ignoreOpenTransaction, final boolean bucketMapsCurrent) {
-    // THE SWITCH THAT TURNS THE PER-TYPE JSON CACHE OFF TURNS THIS SHORTCUT OFF TOO: BOTH RELY ON THE SAME ATTRIBUTION
-    if (bucketMapsCurrent && database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SCHEMA_INCREMENTAL_SERIALIZATION)) {
-      typesChanged();
-      if (VERIFY_INCREMENTAL_SERIALIZATION)
-        verifyBucketTypeMaps();
-    } else
-      rebuildBucketTypeMap();
+    refreshBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
     // A MEMOIZED QUERY RESULT (THE PER-RECORD LET CACHE, #8400) DOES NOT OUTLIVE IT
@@ -4905,225 +4786,48 @@ public class LocalSchema implements Schema {
     // meanwhile, or a write that fails, leaves it unsaved
     final Map<FullTextIndexMetadata, Long> counterGenerations = new IdentityHashMap<>();
     for (final Index index : getIndexes())
-      if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null) {
+      if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
         counterGenerations.computeIfAbsent(ftIndex.getFullTextMetadata(), FullTextIndexMetadata::getCountersGeneration);
-        // A COMMIT MOVES THE CORPUS COUNTERS WITHOUT A SCHEMA CHANGE (#10051): THE TYPE THAT SERIALIZES THEM IS WRITTEN AFRESH
-        if (ftIndex.getFullTextMetadata().isCountersDirty())
-          invalidateSerializedType(ftIndex.getTypeName());
-      }
-
-    final long newVersion = versionSerial.get() + 1;
-    writeSchemaFile(serializeForFile(newVersion), newVersion);
+    final long schemaVersion = versionSerial.get() + 1;
+    writeSchemaFile(serializeSchema(schemaVersion), schemaVersion);
     counterGenerations.forEach(FullTextIndexMetadata::markCountersSaved);
   }
 
-  /** Opens the serialization scope of an outermost recording session: no type named yet (issue #10247). */
-  private void openSessionSerializationScope() {
-    sessionChangedTypes = null;
-    sessionScopeOpen = true;
-    sessionOpenedThroughType = Boolean.TRUE.equals(openingThroughType.get());
-  }
-
   /**
-   * Records that the recording session in progress on this thread changes {@code type}, so its save serializes the type
-   * and its hierarchy afresh and keeps the JSON every other type had (issue #10247). Called by
-   * {@link LocalDocumentType#recordFileChanges}, i.e. by every session opened through a type, and by the type builder for
-   * the type it creates. The hierarchy is dropped from the cache now and again when the session ends, so a super type
-   * linked or unlinked by the session is covered on both sides of the change. Outside a session on this thread - a load,
-   * which mutates the types without one - every type is serialized afresh.
+   * The schema file's text, byte for byte what {@code toJSON(schemaVersion).toString()} answers, without assembling the
+   * document of every type first (issue #10247). Inserting each type into the root's {@code types} object - a tree map
+   * the whole schema is serialized from - was the larger half of the cost of a schema change at tens of thousands of
+   * types: each type is now serialized as it is visited, into the same Gson writer the document's {@code toString()}
+   * uses, so the formatting cannot differ.
    */
-  void typeChangedInRecordingSession(final LocalDocumentType type) {
-    if (!sessionScopeOpen || recordingThread != Thread.currentThread()) {
-      markAllTypesSerializationStale();
-      return;
-    }
-    if (sessionChangedTypes == null)
-      sessionChangedTypes = Collections.newSetFromMap(new IdentityHashMap<>());
-    sessionChangedTypes.add(type);
-    invalidateSerializedHierarchy(type);
-  }
-
-  /**
-   * Closes the scope {@link #openSessionSerializationScope} opened, dropping from the cache what the session changed.
-   *
-   * @return whether the session changed the schema only through the types it named
-   */
-  private boolean closeSessionSerializationScope() {
-    sessionScopeOpen = false;
-    final Set<LocalDocumentType> changed = sessionChangedTypes;
-    sessionChangedTypes = null;
-    if (changed == null || !sessionOpenedThroughType) {
-      // A SESSION NOT OPENED THROUGH A TYPE (A BUCKET, AN INDEX, A DROP TYPE, A BULK CHANGE...) CHANGES WHAT IT NAMES NOT: A
-      // TYPE FRAME NESTED IN IT, A BULK CHANGE THAT DROPS AN INDEX AND ADDS A PROPERTY TO ANOTHER TYPE, DOES NOT MAKE IT ONE
-      markAllTypesSerializationStale();
-      return false;
-    }
-    for (final LocalDocumentType type : changed)
-      invalidateSerializedHierarchy(type);
-    return true;
-  }
-
-  void markAllTypesSerializationStale() {
-    allTypesSerializationStale = true;
-  }
-
-  private void invalidateSerializedType(final String typeName) {
-    if (typeName == null)
-      return;
-    final LocalDocumentType type = typeMap().get(typeName);
-    if (type != null)
-      type.invalidateSerializedJSON();
-  }
-
-  /**
-   * Drops the cached JSON of {@code type}, of every super type and of every sub type, transitively: a change made through a
-   * type can reach the JSON of its whole hierarchy - an index built on a super type gets a sub-index on each new bucket of
-   * the sub types, an EXTERNAL property gets a paired bucket on every sub type - and nothing outside it.
-   */
-  private static void invalidateSerializedHierarchy(final LocalDocumentType type) {
-    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    final ArrayDeque<LocalDocumentType> toVisit = new ArrayDeque<>();
-    toVisit.add(type);
-    while (!toVisit.isEmpty()) {
-      final LocalDocumentType current = toVisit.poll();
-      if (!visited.add(current))
-        continue;
-      current.invalidateSerializedJSON();
-      toVisit.addAll(current.superTypes);
-      toVisit.addAll(current.subTypes);
-    }
-  }
-
-  /**
-   * The schema file content of generation {@code schemaVersion}: byte for byte what {@code toJSON(schemaVersion).toString()}
-   * renders, written as a stream in which each type is the JSON it kept from the last save unless something dropped it
-   * (issue #10247). Serializing the complete schema into one JSON tree and then into a string cost O(N) in the number of
-   * types for every DDL statement - more than half of the cost of a {@code CREATE TYPE} at 20,000 types, a third of it
-   * spent inserting the types one by one into the sorted tree of a single object.
-   */
-  private synchronized String serializeForFile(final long schemaVersion) {
-    if (allTypesSerializationStale || !database.getConfiguration()
-        .getValueAsBoolean(GlobalConfiguration.SCHEMA_INCREMENTAL_SERIALIZATION)) {
-      // CLEARED BEFORE THE TYPES ARE SERIALIZED, NOT AFTER: A CHANGE THAT MARKS THEM STALE WHILE THIS RUNS IS NOT LOST
-      allTypesSerializationStale = false;
-      for (final LocalDocumentType type : typeMap().values())
-        type.invalidateSerializedJSON();
-    }
-
-    // THE FULL SERIALIZATION THE VERIFICATION COMPARES WITH, TAKEN FIRST: SEE verifyAgainstFullSerialization()
-    final String fullBefore = VERIFY_INCREMENTAL_SERIALIZATION ? toJSON(schemaVersion).toString() : null;
-
-    final Gson gson = JSONFactory.INSTANCE.getGson();
+  // Byte identity with toJSON().toString() is pinned by Issue10247SchemaChangeScalingTest, which writes the same schema both ways
+  private String serializeSchema(final long schemaVersion) throws IOException {
     final JSONObject root = toJSON(schemaVersion, false);
-    final StringBuilder content = new StringBuilder(Math.max(1024, lastSerializedSchemaLength + 1024));
-
-    // THE COMPACT FORM GSON WRITES FOR THE WHOLE TREE, MEMBER BY MEMBER: A NAME IS ESCAPED AS A STRING VALUE IS
-    content.append('{');
-    boolean first = true;
+    final Gson gson = JSONFactory.INSTANCE.getGson();
+    final StringWriter out = new StringWriter(Math.max(1024, lastSchemaFileLength + 1024));
+    final JsonWriter writer = gson.newJsonWriter(out);
+    writer.beginObject();
     for (final Map.Entry<String, JsonElement> member : ((JsonObject) root.getInternal()).entrySet()) {
-      if (!first)
-        content.append(',');
-      first = false;
-      content.append(gson.toJson(new JsonPrimitive(member.getKey()))).append(':');
-      if (TYPES_MEMBER.equals(member.getKey()))
-        appendTypes(content);
-      else
-        content.append(gson.toJson(member.getValue()));
+      writer.name(member.getKey());
+      if (TYPES.equals(member.getKey())) {
+        writer.beginObject();
+        forEachTypeToWrite((name, type) -> {
+          try {
+            writer.name(name);
+            gson.toJson(type.getInternal(), writer);
+          } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+          }
+        });
+        writer.endObject();
+      } else
+        gson.toJson(member.getValue(), writer);
     }
-    content.append('}');
-
-    final String result = content.toString();
-    lastSerializedSchemaLength = result.length();
-
-    if (VERIFY_INCREMENTAL_SERIALIZATION)
-      verifyAgainstFullSerialization(schemaVersion, fullBefore, result);
-    return result;
-  }
-
-  /**
-   * Fails when what the per-type cache wrote differs from the full serialization (issue #10247). Only a comparison made while
-   * the schema held still counts: an index compaction swaps the file of an index under the lock of that index, not under this
-   * schema's monitor, so a swap between the two serializations makes them differ with nothing wrong with the cache - the
-   * swapping thread saves the schema right after, and that save is the one to verify. The full serialization is therefore
-   * taken before and after the cached one, and a difference between those two means the comparison proves nothing.
-   */
-  private void verifyAgainstFullSerialization(final long schemaVersion, final String fullBefore, final String result) {
-    if (fullBefore.equals(result))
-      return;
-    final String fullAfter = toJSON(schemaVersion).toString();
-    if (fullBefore.equals(fullAfter))
-      throw new IllegalStateException(
-          "The schema serialized from the per-type cache differs from the full serialization of database '" + database.getName()
-              + "' (issue #10247): " + describeFirstDifference(fullBefore, result));
-  }
-
-  private int                 lastSerializedSchemaLength;
-  // The type names and aliases sorted, the type each one maps to, and the types in the order they are written - each at
-  // the first of its names - as the last save computed them: reused while every name maps to the same type (issue #10247)
-  private String[]            serializationOrderNames  = new String[0];
-  private LocalDocumentType[] serializationOrderMapped = new LocalDocumentType[0];
-  private LocalDocumentType[] serializationOrder       = new LocalDocumentType[0];
-
-  /**
-   * Appends the {@code types} object in the order {@code toJSON} puts it in - the type names and aliases sorted, each type at
-   * the first of its names - from the member each type cached.
-   */
-  private void appendTypes(final StringBuilder content) {
-    final Map<String, LocalDocumentType> typesToWrite = typeMap();
-    if (!isSerializationOrderCurrent(typesToWrite))
-      computeSerializationOrder(typesToWrite);
-
-    content.append('{');
-    final LocalDocumentType[] order = serializationOrder;
-    for (int i = 0; i < order.length; ++i) {
-      if (i > 0)
-        content.append(',');
-      content.append(order[i].getSerializedJSON());
-    }
-    content.append('}');
-  }
-
-  /**
-   * Whether the names map to the types they mapped to when the order was computed: as many names, each mapping to the same
-   * type, is the same mapping. O(N) lookups instead of sorting the names again.
-   */
-  private boolean isSerializationOrderCurrent(final Map<String, LocalDocumentType> typesToWrite) {
-    final String[] names = serializationOrderNames;
-    if (names.length != typesToWrite.size())
-      return false;
-
-    final LocalDocumentType[] mapped = serializationOrderMapped;
-    for (int i = 0; i < names.length; ++i)
-      if (typesToWrite.get(names[i]) != mapped[i])
-        return false;
-    return true;
-  }
-
-  private void computeSerializationOrder(final Map<String, LocalDocumentType> typesToWrite) {
-    final String[] names = typesToWrite.keySet().toArray(new String[0]);
-    Arrays.sort(names);
-
-    final LocalDocumentType[] mapped = new LocalDocumentType[names.length];
-    final List<LocalDocumentType> order = new ArrayList<>(names.length);
-    final Set<LocalDocumentType> written = Collections.newSetFromMap(new IdentityHashMap<>(names.length));
-    for (int i = 0; i < names.length; ++i) {
-      mapped[i] = typesToWrite.get(names[i]);
-      if (mapped[i] != null && written.add(mapped[i]))
-        order.add(mapped[i]);
-    }
-    serializationOrderNames = names;
-    serializationOrderMapped = mapped;
-    serializationOrder = order.toArray(new LocalDocumentType[0]);
-  }
-
-  private static String describeFirstDifference(final String expected, final String actual) {
-    int i = 0;
-    final int max = Math.min(expected.length(), actual.length());
-    while (i < max && expected.charAt(i) == actual.charAt(i))
-      ++i;
-    final int from = Math.max(0, i - 200);
-    return "at offset " + i + ", expected '..." + expected.substring(from, Math.min(expected.length(), i + 200)) + "...' but was '..."
-        + actual.substring(from, Math.min(actual.length(), i + 200)) + "...'";
+    writer.endObject();
+    writer.flush();
+    final String text = out.toString();
+    lastSchemaFileLength = text.length();
+    return text;
   }
 
   public synchronized JSONObject toJSON() {
@@ -5135,8 +4839,33 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * @param withTypes false to leave the {@code types} member empty, for {@link #serializeForFile}, which writes it on its
-   *                  own: the member keeps its position among the others
+   * Visits the types the schema file holds, in name order (issue #8206): hash-map order depends on table capacity, which
+   * differs between a map grown by DDL and one rebuilt by a reload, so replicas would write different files. Sorts a key
+   * array instead of copying into a TreeMap, to spare the garbage.
+   */
+  private void forEachTypeToWrite(final BiConsumer<String, JSONObject> consumer) {
+    final Map<String, LocalDocumentType> typesToWrite = typeMap();
+    final String[] typeNames = typesToWrite.keySet().toArray(new String[0]);
+    Arrays.sort(typeNames);
+    // The map also holds a type under each of its aliases: a type is written once, under its own name, at the place of the
+    // first key that reaches it - as a JSON object keyed by name did - where a streamed writer would repeat the key
+    Set<String> aliasedWritten = null;
+    for (final String typeName : typeNames) {
+      final DocumentType t = typesToWrite.get(typeName);
+      if (t == null)
+        continue;
+      if (!t.getAliases().isEmpty()) {
+        if (aliasedWritten == null)
+          aliasedWritten = new HashSet<>();
+        if (!aliasedWritten.add(t.getName()))
+          continue;
+      }
+      consumer.accept(t.getName(), t.toJSON());
+    }
+  }
+
+  /**
+   * @param withTypes false to leave the {@code types} object empty, for {@link #serializeSchema} to write it type by type
    */
   private synchronized JSONObject toJSON(final long schemaVersion, final boolean withTypes) {
     final JSONObject root = new JSONObject();
@@ -5156,18 +4885,9 @@ public class LocalSchema implements Schema {
     // differs between a map grown by DDL and one rebuilt by a reload, so replicas would write different files.
     // Large maps (types, properties) sort a key array instead of copying into a TreeMap, to spare the garbage.
     final JSONObject types = new JSONObject();
-    root.put(TYPES_MEMBER, types);
-
-    if (withTypes) {
-      final Map<String, LocalDocumentType> typesToWrite = typeMap();
-      final String[] typeNames = typesToWrite.keySet().toArray(new String[0]);
-      Arrays.sort(typeNames);
-      for (final String typeName : typeNames) {
-        final DocumentType t = typesToWrite.get(typeName);
-        if (t != null)
-          types.put(t.getName(), t.toJSON());
-      }
-    }
+    root.put(TYPES, types);
+    if (withTypes)
+      forEachTypeToWrite(types::put);
 
     final JSONObject triggersJson = new JSONObject();
     root.put("triggers", triggersJson);
@@ -5428,8 +5148,6 @@ public class LocalSchema implements Schema {
   public void setMigratedFileId(final int oldFileId, final int newFileId, final boolean saveConfiguration) {
     LogManager.instance().log(this, Level.FINE, "Migrating file id %d to %d", null, oldFileId, newFileId);
     migratedFileIds.put(oldFileId, newFileId);
-    // A COMPACTION SWAPS THE FILE OF AN INDEX, WHICH A TYPE SERIALIZES, AND MAY LEAVE ITS SAVE TO A LATER ONE (#10247)
-    markAllTypesSerializationStale();
     if (saveConfiguration)
       saveConfiguration();
   }
@@ -5581,15 +5299,10 @@ public class LocalSchema implements Schema {
     // rejected schema must leave both generations exactly as they were. An ABSENT version keeps the current one,
     // which is why the default-value getter cannot be used here - it treats an explicit null as absent too.
     final long newVersion = newSchema.has("schemaVersion") ? newSchema.getLong("schemaVersion") : versionSerial.get();
-    // A SCHEMA WRITTEN FROM OUTSIDE (A REPLICATED ONE): WHAT IS IN MEMORY IS SERIALIZED AFRESH BY THE NEXT SAVE (#10247)
-    markAllTypesSerializationStale();
     writeSchemaFile(newSchema.toString(), newVersion);
   }
 
-  /**
-   * Publishes {@code latestSchema} as {@code schema.json}, generation {@code newVersion}: the write {@link #update} does for
-   * a schema object and {@link #writeNextGeneration} for the schema it serialized itself.
-   */
+  /** Publishes {@code latestSchema} as the schema file of version {@code newVersion}, keeping the previous one aside. */
   private synchronized void writeSchemaFile(final String latestSchema, final long newVersion) throws IOException {
     if (configurationFile.exists()) {
       // #6114: A COPY, NOT A RENAME. The rename this replaces moved schema.json out of the way and only then wrote
@@ -5677,24 +5390,6 @@ public class LocalSchema implements Schema {
     return recordFileChanges(callback, false);
   }
 
-  /**
-   * Opens a recording frame on behalf of a type (or of the type builder, which names the type it creates inside the
-   * callback through {@link #typeChangedInRecordingSession}): when it is the outermost frame, the session it opens is
-   * type-scoped and its save serializes only the types it named (issue #10247).
-   */
-  <RET> RET recordFileChangesThroughType(final Callable<Object> callback, final boolean deferIntermediateSchemaSaves) {
-    final Boolean previous = openingThroughType.get();
-    openingThroughType.set(Boolean.TRUE);
-    try {
-      return recordFileChanges(callback, deferIntermediateSchemaSaves);
-    } finally {
-      if (previous == null)
-        openingThroughType.remove();
-      else
-        openingThroughType.set(previous);
-    }
-  }
-
   protected <RET> RET recordFileChanges(final Callable<Object> callback,
       final boolean deferIntermediateSchemaSaves) {
     if (readingFromFile || !loadInRamCompleted) {
@@ -5722,7 +5417,6 @@ public class LocalSchema implements Schema {
         if (outermost) {
           recordingThread = Thread.currentThread();
           recordingSavePending = false;
-          openSessionSerializationScope();
         }
         try {
           final Object callbackResult = callback.call();
@@ -5738,11 +5432,9 @@ public class LocalSchema implements Schema {
           // still holds the database write lock, which is what excludes the observers #7457 is about.
           if (!outermost) {
             recordingSavePending = true;
-            // NO REBUILD OF THE BUCKET MAPS HERE (#10247): A BUCKET THIS FRAME ATTACHED OR DETACHED ALREADY RESOLVES TO
-            // ITS TYPE FOR THE STEPS THAT FOLLOW IN THE ENCLOSING FRAME, BECAUSE THE ATTACH AND THE DETACH UPDATE THE
-            // MAPS THEMSELVES (bucketAttached, bucketDetached). REBUILDING THEM OVER EVERY TYPE IN EACH NESTED FRAME -
-            // A CREATE TYPE OPENS ONE PER BUCKET IT CREATES AND ONE PER BUCKET IT ATTACHES - MADE IT THE LARGEST COST
-            // OF A DDL STATEMENT ON A LARGE SCHEMA. THE OUTERMOST FRAME'S SAVE STILL REBUILDS THEM FROM THE TYPES
+            // THE MAP saveConfiguration() REFRESHES BEFORE IT POSTPONES: A BUCKET THIS FRAME CREATED OR ATTACHED MUST
+            // RESOLVE TO ITS TYPE FOR THE STEPS THAT FOLLOW IN THE ENCLOSING FRAME
+            refreshBucketTypeMap();
             return callbackResult;
           }
 
@@ -5758,12 +5450,8 @@ public class LocalSchema implements Schema {
           // INDEX REGISTERING ITS BUCKET SUB-INDEXES AFTER THEIR OWN SAVES DOES NOT), SO "NOTHING TO SAVE" CANNOT BE
           // READ OFF isDirty() HERE. STILL POSTPONED BY AN OPEN TRANSACTION OR BY multipleUpdate (bulkChange,
           // dropType), WHICH SAVE ONCE AT THEIR OWN END
-          final boolean changedThroughTypes = closeSessionSerializationScope();
           recordingThread = null;
-          // NOT THE PUBLIC saveConfiguration(): THAT ONE TELLS THE SAVE THAT EVERY TYPE MAY HAVE CHANGED, WHERE THE SCOPE
-          // JUST CLOSED NAMES THE ONES THIS SESSION DID CHANGE (#10247). THE BUCKET MAPS ARE REBUILT ANYWAY WHEN ANYTHING
-          // THAT NAMES NO TYPE HAPPENED SINCE THE LAST WRITE, INSIDE THIS SESSION OR BEFORE IT
-          saveConfiguration(false, changedThroughTypes && !allTypesSerializationStale);
+          saveConfiguration();
 
           // THE LAST STEP UNDER THE WRITE LOCK OF THE OUTERMOST FRAME: THE CHANGE IS APPLIED, ITS FILES REGISTERED OR
           // DROPPED AND schema.json SAVED, AND NOTHING ELSE HAPPENS BEFORE THE LOCK IS RELEASED. A TEST ASSERTING
@@ -5774,14 +5462,25 @@ public class LocalSchema implements Schema {
           return callbackResult;
         } finally {
           if (outermost) {
-            // A FAILED SESSION KEEPS WHAT IT APPLIED - THERE IS NO SCHEMA ROLLBACK - SO ITS SCOPE STILL COUNTS (#10247)
-            if (sessionScopeOpen)
-              closeSessionSerializationScope();
             recordingThread = null;
             final boolean pending = recordingSavePending;
             recordingSavePending = false;
-            if (!executed[0] && pending)
-              keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            if (!executed[0]) {
+              // A change that failed part way may have attached or detached a bucket that a hook reported before the
+              // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted, at once, so no
+              // lock-free reader resolves a bucket to a type through an entry the failed change left behind (issue #10247)
+              bucketTypeMapsStale = true;
+              try {
+                rebuildBucketTypeMap();
+              } catch (final RuntimeException e) {
+                // stays stale: the next lookup or save rebuilds it, and the exception to report is the change's own
+                LogManager.instance().log(this, Level.WARNING,
+                    "Cannot rebuild the bucket-to-type maps after a failed schema change on database '%s': %s", e,
+                    database.getName(), e.getMessage());
+              }
+              if (pending)
+                keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            }
           }
           --recordingDepth;
         }
@@ -5823,7 +5522,7 @@ public class LocalSchema implements Schema {
     if (suspendIntermediateSaves)
       multipleUpdate = false;
     try {
-      saveConfiguration(false);
+      saveConfiguration();
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error on saving the schema changes applied before a failed schema change on database '%s'", e,
@@ -6195,80 +5894,154 @@ public class LocalSchema implements Schema {
     return ((RecordEventsRegistry) database.getEmbedded().getEvents()).newTypeRegistry();
   }
 
-  // How many full rebuilds of the bucket-to-type maps this schema ran: what the test of issue #10247 counts instead of timing a DDL
-  // statement, to pin that a nested frame no longer rebuilds them
-  private final AtomicLong bucketMapRebuilds = new AtomicLong();
-
-  long getBucketMapRebuildsForTesting() {
-    return bucketMapRebuilds.get();
-  }
-
-  private void rebuildBucketTypeMap() {
-    bucketMapRebuilds.incrementAndGet();
-    typesChanged();
-    final Collection<LocalDocumentType> types = typeMap().values();
-
-    int maxBucketId = -1;
-    for (final LocalDocumentType t : types)
-      for (final Bucket b : t.getInvolvedBuckets())
-        maxBucketId = Math.max(maxBucketId, b.getFileId());
-
-    if (maxBucketId < 0) {
-      publishBucketTypeMaps(NO_BUCKET_TYPES, NO_BUCKET_TYPES);
+  /**
+   * Brings the bucket maps up to the type graph at the end of a schema change: a full rebuild only when a change left
+   * them stale (or for the graph a load assembles), since the additive changes already updated them in place (issue
+   * #10247). It used to rebuild them over every type on every change, nested frames included, which made one
+   * {@code CREATE TYPE} cost O(N) and N of them O(N^2).
+   */
+  private void refreshBucketTypeMap() {
+    // A type being dropped tears its buckets down in an order no single hook follows: rebuilt at every step until it is gone
+    if (bucketTypeMapsStale || typeBeingDropped != null || isStagingPublication()) {
+      rebuildBucketTypeMap();
       return;
     }
-
-    final LocalDocumentType[] newBucketId2TypeMap = new LocalDocumentType[maxBucketId + 1];
-    for (final LocalDocumentType t : types)
-      for (final Bucket b : t.getBuckets(false))
-        newBucketId2TypeMap[b.getFileId()] = t;
-
-    // COMPUTE INVOLVED BUCKETS FOR SECURITY
-    final LocalDocumentType[] newBucketId2InvolvedTypeMap = new LocalDocumentType[maxBucketId + 1];
-    for (final LocalDocumentType t : types) {
-      for (final Bucket b : t.getInvolvedBuckets()) {
-        // A type's own bucket answers to that type, whatever another type's naming convention claims (a vertex type's
-        // stripe pool is found by name, issue #9780): the grants that cover a user bucket stay the grants of its type
-        final LocalDocumentType owner = newBucketId2TypeMap[b.getFileId()];
-        if (owner == null || owner == t)
-          newBucketId2InvolvedTypeMap[b.getFileId()] = t;
-      }
-    }
-    publishBucketTypeMaps(newBucketId2TypeMap, newBucketId2InvolvedTypeMap);
+    typesChanged();
+    assert bucketTypeMapsDifference() == null :
+        "the bucket maps maintained in place differ from the ones the types describe: " + bucketTypeMapsDifference();
   }
 
   /**
-   * Compares the bucket maps as the attaches and detaches left them with a full rebuild, and refuses a difference: what
-   * {@link #VERIFY_INCREMENTAL_SERIALIZATION} turns on for the save that skips the rebuild (issue #10247).
+   * Records that {@code type} took {@code bucket} as one of its own (issue #10247): the bucket now answers to the type in
+   * both maps, as a full rebuild would make it answer, a type's own bucket winning over any other claim.
    */
-  private void verifyBucketTypeMaps() {
-    if (isStagingPublication())
+  void bucketAttached(final LocalDocumentType type, final Bucket bucket) {
+    if (isStagingPublication()) {
+      stagedBucketOwners.put(bucket.getFileId(), type);
       return;
-    final SchemaState current = published;
-    rebuildBucketTypeMap();
-    final SchemaState rebuilt = published;
-    final int length = Math.max(Math.max(current.bucketId2TypeMap().length, rebuilt.bucketId2TypeMap().length),
-        Math.max(current.bucketId2InvolvedTypeMap().length, rebuilt.bucketId2InvolvedTypeMap().length));
-    for (int bucketId = 0; bucketId < length; ++bucketId)
-      if (typeAt(current.bucketId2TypeMap(), bucketId) != typeAt(rebuilt.bucketId2TypeMap(), bucketId)
-          || typeAt(current.bucketId2InvolvedTypeMap(), bucketId) != typeAt(rebuilt.bucketId2InvolvedTypeMap(), bucketId))
-        throw new IllegalStateException(
-            "The bucket maps updated by the schema change differ from a full rebuild for bucket " + bucketId + " of database '"
-                + database.getName() + "' (issue #10247): " + typeAt(current.bucketId2TypeMap(), bucketId) + "/" + typeAt(
-                current.bucketId2InvolvedTypeMap(), bucketId) + " instead of " + typeAt(rebuilt.bucketId2TypeMap(), bucketId) + "/"
-                + typeAt(rebuilt.bucketId2InvolvedTypeMap(), bucketId));
+    }
+    if (bucketTypeMapsStale)
+      return;
+    final SchemaState state = published;
+    state.bucketId2TypeMap().put(bucket.getFileId(), type);
+    state.bucketId2InvolvedTypeMap().put(bucket.getFileId(), type);
   }
 
-  private void publishBucketTypeMaps(final LocalDocumentType[] newBucketId2TypeMap,
-      final LocalDocumentType[] newBucketId2InvolvedTypeMap) {
+  /**
+   * Records that {@code bucket} became one of the buckets {@code type} involves without owning it - the paired bucket of its
+   * EXTERNAL values, the edge-list bucket of a vertex bucket (issue #10247): the bucket answers to the type for security
+   * unless another type owns it, as in {@link #rebuildBucketTypeMap()}.
+   */
+  void involvedBucketAttached(final LocalDocumentType type, final Bucket bucket) {
+    if (isStagingPublication() || bucketTypeMapsStale)
+      return;
+    final SchemaState state = published;
+    final LocalDocumentType owner = state.bucketId2TypeMap().get(bucket.getFileId());
+    if (owner == null || owner == type)
+      state.bucketId2InvolvedTypeMap().put(bucket.getFileId(), type);
+  }
+
+  /**
+   * Records a change of bucket membership the maps can only follow by a full rebuild, done when the change ends: a bucket
+   * detached from its type, an external bucket unpaired (issue #10247).
+   */
+  void bucketDetached(final LocalDocumentType type, final Bucket bucket) {
+    if (isStagingPublication())
+      stagedBucketOwners.remove(bucket.getFileId(), type);
+    else
+      bucketTypeMapsStale = true;
+  }
+
+  /** A change of the buckets a type involves without owning them that only a full rebuild follows (issue #10247). */
+  void bucketMembershipChanged() {
+    if (!isStagingPublication())
+      bucketTypeMapsStale = true;
+  }
+
+  /**
+   * The type that owns the bucket {@code bucketId}, in the graph this thread works on: the one a load in flight is
+   * assembling, or the published one. One lookup, where the check that a bucket belongs to one type only used to walk
+   * every type (issue #10247).
+   */
+  LocalDocumentType getBucketOwner(final int bucketId) {
+    if (isStagingPublication())
+      return stagedBucketOwners.get(bucketId);
+    if (bucketTypeMapsStale)
+      rebuildBucketTypeMap();
+    return published.bucketId2TypeMap().get(bucketId);
+  }
+
+  /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */
+  private String bucketTypeMapsDifference() {
+    final Map<Integer, LocalDocumentType>[] expected = computeBucketTypeMaps();
+    final SchemaState state = published;
+    final StringBuilder difference = new StringBuilder();
+    describeDifference("bucketId2TypeMap", expected[0], state.bucketId2TypeMap(), difference);
+    describeDifference("bucketId2InvolvedTypeMap", expected[1], state.bucketId2InvolvedTypeMap(), difference);
+    return difference.isEmpty() ? null : difference.toString();
+  }
+
+  private void describeDifference(final String name, final Map<Integer, LocalDocumentType> expected,
+      final Map<Integer, LocalDocumentType> actual, final StringBuilder difference) {
+    final Set<Integer> ids = new TreeSet<>(expected.keySet());
+    ids.addAll(actual.keySet());
+    for (final Integer id : ids) {
+      final LocalDocumentType e = expected.get(id);
+      final LocalDocumentType a = actual.get(id);
+      if (e != a) {
+        final LocalBucket bucket = getBucketById(id, false);
+        difference.append(name).append('[').append(bucket != null ? bucket.getName() : id).append("] expected=")
+            .append(e != null ? e.getName() : null).append(" actual=").append(a != null ? a.getName() : null).append("; ");
+      }
+    }
+  }
+
+  private void rebuildBucketTypeMap() {
+    typesChanged();
+    final Map<Integer, LocalDocumentType>[] maps = computeBucketTypeMaps();
 
     if (isStagingPublication()) {
       // Derived from the staged graph, so they belong to it and are published with it (PR #8001 review).
-      stagedBucketId2TypeMap = newBucketId2TypeMap;
-      stagedBucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
+      stagedBucketId2TypeMap = maps[0];
+      stagedBucketId2InvolvedTypeMap = maps[1];
       return;
     }
 
-    published = new SchemaState(published.types(), newBucketId2TypeMap, newBucketId2InvolvedTypeMap);
+    published = new SchemaState(published.types(), maps[0], maps[1]);
+    bucketTypeMapsStale = false;
+    ++bucketTypeMapRebuilds;
+  }
+
+  /** Full rebuilds of the published bucket maps so far: visible to the test of issue #10247, which counts them. */
+  long getBucketTypeMapRebuilds() {
+    return bucketTypeMapRebuilds;
+  }
+
+  /** The text the next save would write as the schema file: visible to the test of issue #10247. */
+  synchronized String serializeSchemaForTest() throws IOException {
+    return serializeSchema(versionSerial.get());
+  }
+
+  /** The bucket-to-type map and the involved-bucket-to-type map the types of {@link #typeMap()} describe. */
+  @SuppressWarnings("unchecked")
+  private Map<Integer, LocalDocumentType>[] computeBucketTypeMaps() {
+    final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new ConcurrentHashMap<>();
+    for (final LocalDocumentType t : typeMap().values()) {
+      for (final Bucket b : t.getBuckets(false))
+        newBucketId2TypeMap.put(b.getFileId(), t);
+    }
+
+    // COMPUTE INVOLVED BUCKETS FOR SECURITY
+    final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new ConcurrentHashMap<>();
+    for (final LocalDocumentType t : typeMap().values()) {
+      for (final Bucket b : t.getInvolvedBuckets()) {
+        // A type's own bucket answers to that type, whatever another type's naming convention claims (a vertex type's
+        // stripe pool is found by name, issue #9780): the grants that cover a user bucket stay the grants of its type
+        final LocalDocumentType owner = newBucketId2TypeMap.get(b.getFileId());
+        if (owner == null || owner == t)
+          newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      }
+    }
+    return new Map[] { newBucketId2TypeMap, newBucketId2InvolvedTypeMap };
   }
 }

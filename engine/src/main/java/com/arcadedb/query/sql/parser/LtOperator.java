@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.DateUtils;
 
 public class LtOperator extends SimpleNode implements BinaryCompareOperator {
   public LtOperator() {
@@ -41,10 +42,13 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
         final Number[] couple = Type.castComparableNumber(number, number1);
         left = couple[0];
         right = couple[1];
-      } else
+      } else {
         // Comparing across incompatible types has no defined ordering: report "not less" rather than let the
         // raw parse/conversion failure (e.g. NumberFormatException on a non-numeric String) escape (#5900).
+        // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206).
+        left = DateUtils.dateAsMidnightAgainst(left, right);
         right = Type.convertOrNull(database, right, left.getClass());
+      }
     }
 
     if (right == null)

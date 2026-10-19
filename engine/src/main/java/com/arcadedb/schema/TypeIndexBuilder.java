@@ -474,10 +474,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     type.beginIndexConstruction(metadata.propertyNames);
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
-      schema.recordFileChangesThroughType(() -> {
-        // AN INDEX OF THE TYPE, WITH ITS SUB-INDEXES ON THE BUCKETS OF ITS HIERARCHY: THE OTHER TYPES KEEP THEIR JSON (#10247)
-        schema.typeChangedInRecordingSession(type);
-
+      schema.recordFileChanges(() -> {
         // ASKED AGAIN UNDER THE LOCK. The lookup at the top runs before it, so concurrent creators of the same index all
         // found nothing there and then built one each, one after the other: the type ended up with one sub-index per
         // creator on every bucket, all fed by every write (issue #9741). Every build runs inside this write lock, so an

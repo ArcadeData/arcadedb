@@ -411,7 +411,8 @@ public class RemoteVertex {
   }
 
   public void delete() {
-    remoteDatabase.command("sql", "delete from " + vertex.getIdentity());
+    // through the driver's delete, so a vertex deletes, counts and fails as every other remote record does (issue #10230)
+    remoteDatabase.deleteRecord(vertex);
   }
 
   private ResultSet fetch(final String suffix, final Vertex.DIRECTION direction, final String[] types, final int limit,

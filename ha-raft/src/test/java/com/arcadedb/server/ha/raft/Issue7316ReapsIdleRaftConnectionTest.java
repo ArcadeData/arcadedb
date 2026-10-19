@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.ha.raft.ratis.RemoteAddressCallInterceptor;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.grpc.server.GrpcServices;
@@ -130,20 +131,22 @@ class Issue7316ReapsIdleRaftConnectionTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Row 4: neither half configured - Ratis's builder is left exactly as it was
+  // Row 4: neither half configured - no filter and no window, only the remote-address interceptor (issue #10225)
   // ---------------------------------------------------------------------------
 
   @Test
-  void noCustomizerIsInstalledWhenNothingNeedsOne() {
+  void neitherHalfConfiguredInstallsOnlyTheRemoteAddressInterceptor() {
     final ContextConfiguration config = allowlistConfiguration();
     config.setValue(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED, false);
     config.setValue(GlobalConfiguration.HA_GRPC_MAX_CONNECTION_IDLE_MS, 0L);
 
     final Parameters parameters = detachedServer().buildParameters(config);
 
-    assertThat(GrpcConfigKeys.Server.servicesCustomizer(parameters))
-        .as("nothing to customize means nothing installed")
-        .isNull();
+    final RaftGrpcServicesCustomizer installed = (RaftGrpcServicesCustomizer) GrpcConfigKeys.Server.servicesCustomizer(
+        parameters);
+    assertThat(installed.filters()).as("the allowlist is off").isEmpty();
+    assertThat(installed.boundsConnections()).as("no window is configured").isFalse();
+    assertThat(installed.interceptors()).hasExactlyElementsOfTypes(RemoteAddressCallInterceptor.class);
   }
 
   // ---------------------------------------------------------------------------
