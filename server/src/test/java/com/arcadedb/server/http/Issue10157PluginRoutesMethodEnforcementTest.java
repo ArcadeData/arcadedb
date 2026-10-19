@@ -126,7 +126,8 @@ class Issue10157PluginRoutesMethodEnforcementTest {
 
     final HttpResponse<String> delete = send("DELETE", "/api/v1/plugin/config");
     assertThat(delete.statusCode()).isEqualTo(405);
-    assertThat(delete.headers().firstValue("Allow")).contains("GET, POST");
+    // HEAD follows the GET it is answered from (issue #10384)
+    assertThat(delete.headers().firstValue("Allow")).contains("GET, HEAD, POST");
     assertThat(configRuns.get()).isEqualTo(2);
   }
 

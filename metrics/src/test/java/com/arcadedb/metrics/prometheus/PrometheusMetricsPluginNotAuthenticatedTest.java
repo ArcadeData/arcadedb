@@ -74,4 +74,23 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
     assertThat(response.headers().firstValue("Content-Type").get()).isEqualTo("text/plain");
     assertThat(response.body()).contains("system_cpu_usage");
   }
+
+  /**
+   * Issue #10384: the shipped server answers {@code HEAD /prometheus} as it answers GET - the status and the headers, no body -
+   * where it used to answer 405 with {@code Allow: GET}, failing the {@code wget --spider} style healthcheck the core routes were
+   * fixed to pass (issue #8133).
+   */
+  @Test
+  void prometheusEndpointAnswersHead() throws Exception {
+    try (final HttpClient client = HttpClient.newBuilder().build()) {
+      final HttpResponse<String> response = client.send(HttpRequest.newBuilder()
+          .uri(URI.create(getServerHttpUrl("/prometheus")))
+          .method("HEAD", HttpRequest.BodyPublishers.noBody())
+          .build(), HttpResponse.BodyHandlers.ofString());
+
+      assertThat(response.statusCode()).isEqualTo(200);
+      assertThat(response.headers().firstValue("Content-Type")).hasValue("text/plain");
+      assertThat(response.body()).isEmpty();
+    }
+  }
 }

@@ -57,4 +57,15 @@ class MCPPluginRegisteredRoutesMatchApiSpecTest {
         .as("MCPPlugin.registerAPI() serves methods McpApiSpec.MCP_OPERATIONS does not declare, or the reverse")
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(McpApiSpec.MCP_OPERATIONS));
   }
+
+  /** Issue #10384: every route that answers GET answers HEAD too, which container healthchecks send. */
+  @Test
+  void everyGetRouteAnswersHeadToo() {
+    final MCPPlugin plugin = new MCPPlugin();
+    final RecordingPathHandler routes = new RecordingPathHandler();
+
+    plugin.registerAPI(null, new PluginRoutes(routes));
+
+    assertThat(routes.getGetRoutesNotAnsweringHead()).as("MCPPlugin routes declared GET that answer HEAD with a 405").isEmpty();
+  }
 }

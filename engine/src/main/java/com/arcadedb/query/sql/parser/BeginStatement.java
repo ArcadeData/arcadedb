@@ -20,8 +20,8 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -41,7 +41,8 @@ public class BeginStatement extends SimpleExecStatement {
     final DatabaseInternal database = context.getDatabase();
 
     if (isolation != null)
-      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
+      // A level the engine cannot provide is refused, with the words every surface refuses it with (issue #10386)
+      database.begin(IsolationLevels.parse(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
     else
       // USE THE STANDARD ISOLATION LEVEL
       database.begin();

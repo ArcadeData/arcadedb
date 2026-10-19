@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -33,7 +34,6 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.io.IOException;
-import java.util.Arrays;
 
 public class PostBeginHandler extends DatabaseAbstractHandler {
 
@@ -104,13 +104,10 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     final Object value = payload != null ? payload.opt("isolationLevel") : null;
     if (value == null)
       return null;
+    // Parsed where every surface parses it, so the accepted values and the refusal are the same everywhere (issue #10386)
     if (value instanceof String name)
-      for (final Database.TRANSACTION_ISOLATION_LEVEL level : Database.TRANSACTION_ISOLATION_LEVEL.values())
-        if (level.name().equals(name))
-          return level;
-    throw new IllegalArgumentException(
-        "Invalid isolationLevel " + (value instanceof String ? "'" + value + "'" : "of type " + value.getClass().getSimpleName())
-            + ": accepted values are " + Arrays.toString(Database.TRANSACTION_ISOLATION_LEVEL.values()));
+      return IsolationLevels.parse(name);
+    throw IsolationLevels.refusal("of type " + value.getClass().getSimpleName());
   }
 
   @Override

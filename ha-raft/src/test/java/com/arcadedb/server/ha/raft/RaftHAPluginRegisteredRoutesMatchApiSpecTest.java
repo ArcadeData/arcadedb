@@ -91,6 +91,17 @@ class RaftHAPluginRegisteredRoutesMatchApiSpecTest {
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(PluginApiSpec.HA_RAFT_OPERATIONS));
   }
 
+  /** Issue #10384: every route that answers GET answers HEAD too, which container healthchecks send. */
+  @Test
+  void everyGetRouteAnswersHeadToo() {
+    plugin = new RaftHAPlugin();
+    final RecordingPathHandler routes = new RecordingPathHandler();
+
+    plugin.registerAPI(null, new PluginRoutes(routes));
+
+    assertThat(routes.getGetRoutesNotAnsweringHead()).as("RaftHAPlugin routes declared GET that answer HEAD with a 405").isEmpty();
+  }
+
   /** The method check's self-test: a route registered without a method restriction fails it. */
   @Test
   void theMethodCheckCatchesARouteThatAnswersEveryMethod() {

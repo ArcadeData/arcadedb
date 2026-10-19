@@ -2053,19 +2053,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return DatabaseCredentials.newBuilder().setUsername(getUserName()).setPassword(getUserPassword()).build();
   }
 
-  private TransactionIsolation mapIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL level) {
-    switch (level) {
-//      case READ_UNCOMMITTED:
-//        return TransactionIsolation.READ_UNCOMMITTED;
-      case READ_COMMITTED:
-        return TransactionIsolation.READ_COMMITTED;
-      case REPEATABLE_READ:
-        return TransactionIsolation.REPEATABLE_READ;
-//      case SERIALIZABLE:
-//        return TransactionIsolation.SERIALIZABLE;
-      default:
-        return TransactionIsolation.READ_COMMITTED;
-    }
+  // Exhaustive on purpose (issue #10386): a level the engine gains later must be mapped here, or this does not compile,
+  // rather than silently beginning at READ_COMMITTED. The server refuses a level it cannot provide (SERIALIZABLE).
+  private TransactionIsolation mapIsolationLevel(final Database.TRANSACTION_ISOLATION_LEVEL level) {
+    return switch (level) {
+      case READ_COMMITTED -> TransactionIsolation.READ_COMMITTED;
+      case REPEATABLE_READ -> TransactionIsolation.REPEATABLE_READ;
+    };
   }
 
   // ---- TX helpers -------------------------------------------------------------

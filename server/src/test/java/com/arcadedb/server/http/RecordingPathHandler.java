@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.HttpString;
+import io.undertow.util.Methods;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -87,6 +88,22 @@ public class RecordingPathHandler extends PathHandler {
         operations.add("* " + entry.getKey());
     }
     return operations;
+  }
+
+  /**
+   * The paths a plugin declared {@code GET} on that do not answer {@code HEAD} (issue #10384): RFC 9110 requires a server
+   * that supports GET on a resource to support HEAD on it, and container healthchecks such as {@code wget --spider} send it.
+   * {@link PluginRoutes} derives HEAD from the GET entry, so this is empty for every plugin that registers through it, and
+   * the plugin conformance tests assert it. A handler added to the raw {@code PathHandler} answers every method and is
+   * never listed.
+   */
+  public synchronized Set<String> getGetRoutesNotAnsweringHead() {
+    final Set<String> missing = new LinkedHashSet<>();
+    for (final Map.Entry<String, HttpHandler> entry : registered.entrySet())
+      if (entry.getValue() instanceof PluginRoutes.MethodRestrictedHandler restricted
+          && restricted.getHandler(Methods.GET) != null && restricted.getHandler(Methods.HEAD) == null)
+        missing.add(entry.getKey());
+    return missing;
   }
 
   private static HttpHandler unwrap(final HttpHandler handler) {
