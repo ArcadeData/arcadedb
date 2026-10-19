@@ -495,7 +495,9 @@ public final class ColumnDefinition {
    * The refusal of a value this column cannot store: it names the column and the type, which the {@code ClassCastException} it
    * replaces never did.
    */
-  IllegalArgumentException unstorable(final Object value, final Throwable cause) {
+  // public for the SQL step, which refuses a DATE/DATETIME value it converts itself (issue #10233) in these very words, so SQL and the
+  // gateway cannot word the same refusal differently
+  public IllegalArgumentException unstorable(final Object value, final Throwable cause) {
     // The simple name: this text goes back to the client, which has no use for a package
     return new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
         + " column '" + name + "'", cause);

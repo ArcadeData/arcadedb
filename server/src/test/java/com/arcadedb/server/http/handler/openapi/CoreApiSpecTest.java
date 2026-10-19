@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.Components;
@@ -27,9 +28,11 @@ import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import io.swagger.v3.oas.models.parameters.RequestBody;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -198,6 +201,47 @@ class CoreApiSpecTest {
     assertThat(post.getResponses().get("204").getHeaders())
         .as("a client that cannot read the session id cannot use the transaction it just opened")
         .containsKey("arcadedb-session-id");
+  }
+
+  @Test
+  void beginDeclaresTheOptionalIsolationLevelBody() {
+    // Issue #10295: PostBeginHandler reads 'isolationLevel' from an optional JSON body, so a client generated from the
+    // spec could not open a transaction at a chosen isolation level while the spec declared no body at all
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+    final RequestBody body = post.getRequestBody();
+
+    assertThat(body).as("begin accepts an optional JSON body").isNotNull();
+    assertThat(body.getRequired()).as("a begin with no body opens a transaction at the default isolation").isFalse();
+    assertThat(body.getContent().get("application/json").getSchema().get$ref())
+        .isEqualTo("#/components/schemas/BeginRequest");
+
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("BeginRequest");
+    assertThat(schema).as("the BeginRequest component is registered").isNotNull();
+    assertThat(schema.getRequired()).as("isolationLevel is optional").isNullOrEmpty();
+
+    final Schema<?> isolationLevel = schema.getProperties().get("isolationLevel");
+    assertThat(isolationLevel).isNotNull();
+    assertThat(isolationLevel.getType()).isEqualTo("string");
+    assertThat(isolationLevel.getEnum().stream().map(String::valueOf).toList())
+        .as("the accepted values are exactly the engine enum the handler resolves the value against")
+        .containsExactlyElementsOf(Arrays.stream(Database.TRANSACTION_ISOLATION_LEVEL.values()).map(Enum::name).toList());
+  }
+
+  @Test
+  void beginDocumentsThatAnUnknownIsolationLevelAnswers400() {
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+
+    assertThat(post.getResponses().get("400").getDescription()).contains("isolationLevel");
+  }
+
+  @Test
+  void commitAndRollbackDoNotDeclareARequestBody() {
+    // The 400 wording and the body are begin's own: commit and rollback share createTransactionResponses()
+    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+      assertThat(post.getRequestBody()).as(path).isNull();
+      assertThat(post.getResponses().get("400").getDescription()).as(path).doesNotContain("isolationLevel");
+    }
   }
 
   @Test

@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -86,7 +85,9 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
-      private final Set<List<Object>> seenResults = distinct ? new HashSet<>() : null;
+      private final Set<GroupKeyValues> seenResults = distinct ? new HashSet<>() : null;
+      // THE KEYS OF CONSECUTIVE ROWS: A VALUE THE ROW BEFORE HELD AS WELL IS NOT CANONICALIZED AND HASHED AGAIN (ISSUE #10254)
+      private GroupKeyValues.Builder distinctKeys;
       private final OperationHeapLimit distinctLimit = distinct ? distinctHeapLimit(context, "RETURN DISTINCT") : null;
 
       @Override
@@ -145,10 +146,12 @@ public class ProjectReturnStep extends AbstractExecutionStep {
               } else {
                 names = returnClause.getReturnItems().stream().map(ReturnClause.ReturnItem::getOutputName).toList();
               }
-              final List<Object> key = DistinctNumericKey.buildKey(names, projectedResult::getProperty);
+              if (distinctKeys == null)
+                distinctKeys = new GroupKeyValues.Builder(names.size() * 2);
+              final GroupKeyValues key = distinctKeys.build(names, projectedResult::getProperty);
               if (!seenResults.add(key))
                 continue;
-              distinctLimit.add(seenResults.size(), key, HeapEstimator.HASH_ENTRY_BYTES);
+              distinctLimit.add(seenResults.size(), key.canonicalValues(), HeapEstimator.HASH_ENTRY_BYTES);
             }
 
             buffer.add(projectedResult);
@@ -163,6 +166,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
           if (seenResults != null) {
             seenResults.clear();
+            distinctKeys = null;
             distinctLimit.release();
           }
         }

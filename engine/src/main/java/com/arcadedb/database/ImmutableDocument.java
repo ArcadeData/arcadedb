@@ -278,8 +278,11 @@ public class ImmutableDocument extends BaseDocument {
   /**
    * Whether this record's content was read from its bucket by the transaction that began with {@code transactionBeginSequence}
    * (issue #8984). A record that was only referenced (not yet loaded) proves nothing about the bucket, so it does not count.
+   * <p>
+   * Public for {@code GraphEngine}, which draws the same line for an edge found deleted at its delete (issue #10263). It
+   * answers a question about one transaction only: it is not a staleness check of the record against the bucket.
    */
-  boolean wasLoadedInTransaction(final long transactionBeginSequence) {
+  public boolean wasLoadedInTransaction(final long transactionBeginSequence) {
     return buffer != null && readInTransaction >= 0 && readInTransaction == readTransactionId(transactionBeginSequence);
   }
 
