@@ -120,6 +120,20 @@ class Issue10335ViewRemovedPropertyTest extends TestHelper {
   }
 
   @Test
+  void anUpdateOfOnePropertyKeepsTheOthersOfAVertexWithSeveralInTheView() {
+    final GraphAnalyticalView view = createView("SYNCHRONOUS", "PROPERTIES (id, name)");
+    database.transaction(() -> {
+      final MutableVertex vertex = rids[1].asVertex().modify();
+      vertex.set("name", "renamed");
+      vertex.save();
+    });
+
+    assertThat(view.getProperty(view.getNodeId(rids[1]), "id")).isEqualTo(3L);
+    assertThat(view.getProperty(view.getNodeId(rids[1]), "name")).isEqualTo("renamed");
+    assertThat(rows()).containsExactlyInAnyOrder("[xi=2, yi=3]", "[xi=3, yi=4]");
+  }
+
+  @Test
   void aRemovedPropertyCanBeSetAgain() {
     final GraphAnalyticalView view = createView("SYNCHRONOUS", "PROPERTIES (id)");
     database.transaction(() -> removeId(rids[1]));

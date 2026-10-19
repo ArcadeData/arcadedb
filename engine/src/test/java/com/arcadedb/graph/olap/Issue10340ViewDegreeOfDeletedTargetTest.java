@@ -167,6 +167,37 @@ class Issue10340ViewDegreeOfDeletedTargetTest extends TestHelper {
     assertDegreesMatchTheRecords(view, 0);
   }
 
+  /** The edges of the overlay deleted on their own, in a later transaction than the one that created them, are withdrawn. */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void anOverlayEdgeDeletedInALaterTransactionIsWithdrawn(final String mode) {
+    final RID[] base = new RID[1];
+    database.transaction(() -> base[0] = database.newVertex("P").set("id", 1L).save().getIdentity());
+    final GraphAnalyticalView view = createView(mode);
+
+    final RID[] edges = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex b = database.newVertex("Q").set("id", 2L).save();
+      final MutableVertex c = database.newVertex("Q").set("id", 3L).save();
+      // a base source to an overflow target, and two overflow vertices
+      edges[0] = base[0].asVertex().modify().newEdge("L", b).save().getIdentity();
+      edges[1] = b.newEdge("L", c).save().getIdentity();
+    });
+    awaitMerged(view);
+
+    assertDegreesMatchTheRecords(view, 2);
+
+    database.transaction(() -> edges[0].asEdge().delete());
+    awaitMerged(view);
+
+    assertDegreesMatchTheRecords(view, 1);
+
+    database.transaction(() -> edges[1].asEdge().delete());
+    awaitMerged(view);
+
+    assertDegreesMatchTheRecords(view, 0);
+  }
+
   /** A target that survives keeps the edge, whichever side of the build it was created on. */
   @ParameterizedTest
   @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })

@@ -57,6 +57,9 @@ class Issue10338CommitRightAfterCreateViewTest extends TestHelper {
     database.command("sql", "CREATE EDGE TYPE L");
   }
 
+  // The three tests below replay a delta over hand-made CSRs: the RIDs are synthetic (one bucket, the position being the node id),
+  // no database is involved
+
   /** The tail of a chain sits on the slot that is replayed: its in-edge starts past the first entry of the reverse index. */
   @Test
   void replayOfAReusedSlotWhoseInEdgeIsNotTheFirstEntry() {
