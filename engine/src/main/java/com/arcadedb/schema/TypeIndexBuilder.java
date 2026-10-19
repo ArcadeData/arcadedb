@@ -18,6 +18,8 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
@@ -56,6 +58,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   private static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
   private static final long MIN_SORTED_BUILD_MEMORY_BUDGET    = 1L << 20;
+  private static final long SORTED_BUILD_PROGRESS_INTERVAL    = 1_000_000L;
 
   // When set, lets {@link #create()} accept properties that aren't declared on the type yet:
   // the index is materialised with this Type as the key serialisation, while the property
@@ -426,7 +429,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
     final List<Bucket> buckets = type.getBuckets(true);
     final Index[] indexes = new Index[buckets.size()];
-    final boolean sortedBuild = buildMode == IndexBuildMode.SORTED;
+    final boolean sortedBuild = buildMode == IndexBuildMode.SORTED || isSortedBuildChosenFor(buckets);
     final SortedIndexBuildRecoveryMarker[] recoveryMarker = new SortedIndexBuildRecoveryMarker[1];
     final SortedIndexBuildMetrics[] sortedBuildMetrics = new SortedIndexBuildMetrics[1];
     final long sortedBuildStarted = sortedBuild ? System.nanoTime() : 0L;
@@ -506,9 +509,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
 
         if (sortedBuild) {
-          recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
-              buildSpillDirectory);
-          sortedBuildMetrics[0] = createWithSortedBuild(schema, type, keyTypes, buckets, indexes, recoveryMarker[0]);
+          // The sorted build writes its pages outside any transaction, so the caller's - empty, see
+          // validateSortedBuildPreconditions - is set aside for its duration and given back untouched. An HTTP command
+          // always arrives inside the auto-commit transaction of its handler, which is how CREATE INDEX from Studio runs
+          // (issue #10334).
+          try (final CommittedReadScope outsideCallerTransaction = CommittedReadScope.open(database)) {
+            recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
+                buildSpillDirectory);
+            sortedBuildMetrics[0] = createWithSortedBuild(schema, type, keyTypes, buckets, indexes, recoveryMarker[0]);
+          }
         } else
           for (int idx = 0; idx < buckets.size(); ++idx) {
             final int finalIdx = idx;
@@ -790,8 +799,41 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new IndexException("Sorted build currently supports only LSM_TREE indexes");
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
       throw new IndexException("Sorted build is not supported on replicated databases");
-    if (database.isTransactionActive())
-      throw new IndexException("Sorted build requires no active transaction");
+    if (callerTransactionHasChanges(database))
+      throw new IndexException("Sorted build requires no pending changes in the current transaction");
+  }
+
+  /**
+   * Whether a build asked for in the DEFAULT mode takes the sorted build all the same (issue #10334): a UNIQUE LSM_TREE index
+   * over a type holding at least {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS} records. The record-at-a-time
+   * build commits every batch through the uniqueness check, which looks each key up in the index being built, and that lookup
+   * reads every page written so far - nothing compacts an index while it is built - so the build time grows with the square of
+   * the record count. The sorted build refuses a duplicate key in its sorted stream instead, within a bounded memory budget.
+   * <p>
+   * Never chosen where the sorted build cannot run: on a replicated database, and inside a transaction with pending changes,
+   * which the build has to see and which only the record-at-a-time build reads. The record count is the buckets' cached
+   * counters, polymorphic like the build itself, so asking costs nothing.
+   */
+  private boolean isSortedBuildChosenFor(final List<Bucket> buckets) {
+    if (buildMode != IndexBuildMode.DEFAULT || !unique || indexType != Schema.INDEX_TYPE.LSM_TREE)
+      return false;
+
+    final long minRecords = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS);
+    if (minRecords <= 0 || database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated()
+        || callerTransactionHasChanges(database))
+      return false;
+
+    long records = 0;
+    for (final Bucket bucket : buckets) {
+      records += bucket.count();
+      if (records >= minRecords) {
+        LogManager.instance().log(this, Level.INFO,
+            "Building unique index on %s%s with the sorted build: the type holds at least %,d records (%s)", metadata.typeName,
+            metadata.propertyNames, minRecords, GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS.getKey());
+        return true;
+      }
+    }
+    return false;
   }
 
   private SortedIndexBuildMetrics createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type,
@@ -831,6 +873,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
           bulkLoader.add(bucketIndex, record);
           final long total = scannedRecords.incrementAndGet();
+          if (total % SORTED_BUILD_PROGRESS_INTERVAL == 0)
+            LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records (%,.0f records/sec)...",
+                logicalIndexName, total, total / Math.max(0.001, (System.nanoTime() - sourceScanStarted) / 1e9));
           if (callback != null)
             callback.onDocumentIndexed(record, total);
           return true;
@@ -840,6 +885,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           throw new IndexException("Error collecting sorted index entry at record " + rid, exception);
         }), false, maxAttempts, null, null);
       sourceScanNanos = System.nanoTime() - sourceScanStarted;
+      LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records in %,dms, writing the index...",
+          logicalIndexName, scannedRecords.get(), sourceScanNanos / 1_000_000);
 
       outcome = bulkLoader.writeCompacted();
       logicalEntries = bulkLoader.size();

@@ -138,7 +138,8 @@ public class CreateIndexStatement extends DDLStatement {
   /**
    * Reads the {@code buildMode} directive of the {@code METADATA} clause: {@code SORTED} populates an index over existing records with
    * a bounded external sort and writes the ordered stream straight into compacted LSM pages, {@code DEFAULT} (also when absent) adds
-   * the records one at a time. The sorted build is what a bulk build on a large type wants (issue #9291).
+   * the records one at a time, or lets a UNIQUE index over a populated type take the sorted build (see {@link IndexBuildMode#DEFAULT}).
+   * The sorted build is what a bulk build on a large type wants (issues #9291, #10334).
    */
   private IndexBuildMode readBuildMode(final CommandContext context, final Schema.INDEX_TYPE indexType) {
     if (metadata == null)
