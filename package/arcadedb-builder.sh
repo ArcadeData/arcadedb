@@ -925,7 +925,10 @@ ARG ARCADEDB_HOME=/home/arcadedb
 ENV ARCADEDB_OPTS_GC="-XX:+UseZGC"
 ENV ARCADEDB_OPTS_MEMORY="-XX:MaxRAMPercentage=75"
 
-RUN addgroup -S ${ARCADEDB_USER} && adduser -S ${ARCADEDB_USER} -G ${ARCADEDB_USER}
+# UID/GID 1000:1000 as in package/src/main/docker/Dockerfile and the native images, so a volume written by a custom
+# distribution opens in the official images (and vice versa) with no re-chown. A system user (-S) would land on
+# 100:101 instead (issue #10330). Without -G, adduser creates the same-named group with GID = UID.
+RUN adduser -D -u 1000 -h ${ARCADEDB_HOME} -s /bin/sh ${ARCADEDB_USER}
 
 WORKDIR ${ARCADEDB_HOME}
 
