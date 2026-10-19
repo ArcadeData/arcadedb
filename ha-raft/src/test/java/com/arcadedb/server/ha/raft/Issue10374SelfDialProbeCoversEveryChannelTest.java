@@ -205,6 +205,19 @@ class Issue10374SelfDialProbeCoversEveryChannelTest {
     assertThat(raft.getSelfDialProbesUnconfirmed()).isZero();
   }
 
+  /** A connection that fails first does not hide one that comes back after it: the self-dial still wins. */
+  @Test
+  void aFailedConnectionBeforeOneThatComesBackStillConfirmsTheSelfDial() {
+    final RaftHAServer raft = detachedServer();
+    final AtomicInteger loop = new AtomicInteger();
+    raft.setSelfDialProbeChannelsForTesting(new SelfDialProbeChannels(List.of(probe -> {
+      throw new IOException("DEADLINE_EXCEEDED");
+    }, SelfDialChannels.leadingBackTo(raft, loop)), true));
+
+    assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.SELF);
+    assertThat(loop.get()).isEqualTo(1);
+  }
+
   /** The member is credited only when it answered over every connection, and then the claim is somebody else's. */
   @Test
   void theMemberIsCreditedOnlyWhenItAnsweredOverEveryConnection() {
