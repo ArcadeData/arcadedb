@@ -88,7 +88,7 @@ public class MoveVertexExecutionPlanner {
     if (op != null) {
       switch (op.getType()) {
       case UpdateOperations.TYPE_SET:
-        plan.chain(new UpdateSetStep(op.getUpdateItems(), ctx));
+        plan.chain(UpdateSetStep.forExistingRecord(op.getUpdateItems(), ctx));
         break;
       case UpdateOperations.TYPE_REMOVE:
         plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), ctx));

@@ -69,7 +69,8 @@ public interface DocumentType {
   Set<String> getPolymorphicPropertiesWithDefaultDefined();
 
   /**
-   * Fills in this type's (polymorphic) default values on the properties of {@code document} that are null or missing.
+   * Fills in this type's (polymorphic) default values on the properties of {@code document} that are missing: the rule of a
+   * record create, where a property set to NULL on purpose stays NULL (issue #10194).
    * <p>
    * Issue #6134: this is the single definition of the rule. It used to be written twice - once in
    * {@code LocalDatabase.setDefaultValues}, for every record create, and once in {@code ApplyDefaultsStep}, for
@@ -80,8 +81,20 @@ public interface DocumentType {
    * "cannot be null" for a property that is present.
    */
   default void applyDefaultValues(final MutableDocument document) {
+    applyDefaultValues(document, false);
+  }
+
+  /**
+   * Fills in this type's (polymorphic) default values on the properties of {@code document} that are missing, and with
+   * {@code fillExplicitNulls} on the ones that are present and null too.
+   * <p>
+   * Issue #10194: a record CREATE passes {@code false}. A default supplies the value of a property the record does not carry;
+   * a property the caller set to NULL on purpose is stored as NULL, as in SQL. {@code UPDATE ... APPLY DEFAULTS} passes
+   * {@code true}, because filling what is null is exactly what that statement asks for.
+   */
+  default void applyDefaultValues(final MutableDocument document, final boolean fillExplicitNulls) {
     for (final String propertyName : getPolymorphicPropertiesWithDefaultDefined()) {
-      if (document.get(propertyName) == null) {
+      if (fillExplicitNulls ? document.get(propertyName) == null : !document.has(propertyName)) {
         // Issue #6799: on the plan-step path (ApplyDefaultsStep), which holds no database lock, the name set is read
         // and the lookup that follows is a separate step, so a DROP PROPERTY committing in between leaves a name here
         // with nothing behind it. getPolymorphicProperty() would raise "Cannot find property" and fail the record

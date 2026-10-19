@@ -254,13 +254,17 @@ class DocumentValidationTest extends TestHelper {
       assertThat(d.get("string")).isEqualTo("Hi");
       assertThat(d.has("dat")).isFalse();
 
-      final ResultSet resultSet = database.command("sql", "insert into Validation set string = null");
+      // The default fills a property the statement leaves out. An explicit NULL is a value, so NOTNULL refuses it (issue #10194)
+      final ResultSet resultSet = database.command("sql", "insert into Validation set other = 1");
 
       assertThat(resultSet.hasNext()).isTrue();
       final Result result = resultSet.next();
 
       assertThat(result.<String>getProperty("string")).isEqualTo("Hi");
       assertThat(result.hasProperty("dat")).isFalse();
+
+      assertThatThrownBy(() -> database.command("sql", "insert into Validation set string = null")).isInstanceOf(ValidationException.class)
+          .hasMessageContaining("cannot be null");
     });
   }
 

@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.UpdateItem;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -29,15 +30,34 @@ import java.util.List;
  */
 public class UpdateSetStep extends AbstractExecutionStep {
   private final List<UpdateItem> items;
+  private final boolean          readsTheOldRow;
 
+  /** The items of a record that is being created ({@code CREATE EDGE ... SET}): applied in order, each seeing the ones before. */
   public UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext context) {
+    this(updateItems, context, false);
+  }
+
+  private UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext context, final boolean readsTheOldRow) {
     super(context);
     this.items = updateItems;
+    this.readsTheOldRow = readsTheOldRow;
+  }
+
+  /**
+   * The items of a record that already exists ({@code UPDATE ... SET}, {@code MOVE VERTEX ... SET}): every right-hand side reads
+   * the row as it was before the statement, as in SQL (issue #10194).
+   */
+  public static UpdateSetStep forExistingRecord(final List<UpdateItem> updateItems, final CommandContext context) {
+    return new UpdateSetStep(updateItems, context, true);
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
+    // Reused across the records of the statement: only a multi-item SET needs it, one item reads the row it writes to. Not
+    // thread-safe, and it does not need to be: a ResultSet is pulled by one thread and each execution builds its own
+    final Object[] rightValues = readsTheOldRow && items.size() > 1 ? new Object[items.size()] : null;
+    final UpdateItem[] itemArray = rightValues != null ? items.toArray(new UpdateItem[0]) : null;
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -59,8 +79,21 @@ public class UpdateSetStep extends AbstractExecutionStep {
 
           final Result result = upstream.next();
           if (result instanceof ResultInternal internal) {
-            for (final UpdateItem item : items)
-              item.applyUpdate(internal, context);
+            if (rightValues == null) {
+              for (final UpdateItem item : items)
+                item.applyUpdate(internal, context);
+            } else {
+              // EVERY RIGHT-HAND SIDE READS THE ROW AS IT WAS BEFORE THE STATEMENT, AS IN SQL: SET a = b, b = a SWAPS THE
+              // TWO COLUMNS INSTEAD OF LEAVING BOTH EQUAL TO b (issue #10194)
+              for (int i = 0; i < rightValues.length; i++)
+                rightValues[i] = itemArray[i].evaluateRight(internal, context);
+              try {
+                for (int i = 0; i < rightValues.length; i++)
+                  itemArray[i].applyUpdate(internal, context, rightValues[i]);
+              } finally {
+                Arrays.fill(rightValues, null);
+              }
+            }
           }
           return result;
         }

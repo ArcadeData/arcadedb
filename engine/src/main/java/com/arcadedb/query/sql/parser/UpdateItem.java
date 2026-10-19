@@ -112,7 +112,19 @@ public class UpdateItem extends SimpleNode {
   }
 
   public void applyUpdate(final ResultInternal doc, final CommandContext context) {
-    final Object rightValue = right.execute(doc, context);
+    applyUpdate(doc, context, evaluateRight(doc, context));
+  }
+
+  /**
+   * The value the right-hand side takes on {@code doc} as it stands now. Split from {@link #applyUpdate(ResultInternal,
+   * CommandContext, Object)} so that a statement assigning several items can read every right-hand side from the row as it was
+   * before the statement, and only then write (issue #10194).
+   */
+  public Object evaluateRight(final ResultInternal doc, final CommandContext context) {
+    return right.execute(doc, context);
+  }
+
+  public void applyUpdate(final ResultInternal doc, final CommandContext context, final Object rightValue) {
     if (leftModifier == null) {
       applyOperation(doc, left, rightValue, context);
     } else {

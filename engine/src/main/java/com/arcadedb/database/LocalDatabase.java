@@ -1452,6 +1452,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       success = true;
       countCreatedRecord(record);
+      transaction.countCompletedRecordWrite();
 
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
@@ -1612,6 +1613,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         final RID restoredRid = restoreRecordInTransaction(record, bucket, position);
         success = true;
         countCreatedRecord(record);
+        getTransaction().countCompletedRecordWrite();
 
         // INVOKE EVENT CALLBACKS - before the implicit commit, exactly where createRecordNoLock fires them.
         events.onAfterCreate(record);
@@ -1810,12 +1812,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
         }
+        tx.countCompletedRecordWrite();
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
             "transaction", e);
       }
-    } else
+    } else {
       updateRecordNoLock(record, discardRecordAfter);
+      getTransaction().countCompletedRecordWrite();
+    }
 
     // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
     // updated, and the two ways out above that are not an update - a listener vetoing the write, and a write to a
@@ -2103,6 +2108,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         ((LocalDocumentType) document.getType()).fireAfterDelete(record);
 
       final TransactionContext transaction = getTransaction();
+      transaction.countCompletedRecordWrite();
       if (record.getIdentity().getPosition() >= 0)
         // A record-less RID (a lightweight edge) never allocated a record in the bucket, so there is nothing to
         // subtract. Folding a -1 anyway drifts the cached counter behind count(*), and the drift is persisted in

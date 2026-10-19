@@ -159,7 +159,7 @@ public class CreateEdgeExecutionPlanner {
   }
 
   private void handleApplyDefaults(final InsertExecutionPlan result, final CommandContext context) {
-    result.chain(new ApplyDefaultsStep(context));
+    result.chain(ApplyDefaultsStep.forCreate(context));
   }
 
   private void handleConnectEdge(final InsertExecutionPlan result, final CommandContext context) {

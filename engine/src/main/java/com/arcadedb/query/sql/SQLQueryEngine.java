@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -101,38 +102,82 @@ public class SQLQueryEngine implements QueryEngine {
         "The statement is nested or chained too deeply to be executed (the thread stack overflowed while building the plan)", e);
   }
 
+  // The overloads without a context serve query() and analyze().execute(), which the MCP command tool runs writes through: a
+  // write there is a statement of the caller's transaction like one of command() (issue #10194). writeScope() answers null for
+  // an idempotent statement, so the read path pays one virtual call.
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Object[] parameters) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters,
       final CommandContext context) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Object[] parameters,
       final CommandContext context) {
+    final TransactionContext tx = writeScope(statement, database);
+    final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
       throw tooDeep(e);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      throw e;
     }
+  }
+
+  /**
+   * The transaction a write statement joins, or {@code null} when the statement cannot leave a half-applied write in one: a
+   * read, or a write that owns an implicit transaction of its own, which is rolled back whole when the statement fails.
+   */
+  private static TransactionContext writeScope(final Statement statement, final Database database) {
+    if (statement.isIdempotent() || !database.isTransactionActive() || !(database instanceof DatabaseInternal internal))
+      return null;
+    return internal.getTransaction();
+  }
+
+  /** See {@link TransactionContext#refuseCommitIfWrittenSince}: a statement failed in the caller's transaction (issue #10194). */
+  private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final long writesBefore,
+      final Throwable cause) {
+    if (tx != null)
+      tx.refuseCommitIfWrittenSince(writesBefore, cause);
   }
 
   @Override

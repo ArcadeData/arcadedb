@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.Type;
@@ -53,12 +54,15 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
     createProductTypeWithUniqueSku();
     database.command("sql", "INSERT INTO Product SET sku = 'A1', name = 'first'");
 
-    // Matches the documented baseline (issue #4918): the record BEFORE the clash is still inserted, the
-    // clashing record raises, and every record AFTER it never runs at all - the whole point of the new clause.
+    // Matches the documented baseline (issue #4918): the record BEFORE the clash is written, the clashing record raises,
+    // and every record AFTER it never runs at all - the whole point of the new clause. Since #10194 the transaction that
+    // holds the half-applied statement can no longer be committed, so the caller that caught the error has to roll back.
     assertThatExceptionOfType(DuplicatedKeyException.class).isThrownBy(() -> database.command("sql",
         "INSERT INTO Product CONTENT [ {\"sku\":\"A2\",\"name\":\"second\"}, {\"sku\":\"A1\",\"name\":\"clashes\"}, {\"sku\":\"A3\",\"name\":\"never runs\"} ]"));
 
     assertThat(database.query("sql", "SELECT FROM Product WHERE sku = 'A3'").hasNext()).isFalse();
+    assertThat(((DatabaseInternal) database).getTransaction().getRollbackOnlyReason()).contains("a statement failed after part of its records were written");
+    database.rollback();
   }
 
   @Test
