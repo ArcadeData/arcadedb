@@ -159,6 +159,17 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   /**
+   * The refusal of a statement that would remove or rewrite stored samples ({@code DELETE}, {@code UPDATE}, {@code TRUNCATE TYPE}),
+   * which no storage layer of a TIMESERIES type supports: the statements used to report rows as deleted, or success, and keep every
+   * sample (issue #10336). Names what does remove samples, and how to keep a subset.
+   */
+  public String immutableSamplesRefusal(final String statement) {
+    return "Cannot " + statement + " the samples of the TIMESERIES type '" + getName() + "': a sample cannot be deleted or updated once "
+        + "written. The RETENTION of the type removes the samples older than it and DROP TYPE removes all of them; to keep a subset, "
+        + "copy it into a new TIMESERIES type with INSERT INTO <new type> FROM SELECT FROM " + getName() + " WHERE ...";
+  }
+
+  /**
    * Marks this type as registered but without a usable storage engine (issue #6356): {@link #initEngine()} failed
    * during schema load, most commonly because one derived file (a {@code .ts.sealed} sealed store) could not be
    * opened. Package-private: only {@code LocalSchema.readConfiguration()} calls this, on the same path that would

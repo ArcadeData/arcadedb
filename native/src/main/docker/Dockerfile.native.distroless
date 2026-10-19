@@ -30,36 +30,46 @@
 # distroless/base-debian12 provides glibc, libssl and a CA-certificate bundle already baked in -
 # no separate ca-certificates COPY needed here, unlike Dockerfile.native.scratch - but no shell
 # and no package manager: the same "no JAVA_OPTS wrapper script" constraint documented in
-# Dockerfile.native.scratch's ENTRYPOINT comment applies here too. The `:nonroot` tag additionally
-# bakes in a non-root `nonroot:nonroot` (65532:65532) user/group, so - unlike scratch, which has
-# no /etc/passwd at all - this image runs non-root by default with no --user override needed.
+# Dockerfile.native.scratch's ENTRYPOINT comment applies here too.
 #
-# Pinned by digest (in addition to the :nonroot tag, kept for readability) to match the JVM
-# Dockerfile's supply-chain posture: a floating tag can be repointed upstream without notice,
-# while the digest guarantees the exact image content this Dockerfile was validated against.
-# Resolve the current digest with:
-#   docker buildx imagetools inspect gcr.io/distroless/base-debian12:nonroot --format '{{.Manifest.Digest}}'
+# Runs as 1000:1000 (see `USER` below), the UID/GID of the JVM image's `arcadedb` user and of the
+# amd64 scratch image, so the three images' volumes are interchangeable (issue #10319). This uses
+# the plain base-debian12 tag rather than `:nonroot`: that tag only adds a `nonroot` (65532) entry
+# to /etc/passwd, which the binary has no use for - `USER` takes a numeric UID:GID with no passwd
+# entry. Images before #10319 ran as 65532, so volumes they wrote need a one-time
+# `chown -R 1000:1000` before this image can open them.
+#
+# Pinned by digest (in addition to the tag, kept for readability) to match the JVM Dockerfile's
+# supply-chain posture: a floating tag can be repointed upstream without notice, while the digest
+# guarantees the exact image content this Dockerfile was validated against. Resolve the current
+# digest with:
+#   docker buildx imagetools inspect gcr.io/distroless/base-debian12:latest --format '{{.Manifest.Digest}}'
 #
 # Tiny builder stage: distroless/base has no shell/mkdir/chown to create the VOLUME directories
-# below owned by the nonroot (65532:65532) runtime user, so pre-create them here and COPY the
-# resulting tree in. Pinned by digest, matching the base image's own pin above.
+# below owned by the 1000:1000 runtime user, so pre-create them here and COPY the resulting tree
+# in. Docker initializes an anonymous volume with the ownership of the image directory it is
+# mounted on, so these directories decide who can write a fresh volume. Pinned by digest,
+# matching the base image's own pin above.
 FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
-RUN mkdir -p /skel/databases /skel/backups /skel/replication /skel/log && \
-    chown -R 65532:65532 /skel
+RUN mkdir -p /skel/bin /skel/config /skel/databases /skel/backups /skel/replication /skel/log && \
+    chown -R 1000:1000 /skel
 
-FROM gcr.io/distroless/base-debian12:nonroot@sha256:6c806311d31c11d364a8d13a022af5a48f29e43bd585ad6b51f1bb447f83d239
+FROM gcr.io/distroless/base-debian12:latest@sha256:fabbf1c0c357a3d42550111351daed089b20a2c954df13ee2fcff60602515e84
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
 # Build-time inputs staged into the build context by native-image.yml's `docker` job (see its
 # "Stage build context" step, arm64 leg):
 #   ./arcadedb -> the linux/arm64 mostly-static binary, from artifact arcadedb-native-linux-arm64
-#   ./config   -> config templates, copied verbatim from package/src/main/config
-COPY --chown=nonroot:nonroot config /home/arcadedb/config
-COPY --chown=nonroot:nonroot --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
-COPY --from=dirs --chown=65532:65532 /skel/ /home/arcadedb/
+#   ./config   -> config templates from package/src/main/config, with the JVM
+#                 assemblies' include set
+COPY --from=dirs --chown=1000:1000 /skel/ /home/arcadedb/
+COPY --chown=1000:1000 config /home/arcadedb/config
+COPY --chown=1000:1000 --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
 
 WORKDIR /home/arcadedb
+
+USER 1000:1000
 
 VOLUME [ "/home/arcadedb/config" ]
 VOLUME [ "/home/arcadedb/databases" ]
@@ -84,8 +94,11 @@ EXPOSE 50051
 
 # distroless/base has no shell either, so the same exec-form, no-wrapper-script constraints as
 # Dockerfile.native.scratch's ENTRYPOINT apply here (see its comment for the full rationale).
-# `:nonroot` already runs as UID 65532 by default, so - unlike the scratch image - no --user
-# override is required at `docker run` time. See docs/native-image.md for a full worked example.
+# The image already runs as 1000:1000 (see `USER` above), so no --user override is required at
+# `docker run` time. See docs/native-image.md for a full worked example.
+# -Duser.home: UID 1000 has no /etc/passwd entry in either base, so the JVM cannot look its home
+# directory up and would leave user.home unusable (the `%h` of a log file pattern resolves through it).
 ENTRYPOINT ["/home/arcadedb/bin/arcadedb", \
+  "-Duser.home=/home/arcadedb", \
   "-Dorg.jline.terminal.dumb=true", \
   "-Djava.util.logging.config.file=/home/arcadedb/config/arcadedb-log.properties"]

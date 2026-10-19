@@ -226,6 +226,14 @@ public enum GlobalConfiguration {
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
 
+  TX_WAL_IDLE_TIMEOUT("arcadedb.txWalIdleTimeout", SCOPE.DATABASE, """
+      Milliseconds a WAL file of the pool can stay without writes before the WAL housekeeping closes and removes it, \
+      once all its pages reached the data files. A WAL file is opened on the first commit that needs it, so a database \
+      that is only read, or not written for this long, holds no WAL file open. A database written less often than this \
+      creates, locks and deletes a WAL file per write, and its WAL file counter grows with them. 0 or a negative value \
+      keeps every WAL file open until the database is closed""",
+      Long.class, 60_000L),
+
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
 
@@ -1180,6 +1188,17 @@ public enum GlobalConfiguration {
       Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.""",
       Long.class, 50L),
 
+  INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedUniqueMinRecords", SCOPE.DATABASE,
+      """
+      Minimum number of records a type must hold for CREATE INDEX ... UNIQUE (LSM_TREE, default build mode) to be built \
+      with the sorted build instead of the record-at-a-time one (issue #10334). The record-at-a-time build checks every \
+      key it adds against the index being built, and that lookup reads every page written so far, so its time grows \
+      with the square of the record count. The sorted build sorts the keys externally, within a bounded memory budget, \
+      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes and on replicated \
+      databases keep the record-at-a-time build whatever the record count; an empty transaction (such as the auto-commit \
+      one of an HTTP command) does not stop the switch. 0 disables the switch.""",
+      Long.class, 10_000L),
+
   INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
       """
       Timeout in ms a bulk index build waits for the file locks of ONE of its chunk commits, replacing \
@@ -1800,6 +1819,11 @@ public enum GlobalConfiguration {
 
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
+
+  SERVER_QUERY_WARM_UP("arcadedb.server.queryWarmUp", SCOPE.SERVER, """
+      Once the server is online, warms the query stack in the background: parses a SQL statement and runs a trivial \
+      statement in SQL and OpenCypher on a database the server holds open, so the first client request does not pay for \
+      loading the parsers and the function registry""", Boolean.class, true),
 
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\

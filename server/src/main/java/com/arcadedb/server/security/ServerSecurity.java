@@ -255,36 +255,68 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     groupRepository.startWatching();
   }
 
+  /**
+   * Loads {@code server-users.jsonl} into the users in force, and schedules the watcher that calls this again when the
+   * file changes.
+   * <p>
+   * The first load falls back to the default configuration (a single {@code root}) when the file cannot be loaded. A
+   * RELOAD never does (issue #10326): an unreadable, malformed, missing or empty file keeps the users already in force,
+   * and the bad file is preserved as {@code server-users-error.jsonl}. Two consequences an operator should know: emptying
+   * the file by hand does not drop every user (it only logs a WARNING), and until the file is fixed the users in memory
+   * differ from the file on disk - a restart would fall back to the default, and the next user change made through the
+   * server saves the users in force over the bad file.
+   */
   public void loadUsers() {
     try {
-      final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
+      final Map<String, ServerSecurityUser> previousUsers = this.users;
+      // Issue #10326: a RELOAD - the users-file watcher below, on a running server - has users in force to fall back
+      // on, the first load has none (stopService() empties the map, and a first load always publishes at least root).
+      // A reload that cannot read the file keeps them, the way the groups watcher keeps its document: falling back to
+      // createDefault() there dropped every user but a passwordless root at once, revoked their sessions, and had
+      // askForRootPassword() save the new root over the operator's file.
+      final boolean reload = !previousUsers.isEmpty();
 
+      Map<String, ServerSecurityUser> newUsers = null;
       try {
-        for (final JSONObject userJson : usersRepository.getUsers()) {
-          final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          newUsers.put(user.getName(), user);
+        if (!reload)
+          newUsers = toUsers(usersRepository.getUsers());
+        else {
+          final List<JSONObject> records = usersRepository.loadRecords();
+          if (records.isEmpty())
+            // Typically an editor caught between truncating the file and writing it: the next tick sees the content.
+            LogManager.instance().log(this, Level.WARNING, "File '%s' is missing or empty, keeping the %d users already in force",
+                SecurityUserFileRepository.FILE_NAME, previousUsers.size());
+          else
+            newUsers = toUsers(records);
         }
-      } catch (final JSONException e) {
-        groupRepository.saveInError(e);
-        for (final JSONObject userJson : SecurityUserFileRepository.createDefault()) {
-          final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          newUsers.put(user.getName(), user);
-        }
+      } catch (final RuntimeException | IOException e) {
+        // The USERS repository (issue #10321): the groups one named server-groups.json in the SEVERE and wrote the
+        // valid groups document as the "corrupt" file, while the users file that failed was saved over below.
+        if (reload)
+          // ANY failure on reload, not only JSONException: whatever a record of an unexpected shape throws must neither
+          // replace the users in force nor escape into the watcher's java.util.Timer, which an uncaught exception kills.
+          usersRepository.saveInError(e, "keeping the " + previousUsers.size() + " users already in force");
+        else if (e instanceof JSONException) {
+          usersRepository.saveInError(e);
+          newUsers = toUsers(SecurityUserFileRepository.createDefault());
+        } else
+          throw e;
       }
 
-      // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
-      // previous complete map or this one, never an empty intermediate state.
-      final Map<String, ServerSecurityUser> previousUsers = this.users;
-      this.users = newUsers;
+      if (newUsers != null) {
+        // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
+        // previous complete map or this one, never an empty intermediate state.
+        this.users = newUsers;
 
-      // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password
-      // rotated - an operator editing the file directly, or a peer's file being re-read - and the bearer
-      // path only requires the name to still resolve. Same comparison the replicated path makes. A no-op at
-      // startup, when no session exists yet.
-      invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
+        // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password
+        // rotated - an operator editing the file directly, or a peer's file being re-read - and the bearer
+        // path only requires the name to still resolve. Same comparison the replicated path makes. A no-op at
+        // startup, when no session exists yet.
+        invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
 
-      if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
-        askForRootPassword();
+        if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
+          askForRootPassword();
+      }
 
       apiTokenConfig.load();
 
@@ -318,6 +350,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     } catch (final IOException e) {
       throw new ServerException("Error on starting Security service", e);
     }
+  }
+
+  /** Builds a users map from the records of {@code server-users.jsonl}; throws {@link JSONException} on a record that is not a user. */
+  private Map<String, ServerSecurityUser> toUsers(final List<JSONObject> records) {
+    final Map<String, ServerSecurityUser> result = new ConcurrentHashMap<>();
+    for (final JSONObject userJson : records) {
+      final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
+      result.put(user.getName(), user);
+    }
+    return result;
   }
 
   @Override
@@ -1078,6 +1120,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public String encodePassword(final String userPassword) {
     return encodePassword(userPassword, ServerSecurity.generateRandomSalt());
+  }
+
+  /**
+   * Hashes a random throwaway password with the configured iterations, and caches nothing: the code the first login of a
+   * server runs - the JCE provider and its HMAC loop - is then loaded and compiled before a client waits on it (issue
+   * #10218). Called by the background warm-up only.
+   */
+  public void warmUpPasswordHashing() {
+    getEncodedHash(generateRandomSalt(), generateRandomSalt(), saltIteration);
   }
 
   public boolean passwordMatch(final String password, final String hashedPassword) {

@@ -144,6 +144,9 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
+  private static final int                           REMOVED                = 0;
+  private static final int                           APPENDED               = 1;
   // a record position must fit the 40 low bits of a packed (bucket id, position) target
   private static final int                           UNIDIRECTIONAL_TARGET_BUCKET_SHIFT = 40;
   private       Map<RID, Record>                     immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
@@ -175,9 +178,13 @@ public class TransactionContext implements Transaction {
   private       Map<RID, byte[]>                     snapshotRecordContents;
   private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   // #10302: per (vertex, direction, edge type bucket, neighbour), how many lightweight edge entries this transaction removed
-  // from that vertex's list. A lightweight edge has no RID and its twins are indistinguishable, so a removal that finds
-  // nothing is told from a stale list by counting. Lazily allocated: only a lightweight edge delete fills it.
-  private       Map<LightEdgeEntry, int[]>            removedLightEdgeEntries;
+  // from that vertex's list ([REMOVED]) and appended to it ([APPENDED], #10315). A lightweight edge has no RID and its twins
+  // are indistinguishable, so a removal that finds nothing is told from a stale list by counting. Lazily allocated: only a
+  // lightweight edge delete, or the append of one between two vertices that both predate the transaction, fills it.
+  private       Map<LightEdgeEntry, int[]>            lightEdgeEntryChanges;
+  // #10315: the RIDs of newRecords, hashed the first time a lightweight edge append asks, then kept up to date by
+  // registerNewRecord(). Never shrinks: a record unregistered keeps reading as created here, which only skips counting.
+  private       RidHashSet                            newRecordRIDs;
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
@@ -324,6 +331,8 @@ public class TransactionContext implements Transaction {
    * goes through (issue #8053).
    */
   private       String                               rollbackOnlyReason    = null;
+  /** Monotonic: only the difference across a statement is read, see {@link #countCompletedRecordWrite()}. */
+  private       long                                 completedRecordWrites = 0L;
   /**
    * The write refusal ({@link LocalDatabase#refuseWrites}) in force when this transaction began, or {@code null}
    * (issue #8270). A transaction begun on a database that was still waiting to be wrapped for replication is refused
@@ -582,6 +591,8 @@ public class TransactionContext implements Transaction {
    */
   public void registerNewRecord(final Record record) {
     newRecords.add(record);
+    if (newRecordRIDs != null)
+      newRecordRIDs.add(record.getIdentity());
   }
 
   /**
@@ -611,6 +622,41 @@ public class TransactionContext implements Transaction {
   /** Why {@link #commit1stPhase(boolean)} will refuse this transaction, or {@code null} when it will not. */
   public String getRollbackOnlyReason() {
     return rollbackOnlyReason;
+  }
+
+  /**
+   * Counts a record create, update or delete that completed in this transaction: the body written or queued, the indexes
+   * updated, nothing refused. A refusal that retracts its own record (a duplicated key, a failed validation) is never counted,
+   * so the difference of {@link #getCompletedRecordWrites()} across a failed statement says whether it left part of its work in
+   * the transaction (issue #10194). Plain field: a transaction belongs to one thread. Written by the create, update and delete
+   * paths of {@code LocalDatabase}, which cost one increment, and read only by {@link #refuseCommitIfWrittenSince}.
+   */
+  public void countCompletedRecordWrite() {
+    ++completedRecordWrites;
+  }
+
+  public long getCompletedRecordWrites() {
+    return completedRecordWrites;
+  }
+
+  /**
+   * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
+   * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
+   * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no
+   * longer be committed: the caller's error handling reaches the rollback that discards it, the same answer a half-applied
+   * delete already gets (#9305). A statement that failed before writing anything, or whose only write was a record that
+   * retracted itself, completed no write and leaves the transaction usable.
+   * <p>
+   * The class of the failure only, not its message: a duplicated-key message carries the key values, and this text
+   * resurfaces in the exception of {@link #commit()}, which can be logged or shown somewhere the original error never was.
+   *
+   * @param writesBefore {@link #getCompletedRecordWrites()} when the statement started
+   * @param cause        what the statement failed with
+   */
+  public void refuseCommitIfWrittenSince(final long writesBefore, final Throwable cause) {
+    if (completedRecordWrites != writesBefore)
+      setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName()
+          + "), and the transaction has no savepoint to take it back to");
   }
 
   /**
@@ -3146,7 +3192,8 @@ public class TransactionContext implements Transaction {
       deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);
     else
       deletedRecordsInTx.clear();
-    removedLightEdgeEntries = null;
+    lightEdgeEntryChanges = null;
+    newRecordRIDs = null;
     newRecords.clear();
     // Reached only with callbacks left when the transaction ends without running them (a failed commit, a rollback past the
     // commit point): a commit that runs them takes them out first, see resetAndFireCallbacks()
@@ -3596,16 +3643,51 @@ public class TransactionContext implements Transaction {
 
   /** Counts {@code removed} lightweight edge entries removed by this transaction from the edge list {@code entry} names (#10302). */
   public void lightEdgeEntriesRemoved(final LightEdgeEntry entry, final int removed) {
-    if (removedLightEdgeEntries == null)
-      removedLightEdgeEntries = new HashMap<>();
-    removedLightEdgeEntries.computeIfAbsent(entry, k -> new int[1])[0] += removed;
+    lightEdgeEntryCounters(entry)[REMOVED] += removed;
   }
 
   /** How many lightweight edge entries this transaction removed from the edge list {@code entry} names (#10302). */
   public int getLightEdgeEntriesRemoved(final LightEdgeEntry entry) {
-    if (removedLightEdgeEntries == null)
+    return lightEdgeEntryCounter(entry, REMOVED);
+  }
+
+  /**
+   * Counts one lightweight edge entry appended by this transaction to the edge list {@code entry} names (#10315): a twin
+   * this transaction created and then removed was never in the committed list, so its removal is netted out by its
+   * append. The caller skips an entry with an endpoint created by this transaction, see {@link #isCreatedInTransaction}.
+   */
+  public void lightEdgeEntryAppended(final LightEdgeEntry entry) {
+    ++lightEdgeEntryCounters(entry)[APPENDED];
+  }
+
+  /** How many lightweight edge entries this transaction appended to the edge list {@code entry} names (#10315). */
+  public int getLightEdgeEntriesAppended(final LightEdgeEntry entry) {
+    return lightEdgeEntryCounter(entry, APPENDED);
+  }
+
+  /**
+   * Whether {@code rid} is a document this transaction created (#10315). Hashes the records created so far on the first
+   * call, then keeps the set current as records are created, so a bulk load asking once per edge stays linear.
+   */
+  public boolean isCreatedInTransaction(final RID rid) {
+    if (newRecordRIDs == null) {
+      newRecordRIDs = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size() * 2));
+      for (int i = 0; i < newRecords.size(); i++)
+        newRecordRIDs.add(newRecords.get(i).getIdentity());
+    }
+    return newRecordRIDs.contains(rid);
+  }
+
+  private int[] lightEdgeEntryCounters(final LightEdgeEntry entry) {
+    if (lightEdgeEntryChanges == null)
+      lightEdgeEntryChanges = new HashMap<>();
+    return lightEdgeEntryChanges.computeIfAbsent(entry, k -> new int[2]);
+  }
+
+  private int lightEdgeEntryCounter(final LightEdgeEntry entry, final int counter) {
+    if (lightEdgeEntryChanges == null)
       return 0;
-    final int[] removed = removedLightEdgeEntries.get(entry);
-    return removed == null ? 0 : removed[0];
+    final int[] counters = lightEdgeEntryChanges.get(entry);
+    return counters == null ? 0 : counters[counter];
   }
 }

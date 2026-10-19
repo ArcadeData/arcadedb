@@ -1335,6 +1335,14 @@ function validateCreateIndexOptions(opts) {
 }
 
 /**
+ * Whether the sorted build (METADATA buildMode SORTED) can be requested for an algorithm. The engine accepts
+ * it only on UNIQUE / NOTUNIQUE indexes, which are the LSM_TREE algorithm, and refuses it on every other one.
+ */
+function supportsSortedBuild(algorithm) {
+  return algorithm == "LSM_TREE";
+}
+
+/**
  * Assembles the CREATE INDEX statement for the "Add Index" dialog. Pure function: it takes the
  * already collected dialog values so the emitted SQL can be unit tested without a browser.
  *
@@ -1344,6 +1352,7 @@ function validateCreateIndexOptions(opts) {
  *   properties {string[]} the indexed property names, in order
  *   unique {boolean}      LSM_TREE / HASH only
  *   nullStrategy {string} LSM_TREE / HASH only, "" for the server default
+ *   buildMode {string}    LSM_TREE only, "SORTED" for the sorted bulk build, "" for the server default
  *   ifNotExists {boolean} emit IF NOT EXISTS
  *   metadata {object}     METADATA payload, omitted when null or empty
  * @return {string} the SQL command
@@ -1368,7 +1377,10 @@ function buildCreateIndexCommand(opts) {
 
   if ((algorithm == "LSM_TREE" || algorithm == "HASH") && opts.nullStrategy) command += " NULL_STRATEGY " + opts.nullStrategy;
 
-  if (opts.metadata != null && Object.keys(opts.metadata).length > 0) command += " METADATA " + JSON.stringify(opts.metadata);
+  let metadata = opts.metadata;
+  if (opts.buildMode == "SORTED" && supportsSortedBuild(algorithm)) metadata = Object.assign({}, metadata, { buildMode: "SORTED" });
+
+  if (metadata != null && Object.keys(metadata).length > 0) command += " METADATA " + JSON.stringify(metadata);
 
   return command;
 }
@@ -1541,6 +1553,16 @@ function createIndex(typeName) {
   html += "</div>";
   html += "</div>";
 
+  // The sorted build is an LSM_TREE (UNIQUE / NOTUNIQUE) feature: the engine refuses it for every other algorithm.
+  html += "<div id='createIdxBuildMode' class='mb-3'>";
+  html += "<label for='inputCreateIdxBuildMode'>Build Mode <small class='text-muted'>(optional)</small></label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxBuildMode'>";
+  html += "<option value='' selected>(default)</option>";
+  html += "<option value='SORTED'>SORTED - sort the keys, then write the index pages in one pass</option>";
+  html += "</select>";
+  html += "<small class='text-muted'>Faster on types that already hold many records. Not supported on replicated databases.</small>";
+  html += "</div>";
+
   html += "<div class='form-check'>";
   html += "<input class='form-check-input' type='checkbox' id='inputCreateIdxIfNotExists'>";
   html += "<label class='form-check-label' for='inputCreateIdxIfNotExists'>If not exists</label>";
@@ -1619,6 +1641,7 @@ function createIndex(typeName) {
       properties: selectedProps,
       unique: $("#inputCreateIdxUnique").prop("checked"),
       nullStrategy: $("#inputCreateIdxNullStrategy").val(),
+      buildMode: $("#inputCreateIdxBuildMode").val(),
       ifNotExists: $("#inputCreateIdxIfNotExists").prop("checked"),
       metadata: metadata
     };
@@ -1652,16 +1675,19 @@ function createIndex(typeName) {
         $("#createIdxPropsVector").show();
         $("#createIdxPropsSparse").hide();
         $("#createIdxLsmOptions").hide();
+        $("#createIdxBuildMode").hide();
       } else if (alg == "LSM_SPARSE_VECTOR") {
         $("#createIdxPropsNormal").hide();
         $("#createIdxPropsVector").hide();
         $("#createIdxPropsSparse").show();
         $("#createIdxLsmOptions").hide();
+        $("#createIdxBuildMode").hide();
       } else {
         $("#createIdxPropsNormal").show();
         $("#createIdxPropsVector").hide();
         $("#createIdxPropsSparse").hide();
         $("#createIdxLsmOptions").toggle(alg == "LSM_TREE" || alg == "HASH");
+        $("#createIdxBuildMode").toggle(supportsSortedBuild(alg));
       }
     }
     $("#inputCreateIdxAlgorithm").on("change", updateIdxVisibility);
