@@ -245,6 +245,12 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
     }, databaseName);
   }
 
+  /** The deregistration of a database a {@code close database} command closed is recorded as the removal it is. */
+  @Override
+  public void removeClosedDatabase(final String databaseName) {
+    removeDatabase(databaseName);
+  }
+
   /** Recorded: there is nothing to stop on a server that never started. */
   @Override
   public void stop() {
