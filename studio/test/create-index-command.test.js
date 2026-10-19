@@ -73,6 +73,7 @@ function extractFn(src, name) {
 eval(extractFn(utilsSrc, "quoteSqlName"));
 eval(extractFn(utilsSrc, "escapeHtml"));
 eval(extractFn(utilsSrc, "encodeDatabaseName"));
+eval(extractFn(dbSrc, "supportsSortedBuild"));
 eval(extractFn(dbSrc, "buildCreateIndexCommand"));
 eval(extractFn(dbSrc, "validateCreateIndexOptions"));
 
@@ -84,7 +85,12 @@ let sentCommand = null; // the SQL that reached jQuery.ajax
 let notified = null; // the last globalNotify(..., "danger") message
 let inputs = {}; // selector -> value, driven per test
 
-const setTimeout = function () {}; // createIndex() defers its visibility wiring; irrelevant here
+let deferred = null; // the visibility wiring createIndex() defers, run on demand by the tests that need it
+const setTimeout = function (fn) {
+  deferred = fn;
+};
+let shown = {}; // selector -> last visibility the dialog's change handler gave it
+let handlers = {}; // selector -> the "change" handler registered on it
 const document = {
   getElementById: function (id) {
     return Object.prototype.hasOwnProperty.call(inputs, "#" + id) ? { id: id } : null;
@@ -98,7 +104,18 @@ const $ = function (selector) {
     prop: function (name) {
       return inputs[selector + ":" + name] === true;
     },
-    on: function () {}
+    on: function (event, handler) {
+      handlers[selector] = handler;
+    },
+    show: function () {
+      shown[selector] = true;
+    },
+    hide: function () {
+      shown[selector] = false;
+    },
+    toggle: function (visible) {
+      shown[selector] = visible;
+    }
   };
 };
 const chainable = { done: function () { return chainable; }, fail: function () { return chainable; } };
@@ -289,6 +306,57 @@ test("type and property names are quoted, so reserved words and odd characters s
   );
 });
 
+// --- build mode (issues #9291, #10334) -------------------------------------------------------------
+// METADATA {buildMode: 'SORTED'} populates an index over existing records with a bounded external sort.
+// The engine accepts it only on UNIQUE / NOTUNIQUE (LSM_TREE) indexes and refuses it on the others, so
+// the dialog offers it only there and never emits it for another algorithm.
+
+test("LSM_TREE carries METADATA buildMode SORTED when the user picks the sorted build", () => {
+  assert.equal(
+    buildCreateIndexCommand({ typeName: "Doc", algorithm: "LSM_TREE", properties: ["id"], unique: true, buildMode: "SORTED" }),
+    'CREATE INDEX ON `Doc` (`id`) UNIQUE METADATA {"buildMode":"SORTED"}'
+  );
+
+  assert.equal(
+    buildCreateIndexCommand({ typeName: "Doc", algorithm: "LSM_TREE", properties: ["id"], nullStrategy: "SKIP", buildMode: "SORTED" }),
+    'CREATE INDEX ON `Doc` (`id`) NOTUNIQUE NULL_STRATEGY SKIP METADATA {"buildMode":"SORTED"}'
+  );
+});
+
+test("the default build mode adds no METADATA clause", () => {
+  for (const buildMode of [undefined, null, "", "DEFAULT"])
+    assert.equal(
+      buildCreateIndexCommand({ typeName: "Doc", algorithm: "LSM_TREE", properties: ["id"], unique: true, buildMode: buildMode }),
+      "CREATE INDEX ON `Doc` (`id`) UNIQUE",
+      "buildMode " + JSON.stringify(buildMode)
+    );
+});
+
+test("buildMode SORTED never leaks onto an algorithm the engine refuses it for", () => {
+  for (const algorithm of ["HASH", "FULL_TEXT"])
+    assert.equal(
+      buildCreateIndexCommand({ typeName: "Doc", algorithm: algorithm, properties: ["id"], buildMode: "SORTED" }),
+      algorithm == "HASH" ? "CREATE INDEX ON `Doc` (`id`) NOTUNIQUE_HASH" : "CREATE INDEX ON `Doc` (`id`) FULL_TEXT"
+    );
+
+  assert.equal(
+    buildCreateIndexCommand({
+      typeName: "Doc",
+      algorithm: "LSM_VECTOR",
+      properties: ["embedding"],
+      metadata: { dimensions: 8 },
+      buildMode: "SORTED"
+    }),
+    'CREATE INDEX ON `Doc` (`embedding`) LSM_VECTOR METADATA {"dimensions":8}'
+  );
+});
+
+test("only the LSM_TREE algorithm supports the sorted build", () => {
+  assert.equal(supportsSortedBuild("LSM_TREE"), true);
+  for (const algorithm of ["HASH", "FULL_TEXT", "LSM_VECTOR", "LSM_SPARSE_VECTOR"])
+    assert.equal(supportsSortedBuild(algorithm), false, algorithm);
+});
+
 // --- the dialog itself ---------------------------------------------------------------------------
 
 test("the Add Index dialog exposes an input for every mandatory vector setting", () => {
@@ -436,4 +504,72 @@ test("a non-integer rescoreOversample is rejected, not truncated", () => {
 
     assert.equal(command, null, raw + " must not be sent");
   }
+});
+
+test("the Add Index dialog offers the build mode for the LSM_TREE options only", () => {
+  const html = openDialog([{ name: "id", type: "LONG" }]);
+
+  assert.ok(html.includes("id='inputCreateIdxBuildMode'"), "build mode select is missing");
+  assert.ok(html.includes("<option value='SORTED'>"), "SORTED must be offered");
+  // The dialog must be able to hide it for HASH: it lives in its own container, not in the shared LSM options.
+  assert.ok(html.includes("id='createIdxBuildMode'"), "build mode container is missing");
+  assert.equal((html.match(/<div/g) || []).length, (html.match(/<\/div>/g) || []).length, "unbalanced <div> in the dialog");
+});
+
+test("submitting the LSM_TREE branch with the sorted build sends METADATA buildMode SORTED", () => {
+  openDialog([{ name: "id", type: "LONG" }]);
+
+  const command = submitDialog({
+    "#inputCreateIdxAlgorithm": "LSM_TREE",
+    "#inputCreateIdxProps": ["id"],
+    "#inputCreateIdxNullStrategy": "",
+    "#inputCreateIdxBuildMode": "SORTED",
+    "#inputCreateIdxUnique:checked": true
+  });
+
+  assert.equal(command, 'CREATE INDEX ON `Doc` (`id`) UNIQUE METADATA {"buildMode":"SORTED"}');
+});
+
+test("submitting the LSM_TREE branch with the default build mode sends no METADATA", () => {
+  openDialog([{ name: "id", type: "LONG" }]);
+
+  const command = submitDialog({
+    "#inputCreateIdxAlgorithm": "LSM_TREE",
+    "#inputCreateIdxProps": ["id"],
+    "#inputCreateIdxNullStrategy": "",
+    "#inputCreateIdxBuildMode": "",
+    "#inputCreateIdxUnique:checked": true
+  });
+
+  assert.equal(command, "CREATE INDEX ON `Doc` (`id`) UNIQUE");
+});
+
+test("submitting the HASH branch ignores a build mode left selected from LSM_TREE", () => {
+  openDialog([{ name: "id", type: "LONG" }]);
+
+  const command = submitDialog({
+    "#inputCreateIdxAlgorithm": "HASH",
+    "#inputCreateIdxProps": ["id"],
+    "#inputCreateIdxNullStrategy": "",
+    "#inputCreateIdxBuildMode": "SORTED",
+    "#inputCreateIdxUnique:checked": true
+  });
+
+  assert.equal(command, "CREATE INDEX ON `Doc` (`id`) UNIQUE_HASH");
+});
+
+test("the build mode is shown for LSM_TREE only, hidden for every other algorithm", () => {
+  openDialog([{ name: "id", type: "LONG" }]);
+  deferred();
+
+  const visibilityFor = (algorithm) => {
+    inputs = { "#inputCreateIdxAlgorithm": algorithm };
+    shown = {};
+    handlers["#inputCreateIdxAlgorithm"]();
+    return shown["#createIdxBuildMode"];
+  };
+
+  assert.equal(visibilityFor("LSM_TREE"), true);
+  for (const algorithm of ["HASH", "FULL_TEXT", "LSM_VECTOR", "LSM_SPARSE_VECTOR"])
+    assert.equal(visibilityFor(algorithm), false, algorithm);
 });
