@@ -191,6 +191,40 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
   }
 
   @Test
+  void aProvisionalRecordCreatedAndUpdatedByTheStatementDoesNotHideAWriteThatStays() {
+    database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        // the Req is created, updated while provisional and taken back; the update of the T stays and is what the commit must refuse
+        database.command("opencypher", "MATCH (n:T) WHERE n.n = 0 SET n.v = 900 CREATE (m:Req {id: 'd'}) SET m.note = 'x'").close();
+      } catch (final RuntimeException ignored) {
+        // caught by the caller
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  /** The write engines run a statement to the end inside command(), so the failure of a row is raised there and not while the rows are read. */
+  @ParameterizedTest
+  @ValueSource(strings = { "sql", "opencypher" })
+  void aFailureWhileTheResultIsReadIsStillRefused(final String language) {
+    final String statement = language.equals("sql") ? "UPDATE T SET v = 1 RETURN AFTER" : "MATCH (n:T) SET n.v = 1 RETURN n";
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try (final ResultSet rs = database.command(language, statement)) {
+        while (rs.hasNext())
+          rs.next();
+      } catch (final RuntimeException ignored) {
+        // caught by the caller
+      }
+    }, false, 0)).as(language).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(values()).as(language).containsExactly(100, 101, 102);
+  }
+
+  @Test
   void onlyAScriptWithARetryBlockHandlesItsOwnFailures() {
     final QueryEngine script = database.getQueryEngine("sqlscript");
     assertThat(script.handlesItsOwnFailures("BEGIN; UPDATE T SET v = 1; COMMIT RETRY 3;")).isTrue();

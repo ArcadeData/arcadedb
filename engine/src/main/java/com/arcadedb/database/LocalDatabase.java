@@ -2657,9 +2657,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   private void refuseCommitOfHalfAppliedStatement(final String language, final String query, final TransactionContext tx,
       final long writesBefore, final Throwable cause) {
-    // The engine is asked last: it may parse the statement again, and only a statement that wrote before it failed needs the answer
-    if (tx != null && tx.isActive() && tx.getCompletedRecordWrites() != writesBefore
-        && !getQueryEngine(language).handlesItsOwnFailures(query))
+    if (tx == null || !tx.isActive() || tx.getCompletedRecordWrites() == writesBefore)
+      return;
+
+    // The engine is asked last: it may parse the statement again, and only a statement that wrote before it failed needs the answer.
+    // This runs on the way out of the failure it reports, so it cannot throw: an engine that cannot say (a parse that fails in an
+    // unexpected way, a stack that is gone) is taken to leave the statement half applied, which is the safe answer, and the failure
+    // the caller sees is still the statement's own
+    boolean ownFailures = false;
+    try {
+      ownFailures = getQueryEngine(language).handlesItsOwnFailures(query);
+    } catch (final RuntimeException | StackOverflowError e) {
+      cause.addSuppressed(e);
+    }
+    if (!ownFailures)
       tx.refuseCommitIfWrittenSince(writesBefore, cause);
   }
 

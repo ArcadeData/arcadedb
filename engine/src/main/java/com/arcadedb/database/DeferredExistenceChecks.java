@@ -145,7 +145,12 @@ public class DeferredExistenceChecks {
    */
   private Map<RID, Integer> deferredUpdates;
 
-  /** The document whose update was last tallied in {@link #deferredUpdates}: a record missing two properties defers twice per write. */
+  /**
+   * The document whose update was last tallied in {@link #deferredUpdates}: a record missing two properties defers twice per write.
+   * Two writes in a row to one instance, with no other record between them, are tallied once. That under-retracts, which leaves the
+   * counter above the writes that stand and so refuses a commit that could have passed, never the reverse: deliberate, as a count
+   * given back for a write that does stand would let a half-applied statement through.
+   */
   private MutableDocument lastDeferredUpdate;
 
   /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */

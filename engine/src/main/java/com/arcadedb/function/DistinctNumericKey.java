@@ -103,12 +103,8 @@ public final class DistinctNumericKey {
     if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
       return ((Number) value).longValue();
 
-    if (value instanceof Number number) {
-      final double d = number.doubleValue();
-      if (!Double.isNaN(d) && !Double.isInfinite(d) && d == Math.rint(d) && Math.abs(d) <= MAX_EXACT_DOUBLE_INTEGER)
-        return (long) d;
-      return d;
-    }
+    if (value instanceof Number number)
+      return canonicalDouble(number.doubleValue());
 
     if (value instanceof Identifiable identifiable) {
       final RID rid = identifiable.getIdentity();
@@ -149,15 +145,59 @@ public final class DistinctNumericKey {
 
     if (value instanceof byte[] bytes)
       return new BinaryKey(bytes);
-    if (value != null && value.getClass().isArray()) {
-      final int length = Array.getLength(value);
-      final List<Object> key = new ArrayList<>(length);
-      for (int i = 0; i < length; i++)
-        key.add(canonicalize(Array.get(value, i)));
-      return key;
-    }
+    if (value != null && value.getClass().isArray())
+      return canonicalizeSequence(value);
 
     return value;
+  }
+
+  /** The canonical form of a number held as a double, see the numeric rule of the class. */
+  private static Object canonicalDouble(final double d) {
+    if (!Double.isNaN(d) && !Double.isInfinite(d) && d == Math.rint(d) && Math.abs(d) <= MAX_EXACT_DOUBLE_INTEGER)
+      return (long) d;
+    return d;
+  }
+
+  /**
+   * The list of the canonicalized elements of an array that is a sequence. The arrays of numbers, which a group key made of a
+   * vector or a series can be a long one, are read by their type and not through reflection, which boxes every element once more.
+   */
+  private static List<Object> canonicalizeSequence(final Object array) {
+    final List<Object> key;
+    switch (array) {
+    case long[] longs -> {
+      key = new ArrayList<>(longs.length);
+      for (final long element : longs)
+        key.add(element);
+    }
+    case int[] ints -> {
+      key = new ArrayList<>(ints.length);
+      for (final int element : ints)
+        key.add((long) element);
+    }
+    case short[] shorts -> {
+      key = new ArrayList<>(shorts.length);
+      for (final short element : shorts)
+        key.add((long) element);
+    }
+    case double[] doubles -> {
+      key = new ArrayList<>(doubles.length);
+      for (final double element : doubles)
+        key.add(canonicalDouble(element));
+    }
+    case float[] floats -> {
+      key = new ArrayList<>(floats.length);
+      for (final float element : floats)
+        key.add(canonicalDouble(element));
+    }
+    default -> {
+      final int length = Array.getLength(array);
+      key = new ArrayList<>(length);
+      for (int i = 0; i < length; i++)
+        key.add(canonicalize(Array.get(array, i)));
+    }
+    }
+    return key;
   }
 
   /**

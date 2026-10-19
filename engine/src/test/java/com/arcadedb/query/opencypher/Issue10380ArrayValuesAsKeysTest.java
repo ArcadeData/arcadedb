@@ -146,6 +146,45 @@ class Issue10380ArrayValuesAsKeysTest extends TestHelper {
   }
 
   @Test
+  void binaryIsOrderedUnsignedByOrderByToo() {
+    createType("T", Type.BINARY);
+    insert("T", "a", new byte[] { 0x7f });
+    insert("T", "b", new byte[] { (byte) 0x80 });
+    insert("T", "c", new byte[] {});
+
+    final List<Result> ordered = rows("MATCH (n:T) RETURN n.s AS s ORDER BY n.p");
+    assertThat(ordered.stream().map(r -> r.<String>getProperty("s")).toList()).containsExactly("c", "a", "b");
+  }
+
+  @Test
+  void twoEmbeddedDocumentsCompareByContentUnderEquals() {
+    // the comparison failed with a NullPointerException: an embedded document has no RID
+    database.getSchema().createDocumentType("Emb");
+    createType("T", Type.EMBEDDED);
+    insert("T", "x", new HashMap<>(Map.of("@type", "Emb", "k", 1)));
+    insert("T", "y", new HashMap<>(Map.of("@type", "Emb", "k", 1)));
+    insert("T", "z", new HashMap<>(Map.of("@type", "Emb", "k", 2)));
+
+    assertThat(scalar("MATCH (a:T), (c:T) WHERE a.s = 'x' AND c.s = 'y' RETURN a.p = c.p AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (a:T), (c:T) WHERE a.s = 'x' AND c.s = 'z' RETURN a.p = c.p AS v")).isEqualTo(false);
+    assertThat(scalar("MATCH (a:T), (c:T) WHERE a.s = 'x' AND c.s = 'z' RETURN a.p <> c.p AS v")).isEqualTo(true);
+    // an embedded document is never a record
+    assertThat(scalar("MATCH (a:T), (c:T) WHERE a.s = 'x' AND c.s = 'y' RETURN a.p = c AS v")).isEqualTo(false);
+  }
+
+  @Test
+  void floatAndDoubleArraysOfTheSameNumbersShareAKey() {
+    createType("A", Type.ARRAY_OF_FLOATS);
+    createType("B", Type.ARRAY_OF_DOUBLES);
+    insert("A", "x", new float[] { 1.0f, -0.0f });
+    insert("B", "y", new double[] { 1.0d, 0.0d });
+
+    assertThat(scalar("MATCH (a:A), (b:B) RETURN count(DISTINCT [a.p, b.p]) AS v")).isEqualTo(1L);
+    assertThat(scalar("MATCH (a:A), (b:B) RETURN a.p = b.p AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (n) WHERE n:A OR n:B RETURN count(DISTINCT n.p) AS v")).isEqualTo(1L);
+  }
+
+  @Test
   void arraysOfNumbersAreValuesToo() {
     final Object[][] cases = {
         { Type.ARRAY_OF_SHORTS, new short[] { 1, 2 }, new short[] { 9 } },
