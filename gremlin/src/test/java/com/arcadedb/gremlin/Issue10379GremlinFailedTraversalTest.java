@@ -90,6 +90,43 @@ class Issue10379GremlinFailedTraversalTest {
   }
 
   @Test
+  void aTraversalThatOpensTheTransactionItselfAndFailsCannotBeCommittedHalfApplied() {
+    // no transaction is open when the traversal starts: the graph opens one while the result is read, and it is the traversal's
+    assertThat(database.isTransactionActive()).isFalse();
+    final AtomicReference<Throwable> caught = new AtomicReference<>();
+
+    try (final ResultSet rs = database.command("gremlin", "g.V().hasLabel('T').property('v', 1)")) {
+      while (rs.hasNext())
+        rs.next();
+    } catch (final RuntimeException e) {
+      caught.set(e);
+    }
+
+    assertThat(caught.get()).as("the traversal failed").isNotNull();
+    assertThat(database.isTransactionActive()).as("the traversal left its transaction open").isTrue();
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  @Test
+  void aTraversalThatFailsWithoutWritingLeavesAReusedTransactionContextUsable() {
+    // the context of an earlier transaction keeps counting: the writes it already made are not the traversal's
+    database.transaction(() -> database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close());
+
+    try (final ResultSet rs = database.command("gremlin", "g.V().hasLabel('T').has('n', 0).property('v', 'abc')")) {
+      while (rs.hasNext())
+        rs.next();
+    } catch (final RuntimeException e) {
+      assertThat(e).isNotNull();
+    }
+    if (database.isTransactionActive())
+      database.commit();
+
+    assertThat(values()).containsExactly(100, 101, 500);
+  }
+
+  @Test
   void aTraversalThatSucceedsCommitsNormally() {
     database.transaction(() -> {
       try (final ResultSet rs = database.command("gremlin", "g.V().hasLabel('T').has('n', 2).property('v', 500)")) {
