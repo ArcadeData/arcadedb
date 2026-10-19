@@ -53,11 +53,11 @@ class Issue10423SpatialContextNativeMetadataTest {
   @Test
   void everyConstructorOfThePlainSpatialContextFactoryIsInTheNativeMetadata() throws IOException {
     final SpatialContextFactory factory = new SpatialContextFactory();
-    assertThat(requiredConstructors(factory, new SpatialContext(factory))).contains(
+    final Set<String> required = requiredConstructors(factory, new SpatialContext(factory));
+    assertThat(required).contains(
         "org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl(org.locationtech.spatial4j.context.SpatialContext,org.locationtech.spatial4j.context.SpatialContextFactory)");
 
-    assertThat(missingFromMetadata(requiredConstructors(factory, new SpatialContext(factory))))
-        .as("add a <init> entry for each of these to " + METADATA).isEmpty();
+    assertThat(missingFromMetadata(required)).as("add a <init> entry for each of these to " + METADATA).isEmpty();
   }
 
   /** The JTS context {@link GeoUtils} builds, the one every geospatial index and function uses. */
@@ -81,15 +81,16 @@ class Issue10423SpatialContextNativeMetadataTest {
     // a scan that finds nothing would pass for the wrong reason
     assertThat(classes).hasSizeGreaterThan(4);
 
-    // the factory takes the (context, factory) constructor, or the no-arg one when a class has none
+    // SpatialContextFactory.makeClassInstance takes the first public (context, factory) constructor whose parameters accept
+    // its arguments, else the public no-arg one. This mirrors it only while each class has exactly one candidate, so an
+    // upgrade that adds an overload fails here instead of registering a constructor spatial4j might not pick
     final Set<String> required = new TreeSet<>();
     for (final Class<?> clazz : classes) {
-      Constructor<?> chosen = null;
-      for (final Constructor<?> constructor : clazz.getConstructors())
-        if (constructor.getParameterCount() == 2 || (constructor.getParameterCount() == 0 && chosen == null))
-          chosen = constructor;
-      assertThat(chosen).as("a constructor spatial4j can call on " + clazz.getName()).isNotNull();
-      required.add(clazz.getName() + "(" + String.join(",", Arrays.stream(chosen.getParameterTypes()).map(Class::getName).toList()) + ")");
+      final List<Constructor<?>> twoArgs = Arrays.stream(clazz.getConstructors()).filter(c -> c.getParameterCount() == 2).toList();
+      final List<Constructor<?>> noArgs = Arrays.stream(clazz.getConstructors()).filter(c -> c.getParameterCount() == 0).toList();
+      final List<Constructor<?>> candidates = twoArgs.isEmpty() ? noArgs : twoArgs;
+      assertThat(candidates).as("the constructor spatial4j calls on " + clazz.getName()).hasSize(1);
+      required.add(clazz.getName() + "(" + String.join(",", Arrays.stream(candidates.getFirst().getParameterTypes()).map(Class::getName).toList()) + ")");
     }
     return required;
   }
