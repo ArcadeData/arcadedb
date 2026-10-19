@@ -70,6 +70,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private static final long KEY_SAMPLE_FIRST             = 256L;
   private static final long KEY_SAMPLE_INTERVAL          = 13L;
   private static final long KEY_SAMPLE_SMOOTHING         = 16L;
+  /** A measure above the average moves it faster than one below: counting a run too small is the direction that overshoots the budget. */
+  private static final long KEY_SAMPLE_RISE_SMOOTHING    = 4L;
   /** A list cannot hold more, whatever the budget. */
   private static final int  MAX_ENTRIES_PER_RUN          = Integer.MAX_VALUE - 8;
   private static final int  INITIAL_RUN_CAPACITY         = 65_536;
@@ -434,12 +436,19 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   /**
    * The heap the values of a key retain: measured for the first keys and for one in {@link #KEY_SAMPLE_INTERVAL} after them, the
    * moving average of those standing in for the others, so the estimate follows a column whose keys change in size without paying
-   * for the measure on every entry.
+   * for the measure on every entry. It is asked only for the keys an entry carries itself: a key the run already holds costs the
+   * entry nothing more, and was measured when it first came in, which is also why dropping the shared-key table does not leave
+   * keys uncounted.
    */
   private long keyBytes(final TransactionIndexContext.ComparableKey key) {
     if (sampledKeys < KEY_SAMPLE_FIRST || totalEntries % KEY_SAMPLE_INTERVAL == 0) {
       final long measured = HeapEstimator.estimate(key.values);
-      averageKeyBytes = sampledKeys == 0 ? measured : averageKeyBytes + (measured - averageKeyBytes) / KEY_SAMPLE_SMOOTHING;
+      if (sampledKeys == 0)
+        averageKeyBytes = measured;
+      else {
+        final long distance = measured - averageKeyBytes;
+        averageKeyBytes += distance / (distance > 0 ? KEY_SAMPLE_RISE_SMOOTHING : KEY_SAMPLE_SMOOTHING);
+      }
       sampledKeys++;
       return measured;
     }

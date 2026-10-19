@@ -5735,8 +5735,14 @@ public class LocalSchema implements Schema {
   /**
    * The one place a sub-index is bound to a type, shared by the schema load and by the creation of a bucket index (issue #10412):
    * the sub-index of a bucket that a sub type of {@code declaringType} owns is bound to that sub type, under the wrapper of the
-   * type that declares the index, so the layout is the same right after the creation and after every load. {@code declaringWrapper}
-   * is that wrapper when the caller has it, null to mint it.
+   * type that declares the index, so the layout is the same right after the creation and after every load.
+   *
+   * @param declaringType    the type that declares the index
+   * @param owner            the type that owns the bucket, null when none does
+   * @param index            the bucket index to bind
+   * @param bucketId         the bucket the index sits on
+   * @param propertyNames    the indexed properties
+   * @param declaringWrapper the wrapper of the index on {@code declaringType} when the caller has it, null to mint it
    */
   private static void bindBucketIndexToItsOwner(final LocalDocumentType declaringType, final LocalDocumentType owner,
       final IndexInternal index, final int bucketId, final String[] propertyNames, final TypeIndex declaringWrapper) {
