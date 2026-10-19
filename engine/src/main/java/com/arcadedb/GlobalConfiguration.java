@@ -1180,6 +1180,17 @@ public enum GlobalConfiguration {
       Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.""",
       Long.class, 50L),
 
+  INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedUniqueMinRecords", SCOPE.DATABASE,
+      """
+      Minimum number of records a type must hold for CREATE INDEX ... UNIQUE (LSM_TREE, default build mode) to be built \
+      with the sorted build instead of the record-at-a-time one (issue #10334). The record-at-a-time build checks every \
+      key it adds against the index being built, and that lookup reads every page written so far, so its time grows \
+      with the square of the record count. The sorted build sorts the keys externally, within a bounded memory budget, \
+      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes and on replicated \
+      databases keep the record-at-a-time build whatever the record count; an empty transaction (such as the auto-commit \
+      one of an HTTP command) does not stop the switch. 0 disables the switch.""",
+      Long.class, 10_000L),
+
   INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
       """
       Timeout in ms a bulk index build waits for the file locks of ONE of its chunk commits, replacing \
