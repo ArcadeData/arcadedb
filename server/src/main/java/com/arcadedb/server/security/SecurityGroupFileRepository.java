@@ -335,12 +335,14 @@ public class SecurityGroupFileRepository {
    * Re-reads {@link #FILE_NAME} on a running server (issue #10383), the groups half of the rule issue #10326 set for the
    * users file: a document that is missing, unreadable, unparseable or of the wrong shape (no {@code version}, no
    * {@code databases} object) keeps the groups already in force. A missing file is logged at WARNING; any other failure
-   * at SEVERE, and a file that could be read is preserved as {@link #ERROR_FILE_NAME}. Nothing is written over {@link #FILE_NAME}: the operator's file stays byte for byte what
-   * they wrote, so they can fix it in place and the next tick picks the fix up.
+   * at SEVERE, and a file that could be read is preserved as {@link #ERROR_FILE_NAME}. Nothing is written over
+   * {@link #FILE_NAME}: the operator's file stays byte for byte what they wrote, so they can fix it in place and the next
+   * tick picks the fix up.
    * <p>
    * Before any document has been published there is nothing to keep, and this is the first load.
    *
-   * @return {@code true} when a new document was published, {@code false} when the groups in force were kept
+   * @return {@code true} when a document was published - the file's, or on a first load the default one - and
+   *         {@code false} when the groups in force were kept
    */
   synchronized boolean reload() {
     final JSONObject current = latestGroupConfiguration;

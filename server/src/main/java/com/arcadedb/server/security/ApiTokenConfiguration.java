@@ -129,14 +129,18 @@ public class ApiTokenConfiguration {
    */
   synchronized boolean reload() {
     final File file = new File(filePath);
-    final String keeping = "keeping the " + tokens.size() + " API tokens already in force";
+    // Says outright that the previous tokens stay VALID: an operator who edited the file to revoke one must not read
+    // "keeping" as "your revocation is pending".
+    final String keeping = "keeping the " + tokens.size() + " API tokens already in force, which keep authenticating until a "
+        + "valid file is read (a token removed by this edit is NOT revoked)";
 
     if (diskBehind) {
       // Stamped, so the refusal is logged once per change of the file rather than once per tick.
       fileLastUpdated = file.lastModified();
       LogManager.instance().log(this, Level.WARNING,
-          "File '%s' changed, but the API tokens in force have not been written to it yet (the last write failed); %s", FILE_NAME,
-          keeping);
+          "File '%s' changed, but the API tokens in force have not been written to it yet (the last write failed); %s. Make the "
+              + "configuration directory writable again: the next successful write lifts this, or restart the server to read "
+              + "the file as it is", FILE_NAME, keeping);
       return false;
     }
 
