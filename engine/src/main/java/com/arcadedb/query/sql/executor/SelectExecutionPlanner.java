@@ -2206,7 +2206,10 @@ public class SelectExecutionPlanner {
       // newest blocks instead of walking everything.
       final int descendingLimit = timeSeriesDescendingScanLimit(tsType, info, context);
       if (descendingLimit >= 0) {
-        plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context));
+        final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context);
+        consumeTimeSeriesWhereIfPushedDown(tsType, info, context, false);
+        fuseTimeSeriesProjection(fetch, tsType, info);
+        plan.chain(fetch);
         return;
       }
 
@@ -2218,8 +2221,12 @@ public class SelectExecutionPlanner {
       // takes a cap only when isTimeSeriesWhereFullyPushedDown proved the engine returns no row the WHERE drops - which a
       // field predicate never lets it prove. The residual FilterStep still runs over the rows the field filter kept.
       final int ascendingLimit = timeSeriesAscendingScanLimit(tsType, info, context);
-      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, ascendingLimit > 0 ? null : fieldFilter, false,
-          ascendingLimit, context));
+      final FieldFilter pushedFieldFilter = ascendingLimit > 0 ? null : fieldFilter;
+      final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, pushedFieldFilter, false,
+          ascendingLimit, context);
+      consumeTimeSeriesWhereIfPushedDown(tsType, info, context, pushedFieldFilter != null);
+      fuseTimeSeriesProjection(fetch, tsType, info);
+      plan.chain(fetch);
       return;
     }
 
@@ -3638,6 +3645,52 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Drops the WHERE of a TIMESERIES row scan when the fetch step reproduces it exactly (issue #10324): its time range, its tag
+   * filter and, when {@code withFieldFilter}, its field filter return exactly the rows the WHERE keeps, so the residual
+   * {@link FilterStep} would evaluate the whole WHERE a second time on every row and drop none. A WHERE that reads a per-record
+   * LET variable is kept: the variables are evaluated after the fetch.
+   */
+  private void consumeTimeSeriesWhereIfPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context, final boolean withFieldFilter) {
+    if (info.whereClause == null || info.perRecordLetClause != null)
+      return;
+    if (isTimeSeriesWhereFullyPushedDown(tsType, info, context, withFieldFilter))
+      info.whereClause = null;
+  }
+
+  /**
+   * Has the fetch of a TIMESERIES row scan build each row as the projection makes it (issue #10324), instead of a row of every
+   * column that the projection step then copies into a second one: for a projection made only of plain references to the columns
+   * of the type, when nothing planned between the fetch and the projection reads a row (no residual WHERE, no per-record LET, no
+   * aggregation, expand() or UNWIND). What runs after the projection (ORDER BY, DISTINCT, SKIP, LIMIT) reads the projected row
+   * anyway, the aliases an ORDER BY adds to the projection included.
+   */
+  private static void fuseTimeSeriesProjection(final FetchFromTimeSeriesStep fetch, final LocalTimeSeriesType tsType,
+      final QueryPlanningInfo info) {
+    if (info.whereClause != null || info.perRecordLetClause != null || info.projectionsCalculated || info.projection == null
+        || info.projection.getItems() == null || info.projection.getItems().isEmpty() || info.projection.isExpand() || info.expand
+        || info.unwind != null || info.groupBy != null || info.aggregateProjection != null || info.preAggregateProjection != null)
+      return;
+
+    final List<ProjectionItem> items = info.projection.getItems();
+    final String[] aliases = new String[items.size()];
+    final String[] columns = new String[items.size()];
+    for (int i = 0; i < aliases.length; i++) {
+      final ProjectionItem item = items.get(i);
+      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null
+          || !item.getExpression().isBaseIdentifier())
+        return;
+      final String column = item.getExpression().getDefaultAlias().getStringValue();
+      if (tsType.getTsColumn(column) == null)
+        return;
+      columns[i] = column;
+      aliases[i] = item.getProjectionAliasAsString();
+    }
+    fetch.setProjection(aliases, columns);
+    info.projectionsCalculated = true;
+  }
+
+  /**
    * True for {@code tag = x OR tag = y ...}, optionally under a shared time range ({@code ts >= X AND (tag = x OR tag = y)}
    * flattens to {@code (ts >= X AND tag = x) OR (ts >= X AND tag = y)}): every AND block carries the SAME time predicates plus
    * ONE equality, on the same TAG column, with a non-null value. The union of the blocks' ranges is then each block's range
@@ -3692,7 +3745,27 @@ public class SelectExecutionPlanner {
     if (tag == null)
       return null;
     final Expression valueExpr = tag.equals(leftStr) ? binary.right : binary.left;
-    return valueExpr == null || valueExpr.execute((Identifiable) null, context) == null ? null : tag;
+    final Object value = valueExpr == null ? null : valueExpr.execute((Identifiable) null, context);
+    if (value == null)
+      return null;
+    // The tag filter holds the literal coerced to the column's type, as extractTagFilter coerces it: the equality is reproduced
+    // only when that coerced value is still SQL-equal to the literal. A DATETIME literal on a DATE tag is truncated to its day and
+    // would keep every sample of that day, which SQL does not match; a literal a temporal tag cannot read is left out of the tag
+    // filter altogether. Either way only the filter above the fetch decides the equality
+    for (final ColumnDefinition col : columns)
+      if (col.getName().equals(tag)) {
+        final Object coerced;
+        try {
+          coerced = col.isTemporal() ? col.temporalOf(context.getDatabase(), col.epochOf(context.getDatabase(), value)) :
+              col.coerceValue(value);
+        } catch (final IllegalArgumentException e) {
+          return null;
+        }
+        if (coerced == null || !((EqualsCompareOperator) binary.operator).execute(context.getDatabase(), coerced, value))
+          return null;
+        break;
+      }
+    return tag;
   }
 
   private static boolean isTimeSeriesTagColumn(final List<ColumnDefinition> columns, final String name) {

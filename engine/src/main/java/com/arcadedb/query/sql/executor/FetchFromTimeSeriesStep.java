@@ -28,11 +28,11 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
+import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
@@ -44,6 +44,8 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
+
+  private static final long MILLIS_PER_DAY = 86_400_000L;
 
   private final LocalTimeSeriesType tsType;
   private final long                fromTs;
@@ -72,8 +74,20 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
    * boxed and held before {@code LimitExecutionStep} dropped them.
    */
   private final int                 limit;
+  /**
+   * Issue #10324: the columns of a projection made only of plain column references, by output name and by column name, when the
+   * planner proved nothing between this step and the projection reads another column. The row is then built here as the
+   * projection would make it, instead of a row of every column that the projection step copies into a second one. {@code null}
+   * builds the row of every column.
+   */
+  private       String[]            projectedAliases;
+  private       String[]            projectedColumns;
   private       Iterator<Object[]>  resultIterator;
   private       boolean             fetched = false;
+  // THE DATE OF THE LAST TIMESTAMP TURNED INTO A DATE-TIME: THE ROWS COME IN TIMESTAMP ORDER, SO CONSECUTIVE ONES SHARE THEIR DAY AND
+  // ITS CALENDAR COMPUTATION IS DONE ONCE PER DAY INSTEAD OF ONCE PER ROW (issue #10324)
+  private       long                cachedEpochDay = Long.MIN_VALUE;
+  private       LocalDate           cachedDate;
 
   public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final CommandContext context) {
@@ -106,6 +120,16 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     this.fieldFilter = fieldFilter;
     this.descending = descending;
     this.limit = limit;
+  }
+
+  /**
+   * Builds each row as the projection {@code SELECT <columns[0]> AS <aliases[0]>, ...} makes it (issue #10324). Only for a
+   * projection of plain column references, and only when nothing the plan runs between this step and the projection reads a column
+   * left out: the planner then plans no projection step of its own.
+   */
+  void setProjection(final String[] aliases, final String[] columns) {
+    this.projectedAliases = aliases;
+    this.projectedColumns = columns;
   }
 
   @Override
@@ -145,6 +169,32 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       // helper every wire surface names its columns from, so SQL and HTTP cannot disagree, and resolved once
       // per pull rather than once per row.
       final List<ColumnDefinition> columns = TimeSeriesGateway.selectedColumns(tsType.getTsColumns(), null);
+      // the row positions and the output names of the columns each row carries: every column under its own name, or the projected
+      // ones under their aliases, in projection order
+      final int[] positions;
+      final String[] names;
+      if (projectedColumns != null) {
+        positions = new int[projectedColumns.length];
+        for (int p = 0; p < projectedColumns.length; p++) {
+          positions[p] = -1;
+          for (int i = 0; i < columns.size(); i++)
+            if (columns.get(i).getName().equals(projectedColumns[p])) {
+              positions[p] = i;
+              break;
+            }
+          if (positions[p] < 0)
+            throw new CommandExecutionException(
+                "Column '" + projectedColumns[p] + "' is not a column of the TIMESERIES type '" + tsType.getName() + "'");
+        }
+        names = projectedAliases;
+      } else {
+        positions = new int[columns.size()];
+        names = new String[columns.size()];
+        for (int i = 0; i < positions.length; i++) {
+          positions[i] = i;
+          names[i] = columns.get(i).getName();
+        }
+      }
 
       return new ResultSet() {
         private int count = 0;
@@ -171,7 +221,12 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
             final Object[] row = resultIterator.next();
             final ResultInternal result = new ResultInternal(context.getDatabase());
 
-            for (int i = 0; i < columns.size() && i < row.length; i++) {
+            for (int p = 0; p < positions.length; p++) {
+              final int i = positions[p];
+              // never with the full rows this step reads (no column subset is asked of the engine): kept as the bound the loop
+              // always had, so a shorter row leaves the property out rather than failing the scan
+              if (i >= row.length)
+                continue;
               final ColumnDefinition col = columns.get(i);
               Object value = row[i];
 
@@ -179,9 +234,8 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               // standard DATETIME representation) instead of a java.util.Date. A java.util.Date is
               // formatted by the result JSON serializer with the date-only pattern, truncating the
               // value to the day; a temporal keeps the full date-time with its sub-second precision.
-              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
-                value = DateUtils.dateTime(context.getDatabase(), (Long) value, ChronoUnit.MILLIS, LocalDateTime.class,
-                    ChronoUnit.MILLIS);
+              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long epochMillis)
+                value = dateTimeOf(epochMillis);
               // Issue #9725: every other DATE/DATETIME column holds an epoch count in its own unit, handed back as the object a
               // document property of the same type reads as. As the raw count it could not be written back by INSERT, which
               // reads a number as epoch millis, nor matched by the literal that wrote it
@@ -204,7 +258,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               if (value instanceof Number n && TimeSeriesNaN.isAbsent(n.doubleValue()))
                 value = null;
 
-              result.setProperty(col.getName(), value);
+              result.setProperty(names[p], value);
             }
 
             rowCount++;
@@ -224,6 +278,19 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
     }
+  }
+
+  /**
+   * The UTC date-time of a millisecond timestamp, the value {@code DateUtils.dateTime} answers for it, with the date of the previous
+   * row reused while the day does not change (issue #10324).
+   */
+  private LocalDateTime dateTimeOf(final long epochMillis) {
+    final long epochDay = Math.floorDiv(epochMillis, MILLIS_PER_DAY);
+    if (epochDay != cachedEpochDay) {
+      cachedDate = LocalDate.ofEpochDay(epochDay);
+      cachedEpochDay = epochDay;
+    }
+    return LocalDateTime.of(cachedDate, LocalTime.ofNanoOfDay((epochMillis - epochDay * MILLIS_PER_DAY) * 1_000_000L));
   }
 
   @Override
@@ -246,6 +313,16 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     // that hides it reads as if no push-down happened (issue #7663).
     if (limit > 0)
       sb.append(" TOP ").append(limit);
+    if (projectedAliases != null) {
+      sb.append(" PROJECTED ");
+      for (int i = 0; i < projectedAliases.length; i++) {
+        if (i > 0)
+          sb.append(", ");
+        sb.append(projectedColumns[i]);
+        if (!projectedColumns[i].equals(projectedAliases[i]))
+          sb.append(" AS ").append(projectedAliases[i]);
+      }
+    }
     if (context.isProfiling())
       sb.append(" (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");
     return sb.toString();
@@ -266,6 +343,9 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, fieldFilter, descending, limit, context);
+    final FetchFromTimeSeriesStep copy = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, fieldFilter, descending, limit,
+        context);
+    copy.setProjection(projectedAliases, projectedColumns);
+    return copy;
   }
 }

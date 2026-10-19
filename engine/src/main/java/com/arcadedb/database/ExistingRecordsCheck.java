@@ -27,6 +27,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.io.IOException;
@@ -144,6 +145,8 @@ public final class ExistingRecordsCheck {
    * <p>
    * One shape cannot be judged: the storage writes no value of a STRING column as the empty text, so a stored sample of one never
    * reads back as missing, and MANDATORY / NOTNULL find nothing to refuse there. The write path still holds every new sample to them.
+   * MIN and REGEXP judge that empty text here and on the write path alike (issue #10336), so their outcome does not depend on whether
+   * the constraint or the sample came first.
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
       final boolean required, final String requiredBy, final String min, final String max, final String regexp, final String what) {
@@ -174,6 +177,7 @@ public final class ExistingRecordsCheck {
       return;
 
     final long regexTimeoutMs = GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(db);
+    final boolean stringColumn = column.getDataType() == Type.STRING;
     final Object[] violation = new Object[2];
     try {
       engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
@@ -181,7 +185,11 @@ public final class ExistingRecordsCheck {
         if (reason == null)
           return true;
         violation[0] = row[0];
-        violation[1] = reason;
+        // THE EMPTY TEXT IS ALSO WHAT A STRING COLUMN STORES FOR A SAMPLE WRITTEN WITHOUT IT: SAY SO, OR THE REFUSAL OF A VALUE NOBODY
+        // WROTE READS AS A MYSTERY
+        violation[1] = stringColumn && "".equals(row[index]) ?
+            "the column holds the empty text, which is also how it stores a sample written without it, and " + reason :
+            reason;
         return false;
       });
     } catch (final IOException e) {
@@ -189,8 +197,11 @@ public final class ExistingRecordsCheck {
           + "' could not be read to check it", e);
     }
     if (violation[1] != null)
+      // A SAMPLE CANNOT BE DELETED OR UPDATED (issue #10336): THE REMEDY IS A COPY OF THE CONFORMING SAMPLES
       throw new CommandExecutionException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
-          + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first");
+          + "type '" + type.getName() + "' violates it, " + violation[1] + ". A sample cannot be deleted or updated: declare the "
+          + "constraint on a new TIMESERIES type and copy the conforming samples into it with INSERT INTO <new type> FROM SELECT "
+          + "FROM " + type.getName() + " WHERE ...");
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,

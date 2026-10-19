@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
@@ -68,6 +69,10 @@ public class TruncateTypeStatement extends DDLStatement {
     if (typez == null) {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
+
+    // A TIMESERIES TYPE OWNS NO RECORD BUCKET: THE TRUNCATE BELOW REPORTED SUCCESS AND KEPT EVERY SAMPLE (issue #10336)
+    if (typez instanceof LocalTimeSeriesType tsType)
+      throw new CommandExecutionException(tsType.immutableSamplesRefusal("TRUNCATE"));
 
     // TRUNCATE deletes what scanType() finds, and scanType() reads the type's buckets directly - it never goes
     // through the planner, so the walk that issue #7477 gave SELECT and DELETE does not reach it. A lightweight

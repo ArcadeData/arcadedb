@@ -1064,6 +1064,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         combinationColumns.set(idx);
       combinationWidth = columnIndices.length;
     }
+    // the indices of the rows of a block that pass the field filter, reused from block to block
+    int[] selectedRows = null;
 
     // No binary search here any more: the snapshot IS the run of blocks the range can reach, clipped by the two
     // searches snapshotBlockDirectory ran under the lock. The two bound tests below are kept because a block at
@@ -1217,13 +1219,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       if (rawCols != null) {
         // Issue #9612: only the rows that pass the field filter are built, from the primitive columns, and the test reads the
-        // decoded columns in place so a rejected row allocates nothing
-        final List<FieldFilter.Condition> conditions = fieldFilter.getConditions();
+        // decoded columns in place so a rejected row allocates nothing. Selected in one pass over the primitive arrays rather than
+        // one call per row, which spent more than the rows it built (issue #10324)
         final int resultCols = rawCols.length + 1;
-        for (int i = start; i < end; i++) {
+        if (selectedRows == null || selectedRows.length < end - start)
+          selectedRows = new int[end - start];
+        final int selectedCount = FieldFilter.select(fieldFilter.getConditions(), fieldCols, start, end, selectedRows);
+        for (int s = 0; s < selectedCount; s++) {
+          final int i = selectedRows[s];
           if (rowFilter != null && !rowFilter.get(i))
-            continue;
-          if (!FieldFilter.matchesAt(conditions, fieldCols, i))
             continue;
           final Object[] row = new Object[resultCols];
           row[0] = ts[i];

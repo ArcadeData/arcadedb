@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.query.sql.parser.UpdateOperations;
 import com.arcadedb.query.sql.parser.UpdateStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.util.HashSet;
 import java.util.List;
@@ -77,6 +78,7 @@ public class UpdateExecutionPlanner {
   }
 
   public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
+    refuseTimeSeriesTarget(target, context, "UPDATE");
     final int limitValue = limit != null ? limit.getValue(context) : 0;
     final UpdateExecutionPlan result = new UpdateExecutionPlan(context, limitValue);
 
@@ -218,6 +220,18 @@ public class UpdateExecutionPlanner {
         }
       }
     }
+  }
+
+  /**
+   * Refuses a {@code DELETE} or {@code UPDATE} that names a TIMESERIES type (issue #10336). Its rows are samples read from the
+   * engine, not records, so the statement found nothing it could delete or save: DELETE counted every matching row as deleted, UPDATE
+   * reported 0, and both kept every sample.
+   */
+  static void refuseTimeSeriesTarget(final FromClause target, final CommandContext context, final String statement) {
+    final Identifier identifier = target != null && target.getItem() != null ? target.getItem().getIdentifier() : null;
+    if (identifier != null && context.getDatabase().getSchema()
+        .getTypeOrNull(identifier.getStringValue()) instanceof LocalTimeSeriesType tsType)
+      throw new CommandExecutionException(tsType.immutableSamplesRefusal(statement));
   }
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,

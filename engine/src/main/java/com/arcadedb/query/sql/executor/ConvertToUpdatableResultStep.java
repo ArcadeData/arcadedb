@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.NoSuchElementException;
@@ -36,6 +37,8 @@ import java.util.NoSuchElementException;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
+  static final String NOT_A_RECORD = "Cannot write to a row of the source that is not a record and carries no @rid (a projection "
+      + "or a TIMESERIES sample). Select the records themselves (SELECT FROM <type> WHERE ...), or their @rid, as the source";
   ResultSet prevResult = null;
 
   public ConvertToUpdatableResultStep(final CommandContext context) {
@@ -96,7 +99,9 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
               }
             }
 
-            nextItem = null;
+            // A ROW THAT IS NOT A RECORD AND NAMES NONE (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO WRITE TO: IT USED TO BE
+            // SKIPPED, SO THE STATEMENT REPORTED count 0 AS IF NOTHING HAD MATCHED (issue #10336)
+            throw new CommandExecutionException(NOT_A_RECORD);
           } finally {
             cost = System.nanoTime() - begin;
           }

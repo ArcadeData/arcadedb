@@ -55,6 +55,7 @@ public class DeleteExecutionPlanner {
 
   public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
     final DeleteExecutionPlan result = new DeleteExecutionPlan(context, 0);
+    UpdateExecutionPlanner.refuseTimeSeriesTarget(fromClause, context, "DELETE");
 
     if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, context)) {
       if (limit != null)
