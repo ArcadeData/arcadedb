@@ -829,7 +829,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * picks the other build, which produces the same index.
    */
   private boolean isSortedBuildChosenFor(final List<Bucket> buckets) {
-    if (buildMode != IndexBuildMode.DEFAULT || !unique || sortedBuildRefusal() != null)
+    if (buildMode != IndexBuildMode.DEFAULT || !unique || indexType != Schema.INDEX_TYPE.LSM_TREE)
       return false;
 
     final long minRecords = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS);
@@ -837,16 +837,24 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       return false;
 
     long records = 0;
-    for (final Bucket bucket : buckets) {
+    for (final Bucket bucket : buckets)
       records += bucket.count();
-      if (records >= minRecords) {
-        LogManager.instance().log(this, Level.INFO,
-            "Building unique index on %s%s with the sorted build: the type holds at least %,d records (%s)", metadata.typeName,
-            metadata.propertyNames, minRecords, GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS.getKey());
-        return true;
-      }
+    if (records < minRecords)
+      return false;
+
+    final String refusal = sortedBuildRefusal();
+    if (refusal != null) {
+      // Said out loud: on a type this large the record-at-a-time build is the slow one, and this is the only place that knows why
+      LogManager.instance().log(this, Level.INFO,
+          "Building unique index on %s%s over %,d records one record at a time, which slows down as the index grows: %s",
+          metadata.typeName, metadata.propertyNames, records, refusal);
+      return false;
     }
-    return false;
+
+    LogManager.instance().log(this, Level.INFO, "Building unique index on %s%s over %,d records with the sorted build (%s=%,d)",
+        metadata.typeName, metadata.propertyNames, records, GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS.getKey(),
+        minRecords);
+    return true;
   }
 
   private SortedIndexBuildMetrics createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type,
