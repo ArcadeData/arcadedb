@@ -236,8 +236,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
   // In-memory block directory (loaded at open) — protected by directoryLock
-  private final List<BlockEntry>    blockDirectory = new ArrayList<>();
-  private final ReentrantReadWriteLock directoryLock = new ReentrantReadWriteLock();
+  private final List<BlockEntry>       blockDirectory = new ArrayList<>();
+  private final ReentrantReadWriteLock directoryLock  = new ReentrantReadWriteLock();
   // Bumped, under the directory write lock, by every change to blockDirectory: what tells a cached view derived from it
   // (see maxTimestampPrefix) that it is stale
   private          int              directoryVersion;
@@ -5915,6 +5915,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code indexFile} call fails with a plain {@code IOException("Stream Closed")} rather than a
    * {@link ClosedChannelException}: the channel's state, not the exception type, says whether this is a closed channel,
    * and under the WRITE lock nobody else can reopen it and change that answer.
+   * <p>
+   * Every caller holds one of the two locks; a caller holding none would get the path read, which is also the safe answer
+   * for it, since nothing would keep other threads off the shared descriptor.
    */
   private long fileLength() throws IOException {
     if (!directoryLock.isWriteLockedByCurrentThread())
@@ -5951,8 +5954,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * The recovery policy for a channel found closed by an operation holding the directory WRITE lock (issue #9621), the
    * same as {@code PaginatedComponentFile}'s (#9306): reopen the channel and repeat {@code operation} from its start, a
-   * bounded number of times, because this thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
-   * so the reopened channel is not closed at once, and restored afterwards so the caller still sees the cancellation.
+   * bounded number of times, because this thread's OWN interrupt can close the freshly reopened channel again. The
+   * interrupt flag is cleared around the retry so the reopened channel is not closed at once, and restored afterwards so
+   * the caller still sees the cancellation.
    * Only a reopen that is REFUSED - the store was closed on purpose, or its file no longer exists - is a real failure.
    * <p>
    * So an interrupt does NOT cancel a sealed-store read: the read completes and the flag is left set for the caller to
