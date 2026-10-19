@@ -19,6 +19,7 @@
 package com.arcadedb.query;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -225,6 +226,25 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
         // caught by the caller
       }
     }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  @Test
+  void takingBackAProvisionalRecordGivesBackExactlyTheWritesItCounted() {
+    database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
+
+    database.begin();
+    final long before = ((DatabaseInternal) database).getTransaction().getCompletedRecordWrites();
+    // created, updated twice while provisional, then deleted by the existence check: the counter is where it was
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE (n:Req {id: 'h'}) WITH n SET n.a = 1 WITH n SET n.b = 2").close())
+        .isInstanceOf(RuntimeException.class);
+    assertThat(((DatabaseInternal) database).getTransaction().getCompletedRecordWrites()).isEqualTo(before);
+
+    // and a statement that really fails after writing is still refused afterwards
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (n:T) SET n.v = 1").close()).isInstanceOf(RuntimeException.class);
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
 
     assertThat(values()).containsExactly(100, 101, 102);
   }

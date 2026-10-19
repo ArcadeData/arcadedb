@@ -2674,7 +2674,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     boolean ownFailures = false;
     try {
       ownFailures = getQueryEngine(language).handlesItsOwnFailures(query);
-    } catch (final RuntimeException | StackOverflowError e) {
+    } catch (final RuntimeException | Error e) {
       cause.addSuppressed(e);
     }
     if (!ownFailures)

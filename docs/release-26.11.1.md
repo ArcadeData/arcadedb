@@ -135,7 +135,7 @@ was 4 where `length()` is 3. They count characters now, like their neighbours. A
 is one character. Text made of characters in the Basic Multilingual Plane answers exactly as before. `size()` of a `NULL` stays 0,
 as `size()` also serves collections, where a missing one has size 0; use `length()` for a string that may be `NULL`. The distance
 and similarity functions (`text.hammingDistance()`, `text.levenshteinDistance()`, `text.jaroWinklerDistance()`,
-`text.sorensenDiceSimilarity()`) still compare UTF-16 code units.
+`text.sorensenDiceSimilarity()`) still compare UTF-16 code units (#10417).
 
 ## Fixes
 

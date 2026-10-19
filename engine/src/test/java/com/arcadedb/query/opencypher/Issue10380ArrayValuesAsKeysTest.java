@@ -205,6 +205,25 @@ class Issue10380ArrayValuesAsKeysTest extends TestHelper {
   }
 
   @Test
+  void aFloatKeysByItsDecimalFormAsEqualsReadsIt() {
+    // 0.1f is 0.10000000149011612 as a double, and equal to 0.1 for =, so it is one value for DISTINCT and GROUP BY too
+    createType("A", Type.ARRAY_OF_FLOATS);
+    createType("B", Type.ARRAY_OF_DOUBLES);
+    insert("A", "x", new float[] { 0.1f, 2.5f });
+    insert("B", "y", new double[] { 0.1d, 2.5d });
+
+    assertThat(scalar("MATCH (a:A), (b:B) RETURN a.p = b.p AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (n) WHERE n:A OR n:B RETURN count(DISTINCT n.p) AS v")).isEqualTo(1L);
+
+    createType("S", Type.FLOAT);
+    createType("D", Type.DOUBLE);
+    insert("S", "x", 0.1f);
+    insert("D", "y", 0.1d);
+    assertThat(scalar("MATCH (a:S), (b:D) RETURN a.p = b.p AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (n) WHERE n:S OR n:D RETURN count(DISTINCT n.p) AS v")).isEqualTo(1L);
+  }
+
+  @Test
   void arraysOfNumbersAreValuesToo() {
     final Object[][] cases = {
         { Type.ARRAY_OF_SHORTS, new short[] { 1, 2 }, new short[] { 9 } },

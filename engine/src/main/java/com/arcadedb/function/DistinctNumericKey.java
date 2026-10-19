@@ -21,6 +21,7 @@ package com.arcadedb.function;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.LightEdgeRID;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
 import java.lang.reflect.Array;
@@ -103,6 +104,9 @@ public final class DistinctNumericKey {
     if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
       return ((Number) value).longValue();
 
+    // A float goes through its decimal form, as Cypher's = reads it (issue #7609): 0.1f and 0.1 are equal there, so they share a key
+    if (value instanceof Float f)
+      return canonicalDouble(Type.widenFloat(f));
     if (value instanceof Number number)
       return canonicalDouble(number.doubleValue());
 
@@ -188,7 +192,7 @@ public final class DistinctNumericKey {
     case float[] floats -> {
       key = new ArrayList<>(floats.length);
       for (final float element : floats)
-        key.add(canonicalDouble(element));
+        key.add(canonicalDouble(Type.widenFloat(element)));
     }
     default -> {
       final int length = Array.getLength(array);
