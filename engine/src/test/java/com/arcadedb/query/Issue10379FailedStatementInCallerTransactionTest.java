@@ -18,12 +18,14 @@
  */
 package com.arcadedb.query;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.SQLQueryEngine;
@@ -36,6 +38,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -223,6 +226,64 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(() -> {
       try {
         database.command("opencypher", "MATCH (n:T) WHERE n.n = 0 SET n.v = 900 CREATE (m:Req {id: 'f'}) WITH m SET m.note = 'x'").close();
+      } catch (final RuntimeException ignored) {
+        // caught by the caller
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  /**
+   * Every public {@code command()} overload of the database carries the check: a new overload that forgets it fails here. The
+   * {@code query()} overloads of SQL and openCypher refuse a write outright, so they are covered where a query can still write, by
+   * the Gremlin test.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = { 0, 1, 2, 3, 4 })
+  void everyCommandOverloadRefusesTheCommit(final int overload) {
+    final AtomicReference<Throwable> caught = new AtomicReference<>();
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        runThroughOverload(overload).close();
+      } catch (final RuntimeException e) {
+        caught.set(e);
+      }
+    }, false, 0)).as("overload " + overload).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(caught.get()).as("overload " + overload + " failed").isNotNull();
+    assertThat(values()).as("overload " + overload).containsExactly(100, 101, 102);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "sql", "opencypher" })
+  void queryRefusesAWriteStatement(final String language) {
+    final String statement = language.equals("sql") ? "UPDATE T SET v = 1" : "MATCH (n:T) SET n.v = 1";
+    assertThatThrownBy(() -> database.query(language, statement)).as(language).isInstanceOf(QueryNotIdempotentException.class);
+    assertThat(values()).as(language).containsExactly(100, 101, 102);
+  }
+
+  private ResultSet runThroughOverload(final int overload) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    final String update = "UPDATE T SET v = 1";
+    return switch (overload) {
+      case 0 -> database.command("sql", update);
+      case 1 -> database.command("sql", update, new Object[] {});
+      case 2 -> database.command("sql", update, configuration, new Object[] {});
+      case 3 -> database.command("sql", update, Map.<String, Object>of());
+      case 4 -> database.command("sql", update, configuration, Map.<String, Object>of());
+      default -> throw new IllegalArgumentException("No overload " + overload);
+    };
+  }
+
+  @Test
+  void aFailureAfterTheCallersOwnEarlierWritesIsRefusedToo() {
+    assertThatThrownBy(() -> database.transaction(() -> {
+      // the caller's own write, made before the statement starts, is not what the statement is judged by
+      database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close();
+      try {
+        database.command("opencypher", "MATCH (n:T) WHERE n.n < 2 SET n.v = 1").close();
       } catch (final RuntimeException ignored) {
         // caught by the caller
       }

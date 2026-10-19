@@ -113,6 +113,15 @@ class Issue10378TextFunctionsCodePointsTest extends TestHelper {
   }
 
   @Test
+  void onlyTheFirstCharacterOfAPadStringIsUsed() {
+    assertThat(both("text.lpad('a', 3, 'xy')")).isEqualTo("xxa");
+    assertThat(both("text.rpad('a', 3, 'xy')")).isEqualTo("axx");
+    // the first character of the pad is the emoji, whole, and not its high half, nor the character after it
+    assertThat(both("text.lpad('a', 3, '" + EMOJI + "x')")).isEqualTo(EMOJI + EMOJI + "a");
+    assertThat(both("text.rpad('a', 3, '" + EMOJI + "x')")).isEqualTo("a" + EMOJI + EMOJI);
+  }
+
+  @Test
   void padsOfPlainTextKeepTheirBehavior() {
     assertThat(both("text.lpad('abc', 5, '*')")).isEqualTo("**abc");
     assertThat(both("text.rpad('abc', 5, '*')")).isEqualTo("abc**");

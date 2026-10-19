@@ -25,6 +25,8 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -124,6 +126,28 @@ class Issue10379GremlinFailedTraversalTest {
       database.commit();
 
     assertThat(values()).containsExactly(100, 101, 500);
+  }
+
+  /**
+   * A traversal that ends in a terminal step runs inside the call, so the failure is raised where the dispatcher catches it. A query
+   * of Gremlin can write, which one of SQL and openCypher cannot: this covers the check of {@code query()} and of {@code command()}.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "command", "query" })
+  void aTraversalThatFailsInsideTheCallCannotBeCommittedHalfApplied(final String call) {
+    final String traversal = "g.V().hasLabel('T').property('v', 1).toList()";
+    final AtomicReference<Throwable> caught = new AtomicReference<>();
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        (call.equals("command") ? database.command("gremlin", traversal) : database.query("gremlin", traversal)).close();
+      } catch (final RuntimeException e) {
+        caught.set(e);
+      }
+    }, false, 0)).as(call).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(caught.get()).as(call + " failed").isNotNull();
+    assertThat(values()).as(call).containsExactly(100, 101, 102);
   }
 
   @Test
