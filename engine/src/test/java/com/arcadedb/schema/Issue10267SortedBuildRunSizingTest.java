@@ -122,6 +122,25 @@ class Issue10267SortedBuildRunSizingTest extends TestHelper {
     assertThat(longRuns).isGreaterThanOrEqualTo(2);
   }
 
+  /**
+   * Short keys first, long keys later in the scan: the size of a key is followed as it changes, not averaged over the whole build.
+   * An average over every key seen so far lags far behind a late jump and charges the long keys at a fraction of what they take, so
+   * the run would grow past the budget.
+   */
+  @Test
+  void keysThatGrowLateInTheScanAreChargedByTheirOwnSize() {
+    createType("Growing", 1, Type.STRING);
+    final String padding = "x".repeat(400);
+    // 4,000 short keys retain about 1 MB and 8,000 keys of 400 characters about 5 MB: more than the 4 MB budget holds
+    insert("Growing", 12_000, i -> i < 4_000 ? "key-%08d".formatted(i) : "key-%08d-".formatted(i) + padding);
+
+    final TypeIndex index = buildSorted("Growing", 4L << 20);
+
+    assertThat(captured.get().initialRuns()).isGreaterThanOrEqualTo(2);
+    assertThat(index.countEntries()).isEqualTo(12_000);
+    assertThat(index.get(new Object[] { "key-%08d-".formatted(11_999) + padding }).hasNext()).isTrue();
+  }
+
   private TypeIndex buildSorted(final String typeName, final long budget) {
     captured.set(null);
     return database.getSchema().buildTypeIndex(typeName, new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE)

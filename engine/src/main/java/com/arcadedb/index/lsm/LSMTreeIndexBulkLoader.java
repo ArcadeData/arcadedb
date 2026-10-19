@@ -62,11 +62,14 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   /** What registering a key in the shared-key table adds to the key itself: its hash entry, its holder and its slot in the key list. */
   private static final long SHARED_KEY_TABLE_BYTES       = HeapEstimator.HASH_ENTRY_BYTES + 16L + HeapEstimator.REFERENCE_BYTES;
   /**
-   * The first keys are measured one by one, then one in {@link #KEY_SAMPLE_INTERVAL}: the average of the keys seen stands in for the
-   * others. The interval is a prime, so that it does not line up with the period of a column (a power of two, a bucket count).
+   * The first keys are measured one by one, then one in {@link #KEY_SAMPLE_INTERVAL}: a moving average of the keys measured stands in
+   * for the others, each measure moving it by 1 in {@link #KEY_SAMPLE_SMOOTHING} of its distance, so it follows keys that change in
+   * size (a plain average over the whole build lags far behind a late jump). The interval is a prime, so that it does not line up
+   * with the period of a column (a power of two, a bucket count).
    */
   private static final long KEY_SAMPLE_FIRST             = 256L;
   private static final long KEY_SAMPLE_INTERVAL          = 13L;
+  private static final long KEY_SAMPLE_SMOOTHING         = 16L;
   /** A list cannot hold more, whatever the budget. */
   private static final int  MAX_ENTRIES_PER_RUN          = Integer.MAX_VALUE - 8;
   private static final int  INITIAL_RUN_CAPACITY         = 65_536;
@@ -99,7 +102,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private       long                                                   runBytes;
   /** The part of {@link #runBytes} that is the shared-key table, given back when the table is dropped before the run ends. */
   private       long                                                   sharedTableBytes;
-  private       long                                                   sampledKeyBytes;
+  /** The moving average of the heap the values of a key retain, and how many keys were measured. */
+  private       long                                                   averageKeyBytes;
   private       long                                                   sampledKeys;
   /** The group id {@link #shareKey} assigned to the key it was last asked about, {@link Entry#NO_GROUP} when the key is not shared. */
   private       int                                                    lastKeyGroup  = Entry.NO_GROUP;
@@ -429,17 +433,17 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
   /**
    * The heap the values of a key retain: measured for the first keys and for one in {@link #KEY_SAMPLE_INTERVAL} after them, the
-   * average of those standing in for the others, so the estimate follows a column whose keys change in size without paying for the
-   * measure on every entry.
+   * moving average of those standing in for the others, so the estimate follows a column whose keys change in size without paying
+   * for the measure on every entry.
    */
   private long keyBytes(final TransactionIndexContext.ComparableKey key) {
     if (sampledKeys < KEY_SAMPLE_FIRST || totalEntries % KEY_SAMPLE_INTERVAL == 0) {
       final long measured = HeapEstimator.estimate(key.values);
-      sampledKeyBytes += measured;
+      averageKeyBytes = sampledKeys == 0 ? measured : averageKeyBytes + (measured - averageKeyBytes) / KEY_SAMPLE_SMOOTHING;
       sampledKeys++;
       return measured;
     }
-    return sampledKeyBytes / sampledKeys;
+    return averageKeyBytes;
   }
 
   /**
