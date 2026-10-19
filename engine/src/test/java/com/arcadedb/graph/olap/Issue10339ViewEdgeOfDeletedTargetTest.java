@@ -59,7 +59,7 @@ class Issue10339ViewEdgeOfDeletedTargetTest extends TestHelper {
       link(graph, lightweight);
       graph.target.delete();
     });
-    graph.view.awaitReady(60, TimeUnit.SECONDS);
+    assertThat(graph.view.awaitReady(60, TimeUnit.SECONDS)).as("the change is merged").isTrue();
 
     assertThat(edgesAnsweredByCypher()).as("count(r) of the view").isZero();
     assertThat(graph.view.getEdgeCount()).as("the edges the view holds").isZero();
@@ -74,14 +74,14 @@ class Issue10339ViewEdgeOfDeletedTargetTest extends TestHelper {
     final Graph graph = new Graph(mode, reused);
 
     database.transaction(() -> link(graph, lightweight));
-    graph.view.awaitReady(60, TimeUnit.SECONDS);
+    assertThat(graph.view.awaitReady(60, TimeUnit.SECONDS)).as("the change is merged").isTrue();
 
     assertThat(edgesAnsweredByCypher()).isEqualTo(1);
     assertThat(graph.view.getEdgeCount()).isEqualTo(1);
 
     // and leaves it with the vertex, in a later transaction
     database.transaction(() -> graph.target.delete());
-    graph.view.awaitReady(60, TimeUnit.SECONDS);
+    assertThat(graph.view.awaitReady(60, TimeUnit.SECONDS)).as("the change is merged").isTrue();
 
     assertThat(edgesAnsweredByCypher()).isZero();
     assertThat(graph.view.getEdgeCount()).isZero();
@@ -100,7 +100,7 @@ class Issue10339ViewEdgeOfDeletedTargetTest extends TestHelper {
       link(graph, lightweight);
       graph.source.delete();
     });
-    graph.view.awaitReady(60, TimeUnit.SECONDS);
+    assertThat(graph.view.awaitReady(60, TimeUnit.SECONDS)).as("the change is merged").isTrue();
 
     assertThat(edgesAnsweredByCypher()).isZero();
     assertThat(graph.view.getEdgeCount()).isZero();

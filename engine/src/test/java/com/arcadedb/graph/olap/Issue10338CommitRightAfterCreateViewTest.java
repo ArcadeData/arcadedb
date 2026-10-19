@@ -155,7 +155,14 @@ class Issue10338CommitRightAfterCreateViewTest extends TestHelper {
     // a change the overlay cannot take: a vertex without an identity
     final TxDelta unmergeable = new TxDelta();
     unmergeable.addedVertices.add(new TxDelta.VertexDelta(null, Map.of()));
-    view.onCommittedDelta(unmergeable);
+    // The rebuild waits for a permit, so the view can be seen leaving READY: a change dropped with a warning would leave it there
+    final int held = GraphAnalyticalView.BUILD_PERMITS.drainPermits();
+    try {
+      view.onCommittedDelta(unmergeable);
+      assertThat(view.getStatus()).as("the unmergeable change asks for a rebuild").isNotEqualTo(GraphAnalyticalView.Status.READY);
+    } finally {
+      GraphAnalyticalView.BUILD_PERMITS.release(held);
+    }
 
     // the graph is unchanged, so the rebuild the failure asked for publishes the same view
     awaitReadyAgain(view);
