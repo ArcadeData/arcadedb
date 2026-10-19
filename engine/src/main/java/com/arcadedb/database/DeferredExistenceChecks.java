@@ -444,12 +444,15 @@ public class DeferredExistenceChecks {
         record = (Document) database.lookupByRID(rid, true);
       } catch (final RecordNotFoundException | ClassCastException e) {
         // Rolled back, or deleted later in the same statement: there is nothing left to constrain.
+        forgetTally(rid);
         continue;
       }
 
       final String violation = firstUnmetExistenceConstraint(record);
-      if (violation == null)
+      if (violation == null) {
+        forgetTally(rid);
         continue;
+      }
 
       violations.add(violation);
       incomplete.add(rid);
@@ -594,6 +597,12 @@ public class DeferredExistenceChecks {
         it.remove();
       }
     }
+  }
+
+  /** A record that leaves {@link #pending} without being taken back keeps no tally of updates, so a RID reused later starts from none. */
+  private void forgetTally(final RID rid) {
+    if (deferredUpdates != null)
+      deferredUpdates.remove(rid);
   }
 
   /** Drops from {@link #pending} every record the statement has completed since it was registered. */

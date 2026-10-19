@@ -364,6 +364,54 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
     assertThat(values()).containsExactly(100, 101, 500);
   }
 
+  /**
+   * The check runs at every call, so a statement a function runs through the database, whose failure the outer statement catches and
+   * carries on from, marks the caller's transaction like any other: its first rows are in the transaction and nothing takes them back.
+   */
+  @Test
+  void aNestedStatementThatFailedAfterWritingAndWasCaughtStillRefusesTheCommit() {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionNestedUpdate());
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      // the outer statement succeeds: its function caught the failure of the multi-row update it ran
+      try (final ResultSet rs = database.command("sql", "SELECT nestedUpdate() AS r")) {
+        // the projection runs when the row is read
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  /** Runs a multi-row update through the database, which fails on its second row, and catches the failure. */
+  public static class SQLFunctionNestedUpdate extends SQLFunctionAbstract {
+    SQLFunctionNestedUpdate() {
+      super("nestedUpdate");
+    }
+
+    @Override
+    public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+        final CommandContext context) {
+      try {
+        context.getDatabase().command("sql", "UPDATE T SET v = 1").close();
+      } catch (final RuntimeException ignored) {
+        // carried on from by the function, as an application retrying on a duplicate key would
+      }
+      return null;
+    }
+
+    @Override
+    public String getSyntax() {
+      return "nestedUpdate()";
+    }
+
+    @Override
+    public Object getResult() {
+      return null;
+    }
+  }
+
   /** Fails with a ConcurrentModificationException, which {@code COMMIT RETRY} answers by rolling the attempt back and trying again. */
   public static class SQLFunctionThrowCME extends SQLFunctionAbstract {
     SQLFunctionThrowCME() {

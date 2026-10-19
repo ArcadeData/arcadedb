@@ -113,6 +113,9 @@ failed attempts and answers the failure in its `ELSE` branch, is unchanged; a wr
 openCypher and script engines run a write statement to its end inside the call; a Gremlin traversal runs while its result is read,
 so its result carries the same check.
 
+The check runs at every call, so a statement that a function or a procedure runs through the database, whose failure the outer
+statement catches and carries on from, marks the caller's transaction too when it wrote before it failed.
+
 **Who sees a different answer.** A caller that catches the error of a multi-row openCypher or script statement inside its own
 transaction and goes on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
 
