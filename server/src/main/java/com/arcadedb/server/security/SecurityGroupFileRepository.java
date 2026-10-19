@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
@@ -46,6 +47,7 @@ public class SecurityGroupFileRepository {
   public static final String                     ERROR_FILE_NAME = "server-groups-error.json";
   /** Prefix of the watcher thread's name; the watched document's path is appended to it. See {@link #startWatching()}. */
   public static final String                     WATCHER_PREFIX  = "arcadedb-security-groups-watcher";
+  private static final String                    KEEPING_GROUPS  = "keeping the groups already in force";
   private final       String                     securityConfPath;
   private final       File                       file;
   private final       int                        checkConfigReloadEveryMs;
@@ -203,6 +205,11 @@ public class SecurityGroupFileRepository {
     SecurityUserFileRepository.preserveInError(this, file, new File(securityConfPath, ERROR_FILE_NAME), e);
   }
 
+  /** As {@link #saveInError(Exception)}, with {@code outcome} saying in the SEVERE what this node does instead (issue #10383). */
+  synchronized void saveInError(final Exception e, final String outcome) {
+    SecurityUserFileRepository.preserveInError(this, file, new File(securityConfPath, ERROR_FILE_NAME), e, outcome);
+  }
+
   public JSONObject getGroups() {
     // Double-checked locking on the volatile field: the hot read path stays lock-free, while a concurrent
     // first-time lazy init cannot race two threads both running load()/createDefault().
@@ -214,9 +221,10 @@ public class SecurityGroupFileRepository {
           try {
             load();
           } catch (final Exception e) {
-            // saveInError() logs the failure, naming the file it was preserved as.
+            // saveInError() logs the failure, naming the file it was preserved as. BEFORE the default is saved over
+            // the operator's file: from then on the copy is the only one left (issue #10321).
             saveInError(e);
-            latestGroupConfiguration = createDefault();
+            installDefault();
           }
           cfg = latestGroupConfiguration;
         }
@@ -289,9 +297,10 @@ public class SecurityGroupFileRepository {
           try {
             if (file.exists() && file.lastModified() > fileLastUpdated) {
               LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
-              load();
-
-              if (reloadCallback != null)
+              // reload(), never load() (issue #10383): the file changed on a RUNNING server, so a document this node
+              // cannot use keeps the groups in force instead of falling back to the default and saving it over the
+              // operator's file. The permission refresh runs only when a new document was actually published.
+              if (reload() && reloadCallback != null)
                 reloadCallback.call(latestGroupConfiguration);
             }
           } catch (final Throwable e) {
@@ -301,28 +310,128 @@ public class SecurityGroupFileRepository {
     }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
   }
 
+  /**
+   * The FIRST load: publishes {@link #FILE_NAME}, or the default document when there is no file yet.
+   * <p>
+   * A file that exists but cannot be used - unreadable, unparseable, or a document without a usable {@code version}
+   * and {@code databases} - THROWS, so {@link #getGroups()} preserves it as {@link #ERROR_FILE_NAME} before it falls
+   * back to the default (issue #10383). It used to turn a document without {@code version} into "there is no
+   * document" and save the default over it with no copy kept.
+   * <p>
+   * Never reached by the watcher, which calls {@link #reload()}: the default is a first-load policy only.
+   */
   protected synchronized JSONObject load() throws IOException {
     startWatching();
 
-    JSONObject json = null;
-    if (file.exists()) {
-      fileLastUpdated = file.lastModified();
+    final JSONObject json = readFile();
+    if (json == null)
+      return installDefault();
 
-      try (final FileInputStream fis = new FileInputStream(file)) {
-        json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
+    latestGroupConfiguration = json;
+    return json;
+  }
+
+  /**
+   * Re-reads {@link #FILE_NAME} on a running server (issue #10383), the groups half of the rule issue #10326 set for the
+   * users file: a document that is missing, unreadable, unparseable or of the wrong shape (no {@code version}, no
+   * {@code databases} object) keeps the groups already in force. A missing file is logged at WARNING; any other failure
+   * at SEVERE, and a file that could be read is preserved as {@link #ERROR_FILE_NAME}. Nothing is written over {@link #FILE_NAME}: the operator's file stays byte for byte what
+   * they wrote, so they can fix it in place and the next tick picks the fix up.
+   * <p>
+   * Before any document has been published there is nothing to keep, and this is the first load.
+   *
+   * @return {@code true} when a new document was published, {@code false} when the groups in force were kept
+   */
+  synchronized boolean reload() {
+    final JSONObject current = latestGroupConfiguration;
+    if (current == null) {
+      try {
+        load();
+      } catch (final Exception e) {
+        saveInError(e);
+        installDefault();
       }
-      if (!json.has("version"))
-        json = null;
-      else if (json.getInt("version") < ServerSecurity.LATEST_VERSION)
-        json = migrateConfiguration(json);
+      return true;
     }
 
-    if (json == null)
-      json = createDefault();
+    final JSONObject json;
+    try {
+      json = readFile();
+    } catch (final IOException | RuntimeException e) {
+      // ANY failure, not only JSONException: whatever an unexpected shape throws must neither replace the groups in
+      // force nor escape into the watcher's java.util.Timer.
+      saveInError(e, KEEPING_GROUPS);
+      return false;
+    }
 
-    if (json != null)
+    if (json == null) {
+      // Typically an editor caught between deleting and writing the file: the next tick sees the content.
+      LogManager.instance().log(this, Level.WARNING, "File '%s' is missing, %s", FILE_NAME, KEEPING_GROUPS);
+      return false;
+    }
+
+    latestGroupConfiguration = json;
+    return true;
+  }
+
+  /**
+   * Reads {@link #FILE_NAME} into a document fit to be published, migrated to the latest version. Writes nothing
+   * except the migration's own save of a valid older document.
+   *
+   * @return the document, or {@code null} when there is no file
+   * @throws IOException   if the file cannot be read
+   * @throws JSONException if it does not parse, or is not a group document (see {@link #shapeProblem})
+   */
+  private JSONObject readFile() throws IOException {
+    if (!file.exists())
+      return null;
+
+    // Stamped BEFORE the read, as the users repository does: a file that fails is not re-read on every tick, and an
+    // edit landing after this point has a newer stamp and is picked up by the next one.
+    fileLastUpdated = file.lastModified();
+
+    final JSONObject json;
+    try (final FileInputStream fis = new FileInputStream(file)) {
+      json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
+    }
+
+    final String problem = shapeProblem(json);
+    if (problem != null)
+      throw new JSONException("'" + FILE_NAME + "' is not a group document: " + problem);
+
+    if (json.getInt("version") < ServerSecurity.LATEST_VERSION)
+      return migrateConfiguration(json);
+    return json;
+  }
+
+  /**
+   * Why {@code json} cannot be installed as the group document, or {@code null} when it can. Shared with the
+   * replicated install ({@code ServerSecurity.applyReplicatedGroups}), so a document the file reader refuses is the
+   * same document the replicated path refuses:
+   * <ul>
+   *   <li>no {@code databases} object, and every authorization lookup - {@code getDatabaseGroupsConfiguration},
+   *       called per request - throws instead of answering;</li>
+   *   <li>no {@code version}, and the document cannot be told apart from one of an unknown format (a version that is
+   *       not a number fails later, in {@link #readFile()}, with a {@link JSONException} too).</li>
+   * </ul>
+   */
+  static String shapeProblem(final JSONObject json) {
+    if (!json.has("databases") || !(json.get("databases") instanceof JSONObject))
+      return "it has no usable 'databases' section";
+    if (!json.has("version"))
+      return "it carries no 'version'";
+    return null;
+  }
+
+  /** Publishes the default document and saves it. Reached only by a FIRST load that found nothing it could use. */
+  private JSONObject installDefault() {
+    final JSONObject json = createDefault();
+    try {
+      save(json);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving default group configuration to file '%s'", e, FILE_NAME);
       latestGroupConfiguration = json;
-
+    }
     return json;
   }
 
@@ -380,6 +489,11 @@ public class SecurityGroupFileRepository {
     return json;
   }
 
+  /**
+   * The default group document. Builds it and nothing else (issue #10383): it used to save itself too, so every path
+   * that reached it - including a reload that merely failed to read the file - wrote over the operator's file.
+   * {@link #installDefault()} is the one place that saves it.
+   */
   public JSONObject createDefault() {
     final JSONObject json = new JSONObject();
 
@@ -396,13 +510,6 @@ public class SecurityGroupFileRepository {
 
     json.put("databases", new JSONObject().put(SecurityManager.ANY, defaultDatabase));
     json.put("version", ServerSecurity.LATEST_VERSION);
-
-    try {
-      save(json);
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving default group configuration to file '%s'", e, FILE_NAME);
-    }
-
     return json;
   }
 
