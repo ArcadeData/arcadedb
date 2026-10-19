@@ -223,6 +223,8 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
             for (int p = 0; p < positions.length; p++) {
               final int i = positions[p];
+              // never with the full rows this step reads (no column subset is asked of the engine): kept as the bound the loop
+              // always had, so a shorter row leaves the property out rather than failing the scan
               if (i >= row.length)
                 continue;
               final ColumnDefinition col = columns.get(i);

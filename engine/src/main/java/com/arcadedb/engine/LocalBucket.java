@@ -663,6 +663,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * out: the endpoint of a unidirectional edge is not read to create the edge (issue #10325), so asking whether it exists must
    * not need a grant the creation itself never needed. Reads the slot through the transaction, so a record this transaction
    * created is found.
+   * <p>
+   * Internal: the answer is an existence oracle for any RID of the bucket. A caller must never hand it to a user who has not been
+   * checked for READ_RECORD on the bucket, except as the refusal of an operation on a RID that user named.
    */
   public boolean isRecordPresent(final RID rid) {
     if (rid.getPosition() < 0)
