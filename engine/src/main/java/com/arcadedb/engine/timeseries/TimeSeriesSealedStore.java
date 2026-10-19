@@ -44,6 +44,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -5938,17 +5939,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * The length of the file at {@code basePath}, read without any descriptor, for the callers holding only the directory
    * READ lock (issue #10372). It refuses what a reopen of the shared channel would have refused: a store closed on
-   * purpose, and a file that no longer exists, which {@link File#length()} would otherwise report as an empty one - and
-   * the HA ship would send that to every follower.
+   * purpose, and a file that no longer exists. A failure to read the size is raised, never reported as an empty file,
+   * which the HA ship would send to every follower.
    */
   private long fileLengthOnDisk() throws IOException {
     final File file = new File(basePath + FILE_EXTENSION);
     if (closed)
       throw new FileNotFoundException("Sealed store '" + file.getPath() + "' was closed on purpose, refusing to read its length");
-    final long length = file.length();
-    if (length == 0L && !file.exists())
+    // Files.size() and not File.length(): the latter answers 0 for an I/O error too, and a 0 the HA ship took at its word
+    // would send an empty sealed store to every follower
+    try {
+      return Files.size(file.toPath());
+    } catch (final NoSuchFileException e) {
       throw new FileNotFoundException("Sealed store '" + file.getPath() + "' no longer exists on disk");
-    return length;
+    }
   }
 
   /**
