@@ -619,7 +619,8 @@ public class TransactionContext implements Transaction {
    * Counts a record create, update or delete that completed in this transaction: the body written or queued, the indexes
    * updated, nothing refused. A refusal that retracts its own record (a duplicated key, a failed validation) is never counted,
    * so the difference of {@link #getCompletedRecordWrites()} across a failed statement says whether it left part of its work in
-   * the transaction (issue #10194). Plain field: a transaction belongs to one thread.
+   * the transaction (issue #10194). Plain field: a transaction belongs to one thread. Written by the create, update and delete
+   * paths of {@code LocalDatabase}, which cost one increment, and read only by {@link #refuseCommitIfWrittenSince}.
    */
   public void countCompletedRecordWrite() {
     ++completedRecordWrites;

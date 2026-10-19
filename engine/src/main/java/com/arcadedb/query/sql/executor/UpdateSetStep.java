@@ -42,6 +42,7 @@ public class UpdateSetStep extends AbstractExecutionStep {
     // Reused across the records of the statement: only a multi-item SET needs it, one item reads the row it writes to. Not
     // thread-safe, and it does not need to be: a ResultSet is pulled by one thread and each execution builds its own
     final Object[] rightValues = items.size() > 1 ? new Object[items.size()] : null;
+    final UpdateItem[] itemArray = rightValues != null ? items.toArray(new UpdateItem[0]) : null;
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -69,10 +70,10 @@ public class UpdateSetStep extends AbstractExecutionStep {
               // EVERY RIGHT-HAND SIDE READS THE ROW AS IT WAS BEFORE THE STATEMENT, AS IN SQL: SET a = b, b = a SWAPS THE
               // TWO COLUMNS INSTEAD OF LEAVING BOTH EQUAL TO b (issue #10194)
               for (int i = 0; i < rightValues.length; i++)
-                rightValues[i] = items.get(i).evaluateRight(internal, context);
+                rightValues[i] = itemArray[i].evaluateRight(internal, context);
               try {
                 for (int i = 0; i < rightValues.length; i++)
-                  items.get(i).applyUpdate(internal, context, rightValues[i]);
+                  itemArray[i].applyUpdate(internal, context, rightValues[i]);
               } finally {
                 Arrays.fill(rightValues, null);
               }

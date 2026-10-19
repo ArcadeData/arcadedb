@@ -168,6 +168,29 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
   }
 
   @Test
+  void aWriteStatementFailsInsideCommandAndNotWhileTheResultIsRead() {
+    database.command("sql", "CREATE DOCUMENT TYPE Src").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Src SET id = 1, k = 7").close();
+      database.command("sql", "INSERT INTO Src SET id = 2, k = 7").close();
+    });
+
+    // INSERT ... FROM SELECT runs to the end inside command(): the error is raised there, where the guard sees it, and the
+    // result set that comes back holds what the statement already did
+    final AtomicReference<Throwable> caught = new AtomicReference<>();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        database.command("sql", "INSERT INTO T FROM SELECT id, k FROM Src ORDER BY id").close();
+      } catch (final DuplicatedKeyException e) {
+        caught.set(e);
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(caught.get()).isInstanceOf(DuplicatedKeyException.class);
+    assertThat(rows()).isZero();
+  }
+
+  @Test
   void aReadOnlyStatementNeverBlocksTheCommit() {
     database.transaction(() -> {
       database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();

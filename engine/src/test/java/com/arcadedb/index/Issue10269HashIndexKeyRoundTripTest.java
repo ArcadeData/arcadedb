@@ -229,12 +229,13 @@ class Issue10269HashIndexKeyRoundTripTest extends TestHelper {
     assertThat(index(t).countEntries()).isZero();
   }
 
-  @Test
-  void compositeHashKeyRoundTrip() {
+  @ParameterizedTest
+  @ValueSource(strings = { "NOTUNIQUE_HASH", "NOTUNIQUE" })
+  void compositeKeyRoundTrip(final String kind) {
     database.command("sql", "CREATE DOCUMENT TYPE Comp").close();
     database.command("sql", "CREATE PROPERTY Comp.a INTEGER").close();
     database.command("sql", "CREATE PROPERTY Comp.b INTEGER").close();
-    database.command("sql", "CREATE INDEX ON Comp (a, b) NOTUNIQUE_HASH").close();
+    database.command("sql", "CREATE INDEX ON Comp (a, b) " + kind).close();
     final RID[] x = new RID[1];
     database.transaction(() -> x[0] = database.newDocument("Comp").set("a", 1).set("b", 7).save().getIdentity());
 

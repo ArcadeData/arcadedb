@@ -169,6 +169,24 @@ class Issue10194ExplicitNullKeepsNullTest extends TestHelper {
   }
 
   @Test
+  void aRefusedExplicitNullInsideACallerKeptTransactionLeavesItUsable() {
+    database.command("sql", "ALTER PROPERTY T.df NOTNULL true").close();
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1").close();
+      assertThatThrownBy(() -> database.command("sql", "INSERT INTO T SET id = 2, df = null").close())
+          .isInstanceOf(ValidationException.class);
+      database.command("sql", "INSERT INTO T SET id = 3").close();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT id, df FROM T ORDER BY id")) {
+      assertThat(rs.next().<Number>getProperty("id").longValue()).isEqualTo(1L);
+      assertThat(rs.next().<Number>getProperty("id").longValue()).isEqualTo(3L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
   void edgeCreatedWithAnExplicitNullKeepsNull() {
     database.command("sql", "CREATE VERTEX TYPE V").close();
     database.command("sql", "CREATE EDGE TYPE E").close();
