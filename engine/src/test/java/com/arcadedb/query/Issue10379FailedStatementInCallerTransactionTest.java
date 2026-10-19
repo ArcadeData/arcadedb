@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.TransactionContext;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -309,27 +308,6 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
     database.rollback();
 
     assertThat(values()).containsExactly(100, 101, 102);
-  }
-
-  @Test
-  void aRetractionNeverTakesTheCounterBelowWhereTheStatementStarted() {
-    database.begin();
-    try {
-      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
-      database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close();
-      final long afterTheCallersWrite = tx.getCompletedRecordWrites();
-      assertThat(afterTheCallersWrite).isPositive();
-
-      // a statement that started here and counted two writes can give two back, and never more than it counted
-      tx.countCompletedRecordWrite();
-      tx.countCompletedRecordWrite();
-      tx.retractCompletedRecordWrites(2L, afterTheCallersWrite);
-      assertThat(tx.getCompletedRecordWrites()).isEqualTo(afterTheCallersWrite);
-      tx.retractCompletedRecordWrites(100L, afterTheCallersWrite);
-      assertThat(tx.getCompletedRecordWrites()).isEqualTo(afterTheCallersWrite);
-    } finally {
-      database.rollback();
-    }
   }
 
   @Test

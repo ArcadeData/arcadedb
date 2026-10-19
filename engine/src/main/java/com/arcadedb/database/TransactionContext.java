@@ -648,7 +648,7 @@ public class TransactionContext implements Transaction {
    * @param floor what {@link #getCompletedRecordWrites()} held when the statement started: a statement can only give back what it
    *              counted itself, so the counter never goes below it, whatever the caller got wrong about its own count
    */
-  public void retractCompletedRecordWrites(final long count, final long floor) {
+  void retractCompletedRecordWrites(final long count, final long floor) {
     completedRecordWrites = Math.max(floor, completedRecordWrites - count);
   }
 
