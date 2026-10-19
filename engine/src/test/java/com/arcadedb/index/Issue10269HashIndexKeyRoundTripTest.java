@@ -207,6 +207,28 @@ class Issue10269HashIndexKeyRoundTripTest extends TestHelper {
     });
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = { "NOTUNIQUE_HASH", "NOTUNIQUE" })
+  void theRoundTripAndTheDeleteSurviveAReopen(final String kind) {
+    final String t = create("I", kind);
+    final RID x = insert(t, 1);
+    roundTrip(x);
+
+    reopenDatabase();
+
+    final RID[] reloaded = new RID[1];
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + t + " WHERE k = 1")) {
+      reloaded[0] = rs.next().getIdentity().orElseThrow();
+      assertThat(rs.hasNext()).isFalse();
+    }
+    assertThat(indexed(t, 1)).containsExactly(reloaded[0]);
+
+    database.transaction(() -> reloaded[0].asDocument().delete());
+
+    assertThat(indexed(t, 1)).isEmpty();
+    assertThat(index(t).countEntries()).isZero();
+  }
+
   @Test
   void compositeHashKeyRoundTrip() {
     database.command("sql", "CREATE DOCUMENT TYPE Comp").close();

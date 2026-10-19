@@ -158,19 +158,11 @@ public class SQLQueryEngine implements QueryEngine {
     return internal.getTransaction();
   }
 
-  /**
-   * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
-   * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
-   * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no
-   * longer be committed: the caller's error handling reaches the rollback that discards it, the same answer a half-applied
-   * delete already gets (#9305). A statement that failed before writing anything, or whose only write was a record that
-   * retracted itself, completed no write and leaves the transaction usable.
-   */
+  /** See {@link TransactionContext#refuseCommitIfWrittenSince}: a statement failed in the caller's transaction (issue #10194). */
   private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final long writesBefore,
       final Throwable cause) {
-    if (tx != null && tx.getCompletedRecordWrites() != writesBefore)
-      tx.setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName() + ": "
-          + cause.getMessage() + "), and the transaction has no savepoint to take it back to");
+    if (tx != null)
+      tx.refuseCommitIfWrittenSince(writesBefore, cause);
   }
 
   @Override

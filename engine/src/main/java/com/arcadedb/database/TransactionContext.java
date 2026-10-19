@@ -630,6 +630,26 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
+   * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
+   * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no
+   * longer be committed: the caller's error handling reaches the rollback that discards it, the same answer a half-applied
+   * delete already gets (#9305). A statement that failed before writing anything, or whose only write was a record that
+   * retracted itself, completed no write and leaves the transaction usable.
+   * <p>
+   * The class of the failure only, not its message: a duplicated-key message carries the key values, and this text
+   * resurfaces in the exception of {@link #commit()}, which can be logged or shown somewhere the original error never was.
+   *
+   * @param writesBefore {@link #getCompletedRecordWrites()} when the statement started
+   * @param cause        what the statement failed with
+   */
+  public void refuseCommitIfWrittenSince(final long writesBefore, final Throwable cause) {
+    if (completedRecordWrites != writesBefore)
+      setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName()
+          + "), and the transaction has no savepoint to take it back to");
+  }
+
+  /**
    * Takes back the registration of a record whose creation is being undone, because the indexing that followed it
    * refused it (issue #7467). Without this the retracted record would still be walked by {@link #rollback()},
    * which is harmless in itself but keeps a reference to an object the transaction no longer has anything to do

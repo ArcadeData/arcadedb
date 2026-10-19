@@ -68,7 +68,8 @@ The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they fol
 Every right-hand side of a `SET` reads the record as it was before the statement, as in SQL, instead of the record with the
 earlier items already applied: `UPDATE T SET a = b, b = a` swaps the two columns (it left both equal to `b`), and
 `UPDATE T SET b = 7, a = b` gives `a` the old value of `b`. A statement with a single `SET` item, and one whose items do not
-read a property another item writes, answers exactly as before.
+read a property another item writes, answers exactly as before. Two items on the same property still apply in order, and a
+compound operator extends the value its property holds by then: `SET a = 1, a += 2` gives 3.
 
 **Who sees a different answer.** A statement that relied on a later item seeing an earlier one (`SET b = 7, a = b` meaning
 "both seven"). Write the value twice (`SET b = 7, a = 7`) or run two statements.
@@ -93,6 +94,8 @@ back to, so the transaction is now marked rollback-only: `commit()` throws a `Tr
 committed: a statement failed after part of its records were written ...") and nothing of the transaction is published. A
 statement that fails having written nothing, which includes every single-row refusal because the refused record retracts
 itself, leaves the transaction usable. A statement that owns its transaction (auto-transaction mode) rolls back whole, as before.
+The lines of a `sqlscript` are not covered: a script handles its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) and
+is unchanged.
 
 **Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes
 on to commit. Roll the transaction back and retry, or issue the rows as separate statements.

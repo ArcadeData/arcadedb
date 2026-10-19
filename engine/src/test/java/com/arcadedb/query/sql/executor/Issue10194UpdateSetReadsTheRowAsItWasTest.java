@@ -76,6 +76,14 @@ class Issue10194UpdateSetReadsTheRowAsItWasTest extends TestHelper {
   }
 
   @Test
+  void twoItemsOnTheSamePropertyStillApplyInOrder() {
+    // only the right-hand sides are read from the old row: a compound operator extends the value its own property holds by then
+    update("UPDATE T SET a = 1, a += 2");
+
+    assertRow(3, 2);
+  }
+
+  @Test
   void expressionsReadTheOldRow() {
     update("UPDATE T SET a = a + b, b = a * 10");
 

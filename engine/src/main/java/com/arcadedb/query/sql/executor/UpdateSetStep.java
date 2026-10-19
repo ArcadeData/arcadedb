@@ -39,7 +39,8 @@ public class UpdateSetStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
-    // Reused across the records of the statement: only a multi-item SET needs it, one item reads the row it writes to
+    // Reused across the records of the statement: only a multi-item SET needs it, one item reads the row it writes to. Not
+    // thread-safe, and it does not need to be: a ResultSet is pulled by one thread and each execution builds its own
     final Object[] rightValues = items.size() > 1 ? new Object[items.size()] : null;
     return new ResultSet() {
       @Override
