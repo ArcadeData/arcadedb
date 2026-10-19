@@ -531,17 +531,16 @@ public class EdgeLinkedList {
       }
     }
 
-    // addAll batches its updateRecord calls and does not register individual appends: exclude every touched
-    // edge page from the append-merge so a concurrent-append rebase can never lose these edges.
-    final TransactionContext tx = database.getTransactionIfExists();
+    // addAll batches its updateRecord calls and does not register individual appends: every touched segment is
+    // written as a rewrite, excluding its page from the append-merge so a concurrent-append rebase can never lose these
+    // edges.
     for (final Record r : recordsToUpdate) {
       // A vertex is in the set for its head pointer only: its own bookkeeping, which no listener hears (issue #10207)
       if (r instanceof MutableVertex)
         database.updateRecordWithoutEvents(r);
       else
-        database.updateRecord(r);
-      if (tx != null && r instanceof MutableEdgeSegment segment)
-        tx.poisonEdgeAppendPage(segment.getIdentity());
+        // THE SET HOLDS NOTHING BUT THE VERTEX AND THE SEGMENTS THE BATCH WROTE TO
+        updateRewrittenSegment(database, (EdgeSegment) r);
     }
   }
 
@@ -796,17 +795,33 @@ public class EdgeLinkedList {
       prevBrowsed.setPrevious(previousOf(current));
       // The pages are excluded BEFORE the writes: a write to a segment on an excluded page is replayed by the
       // disjoint-slot merge, which keeps two transactions touching different segments of one page from failing (#9208)
-      if (tx != null) {
-        tx.poisonEdgeAppendPage(prevBrowsed.getIdentity());
-        tx.poisonEdgeAppendPage(current.getIdentity());
-      }
-      database.updateRecord(prevBrowsed);
-      current.delete();
-    } else {
       if (tx != null)
         tx.poisonEdgeAppendPage(current.getIdentity());
-      database.updateRecord(current);
-    }
+      updateRewrittenSegment(database, prevBrowsed);
+      current.delete();
+    } else
+      updateRewrittenSegment(database, current);
+  }
+
+  /**
+   * Writes a segment this transaction changed in any way but an in-chunk append of {@link #add} - an entry taken out, a
+   * relink, a batch of entries nobody tracked - and excludes its page from the commit-time edge-append merge first.
+   * Every such write goes through here, never through {@code updateRecord} directly ({@code Issue10375} pins it with a
+   * census of the callers).
+   * <p>
+   * The exclusion is not optional, and the coverage proof of #5596 does not make it so. The merge rebases a conflicting
+   * page as committed image plus this transaction's TRACKED appends, and {@code LocalBucket.updateRecord} declares a
+   * segment write replayable when the segment has tracked appends and its page is not excluded. The declaration covers
+   * the segment's final buffer as a whole, so a buffer carrying this transaction's appends AND a removal looks exactly
+   * like an append-only one: without the exclusion the removal is rebased away at commit, while the edge record it named
+   * stays deleted (#10375). Excluded, the page is left to the disjoint-slot merge, whose pre-image check of the slot
+   * turns a concurrent change of the same segment into a retryable conflict (#9208).
+   */
+  static void updateRewrittenSegment(final DatabaseInternal database, final EdgeSegment segment) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null)
+      tx.poisonEdgeAppendPage(segment.getIdentity());
+    database.updateRecord(segment);
   }
 
   public void deleteAll() {
