@@ -5971,6 +5971,18 @@ public class LocalSchema implements Schema {
     return published.bucketId2TypeMap().get(bucketId);
   }
 
+  /**
+   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it. The one place the verdict and its
+   * wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before it registers a type,
+   * so a refusal leaves no half-built type behind (issue #10317).
+   */
+  void checkBucketIsFree(final String typeName, final Bucket bucket) {
+    final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
+    if (owner != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+  }
+
   /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */
   private String bucketTypeMapsDifference() {
     final Map<Integer, LocalDocumentType>[] expected = computeBucketTypeMaps();
