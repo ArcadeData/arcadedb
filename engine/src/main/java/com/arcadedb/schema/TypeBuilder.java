@@ -275,6 +275,18 @@ public class TypeBuilder<T> {
         for (final LocalDocumentType sup : superTypes)
           LocalEdgeType.checkCanBeLightweight(typeName, sup);
 
+      // The same for a bucket another type owns: addBucket refuses it, but only after the type is registered, which left the
+      // type behind with no bucket (issue #10317)
+      if (bucketInstances.isEmpty()) {
+        for (int i = 0; i < buckets; ++i) {
+          final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
+          if (schema.existsBucket(bucketName))
+            checkBucketIsFree(schema, schema.getBucketByName(bucketName));
+        }
+      } else
+        for (final Bucket bucket : bucketInstances)
+          checkBucketIsFree(schema, bucket);
+
       final LocalDocumentType c;
       if (type.equals(VertexType.class))
         c = new LocalVertexType(schema, typeName);
@@ -312,6 +324,13 @@ public class TypeBuilder<T> {
 
       return c;
     });
+  }
+
+  private void checkBucketIsFree(final LocalSchema schema, final Bucket bucket) {
+    final LocalDocumentType owner = schema.getBucketOwner(bucket.getFileId());
+    if (owner != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is already associated to the type '" + owner.getName() + "'");
   }
 
   public TypeBuilder<T> withName(final String typeName) {
