@@ -251,7 +251,8 @@ class PackagingManifestsTest {
       assertThat(code).as("%s must create the arcadedb user with an explicit UID", name)
           .containsPattern("(?m)^RUN (?:.*&& )?adduser .*-u " + IMAGE_UID + "\\b.* arcadedb(?: &&.*)?$");
       // Without -G, BusyBox adduser creates a same-named group whose GID is the UID. With an explicit group, that
-      // group has to be pinned to the same id, or a system group lands on 101 and the GID drifts on its own.
+      // group has to be pinned to the same id, or a system group lands on 101 and the GID drifts on its own. Neither
+      // shipped Dockerfile uses -G today, so this branch only guards a future edit.
       final Matcher group = Pattern.compile("(?m)^RUN .*adduser .*-G (\\S+)").matcher(code);
       if (group.find())
         assertThat(code).as("%s must create the %s group with an explicit GID", name, group.group(1))

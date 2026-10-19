@@ -207,6 +207,18 @@ The builder creates:
 - `{output-name}.tar.gz` - Compressed tarball
 - Docker image with tag `{docker-tag}` (if not skipped)
 
+### Docker image user
+
+The generated image runs as the `arcadedb` user with UID/GID `1000:1000`, the same owner as the official JVM and
+native images, so their `databases`, `backups` and `log` volumes are interchangeable.
+
+**Upgrading a custom image built before 26.11.1:** older builder versions created a system user (`100:101`). Change
+the owner of the existing volumes once before starting the new image, for example:
+
+```bash
+docker run --rm -u 0 -v <volume>:/data alpine chown -R 1000:1000 /data
+```
+
 ## Directory Structure
 
 ```
