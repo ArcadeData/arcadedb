@@ -549,9 +549,10 @@ public class GraphEngine {
    * @param bidirectional {@code false} asks for edges without an incoming side, which only a unidirectional type can hold: a
    *                      connection on a bidirectional type is then refused, as
    *                      {@link MutableVertex#newEdge(String, Identifiable, boolean, Object...)} refuses it. This check runs on
-   *                      every connection before any edge of the batch is created, so this refusal leaves nothing behind; a
-   *                      failure met later while creating the edges (a deleted destination, a property, a duplicated key) can
-   *                      still leave the earlier edges of the batch in the caller's transaction. {@code true} is
+   *                      every connection before any edge of the batch is created, as do the checks of every destination (one
+   *                      this transaction deleted, or one of a unidirectional type that does not exist), so these refusals leave
+   *                      nothing behind; a failure met later while creating the edges (a property, a duplicated key) can still
+   *                      leave the earlier edges of the batch in the caller's transaction. {@code true} is
    *                      what every type accepts, and a unidirectional type still gets no incoming side.
    *
    * @throws IllegalArgumentException if {@code bidirectional} is {@code false} and a connection names a bidirectional edge type
@@ -562,19 +563,25 @@ public class GraphEngine {
     if (connections == null || connections.isEmpty())
       return Collections.emptyList();
 
-    // RESOLVE EVERY TYPE FIRST: A REFUSED CONNECTION MUST NOT LEAVE THE EDGES BEFORE IT STORED IN THE CALLER'S TRANSACTION
-    final int size = connections.size();
-    final EdgeType[] edgeTypes = new EdgeType[size];
-    for (int i = 0; i < size; ++i) {
-      final EdgeType edgeType = getEdgeType(database, connections.get(i).edgeTypeName);
-      if (!bidirectional && edgeType.isBidirectional())
-        throw new IllegalArgumentException(unidirectionalEdgeOnBidirectionalTypeMessage(edgeType.getName()));
-      edgeTypes[i] = edgeType;
-    }
-
     final RID sourceVertexRID = sourceVertex.getIdentity();
     checkEndpointsNotDeletedInTransaction(database, sourceVertexRID, null);
     final TransactionContext tx = database.getTransactionIfExists();
+
+    // RESOLVE EVERY TYPE AND CHECK EVERY DESTINATION FIRST: A REFUSED CONNECTION MUST NOT LEAVE THE EDGES BEFORE IT STORED IN THE
+    // CALLER'S TRANSACTION, SAVED BUT NOT YET WIRED INTO THE SOURCE'S OUT LIST (issue #10325)
+    final int size = connections.size();
+    final EdgeType[] edgeTypes = new EdgeType[size];
+    for (int i = 0; i < size; ++i) {
+      final CreateEdgeOperation connection = connections.get(i);
+      final EdgeType edgeType = getEdgeType(database, connection.edgeTypeName);
+      if (!bidirectional && edgeType.isBidirectional())
+        throw new IllegalArgumentException(unidirectionalEdgeOnBidirectionalTypeMessage(edgeType.getName()));
+      final RID destinationRID = connection.destinationVertex.getIdentity();
+      checkDestinationNotDeletedInTransaction(tx, destinationRID);
+      if (!edgeType.isBidirectional())
+        checkUnidirectionalDestinationExists(tx, destinationRID);
+      edgeTypes[i] = edgeType;
+    }
 
     final List<Edge> edges = new ArrayList<>(size);
     final List<Pair<Identifiable, Identifiable>> outEdgePairs = new ArrayList<>();
@@ -583,7 +590,6 @@ public class GraphEngine {
     for (int i = 0; i < size; ++i) {
       final CreateEdgeOperation connection = connections.get(i);
       final Identifiable destinationVertex = connection.destinationVertex;
-      checkDestinationNotDeletedInTransaction(tx, destinationVertex.getIdentity());
 
       final EdgeType edgeType = edgeTypes[i];
 
@@ -598,9 +604,6 @@ public class GraphEngine {
           edges.add(lightEdge);
         continue;
       }
-
-      if (!edgeType.isBidirectional())
-        checkUnidirectionalDestinationExists(tx, destinationVertex.getIdentity());
 
       final MutableEdge edge = new MutableEdge(database, edgeType, sourceVertexRID, destinationVertex.getIdentity());
 

@@ -95,6 +95,23 @@ class Issue10325UnidirectionalEdgeToMissingVertexTest extends TestHelper {
   }
 
   @Test
+  void aBatchWithAMissingDestinationLeavesNoEdgeOfItBehind() {
+    // THE SOURCE ITSELF AS THE DESTINATION THAT EXISTS: A VERTEX CREATED HERE WOULD TAKE THE FREED SLOT OF THE DELETED ONE
+    final RID[] alive = { source };
+
+    // THE REFUSAL IS CAUGHT AND THE TRANSACTION COMMITTED: THE EDGE BEFORE THE MISSING DESTINATION MUST NOT HAVE BEEN SAVED, OR IT
+    // WOULD BE COMMITTED WITHOUT ITS ENTRY IN THE SOURCE'S OUT LIST
+    database.begin();
+    assertThatThrownBy(() -> ((DatabaseInternal) database).getGraphEngine().newEdges((VertexInternal) source.asVertex(),
+        List.of(new GraphEngine.CreateEdgeOperation("U", alive[0], new Object[0]),
+            new GraphEngine.CreateEdgeOperation("U", gone, new Object[0])), false)).isInstanceOf(RecordNotFoundException.class);
+    database.commit();
+
+    assertThat(edges("U")).isZero();
+    assertThat(source.asVertex().countEdges(Vertex.DIRECTION.OUT, "U")).isZero();
+  }
+
+  @Test
   void lightweightUnidirectionalEdgeIsRefusedAsNotFound() {
     database.begin();
     try {
