@@ -38,6 +38,7 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
@@ -100,6 +101,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // concurrent queries (issue #4909).
   private static final Result       EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
+  // The IN-lists of the WHERE filter a property index can answer, found once here rather than per input row (see InListSeek)
+  private final List<InListSeek>    inListSeeks;
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
   // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
   // pretty printer at plan-print time. Not safe to share a step instance across concurrent MATCH
@@ -225,6 +228,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.whereFilter = dynamicIdExpression != null
         ? stripIdEqualityForVariable(whereFilter, variable)
         : whereFilter;
+    this.inListSeeks = this.whereFilter != null ? findInListSeeks(this.whereFilter) : List.of();
   }
 
   /**
@@ -552,6 +556,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       if (whereFilterHasEqualityPredicateOnOwnVariable(whereFilter))
         return false;
+      // An IN-list is seeked per row only when the row says what it holds; a fixed one gives every row the same candidates
+      for (final InListSeek seek : inListSeeks)
+        if (!seek.rowIndependent())
+          return false;
     }
     return true;
   }
@@ -565,9 +573,6 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * is not something {@code tryFindAndUseIndexFromWhere} can act on either, so it must not disqualify caching.
    */
   private boolean whereFilterHasEqualityPredicateOnOwnVariable(final BooleanExpression expr) {
-    // An IN-list on the own variable is a set of equalities, which tryInListIndexSeek can seek per row
-    if (expr instanceof InExpression in)
-      return isPropertyAccessOnOwnVariable(in.getExpression());
     if (expr instanceof ComparisonExpression comp) {
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
         return false;
@@ -992,45 +997,81 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
+   * A {@code variable.property IN <list>} conjunct of the WHERE filter's top-level AND chain that {@link #tryInListIndexSeek}
+   * may answer from an index. Found once, from the constructor: the answer is a property of the query text, and a chained MATCH
+   * re-opens the step once per outer row.
+   *
+   * @param rowIndependent true when the list reads no variable at all (literals and parameters), so every input row seeks the
+   *                       same keys and the candidates may be cached like those of a full scan
+   */
+  private record InListSeek(InExpression in, String propertyName, boolean rowIndependent) {
+  }
+
+  /**
+   * The IN-lists of {@code expr} the index can answer: one whose elements read the node being matched cannot be, since the
+   * node is not bound while its candidates are being chosen and every such element would evaluate to a null the seek would
+   * take for "equals nothing". The WHERE filter, which sees the node, answers those. A list whose names are not
+   * all known (a shape the collector does not model) is left to the filter too.
+   */
+  private List<InListSeek> findInListSeeks(final BooleanExpression expr) {
+    final List<InListSeek> seeks = new ArrayList<>();
+    collectInListSeeks(expr, seeks);
+    return seeks.isEmpty() ? List.of() : seeks;
+  }
+
+  private void collectInListSeeks(final BooleanExpression expr, final List<InListSeek> seeks) {
+    if (expr instanceof InExpression in && in.getExpression() instanceof PropertyAccessExpression property
+        && isPropertyAccessOnOwnVariable(property)) {
+      boolean rowIndependent = true;
+      for (final Expression element : in.getList()) {
+        final CypherReferencedVariables referenced = CypherReferencedVariables.of(element);
+        if (referenced.referencesAny(List.of(variable)))
+          return;
+        rowIndependent &= referenced.getNames().isEmpty();
+      }
+      seeks.add(new InListSeek(in, property.getPropertyName(), rowIndependent));
+    } else if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      collectInListSeeks(logical.getLeft(), seeks);
+      collectInListSeeks(logical.getRight(), seeks);
+    }
+  }
+
+  /**
    * Answers a {@code variable.property IN <list>} predicate of the WHERE filter's top-level AND chain with one seek per
    * distinct list element on a single-property index, as the optimizer's {@code NodeIndexSeek} does for an IN-list anchor.
    * Every query with an OPTIONAL MATCH runs here, and without this a {@code WHERE n.id IN $ids} scanned the whole type and
    * compared each record against every element. The WHERE filter still runs on every record the seek yields, so the seek
    * only narrows the candidates; anything it cannot answer exactly (an element that is a list or a map, a right side that
-   * is not a list, a concurrent index drop) returns null and leaves the scan in charge.
+   * is not a list, a concurrent index drop) returns null and leaves the scan in charge. When several IN-lists could be
+   * seeked, the one with the fewest distinct elements is.
    */
   private Iterator<Identifiable> tryInListIndexSeek(final DocumentType type, final String label,
       final Result currentInputResult) {
-    final List<InExpression> inPredicates = new ArrayList<>();
-    extractInListPredicates(whereFilter, inPredicates);
+    TypeIndex bestIndex = null;
+    String bestProperty = null;
+    List<Object[]> bestKeys = null;
 
-    for (final InExpression in : inPredicates) {
-      final String propertyName = ((PropertyAccessExpression) in.getExpression()).getPropertyName();
-      final TypeIndex index = singlePropertyIndex(type, propertyName);
+    for (final InListSeek seek : inListSeeks) {
+      final TypeIndex index = singlePropertyIndex(type, seek.propertyName());
       if (index == null)
         continue;
 
-      final List<Object[]> keys = resolveInListKeys(in, currentInputResult);
-      if (keys == null)
-        continue;
-
-      usedIndexName = index.getTypeName() + "[" + propertyName + "]";
-      // No element can equal anything (an empty list, or only nulls): the predicate is never true
-      if (keys.isEmpty())
-        return Collections.emptyIterator();
-
-      return seekKeys(index, label, keys);
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult);
+      if (keys != null && (bestKeys == null || keys.size() < bestKeys.size())) {
+        bestIndex = index;
+        bestProperty = seek.propertyName();
+        bestKeys = keys;
+      }
     }
-    return null;
-  }
+    if (bestKeys == null)
+      return null;
 
-  private void extractInListPredicates(final BooleanExpression expr, final List<InExpression> predicates) {
-    if (expr instanceof InExpression in && isPropertyAccessOnOwnVariable(in.getExpression()))
-      predicates.add(in);
-    else if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
-      extractInListPredicates(logical.getLeft(), predicates);
-      extractInListPredicates(logical.getRight(), predicates);
-    }
+    // No element can equal anything (an empty list, or only nulls): the predicate is never true
+    final Iterator<Identifiable> seek = bestKeys.isEmpty() ? Collections.emptyIterator() : seekKeys(bestIndex, label, bestKeys);
+    // Only a seek that answered is reported: a null leaves the scan in charge
+    if (seek != null)
+      usedIndexName = bestIndex.getTypeName() + "[" + bestProperty + "]";
+    return seek;
   }
 
   private TypeIndex singlePropertyIndex(final DocumentType type, final String propertyName) {

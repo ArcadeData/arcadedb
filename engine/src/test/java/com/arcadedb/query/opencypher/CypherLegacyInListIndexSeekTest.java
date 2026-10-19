@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -156,6 +157,77 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
         .isEqualTo(ids("MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
     assertThat(plan(seek, params)).contains("[index: Person[code]]");
     assertThat(ids(seek + " LIMIT 3", params)).hasSize(3);
+  }
+
+  @Test
+  void singleElementListSeeksTheIndex() {
+    final String seek = "MATCH (p:Person) WHERE p.id IN [5]" + OPTIONAL_TAIL;
+
+    assertThat(ids(seek, null)).containsExactly(5);
+    assertThat(plan(seek, null)).contains("[index: Person[id]]");
+  }
+
+  @Test
+  void elementsOfOtherTypesAnswerAsTheScan() {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("ids", Arrays.asList(true, 3.0, 4.5, "7", "7.0", LocalDate.of(2020, 1, 1), 8L, List.of(9), Map.of("a", 1)));
+
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL, params))
+        .isEqualTo(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
+    params.put("ids", Arrays.asList(true, 3.0, 4.5, "7", "7.0", LocalDate.of(2020, 1, 1), 8L));
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL, params))
+        .isEqualTo(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
+    params.put("ids", Arrays.asList(1, 2.0, "3"));
+    assertThat(ids("MATCH (p:Person) WHERE p.code IN $ids" + OPTIONAL_TAIL, params))
+        .isEqualTo(ids("MATCH (p:Person) WHERE p.codeCopy IN $ids" + OPTIONAL_TAIL, params));
+  }
+
+  @Test
+  void indexDeclaredOnASupertypeAnswersOnlyTheLabel() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Employee", 1).addSuperType("Person");
+      database.command("opencypher", "CREATE (:Employee {id: 100, idCopy: 100})");
+    });
+
+    assertThat(ids("MATCH (p:Employee) WHERE p.id IN [3, 100]" + OPTIONAL_TAIL, null)).containsExactly(100);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [3, 100]" + OPTIONAL_TAIL, null)).containsExactly(3, 100);
+  }
+
+  @Test
+  void listElementReadingTheMatchedNodeItselfIsNotDroppedAsNull() {
+    // an element only the candidate can answer is no null: the seek has no value for it, so the scan and the filter answer
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [1, p.idCopy]" + OPTIONAL_TAIL, null)).hasSize(50);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [p.idCopy]" + OPTIONAL_TAIL, null)).hasSize(50);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [p.idCopy + 1, 2]" + OPTIONAL_TAIL, null)).containsExactly(2);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [size(p.name) - 7]" + OPTIONAL_TAIL, null)).containsExactly(0);
+    assertThat(plan("MATCH (p:Person) WHERE p.id IN [1, p.idCopy]" + OPTIONAL_TAIL, null)).doesNotContain("[index:");
+  }
+
+  @Test
+  void listElementReadingTheMatchedNodeOfAChainedMatchIsNotDropped() {
+    final String query = "UNWIND [1, 2] AS k MATCH (p:Person) WHERE p.id IN [k, p.idCopy + 100]" + OPTIONAL_TAIL;
+
+    assertThat(ids(query, null)).containsExactly(1, 2);
+    assertThat(ids("UNWIND [1] AS k MATCH (p:Person) WHERE p.id IN [p.idCopy, k]" + OPTIONAL_TAIL, null)).hasSize(50);
+  }
+
+  @Test
+  void fixedListOfAChainedMatchGivesEveryOuterRowTheSameCandidates() {
+    final Map<String, Object> params = Map.of("codes", List.of("c1", "c2"));
+    final String seek = "UNWIND [1, 2, 3] AS k MATCH (p:Person) WHERE p.code IN $codes" + OPTIONAL_TAIL;
+
+    assertThat(ids(seek, params)).hasSize(30)
+        .isEqualTo(ids("UNWIND [1, 2, 3] AS k MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
+    assertThat(plan(seek, params)).contains("[index: Person[code]]");
+  }
+
+  @Test
+  void theListWithTheFewestElementsIsSought() {
+    final Map<String, Object> params = Map.of("codes", List.of("c1", "c2", "c3", "c4"));
+    final String seek = "MATCH (p:Person) WHERE p.code IN $codes AND p.id IN [3, 4, 99]" + OPTIONAL_TAIL;
+
+    assertThat(ids(seek, params)).containsExactly(3, 4);
+    assertThat(plan(seek, params)).contains("[index: Person[id]]");
   }
 
   private List<Integer> ids(final String cypher, final Map<String, Object> params) {
