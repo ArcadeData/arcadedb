@@ -202,7 +202,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     // Try CSR-accelerated provider for non-edge path
     if (!Boolean.TRUE.equals(shortestPathContext.edge)) {
       final Database db = shortestPathContext.sourceVertex.getDatabase();
-      shortestPathContext.provider = GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam);
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam);
+      // Pinned: the search asks it for node ids, neighbours and RIDs until the paths meet, all of the same numbering (issue #10350)
+      shortestPathContext.provider = provider != null ? provider.pinned() : null;
       if (shortestPathContext.provider != null)
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
     }

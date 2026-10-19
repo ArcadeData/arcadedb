@@ -120,7 +120,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     // through GraphTraversalProvider#edgeWeightsOf per popped node, sized against the overlay's own id-space
     // upper bound rather than the base node mapping (issue #6792) - so this procedure no longer has to refuse
     // the whole call just because a commit landed since the view was last built (issue #6791).
-    if (provider instanceof GraphAnalyticalView gav && gav.servesEdgeProperty(weightProperty, relTypes)) {
+    if (provider instanceof GraphAnalyticalView.Pinned gav && gav.servesEdgeProperty(weightProperty, relTypes)) {
       final Stream<Result> accelerated = executeWithCSR(gav, startNode.getIdentity(), relTypes, weightProperty, dir);
       // Null means the kernel refused outright: a node it popped could not be answered exactly even through
       // the overlay-aware fallback GraphAlgorithms.dijkstraSingleSource takes while an overlay is active
@@ -135,7 +135,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     return executeWithOLTP(db, startNode, relTypes, weightProperty, dir, context);
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final RID startRid,
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView.Pinned gav, final RID startRid,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
     // The exclusive bound of the dense id space, not the live node count: while an overlay is active the two
     // diverge (issue #6792) - an added node's id sits above the base mapping regardless of how many nodes are
