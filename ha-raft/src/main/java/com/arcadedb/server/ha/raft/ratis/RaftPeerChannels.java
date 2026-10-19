@@ -63,8 +63,10 @@ public final class RaftPeerChannels {
   /**
    * The channels found for a peer, each listed once, and whether they are all the connections the proxy holds for it.
    * A pooled channel that was never built is no connection, so it is not missing from a complete census.
+   * {@code unreadable} is why reflection could not read the proxy, or {@code null} when it could: a census can be
+   * incomplete with readable fields too, when it finds something it cannot account for.
    */
-  public record Census(List<ManagedChannel> channels, boolean complete) {
+  public record Census(List<ManagedChannel> channels, boolean complete, String unreadable) {
   }
 
   private RaftPeerChannels() {
@@ -73,19 +75,19 @@ public final class RaftPeerChannels {
   /** Lists the channels {@code proxy} - a Ratis {@code GrpcServerProtocolClient} - holds for its peer. */
   public static Census of(final Object proxy) {
     if (proxy == null)
-      return new Census(List.of(), false);
+      return new Census(List.of(), false, null);
     final Walk walk = new Walk();
     try {
       walk.fieldsOf(proxy, 0);
     } catch (final RuntimeException | IllegalAccessException e) {
       // InaccessibleObjectException in a module-path deployment, missing reflection metadata in a native image
-      return new Census(List.copyOf(walk.channels), false);
+      return new Census(List.copyOf(walk.channels), false, e.toString());
     }
     boolean complete = walk.complete && !walk.channels.isEmpty();
     for (final AbstractStub<?> stub : walk.stubs)
       if (!containsSame(walk.channels, stub.getChannel()))
         complete = false;
-    return new Census(List.copyOf(walk.channels), complete);
+    return new Census(List.copyOf(walk.channels), complete, null);
   }
 
   private static boolean containsSame(final List<ManagedChannel> channels, final Channel channel) {

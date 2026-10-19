@@ -105,6 +105,7 @@ class Issue10374SelfDialProbeCoversEveryChannelTest {
       assertThat(census.channels().get(0)).isNotSameAs(census.channels().get(1));
       assertThat(census.channels()).contains((ManagedChannel) field(client, "channel"), (ManagedChannel) field(client, "hbChannel"));
       assertThat(census.complete()).isTrue();
+      assertThat(census.unreadable()).as("reflection read the proxy").isNull();
     } finally {
       ((Closeable) client).close();
     }

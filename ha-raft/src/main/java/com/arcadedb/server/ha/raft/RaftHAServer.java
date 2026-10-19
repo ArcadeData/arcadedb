@@ -1338,9 +1338,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (rpc == null)
       return null;
 
+    // The channels are probed after they are listed, over up to a few request timeouts: a reset of the proxy in between
+    // closes them, the probes fail UNAVAILABLE and the outcome is ELSEWHERE - harmless, as the reset rebuilt them anyway
     if (rpc instanceof RaftServerRpcWithProxy<?, ?> withProxy && withProxy.getProxies() != null)
       try {
         final RaftPeerChannels.Census census = RaftPeerChannels.of(withProxy.getProxies().getProxy(addressedTo));
+        // Once per JVM: reflection blocked on the module path, or missing native-image metadata, does not go away
+        if (census.unreadable() != null && SELF_DIAL_CENSUS_FALLBACK_LOGGED.compareAndSet(false, true))
+          LogManager.instance().log(this, Level.INFO,
+              "Could not read the gRPC channels Ratis holds for peer '%s' (%s): a probe the peer answers over the channels "
+                  + "that could be read is reported as inconclusive rather than as proof of another sender", addressedTo,
+              census.unreadable());
         if (!census.channels().isEmpty()) {
           final TimeDuration timeout = RaftServerConfigKeys.Rpc.requestTimeout(server.getProperties());
           final List<SelfDialProbeTransport> transports = new ArrayList<>(census.channels().size());
@@ -1349,15 +1357,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
                 .withDeadlineAfter(timeout.getDuration(), timeout.getUnit()).requestVote(probe));
           return new SelfDialProbeChannels(transports, census.complete());
         }
+        LogManager.instance().log(this, Level.FINE,
+            "Found no gRPC channel to '%s' for a self-dial probe: probing over the Raft server RPC, as inconclusive", addressedTo);
       } catch (final IOException | RuntimeException e) {
         LogManager.instance().log(this, Level.FINE, "Could not list the channels to '%s' for a self-dial probe: %s",
             addressedTo, e.toString());
       }
-    // Once per JVM: the reason (reflection blocked on the module path, missing native-image metadata) does not change
-    if (SELF_DIAL_CENSUS_FALLBACK_LOGGED.compareAndSet(false, true))
-      LogManager.instance().log(this, Level.INFO,
-          "Could not list the gRPC channels Ratis holds for peer '%s': self-dial probes go over the primary channel only, "
-              + "and a probe the peer answers is reported as inconclusive rather than as proof of another sender", addressedTo);
     return new SelfDialProbeChannels(List.of(rpc::requestVote), false);
   }
 
