@@ -454,9 +454,14 @@ public class HttpServer implements ServerPlugin {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
+    // The routes the two routers above answer: a plugin path that would shadow one is refused, not served instead (issue #10385)
+    routes.reserveServerRoutes("/api/v1", basicRoutes.getRegisteredRoutes());
+    routes.reserveServerRoutes("/api/v1/ai", aiRoutes.getRegisteredRoutes());
+
     // A plugin declares its routes with their methods through PluginRoutes (issue #10296). The deprecated PathHandler
     // overload is still called for a plugin built against it; a route added there directly answers every method, and
-    // PluginPathHandler names it (issue #10157)
+    // PluginPathHandler names it (issue #10157). A route that is not one plugin's alone - another plugin's, or the
+    // server's - is refused there, and the refusal fails the start (issue #10385)
     for (final ServerPlugin plugin : server.getPlugins()) {
       routes.setRegisteringPlugin(plugin.getName());
       try {

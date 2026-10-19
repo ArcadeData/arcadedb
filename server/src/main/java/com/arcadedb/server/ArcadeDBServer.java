@@ -269,8 +269,14 @@ public class ArcadeDBServer {
   // a database created inside it was dropped and overwritten with no error reported to either caller. Sampling the
   // name a second time would not have helped - the two samples are not atomic with each other either - so the name
   // is reserved in the same databasesLock section as the pre-check and released when the restore ends. Creators are
-  // refused, not parked: waiting here would block a create behind a multi-GB download.
+  // refused, not parked: waiting here would block a create behind a multi-GB download. A client request is refused the
+  // same way when it would OPEN the target (issue #10388), but only a request: the restore resolves its own target.
   private final       Set<String>                           restoringDatabaseNames               = new HashSet<>();
+  // The databases whose files a drop is deleting right now (issue #10388). LocalDatabase.drop() closes the instance and
+  // only then runs the recursive delete, and until the delete reaches schema.json the directory still holds a database:
+  // a request that resolved the name in that window opened the directory being deleted. Set before the drop starts and
+  // cleared after the files are gone, by dropLocalDatabase, and refused to every caller by getDatabase under databasesLock.
+  private final       Set<String>                           beingDropped                         = ConcurrentHashMap.newKeySet();
   // Serialises start() and stop(). Deliberately an explicit lock rather than `synchronized` on the
   // instance: the JVM shutdown hook must be able to give up on it (see stopFromShutdownHook), because a
   // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
@@ -1437,8 +1443,10 @@ public class ArcadeDBServer {
       return db;
 
     // ONLY WHILE THE SERVER IS ONLINE: NOT WHILE IT STARTS (THE DATABASES ARE BEING LOADED, AND THE HA PLUGIN RE-WRAPS THEM) AND
-    // NOT WHILE IT STOPS (A DATABASE OPENED THEN WOULD BE LEFT OPEN BEHIND THE SHUTDOWN)
-    if (status == STATUS.ONLINE && !isReservedDatabaseName(databaseName) && !closedByCommand.contains(databaseName)) {
+    // NOT WHILE IT STOPS (A DATABASE OPENED THEN WOULD BE LEFT OPEN BEHIND THE SHUTDOWN). A NAME AN OPERATOR HAS TAKEN AWAY (CLOSED,
+    // BEING DROPPED, BEING RESTORED) IS REFUSED BY getDatabase UNDER databasesLock, WHERE THE OPERATOR'S OWN STEP IS SERIALISED WITH
+    // THE LOAD (ISSUES #10234, #10388): A CHECK MADE HERE, WITHOUT THE LOCK, WOULD BE A SAMPLE THAT CAN GO STALE BEFORE THE OPEN
+    if (status == STATUS.ONLINE && !isReservedDatabaseName(databaseName)) {
       // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK, AND IS
       // ANSWERED AS IT ALWAYS WAS (NOT AVAILABLE), NOT WITH A NEW KIND OF ERROR
       if (isValidDatabaseName(databaseName)) {
@@ -1544,6 +1552,11 @@ public class ArcadeDBServer {
     if (restoringDatabaseNames.contains(databaseName))
       throw new ServerControlPlane.OperationInProgressException(
           "Cannot create database '" + databaseName + "': a restore of it is already in progress");
+    // The other way a name is taken away from whoever would bring a database in under it (issue #10388): its files are being
+    // deleted, and a database created now would be built in the directory being emptied
+    if (beingDropped.contains(databaseName))
+      throw new ServerControlPlane.OperationInProgressException(
+          "Cannot create database '" + databaseName + "': it is being dropped");
   }
 
   public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
@@ -1799,6 +1812,34 @@ public class ArcadeDBServer {
    */
   public void removeClosedDatabase(final String databaseName) {
     removeDatabase(databaseName, true);
+  }
+
+  /**
+   * Drops the files of {@code databaseName} through its embedded instance, the drop of a database that is not replicated, and
+   * deregisters it (issue #10388).
+   * <p>
+   * {@code LocalDatabase.drop()} closes the instance and only then runs the recursive delete, which holds no lock a request
+   * shares and takes as long as the database is large. Until it reaches {@code schema.json} the directory still holds a
+   * database, so a request that resolved the name in that window opened the directory being deleted: a torn-database error that
+   * reads as corruption, a live instance whose files were removed under it, or an open instance that
+   * {@link #removeDatabase(String)} then deregistered behind its back, which kept its path and refused the name when it was
+   * created again. The name is therefore held from before the drop starts until the files are gone: {@link #getDatabase} refuses
+   * to open it for any caller, under {@link #databasesLock}, and so does {@link #createDatabase}. The hold is released when the
+   * drop ends, however it ends, so a drop that failed leaves the name as it was.
+   * <p>
+   * A replicated database is dropped through the cluster instead, which closes, deregisters and renames its directory aside under
+   * {@link #databasesLock} as one step.
+   */
+  public void dropLocalDatabase(final DatabaseInternal embedded, final String databaseName) {
+    final boolean held = beingDropped.add(databaseName);
+    try {
+      embedded.drop();
+      removeDatabase(databaseName);
+    } finally {
+      // Only the hold taken here: a drop that overlapped another, which the maintenance slot does not allow, must not end its hold
+      if (held)
+        beingDropped.remove(databaseName);
+    }
   }
 
   private void removeDatabase(final String databaseName, final boolean keepClosedByCommandMark) {
@@ -2103,9 +2144,10 @@ public class ArcadeDBServer {
   }
 
   /**
-   * @param refuseIfClosedByCommand {@code true} for a client request (issue #10234): a database a {@code close database}
-   *                                command closed is not opened for it. Checked under {@link #databasesLock}, where the
-   *                                command deregisters the database, so a request cannot reopen it between the two.
+   * @param refuseIfClosedByCommand {@code true} for a client request (issues #10234, #10388): a database a {@code close
+   *                                database} command closed, or one a restore holds, is not opened for it. Checked under
+   *                                {@link #databasesLock}, where the command deregisters the database, so a request cannot
+   *                                reopen it between the two. A database being dropped is refused to every caller.
    */
   private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
       final boolean allowLoad, final boolean underSnapshotRecovery, final boolean refuseIfClosedByCommand) {
@@ -2155,9 +2197,22 @@ public class ArcadeDBServer {
         if (!allowLoad)
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
 
-        if (refuseIfClosedByCommand && closedByCommand.contains(databaseName))
-          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
-              + "'close database' command and stays closed until 'open database'");
+        // Whoever takes a database away has to be seen here, under the lock the load takes, or the load and the operation
+        // interleave (issues #10234, #10388). A drop is refused to every caller: its files are being deleted, and nobody
+        // has a use for the directory. A close and a restore are refused to a client request only - 'open database' and the
+        // restore itself resolve the name through here too.
+        if (beingDropped.contains(databaseName))
+          throw new DatabaseNotAvailableException(
+              "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted");
+
+        if (refuseIfClosedByCommand) {
+          if (closedByCommand.contains(databaseName))
+            throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
+                + "'close database' command and stays closed until 'open database'");
+          if (restoringDatabaseNames.contains(databaseName))
+            throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: a restore of it is in "
+                + "progress, and will replace what is on disk");
+        }
 
         checkDatabaseNameIsValid(databaseName);
 
@@ -2612,11 +2667,10 @@ public class ArcadeDBServer {
                   + "the cluster is not told, and every peer keeps its current copy of '%s' until it restores from "
                   + "the same startup command or is otherwise brought back in sync", null, databaseName, databaseName);
 
-        ((DatabaseInternal) existing).getEmbedded().drop();
-        // Route through removeDatabase so this registry mutation also runs under databasesLock, keeping the
-        // defect-2 invariant consistent (this path is startup-single-threaded, but consistency is cheaper
-        // to keep than to reason about the exception).
-        removeDatabase(databaseName);
+        // Through the same drop the control plane uses: the registry mutation runs under databasesLock, keeping the defect-2
+        // invariant consistent, and the name is held until the files are gone (this path is startup-single-threaded, but
+        // consistency is cheaper to keep than to reason about the exception).
+        dropLocalDatabase(((DatabaseInternal) existing).getEmbedded(), databaseName);
       }
 
       final OperationProgress progress = OperationProgressRegistry.instance()

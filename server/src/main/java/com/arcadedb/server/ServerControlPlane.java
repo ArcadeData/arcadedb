@@ -1135,11 +1135,11 @@ public class ServerControlPlane {
   private void dropDatabaseClusterWide(final ServerDatabase database, final String databaseName) {
     if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
       haDb.dropInReplicas();
-    else {
-      // Non-HA: there is no cluster to tell, so delete the files here.
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
-    }
+    else
+      // Non-HA: there is no cluster to tell, so delete the files here. The name is held until they are gone, so a request
+      // cannot open the directory while it is being deleted (issue #10388). A replicated database does the equivalent on every
+      // peer: the apply closes, deregisters and renames the directory aside under the registry lock.
+      server.dropLocalDatabase(database.getEmbedded(), databaseName);
   }
 
   public void openDatabase(final String databaseName) {
@@ -2761,8 +2761,7 @@ public class ServerControlPlane {
   /** Best-effort compensating drop after a failed restore or import. Never masks the original failure. */
   private void dropQuietly(final ServerDatabase database, final String databaseName) {
     try {
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
+      server.dropLocalDatabase(database.getEmbedded(), databaseName);
     } catch (final Exception inner) {
       LogManager.instance().log(this, Level.SEVERE, "Compensating drop for '%s' failed", inner, databaseName);
     }
