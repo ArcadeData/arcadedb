@@ -115,6 +115,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final    AtomicLong           completedScansShrunkBatches = new AtomicLong();
   // THE FULL TYPE SCAN IN PROGRESS, KEPT TO GIVE ITS READ-AHEAD BACK WHEN THE STEP CLOSES OR OPENS ANOTHER SCAN
   private volatile ScanPressureReporter openScan;
+  // The IN-list seek the step is reading, closed with the step: a LIMIT stops reading it before its last key
+  private DistinctKeySeek openSeek;
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
   // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
@@ -278,6 +280,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (openScan != null) {
       openScan.releaseReadAhead();
       openScan = null;
+    }
+    if (openSeek != null) {
+      openSeek.close();
+      openSeek = null;
     }
     super.close();
   }
@@ -556,12 +562,31 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       if (whereFilterHasEqualityPredicateOnOwnVariable(whereFilter))
         return false;
-      // An IN-list is seeked per row only when the row says what it holds; a fixed one gives every row the same candidates
-      for (final InListSeek seek : inListSeeks)
-        if (!seek.rowIndependent())
-          return false;
+      if (seeksIndexPerRow(labels.getFirst()))
+        return false;
     }
     return true;
+  }
+
+  /**
+   * True when an IN-list of the WHERE filter is seeked from an index with keys only the input row can tell: every row then gets
+   * its own candidates. A fixed list gives every row the same ones, and a list over a property no index covers is not seeked at
+   * all, so neither keeps the candidates from being cached.
+   */
+  private boolean seeksIndexPerRow(final String label) {
+    DocumentType type = null;
+    for (final InListSeek seek : inListSeeks) {
+      if (seek.rowIndependent())
+        continue;
+      if (type == null) {
+        if (!context.getDatabase().getSchema().existsType(label))
+          return false;
+        type = context.getDatabase().getSchema().getType(label);
+      }
+      if (singlePropertyIndex(type, seek.propertyName()) != null)
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -1148,7 +1173,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return null;
       throw e;
     }
-    final Iterator<Identifiable> distinct = new DistinctKeySeek(index, keys, first, nextKey);
+    // A new seek is only opened once the one before it is drained, so there is never more than one to close
+    final DistinctKeySeek distinct = new DistinctKeySeek(index, keys, first, nextKey);
+    openSeek = distinct;
     return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(distinct, context.getDatabase(), label) : distinct;
   }
 
@@ -1187,13 +1214,28 @@ public class MatchNodeStep extends AbstractExecutionStep {
         } else {
           cursor.close();
           cursor = nextKey < keys.size() ? index.get(keys.get(nextKey++)) : null;
-          if (cursor == null) {
-            seen = null;
-            seenHeapLimit.release();
-          }
+          if (cursor == null)
+            releaseSeen();
         }
       }
       return next != null;
+    }
+
+    /** Gives back the cursor and the heap the RIDs seen hold, whether the seek is drained or abandoned. Safe to call twice. */
+    private void close() {
+      if (cursor != null) {
+        cursor.close();
+        cursor = null;
+      }
+      next = null;
+      releaseSeen();
+    }
+
+    private void releaseSeen() {
+      if (seen != null) {
+        seen = null;
+        seenHeapLimit.release();
+      }
     }
 
     @Override

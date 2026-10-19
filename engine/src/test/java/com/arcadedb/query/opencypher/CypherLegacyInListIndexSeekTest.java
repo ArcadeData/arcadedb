@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
@@ -228,6 +230,60 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
 
     assertThat(ids(seek, params)).containsExactly(3, 4);
     assertThat(plan(seek, params)).contains("[index: Person[id]]");
+  }
+
+  /**
+   * A seek over more than {@code ConsistentKeyLookup.MAX_ENTRIES} entries remembers the RIDs it returned and charges them to the heap
+   * budget all queries share. A LIMIT, or a client that closes the stream, stops the seek before its last key: closing the step gives
+   * the charge back instead of leaving it to the garbage collector.
+   */
+  @Test
+  void abandonedSeekGivesItsHeapChargeBack() {
+    final int total = 30_000;
+    database.transaction(() -> {
+      final var big = database.getSchema().createVertexType("Big");
+      big.createProperty("k", Integer.class);
+      big.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+      for (int i = 0; i < total; i++)
+        database.newVertex("Big").set("k", i).save();
+    });
+    final List<Integer> keys = new ArrayList<>(total);
+    for (int i = 0; i < total; i++)
+      keys.add(i);
+
+    final long baseline = QueryHeapBudget.getReservedBytes();
+    final String query = "MATCH (b:Big) WHERE b.k IN $keys OPTIONAL MATCH (b)-[:KNOWS]->(q) RETURN b.k AS id";
+    assertThat(plan(query + " LIMIT 1", Map.of("keys", keys))).contains("[index: Big[k]]");
+
+    final ResultSet rs = database.query("opencypher", query, Map.of("keys", keys));
+    try {
+      for (int i = 0; i < 25_000; i++)
+        rs.next();
+      assertThat(QueryHeapBudget.getReservedBytes()).as("charged while the seek is open").isGreaterThan(baseline);
+    } finally {
+      rs.close();
+    }
+    assertThat(QueryHeapBudget.getReservedBytes()).as("given back when the stream is closed").isLessThanOrEqualTo(baseline);
+  }
+
+  /**
+   * A chained MATCH re-opens its scan once per outer row, and caches the candidates of a scan no row can steer (issue #6602, #8695). An
+   * IN-list is only seeked per row when an index answers it, so one over an unindexed property keeps the cache even when its list reads
+   * the outer row, and the type is scanned once rather than once per row.
+   */
+  @Test
+  void rowDependentListOverAnUnindexedPropertyScansTheTypeOnce() {
+    final String unindexed = "UNWIND ['c1', 'c2', 'c3', 'c4'] AS a MATCH (p:Person) WHERE p.codeCopy IN [a]" + OPTIONAL_TAIL;
+    final String indexed = "UNWIND ['c1', 'c2', 'c3', 'c4'] AS a MATCH (p:Person) WHERE p.code IN [a]" + OPTIONAL_TAIL;
+
+    final long before = typeScans();
+    assertThat(ids(unindexed, null)).hasSize(20).isEqualTo(ids(indexed, null));
+    final long scans = typeScans() - before;
+    assertThat(scans).as("scans of the type for the unindexed list and the indexed one, which seeks and scans none").isEqualTo(1L);
+  }
+
+  private long typeScans() {
+    return ((Number) ((DatabaseInternal) database).getStats().get("iterateType")).longValue();
   }
 
   private List<Integer> ids(final String cypher, final Map<String, Object> params) {
