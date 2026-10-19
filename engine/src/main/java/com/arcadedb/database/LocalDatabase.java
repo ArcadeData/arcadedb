@@ -2640,6 +2640,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return engine;
   }
 
+  /** The transaction the caller has open on this thread, or {@code null}: what a statement joins instead of owning one. */
+  private TransactionContext activeTransaction() {
+    final TransactionContext tx = getTransactionIfExists();
+    return tx != null && tx.isActive() ? tx : null;
+  }
+
+  /**
+   * A statement of any language that fails inside the caller's transaction after part of its records were written leaves that part
+   * behind, and a caller that catches the error and commits publishes half a statement (issues #10194, #10379). The engine has no
+   * savepoint to take the statement back to, so the transaction cannot be committed any more, see
+   * {@link TransactionContext#refuseCommitIfWrittenSince}. It is asked here, where every engine is dispatched, so a language cannot
+   * opt out by not asking, except through {@link QueryEngine#handlesItsOwnFailures}. A transaction the statement itself concluded (a
+   * script's own {@code ROLLBACK}) is not touched: there is nothing of the statement left in it, and a reason set now would outlive
+   * it into the next transaction of the context.
+   */
+  private void refuseCommitOfHalfAppliedStatement(final String language, final String query, final TransactionContext tx,
+      final long writesBefore, final Throwable cause) {
+    // The engine is asked last: it may parse the statement again, and only a statement that wrote before it failed needs the answer
+    if (tx != null && tx.isActive() && tx.getCompletedRecordWrites() != writesBefore
+        && !getQueryEngine(language).handlesItsOwnFailures(query))
+      tx.refuseCommitIfWrittenSince(writesBefore, cause);
+  }
+
   /**
    * Optimized overload for commands with no parameters - avoids varargs array allocation.
    */
@@ -2648,9 +2671,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     markModified();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration());
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
@@ -2661,9 +2689,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     markModified();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
@@ -2675,9 +2708,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     markModified();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
@@ -2694,9 +2732,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     markModified();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
@@ -2725,9 +2768,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet query(final String language, final String query) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration());
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
     }
@@ -2737,9 +2785,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet query(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
     }
@@ -2749,9 +2802,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
+    final TransactionContext callerTx = activeTransaction();
+    final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
+    } catch (final RuntimeException | Error e) {
+      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      throw e;
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
     }

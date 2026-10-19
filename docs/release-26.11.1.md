@@ -59,7 +59,7 @@ surrogate pair. Text made of characters in the Basic Multilingual Plane, which i
 
 **Who sees a different answer.** A query that keeps a position or a length in a property and uses it later on a text with
 emojis or other characters outside the Basic Multilingual Plane (`WHERE s.length() > 140` on tweets, `s.substring(0, 280)`).
-The text.* functions (`text.indexOf()`, `text.charAt()`) are unchanged: they follow APOC, which counts UTF-16 code units.
+The text.* functions follow since #10378, see below.
 
 **Cost.** `length()` is constant time on Latin-1 text, which is how the JVM stores most of it. A position past the start of text with other characters (`charAt(i)`, `indexOf(s, i)`) is found by walking to it, so a query that reads every character of a long text of that kind by position costs more than before; `left()`, `right()` and `subString()` cost what they cut.
 
@@ -94,11 +94,46 @@ back to, so the transaction is now marked rollback-only: `commit()` throws a `Tr
 committed: a statement failed after part of its records were written ...") and nothing of the transaction is published. A
 statement that fails having written nothing, which includes every single-row refusal because the refused record retracts
 itself, leaves the transaction usable. A statement that owns its transaction (auto-transaction mode) rolls back whole, as before.
-The lines of a `sqlscript` are not covered: a script handles its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) and
-is unchanged.
+A `sqlscript` that handles its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) is unchanged; openCypher and a script
+without such a block are covered since #10379, see below.
 
 **Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes
 on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+
+### openCypher and SQL scripts: a transaction cannot be committed after a statement failed halfway, whatever the language (#10379)
+
+The rule of #10194 belongs to the transaction, not to SQL. It was enforced by the SQL engine alone, so
+`MATCH (n:T) SET n.v = 1` run in openCypher (or by Bolt inside `BEGIN`), and `UPDATE T SET v = 1;` run as a `sqlscript`, inside a
+transaction the caller keeps, failed after their first row and the caller's commit published that row. The check now sits where
+`database.command()` and `database.query()` dispatch every language, so any engine, including a later one, answers the same:
+`commit()` throws a `TransactionException` and nothing of the transaction is published. A statement that fails having written
+nothing leaves the transaction usable, and so does an openCypher statement whose own existence-constraint check took back every
+record it had created (#7945). A `sqlscript` that concludes its own transaction, such as a `BEGIN ... COMMIT RETRY n` block, is
+unchanged.
+
+**Who sees a different answer.** A caller that catches the error of a multi-row openCypher or script statement inside its own
+transaction and goes on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+
+### openCypher: `DISTINCT`, `GROUP BY`, `UNION`, `min()` and `max()` key a `BINARY` or `ARRAY_OF_*` value by its content (#10380)
+
+A `BINARY` value and the `ARRAY_OF_SHORTS`, `ARRAY_OF_INTEGERS`, `ARRAY_OF_LONGS`, `ARRAY_OF_FLOATS` and `ARRAY_OF_DOUBLES` values
+are Java arrays, which Java compares by identity, so two records holding the very bytes `=` reported equal were two groups and two
+`DISTINCT` rows, and `min()` / `max()` answered whichever row came first. They are now one value in all four places: `=`,
+`DISTINCT` / `GROUP BY` / `UNION` / `collect(DISTINCT)` / `count(DISTINCT)` / `coll.toSet()` / `coll.indexOf()`, `ORDER BY`, and
+`min()` / `max()` / `coll.min()` / `coll.max()`. A `BINARY` value orders by its bytes, unsigned (as in SQL); the other arrays order
+element by element like a list. Comparing two embedded documents with `=` no longer fails with a `NullPointerException`.
+
+**Who sees a different answer.** A query that counted or grouped such values and got one row per record, and `ORDER BY` over an
+`ARRAY_OF_*` property, whose order changed from one run to the next.
+
+### SQL and openCypher: `text.charAt()`, `text.indexOf()`, `text.lpad()`, `text.rpad()` and the `size()` method count characters (#10378)
+
+#10248 moved the string methods to Unicode characters but left four `text.*` functions and `size()` on UTF-16 code units, so
+`text.charAt('a<emoji>b', 1)` returned half a surrogate pair (stored as `?`), `text.indexOf('a<emoji>b', 'b')` answered 3 for a
+string whose `size()` is 3, `text.lpad` / `text.rpad` measured an emoji as two characters and did not pad, and `'a<emoji>b'.size()`
+was 4 where `length()` is 3. They count characters now, like their neighbours. A pad character outside the Basic Multilingual Plane
+is one character. Text made of characters in the Basic Multilingual Plane answers exactly as before. `size()` of a `NULL` stays 0,
+as `size()` also serves collections, where a missing one has size 0; use `length()` for a string that may be `NULL`.
 
 ## Fixes
 

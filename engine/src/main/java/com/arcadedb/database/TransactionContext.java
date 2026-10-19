@@ -640,6 +640,15 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Gives back writes counted by {@link #countCompletedRecordWrite()} that no longer stand, because the statement that made them took
+   * them back itself: a record it created and deleted again leaves nothing of the statement behind (issue #10379). Only for such a
+   * caller: a count given back for a write that does stand lets a half-applied statement through.
+   */
+  public void retractCompletedRecordWrites(final long count) {
+    completedRecordWrites -= count;
+  }
+
+  /**
    * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
    * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
    * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no

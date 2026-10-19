@@ -23,7 +23,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.utility.LongRangeList;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +67,12 @@ import java.util.function.Function;
  * <b>Collections:</b> a list or map canonicalizes to a copy whose elements (map values) are canonicalized, so {@code [1]} and
  * {@code [1.0]} share a key; one holding nothing to change is returned as is. A lazy range is never walked.
  * <p>
+ * <b>Arrays:</b> a Java array has the identity {@code equals()} / {@code hashCode()}, so two arrays holding the same values are two
+ * keys unless something stands in for them (issue #10380). A BINARY value ({@code byte[]}) is one value, compared by its bytes, and
+ * canonicalizes to a {@link BinaryKey}. Any other array ({@code ARRAY_OF_SHORTS}, {@code ARRAY_OF_INTEGERS}, ...) is a sequence,
+ * which Cypher's {@code =} compares element by element as it does a list, so it canonicalizes to the list of its canonicalized
+ * elements and shares a key with the list of the same numbers.
+ * <p>
  * Other values pass through unchanged.
  */
 public final class DistinctNumericKey {
@@ -70,6 +80,16 @@ public final class DistinctNumericKey {
   private static final long MAX_EXACT_DOUBLE_INTEGER = 1L << 53;
 
   private DistinctNumericKey() {
+  }
+
+  /**
+   * Whether {@link #canonicalize(Object)} may answer something other than {@code value} itself: the values that Java's own
+   * {@code equals()} / {@code hashCode()} cannot key, or key apart from what Cypher's {@code =} says. A caller that wraps only
+   * the values that need it, to keep the rest as they are, asks here instead of repeating the list.
+   */
+  public static boolean needsKey(final Object value) {
+    return value instanceof Number || value instanceof Identifiable || value instanceof Collection || value instanceof Map
+        || value != null && value.getClass().isArray();
   }
 
   /**
@@ -127,7 +147,45 @@ public final class DistinctNumericKey {
       return key != null ? key : value;
     }
 
+    if (value instanceof byte[] bytes)
+      return new BinaryKey(bytes);
+    if (value != null && value.getClass().isArray()) {
+      final int length = Array.getLength(value);
+      final List<Object> key = new ArrayList<>(length);
+      for (int i = 0; i < length; i++)
+        key.add(canonicalize(Array.get(value, i)));
+      return key;
+    }
+
     return value;
+  }
+
+  /**
+   * A BINARY value as a key: its bytes decide, as they do for {@code =} and for the order of {@code ORDER BY}, where the identity of
+   * the array cannot (issue #10380). Holds the array it was made for, without a copy: a stored value is not changed afterwards.
+   */
+  private static final class BinaryKey {
+    private final byte[] bytes;
+
+    private BinaryKey(final byte[] bytes) {
+      this.bytes = bytes;
+    }
+
+    @Override
+    public boolean equals(final Object obj) {
+      return this == obj || obj instanceof BinaryKey other && Arrays.equals(bytes, other.bytes);
+    }
+
+    @Override
+    public int hashCode() {
+      return Arrays.hashCode(bytes);
+    }
+
+    /** The bytes, not the identity of the array, for a caller that renders a key into text. */
+    @Override
+    public String toString() {
+      return "BINARY[" + HexFormat.of().formatHex(bytes) + "]";
+    }
   }
 
   /**

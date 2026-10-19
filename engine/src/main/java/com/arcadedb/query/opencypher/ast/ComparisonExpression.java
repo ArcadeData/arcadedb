@@ -224,7 +224,12 @@ public class ComparisonExpression implements BooleanExpression {
     // relationships, which the RID cannot tell apart and LightEdgeRID.isSameEdge can (issue #10008)
     if (left instanceof Identifiable leftIdentifiable
         && right instanceof Identifiable rightIdentifiable) {
-      final boolean equal = LightEdgeRID.isSameEdge(leftIdentifiable.getIdentity(), rightIdentifiable.getIdentity());
+      final RID leftRid = leftIdentifiable.getIdentity();
+      final RID rightRid = rightIdentifiable.getIdentity();
+      // An embedded document has no RID and is equal to another by its content, which its own equals() compares; against a record
+      // it is never equal (issue #10380)
+      final boolean equal = leftRid != null && rightRid != null ? LightEdgeRID.isSameEdge(leftRid, rightRid)
+          : leftRid == null && rightRid == null && leftIdentifiable.equals(rightIdentifiable);
       if (operator == Operator.EQUALS)
         return equal;
       if (operator == Operator.NOT_EQUALS)

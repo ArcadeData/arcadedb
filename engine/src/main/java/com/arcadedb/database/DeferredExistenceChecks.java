@@ -24,9 +24,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -136,6 +138,16 @@ public class DeferredExistenceChecks {
    */
   private int sweepAt = SWEEP_THRESHOLD;
 
+  /**
+   * For a record still in {@link #pending}, how many updates it took while it was provisional, which are writes the transaction
+   * counted ({@link TransactionContext#countCompletedRecordWrite}) and which taking the record back retracts again. Created on the
+   * first such update, so the usual statement that never updates a record before completing it pays nothing.
+   */
+  private Map<RID, Integer> deferredUpdates;
+
+  /** The document whose update was last tallied in {@link #deferredUpdates}: a record missing two properties defers twice per write. */
+  private MutableDocument lastDeferredUpdate;
+
   /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */
   private boolean active = false;
 
@@ -197,6 +209,8 @@ public class DeferredExistenceChecks {
     active = false;
     unresolved.clear();
     pending.clear();
+    deferredUpdates = null;
+    lastDeferredUpdate = null;
     patternCreateDepth = 0;
     sweepAt = SWEEP_THRESHOLD;
     disarm();
@@ -268,7 +282,10 @@ public class DeferredExistenceChecks {
 
     // An update: deferred only while this very record is still provisional. An update to any other record is a
     // complete write of its own and is validated as it always was.
-    return scope.isPending(rid);
+    if (!scope.isPending(rid))
+      return false;
+    scope.tallyDeferredUpdate(document, rid);
+    return true;
   }
 
   /**
@@ -296,6 +313,9 @@ public class DeferredExistenceChecks {
       // statement's row count.
       scope.resolve();
       scope.pending.remove(rid);
+      if (scope.deferredUpdates != null)
+        // Completed, so it stays: its writes are the statement's to keep
+        scope.deferredUpdates.remove(rid);
 
       // Nothing incomplete left, so this scope stops making every other write in the JVM look for it. Without this
       // the counter would stay up for the rest of the statement, and a bulk upsert - which holds a provisional
@@ -478,8 +498,14 @@ public class DeferredExistenceChecks {
   private boolean deleteProvisionalRecord(final RID rid) {
     try {
       final Record record = database.lookupByRID(rid, false);
-      if (record != null)
+      if (record != null) {
         database.deleteRecord(record);
+        // The statement created this record and now takes it back, with every update it took meanwhile: nothing of it stands, so the
+        // writes the transaction counted for it (the creation, those updates, this delete) are given back, and a caller that goes on
+        // after the ValidationException is not told that part of the statement is left behind (issue #10379)
+        final Integer updates = deferredUpdates != null ? deferredUpdates.remove(rid) : null;
+        database.getTransaction().retractCompletedRecordWrites(2L + (updates != null ? updates : 0));
+      }
       return true;
     } catch (final RecordNotFoundException e) {
       // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
@@ -545,12 +571,26 @@ public class DeferredExistenceChecks {
     for (final Iterator<RID> it = pending.iterator(); it.hasNext(); ) {
       final RID rid = it.next();
       try {
-        if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null)
+        if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null) {
           it.remove();
+          if (deferredUpdates != null)
+            deferredUpdates.remove(rid);
+        }
       } catch (final RecordNotFoundException | ClassCastException e) {
         it.remove();
+        if (deferredUpdates != null)
+          deferredUpdates.remove(rid);
       }
     }
+  }
+
+  private void tallyDeferredUpdate(final MutableDocument document, final RID rid) {
+    if (lastDeferredUpdate == document)
+      return;
+    lastDeferredUpdate = document;
+    if (deferredUpdates == null)
+      deferredUpdates = new HashMap<>();
+    deferredUpdates.merge(rid, 1, Integer::sum);
   }
 
   private static DatabaseInternal databaseOf(final MutableDocument document) {

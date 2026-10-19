@@ -169,6 +169,19 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return DDLClassification.NOT_DDL;
   }
 
+  /** A script with a {@code COMMIT RETRY n} block handles its failure there, in its {@code ELSE} branch (issue #10379). */
+  @Override
+  public boolean handlesItsOwnFailures(final String query) {
+    try {
+      for (final Statement statement : parseScript(query, database))
+        if (statement instanceof CommitStatement commit && commit.getRetry() != null)
+          return true;
+    } catch (final CommandSQLParsingException e) {
+      // A script that does not parse failed before it wrote anything, and is not one that handles anything
+    }
+    return false;
+  }
+
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
     try {
       return new SQLAntlrParser(database).parseScript(script);

@@ -511,6 +511,9 @@ public final class CypherFunctionHelper {
       return 2;
     if (value instanceof Map)
       return 0;
+    // An array that is not a BINARY value is a sequence, ordered with the lists (issue #10380)
+    if (MultiValue.isSequenceArray(value))
+      return 3;
     // After the common graph and collection values, which are never temporal, so a sort over them skips the temporal checks
     final int temporal = temporalTypeRank(value);
     if (temporal >= 0)
@@ -581,9 +584,13 @@ public final class CypherFunctionHelper {
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
       return Boolean.compare((Boolean) a, (Boolean) b);
-    if (a instanceof List && b instanceof List) {
-      final List<?> la = (List<?>) a;
-      final List<?> lb = (List<?>) b;
+    // BINARY values order by their bytes, unsigned, as SQL and the index order them. A byte[] is not Comparable, so without this arm
+    // every pair of them tied and min() / max() kept the first row (issue #10380)
+    if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
+      return BinaryComparator.compareBytes(bytesA, bytesB);
+    if ((a instanceof List || MultiValue.isSequenceArray(a)) && (b instanceof List || MultiValue.isSequenceArray(b))) {
+      final List<?> la = MultiValue.getMultiValueAsList(a);
+      final List<?> lb = MultiValue.getMultiValueAsList(b);
       for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
         final int cmp = cypherCompare(la.get(i), lb.get(i));
         if (cmp != 0)
