@@ -243,7 +243,7 @@ class Issue10340ViewDegreeOfDeletedTargetTest extends TestHelper {
   private long countVertices() {
     long count = 0;
     for (final String type : new String[] { "P", "Q" })
-      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + type)) {
+      try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM " + type)) {
         count += rs.next().<Number>getProperty("c").longValue();
       }
     return count;
