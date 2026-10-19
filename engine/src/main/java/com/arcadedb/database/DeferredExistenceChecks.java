@@ -140,18 +140,12 @@ public class DeferredExistenceChecks {
 
   /**
    * For a record still in {@link #pending}, how many updates it took while it was provisional, which are writes the transaction
-   * counted ({@link TransactionContext#countCompletedRecordWrite}) and which taking the record back retracts again. Created on the
-   * first such update, so the usual statement that never updates a record before completing it pays nothing.
+   * counted ({@link TransactionContext#countCompletedRecordWrite}) and which taking the record back retracts again. Tallied by
+   * {@link #updateCounted} at the moment the write is counted, never earlier: validation runs before a listener can veto the update
+   * or an index can refuse it, and a count given back for a write that was not made cancels one that stands. Created on the first
+   * such update, so the usual statement that never updates a record before completing it pays nothing.
    */
   private Map<RID, Integer> deferredUpdates;
-
-  /**
-   * The document whose update was last tallied in {@link #deferredUpdates}: a record missing two properties defers twice per write.
-   * Two writes in a row to one instance, with no other record between them, are tallied once. That under-retracts, which leaves the
-   * counter above the writes that stand and so refuses a commit that could have passed, never the reverse: deliberate, as a count
-   * given back for a write that does stand would let a half-applied statement through.
-   */
-  private MutableDocument lastDeferredUpdate;
 
   /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */
   private boolean active = false;
@@ -215,7 +209,6 @@ public class DeferredExistenceChecks {
     unresolved.clear();
     pending.clear();
     deferredUpdates = null;
-    lastDeferredUpdate = null;
     patternCreateDepth = 0;
     sweepAt = SWEEP_THRESHOLD;
     disarm();
@@ -287,10 +280,28 @@ public class DeferredExistenceChecks {
 
     // An update: deferred only while this very record is still provisional. An update to any other record is a
     // complete write of its own and is validated as it always was.
-    if (!scope.isPending(rid))
-      return false;
-    scope.tallyDeferredUpdate(document, rid);
-    return true;
+    return scope.isPending(rid);
+  }
+
+  /**
+   * Tallies an update of a record that is still provisional, called by the update path right after it counted the write
+   * ({@link TransactionContext#countCompletedRecordWrite}): the retraction of {@link #deleteProvisionalRecord} gives back what was
+   * counted for the record, no more. An update that completed the record is not tallied, as the record and that write stay.
+   */
+  static void updateCounted(final DatabaseInternal database, final RID rid) {
+    if (rid == null)
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    if (context == null)
+      return;
+
+    final DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
+    if (scope == null || !scope.active || !scope.isPending(rid))
+      return;
+    if (scope.deferredUpdates == null)
+      scope.deferredUpdates = new HashMap<>();
+    scope.deferredUpdates.merge(rid, 1, Integer::sum);
   }
 
   /**
@@ -589,14 +600,6 @@ public class DeferredExistenceChecks {
     }
   }
 
-  private void tallyDeferredUpdate(final MutableDocument document, final RID rid) {
-    if (lastDeferredUpdate == document)
-      return;
-    lastDeferredUpdate = document;
-    if (deferredUpdates == null)
-      deferredUpdates = new HashMap<>();
-    deferredUpdates.merge(rid, 1, Integer::sum);
-  }
 
   private static DatabaseInternal databaseOf(final MutableDocument document) {
     final Database database = document.getDatabase();

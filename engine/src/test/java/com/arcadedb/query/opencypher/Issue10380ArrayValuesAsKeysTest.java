@@ -173,6 +173,26 @@ class Issue10380ArrayValuesAsKeysTest extends TestHelper {
   }
 
   @Test
+  void aBinaryValueIsNotAListAndComparesByItsBytesUnderTheOperators() {
+    createType("T", Type.BINARY);
+    insert("T", "a", new byte[] { 1, 2 });
+    insert("T", "b", new byte[] { 1, 2 });
+    insert("T", "c", new byte[] { 0x7f });
+    insert("T", "d", new byte[] { (byte) 0x80 });
+
+    // the bytes of a BINARY value are not the elements of a list, so DISTINCT, GROUP BY and = answer one rule
+    assertThat(scalar("MATCH (n:T) WHERE n.s = 'a' RETURN n.p = [1, 2] AS v")).isEqualTo(false);
+    assertThat(scalar("MATCH (n:T) WHERE n.s = 'a' RETURN n.p <> [1, 2] AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (a:T), (b:T) WHERE a.s = 'a' AND b.s = 'b' RETURN a.p = b.p AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (a:T), (b:T) WHERE a.s = 'a' AND b.s = 'b' RETURN a.p <> b.p AS v")).isEqualTo(false);
+    // and they order unsigned, as ORDER BY and SQL do: 0x7f < 0x80, where the signed bytes said the opposite
+    assertThat(scalar("MATCH (a:T), (b:T) WHERE a.s = 'c' AND b.s = 'd' RETURN a.p < b.p AS v")).isEqualTo(true);
+    assertThat(scalar("MATCH (a:T), (b:T) WHERE a.s = 'c' AND b.s = 'd' RETURN a.p > b.p AS v")).isEqualTo(false);
+    assertThat(scalar("MATCH (n:T) WHERE n.s = 'a' RETURN n.p IN [[1, 2]] AS v")).isEqualTo(false);
+    assertThat(rows("MATCH (n:T) WHERE n.p = $bytes RETURN n.s AS s", Map.of("bytes", new byte[] { 1, 2 }))).hasSize(2);
+  }
+
+  @Test
   void floatAndDoubleArraysOfTheSameNumbersShareAKey() {
     createType("A", Type.ARRAY_OF_FLOATS);
     createType("B", Type.ARRAY_OF_DOUBLES);
@@ -323,6 +343,15 @@ class Issue10380ArrayValuesAsKeysTest extends TestHelper {
   private List<Result> rows(final String query) {
     final List<Result> out = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext())
+        out.add(rs.next());
+    }
+    return out;
+  }
+
+  private List<Result> rows(final String query, final Map<String, Object> parameters) {
+    final List<Result> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query, parameters)) {
       while (rs.hasNext())
         out.add(rs.next());
     }

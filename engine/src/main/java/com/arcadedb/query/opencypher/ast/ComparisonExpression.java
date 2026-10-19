@@ -374,6 +374,23 @@ public class ComparisonExpression implements BooleanExpression {
       };
     }
 
+    // BINARY values compare by their bytes, unsigned, as ORDER BY, min()/max() and SQL do, and a BINARY value is not a list: coerced to
+    // one, its bytes were compared as signed numbers, so 0x80 was below 0x7f, and the value equalled the list of the same numbers,
+    // which no DISTINCT or GROUP BY key can follow (issue #10380)
+    if (left instanceof byte[] || right instanceof byte[]) {
+      if (!(left instanceof byte[] leftBytes && right instanceof byte[] rightBytes))
+        return differentTypes();
+      final int comparison = BinaryComparator.compareBytes(leftBytes, rightBytes);
+      return switch (operator) {
+        case EQUALS -> comparison == 0;
+        case NOT_EQUALS -> comparison != 0;
+        case LESS_THAN -> comparison < 0;
+        case GREATER_THAN -> comparison > 0;
+        case LESS_THAN_OR_EQUAL -> comparison <= 0;
+        case GREATER_THAN_OR_EQUAL -> comparison >= 0;
+      };
+    }
+
     // List comparison (element-wise with null propagation).
     // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
     final List<Object> leftList = MultiValue.getMultiValueAsList(left);

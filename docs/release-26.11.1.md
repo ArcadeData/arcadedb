@@ -59,7 +59,7 @@ surrogate pair. Text made of characters in the Basic Multilingual Plane, which i
 
 **Who sees a different answer.** A query that keeps a position or a length in a property and uses it later on a text with
 emojis or other characters outside the Basic Multilingual Plane (`WHERE s.length() > 140` on tweets, `s.substring(0, 280)`).
-The text.* functions follow since #10378, see below.
+`text.charAt()`, `text.indexOf()`, `text.lpad()` and `text.rpad()` follow since #10378, see below.
 
 **Cost.** `length()` is constant time on Latin-1 text, which is how the JVM stores most of it. A position past the start of text with other characters (`charAt(i)`, `indexOf(s, i)`) is found by walking to it, so a query that reads every character of a long text of that kind by position costs more than before; `left()`, `right()` and `subString()` cost what they cut.
 
@@ -133,7 +133,9 @@ element by element like a list. Comparing two embedded documents with `=` no lon
 string whose `size()` is 3, `text.lpad` / `text.rpad` measured an emoji as two characters and did not pad, and `'a<emoji>b'.size()`
 was 4 where `length()` is 3. They count characters now, like their neighbours. A pad character outside the Basic Multilingual Plane
 is one character. Text made of characters in the Basic Multilingual Plane answers exactly as before. `size()` of a `NULL` stays 0,
-as `size()` also serves collections, where a missing one has size 0; use `length()` for a string that may be `NULL`.
+as `size()` also serves collections, where a missing one has size 0; use `length()` for a string that may be `NULL`. The distance
+and similarity functions (`text.hammingDistance()`, `text.levenshteinDistance()`, `text.jaroWinklerDistance()`,
+`text.sorensenDiceSimilarity()`) still compare UTF-16 code units.
 
 ## Fixes
 

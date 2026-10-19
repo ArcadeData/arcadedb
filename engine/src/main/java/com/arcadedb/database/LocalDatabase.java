@@ -1812,14 +1812,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
         }
-        tx.countCompletedRecordWrite();
+        countCompletedUpdate(tx, record);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
             "transaction", e);
       }
     } else {
       updateRecordNoLock(record, discardRecordAfter);
-      getTransaction().countCompletedRecordWrite();
+      countCompletedUpdate(getTransaction(), record);
     }
 
     // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
@@ -1839,6 +1839,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     return true;
+  }
+
+  /** Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it. */
+  private void countCompletedUpdate(final TransactionContext tx, final Record record) {
+    tx.countCompletedRecordWrite();
+    if (DeferredExistenceChecks.anyScopeArmed())
+      DeferredExistenceChecks.updateCounted(this, record.getIdentity());
   }
 
   public Document getOriginalDocument(final Record record) {

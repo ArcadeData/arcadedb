@@ -19,7 +19,13 @@
 package com.arcadedb.query;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -204,6 +210,100 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
     }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
 
     assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  @Test
+  void anUpdateVetoedOnAProvisionalRecordIsNotCountedSoItCannotCancelAWriteThatStays() {
+    database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
+    // the listener refuses the update of the provisional record: the write is not made, so it is not counted either
+    database.getSchema().getType("Req").getEvents().registerListener((BeforeRecordUpdateListener) record -> false);
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        database.command("opencypher", "MATCH (n:T) WHERE n.n = 0 SET n.v = 900 CREATE (m:Req {id: 'f'}) WITH m SET m.note = 'x'").close();
+      } catch (final RuntimeException ignored) {
+        // caught by the caller
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  @Test
+  void twoUpdatesInARowOnAProvisionalRecordAreBothGivenBack() {
+    database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
+
+    database.transaction(() -> {
+      assertThatThrownBy(() -> database.command("opencypher", "CREATE (n:Req {id: 'g'}) WITH n SET n.a = 1 WITH n SET n.b = 2").close())
+          .isInstanceOf(RuntimeException.class);
+      database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close();
+    }, false, 0);
+
+    assertThat(values()).containsExactly(100, 101, 500);
+  }
+
+  @Test
+  void aScriptWithAWriteOutsideItsRetryBlockDoesNotHandleItsOwnFailures() {
+    final QueryEngine script = database.getQueryEngine("sqlscript");
+    assertThat(script.handlesItsOwnFailures("UPDATE T SET v = 1; BEGIN; UPDATE T SET v = 2; COMMIT RETRY 3;")).isFalse();
+    assertThat(script.handlesItsOwnFailures("BEGIN; UPDATE T SET v = 2; COMMIT RETRY 3; UPDATE T SET v = 1;")).isFalse();
+    assertThat(script.handlesItsOwnFailures("LET $a = 1; BEGIN; UPDATE T SET v = 2; COMMIT RETRY 3;")).isTrue();
+    assertThat(script.handlesItsOwnFailures("BEGIN; UPDATE T SET v = 2; COMMIT RETRY 3 ELSE { UPDATE T SET v = 3; }")).isTrue();
+  }
+
+  @Test
+  void aTopLevelWriteBesideARetryBlockIsRefusedWhenTheScriptFails() {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionThrowCME());
+    // row 0 is written outside the block, which stays in the caller's transaction; the block then fails on every attempt
+    final String script = "UPDATE T SET v = 1 WHERE n = 0; BEGIN; SELECT throwCME(#-1:-1, 1, 1, 1); COMMIT RETRY 2;";
+
+    final AtomicReference<Throwable> caught = new AtomicReference<>();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try {
+        database.command("sqlscript", script).close();
+      } catch (final RuntimeException e) {
+        caught.set(e);
+      }
+    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+
+    assertThat(caught.get()).as("the script failed").isInstanceOf(ConcurrentModificationException.class);
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  @Test
+  void aScriptWhoseWritesAreAllInTheRetryBlockLeavesTheTransactionUsable() {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionThrowCME());
+    final String script = "BEGIN; UPDATE T SET v = 1 WHERE n = 0; SELECT throwCME(#-1:-1, 1, 1, 1); COMMIT RETRY 2;";
+
+    database.transaction(() -> {
+      assertThatThrownBy(() -> database.command("sqlscript", script).close()).isInstanceOf(ConcurrentModificationException.class);
+      database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close();
+    }, false, 0);
+
+    assertThat(values()).containsExactly(100, 101, 500);
+  }
+
+  /** Fails with a ConcurrentModificationException, which {@code COMMIT RETRY} answers by rolling the attempt back and trying again. */
+  public static class SQLFunctionThrowCME extends SQLFunctionAbstract {
+    SQLFunctionThrowCME() {
+      super("throwCME");
+    }
+
+    @Override
+    public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+        final CommandContext context) {
+      throw new ConcurrentModificationException("" + params[0]);
+    }
+
+    @Override
+    public String getSyntax() {
+      return "throwCME(message)";
+    }
+
+    @Override
+    public Object getResult() {
+      return null;
+    }
   }
 
   /** The write engines run a statement to the end inside command(), so the failure of a row is raised there and not while the rows are read. */
