@@ -779,12 +779,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         baseWatch = watch;
       }
       if (!buffered.isEmpty()) {
-        DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-        for (final TxDelta d : buffered)
-          overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch, result.getCsrPerType());
-        edgePropertiesDirty = overlay.isEdgePropertiesDirty();
-        if (overlay.hasChanges())
-          fresh = fresh.withOverlay(overlay);
+        try {
+          DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+          for (final TxDelta d : buffered)
+            overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch, result.getCsrPerType());
+          edgePropertiesDirty = overlay.isEdgePropertiesDirty();
+          if (overlay.hasChanges())
+            fresh = fresh.withOverlay(overlay);
+        } catch (final RuntimeException e) {
+          // A change that cannot be replayed must not fail the build, which would leave a first build NOT_BUILT with nothing to
+          // retry it: the scan is published STALE, and the rebuild that follows reads the change from the graph (issue #10338). Only a
+          // RuntimeException: an Error is left to fail the build, as before
+          LogManager.instance().log(this, Level.WARNING,
+              "GraphAnalyticalView '%s': cannot replay the changes committed during the build, rebuilding", e, name);
+          followUpRebuildPending = true;
+          edgePropertiesDirty = false;
+        }
       }
       // The scan cannot tell duplicated lightweight copies apart, so the reconciliation of the pairs it raced on is
       // checked against the graph: a view that disagrees is not published READY, it rebuilds (issue #9572)
@@ -3943,15 +3953,40 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * instance's monitor only for the merge itself: no build scans while holding it, blocking or not (issue #8403).
    */
   void onCommittedDelta(final TxDelta delta) {
-    final BuildWatch watch = buildWatch;
-    // The base being served when the delta was buffered: it takes the delta only if still served when merged
-    final Snapshot served = snapshot;
-    if (watch != null && watch.offer(delta)) {
-      if (served != null)
-        mergeCommittedDelta(delta, served.csrPerType);
-      return;
+    try {
+      final BuildWatch watch = buildWatch;
+      // The base being served when the delta was buffered: it takes the delta only if still served when merged
+      final Snapshot served = snapshot;
+      if (watch != null && watch.offer(delta)) {
+        if (served != null)
+          mergeCommittedDelta(delta, served.csrPerType);
+        return;
+      }
+      mergeCommittedDelta(delta, null);
+    } catch (final RuntimeException e) {
+      rebuildForUnmergedDelta(e);
     }
-    mergeCommittedDelta(delta, null);
+  }
+
+  /**
+   * A committed change the overlay could not take is not in the view, and the commit gate that called it would only log it and
+   * go on: the view would answer from a graph that never existed until the database is reopened (issue #10338). It rebuilds
+   * instead, as the asynchronous merge does for a change it cannot merge, and is STALE until that lands.
+   * <p>
+   * Only a {@link RuntimeException} is a change that cannot be merged: an {@link Error} (out of memory, say) is a JVM that cannot go
+   * on, and is left to propagate. A failure that repeats costs one rebuild per failing commit, no more than one at a time since
+   * builds coalesce, and each rebuild reads the graph fresh.
+   */
+  private synchronized void rebuildForUnmergedDelta(final RuntimeException e) {
+    // A view that is closing has nothing to rebuild, nor a failure worth a stack trace
+    if (shutDown)
+      return;
+    LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
+    // A build in flight publishes its own status: it reads the flag once it has published, and the scan it starts then is after this commit
+    if (buildWatch == null)
+      status = Status.STALE;
+    followUpRebuildPending = true;
+    rebuildAfterPublication();
   }
 
   /** Merges a committed delta now (SYNCHRONOUS), or queues it for the merge off the committing thread (ASYNCHRONOUS). */
