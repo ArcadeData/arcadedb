@@ -106,6 +106,49 @@ class Issue10295BeginIsolationLevelIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aBodyThatIsNotAJsonObjectAnswers400AndOpensNoSession() throws Exception {
+    // Truncated or garbled bodies, a scalar and a top-level array: none can carry the isolationLevel the client meant, so
+    // none may fall back to the database default with a success status (issue #10337). The same check serves every shape
+    final HttpSessionManager sessions = getServer(0).getHttpServer().getSessionManager();
+
+    for (final String body : new String[] { "{\"isolationLevel\":\"REPEATABLE_READ\"", "{\"isolationLevel\":\"REPEATABLE_READ\",",
+        "not json", "null", "123", "\"REPEATABLE_READ\"", "[", "[]", "[\"REPEATABLE_READ\"]" }) {
+      final int before = sessions.getActiveSessions();
+      final HttpURLConnection connection = begin(body);
+      try {
+        assertThat(connection.getResponseCode()).as(body).isEqualTo(400);
+        assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).as(body).isNull();
+        assertThat(readError(connection)).as(body).contains("JSON object");
+      } finally {
+        connection.disconnect();
+      }
+      assertThat(sessions.getActiveSessions()).as(body).isEqualTo(before);
+    }
+
+    // The refused begins left nothing attached to the worker threads: a valid begin still succeeds
+    final HttpURLConnection connection = begin("{\"isolationLevel\":\"REPEATABLE_READ\"}");
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(204);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void aBlankBodyIsNoBody() throws Exception {
+    // Whitespace only is an absent body, not a malformed one: it must keep opening a transaction at the database default
+    for (final String body : new String[] { "", "  ", "\n" }) {
+      final HttpURLConnection connection = begin(body);
+      try {
+        assertThat(connection.getResponseCode()).as("'" + body + "'").isEqualTo(204);
+        assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).as("'" + body + "'").isNotNull();
+      } finally {
+        connection.disconnect();
+      }
+    }
+  }
+
+  @Test
   void anUnknownIsolationLevelAnswers400AndOpensNoSession() throws Exception {
     final HttpSessionManager sessions = getServer(0).getHttpServer().getSessionManager();
 
