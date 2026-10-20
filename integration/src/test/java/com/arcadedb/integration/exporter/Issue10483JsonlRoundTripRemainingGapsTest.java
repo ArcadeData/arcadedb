@@ -218,10 +218,16 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
 
   /**
    * The deferral is of the target's type only: the link is checked against the declared type once it is resolved, so a link to a
-   * record of the wrong type still fails the import instead of being stored.
+   * record of the wrong type still fails the import instead of being stored, whatever the declaration is and whether the holder is
+   * also the end of an edge (the edge updates it before the reconciliation).
    */
-  @Test
-  void aForwardLinkToTheWrongTypeStillFailsTheImport() throws Exception {
+  @ParameterizedTest(name = "{0}, with an edge: {1}")
+  @MethodSource("declarationsWithAndWithoutAnEdge")
+  void aForwardLinkToTheWrongTypeStillFailsTheImport(final String declaration, final boolean withEdge) throws Exception {
+    final String value = declaration.startsWith("LIST") ? "[\"#5:0\"]" : declaration.startsWith("MAP") ? "{\"k\":\"#5:0\"}" : "\"#5:0\"";
+    final String type = declaration.startsWith("LIST") ? "LIST" : declaration.startsWith("MAP") ? "MAP" : "LINK";
+    // the type tree the export writes for the links held by a list or a map: without it a file names no link to remap
+    final String tree = declaration.startsWith("LIST") ? ",\"y\":{\"p\":[\"LINK\"]}" : declaration.startsWith("MAP") ? ",\"y\":{\"p\":{\"k\":\"LINK\"}}" : "";
     final File file = new File(SOURCE_PATH + "-wrong.jsonl");
     file.getParentFile().mkdirs();
     Files.writeString(file.toPath(), ""
@@ -229,13 +235,17 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
         + "{\"t\":\"schema\",\"c\":{\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{"
         + "\"Wanted\":{\"type\":\"d\",\"parents\":[],\"buckets\":[\"Wanted_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}},"
         + "\"Other\":{\"type\":\"d\",\"parents\":[],\"buckets\":[\"Other_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}},"
-        + "\"Holder\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Holder_0\"],\"properties\":{\"p\":{\"type\":\"LINK\",\"of\":\"Wanted\"}},\"indexes\":{},\"custom\":{}}}}}\n"
-        + "{\"t\":\"v\",\"c\":{\"p\":{\"p\":\"#5:0\"},\"r\":\"#3:0\",\"t\":\"Holder\"}}\n"
-        + "{\"t\":\"d\",\"c\":{\"p\":{},\"r\":\"#5:0\",\"t\":\"Other\"}}\n");
+        + "\"E\":{\"type\":\"e\",\"parents\":[],\"buckets\":[\"E_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}},"
+        + "\"Holder\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Holder_0\"],\"properties\":{\"p\":{\"type\":\"" + type
+        + "\",\"of\":\"Wanted\"}},\"indexes\":{},\"custom\":{}}}}}\n"
+        + "{\"t\":\"v\",\"c\":{\"p\":{\"p\":" + value + "}" + tree + ",\"r\":\"#3:0\",\"t\":\"Holder\"}}\n"
+        + "{\"t\":\"v\",\"c\":{\"p\":{},\"r\":\"#3:1\",\"t\":\"Holder\"}}\n"
+        + "{\"t\":\"d\",\"c\":{\"p\":{},\"r\":\"#5:0\",\"t\":\"Other\"}}\n"
+        + (withEdge ? "{\"t\":\"e\",\"c\":{\"p\":{},\"r\":\"#4:0\",\"t\":\"E\",\"o\":\"#3:0\",\"i\":\"#3:1\"}}\n" : ""));
 
     try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
       assertThatThrownBy(() -> target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath()))
-          .hasStackTraceContaining("declared as LINK of 'Wanted'");
+          .hasStackTraceContaining("declared as").hasStackTraceContaining("'Wanted'");
     } finally {
       file.delete();
     }
@@ -413,6 +423,14 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
         value instanceof Map<?, ?> map ? (Identifiable) map.get("k") : (Identifiable) value;
     final Document target = database.lookupByRID(link.getIdentity(), true).asDocument();
     return target.getTypeName() + " id=" + target.get("id");
+  }
+
+  static Stream<Arguments> declarationsWithAndWithoutAnEdge() {
+    final List<Arguments> cases = new ArrayList<>();
+    for (final String declaration : new String[] { "LINK OF Wanted", "LIST OF Wanted", "MAP OF Wanted" })
+      for (final boolean withEdge : new boolean[] { false, true })
+        cases.add(Arguments.of(declaration, withEdge));
+    return cases.stream();
   }
 
   static Stream<Arguments> typedLinksOnVerticesWithEdges() {
