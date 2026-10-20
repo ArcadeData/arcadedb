@@ -395,6 +395,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
      * <p>
      * The base class stamps its own baseline on a refusal; this store watches the repository's stamp instead
      * ({@link #fileChanged()}), so it is advanced here too, or the refusal would be logged again on every tick.
+     * <p>
+     * The check and the stamp are not one atomic step, on purpose. A successful {@code save()} in between stamps the
+     * file it wrote, which is the stamp this would read. A hand edit in between is taken as seen without being read,
+     * which is the refusal's own outcome: the next successful write overwrites that edit with the users in force.
      */
     @Override
     protected String refusal() {
