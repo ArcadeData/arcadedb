@@ -2801,11 +2801,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int[] filterColumns = tagFilter != null ? tagFilterColumns(tagFilter) : null;
 
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
-      final List<byte[][]> rebuiltCompressed = new ArrayList<>();
-      final List<long[]> rebuiltMeta = new ArrayList<>();
-      final List<BlockStats> rebuiltStats = new ArrayList<>();
-      final List<String[][]> rebuiltTagDistinctValues = new ArrayList<>();
-      final List<Long> rebuiltGranularities = new ArrayList<>();
+      final RebuiltBlocks rebuilt = new RebuiltBlocks();
       long deleted = 0L;
 
       for (final BlockEntry entry : blockDirectory) {
@@ -2825,24 +2821,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         // CRC-checked by the read: a block rebuilt below is written with a fresh CRC, which would launder a damaged one
         final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-        final int from = lowerBound(timestamps, fromTs);
-        final int to = upperBound(timestamps, toTs);
-        final BitSet doomed = new BitSet(timestamps.length);
-        if (from < to)
-          if (tagMatch == BlockMatchResult.FAST_PATH)
-            doomed.set(from, to);
-          else {
-            final Object[][] tagColumns = decompressColumns(entry, filterColumns, tsColIdx);
-            final Object[] probe = new Object[filterColumns.length + 1];
-            for (int i = from; i < to; i++) {
-              probe[0] = timestamps[i];
-              for (int c = 0; c < tagColumns.length; c++)
-                probe[c + 1] = tagColumns[c][i];
-              if (tagFilter.matchesMapped(probe, filterColumns))
-                doomed.set(i);
-            }
-          }
-
+        final BitSet doomed = rowsToDelete(entry, timestamps, tagMatch, tagFilter, filterColumns, fromTs, toTs, tsColIdx);
         final int doomedCount = doomed.cardinality();
         if (doomedCount == 0) {
           retained.add(entry);
@@ -2852,23 +2831,69 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (doomedCount == timestamps.length)
           continue;
 
-        rebuildWithout(entry, timestamps, doomed, tsColIdx, colCount, rebuiltCompressed, rebuiltMeta, rebuiltStats,
-            rebuiltTagDistinctValues, rebuiltGranularities);
+        rebuildWithout(entry, timestamps, doomed, tsColIdx, colCount, rebuilt);
       }
 
       if (deleted == 0L)
         return 0L;
 
-      final long[] granularities = new long[rebuiltGranularities.size()];
-      for (int i = 0; i < granularities.length; i++)
-        granularities[i] = rebuiltGranularities.get(i);
-
       // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows
       downsampleEpoch++;
-      rewriteWithBlocks(retained, rebuiltCompressed, rebuiltMeta, rebuiltStats, rebuiltTagDistinctValues, granularities, 0L);
+      rewriteWithBlocks(retained, rebuilt.compressed, rebuilt.meta, rebuilt.stats, rebuilt.tagDistinctValues, rebuilt.granularities(),
+          0L);
       return deleted;
     } finally {
       directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * The rows of a block the predicate takes: those in {@code [fromTs, toTs]}, and, when the block mixes tag values
+   * ({@link BlockMatchResult#SLOW_PATH}), those whose tags satisfy the filter, tested the way a scan tests them.
+   */
+  private BitSet rowsToDelete(final BlockEntry entry, final long[] timestamps, final BlockMatchResult tagMatch,
+      final TagFilter tagFilter, final int[] filterColumns, final long fromTs, final long toTs, final int tsColIdx) throws IOException {
+    final BitSet doomed = new BitSet(timestamps.length);
+    final int from = lowerBound(timestamps, fromTs);
+    final int to = upperBound(timestamps, toTs);
+    if (from >= to)
+      return doomed;
+
+    if (tagMatch == BlockMatchResult.FAST_PATH) {
+      doomed.set(from, to);
+      return doomed;
+    }
+
+    final Object[][] tagColumns = decompressColumns(entry, filterColumns, tsColIdx);
+    final Object[] probe = new Object[filterColumns.length + 1];
+    for (int i = from; i < to; i++) {
+      probe[0] = timestamps[i];
+      for (int c = 0; c < tagColumns.length; c++)
+        probe[c + 1] = tagColumns[c][i];
+      if (tagFilter.matchesMapped(probe, filterColumns))
+        doomed.set(i);
+    }
+    return doomed;
+  }
+
+  /** The blocks a delete rebuilt from the rows that stay, as the lists {@link #rewriteWithBlocks} takes. */
+  private static final class RebuiltBlocks {
+    final List<byte[][]>   compressed       = new ArrayList<>();
+    final List<long[]>     meta             = new ArrayList<>();
+    final List<BlockStats> stats            = new ArrayList<>();
+    final List<String[][]> tagDistinctValues = new ArrayList<>();
+    private long[]         granularities    = new long[4];
+    private int            size;
+
+    /** The downsampling granularity of the block just added, which a rebuilt block keeps. */
+    void addGranularity(final long granularity) {
+      if (size == granularities.length)
+        granularities = Arrays.copyOf(granularities, size * 2);
+      granularities[size++] = granularity;
+    }
+
+    long[] granularities() {
+      return Arrays.copyOf(granularities, size);
     }
   }
 
@@ -2885,8 +2910,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * was written with, the surviving rows picked, and the block's statistics and declared tag values recomputed from them.
    */
   private void rebuildWithout(final BlockEntry entry, final long[] timestamps, final BitSet doomed, final int tsColIdx,
-      final int colCount, final List<byte[][]> compressedOut, final List<long[]> metaOut, final List<BlockStats> statsOut,
-      final List<String[][]> tagDistinctValuesOut, final List<Long> granularitiesOut) throws IOException {
+      final int colCount, final RebuiltBlocks out) throws IOException {
     final int kept = timestamps.length - doomed.cardinality();
     final long[] keptTimestamps = new long[kept];
     int k = 0;
@@ -2933,11 +2957,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
     }
 
-    compressedOut.add(compressedCols);
-    metaOut.add(new long[] { keptTimestamps[0], keptTimestamps[kept - 1], kept });
-    statsOut.add(stats.build());
-    tagDistinctValuesOut.add(tagDistinctValues);
-    granularitiesOut.add(entry.downsampledGranularityMs);
+    out.compressed.add(compressedCols);
+    out.meta.add(new long[] { keptTimestamps[0], keptTimestamps[kept - 1], kept });
+    out.stats.add(stats.build());
+    out.tagDistinctValues.add(tagDistinctValues);
+    out.addGranularity(entry.downsampledGranularityMs);
   }
 
   /**

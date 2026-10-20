@@ -337,7 +337,33 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
     }).hasMessageContaining("delete of samples");
   }
 
-  /** The bounds a SELECT takes in a WHERE are the bounds a DELETE takes: a date as text in the database's zone, and a parameter. */
+  /**
+   * A delete that stopped after some of the shards (a failure part way through the loop) is finished by running it again: what is
+   * gone is not deleted twice, and the shards it did not reach are.
+   */
+  @Test
+  void aDeleteThatStoppedAfterSomeShardsIsFinishedByRunningItAgain() throws Exception {
+    create(3);
+    populate(Layout.BOTH);
+    final long from = BASE + 50_000L;
+    final long to = BASE + 250_000L;
+
+    // what the interrupted statement did: the first shard only
+    final TimeSeriesShard first = engine().getShard(0);
+    final long[] doneByFirst = new long[1];
+    first.runSealedRewrite(() -> doneByFirst[0] = first.deleteSamplesLocked(from, to, null));
+    assertThat(doneByFirst[0]).as("the first shard held samples of the range").isPositive();
+
+    final Predicate<Sample> inRange = s -> s.ts >= from && s.ts <= to;
+    final long inTotal = model.stream().filter(inRange).count();
+    model.removeIf(inRange);
+    try (final ResultSet rs = database.command("sql", "DELETE FROM M WHERE ts >= " + from + " AND ts <= " + to)) {
+      assertThat(rs.next().<Long>getProperty("count")).as("what the first run left").isEqualTo(inTotal - doneByFirst[0]);
+    }
+    assertMatchesModel();
+  }
+
+  /** The bounds a SELECT takes in a WHERE are the bounds a DELETE takes: a date as text (read in UTC), and a parameter. */
   @Test
   void aDateAsTextAndParametersAreReadAsASelectReadsThem() throws Exception {
     create(2);

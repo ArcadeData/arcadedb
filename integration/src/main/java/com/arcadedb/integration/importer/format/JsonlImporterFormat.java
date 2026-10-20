@@ -1078,12 +1078,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             if (items.get(i) instanceof Number)
               items.set(i, array.getBigDecimal(i));
         } else if (elementType != null)
-          for (int i = 0; i < items.size(); ++i) {
-            final Object item = items.get(i);
-            final Object restored = restoreElement(elementType, item);
-            if (restored != item)
-              items.set(i, restored);
-          }
+          for (int i = 0; i < items.size(); ++i)
+            items.set(i, restoreElement(elementType, items.get(i)));
       } else if (propertyType == Type.MAP && entry.getValue() instanceof Map<?, ?> container) {
         // the same restoration as the LIST above, for the same element types: a MAP OF is not a second-class container (issue #10391)
         @SuppressWarnings("unchecked") final Map<String, Object> values = (Map<String, Object>) container;
@@ -1094,12 +1090,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             if (mapEntry.getValue() instanceof Number)
               mapEntry.setValue(object.getBigDecimal(mapEntry.getKey()));
         } else if (elementType != null)
-          for (final Map.Entry<String, Object> mapEntry : values.entrySet()) {
-            final Object item = mapEntry.getValue();
-            final Object restored = restoreElement(elementType, item);
-            if (restored != item)
-              mapEntry.setValue(restored);
-          }
+          for (final Map.Entry<String, Object> mapEntry : values.entrySet())
+            mapEntry.setValue(restoreElement(elementType, mapEntry.getValue()));
       }
     }
   }

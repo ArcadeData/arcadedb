@@ -1433,9 +1433,10 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * fixed-width and packed - so the rows that stay are read, the pages are cleared and the kept rows are appended again in their
    * original order: one image of the bucket replaces another inside one transaction, which commits whole or not at all.
    * <p>
-   * Nothing is written when no sample matches, so a delete that finds nothing costs the read. Deleting everything
-   * ({@code Long.MIN_VALUE .. Long.MAX_VALUE}, no filter) reads nothing and touches only the header page, as
-   * {@link #clearDataPages()} does.
+   * Nothing is written when no sample matches. A range that misses the bucket's own min/max timestamps, which the header holds,
+   * ends the call before a page is read, and deleting everything ({@code Long.MIN_VALUE .. Long.MAX_VALUE}, no filter) reads nothing
+   * and touches only the header page, as {@link #clearDataPages()} does. Any other delete reads every row of the bucket into memory
+   * once, the way a compaction does: the mutable pages are bounded by the compaction that seals them, so that is the bound.
    * <p>
    * The caller keeps appends and compactions out ({@code TimeSeriesShard}'s compaction write lock): the rows read here are the rows
    * cleared below.
@@ -1454,6 +1455,10 @@ public class TimeSeriesBucket extends PaginatedComponent {
         clearDataPages();
       return all;
     }
+
+    final long[] bounds = getMinMaxTimestamps();
+    if (bounds[1] < fromTs || bounds[0] > toTs)
+      return 0L;
 
     final List<Object[]> rows = scanRange(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null);
     final List<Object[]> kept = new ArrayList<>(rows.size());
