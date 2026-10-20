@@ -127,6 +127,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   });
   // The users half of the reload policy shared with the group and token stores (issue #10404), and its watcher.
   private final        UsersPolicy                     usersPolicy;
+  /**
+   * Makes "save the users file, then swap the users in force" one step against every other writer of the file (issue #10481). A local
+   * change and a replicated install each do that pair, and an install on the Raft apply thread must not take this class's monitor (the
+   * cluster-wide mutators hold it across the consensus round trip that install completes). Landing between the other's save and swap, each
+   * wrote its list over the other's save and swapped its own in, leaving memory and {@code server-users.jsonl} with different lists. This
+   * lock is held for a file write and a reference swap and nothing else, never across a Raft entry or a session wait, so the apply thread
+   * can take it without waiting on anything that waits for the apply thread. Taken after the monitor, never before.
+   */
+  private final        Object                          usersFileLock = new Object();
+  private volatile     Runnable                        afterLocalUsersSave;
+  private volatile     Runnable                        beforeReplicatedUsersSwap;
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
   private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
@@ -636,8 +647,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // Persist BEFORE publishing: saveUsers() propagates an I/O failure so the request fails, and publishing
     // first would leave the new user live in memory while nothing reached the disk - authoritative until the
     // next restart silently took it away again.
-    saveUsers(snapshotWith(name, userConfiguration));
-    publishLocalChange(name, user);
+    persistAndPublishLocalChange(name, userConfiguration, user);
     return user;
   }
 
@@ -656,8 +666,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // Persist before publishing, as in createUser(): a failed save must leave the previous password in
       // force rather than activate a new one that no longer exists after a restart - and the throw would
       // also skip the session invalidation below, so the rotation would be half-applied.
-      saveUsers(snapshotWith(name, userConfiguration));
-      publishLocalChange(name, user);
+      persistAndPublishLocalChange(name, userConfiguration, user);
     }
 
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
@@ -680,15 +689,29 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Saves the users with {@code name} replaced by {@code configuration} (removed when {@code null}) and publishes {@code user} (its
+   * removal when {@code null}) - the two steps of a local change, as one (issue #10481).
+   */
+  private void persistAndPublishLocalChange(final String name, final JSONObject configuration, final ServerSecurityUser user) {
+    synchronized (usersFileLock) {
+      // Persist BEFORE publishing (see createUser), from the users in force NOW: an install cannot swap them under this snapshot
+      saveUsers(snapshotWith(name, configuration));
+      if (afterLocalUsersSave != null)
+        afterLocalUsersSave.run();
+      publishLocalChange(name, user);
+    }
+  }
+
+  /**
    * Publishes a local change of one user - {@code user}, or its removal when {@code null} - as a NEW map rather than an
    * edit of the one in force (issue #10460), so a users-file reload that read the file before the change fails its
    * compare-and-set instead of publishing over it. A compare-and-set here too, retried, because the replicated install
    * on the Raft apply thread swaps the map without this class's monitor, and its list must not be overwritten by a copy
    * of the one it replaced. A copy per change is fine: user administration is rare, and the map is small.
    * <p>
-   * Not closed here, and older than this method: the caller saved a snapshot of the map before calling it, so an install
-   * landing between that save and this swap writes its own list over the save and then swaps it in. Memory ends up with
-   * the install plus this change, and the file with the install alone, until the next successful local save writes both.
+   * Called with {@link #usersFileLock} held, by {@link #persistAndPublishLocalChange}: an install cannot land between the save of
+   * the snapshot this change was made on and this swap (issue #10481), so the file and the map in force stay the same list. The
+   * compare-and-set here is for the users-file reload, which does not take that lock.
    */
   private void publishLocalChange(final String name, final ServerSecurityUser user) {
     while (true) {
@@ -709,6 +732,22 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   void afterUsersFileRead(final Runnable hook) {
     usersPolicy.afterRead = hook;
+  }
+
+  /**
+   * Test seam (issue #10481): runs {@code hook} in every local user change after the users were saved and before the change is
+   * swapped into memory, the window a replicated install has to land in. {@code null} removes it.
+   */
+  void afterLocalUsersSave(final Runnable hook) {
+    afterLocalUsersSave = hook;
+  }
+
+  /**
+   * Test seam (issue #10481): runs {@code hook} in every replicated install after the list was saved and before it is swapped in, the
+   * window a local user change has to land in. {@code null} removes it.
+   */
+  void beforeReplicatedUsersSwap(final Runnable hook) {
+    beforeReplicatedUsersSwap = hook;
   }
 
   /**
@@ -734,8 +773,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         return false;
       // Persist before publishing, as in createUser()/updateUser(): a failed save must not leave a user
       // removed in memory and still present on disk, which a restart would resurrect.
-      saveUsers(snapshotWith(userName, null));
-      publishLocalChange(userName, null);
+      persistAndPublishLocalChange(userName, null, null);
     }
     // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
     // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
@@ -1376,7 +1414,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   public void saveUsers() {
-    saveUsers(usersToJSON());
+    // The users in force are read and written under the lock (issue #10481), or a change saved in between would be overwritten
+    synchronized (usersFileLock) {
+      saveUsers(usersToJSON());
+    }
   }
 
   /**
@@ -1526,40 +1567,51 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // turned into users must leave both the file and this node's users untouched rather than persisting a
     // snapshot the node itself could not load. Everything that can throw therefore still happens before any
     // mutation, which is the ordering ArcadeStateMachine relies on (see the note above).
-    final Map<String, ServerSecurityUser> previousUsers = this.users;
     final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
     for (final JSONObject userJson : list)
       newUsers.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
 
-    // A local persistence failure is captured, not thrown, and reported only AFTER the swap below (issue
-    // #7137). Returning early here would leave this node authenticating against the PREVIOUS user list - so a
-    // password the operator has just changed, or an account they have just dropped, would keep working here for
-    // as long as the volume stays full or read-only. The entry is valid and reached a quorum; the only thing
-    // that failed is writing it down, so the revocation takes effect now and what is outstanding is durability.
-    //
-    // Durability is recovered by the Raft log since issue #7752: the failure is recorded for
-    // isReplicatedDocumentDurable, and the HA layer keeps this entry out of every snapshot checkpoint until the list
-    // reaches the disk - written again by retryReplicatedSecurityPersistence, or by a later entry - so a restart
-    // replays it rather than reloading the stale file with nothing left to replay.
-    final Exception persistFailure = trySaveUsers(list);
-    trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.USERS, persistFailure);
-    if (persistFailure != null)
-      // Logged here, at the point of capture, and not only where it is thrown below: the throw is the LAST
-      // statement, so anything between - today invalidateAuthSessionsOfRevokedPrincipals - that throws would
-      // propagate instead and take this failure with it. Only one exception can leave a method.
-      LogManager.instance().log(this, Level.SEVERE,
-          "Could not write the replicated user list to '%s'. The new list IS in effect on this node from now on; "
-              + "what failed is making it durable", persistFailure, SecurityUserFileRepository.FILE_NAME);
+    // Save and swap are ONE step against a local user change (issue #10481): see usersFileLock. Taken here, after everything that can
+    // throw has run, and released before anything that can wait.
+    final Exception persistFailure;
+    final Map<String, ServerSecurityUser> previousUsers;
+    synchronized (usersFileLock) {
+      // What this swap replaces, read under the lock: a local change made since the payload was parsed is part of it
+      previousUsers = this.users;
 
-    // Published in a single atomic reference swap so concurrent readers never observe an empty/torn window.
-    this.users = newUsers;
+      // A local persistence failure is captured, not thrown, and reported only AFTER the swap below (issue
+      // #7137). Returning early here would leave this node authenticating against the PREVIOUS user list - so a
+      // password the operator has just changed, or an account they have just dropped, would keep working here for
+      // as long as the volume stays full or read-only. The entry is valid and reached a quorum; the only thing
+      // that failed is writing it down, so the revocation takes effect now and what is outstanding is durability.
+      //
+      // Durability is recovered by the Raft log since issue #7752: the failure is recorded for
+      // isReplicatedDocumentDurable, and the HA layer keeps this entry out of every snapshot checkpoint until the list
+      // reaches the disk - written again by retryReplicatedSecurityPersistence, or by a later entry - so a restart
+      // replays it rather than reloading the stale file with nothing left to replay.
+      persistFailure = trySaveUsers(list);
+      trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.USERS, persistFailure);
+      if (persistFailure != null)
+        // Logged here, at the point of capture, and not only where it is thrown below: the throw is the LAST
+        // statement, so anything between - today invalidateAuthSessionsOfRevokedPrincipals - that throws would
+        // propagate instead and take this failure with it. Only one exception can leave a method.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Could not write the replicated user list to '%s'. The new list IS in effect on this node from now on; "
+                + "what failed is making it durable", persistFailure, SecurityUserFileRepository.FILE_NAME);
 
-    // From here on this node's user list IS the cluster's, so the compare-and-set of issue #7509 can judge an
-    // entry against it (issue #7693). Recorded BEFORE the persistence failure is reported below, for the same
-    // reason the swap happens before it: the list is in force on this node whether or not it reached disk. And
-    // if it did NOT reach disk, the restart reads the previous file, whose fingerprint no longer matches what is
-    // recorded here - so that node correctly goes back to "cannot judge" rather than judging with a stale list.
-    replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.USERS, usersFingerprint());
+      if (beforeReplicatedUsersSwap != null)
+        beforeReplicatedUsersSwap.run();
+
+      // Published in a single atomic reference swap so concurrent readers never observe an empty/torn window.
+      this.users = newUsers;
+
+      // From here on this node's user list IS the cluster's, so the compare-and-set of issue #7509 can judge an
+      // entry against it (issue #7693). Recorded BEFORE the persistence failure is reported below, for the same
+      // reason the swap happens before it: the list is in force on this node whether or not it reached disk. And
+      // if it did NOT reach disk, the restart reads the previous file, whose fingerprint no longer matches what is
+      // recorded here - so that node correctly goes back to "cannot judge" rather than judging with a stale list.
+      replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.USERS, usersFingerprint());
+    }
 
     // A peer applying a replicated drop or password change must also revoke the login tokens it had already
     // issued to that principal, or the credentials the operator revoked keep working on this node until the
@@ -1711,7 +1763,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   public boolean retryReplicatedSecurityPersistence() {
     if (unpersistedReplicatedDocuments.contains(ReplicatedSecurityFingerprintRepository.USERS))
-      trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.USERS, trySaveUsers(usersToJSON()));
+      // What is in force is read and written under the lock, or a local change could be saved in between and then overwritten with the
+      // list it was made on (issue #10481)
+      synchronized (usersFileLock) {
+        trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.USERS, trySaveUsers(usersToJSON()));
+      }
     if (unpersistedReplicatedDocuments.contains(ReplicatedSecurityFingerprintRepository.GROUPS))
       trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.GROUPS, groupRepository.persistCurrent());
     if (unpersistedReplicatedDocuments.contains(ReplicatedSecurityFingerprintRepository.API_TOKENS))
