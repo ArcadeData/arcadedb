@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
@@ -665,8 +666,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // A non-vertex type with the same name (edge/document type) matches no node pattern: labels
         // and relationship types are separate namespaces in Cypher, so yield 0 rows instead of
         // failing with a ClassCastException while casting edges to vertices (issue #5194)
-        if (!(type instanceof VertexType))
+        if (!(type instanceof VertexType)) {
+          // ...except a time-series type: a static label naming one was refused at planning, a dynamic one is only known
+          // here, and zero rows would read as a series with no samples (issue #10440)
+          Labels.requireNotTimeSeriesType(type, "label");
           return Collections.emptyIterator();
+        }
 
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
@@ -756,6 +761,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // tryFindAndUseIndexFromWhere, tryPartitionPrunedIterator), which is why it treats properties/WHERE
       // as safe to ignore for a multi-label or label-less pattern. If a future change ever gives this
       // branch an index/partition fast path of its own, isRowIndependentFullScan() must be revisited too.
+      // A static label was refused when the statement was planned (TimeSeriesPatternGuard), a dynamic one is only known
+      // here (issue #10440): only then are the labels looked up, so a static multi-label scan opened per row pays nothing
+      if (pattern.hasDynamicLabels()) {
+        final Schema schema = context.getDatabase().getSchema();
+        for (int i = 0; i < labels.size(); i++)
+          Labels.requireNotTimeSeriesType(schema.getTypeOrNull(labels.get(i)), "label");
+      }
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
           (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels,
               pattern.isLabelDisjunction());
