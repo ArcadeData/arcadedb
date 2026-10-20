@@ -75,6 +75,7 @@ public class DocumentValidator {
 
   private static final class LinkTargetTypeScope implements LinkTargetTypeDeferral {
     private final Thread  owner = Thread.currentThread();
+    // Plain: only the owner thread reads and writes it, close() refuses any other thread before touching it
     private       boolean closed;
 
     @Override

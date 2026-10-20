@@ -462,7 +462,8 @@ public class DeferredExistenceChecks {
     try {
       return database.lookupByRID(rid, true) instanceof EdgeSegment segment && segment.isEmpty();
     } catch (final RecordNotFoundException e) {
-      return true;
+      // A record that cannot be read is not shown to be gone (a delete in this transaction was asked before): the guard refuses
+      return false;
     }
   }
 
