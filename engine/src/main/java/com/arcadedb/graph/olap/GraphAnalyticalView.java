@@ -37,6 +37,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
@@ -50,6 +51,7 @@ import com.arcadedb.utility.IntHashSet;
 import java.lang.ref.SoftReference;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -65,6 +67,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -252,6 +255,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
     final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
+    // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
+    // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
+    volatile SoftReference<GraphTraversalProvider> denseIds;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
@@ -1051,11 +1057,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     shutdown(true);
   }
 
+  /**
+   * Takes this view out of service for good because a type it names was renamed (issue #10368): its snapshot and every
+   * structure built with it are keyed by the old name, so the view does not carry the rename itself, the view built from the
+   * renamed definition replaces it. Runs inside the schema session that publishes the rename, under the database write lock,
+   * so it does not wait for a build in flight - which may need that lock to finish - as {@link #shutdown()} does: that build
+   * finds the view shut down and publishes nothing. Its persisted CSR and contraction orders are deleted, they name the old
+   * types.
+   */
+  void retireForTypeRename() {
+    shutdown(false, false);
+    if (name != null) {
+      GraphAnalyticalViewCSRPersistence.delete(database, name);
+      for (final ContractionHierarchy hierarchy : contractionHierarchies)
+        CCHOrderPersistence.delete(hierarchy.orderFile());
+    }
+  }
+
   private void shutdown(final boolean persistCsr) {
+    shutdown(persistCsr, true);
+  }
+
+  private void shutdown(final boolean persistCsr, final boolean awaitTasks) {
     // a hierarchy being prepared stops at its next check instead of holding the wait below
     for (final ContractionHierarchy hierarchy : contractionHierarchies)
       hierarchy.close();
-    awaitInFlightTasks(shutdownAwaitMs);
+    if (awaitTasks)
+      awaitInFlightTasks(shutdownAwaitMs);
     synchronized (this) {
       // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
       // view that is gone (issue #8403). Nor may the view keep saying BUILDING: that build will never publish it
@@ -1658,19 +1686,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
-    // Apply overlay deltas if active
+    // Apply overlay deltas if active: to the nodes it changes, rather than one lookup per node of the graph (issue #10411)
     if (ov != null) {
-      for (int v = 0; v < degrees.length; v++) {
-        if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-          degrees[v] += ov.getAddedOutNeighbors(v, edgeType).length;
-          degrees[v] -= ov.countDeletedOutEdges(v, edgeType);
-        }
-        if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-          degrees[v] += ov.getAddedInNeighbors(v, edgeType).length;
-          degrees[v] -= ov.countDeletedInEdges(v, edgeType);
-        }
-      }
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+        applyOverlayDegrees(ov, degrees, edgeType, true);
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        applyOverlayDegrees(ov, degrees, edgeType, false);
     }
+  }
+
+  private static void applyOverlayDegrees(final DeltaOverlay ov, final int[] degrees, final String edgeType,
+      final boolean outgoing) {
+    final BitSet changed = new BitSet();
+    ov.markChangedNodes(edgeType, outgoing, changed);
+    for (int v = changed.nextSetBit(0); v >= 0 && v < degrees.length; v = changed.nextSetBit(v + 1))
+      degrees[v] += outgoing ?
+          ov.getAddedOutNeighbors(v, edgeType).length - ov.countDeletedOutEdges(v, edgeType) :
+          ov.getAddedInNeighbors(v, edgeType).length - ov.countDeletedInEdges(v, edgeType);
   }
 
   @Override
@@ -1681,9 +1713,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private NeighborView getNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
-    // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
+    // The overlay changes the topology: the view is the base with the overlay applied, built once per snapshot (issue #10411)
     if (hasActiveOverlay(snap))
-      return null;
+      return overlayNeighborView(snap, direction,
+          edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : allEdgeTypes(snap).toArray(new String[0]),
+          neighborViewKey(direction, edgeTypes));
 
     final int n = snap.nodeMapping.size();
 
@@ -1734,14 +1768,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   private static NeighborView cachedMergedNeighborView(final Snapshot snap, final Vertex.DIRECTION direction,
       final String[] edgeTypes, final Collection<CSRAdjacencyIndex> indices, final int n) {
-    final String key;
+    return cachedNeighborView(snap, neighborViewKey(direction, edgeTypes), () -> buildMergedNeighborView(indices, n, direction));
+  }
+
+  /** The key a neighbour view of {@code direction} over {@code edgeTypes} (null or empty: every type) is cached under. */
+  private static String neighborViewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      key = direction + "|*";
-    else {
-      final String[] sorted = edgeTypes.clone();
-      Arrays.sort(sorted);
-      key = direction + "|" + String.join("\u0000", sorted);
-    }
+      return direction + "|*";
+    final String[] sorted = edgeTypes.clone();
+    Arrays.sort(sorted);
+    return direction + "|" + String.join("\u0000", sorted);
+  }
+
+  private static NeighborView cachedNeighborView(final Snapshot snap, final String key, final Supplier<NeighborView> builder) {
     // compute() so concurrent callers share one build of a large merge instead of each sorting the whole adjacency, and
     // so a reference the GC cleared is replaced rather than left behind
     final NeighborView[] result = new NeighborView[1];
@@ -1751,10 +1790,143 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result[0] = hit;
         return cached;
       }
-      result[0] = buildMergedNeighborView(indices, n, direction);
+      result[0] = builder.get();
       return new SoftReference<>(result[0]);
     });
     return result[0];
+  }
+
+  /**
+   * The neighbour view of a snapshot that carries an overlay (issue #10411): the adjacency every per-node read answers -
+   * {@link #getNeighborsFromCSR}'s arithmetic, the base CSR less the overlay's deletions plus its additions, sorted - packed for
+   * the whole id space, the vertices only the overlay holds included. Answering null instead sent every whole-graph reader
+   * down the per-node path for as long as the overlay lived, one array per node and one overlay lookup per node and type,
+   * which a single committed edge made a quarter slower for up to {@link #DEFAULT_COMPACTION_THRESHOLD} changes.
+   * <p>
+   * Built once per snapshot and kept with it, like the merged views of the base: a snapshot never changes, and a commit merged
+   * into the overlay publishes a new one. A node the overlay does not change copies its base slice; only the changed ones are
+   * merged. One edge type in one direction the overlay does not touch, with no vertex added, is the base CSR itself.
+   */
+  private static NeighborView overlayNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices,
+      final String key) {
+    final DeltaOverlay ov = snap.overlay;
+    final int n = ov.getNodeIdUpperBound();
+    final int baseNodes = snap.nodeMapping.size();
+    if (slices.length == 1 && direction != Vertex.DIRECTION.BOTH && n == baseNodes) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(slices[0]);
+      final BitSet changed = new BitSet();
+      ov.markChangedNodes(slices[0], direction == Vertex.DIRECTION.OUT, changed);
+      if (csr != null && changed.isEmpty())
+        return buildNeighborViewFromCSR(csr, n, direction);
+    }
+    return cachedNeighborView(snap, key, () -> {
+      final List<NeighborView> parts = new ArrayList<>(slices.length * 2);
+      for (final String slice : slices) {
+        if (direction != Vertex.DIRECTION.IN)
+          addOverlaySlice(snap, slice, true, n, parts);
+        if (direction != Vertex.DIRECTION.OUT)
+          addOverlaySlice(snap, slice, false, n, parts);
+      }
+      if (parts.isEmpty())
+        return new NeighborView(n, new int[n + 1], EMPTY_INT);
+      return parts.size() == 1 ? parts.getFirst() : mergeNeighborViews(parts, n);
+    });
+  }
+
+  /**
+   * The adjacency of one edge type in one direction with the overlay applied, for every node below {@code n}; nothing when
+   * neither the base nor the overlay holds an edge of it.
+   */
+  private static void addOverlaySlice(final Snapshot snap, final String slice, final boolean outgoing, final int n,
+      final List<NeighborView> parts) {
+    final DeltaOverlay ov = snap.overlay;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+    final BitSet changed = new BitSet();
+    ov.markChangedNodes(slice, outgoing, changed);
+    if (csr == null && changed.isEmpty())
+      return;
+
+    final int baseNodes = csr != null ? Math.min(snap.nodeMapping.size(), n) : 0;
+    final int[] baseNeighbors = csr == null ? null : outgoing ? csr.getForwardNeighbors() : csr.getBackwardNeighbors();
+
+    // The changed nodes' adjacency, in id order: few next to the nodes the overlay leaves alone
+    final int[][] changedAdjacency = new int[changed.cardinality()][];
+    int c = 0;
+    for (int v = changed.nextSetBit(0); v >= 0 && v < n; v = changed.nextSetBit(v + 1))
+      changedAdjacency[c++] = overlaySliceOf(ov, csr, baseNeighbors, v < baseNodes, v, slice, outgoing);
+
+    final int[] offsets = new int[n + 1];
+    c = 0;
+    for (int v = 0; v < n; v++) {
+      final int degree;
+      if (changed.get(v))
+        degree = changedAdjacency[c++].length;
+      else if (v < baseNodes)
+        degree = outgoing ? csr.outDegree(v) : csr.inDegree(v);
+      else
+        degree = 0;
+      offsets[v + 1] = offsets[v] + degree;
+    }
+
+    final int[] neighbors = new int[offsets[n]];
+    c = 0;
+    for (int v = 0; v < n; v++) {
+      final int[] source;
+      final int from;
+      if (changed.get(v)) {
+        source = changedAdjacency[c++];
+        from = 0;
+      } else if (v < baseNodes) {
+        source = baseNeighbors;
+        from = outgoing ? csr.outOffset(v) : csr.inOffset(v);
+      } else
+        continue;
+      System.arraycopy(source, from, neighbors, offsets[v], offsets[v + 1] - offsets[v]);
+    }
+    parts.add(new NeighborView(n, offsets, neighbors));
+  }
+
+  /** One node's adjacency of one slice and direction with the overlay applied, the way {@link #getNeighborsFromCSR} reads it. */
+  private static int[] overlaySliceOf(final DeltaOverlay ov, final CSRAdjacencyIndex csr, final int[] baseNeighbors,
+      final boolean inBase, final int nodeId, final String slice, final boolean outgoing) {
+    int[] base = EMPTY_INT;
+    if (inBase) {
+      final int start = outgoing ? csr.outOffset(nodeId) : csr.inOffset(nodeId);
+      final int end = outgoing ? csr.outOffsetEnd(nodeId) : csr.inOffsetEnd(nodeId);
+      if (start < end)
+        base = copyBaseExcludingDeleted(baseNeighbors, start, end, ov, slice, nodeId, outgoing);
+    }
+    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, slice, outgoing);
+    if (added == null || added.nodeIds().length == 0)
+      return base;
+    final int[] result = Arrays.copyOf(base, base.length + added.nodeIds().length);
+    System.arraycopy(added.nodeIds(), 0, result, base.length, added.nodeIds().length);
+    Arrays.sort(result);
+    return result;
+  }
+
+  /** {@link #buildMergedNeighborView} over views rather than CSRs: each node's ranges concatenated and sorted. */
+  private static NeighborView mergeNeighborViews(final List<NeighborView> parts, final int n) {
+    final int[] offsets = new int[n + 1];
+    for (int v = 0; v < n; v++) {
+      int degree = 0;
+      for (final NeighborView part : parts)
+        degree += part.degree(v);
+      offsets[v + 1] = offsets[v] + degree;
+    }
+    final int[] neighbors = new int[offsets[n]];
+    for (int v = 0; v < n; v++) {
+      int pos = offsets[v];
+      for (final NeighborView part : parts) {
+        final int from = part.offset(v);
+        final int length = part.offsetEnd(v) - from;
+        System.arraycopy(part.neighbors(), from, neighbors, pos, length);
+        pos += length;
+      }
+      if (offsets[v + 1] - offsets[v] > 1)
+        Arrays.sort(neighbors, offsets[v], offsets[v + 1]);
+    }
+    return new NeighborView(n, offsets, neighbors);
   }
 
   private static NeighborView buildNeighborViewFromCSR(final CSRAdjacencyIndex csr, final int n,
@@ -2056,9 +2228,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   private static NeighborView getNeighborViewOfSlice(final Snapshot snap, final Vertex.DIRECTION direction,
       final String edgeType) {
-    // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
-    if (hasActiveOverlay(snap))
-      return null;
+    // The overlay changes the topology: the slice with the overlay applied, built once per snapshot (issue #10411)
+    if (hasActiveOverlay(snap)) {
+      final String[] slice = { edgeType };
+      return overlayNeighborView(snap, direction, slice, neighborViewKey(direction, slice));
+    }
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     if (csr == null)
       return null;
@@ -2299,7 +2473,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * an algorithm, behind the provider SPI. Every answer it gives belongs to that one snapshot, its overlay included, however
    * many commits are merged and however many times the view is rebuilt meanwhile (issue #10350). Costs one object: the
    * snapshot is immutable, and pinning only keeps it reachable for as long as the caller holds the result - a long algorithm
-   * keeps a superseded base in memory until it ends. The Cypher MATCH operators do not read through a pin yet (issue #10365).
+   * keeps a superseded base in memory until it ends. A query takes one per statement, shared by its operators, through
+   * {@link GraphViewPins} (issue #10415).
    */
   @Override
   public Pinned pinned() {
@@ -2323,6 +2498,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     /** The snapshot itself, for a kernel of this package that reads its arrays directly. */
     Snapshot snapshot() {
       return snap;
+    }
+
+    /**
+     * This snapshot's ids renumbered onto a gapless range: the one {@code builder} makes, built once per snapshot and shared by
+     * every query that reads it, so the renumbering and the neighbour views it translates are not rebuilt per query (issue
+     * #10411).
+     */
+    public GraphTraversalProvider denseIds(final Supplier<GraphTraversalProvider> builder) {
+      final SoftReference<GraphTraversalProvider> cached = snap.denseIds;
+      GraphTraversalProvider dense = cached != null ? cached.get() : null;
+      if (dense == null) {
+        dense = builder.get();
+        snap.denseIds = new SoftReference<>(dense);
+      }
+      return dense;
     }
 
     @Override

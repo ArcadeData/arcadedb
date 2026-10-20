@@ -75,6 +75,20 @@ public final class GAVVertex implements Vertex {
     return nodeId;
   }
 
+  /**
+   * The dense node id of {@code vertex} in {@code provider}'s numbering, or -1 when it has none. The id a {@link GAVVertex}
+   * carries is reused only when it was read off that very provider: ids are numbered per snapshot, so one read off another
+   * view, or another pin of the same view, names another vertex there (issue #10415), and the vertex is looked up by its RID
+   * instead.
+   */
+  public static int nodeIdIn(final Object vertex, final GraphTraversalProvider provider) {
+    if (vertex instanceof GAVVertex gavVertex)
+      return gavVertex.provider == provider ? gavVertex.nodeId : provider.getNodeId(gavVertex.getIdentity());
+    if (vertex instanceof Vertex v)
+      return provider.getNodeId(v.getIdentity());
+    return -1;
+  }
+
   public GraphTraversalProvider getProvider() {
     return provider;
   }

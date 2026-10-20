@@ -304,7 +304,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               // Resolve source: accept both GAVVertex and Vertex
               int sourceNodeId = -1;
               Vertex sourceVertex = null;
+              GAVVertex sourceGavVertex = null;
               if (sourceObj instanceof GAVVertex gavVertex) {
+                sourceGavVertex = gavVertex;
                 sourceNodeId = gavVertex.getNodeId();
                 // Don't resolve to Vertex yet — only resolve if we can't use GAV fast path
               } else if (sourceObj instanceof Vertex)
@@ -321,6 +323,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                       pattern.hasTypes() ? pattern.getTypes().toArray(new String[0]) : null);
                   if (gavProvider != null && sourceNodeId < 0 && sourceVertex != null)
                     sourceNodeId = gavProvider.getNodeId(sourceVertex.getIdentity());
+                  else if (gavProvider != null && sourceGavVertex != null)
+                    // the id is the provider's only when the vertex was read off it (issue #10415)
+                    sourceNodeId = GAVVertex.nodeIdIn(sourceGavVertex, gavProvider);
 
                   if (gavProvider != null && sourceNodeId >= 0) {
                     // GAV reference path: produce GAVVertex, skip all lookupByRID
@@ -925,7 +930,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   private GraphTraversalProvider resolveGavProvider(final String[] edgeTypes) {
     if (!gavProviderResolved) {
       final Database db = context.getDatabase();
-      final GraphTraversalProvider resolved = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+      // Pinned for the statement: every row of this step, and every operator the rows go on to, reads one snapshot (issue #10415)
+      final GraphTraversalProvider resolved = GraphTraversalProviderRegistry.findProvider(context, edgeTypes);
       if (resolved == null && context.isProfiling()) {
         final List<GraphTraversalProvider> allProviders = GraphTraversalProviderRegistry.getProviders(db);
         gavProviderDebug = "db=" + db.getClass().getSimpleName() + ", providers=" + allProviders.size();
