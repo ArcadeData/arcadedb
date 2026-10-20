@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -271,9 +272,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     ArcadeGraph.checkNotTerminated();
     if (isRemoved())
       return Collections.emptyIterator();
-    // CSR fast path: use GAV provider when available for O(1) neighbor lookup
+    // CSR fast path: use GAV provider when available for O(1) neighbor lookup. Pinned, so the node id, the neighbours and their
+    // RIDs come from one snapshot whatever the view does meanwhile (issue #10415)
     final GraphTraversalProvider provider = graph.getDatabase() instanceof Database db
-        ? (edgeLabels.length == 0
+        ? GraphViewPins.pinAlone(edgeLabels.length == 0
             ? GraphTraversalProviderRegistry.findProvider(db)
             : GraphTraversalProviderRegistry.findProvider(db, edgeLabels))
         : null;

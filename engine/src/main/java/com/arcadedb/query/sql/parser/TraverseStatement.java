@@ -72,6 +72,8 @@ public class TraverseStatement extends Statement {
     if (parentcontext != null) {
       context.setParentWithoutOverridingChild(parentcontext);
     }
+    // ONE SNAPSHOT OF EACH GRAPH VIEW FOR THE WHOLE STATEMENT, ITS SUB-QUERIES INCLUDED (issue #10415)
+    context.openGraphViewPins();
     context.setDatabase(db);
     context.setInputParameters(args);
     final InternalExecutionPlan executionPlan = createExecutionPlan(context);
@@ -86,6 +88,8 @@ public class TraverseStatement extends Statement {
     if (parentcontext != null) {
       context.setParentWithoutOverridingChild(parentcontext);
     }
+    // ONE SNAPSHOT OF EACH GRAPH VIEW FOR THE WHOLE STATEMENT, ITS SUB-QUERIES INCLUDED (issue #10415)
+    context.openGraphViewPins();
     context.setDatabase(db);
     context.setInputParameters(params);
     final InternalExecutionPlan executionPlan = createExecutionPlan(context);

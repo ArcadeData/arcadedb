@@ -22,8 +22,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -93,6 +95,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
+    // The view as the statement reads it, one snapshot for every row (issue #10415)
+    final GraphTraversalProvider provider = GraphViewPins.pin(context, this.provider);
 
     return new ResultSet() {
       private final List<Result> buffer = new ArrayList<>();
@@ -138,8 +142,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           }
 
           // CSR multiplicity lookup: O(log(degree)) binary search plus the equal range
-          final int srcId = provider.getNodeId(sourceVertex.getIdentity());
-          final int tgtId = provider.getNodeId(targetVertex.getIdentity());
+          final int srcId = GAVVertex.nodeIdIn(sourceVertex, provider);
+          final int tgtId = GAVVertex.nodeIdIn(targetVertex, provider);
 
           // One or both vertices not in the GAV mapping, or a provider that cannot state the
           // multiplicity exactly (a negative answer) — fall back to the OLTP edge list
@@ -175,8 +179,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         final GAVEdgeRef[] bound = GAVEdgeRef.collect(inputResult, sameClausePrecedingRelVars);
         final RID source = sourceVertex.getIdentity();
         final RID target = targetVertex.getIdentity();
-        final int srcId = provider.getNodeId(source);
-        final int tgtId = provider.getNodeId(target);
+        final int srcId = GAVVertex.nodeIdIn(sourceVertex, provider);
+        final int tgtId = GAVVertex.nodeIdIn(targetVertex, provider);
         for (final String type : trackedTypes) {
           if (direction != Direction.IN)
             emitTracked(inputResult, bound, type, source, target, srcId, tgtId, Vertex.DIRECTION.OUT, sourceVertex, targetVertex);

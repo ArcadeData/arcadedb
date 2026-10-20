@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -208,6 +209,30 @@ public class GraphTraversalProviderRegistry {
    */
   public static GraphTraversalProvider findProvider(final Database database, final String... edgeTypes) {
     return findReadyProvider(database, provider -> provider.coversVertexType(null), true, edgeTypes);
+  }
+
+  /**
+   * {@link #findProvider(Database, String...)} for a read that runs now, on behalf of the statement {@code context} belongs to:
+   * the provider as that statement reads it, pinned at one snapshot for the whole statement (issue #10415). Every caller that
+   * reads through the provider it gets uses this form; the {@link Database} form is for the planner, whose plans are cached and
+   * must hold the live view rather than a snapshot of it.
+   */
+  public static GraphTraversalProvider findProvider(final CommandContext context, final String... edgeTypes) {
+    return GraphViewPins.pin(context, findProvider(context.getDatabase(), edgeTypes));
+  }
+
+  /** {@link #findProviderWithoutWaiting(Database, String...)}, pinned for the statement {@code context} belongs to (issue #10415). */
+  public static GraphTraversalProvider findProviderWithoutWaiting(final CommandContext context, final String... edgeTypes) {
+    return GraphViewPins.pin(context, findProviderWithoutWaiting(context.getDatabase(), edgeTypes));
+  }
+
+  /**
+   * {@link #findProviderAllowingPartialVertexCoverage(Database, Predicate, String...)}, pinned for the statement {@code context}
+   * belongs to (issue #10415).
+   */
+  public static GraphTraversalProvider findProviderAllowingPartialVertexCoverage(final CommandContext context,
+      final Predicate<GraphTraversalProvider> coversWalk, final String... edgeTypes) {
+    return GraphViewPins.pin(context, findProviderAllowingPartialVertexCoverage(context.getDatabase(), coversWalk, edgeTypes));
   }
 
   /**

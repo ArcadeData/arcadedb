@@ -32,6 +32,7 @@ import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -376,6 +377,7 @@ public class CypherExecutionPlan {
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -509,6 +511,16 @@ public class CypherExecutionPlan {
       context.setIncomingEdgeLookup(outerContext.getIncomingEdgeLookup());
   }
 
+  /**
+   * Makes a nested plan read the graph views through the pins of the statement it is part of, and a top-level plan open that
+   * statement's scope (issue #10415): every operator of the statement, the nested plans' included, then reads one snapshot of
+   * each view however many times it is rebuilt meanwhile.
+   */
+  private static void inheritGraphViewPins(final BasicCommandContext context, final CommandContext outerContext) {
+    final GraphViewPins pins = outerContext != null ? outerContext.getGraphViewPins() : null;
+    context.setGraphViewPins(pins != null ? pins : new GraphViewPins());
+  }
+
   private boolean canUseOptimizedPhysicalPlan() {
     return physicalPlan != null && physicalPlan.getRootOperator() != null
         && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
@@ -590,6 +602,7 @@ public class CypherExecutionPlan {
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -699,6 +712,7 @@ public class CypherExecutionPlan {
     setupFunctionResolver(context);
     inheritCommandDeadline(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
     if (countStep == null)
@@ -841,6 +855,7 @@ public class CypherExecutionPlan {
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
@@ -1148,6 +1163,7 @@ public class CypherExecutionPlan {
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
     context.setProfiling(true);
+    context.openGraphViewPins();
 
     final InternalResultSet results = new InternalResultSet();
     AbstractExecutionStep rootStep = null;
@@ -4943,8 +4959,9 @@ public class CypherExecutionPlan {
 
     final List<String> types = relationship.getTypes();
     final String[] edgeTypes = types != null && !types.isEmpty() ? types.toArray(new String[0]) : null;
-    // Several views can hold the edge types: take the first one that holds both endpoints, not the first one
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database,
+    // Several views can hold the edge types: take the first one that holds both endpoints, not the first one. Pinned for the
+    // statement: the step maps, walks and maps back in one snapshot (issue #10415)
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(context,
         candidate -> coveredVertexBuckets(candidate, source.getFirstLabel()) != null && (target.hasLabels()
             ? coveredVertexBuckets(candidate, target.getFirstLabel()) != null : candidate.coversVertexType(null)),
         edgeTypes);

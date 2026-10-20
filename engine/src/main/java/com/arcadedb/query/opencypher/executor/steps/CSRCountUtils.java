@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -169,7 +170,8 @@ public final class CSRCountUtils {
    * the edge types, and the count has to come off the edge lists (issue #5757).
    */
   public static GraphTraversalProvider findAcceleratingProvider(final Database db, final String... edgeTypes) {
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    // Pinned: the walk asks it per vertex, and every answer has to come from one snapshot (issue #10415)
+    final GraphTraversalProvider provider = GraphViewPins.pinAlone(GraphTraversalProviderRegistry.findProvider(db, edgeTypes));
     return provider != null && provider.coversVertexType(null) ? provider : null;
   }
 

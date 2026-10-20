@@ -269,8 +269,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (node == null)
       return result;
 
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(
-        ctx.getDatabase(), paramEdgeTypeNames);
+    // Pinned for the statement: the id, the weighted neighbours and their records come from one snapshot, and so does every node
+    // the search expands (issue #10415)
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(ctx, paramEdgeTypeNames);
     if (provider != null) {
       final int nodeId = provider.getNodeId(node.getIdentity());
       // edgeWeightsOf() answers null unless the provider can serve THIS property for EVERY type in play, and it

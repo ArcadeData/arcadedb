@@ -371,21 +371,15 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
   }
 
   /**
-   * A self-loop is reachable from BOTH of the vertex's lists, so both walks yield it and the delete pipeline runs
-   * for it twice - the second time over a record the first pass already removed, which `EdgeIterator.hasNext`
-   * does not filter out because it resolves the edge with {@code loadContent=false} and a lazy handle to a record
-   * deleted earlier in the same transaction still resolves.
-   * <p>
-   * That means {@code onBeforeDelete} fires TWICE for a self-loop, and a listener that is not idempotent sees it.
-   * Pinned here as an exact count, in both the record-backed and the lightweight shape, because the number is the
-   * whole point: it is what this path did BEFORE #5760 as well (the two-phase walk collected the self-loop from
-   * each list and called {@code delete()} on it twice, the second reaching the tolerated
-   * {@code RecordNotFoundException} inside {@code deleteEdge}), so streaming changed nothing here and must keep
-   * not changing it. Verified against the parent commit: two events there, two events now. A future change that
-   * makes it one - or three - moves this assertion.
+   * A self-loop is reachable from BOTH of the vertex's lists, and both walks used to yield it, so the delete pipeline
+   * ran for it twice - the second time over a record the first pass had already removed - and {@code onBeforeDelete}
+   * fired TWICE for one deletion. A record-backed edge carries its RID, which lets a listener tell the replay apart; a
+   * lightweight one does not, and a Graph Analytical View counted the second report as a second edge gone (issue
+   * #10369). The incoming walk now skips the self-loops the outgoing walk deleted, so the event fires once, in both
+   * shapes. Pinned as an exact count: a change that makes it two again moves this assertion.
    */
   @Test
-  void aSelfLoopIsWalkedFromBothListsSoItsDeleteEventFiresTwice() {
+  void aSelfLoopIsDeletedOnceSoItsDeleteEventFiresOnce() {
     database.transaction(() -> {
       database.getSchema().createVertexType("Loop", 1);
       database.getSchema().createEdgeType("LINK", 4);
@@ -393,10 +387,50 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
     });
 
     assertThat(countDeleteEventsDeletingASelfLoop("LINK"))
-        .as("a record-backed self-loop: yielded by the OUT walk and again by the IN walk").isEqualTo(2);
+        .as("a record-backed self-loop: deleted by the OUT walk, skipped by the IN walk").isEqualTo(1);
     assertThat(countDeleteEventsDeletingASelfLoop("LIGHT"))
-        .as("a lightweight self-loop has no record to go missing, so both walks yield it just the same")
-        .isEqualTo(2);
+        .as("a lightweight self-loop has no identity to tell a replay by, so it must not be replayed")
+        .isEqualTo(1);
+
+    assertIntegrityClean();
+  }
+
+  /**
+   * A unidirectional type stores a self-loop in the vertex's OUTGOING list only, so the incoming walk has nothing to skip: the
+   * outgoing walk deletes it, once, and it leaves no record behind.
+   */
+  @Test
+  void aUnidirectionalSelfLoopIsDeletedWithItsVertex() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Loop", 1);
+      database.getSchema().buildEdgeType().withName("ONEWAY").withTotalBuckets(4).withBidirectional(false).create();
+    });
+    final RID[] holder = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Loop").save();
+      v.newEdge("ONEWAY", v);
+      holder[0] = v.getIdentity();
+    });
+    database.transaction(() -> assertThat(database.countType("ONEWAY", false)).isEqualTo(1L));
+
+    final AtomicLong events = new AtomicLong();
+    final BeforeRecordDeleteListener probe = record -> {
+      if (record instanceof Edge)
+        events.incrementAndGet();
+      return true;
+    };
+    database.getSchema().getType("ONEWAY").getEvents().registerListener(probe);
+    try {
+      database.transaction(() -> holder[0].asVertex().delete());
+    } finally {
+      database.getSchema().getType("ONEWAY").getEvents().unregisterListener(probe);
+    }
+
+    assertThat(events.get()).isEqualTo(1);
+    database.transaction(() -> {
+      assertThat(database.existsRecord(holder[0])).isFalse();
+      assertThat(database.countType("ONEWAY", false)).as("the self-loop is gone with its vertex").isZero();
+    });
 
     assertIntegrityClean();
   }

@@ -21,6 +21,7 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
@@ -239,15 +240,20 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     if (!(graph.getDatabase() instanceof Database db))
       return;
 
+    // One pin per view for the whole traversal: the steps of a view then share it, which is what lets Phase 2 fuse them
+    final GraphViewPins pins = new GraphViewPins();
+
     // Phase 1: Replace VertexStep → ArcadeGAVVertexStep when provider covers the edge labels
     final List<Step> steps = traversal.getSteps();
     for (int i = 0; i < steps.size(); i++) {
       final Step step = steps.get(i);
       if (step instanceof VertexStep<?> vertexStep && vertexStep.returnsVertex()) {
         final String[] edgeLabels = vertexStep.getEdgeLabels();
-        final GraphTraversalProvider provider = edgeLabels.length == 0
+        // Pinned when the traversal is about to run: the step maps, walks and maps back in one snapshot for the whole traversal,
+        // whatever the view does meanwhile (issue #10415)
+        final GraphTraversalProvider provider = pins.pin(edgeLabels.length == 0
             ? GraphTraversalProviderRegistry.findProvider(db)
-            : GraphTraversalProviderRegistry.findProvider(db, edgeLabels);
+            : GraphTraversalProviderRegistry.findProvider(db, edgeLabels));
         if (provider != null) {
           final ArcadeGAVVertexStep gavStep = new ArcadeGAVVertexStep(
               graph, vertexStep, provider, vertexStep.getDirection(), edgeLabels);
@@ -347,9 +353,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         continue;
 
       final String[] edgeLabels = vertexStep.getEdgeLabels();
-      final GraphTraversalProvider provider = edgeLabels.length == 0
+      // Pinned, as for the vertex steps above (issue #10415)
+      final GraphTraversalProvider provider = GraphViewPins.pinAlone(edgeLabels.length == 0
           ? GraphTraversalProviderRegistry.findProvider(db)
-          : GraphTraversalProviderRegistry.findProvider(db, edgeLabels);
+          : GraphTraversalProviderRegistry.findProvider(db, edgeLabels));
       if (provider == null)
         continue;
 

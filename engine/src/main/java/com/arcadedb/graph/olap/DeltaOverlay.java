@@ -921,6 +921,23 @@ class DeltaOverlay {
   }
 
   /**
+   * Sets in {@code nodes} every node whose {@code edgeType} edges in the given direction this overlay changes: the ones it
+   * added edges to, and the ones it deleted base edges of. Every other node's adjacency is the base CSR's, entry for entry,
+   * which is what lets a whole-graph reader copy it instead of merging it (issue #10411).
+   *
+   * @param outgoing true for the edges leaving a node, false for those reaching it
+   */
+  void markChangedNodes(final String edgeType, final boolean outgoing, final BitSet nodes) {
+    final Map<Integer, AddedNeighbors> added = (outgoing ? outNeighborIndex : inNeighborIndex).get(edgeType);
+    if (added != null)
+      for (final Integer nodeId : added.keySet())
+        nodes.set(nodeId);
+    final IntIntHashMap deleted = (outgoing ? deletedOutEdgeCounts : deletedInEdgeCounts).get(edgeType);
+    if (deleted != null)
+      deleted.forEach((nodeId, count) -> nodes.set(nodeId));
+  }
+
+  /**
    * True when a committed transaction left {@code edgeType}'s property columns holding a value the database no
    * longer has. See the field's own comment.
    */

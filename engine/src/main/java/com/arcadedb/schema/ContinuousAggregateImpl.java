@@ -19,13 +19,15 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class ContinuousAggregateImpl implements ContinuousAggregate {
+public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant {
   private final Database database;
   private final String   name;
   // volatile, not final: a rename of the source type rewrites them in place (#10096), see retargetSourceType()
@@ -121,6 +123,43 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
   void retargetSourceType(final String newName, final String newQuery) {
     sourceTypeName = newName;
     query = newQuery;
+  }
+
+  /** Refuses the drop of its backing type and of its source type (issue #10096). */
+  @Override
+  public void checkTypeDrop(final LocalSchema schema, final String typeName, final String canonicalTypeName) {
+    final String source = sourceTypeName;
+    TypeNameDependant.checkNamesResolve(schema, typeName, "continuous aggregate", name, dropStatement(),
+        source != null ? List.of(backingTypeName, source) : List.of(backingTypeName));
+    if (backingTypeName.equals(canonicalTypeName))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '"
+          + name + "'. Drop the continuous aggregate first with: " + dropStatement());
+    if (source != null && canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(schema, source)))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '"
+          + name + "'. Drop the continuous aggregate first with: " + dropStatement());
+  }
+
+  /**
+   * Refuses the rename of the backing type, which the aggregate is named after, and of the source type when its query cannot be
+   * re-pointed at with certainty (issue #10096).
+   */
+  @Override
+  public void checkTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (backingTypeName.equals(oldName))
+      throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for continuous aggregate '"
+          + name + "': an aggregate is named after its backing type. Drop the continuous aggregate first with: " + dropStatement());
+    if (oldName.equals(sourceTypeName) && schema.retargetQuery(query, oldName, newName) == null)
+      throw LocalSchema.cannotRepointQuery(oldName, newName, "continuous aggregate", name, dropStatement());
+  }
+
+  @Override
+  public void carryTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (oldName.equals(sourceTypeName))
+      retargetSourceType(newName, schema.retargetedQuery("continuous aggregate", name, query, oldName, newName));
+  }
+
+  private String dropStatement() {
+    return "DROP CONTINUOUS AGGREGATE " + name;
   }
 
   @Override

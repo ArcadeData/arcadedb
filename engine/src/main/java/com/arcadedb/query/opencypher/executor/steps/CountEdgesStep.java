@@ -80,7 +80,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
 
     // Try GAV provider for accelerated counting
     final Database db = context.getDatabase();
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, edgeTypes);
 
     final String[] aliasOutputNames = passThroughAliases.keySet().toArray(new String[0]);
     final String[] aliasVarNames = passThroughAliases.values().toArray(new String[0]);
