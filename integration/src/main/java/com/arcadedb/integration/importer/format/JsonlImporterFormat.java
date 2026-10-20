@@ -1014,7 +1014,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     final List<PendingLink> unresolvedLinks = new ArrayList<>(0);
     final LinkTargetTypeDeferral[] deferral = new LinkTargetTypeDeferral[1];
     final MutableEdge imported;
-    try {
+    // Connecting the edge updates the records of its two vertices (their edge lists), and an update validates the whole record: a
+    // vertex that still waits for the target of one of its links (see saveReadRecord) would be refused for it here
+    try (final LinkTargetTypeDeferral ignored = pendingLinkReconciliation.containsKey(newOut) || pendingLinkReconciliation.containsKey(
+        newIn) ? DocumentValidator.deferLinkTargetTypeChecks() : null) {
       imported = database.getGraphEngine().newEdgeInitializedReportingVeto(sourceVertex, edgeType, newIn, lightweight ?
           null :
           newEdge -> {

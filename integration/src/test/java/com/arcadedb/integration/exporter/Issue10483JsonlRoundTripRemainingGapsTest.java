@@ -106,6 +106,48 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
     }
   }
 
+  /**
+   * The holder is also the end of an edge: loading the edge updates the vertex record (its edge list), while the link it holds still
+   * waits for the document the file reaches before the edges but after the vertices.
+   */
+  @ParameterizedTest(name = "{0}, holder is the {1} of the edge")
+  @MethodSource("typedLinksOnVerticesWithEdges")
+  void aHolderWithAnEdgeKeepsItsLinkToADocumentExportedLater(final String declaration, final String end) {
+    final Function<RID, Object> wrap = wrapperOf(declaration);
+    try (final Database source = new DatabaseFactory(SOURCE_PATH).create()) {
+      source.command("sql", "CREATE DOCUMENT TYPE Target");
+      source.command("sql", "CREATE PROPERTY Target.id LONG");
+      source.command("sql", "CREATE VERTEX TYPE Holder");
+      source.command("sql", "CREATE PROPERTY Holder.p " + declaration);
+      source.command("sql", "CREATE EDGE TYPE E");
+      source.transaction(() -> {
+        final MutableDocument target = source.newDocument("Target").set("id", 7L);
+        target.save();
+        final MutableVertex holder = source.newVertex("Holder").set("p", wrap.apply(target.getIdentity()));
+        holder.save();
+        final MutableVertex other = source.newVertex("Holder");
+        other.save();
+        if (end.equals("source"))
+          holder.newEdge("E", other);
+        else
+          other.newEdge("E", holder);
+      });
+      source.command("sql", "EXPORT DATABASE file://" + FILE + " WITH overwrite = true");
+    }
+
+    try (final Database target = importedInto()) {
+      try (final ResultSet rs = target.query("sql", "SELECT FROM Holder WHERE p IS NOT NULL")) {
+        final Object value = rs.next().getElement().get().get("p");
+        final Identifiable link = value instanceof List<?> list ?
+            (Identifiable) list.get(0) :
+            value instanceof Map<?, ?> map ? (Identifiable) map.get("k") : (Identifiable) value;
+        final Document linked = target.lookupByRID(link.getIdentity(), true).asDocument();
+        assertThat(linked.getTypeName() + " id=" + linked.get("id")).isEqualTo("Target id=7");
+      }
+      assertThat(target.countType("E", false)).isEqualTo(1L);
+    }
+  }
+
   /** The same, for a vertex linking to a vertex of a type the export lists after its own. */
   @ParameterizedTest(name = "{0}")
   @ValueSource(strings = { "LINK OF Later", "LIST OF Later", "MAP OF Later" })
@@ -334,6 +376,14 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
         value instanceof Map<?, ?> map ? (Identifiable) map.get("k") : (Identifiable) value;
     final Document target = database.lookupByRID(link.getIdentity(), true).asDocument();
     return target.getTypeName() + " id=" + target.get("id");
+  }
+
+  static Stream<Arguments> typedLinksOnVerticesWithEdges() {
+    final List<Arguments> cases = new ArrayList<>();
+    for (final String declaration : new String[] { "LINK OF Target", "LIST OF Target", "MAP OF Target" })
+      for (final String end : new String[] { "source", "destination" })
+        cases.add(Arguments.of(declaration, end));
+    return cases.stream();
   }
 
   static Stream<Arguments> mapDeclarationsAndKeys() {
