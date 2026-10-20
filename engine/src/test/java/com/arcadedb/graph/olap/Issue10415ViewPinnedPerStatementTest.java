@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10415 (#10365, #10393): the Cypher MATCH operators that use a Graph Analytical View read whichever snapshot the view
@@ -141,6 +142,29 @@ class Issue10415ViewPinnedPerStatementTest extends TestHelper {
     assertThat(script.getGraphViewPins()).isNull();
     assertThat(secondStatement.getGraphViewPins()).isNotNull().isNotSameAs(firstStatement.getGraphViewPins());
     assertThat(GraphViewPins.pin(secondStatement, view)).isNotSameAs(GraphViewPins.pin(firstStatement, view));
+  }
+
+  /**
+   * A view with no snapshot yet has nothing to pin: the statement is handed the view itself, every read of which fails, and the
+   * fallback is not kept, so the same statement pins the view once it is built - and keeps that pin from then on.
+   */
+  @Test
+  void aViewBuiltDuringTheStatementIsPinnedFromItsFirstSnapshot() {
+    final GraphAnalyticalView unbuilt = new GraphAnalyticalView(database);
+    try {
+      final BasicCommandContext statement = new BasicCommandContext();
+      statement.openGraphViewPins();
+      assertThat(GraphViewPins.pin(statement, unbuilt)).isSameAs(unbuilt);
+      assertThatThrownBy(() -> unbuilt.getNodeId(sources.get(0))).isInstanceOf(IllegalStateException.class);
+
+      unbuilt.build();
+      final GraphTraversalProvider pinned = GraphViewPins.pin(statement, unbuilt);
+      assertThat(pinned).isInstanceOf(GraphAnalyticalView.Pinned.class);
+      unbuilt.build();
+      assertThat(GraphViewPins.pin(statement, unbuilt)).as("the statement keeps the first snapshot it pinned").isSameAs(pinned);
+    } finally {
+      unbuilt.shutdown();
+    }
   }
 
   /**

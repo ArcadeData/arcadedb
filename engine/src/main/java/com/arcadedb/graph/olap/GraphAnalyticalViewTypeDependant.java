@@ -90,16 +90,18 @@ final class GraphAnalyticalViewTypeDependant implements TypeNameDependant {
     allGavs.put(name, renamed);
     schema.setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, allGavs);
 
-    final GraphAnalyticalView live = GraphAnalyticalViewRegistry.get(database, name);
-    if (live != null)
-      live.retireForTypeRename();
+    // The definition above is the part that has to be right, and it is saved with the schema by the session publishing the
+    // rename. Replacing the live view is not allowed to fail the rename, whose files have moved by now: a view that cannot be
+    // replaced here is built from the renamed definition on the next open, or by REBUILD GRAPH ANALYTICAL VIEW
     try {
+      final GraphAnalyticalView live = GraphAnalyticalViewRegistry.get(database, name);
+      if (live != null)
+        live.retireForTypeRename();
       GraphAnalyticalViewPersistence.builderFor(database, name, renamed).skipPersistence().buildAsync();
     } catch (final RuntimeException e) {
-      // The rename is published already: the definition carries it, and the next open builds the view from it
       LogManager.instance().log(this, Level.WARNING,
-          "Cannot rebuild graph analytical view '%s' after the rename of type '%s' to '%s': it is built again on the next open",
-          e, name, oldName, newName);
+          "Cannot rebuild graph analytical view '%s' after the rename of type '%s' to '%s': it is built again on the next open, "
+              + "or by REBUILD GRAPH ANALYTICAL VIEW %s", e, name, oldName, newName, name);
     }
   }
 
