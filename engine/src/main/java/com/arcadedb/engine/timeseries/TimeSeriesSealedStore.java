@@ -2837,10 +2837,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (deleted == 0L)
         return 0L;
 
-      // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows
-      downsampleEpoch++;
       rewriteWithBlocks(retained, rebuilt.compressed, rebuilt.meta, rebuilt.stats, rebuilt.tagDistinctValues, rebuilt.granularities(),
           0L);
+      // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows. After
+      // the rewrite, so a rewrite that failed does not make a walk fail for a change that never happened; a walk reads the epoch under
+      // the directory read lock, which this write lock excludes until both are done
+      downsampleEpoch++;
       return deleted;
     } finally {
       directoryLock.writeLock().unlock();

@@ -393,9 +393,14 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
     assertThat(engine().getShard(0).countSamples()).as("the shard before the failure was deleted").isLessThan(before[0]);
     assertThat(engine().getShard(1).countSamples()).as("the shard that failed is as it was").isEqualTo(before[1]);
     assertThat(engine().getShard(2).countSamples()).as("the shard after it was not reached").isEqualTo(before[2]);
+    // the failed statement published nothing, so the shard it did rewrite still has its sealed file to ship (to the followers, under HA)
+    assertThat(engine().getShard(0).hasUnpublishedSealedDelete()).as("the rewritten shard waits to ship its file").isTrue();
+    assertThat(engine().getShard(1).hasUnpublishedSealedDelete()).isFalse();
 
     model.removeIf(s -> s.ts >= from && s.ts <= to);
     database.command("sql", "DELETE FROM M WHERE ts >= " + from + " AND ts <= " + to).close();
+    for (int s = 0; s < 3; s++)
+      assertThat(engine().getShard(s).hasUnpublishedSealedDelete()).as("shard %d after the statement that finished the job", s).isFalse();
     assertMatchesModel();
   }
 

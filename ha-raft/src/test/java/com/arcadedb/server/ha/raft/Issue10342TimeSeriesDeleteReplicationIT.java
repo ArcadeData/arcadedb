@@ -27,6 +27,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -109,6 +111,50 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     waitForAllServers();
     assertThat(awaitCountOn(followerIndex, 10L)).as("follower after the type took samples again").isEqualTo(10L);
 
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get()).as("page-version gaps seen by the follower").isZero();
+  }
+
+  /**
+   * A delete that fails on the second shard of the leader leaves the first one rewritten and, as the session is not published, not
+   * shipped: the follower still holds those samples. The statement run again finds nothing left to delete in the first shard and must
+   * ship its file all the same, or the follower would keep the samples for good (a compaction would heal it only when new data arrives).
+   */
+  @Test
+  void aDeleteThatFailedOnALaterShardIsMadeGoodOnTheFollowerByRunningItAgain() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE TIMESERIES TYPE sensor TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2").close();
+    waitForAllServers();
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    // every sample sealed: the delete changes sealed files only, which is the case no page write of the session betrays
+    insert(leaderDb, 0, 100);
+    engine(leaderIndex).compactAll();
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, 100L)).isEqualTo(100L);
+
+    // the temp file of the second shard's sealed rewrite cannot be created on the leader
+    final Path obstruction = Path.of(leaderDb.getDatabasePath(), "sensor_shard_1.ts.sealed.tmp");
+    Files.createDirectory(obstruction);
+    try {
+      assertThatThrownBy(() -> leaderDb.command("sql", "DELETE FROM sensor WHERE ts >= " + (BASE + 10_000L)).close())
+          .hasMessageContaining("TIMESERIES type 'sensor'");
+    } finally {
+      Files.deleteIfExists(obstruction);
+    }
+    assertThat(count(leaderIndex)).as("the first shard of the leader was rewritten").isLessThan(100L);
+    assertThat(count(followerIndex)).as("nothing was published, the follower is as it was").isEqualTo(100L);
+
+    leaderDb.command("sql", "DELETE FROM sensor WHERE ts >= " + (BASE + 10_000L)).close();
+    waitForAllServers();
+
+    final long expected = 10L;
+    assertThat(awaitCountOn(leaderIndex, expected)).as("leader").isEqualTo(expected);
+    assertThat(awaitCountOn(followerIndex, expected)).as("the follower after the statement was run again").isEqualTo(expected);
+    assertThat(sealedSamples(followerIndex)).isEqualTo(sealedSamples(leaderIndex));
     assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get()).as("page-version gaps seen by the follower").isZero();
   }
 

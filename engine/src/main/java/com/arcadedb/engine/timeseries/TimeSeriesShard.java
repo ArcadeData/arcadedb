@@ -109,6 +109,10 @@ public class TimeSeriesShard implements AutoCloseable {
   // Throttle (60s window) for the oversized-sealed-store WARNING so a permanently-too-large shard
   // does not spam the log every maintenance cycle.
   private volatile long                lastOversizedWarnMs = 0;
+  // Set when a delete rewrote this shard's sealed file, cleared once the replication session that carries it has been published
+  // (issue #10342). A delete that failed on a later shard publishes nothing, so the followers still hold the old sealed bytes, and
+  // the statement run again finds nothing left to delete here: the flag is what makes that run ship the file all the same
+  private volatile boolean             sealedDeleteUnpublished = false;
 
   /**
    * Test-only hook. When non-null, fires in {@link #compactInternal()} immediately before Phase 4c
@@ -988,7 +992,9 @@ public class TimeSeriesShard implements AutoCloseable {
    * compaction.
    * <p>
    * Not atomic across the two layers on this node: the layer done first stays deleted if the second fails, and the statement that
-   * reports the failure can simply be run again, because deleting what is already gone deletes nothing. The sealed layer goes first
+   * reports the failure can simply be run again, because deleting what is already gone deletes nothing, and a shard whose sealed file
+   * was rewritten by a delete that was not published ships that file in the next one even if it has nothing left to remove (under
+   * HA the followers would otherwise keep the samples this node deleted). The sealed layer goes first
    * because it is the one that can fail for want of a disk (a temp file, an atomic move); the mutable layer is a single transaction
    * whose only failure is a page conflict it retries, so a failing delete leaves the shard as it found it far more often than not.
    */
@@ -998,6 +1004,8 @@ public class TimeSeriesShard implements AutoCloseable {
     // The sealed blocks
     long deleted = sealedStore.deleteSamples(fromTs, toTs, tagFilter);
     if (deleted > 0L)
+      sealedDeleteUnpublished = true;
+    if (sealedDeleteUnpublished)
       db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
 
     // The mutable pages. An in-flight append of a replicated database may commit page 0 between the begin and the commit below
@@ -1025,6 +1033,16 @@ public class TimeSeriesShard implements AutoCloseable {
     }
 
     return deleted;
+  }
+
+  /** Whether a delete rewrote the sealed file of this shard and no published replication session has carried it yet. */
+  boolean hasUnpublishedSealedDelete() {
+    return sealedDeleteUnpublished;
+  }
+
+  /** The session that carried the sealed file of this shard has been published: the next delete need not ship it again. */
+  void sealedDeletePublished() {
+    sealedDeleteUnpublished = false;
   }
 
   /**

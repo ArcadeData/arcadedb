@@ -1322,6 +1322,9 @@ public class TimeSeriesEngine implements AutoCloseable {
       throw new NeedRetryException("Cannot delete the samples of the TIMESERIES type '" + typeName + "' now: another maintenance pass "
           + "(a compaction, a retention, a delete) holds the replication session, or the leadership moved. Nothing was deleted: run the "
           + "statement again");
+    // published, for every shard: the sealed files this statement rewrote, or that an earlier one failed to ship, are on the followers
+    for (final TimeSeriesShard shard : shards)
+      shard.sealedDeletePublished();
     return deleted[0];
   }
 

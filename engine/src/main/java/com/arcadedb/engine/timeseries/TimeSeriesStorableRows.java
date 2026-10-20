@@ -248,7 +248,9 @@ public final class TimeSeriesStorableRows {
   /**
    * Holds a primitive source - {@code DatabaseAsyncExecutor.appendSamples(String, TimeSeriesRowSource)} - to the constraints the
    * type declares (issue #10381). The source carries values its columns can store by construction, so there is nothing to convert,
-   * and a type that declares no constraint, which is nearly every type, pays one null check and no read of the source.
+   * and a type that declares no constraint, which is nearly every type, pays one null check and no read of the source. A type that
+   * does declare some reads every cell of the source once (a value boxed per cell) on the calling thread: the price of refusing a
+   * sample where the caller can see it.
    *
    * @throws ValidationException when a row is refused, naming every reason (at most
    *                             {@link TimeSeriesGateway#MAX_REPORTED_UNREADABLE_VALUES}); nothing is appended
