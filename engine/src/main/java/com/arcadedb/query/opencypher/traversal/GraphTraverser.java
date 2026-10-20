@@ -258,7 +258,12 @@ public abstract class GraphTraverser {
      * without spending the vertex it names: another, live, entry may reach it.
      */
     public boolean liveEdge() {
-      // The lookup that answered an entry with its vertex has already met the ghost, or cannot be asked
+      // The vertices a lookup answered have no edge RID to ask about. What is covered: the incoming side of a unidirectional type is
+      // answered from a scan of the edge RECORDS of the type, which a ghost has none of, and a stored incoming side reads the edge
+      // when it reads the source, which fails on a ghost where the expansions catch it. What is not: the outgoing side of an undirected
+      // hop over such a type is a stored list read by its entries, which follows a ghost as getVertices() does. A walk reaching here
+      // is one over a unidirectional edge type, a case the engine-vertex path above does not serve; closing it means answering the
+      // entries of those lists with their edge RIDs, in IncomingEdgeLookup
       return resolved != null || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
     }
 

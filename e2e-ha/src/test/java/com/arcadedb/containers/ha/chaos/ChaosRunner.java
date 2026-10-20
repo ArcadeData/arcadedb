@@ -212,6 +212,7 @@ public final class ChaosRunner {
       census = reformatCensus(step, fault, restartsBefore);
     } catch (final ChaosFailure e) {
       countsFailure = e;
+      census = ReformatCensus.UNKNOWN;
     }
     report.step(new StepRecord(step, fault.name(), targets, leaderBefore, leaderAfter, timeToLeaderMs,
         result.convergenceMillis(), ackedDuringHold, ledger.count(Ledger.ACKED) + ledger.count(Ledger.ACKED_LATE),
@@ -228,7 +229,7 @@ public final class ChaosRunner {
       return fromViolations(result.violations(), step);
     }
     // A reformat is a violation only where the fault gives no node a reason for one; elsewhere it is reported and the run goes on
-    if (census.reformats() == 0 || !fault.forbidsReformat())
+    if (census.reformats() <= 0 || !fault.forbidsReformat())
       return result.violations().isEmpty() ? null : fromViolations(result.violations(), step);
     final List<Violation> violations = new ArrayList<>(result.violations());
     violations.add(new Violation(ResultKind.SAFETY, "REFORMAT",
@@ -237,9 +238,13 @@ public final class ChaosRunner {
     return fromViolations(violations, step);
   }
 
-  /** What the nodes did to their Raft storage during a step: {@code reformats} in all, {@code nodes} names them. */
+  /**
+   * What the nodes did to their Raft storage during a step: {@code reformats} in all, {@code nodes} names them. UNKNOWN is a step whose
+   * counts could not be read, which is not the same as none: its line says so.
+   */
   private record ReformatCensus(int reformats, String nodes) {
-    static final ReformatCensus NONE = new ReformatCensus(0, "");
+    static final ReformatCensus NONE    = new ReformatCensus(0, "");
+    static final ReformatCensus UNKNOWN = new ReformatCensus(StepRecord.REFORMATS_UNKNOWN, "");
   }
 
   /**
@@ -273,11 +278,11 @@ public final class ChaosRunner {
    */
   private ReformatCensus reformatCensus(final int step, final Fault fault, final NodeControl.InPlaceRestarts[] before) {
     if (before == null)
-      return ReformatCensus.NONE;
+      return ReformatCensus.UNKNOWN;
     final boolean forbidden = fault.forbidsReformat();
     final NodeControl.InPlaceRestarts[] after = inPlaceRestarts(forbidden);
     if (after == null)
-      return ReformatCensus.NONE;
+      return ReformatCensus.UNKNOWN;
 
     final boolean[] restarted = new boolean[after.length];
     for (final int node : fault.restartedNodes(state))

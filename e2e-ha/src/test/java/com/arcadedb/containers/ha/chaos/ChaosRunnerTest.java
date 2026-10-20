@@ -364,15 +364,24 @@ class ChaosRunnerTest {
     final Harness harness = harness(config("chaos.faults", "stop", "chaos.maxSteps", "1"));
     assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
     assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("reformats=0");
-    assertThat(new JSONObject(Files.readString(dir.resolve("7/summary.json"))).getInt("reformats")).isZero();
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getInt("reformats")).isZero();
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isZero();
   }
 
-  /** Counts that cannot be read are an observation lost, not a failure, for a fault that is allowed to reformat. */
+  /**
+   * Counts that cannot be read are an observation lost, not a failure, for a fault that is allowed to reformat. The step says so
+   * ("?", and a count of such steps in the summary) rather than reading as a step in which no reformat happened.
+   */
   @Test
   void unreadableRestartCountsDoNotFailAFaultThatMayReformat() throws IOException {
     final Harness harness = harness(config("chaos.faults", "kill", "chaos.maxSteps", "1"));
     harness.control().restartCountsUnreadable = true;
     assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("reformats=?");
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getInt("reformats")).isZero();
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isEqualTo(1);
   }
 
   /** ... and still a harness failure for one that forbids it, which is what the counts are there to prove. */

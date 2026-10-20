@@ -58,10 +58,14 @@ public final class GhostEdgeReporter {
    * @param cause the {@link RecordNotFoundException} raised when the dangling edge was dereferenced
    */
   public static void reportSkipped(final RecordNotFoundException cause) {
+    report(cause.getMessage());
+  }
+
+  private static void report(final String detail) {
     final long total = totalSkipped.incrementAndGet();
 
     LogManager.instance().log(GhostEdgeReporter.class, Level.FINE,
-        "Skipped ghost edge during traversal (%s); total skipped since startup=%d", cause.getMessage(), total);
+        "Skipped ghost edge during traversal (%s); total skipped since startup=%d", detail, total);
 
     if (shouldEmitWarning(System.nanoTime()))
       LogManager.instance().log(GhostEdgeReporter.class, Level.WARNING,
@@ -75,7 +79,8 @@ public final class GhostEdgeReporter {
    * ({@link #edgeRecordExists}) and so has no {@link RecordNotFoundException} of its own to hand over.
    */
   public static void reportSkipped(final RID edgeRid) {
-    reportSkipped(new RecordNotFoundException("Record " + edgeRid + " not found", edgeRid));
+    // No exception is built for it: a stack trace per ghost would be paid on every one of them, on the graph where there are many
+    report("Record " + edgeRid + " not found");
   }
 
   /**
@@ -93,6 +98,8 @@ public final class GhostEdgeReporter {
     final Bucket bucket = database.getSchema().getBucketByIdIfExists(edgeRid.getBucketId());
     if (bucket == null)
       return false;
+    // isRecordPresent is the same question as existsRecord without the READ_RECORD check (see above); a bucket that is not an engine
+    // one has only the checked form
     return bucket instanceof LocalBucket local ? local.isRecordPresent(edgeRid) : bucket.existsRecord(edgeRid);
   }
 

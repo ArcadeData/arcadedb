@@ -66,6 +66,9 @@ public final class NodeFault implements Fault {
     final Targets.Role role = Targets.role(random);
     final int count = Targets.count(state, random);
     targets = Targets.pick(state, control, random, role, count);
+    // Every target, from before the first one is touched: a kill or stop that fails part way ends the step with that failure, which the
+    // runner reports before it counts anything, so the nodes reached are never read from here. RollingRestartFault, whose failure the
+    // runner can also meet, tracks how far it got
     restarted = kind == Kind.KILL || kind == Kind.STOP ? targets.clone() : new int[0];
     for (final int node : targets) {
       switch (kind) {

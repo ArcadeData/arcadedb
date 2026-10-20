@@ -50,6 +50,10 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public abstract class CreateTypeAbstractStatement extends DDLStatement {
+  /** What a statement that does not link a super type or build an index holds in place of a quiescence: nothing to release. */
+  private static final AsyncQuiesce NOTHING_TO_QUIESCE = () -> {
+  };
+
   /**
    * Class name
    */
@@ -92,6 +96,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   /**
    * Creates the type under {@code typeName}, the name this execution resolved - never read {@code name} for it, which still
    * holds a {@code $variable} as written.
+   * <p>
+   * Runs inside the one schema frame of the statement (issue #10147). A subclass whose creation builds an index must also override
+   * {@link #createsAnIndex()}: the index waits for the async workers to drain, which has to be asked before the frame is opened, or
+   * it stalls under the write lock until its timeout.
    */
   protected abstract DocumentType createType(Schema schema, String typeName);
 
@@ -156,8 +164,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // the index builder ask for below rides on this one. Only when the statement does what needs it, as before.
     final DatabaseInternal database = context.getDatabase();
     final boolean[] existed = new boolean[1];
-    try (final AsyncQuiesce asyncPaused = superclasses.length > 0 || createsAnIndex() ? database.quiesceAsync() : () -> {
-    }) {
+    try (final AsyncQuiesce asyncPaused = superclasses.length > 0 || createsAnIndex() ? database.quiesceAsync() : NOTHING_TO_QUIESCE) {
       database.executeInWriteLock(() -> {
         // The check at the top and the create are two steps, and another statement can create the type in between. Asked again
         // under the lock, so that nothing can separate it from the create: IF NOT EXISTS has to hold against that too (issue
