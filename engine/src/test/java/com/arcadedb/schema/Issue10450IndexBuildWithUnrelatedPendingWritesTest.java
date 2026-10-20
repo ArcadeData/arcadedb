@@ -16,17 +16,16 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.index.vector;
+package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.utility.IntHashSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -220,6 +219,41 @@ class Issue10450IndexBuildWithUnrelatedPendingWritesTest extends TestHelper {
 
     assertThat(database.getSchema().getIndexByName("PParent[behavior]").countEntries()).isEqualTo(2L);
     assertThat(neighbors("PParent[behavior]")).hasSize(2);
+  }
+
+  /** The transaction-side half of the decision, asked directly: which files a transaction has written to. */
+  @Test
+  void transactionReportsTheFilesItWroteTo() {
+    final DocumentType written = database.getSchema().createDocumentType("WrittenTo", 1);
+    final DocumentType updated = database.getSchema().createDocumentType("UpdatedOnly", 1);
+    final DocumentType untouched = database.getSchema().createDocumentType("Untouched", 1);
+    final int writtenBucket = written.getBuckets(false).getFirst().getFileId();
+    final int updatedBucket = updated.getBuckets(false).getFirst().getFileId();
+    final int untouchedBucket = untouched.getBuckets(false).getFirst().getFileId();
+
+    final RID[] committed = new RID[1];
+    database.transaction(() -> committed[0] = database.newDocument("UpdatedOnly").set("x", 1).save().getIdentity());
+
+    database.transaction(() -> {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+      assertThat(tx.hasChangesInFiles(setOf(writtenBucket, updatedBucket, untouchedBucket))).isFalse();
+
+      database.newDocument("WrittenTo").set("x", 1).save();
+      assertThat(tx.hasChangesInFiles(setOf(writtenBucket))).isTrue();
+      assertThat(tx.hasChangesInFiles(setOf(updatedBucket, untouchedBucket))).isFalse();
+
+      database.lookupByRID(committed[0], true).asDocument().modify().set("x", 2).save();
+      assertThat(tx.hasChangesInFiles(setOf(updatedBucket))).isTrue();
+      assertThat(tx.hasChangesInFiles(setOf(untouchedBucket))).isFalse();
+      assertThat(tx.hasChangesInFiles(new IntHashSet())).isFalse();
+    });
+  }
+
+  private static IntHashSet setOf(final int... values) {
+    final IntHashSet set = new IntHashSet();
+    for (final int value : values)
+      set.add(value);
+    return set;
   }
 
   private void createCommittedVectorRecords(final String typeName, final int count) {

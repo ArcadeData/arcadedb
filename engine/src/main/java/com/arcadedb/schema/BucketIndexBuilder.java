@@ -185,9 +185,10 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
       // Asked before the transactions below, while the answer is still about the transaction that was already there
       // (issue #6324, item 1), and about the one bucket this build scans (issue #10450). See
       // IndexBuilder#buildSharesCallerTransaction.
+      // An unknown bucket name scans nothing, so it never shares; createIndexOnBucket refuses it right after anyway.
       final Bucket indexedBucket = findBucket(type);
-      final boolean sharesCallerTransaction =
-          buildSharesCallerTransaction(indexedBucket != null ? List.of(indexedBucket) : List.of());
+      final List<Bucket> scannedBuckets = indexedBucket != null ? List.of(indexedBucket) : List.of();
+      final boolean sharesCallerTransaction = buildSharesCallerTransaction(scannedBuckets);
 
       return schema.recordFileChanges(() -> {
         final AtomicReference<Index> result1 = new AtomicReference<>();

@@ -486,8 +486,11 @@ public abstract class IndexBuilder<T extends Index> {
    * is that call site arriving back at the defect #6324 item 1 fixed, and the predicate lives here so a third spelling
    * of it cannot drift from the other two.
    * <p>
-   * Only the innermost transaction is asked, the one a shared build would join. A record's content can also live in
-   * the paired external-property bucket of its own bucket, so that one counts as written to as well.
+   * Only the innermost transaction is asked, the one a shared build would join. An OUTER transaction's writes are out
+   * of reach of either answer: a nested transaction does not see its outer transaction's uncommitted pages, so neither
+   * a build that joins the innermost transaction nor one in a transaction of its own would index them. That was the
+   * case before issue #10450 too, and narrowing the test to the scanned buckets does not change it. A record's content
+   * can also live in the paired external-property bucket of its own bucket, so that one counts as written to as well.
    * <p>
    * Timing is the whole trap: inside the component-creation transaction there is ALWAYS one open, it is EMPTY, and the
    * answer would always be no.
