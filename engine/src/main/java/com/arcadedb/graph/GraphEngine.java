@@ -52,6 +52,7 @@ import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -813,18 +814,21 @@ public class GraphEngine {
     if (outVertices.isEmpty() && inVertices.isEmpty())
       return;
 
+    // THE BUCKETS A LIGHTWEIGHT EDGE OF A BIDIRECTIONAL TYPE CAN NAME. EVERY BIDIRECTIONAL TYPE, NOT ONLY THE ONES DECLARED
+    // LIGHTWEIGHT: THE DEPRECATED newLightEdge() STORES A LIGHTWEIGHT ENTRY UNDER A REGULAR TYPE TOO. NONE, NOTHING TO FIND
+    final IntHashSet bidirectionalBuckets = new IntHashSet();
     final List<String> vertexTypes = new ArrayList<>();
     for (final DocumentType type : database.getSchema().getTypes())
       if (type instanceof VertexType)
         vertexTypes.add(type.getName());
+      else if (type instanceof EdgeType edgeType && edgeType.isBidirectional())
+        for (final int bucketId : edgeType.getBucketIds(false))
+          bidirectionalBuckets.add(bucketId);
+    if (bidirectionalBuckets.isEmpty())
+      return;
 
-    final Map<Integer, Boolean> bidirectionalByBucket = new HashMap<>();
     final long[] walked = new long[2];
     final long beginTime = System.currentTimeMillis();
-    // A FULL ADJACENCY WALK CAN TAKE A WHILE ON A LARGE GRAPH: THE OPERATOR RUNNING THE REPAIR SEES IT START AND END
-    LogManager.instance().log(this, Level.INFO,
-        "Searching the edge lists of every vertex for the lightweight edges of %d outgoing and %d incoming edge list(s) being rebuilt",
-        outVertices.size(), inVertices.size());
 
     // ONE WALK PER SIDE: AN OUT LIST BEING REBUILT IS READ FROM THE FAR IN LISTS, AN IN LIST FROM THE FAR OUT LISTS
     for (final Vertex.DIRECTION targetDirection : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
@@ -849,8 +853,8 @@ public class GraphEngine {
           final RID farRID = far.getIdentity();
           ++walked[0];
           readEdgeListEntries(far, farDirection, (edgeRID, neighbour) -> {
-            if (edgeRID != null && neighbour != null && edgeRID.getPosition() < 0 && targets.contains(neighbour)
-                && bidirectionalByBucket.computeIfAbsent(edgeRID.getBucketId(), this::isBidirectionalEdgeBucket)) {
+            if (edgeRID != null && neighbour != null && edgeRID.getPosition() < 0 && bidirectionalBuckets.contains(
+                edgeRID.getBucketId()) && targets.contains(neighbour)) {
               ++walked[1];
               consumer.accept(neighbour, targetDirection, edgeRID, farRID);
             }
@@ -859,12 +863,10 @@ public class GraphEngine {
         }, (rid, exception) -> true);
     }
 
-    LogManager.instance().log(this, Level.INFO, "Found %d lightweight edge copies walking %d edge lists in %d ms", walked[1],
-        walked[0], System.currentTimeMillis() - beginTime);
-  }
-
-  private boolean isBidirectionalEdgeBucket(final int bucketId) {
-    return database.getSchema().getTypeByBucketId(bucketId) instanceof EdgeType type && type.isBidirectional();
+    // FINE: THE CALLERS REPORT WHAT THE REPAIR DID, THIS ONLY SAYS WHAT THE WALK COST
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE, "Found %d lightweight edge copies walking %d edge lists in %d ms", walked[1],
+          walked[0], System.currentTimeMillis() - beginTime);
   }
 
   /**
@@ -980,10 +982,11 @@ public class GraphEngine {
     LogManager.instance().log(this, Level.WARNING,
         "Restored vertex %s (type=%s): reconnected %d outgoing and %d incoming edge(s), %d and %d of them lightweight, from surviving records and lists",
         null, targetRid, typeName, counts[0], counts[1], counts[2], counts[3]);
+    // INFO, NOT WARNING: THE SCHEMA SAYS ONLY THAT SUCH EDGES CAN EXIST, NOT THAT THIS VERTEX HAD ANY
     final List<String> unrecoverable = lightEdgeTypesWithoutFarCopy();
     if (!unrecoverable.isEmpty())
-      LogManager.instance().log(this, Level.WARNING,
-          "Restored vertex %s: an outgoing lightweight edge of the unidirectional type(s) %s was stored only in the vertex's own list and cannot be restored",
+      LogManager.instance().log(this, Level.INFO,
+          "Restored vertex %s: any outgoing lightweight edge it had of the unidirectional type(s) %s, and any lightweight self-loop, was stored only in its own lists and cannot be restored",
           null, targetRid, unrecoverable);
 
     return targetRid.asVertex(true);

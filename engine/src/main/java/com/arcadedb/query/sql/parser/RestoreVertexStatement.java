@@ -45,7 +45,9 @@ import java.util.Set;
  * A LIGHTWEIGHT edge has no record: one of a bidirectional type is rebuilt from its copy in the far endpoint's list, and
  * counted apart in {@code reconnectedLightweightOutEdges}/{@code reconnectedLightweightInEdges} (#10407). An outgoing one
  * of a unidirectional type was stored in the vertex's own list only and cannot be rebuilt:
- * {@code unrecoverableLightweightEdgeTypes} names the types in which the vertex may have had such edges.
+ * {@code unrecoverableLightweightEdgeTypes} names the types in which the vertex may have had such edges. Neither can a
+ * lightweight self-loop: both its copies were in the vertex's own lists. No count can be given for either, since no
+ * surviving structure records them.
  * <p>
  * Restores graph STRUCTURE only: the vertex's original property values are not recoverable from its edges. SET or
  * CONTENT lets the caller supply them if known from another source (a backup, an application log, ...).

@@ -106,6 +106,8 @@ class Issue10416CommitPhase2InterruptFlagTest extends TestHelper {
     final boolean fenced = ((LocalDatabase) db.getEmbedded()).isFencedForRecovery();
     reopenDatabase();
 
+    // THE SHAPE restoreInterruptIfCause RELIES ON: THE InterruptedException IS THE DIRECT CAUSE OF THE TransactionException,
+    // NOT WRAPPED AGAIN ON ITS WAY OUT OF commit()
     assertThat(failure.get()).isInstanceOf(TransactionException.class);
     assertThat(failure.get().getCause()).isInstanceOf(InterruptedException.class);
     assertThat(interruptedAfterTheFailure.get()).as("the cancellation must survive the failed commit").isTrue();
