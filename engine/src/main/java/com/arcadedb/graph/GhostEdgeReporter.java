@@ -61,7 +61,8 @@ public final class GhostEdgeReporter {
     report(cause.getMessage());
   }
 
-  private static void report(final String detail) {
+  /** {@code detail} is formatted by the logger, and only if FINE is on: nothing is built per ghost for a log nobody reads. */
+  private static void report(final Object detail) {
     final long total = totalSkipped.incrementAndGet();
 
     LogManager.instance().log(GhostEdgeReporter.class, Level.FINE,
@@ -79,8 +80,8 @@ public final class GhostEdgeReporter {
    * ({@link #edgeRecordExists}) and so has no {@link RecordNotFoundException} of its own to hand over.
    */
   public static void reportSkipped(final RID edgeRid) {
-    // No exception is built for it: a stack trace per ghost would be paid on every one of them, on the graph where there are many
-    report("Record " + edgeRid + " not found");
+    // No exception and no string is built for it: both would be paid on every ghost, on the graph where there are many
+    report(edgeRid);
   }
 
   /**
@@ -93,6 +94,7 @@ public final class GhostEdgeReporter {
    * the answer reaches no one as a record; a user who may traverse the entry must not need a grant the traversal never needed.
    */
   public static boolean edgeRecordExists(final Database database, final RID edgeRid) {
+    // A lightweight edge has no record, and its RID has a negative position: there is nothing to be gone, so the entry is live
     if (edgeRid == null || edgeRid.getPosition() < 0)
       return true;
     final Bucket bucket = database.getSchema().getBucketByIdIfExists(edgeRid.getBucketId());

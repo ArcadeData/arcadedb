@@ -116,6 +116,16 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    * every execution of its text, concurrent ones included. The resolution used to be written into the field and put back
    * on the success paths only, so a refused execution left the statement naming the type it had resolved, and an
    * overlapping execution could create the type another one resolved (issue #9741).
+   * <p>
+   * ONE SCHEMA PUBLICATION FOR THE WHOLE STATEMENT (issue #10147). Under Raft every outermost schema frame ships its own
+   * {@code SCHEMA_ENTRY}, and the create, each super type link, the index of a UNIQUE edge type and each CUSTOM value used to be a
+   * frame of their own: a composite openCypher label ({@code CREATE (n:A:B)}) was three entries, which a follower asking the leader
+   * for the type in a transaction that had already written read as somebody else's schema change, and a follower applying them saw the
+   * type appear without its super types and then gain them. The frame is the database write lock, taken once and held across them all.
+   * <p>
+   * The async quiescence is taken OUTSIDE it: it waits for the workers to drain, and the write lock is what a worker needs to commit
+   * its batch, so asked from inside the frame it would stall until its timeout. It is reentrant, so what {@code addSuperType} and the
+   * index builder ask for inside rides on this one. It is taken only when the statement does what needs it.
    */
   @Override
   public ResultSet executeDDL(final CommandContext context) {
@@ -150,37 +160,28 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // Evaluated before anything is created: a value that cannot be computed refuses the statement, which then leaves nothing behind
     final Map<String, Object> custom = evaluateCustomProperties(context);
 
-    // Taken before the create, and only for a statement that links super types, the one step that can refuse once the type exists
-    final Set<String> bucketsOfOthers = superclasses.length > 0 ? bucketsThatExistBeforeTheCreate(context, typeName) : Set.of();
-
-    // ONE SCHEMA PUBLICATION FOR THE WHOLE STATEMENT (issue #10147). Under Raft every outermost schema frame ships its own
-    // SCHEMA_ENTRY, and the create, each super type link, the index of a UNIQUE edge type and each CUSTOM value used to be a frame
-    // of their own: a composite openCypher label (CREATE (n:A:B)) was three entries, which a follower asking the leader for the type
-    // in a transaction that had already written read as somebody else's schema change, and a follower applying them saw the type
-    // appear without its super types and then gain them. The frame is the database write lock, taken once and held across them all.
-    //
-    // The async quiescence is taken OUTSIDE it: it waits for the workers to drain, and the write lock is what a worker needs to
-    // commit its batch, so asked from inside the frame it would stall until its timeout. It is reentrant, so what addSuperType and
-    // the index builder ask for below rides on this one. Only when the statement does what needs it, as before.
+    // One schema publication for the whole statement, see above. The quiescence is outside the frame, the write lock is the frame
     final DatabaseInternal database = context.getDatabase();
-    final boolean[] existed = new boolean[1];
+    final boolean existed;
     try (final AsyncQuiesce asyncPaused = superclasses.length > 0 || createsAnIndex() ? database.quiesceAsync() : NOTHING_TO_QUIESCE) {
-      database.executeInWriteLock(() -> {
-        // The check at the top and the create are two steps, and another statement can create the type in between. Asked again
-        // under the lock, so that nothing can separate it from the create: IF NOT EXISTS has to hold against that too (issue
-        // #10067: two replicas asking the leader for the same new label at the same time), the type that statement made is the
-        // answer, and a statement that has nothing to do opens no frame and publishes nothing
+      existed = database.executeInWriteLock(() -> {
+        // The check at the top and the create are two steps, and another statement can create the type in between: asked again under
+        // the lock, so that nothing separates it from the create (issue #10067). The type that statement made is the answer, and a
+        // statement that has nothing to do opens no frame and publishes nothing
         if (schema.existsType(typeName)) {
           if (!ifNotExists)
             throw new TypeAlreadyExistsException(typeName);
-          existed[0] = true;
-          return null;
+          return true;
         }
+        // Read under the same lock, only for a statement that links super types, the one step that can refuse once the type exists:
+        // a bucket a concurrent statement made between a snapshot taken before the lock and the create would be taken for the type's
+        // own by the take-back, which would drop its records
+        final Set<String> bucketsOfOthers = superclasses.length > 0 ? bucketsThatExistBeforeTheCreate(context, typeName) : Set.of();
         schema.bulkChange(() -> createAndLink(schema, typeName, superclasses, bucketsOfOthers, custom));
-        return null;
+        return false;
       });
     }
-    if (existed[0])
+    if (existed)
       return alreadyThere(context, typeName);
 
     if (!custom.isEmpty())

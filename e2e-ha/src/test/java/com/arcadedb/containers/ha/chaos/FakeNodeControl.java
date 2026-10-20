@@ -51,6 +51,8 @@ final class FakeNodeControl implements NodeControl {
   boolean                recoverOnUnpause;
   /** An unpaused node's server process restarts: its counts drop to zero. */
   boolean                processRestartsOnUnpause;
+  /** A reconnected node's server process restarts too, which no fault of that kind performs. */
+  boolean                processRestartsOnReconnect;
   /** After an unpause, reading the in-place restart counts fails, as for a node that no longer answers HTTP. */
   boolean                countsUnreadableAfterUnpause;
   boolean                restartCountsUnreadable;
@@ -111,6 +113,11 @@ final class FakeNodeControl implements NodeControl {
   @Override
   public void reconnect(final int node) {
     log("reconnect:" + node);
+    // A server process restart nobody asked for, as an OOM kill and a restart policy would make one
+    if (processRestartsOnReconnect) {
+      recovered[node] = 0;
+      reformatted[node] = 0;
+    }
   }
 
   @Override

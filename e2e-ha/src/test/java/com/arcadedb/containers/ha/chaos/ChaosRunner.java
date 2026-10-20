@@ -274,7 +274,8 @@ public final class ChaosRunner {
    * <p>
    * The counts are kept by the server process. A node the fault restarted counts from zero again, so for it the count after the
    * step is the whole of what the step did; for any other node a count that went down is a restart nobody explains, and a reformat
-   * cannot be ruled out (a harness failure where the fault forbids one, a warning where it does not).
+   * cannot be ruled out (a harness failure where the fault forbids one, and where it does not the step is reported as unknown, since
+   * what the node counts since its restart may hold the reformats of earlier steps).
    */
   private ReformatCensus reformatCensus(final int step, final Fault fault, final NodeControl.InPlaceRestarts[] before) {
     if (before == null)
@@ -290,6 +291,7 @@ public final class ChaosRunner {
         restarted[node] = true;
 
     int total = 0;
+    boolean unexplained = false;
     final StringBuilder reformatted = new StringBuilder();
     for (int i = 0; i < after.length; i++) {
       int recovered = after[i].recovered();
@@ -303,8 +305,9 @@ public final class ChaosRunner {
           if (forbidden)
             throw new ChaosFailure(ResultKind.HARNESS, went);
           LOGGER.warn("CHAOS step {} fault={}: {}", step, fault.name(), went);
-          recovered = after[i].recovered();
-          reformats = after[i].reformatted();
+          // The count since that restart may hold reformats of earlier steps, so it is not this step's: the step is not counted at all
+          unexplained = true;
+          continue;
         }
       }
       if (recovered > 0 || reformats > 0)
@@ -315,6 +318,8 @@ public final class ChaosRunner {
         reformatted.append(reformatted.isEmpty() ? "" : ", ").append("node ").append(i).append(" x").append(reformats);
       }
     }
+    if (unexplained)
+      return ReformatCensus.UNKNOWN;
     if (total > 0 && !forbidden)
       LOGGER.warn("CHAOS step {} fault={}: {} reformat(s) of the Raft storage ({}), which this fault may cause, so the step stands", step,
           fault.name(), total, reformatted);

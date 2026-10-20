@@ -359,6 +359,23 @@ class ChaosRunnerTest {
     assertThat(new JSONObject(Files.readString(dir.resolve("7/summary.json"))).getInt("reformats")).isEqualTo(2);
   }
 
+  /**
+   * A count that went down on a node the fault did not restart is a restart nobody explains. Where the fault may reformat that does not
+   * fail the step, and it is not counted either: what the node has counted since holds the reformats of earlier steps too, so the step
+   * says "?" instead of reporting them as its own.
+   */
+  @Test
+  void anUnexplainedDropOfACountIsReportedAsUnknownWhereTheFaultMayReformat() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "isolate", "chaos.maxSteps", "1"));
+    Arrays.fill(harness.control().reformatted, 3);
+    harness.control().processRestartsOnReconnect = true;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("reformats=?");
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getInt("reformats")).isZero();
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isEqualTo(1);
+  }
+
   @Test
   void aCleanStepReportsNoReformat() throws IOException {
     final Harness harness = harness(config("chaos.faults", "stop", "chaos.maxSteps", "1"));
