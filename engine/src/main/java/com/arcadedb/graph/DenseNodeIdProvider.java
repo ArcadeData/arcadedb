@@ -381,6 +381,37 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
     return view;
   }
 
+  /** The delegate's: renumbering its view is one pass over it, kept with the snapshot, so what costs is the view being renumbered. */
+  @Override
+  public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return delegate.getNeighborViewBuildCost(direction, edgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return delegate.getNeighborViewOfSliceBuildCost(direction, edgeType);
+  }
+
+  @Override
+  public double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return delegate.getMeanDegree(direction, edgeTypes);
+  }
+
+  /** The delegate decides whether its view is worth building; the renumbered one is only asked for when it is. */
+  @Override
+  public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    return delegate.getNeighborViewForVisits(expectedVisits, direction, edgeTypes) == null ? null : getNeighborView(direction, edgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return delegate.getNeighborViewOfSliceForVisits(expectedVisits, direction, edgeType) == null ?
+        null :
+        getNeighborViewOfSlice(direction, edgeType);
+  }
+
   private NeighborView translate(final NeighborView view) {
     if (view == null)
       return null;

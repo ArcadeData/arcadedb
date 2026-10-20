@@ -1,0 +1,235 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.mongo;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.mongodb.MongoBulkWriteException;
+import com.mongodb.MongoClient;
+import com.mongodb.MongoClientOptions;
+import com.mongodb.MongoCredential;
+import com.mongodb.MongoWriteException;
+import com.mongodb.ServerAddress;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.InsertManyOptions;
+import org.bson.Document;
+import org.bson.types.ObjectId;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #10476 (follow-up of #10464): {@code insertOne} into a TIMESERIES collection failed with {@code NamespaceNotFound} on a
+ * collection that exists, because the insert tried to put the {@code _id} index every MongoDB collection has on a type that
+ * stores samples in its own engine, not in records. The samples are now appended through the type's engine, as SQL
+ * {@code INSERT INTO Ev SET ...} does, and what cannot be stored is refused with an error naming the type.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
+  private static final long T0 = 1792396800000L;
+
+  private MongoClient               client;
+  private MongoCollection<Document> collection;
+
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.SERVER_PLUGINS.setValue("MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin");
+  }
+
+  @BeforeEach
+  @Override
+  public void beginTest() {
+    super.beginTest();
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE TIMESERIES TYPE Ev TIMESTAMP ts PRECISION MILLISECOND TAGS (k STRING) FIELDS (v DOUBLE)");
+
+    client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
+        MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()),
+        MongoClientOptions.builder().serverSelectionTimeout(5000).build());
+    collection = client.getDatabase(getDatabaseName()).getCollection("Ev");
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
+    if (client != null)
+      client.close();
+    super.endTest();
+  }
+
+  @Test
+  void insertOneAppendsTheSample() {
+    collection.insertOne(new Document("ts", T0).append("k", "c").append("v", 4.0));
+
+    final List<Sample> samples = samples();
+    assertThat(samples).containsExactly(new Sample(T0, "c", 4.0));
+    assertThat(collection.countDocuments()).isEqualTo(1);
+    assertThat(collection.find(new Document("k", "c")).into(new ArrayList<>())).hasSize(1);
+  }
+
+  @Test
+  void insertOneReadsADateAsTheInstant() {
+    collection.insertOne(new Document("ts", new Date(T0 + 5)).append("k", "d").append("v", 1.5));
+
+    assertThat(samples()).containsExactly(new Sample(T0 + 5, "d", 1.5));
+  }
+
+  @Test
+  void insertManyAppendsEverySampleAndCountsThem() {
+    final List<Document> batch = new ArrayList<>();
+    for (int i = 0; i < 25; i++)
+      batch.add(new Document("ts", T0 + i * 1000L).append("k", i % 2 == 0 ? "even" : "odd").append("v", (double) i));
+
+    collection.insertMany(batch);
+
+    assertThat(samples()).hasSize(25);
+    assertThat(collection.countDocuments(new Document("k", "odd"))).isEqualTo(12);
+  }
+
+  @Test
+  void insertOnATimeSeriesTypeLeavesNoIdIndex() {
+    collection.insertOne(new Document("ts", T0).append("k", "c").append("v", 4.0));
+
+    final Database database = getServerDatabase(0, getDatabaseName());
+    assertThat(database.getSchema().getType("Ev").getAllIndexes(true)).isEmpty();
+  }
+
+  @Test
+  void anUndeclaredKeyIsRefusedNamingTheType() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("ts", T0).append("k", "c").append("v", 4.0).append("misspelled", 1)))
+        .isInstanceOf(MongoWriteException.class)
+        .satisfies(e -> {
+          final MongoWriteException write = (MongoWriteException) e;
+          assertThat(write.getError().getCode()).isNotEqualTo(26);
+          assertThat(write.getError().getMessage()).contains("Ev").contains("misspelled");
+        });
+
+    assertThat(samples()).isEmpty();
+  }
+
+  @Test
+  void aValueOfTheWrongKindIsRefusedNamingTheColumn() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("ts", T0).append("k", "c").append("v", "not a number")))
+        .isInstanceOf(MongoWriteException.class)
+        .satisfies(e -> {
+          final MongoWriteException write = (MongoWriteException) e;
+          assertThat(write.getError().getCode()).isNotEqualTo(26);
+          assertThat(write.getError().getMessage()).contains("v");
+        });
+
+    assertThat(samples()).isEmpty();
+  }
+
+  @Test
+  void anExplicitIdThatIsNotAnObjectIdIsRefusedInsteadOfLost() {
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", "mine").append("ts", T0).append("k", "c").append("v", 4.0)))
+        .isInstanceOf(MongoWriteException.class)
+        .satisfies(e -> assertThat(((MongoWriteException) e).getError().getMessage()).contains("Ev").contains("_id"));
+
+    assertThat(samples()).isEmpty();
+  }
+
+  @Test
+  void anObjectIdIsAcceptedAndNotStored() {
+    collection.insertOne(new Document("_id", new ObjectId()).append("ts", T0).append("k", "c").append("v", 4.0));
+
+    assertThat(samples()).containsExactly(new Sample(T0, "c", 4.0));
+  }
+
+  @Test
+  void anOrderedBatchStopsAtTheFirstRefusedSample() {
+    final List<Document> batch = List.of(//
+        new Document("ts", T0).append("k", "a").append("v", 1.0), //
+        new Document("ts", T0 + 1).append("k", "a").append("v", "bad"), //
+        new Document("ts", T0 + 2).append("k", "a").append("v", 3.0));
+
+    assertThatThrownBy(() -> collection.insertMany(batch)).isInstanceOf(MongoBulkWriteException.class).satisfies(e -> {
+      final MongoBulkWriteException bulk = (MongoBulkWriteException) e;
+      assertThat(bulk.getWriteErrors()).hasSize(1);
+      assertThat(bulk.getWriteErrors().getFirst().getIndex()).isEqualTo(1);
+      assertThat(bulk.getWriteResult().getInsertedCount()).isEqualTo(1);
+    });
+
+    assertThat(samples()).containsExactly(new Sample(T0, "a", 1.0));
+  }
+
+  @Test
+  void anUnorderedBatchStoresTheSamplesAroundTheRefusedOne() {
+    final List<Document> batch = List.of(//
+        new Document("ts", T0).append("k", "a").append("v", 1.0), //
+        new Document("ts", T0 + 1).append("k", "a").append("v", "bad"), //
+        new Document("ts", T0 + 2).append("k", "a").append("v", 3.0));
+
+    assertThatThrownBy(() -> collection.insertMany(batch, new InsertManyOptions().ordered(false))).isInstanceOf(
+        MongoBulkWriteException.class).satisfies(e -> {
+      final MongoBulkWriteException bulk = (MongoBulkWriteException) e;
+      assertThat(bulk.getWriteErrors()).hasSize(1);
+      assertThat(bulk.getWriteErrors().getFirst().getIndex()).isEqualTo(1);
+      assertThat(bulk.getWriteResult().getInsertedCount()).isEqualTo(2);
+    });
+
+    assertThat(samples()).containsExactlyInAnyOrder(new Sample(T0, "a", 1.0), new Sample(T0 + 2, "a", 3.0));
+  }
+
+  @Test
+  void aCollectionThatIsNotATimeSeriesTypeIsStillCreatedByTheFirstInsert() {
+    final MongoCollection<Document> plain = client.getDatabase(getDatabaseName()).getCollection("Plain10476");
+    plain.insertOne(new Document("a", 1));
+
+    assertThat(plain.countDocuments()).isEqualTo(1);
+  }
+
+  private List<Sample> samples() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    final List<Sample> samples = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT ts, k, v FROM Ev ORDER BY ts")) {
+      while (rs.hasNext()) {
+        final var row = rs.next();
+        samples.add(new Sample(epochMillis(row.getProperty("ts")), row.getProperty("k"),
+            ((Number) row.getProperty("v")).doubleValue()));
+      }
+    }
+    return samples;
+  }
+
+  private static long epochMillis(final Object timestamp) {
+    // SQL reads the stored milliseconds as the UTC date and time they name
+    if (timestamp instanceof LocalDateTime local)
+      return local.toInstant(ZoneOffset.UTC).toEpochMilli();
+    if (timestamp instanceof Date date)
+      return date.getTime();
+    return ((Number) timestamp).longValue();
+  }
+
+  private record Sample(long ts, String k, double v) {
+  }
+}

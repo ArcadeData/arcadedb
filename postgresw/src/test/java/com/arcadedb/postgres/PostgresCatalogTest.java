@@ -282,7 +282,7 @@ class PostgresCatalogTest {
 
   @Test
   void aQueryAboutARelationThisCatalogDoesNotModelIsDeclined() {
-    assertThat(resolveRaw("SELECT indexrelid FROM pg_catalog.pg_index")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_proc")).isSameAs(PostgresCatalog.DECLINED);
   }
 
   @Test

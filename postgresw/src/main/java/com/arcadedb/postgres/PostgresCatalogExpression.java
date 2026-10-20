@@ -138,6 +138,38 @@ abstract class PostgresCatalogExpression {
 
   abstract Object evaluate(Resolver resolver);
 
+  /** Receives the columns an expression reads, see {@link #collectColumns}. */
+  interface Columns {
+    /** The expression reads the column {@code name} of {@code qualifier}, null when it was written bare. */
+    void column(String qualifier, String name);
+
+    /**
+     * The expression reads columns that cannot be listed: a sub-select is correlated to the row it is evaluated against by names
+     * its own text carries, so it depends on every relation of the statement.
+     */
+    void anyColumn();
+  }
+
+  /**
+   * Reports every column this expression reads, without evaluating it. What lets a join evaluate a condition as soon as the
+   * relations it reads are bound, rather than once they all are.
+   */
+  abstract void collectColumns(Columns columns);
+
+  /** An equality between two expressions, see {@link #equalityOf}. */
+  record Equality(PostgresCatalogExpression left, PostgresCatalogExpression right) {
+  }
+
+  /** The two sides of {@code expression} when it is a plain {@code =}, null for anything else. */
+  static Equality equalityOf(final PostgresCatalogExpression expression) {
+    return expression instanceof Binary binary && "=".equals(binary.operator) ? new Equality(binary.left, binary.right) : null;
+  }
+
+  /** The column {@code expression} is, when it is nothing but a column reference, null otherwise. */
+  static ColumnReference columnOf(final PostgresCatalogExpression expression) {
+    return expression instanceof ColumnReference reference ? reference : null;
+  }
+
   /**
    * Parses one expression and returns it, or null when it is not written in the supported slice. The whole
    * token range must be consumed: a trailing token means the text was something more than one expression.
@@ -179,6 +211,22 @@ abstract class PostgresCatalogExpression {
     return false;
   }
 
+  /**
+   * A value read as a boolean, for a comparison with one: text is read the way PostgreSQL reads the input of a {@code boolean}
+   * ({@code indisprimary = 't'} is a test of the flag), anything that is neither is {@link #isTrue}.
+   */
+  static boolean truth(final Object value) {
+    if (value instanceof String text) {
+      switch (text.trim().toLowerCase(Locale.ENGLISH)) {
+      case "t", "true", "y", "yes", "on", "1":
+        return true;
+      default:
+        return false;
+      }
+    }
+    return isTrue(value);
+  }
+
   static String asString(final Object value) {
     if (value == null || value == UNKNOWN)
       return null;
@@ -194,6 +242,10 @@ abstract class PostgresCatalogExpression {
 
     Literal(final Object value) {
       this.value = value;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
     }
 
     @Override
@@ -222,6 +274,11 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      columns.anyColumn();
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.subquery(tokens, kind);
     }
@@ -237,6 +294,12 @@ abstract class PostgresCatalogExpression {
       this.operand = operand;
       this.subquery = subquery;
       this.negated = negated;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      subquery.collectColumns(columns);
     }
 
     @Override
@@ -285,6 +348,14 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      if (argument != null)
+        argument.collectColumns(columns);
+      for (final PostgresCatalogExpression extra : extraArguments)
+        extra.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.aggregate(this);
     }
@@ -300,6 +371,11 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      columns.column(qualifier, name);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.column(qualifier, name);
     }
@@ -312,6 +388,12 @@ abstract class PostgresCatalogExpression {
     FunctionCall(final String name, final List<PostgresCatalogExpression> arguments) {
       this.name = name;
       this.arguments = arguments;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      for (final PostgresCatalogExpression argument : arguments)
+        argument.collectColumns(columns);
     }
 
     @Override
@@ -371,6 +453,14 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      for (final PostgresCatalogExpression expression : partitionBy)
+        expression.collectColumns(columns);
+      for (final PostgresCatalogExpression expression : orderBy)
+        expression.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.window(this);
     }
@@ -422,6 +512,11 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object value = operand.evaluate(resolver);
       if (value == UNKNOWN)
@@ -437,6 +532,11 @@ abstract class PostgresCatalogExpression {
 
     Negate(final PostgresCatalogExpression operand) {
       this.operand = operand;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
     }
 
     @Override
@@ -476,6 +576,12 @@ abstract class PostgresCatalogExpression {
       this.operator = operator;
       this.left = left;
       this.right = right;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      left.collectColumns(columns);
+      right.collectColumns(columns);
     }
 
     @Override
@@ -590,7 +696,7 @@ abstract class PostgresCatalogExpression {
       if (l instanceof Number ln && r instanceof Number rn)
         comparison = Double.compare(ln.doubleValue(), rn.doubleValue());
       else if (l instanceof Boolean || r instanceof Boolean)
-        comparison = Boolean.compare(isTrue(l), isTrue(r));
+        comparison = Boolean.compare(truth(l), truth(r));
       else
         comparison = asString(l).compareTo(asString(r));
 
@@ -798,6 +904,13 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      for (final PostgresCatalogExpression candidate : candidates)
+        candidate.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object value = operand.evaluate(resolver);
       if (value == UNKNOWN)
@@ -831,6 +944,11 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object value = operand.evaluate(resolver);
       if (value == UNKNOWN)
@@ -851,6 +969,18 @@ abstract class PostgresCatalogExpression {
       this.conditions = conditions;
       this.results = results;
       this.fallback = fallback;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      if (operand != null)
+        operand.collectColumns(columns);
+      for (final PostgresCatalogExpression condition : conditions)
+        condition.collectColumns(columns);
+      for (final PostgresCatalogExpression result : results)
+        result.collectColumns(columns);
+      if (fallback != null)
+        fallback.collectColumns(columns);
     }
 
     @Override
@@ -888,6 +1018,12 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      index.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object value = operand.evaluate(resolver);
       final Object position = index.evaluate(resolver);
@@ -896,8 +1032,9 @@ abstract class PostgresCatalogExpression {
       if (!(value instanceof List<?> list) || !(position instanceof Number n))
         return UNKNOWN;
 
-      // PostgreSQL arrays are 1-based by default, which is the only base a catalog query ever uses.
-      final int i = n.intValue() - 1;
+      // PostgreSQL arrays are 1-based by default, which is the base a catalog query uses - but for int2vector and oidvector, the
+      // arrays an index keeps its key columns in, which start at 0: psqlodbc subscripts indkey[attnum - 1]
+      final int i = n.intValue() - (list instanceof PostgresCatalogIndexes.Vector ? 0 : 1);
       return i < 0 || i >= list.size() ? null : list.get(i);
     }
   }

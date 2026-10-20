@@ -540,6 +540,53 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * How many adjacency entries {@link #getNeighborView} would have to write to answer, that no earlier call has already written
+   * for the snapshot this provider reads: {@code 0} when the view is the provider's own arrays or was built before, and the size
+   * of the whole adjacency otherwise. A view is packed for every node whatever the read that asks for it, so a read that visits
+   * a handful of nodes pays for the whole graph (issue #10471); {@link #getNeighborViewForVisits} compares the two.
+   * <p>
+   * The default is {@code 0}: a provider that has nothing to build, or whose views are not worth costing, is always asked.
+   */
+  default long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return 0L;
+  }
+
+  /** {@link #getNeighborViewBuildCost} of ONE concrete edge type, sub-types left out: see {@link #getNeighborViewOfSlice}. */
+  default long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborViewBuildCost(direction, edgeType);
+  }
+
+  /**
+   * The mean number of adjacency entries a node has in {@code direction} over {@code edgeTypes}, or {@code -1} when the provider
+   * does not know. What a read multiplies by the nodes it starts from to estimate the entries it will visit.
+   */
+  default double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return -1.0;
+  }
+
+  /**
+   * {@link #getNeighborView} for a read that will visit about {@code expectedVisits} adjacency entries: the view, unless building
+   * it costs more than the read itself ({@link #getNeighborViewBuildCost}), in which case {@code null} and the caller reads per
+   * node, as it does when the provider has no view at all. A view that is ready is always returned, whatever the read: it costs
+   * nothing.
+   * <p>
+   * A snapshot that changes with every commit gives a view no second reader, so a point lookup that asked for the view of the
+   * whole graph would build it for itself alone, once per commit. This default compares one read with the build; a provider whose
+   * snapshots are shared by many reads (a Graph Analytical View) adds the reads up instead, so that the view is built once they
+   * have paid for it between them.
+   */
+  default NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    return getNeighborViewBuildCost(direction, edgeTypes) > expectedVisits ? null : getNeighborView(direction, edgeTypes);
+  }
+
+  /** {@link #getNeighborViewForVisits} of ONE concrete edge type, sub-types left out: see {@link #getNeighborViewOfSlice}. */
+  default NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return getNeighborViewOfSliceBuildCost(direction, edgeType) > expectedVisits ? null : getNeighborViewOfSlice(direction, edgeType);
+  }
+
+  /**
    * Bulk degree computation: fills {@code degrees[nodeId]} with the edge count for each node.
    * <p>
    * Default implementation calls {@link #countEdges} per node. CSR-backed providers override

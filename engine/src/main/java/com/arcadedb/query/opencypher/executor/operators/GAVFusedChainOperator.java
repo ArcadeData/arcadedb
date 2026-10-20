@@ -236,13 +236,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Pre-compute the output variable names array (shared across all rows — zero per-row allocation)
     final String[] outputNames = buildOutputNames();
 
-    // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices)
-    final NeighborView[] hopViews = new NeighborView[chainLength];
-    for (int i = 0; i < chainLength; i++)
-      if (hopTracked == null || !hopTracked[i])
-        hopViews[i] = provider.getNeighborView(hopDirections[i], hopEdgeTypes[i]);
-    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes(db) : null;
-
     // Collect all source nodeIds into a primitive int[] for parallel partitioning (zero boxing)
     int[] sourceNodeIdsBuf = new int[1024];
     int sourceCount = 0;
@@ -271,6 +264,16 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
     final int[] sourceNodeIds = sourceNodeIdsBuf;
     final int totalSources = sourceCount; // effectively final for lambda capture
+
+    // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices). Asked for after the
+    // sources are known: a view packs the adjacency of the whole graph, and a chain that starts from a handful of vertices does
+    // not pay for building one while the view has an overlay, which every commit replaces (issue #10471)
+    final long[] hopVisits = expectedVisits(totalSources);
+    final NeighborView[] hopViews = new NeighborView[chainLength];
+    for (int i = chainLength - 1; i >= 0; i--)
+      if (hopTracked == null || !hopTracked[i])
+        hopViews[i] = provider.getNeighborViewForVisits(hopVisits[i], hopDirections[i], hopEdgeTypes[i]);
+    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes(db, hopVisits) : null;
     final int parallelism = Runtime.getRuntime().availableProcessors();
     // Guard against an empty source set: chunkSize must never be 0 (issue #5306, it later divides by it).
     final int chunkSize = Math.max(1, (totalSources + parallelism - 1) / parallelism);
@@ -873,7 +876,24 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private record TrackedTypes(String[] names, int[][] hopTypeIds, NeighborView[] views) {
   }
 
-  private TrackedTypes resolveTrackedTypes(final Database database) {
+  /**
+   * The entries each hop is expected to visit when the chain starts from {@code sources} vertices: the fan-out of the hops walked
+   * so far, multiplied in. A provider that does not know its degrees (or a hop's types) makes the hop expect every entry there
+   * is, so the view is asked for as it always was. A target label that thins a hop is ignored, which overestimates: a view
+   * that was not worth building is built, never the reverse.
+   */
+  private long[] expectedVisits(final long sources) {
+    final long[] visits = new long[hopDirections.length];
+    double reached = sources;
+    for (int i = 0; i < visits.length; i++) {
+      final double degree = provider.getMeanDegree(hopDirections[i], hopEdgeTypes[i]);
+      reached = degree < 0 ? Long.MAX_VALUE : Math.min(reached * degree, Long.MAX_VALUE);
+      visits[i] = (long) reached;
+    }
+    return visits;
+  }
+
+  private TrackedTypes resolveTrackedTypes(final Database database, final long[] hopVisits) {
     final Map<String, Integer> ids = new HashMap<>();
     final List<String> names = new ArrayList<>();
     final int[][] hopTypeIds = new int[hopDirections.length][];
@@ -890,11 +910,17 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         });
       }
     }
+    // The entries a type is expected to be read for: the most of the hops that walk it, a slice being shared by them
+    final long[] typeVisits = new long[names.size()];
+    for (int i = 0; i < hopDirections.length; i++)
+      if (hopTypeIds[i] != null)
+        for (final int id : hopTypeIds[i])
+          typeVisits[id] = Math.max(typeVisits[id], hopVisits[i]);
     // One concrete type per slice, sub-types left out: each has its own (issue #10213)
     final NeighborView[] views = new NeighborView[names.size() * 2];
     for (int t = 0; t < names.size(); t++) {
-      views[t * 2] = provider.getNeighborViewOfSlice(Vertex.DIRECTION.IN, names.get(t));
-      views[t * 2 + 1] = provider.getNeighborViewOfSlice(Vertex.DIRECTION.OUT, names.get(t));
+      views[t * 2] = provider.getNeighborViewOfSliceForVisits(typeVisits[t], Vertex.DIRECTION.IN, names.get(t));
+      views[t * 2 + 1] = provider.getNeighborViewOfSliceForVisits(typeVisits[t], Vertex.DIRECTION.OUT, names.get(t));
     }
     return new TrackedTypes(names.toArray(new String[0]), hopTypeIds, views);
   }
