@@ -246,6 +246,37 @@ class Issue10305ViewSameSlotCreateDeleteTest extends TestHelper {
     }
   }
 
+  /** A lightweight edge has no RID of its own to take back: its creation and its deletion are both reported, and cancel out in the view. */
+  @Test
+  void aLightweightEdgeCreatedAndDeletedInOneTransactionLeavesTheViewAlone() {
+    sql("CREATE VERTEX TYPE V");
+    sql("CREATE EDGE TYPE L LIGHTWEIGHT");
+    sql("CREATE PROPERTY V.id INTEGER");
+    database.transaction(() -> {
+      for (int i = 0; i < 4; i++)
+        vertices.add(database.newVertex("V").set("id", i).save().getIdentity());
+      vertices.get(0).asVertex().newEdge("L", vertices.get(1).asVertex());
+    });
+    sql("CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (V) EDGE TYPES (L) UPDATE MODE SYNCHRONOUS");
+    awaitView("gv");
+
+    database.transaction(() -> {
+      vertices.get(2).asVertex().newEdge("L", vertices.get(3).asVertex());
+      for (final Edge e : vertices.get(2).asVertex().getEdges(Vertex.DIRECTION.OUT, "L"))
+        e.delete();
+    });
+    awaitView("gv");
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V)-[:L]->(b:V) RETURN a.id AS a, b.id AS b")) {
+      final List<String> edges = new ArrayList<>();
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        edges.add(row.<Object>getProperty("a") + "->" + row.<Object>getProperty("b"));
+      }
+      assertThat(edges).containsExactly("0->1");
+    }
+  }
+
   @Test
   void anEdgeCreatedAndDeletedInOneTransactionLeavesTheViewAlone() {
     sql("CREATE VERTEX TYPE V");

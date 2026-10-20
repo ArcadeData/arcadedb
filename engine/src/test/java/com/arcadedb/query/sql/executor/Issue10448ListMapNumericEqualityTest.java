@@ -179,6 +179,9 @@ class Issue10448ListMapNumericEqualityTest extends TestHelper {
     assertThat(BinaryComparator.equals(nullValue, Map.of("a", 1))).isFalse();
     assertThat(BinaryComparator.equals(Map.of(1L, "x"), Map.of(1, "x"))).as("keys are matched by the map, as Map.equals does").isFalse();
     assertThat(BinaryComparator.equals(new TreeMap<>(Map.of("a", 1L)), Map.of("a", 1))).as("a sorted map and a hash map").isTrue();
+    // a sorted map asked for a key of a class it cannot hold throws: that is a key it does not have, not a failure of the comparison
+    assertThat(BinaryComparator.equals(Map.of(1, "x"), new TreeMap<>(Map.of("a", "x")))).as("key class the sorted map cannot hold").isFalse();
+    assertThat(BinaryComparator.equals(new TreeMap<>(Map.of("a", "x")), Map.of(1, "x"))).isFalse();
   }
 
   /** Lists of links compare as they always did: by the records they point to, a loaded record or its RID alike. */

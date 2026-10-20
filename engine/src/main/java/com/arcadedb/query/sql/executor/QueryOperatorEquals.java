@@ -59,7 +59,7 @@ public class QueryOperatorEquals {
 
     // Two lists or two maps of different implementations (a stored ArrayList against an immutable List.of() parameter) are compared
     // as they are, not converted into one another first: the elements follow the numeric rule of "=" (issue #10448)
-    if (left instanceof List && right instanceof List || left instanceof Map && right instanceof Map)
+    if ((left instanceof List && right instanceof List) || (left instanceof Map && right instanceof Map))
       return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {

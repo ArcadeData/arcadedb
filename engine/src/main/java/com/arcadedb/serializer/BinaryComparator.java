@@ -585,7 +585,7 @@ public class BinaryComparator {
     if (a instanceof BigDecimal && b instanceof BigDecimal)
       // scale-sensitive on purpose: BigDecimal.hashCode() is, and these keys pick their slot by hash
       return a.equals(b);
-    if (a instanceof List && b instanceof List || a instanceof Map && b instanceof Map)
+    if ((a instanceof List && b instanceof List) || (a instanceof Map && b instanceof Map))
       // the elements of a list or map key follow Object.equals() too, not the numeric rule equals() applies to them (issue #10448)
       return a.equals(b);
     if (!(a != null && b != null && !a.getClass().equals(b.getClass()) && a instanceof Number number && b instanceof Number number1))
