@@ -665,8 +665,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // A non-vertex type with the same name (edge/document type) matches no node pattern: labels
         // and relationship types are separate namespaces in Cypher, so yield 0 rows instead of
         // failing with a ClassCastException while casting edges to vertices (issue #5194)
-        if (!(type instanceof VertexType))
+        if (!(type instanceof VertexType)) {
+          // ...except a time-series type: a static label naming one was refused at planning, a dynamic one is only known
+          // here, and zero rows would read as a series with no samples (issue #10440)
+          Labels.requireNotTimeSeriesType(type, "label");
           return Collections.emptyIterator();
+        }
 
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {

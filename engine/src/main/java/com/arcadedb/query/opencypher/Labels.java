@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -571,10 +572,20 @@ public final class Labels {
       final String label = labels.get(0);
       // A type name that names an edge or document type is not a label: labels and relationship types are separate
       // namespaces in Cypher, so such a pattern matches no node rather than yielding records that are not vertices.
-      if (!(schema.getTypeOrNull(label) instanceof VertexType))
+      final DocumentType type = schema.getTypeOrNull(label);
+      if (!(type instanceof VertexType)) {
+        // ...except a time-series type, whose samples a query asking for them would silently never see (issue #10440)
+        requireNotTimeSeriesType(type, "label");
         return Collections.emptyIterator();
+      }
       return database.iterateType(label, true);
     }
+
+    // A static label was refused when the statement was planned (TimeSeriesPatternGuard), but a dynamic one is only
+    // known now (issue #10440)
+    if (labels != null)
+      for (int i = 0; i < labels.size(); i++)
+        requireNotTimeSeriesType(schema.getTypeOrNull(labels.get(i)), "label");
 
     final List<DocumentType> types = matchingVertexTypes(schema, labels, disjunction);
     if (types.isEmpty())
@@ -582,6 +593,24 @@ public final class Labels {
     if (types.size() == 1)
       return database.iterateType(types.get(0).getName(), false);
     return new ChainedTypeIterator(database, types);
+  }
+
+  /**
+   * Refuses a node label or relationship type that names a TIMESERIES type (issue #10440). Time-series samples are
+   * stored in their own engine, not as records of the type's buckets, and they are neither vertices nor edges, so a
+   * pattern naming the type can match nothing. Answering that as zero rows reads as "there is no data", while SQL
+   * over the same type returns the samples, so the pattern is an error instead.
+   *
+   * @param type the type the name resolves to, or {@code null} when it names none
+   * @param kind {@code "label"} or {@code "relationship type"}, for the message
+   *
+   * @throws CommandSemanticException when {@code type} is a time-series type
+   */
+  public static void requireNotTimeSeriesType(final DocumentType type, final String kind) {
+    if (type instanceof TimeSeriesType)
+      throw new CommandSemanticException("The " + kind + " '" + type.getName() + "' names the TIMESERIES type '" + type.getName()
+          + "': Cypher does not query time-series types, whose samples are neither nodes nor relationships. Query it with SQL ("
+          + "SELECT FROM `" + type.getName() + "`) or PromQL instead");
   }
 
   /**
