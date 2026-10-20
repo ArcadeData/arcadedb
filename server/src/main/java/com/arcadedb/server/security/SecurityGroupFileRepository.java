@@ -61,6 +61,12 @@ public class SecurityGroupFileRepository {
   private volatile    Timer                      checkFileUpdatedTimer;
   private             Callable<Void, JSONObject> reloadCallback  = null;
   private volatile    JSONObject                 latestGroupConfiguration;
+  // Whether the document in force is NEWER than the file (issue #10403): a replicated install publishes before it
+  // persists (issue #7373), and its write failed. Set only by applyReplicated(), cleared by any successful persist(), and
+  // guarded by the monitor - every reader and writer is synchronized. reload() refuses to re-read the older file while
+  // it is set. A failed save() leaves it as it was: save() publishes nothing when its write fails, so it cannot put the
+  // disk behind memory, and it cannot bring a disk that already was behind level either.
+  private             boolean                    diskBehind;
 
   public SecurityGroupFileRepository(String securityConfPath, final int checkConfigReloadEveryMs) {
     // EITHER SEPARATOR CONVENTION (ISSUE #7588)
@@ -139,13 +145,17 @@ public class SecurityGroupFileRepository {
     } catch (final Exception e) {
       // Exception, not IOException: an unchecked failure out of persist() would otherwise propagate from a
       // method whose whole contract is "the document is in force here, only the write failed".
+      //
+      // The file is now OLDER than the groups in force (issue #10403): see reload().
+      diskBehind = true;
       return e;
     }
   }
 
   /**
    * Writes the document in force again, for a replicated install whose own write failed (issue #7752). Same failure
-   * contract as {@link #applyReplicated}: the failure is returned, never thrown.
+   * contract as {@link #applyReplicated}: the failure is returned, never thrown. A success lifts {@link #reload()}'s
+   * refusal to re-read the file (issue #10403).
    *
    * @return the persistence failure, or {@code null} when the document reached the disk (or there is none to write)
    */
@@ -161,7 +171,10 @@ public class SecurityGroupFileRepository {
     }
   }
 
-  /** Writes the document to {@link #FILE_NAME} without touching the in-memory copy. */
+  /**
+   * Writes the document to {@link #FILE_NAME} without touching the in-memory copy. A success clears {@link #diskBehind}:
+   * every caller writes the document that is, or is about to be, in force.
+   */
   private void persist(final JSONObject configuration) throws IOException {
     final File dir = file.getParentFile();
     if (dir != null && !dir.exists())
@@ -187,6 +200,7 @@ public class SecurityGroupFileRepository {
       } catch (final AtomicMoveNotSupportedException e) {
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
       }
+      diskBehind = false;
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -333,6 +347,12 @@ public class SecurityGroupFileRepository {
    * tick picks the fix up.
    * <p>
    * Before any document has been published there is nothing to keep, and this is the first load.
+   * <p>
+   * Also refuses while the document in force has not reached the disk ({@link #diskBehind}, issue #10403): the file then
+   * holds an OLDER document - say, one with a group a replicated deletion has since removed, or a permission it has
+   * since narrowed - and publishing it would undo the replicated change on this node. {@link #save} never advances the
+   * watcher's stamp, so the bump of an earlier successful save is enough to fire such a reload, without anybody touching
+   * the file. The #7752 retry ({@link #persistCurrent}), or any later successful write, lifts the refusal.
    *
    * @return {@code true} when a document was published - the file's, or on a first load the default one - and
    *         {@code false} when the groups in force were kept
@@ -342,6 +362,19 @@ public class SecurityGroupFileRepository {
     if (current == null) {
       firstLoad();
       return true;
+    }
+
+    if (diskBehind) {
+      // Stamped, so the refusal is logged once per change of the file rather than once per tick.
+      if (file.exists())
+        fileLastUpdated = file.lastModified();
+      LogManager.instance().log(this, Level.WARNING,
+          "File '%s' changed, but the groups in force have not been written to it yet (the last write of a replicated group "
+              + "document failed); %s. Make the configuration directory writable again: the next successful write lifts this, "
+              + "and it writes the groups in force OVER this edit. Make a group change through the server once the directory "
+              + "is writable instead: a hand edit cannot win over a replicated document, which a restart would also replay", FILE_NAME,
+          KEEPING_GROUPS);
+      return false;
     }
 
     final JSONObject json;
