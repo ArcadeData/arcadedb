@@ -193,6 +193,26 @@ class Issue10451UsersDiskBehindReloadTest {
     await().atMost(AT_MOST).pollInterval(POLL).until(() -> security.existsUser("alice"));
   }
 
+  /** The repository's half on its own, without the watcher: the flag's lifecycle and the stamp the refusal advances. */
+  @Test
+  void theRepositoryFlagIsClearedBySaveAndMarkFileSeenSwallowsTheChange() throws Exception {
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository(CONFIG_PATH);
+    final List<JSONObject> rootOnly = withoutAlice();
+    repository.save(rootOnly);
+    assertThat(repository.isDiskBehind()).isFalse();
+
+    repository.markDiskBehind();
+    assertThat(repository.isDiskBehind()).isTrue();
+
+    touch(usersFile);
+    assertThat(repository.isUserFileChanged()).isTrue();
+    repository.markFileSeen();
+    assertThat(repository.isUserFileChanged()).as("a refused change is not reported again on the next tick").isFalse();
+
+    repository.save(rootOnly);
+    assertThat(repository.isDiskBehind()).as("a successful save puts the disk level with memory").isFalse();
+  }
+
   private boolean applyFails(final String payload) {
     try {
       security.applyReplicatedUsers(payload);
