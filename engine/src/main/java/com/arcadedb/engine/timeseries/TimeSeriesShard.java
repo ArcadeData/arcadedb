@@ -977,6 +977,57 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Removes the samples with a timestamp in {@code [fromTs, toTs]} and tags satisfying {@code tagFilter} from the mutable pages and
+   * from the sealed blocks of this shard (issue #10342), and answers how many. The sealed layer is rewritten as retention rewrites it
+   * and the mutable pages are replaced inside one transaction ({@link TimeSeriesBucket#deleteSamples}).
+   * <p>
+   * Called from {@link #runSealedRewrite}, so under the compaction write lock and the sealed-file mutex: no append, compaction,
+   * merge, retention or downsample can interleave, and no reader can see the two layers apart. And inside the replication session
+   * the engine opens for all shards ({@code TimeSeriesEngine.deleteSamples}): the mutable transaction commits into that session's
+   * buffer and the rewritten sealed bytes are recorded beside it, so under HA followers receive both as one unit, as they receive a
+   * compaction.
+   * <p>
+   * Not atomic across the two layers on this node: the layer committed first stays deleted if the second fails, and the statement
+   * that reports the failure can simply be run again, because deleting what is already gone deletes nothing.
+   */
+  long deleteSamplesLocked(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
+    long deleted = 0L;
+
+    // The mutable pages. An in-flight append of a replicated database may commit page 0 between the begin and the commit below
+    // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read
+    for (int attempt = 3; attempt > 0; attempt--) {
+      final OwnTransaction tx = OwnTransaction.begin(db);
+      try {
+        final long removed = mutableBucket.deleteSamples(fromTs, toTs, tagFilter);
+        if (removed > 0L)
+          tx.commit();
+        else
+          tx.rollbackIfMine();
+        deleted += removed;
+        break;
+      } catch (final ConcurrentModificationException e) {
+        tx.rollbackIfMine();
+        if (attempt == 1)
+          throw new IOException("Deleting samples from the mutable pages of shard " + shardIndex + " of type '" + typeName
+              + "' failed after retries", e);
+      } catch (final Exception e) {
+        tx.rollbackIfMine();
+        throw e instanceof IOException ? (IOException) e :
+            new IOException("Failed to delete samples from the mutable pages of shard " + shardIndex + " of type '" + typeName + "'", e);
+      }
+    }
+
+    // The sealed blocks
+    final long removedSealed = sealedStore.deleteSamples(fromTs, toTs, tagFilter);
+    if (removedSealed > 0L) {
+      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+      deleted += removedSealed;
+    }
+    return deleted;
+  }
+
+  /**
    * Whether a rewrite of the sealed file (compaction, merge, retention, downsampling) is waiting for the one in flight. Lets a
    * test prove that a second rewrite is queued on {@link #compactionMutex} and not merely parked on something else.
    */

@@ -21,8 +21,10 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -57,6 +59,8 @@ import java.util.logging.Level;
 public class TimeSeriesEngine implements AutoCloseable {
   // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER: UP TO TWICE, THE ARRAY COSTS ABOUT WHAT THE CEILING ALREADY ALLOWS
   private static final long FLAT_WINDOW_PER_CEILING = 2L;
+  // HOW MANY TIMES A DELETE ASKS FOR THE REPLICATION SESSION BEFORE GIVING UP: THE BACKOFF OF 20 TO 500 MS PER ATTEMPT WAITS A FEW SECONDS AT MOST
+  private static final int  DELETE_SESSION_ATTEMPTS  = 12;
 
   private final DatabaseInternal       database;
   private final String                 typeName;
@@ -1251,6 +1255,66 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public void applyRetention(final long cutoffTimestamp) throws IOException {
     runSealedMaintenanceReplicated(shard -> shard.getSealedStore().truncateBefore(cutoffTimestamp));
+  }
+
+  /**
+   * Removes every sample with a timestamp in {@code [fromTs, toTs]} whose tags satisfy {@code tagFilter}, from the mutable pages and
+   * the sealed blocks of every shard, and answers how many it removed (issue #10342). The shape time series databases support: a time
+   * range and equalities on tags. A sample is never updated; arbitrary predicates on the value columns are not supported.
+   * <p>
+   * <b>A maintenance operation, not a record write.</b> It does not take part in the caller's transaction, as the append does not
+   * (issue #7410): the samples are gone, durably, when this returns, and a rollback of the transaction the caller has open does not
+   * bring them back. The rewrite of the sealed file runs outside any transaction, like retention and downsampling, and cannot be
+   * undone by one.
+   * <p>
+   * Under HA it runs on the leader and ships, in one replication unit, the mutable pages it rewrote and the sealed bytes of every shard
+   * it changed, as a compaction does. A session another maintenance pass holds is waited for, a few seconds at most, then refused with
+   * a {@link NeedRetryException}: nothing was deleted by an attempt that did not run.
+   * <p>
+   * Deleting what is already gone deletes nothing, so a statement that failed half way can be run again. Readers are held off for the
+   * rewrite of a shard (the compaction write lock, as retention holds it), and a long read that straddles it fails with
+   * {@link TimeSeriesWalkCoarsenedException} rather than answer from blocks that no longer exist.
+   *
+   * @param tagFilter the tag conditions, or {@code null} for samples of any tags
+   *
+   * @return how many samples were removed
+   */
+  public long deleteSamples(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
+    if (fromTs > toTs)
+      return 0L;
+
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
+    final long[] deleted = new long[1];
+    boolean ran = false;
+    try {
+      for (int attempt = 0; attempt < DELETE_SESSION_ATTEMPTS && !ran; attempt++) {
+        if (attempt > 0)
+          RetryBackoff.sleep(attempt - 1, 20L, 500L);
+        deleted[0] = 0L;
+        // One session for all shards, like retention: the pages and the sealed bytes of the whole statement are one replication unit
+        ran = db.runWithCompactionReplication(() -> {
+          for (final TimeSeriesShard shard : shards)
+            shard.runSealedRewrite(() -> deleted[0] += shard.deleteSamplesLocked(fromTs, toTs, tagFilter));
+          return true;
+        });
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Deleting samples of type " + typeName + " interrupted", e);
+    }
+    if (!ran)
+      throw new NeedRetryException("Cannot delete the samples of the TIMESERIES type '" + typeName + "' now: this node is not the "
+          + "leader of the cluster, or another maintenance pass (a compaction, a retention, a delete) holds the replication session. "
+          + "Nothing was deleted: run the statement again");
+    return deleted[0];
+  }
+
+  /**
+   * Removes every sample of every shard (issue #10342): {@link #deleteSamples} over all time and all tags, which reads no sample and
+   * drops the sealed blocks without opening them.
+   */
+  public long truncate() throws IOException {
+    return deleteSamples(Long.MIN_VALUE, Long.MAX_VALUE, null);
   }
 
   /**

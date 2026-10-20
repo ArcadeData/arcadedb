@@ -1,0 +1,156 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalTimeSeriesType;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #10342: {@code DELETE FROM <timeseries type> WHERE ...} and {@code TRUNCATE TYPE} remove samples from the mutable pages and
+ * the sealed blocks of every shard, and under HA the leader ships both - the pages it rewrote and the sealed bytes of every shard it
+ * changed - in one replication unit, as it ships a compaction. The follower must hold exactly the samples the leader holds, in both
+ * layers, and must not see a gap in the page versions of the mutable bucket (the sealed store has no WAL, the pages do).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+@Tag("slow")
+class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
+  private static final long BASE = 1_700_000_000_000L;
+
+  @Override
+  protected int getServerCount() {
+    return 2;
+  }
+
+  @AfterEach
+  void cleanupHooks() {
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = null;
+  }
+
+  @Test
+  void aDeleteAndATruncateReachTheFollower() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE TIMESERIES TYPE sensor TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2").close();
+    waitForAllServers();
+    ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
+
+    // 90 samples sealed by a compaction, then 60 left in the mutable pages
+    insert(leaderDb, 0, 90);
+    ((LocalTimeSeriesType) leaderDb.getSchema().getType("sensor")).getEngine().compactAll();
+    insert(leaderDb, 90, 150);
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, 150L)).as("the follower holds the samples before the delete").isEqualTo(150L);
+    assertThat(sealedSamples(followerIndex)).as("the follower holds the sealed blocks").isEqualTo(sealedSamples(leaderIndex)).isPositive();
+
+    // a delete that drops sealed blocks, rebuilds one and rewrites the mutable pages
+    try (final ResultSet rs = leaderDb.command("sql",
+        "DELETE FROM sensor WHERE host = 'h1' AND ts >= " + (BASE + 20_000L) + " AND ts < " + (BASE + 130_000L))) {
+      // the samples 22, 25, ... 127 of the series h1
+      assertThat(rs.next().<Number>getProperty("count").longValue()).isEqualTo(36L);
+    }
+    waitForAllServers();
+
+    assertThat(awaitCountOn(leaderIndex, 114L)).as("leader").isEqualTo(114L);
+    assertThat(awaitCountOn(followerIndex, 114L)).as("follower").isEqualTo(114L);
+    assertThat(sum(followerIndex)).as("follower sum(v)").isEqualTo(sum(leaderIndex));
+    assertThat(sealedSamples(followerIndex)).as("follower sealed samples").isEqualTo(sealedSamples(leaderIndex));
+    assertThat(mutableSamples(followerIndex)).as("follower mutable samples").isEqualTo(mutableSamples(leaderIndex));
+    assertThat(countOfHost(followerIndex, "h1")).as("follower samples of the deleted series").isEqualTo(countOfHost(leaderIndex, "h1"));
+
+    // a truncate empties both layers on both nodes, and the type takes samples again
+    try (final ResultSet rs = leaderDb.command("sql", "TRUNCATE TYPE sensor")) {
+      assertThat(rs.next().<Number>getProperty("count").longValue()).isEqualTo(114L);
+    }
+    waitForAllServers();
+    assertThat(awaitCountOn(leaderIndex, 0L)).as("leader after truncate").isZero();
+    assertThat(awaitCountOn(followerIndex, 0L)).as("follower after truncate").isZero();
+    assertThat(sealedSamples(followerIndex)).isZero();
+    assertThat(mutableSamples(followerIndex)).isZero();
+
+    insert(leaderDb, 200, 210);
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, 10L)).as("follower after the type took samples again").isEqualTo(10L);
+
+    assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get()).as("page-version gaps seen by the follower").isZero();
+  }
+
+  private void insert(final Database db, final int from, final int to) {
+    for (int i = from; i < to; i++)
+      db.command("sql", "INSERT INTO sensor SET ts = ?, host = ?, v = ?", BASE + i * 1_000L, "h" + (i % 3), (double) i).close();
+  }
+
+  private long awaitCountOn(final int serverIndex, final long expected) throws InterruptedException {
+    return awaitValue(expected, () -> count(serverIndex));
+  }
+
+  private long count(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM sensor")) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  private long countOfHost(final int serverIndex, final String host) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM sensor WHERE host = ?", host)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  private double sum(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    try (final ResultSet rs = db.query("sql", "SELECT sum(v) AS s FROM sensor")) {
+      final Number sum = rs.next().getProperty("s");
+      return sum != null ? sum.doubleValue() : 0.0;
+    }
+  }
+
+  private long sealedSamples(final int serverIndex) {
+    final TimeSeriesEngine engine = engine(serverIndex);
+    long total = 0;
+    for (int s = 0; s < engine.getShardCount(); s++)
+      total += engine.getShard(s).getSealedStore().getTotalSampleCount();
+    return total;
+  }
+
+  private long mutableSamples(final int serverIndex) throws Exception {
+    final TimeSeriesEngine engine = engine(serverIndex);
+    long total = 0;
+    for (int s = 0; s < engine.getShardCount(); s++)
+      total += engine.getShard(s).getMutableBucket().getSampleCount();
+    return total;
+  }
+
+  private TimeSeriesEngine engine(final int serverIndex) {
+    return ((LocalTimeSeriesType) getServerDatabase(serverIndex, getDatabaseName()).getSchema().getType("sensor")).getEngine();
+  }
+}

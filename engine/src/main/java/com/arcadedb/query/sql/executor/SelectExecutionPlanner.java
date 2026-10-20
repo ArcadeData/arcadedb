@@ -3157,6 +3157,32 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * What a {@code DELETE} over a TIMESERIES type names (issue #10342): a time range on the timestamp column and the tag
+   * equalities, exactly as the WHERE says them.
+   */
+  record TimeSeriesDeleteScope(long fromTs, long toTs, TagFilter tagFilter) {
+  }
+
+  /**
+   * The samples a {@code DELETE FROM <timeseries type> WHERE ...} removes, or {@code null} when the WHERE says more than a time range
+   * and tag equalities (issue #10342). A DELETE is not undone by reading the result again, so the engine is given the predicate only
+   * when it IS the WHERE: the same extraction a SELECT of the same WHERE pushes into the scan, under the proof that nothing is left
+   * for a residual filter ({@link #isTimeSeriesWhereFullyPushedDown}). An OR, a predicate on a FIELD column, a tag compared with a
+   * parameter that is null or that its column cannot read, two equalities on one tag: none is a scope.
+   *
+   * @param whereClause the WHERE of the statement, {@code null} for every sample
+   */
+  static TimeSeriesDeleteScope timeSeriesDeleteScope(final LocalTimeSeriesType tsType, final WhereClause whereClause,
+      final CommandContext context) {
+    final List<AndBlock> flattened = whereClause == null ? null : whereClause.flatten();
+    if (!isTimeSeriesWhereFullyPushedDown(tsType, flattened, context, false))
+      return null;
+    final long[] range = extractTimeRangeUnion(flattened, tsType.getTimestampColumn(), context);
+    final TagFilter tagFilter = extractTagFilter(flattened, tsType.getTsColumns(), tsType.getTimestampColumn(), context);
+    return new TimeSeriesDeleteScope(range[0], range[1], tagFilter);
+  }
+
+  /**
    * Extracts a TagFilter from the flattened WHERE clause by matching equality predicates on TAG columns.
    * <p>
    * The flattened WHERE is in DNF form: a list of AndBlocks where the overall predicate is the OR of
@@ -3614,18 +3640,23 @@ public class SelectExecutionPlanner {
    */
   private boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
       final CommandContext context, final boolean withFieldFilter) {
-    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+    return isTimeSeriesWhereFullyPushedDown(tsType, info.flattenedWhereClause, context, withFieldFilter);
+  }
+
+  private static boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final List<AndBlock> flattenedWhereClause,
+      final CommandContext context, final boolean withFieldFilter) {
+    if (flattenedWhereClause == null || flattenedWhereClause.isEmpty())
       return true;
     // An OR pushes the union of the per-block tag values, a superset that relies on the residual
     // filter to drop false positives.
-    if (info.flattenedWhereClause.size() > 1)
+    if (flattenedWhereClause.size() > 1)
       return false;
 
     final String timestampColumn = tsType.getTimestampColumn();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final Set<String> constrainedTags = new HashSet<>();
 
-    for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : flattenedWhereClause.getFirst().getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
         continue;
 

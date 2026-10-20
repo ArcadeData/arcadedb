@@ -128,6 +128,24 @@ class PerTypeAclTimeSeriesPathsTest {
         .isEqualTo(3);
   }
 
+  /** Issue #10342: the samples are removed by the engine of the type, so the type-name ACL is the only gate they have. */
+  @Test
+  void deleteAndTruncateDeniedOnRestrictedType() {
+    denyOn(RESTRICTED_TYPE, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+
+    final Throwable deleted = catchThrowable(
+        () -> database.command("sql", "DELETE FROM " + RESTRICTED_TYPE + " WHERE ts < 1500").close());
+    assertThat(deleted).as("deleting samples of a denied TimeSeries type must be rejected").isInstanceOf(SecurityException.class);
+    final Throwable truncated = catchThrowable(() -> database.command("sql", "TRUNCATE TYPE " + RESTRICTED_TYPE).close());
+    assertThat(truncated).as("truncating a denied TimeSeries type must be rejected").isInstanceOf(SecurityException.class);
+
+    database.command("sql", "DELETE FROM " + AUTHORIZED_TYPE + " WHERE ts < 1500").close();
+
+    unbindUser();
+    assertThat(database.countType(RESTRICTED_TYPE, false)).as("the rejected deletes must have removed nothing").isEqualTo(2);
+    assertThat(database.countType(AUTHORIZED_TYPE, false)).as("the authorized delete must have removed its sample").isEqualTo(1);
+  }
+
   @Test
   void promQlEvaluationDeniedOnRestrictedType() {
     denyOn(RESTRICTED_TYPE, SecurityDatabaseUser.ACCESS.READ_RECORD);

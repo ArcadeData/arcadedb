@@ -1427,6 +1427,62 @@ public class TimeSeriesBucket extends PaginatedComponent {
     // of how many data pages were previously allocated, preventing OOM on large datasets.
   }
 
+  /**
+   * Removes from the data pages every sample whose timestamp is in {@code [fromTs, toTs]} and whose tags satisfy {@code tagFilter}
+   * (issue #10342), in the CURRENT transaction, which the caller commits. A page is never edited in place - the rows are
+   * fixed-width and packed - so the rows that stay are read, the pages are cleared and the kept rows are appended again in their
+   * original order: one image of the bucket replaces another inside one transaction, which commits whole or not at all.
+   * <p>
+   * Nothing is written when no sample matches, so a delete that finds nothing costs the read. Deleting everything
+   * ({@code Long.MIN_VALUE .. Long.MAX_VALUE}, no filter) reads nothing and touches only the header page, as
+   * {@link #clearDataPages()} does.
+   * <p>
+   * The caller keeps appends and compactions out ({@code TimeSeriesShard}'s compaction write lock): the rows read here are the rows
+   * cleared below.
+   *
+   * @param tagFilter the tag conditions, or {@code null} for any tags
+   *
+   * @return how many samples were removed
+   */
+  public long deleteSamples(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
+    if (fromTs > toTs)
+      return 0L;
+
+    if (fromTs == Long.MIN_VALUE && toTs == Long.MAX_VALUE && tagFilter == null) {
+      final long all = getSampleCount();
+      if (all > 0)
+        clearDataPages();
+      return all;
+    }
+
+    final List<Object[]> rows = scanRange(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null);
+    final List<Object[]> kept = new ArrayList<>(rows.size());
+    for (final Object[] row : rows) {
+      final long timestamp = (Long) row[0];
+      if (timestamp >= fromTs && timestamp <= toTs && (tagFilter == null || tagFilter.matches(row)))
+        continue;
+      kept.add(row);
+    }
+    final long deleted = rows.size() - kept.size();
+    if (deleted == 0L)
+      return 0L;
+
+    clearDataPages();
+    if (!kept.isEmpty()) {
+      final int valueColumns = columns.size() - 1; // exclude timestamp
+      final long[] timestamps = new long[kept.size()];
+      final Object[][] columnValues = new Object[valueColumns][kept.size()];
+      for (int i = 0; i < timestamps.length; i++) {
+        final Object[] row = kept.get(i);
+        timestamps[i] = (Long) row[0];
+        for (int c = 0; c < valueColumns; c++)
+          columnValues[c][i] = row[c + 1];
+      }
+      appendSamples(timestamps, columnValues);
+    }
+    return deleted;
+  }
+
   public List<ColumnDefinition> getColumns() {
     return columns;
   }
