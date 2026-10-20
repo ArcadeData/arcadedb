@@ -259,6 +259,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // The entries the reads that did not take a neighbour view of this snapshot visited per node instead, by the key of the view
     // (issue #10471): the view that was never built is built once they add up to what it costs, see neighborViewForVisits()
     final Map<String, LongAdder> neighborViewDemand = new ConcurrentHashMap<>();
+    // Every edge type this snapshot answers for, as the array the views are asked with (see slicesOf): built on first use. Two
+    // threads may both build it; either array is right
+    volatile String[] allEdgeTypeSlices;
     // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
     // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
     volatile SoftReference<GraphTraversalProvider> denseIds;
@@ -1746,9 +1749,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // The overlay changes the topology: the view is the base with the overlay applied, built once per snapshot (issue #10411)
     if (hasActiveOverlay(snap))
-      return overlayNeighborView(snap, direction,
-          edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : allEdgeTypes(snap).toArray(new String[0]),
-          neighborViewKey(direction, edgeTypes));
+      return overlayNeighborView(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
 
     final int n = snap.nodeMapping.size();
 
@@ -1894,9 +1895,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return overlayViewBuildCost(snap, direction, slice, neighborViewKey(direction, slice));
   }
 
-  /** The edge types a view reads: the resolved ones, every type of the snapshot when none were asked for. */
-  private String[] slicesOf(final Snapshot snap, final String[] edgeTypes) {
-    return edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : allEdgeTypes(snap).toArray(new String[0]);
+  /**
+   * The edge types a view reads: the resolved ones, every type of the snapshot when none were asked for. The array of every type
+   * is made once per snapshot, which never changes: a read with no edge type is a hot path and must not allocate one per call.
+   * The caller reads it and does not change it.
+   */
+  private static String[] slicesOf(final Snapshot snap, final String[] edgeTypes) {
+    if (edgeTypes != null && edgeTypes.length > 0)
+      return edgeTypes;
+    String[] all = snap.allEdgeTypeSlices;
+    if (all == null) {
+      all = allEdgeTypes(snap).toArray(new String[0]);
+      snap.allEdgeTypeSlices = all;
+    }
+    return all;
   }
 
   private static long overlayViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices,
@@ -1924,6 +1936,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (cost == 0L || expectedVisits >= cost)
       return true;
     final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
+    // The check, the add and the check again are not one atomic step, on purpose: readers racing at the threshold may overshoot it
+    // by a read or ask for the view together, and the build is one per snapshot and key whoever asks (cachedNeighborView), so the
+    // cost of the race is at most the few reads that could have been served by it
     // saturated: once the reads have spent the cost the view is built, so nothing adds to the sum after that (it stays below twice
     // the cost, and cannot overflow)
     if (demand.sum() >= cost)
