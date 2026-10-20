@@ -71,7 +71,7 @@ public class ContainsCondition extends BooleanExpression {
             if (((Collection<?>) left).contains(propValue))
               return true;
           }
-          if (((Collection<?>) left).contains(item))
+          if (containsValue((Collection<?>) left, item))
             return true;
 
           if (item instanceof Result)
@@ -84,7 +84,7 @@ public class ContainsCondition extends BooleanExpression {
         // A multi-item collection on the right is looked for as ONE element of the left-hand collection, which is
         // what `test CONTAINS [1]` means for a row holding `test = [[1]]`. The single-item unwrapping above is the
         // deliberate exception, for the one-row sub-query case.
-        return MultiValue.contains(left, right);
+        return containsValue((Collection<?>) left, right);
       }
 
       if (right instanceof Iterable)
@@ -93,7 +93,7 @@ public class ContainsCondition extends BooleanExpression {
       if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (!((Collection<?>) left).contains(next))
+          if (!containsValue((Collection<?>) left, next))
             return false;
         }
       }
@@ -156,6 +156,24 @@ public class ContainsCondition extends BooleanExpression {
 
   private static boolean isArray(final Object value) {
     return value != null && value.getClass().isArray();
+  }
+
+  /**
+   * True when the collection holds the value. A list or map is looked for as ONE element, compared under the numeric rule of
+   * {@code =} (a stored {@code [1L, 2L]} is the {@code [1, 2]} searched for) after the {@code Collection.contains()} that settles
+   * every identical element (issue #10448).
+   */
+  private static boolean containsValue(final Collection<?> collection, final Object value) {
+    if (collection.contains(value))
+      return true;
+    if (!(value instanceof List || value instanceof Map))
+      return false;
+    // only an element of the same kind can be that list or map: anything else was never equal to it, and is not asked
+    final boolean list = value instanceof List;
+    for (final Object o : collection)
+      if ((list ? o instanceof List : o instanceof Map) && QueryOperatorEquals.equals(o, value))
+        return true;
+    return false;
   }
 
   private boolean equalsInContainsSpace(final Object left, final Object right) {
