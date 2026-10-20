@@ -569,8 +569,10 @@ public interface Schema {
      * build committed an empty index whenever the writes it should cover were still pending.
      * <p>
      * A shared build cannot commit in chunks, so every entry stays queued until the caller commits. For a vector index
-     * over a large bucket that is one heavy entry per record held in memory, so such an index is best created in a
-     * request of its own. Kept as a predicate so a future family that cannot share has one place to say so.
+     * over a large bucket that is one heavy entry per record held in memory, which is why a build shares the caller's
+     * transaction only when that transaction has written to the buckets the build scans (issue #10450, see
+     * {@code IndexBuilder#buildSharesCallerTransaction}): a caller that wrote only elsewhere gets the chunked build of a
+     * transaction of its own. Kept as a predicate so a future family that cannot share has one place to say so.
      */
     public boolean buildCanShareCallerTransaction() {
       return true;
