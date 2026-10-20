@@ -245,6 +245,26 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     assertThat(count("R")).isZero();
   }
 
+  /**
+   * The property is written while the provisional record is pending, so the journal sees the write: it is a property assigned, not the
+   * maintenance of an edge list, and it stays when the edge that was taken back is gone.
+   */
+  @Test
+  void aPropertyWrittenWhileTheProvisionalRecordIsPendingStillRefusesTheCommit() {
+    database.begin();
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 15}) WITH v MATCH (m:T {k: 1}) SET m.note = 'x' CREATE (m)-[:R {w: 1}]->(v)").close(), ValidationException.class);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE note = 'x'")) {
+      assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
+    assertThat(count("V")).isZero();
+    assertThat(count("R")).isZero();
+  }
+
   /** The conservative paths together: a lightweight edge and a property on existing vertices stand beside a regular edge that is taken back. */
   @Test
   void aMixedStatementWhoseWritesPartlyStandStillRefusesTheCommit() {

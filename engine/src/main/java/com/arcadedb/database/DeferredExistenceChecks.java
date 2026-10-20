@@ -422,6 +422,13 @@ public class DeferredExistenceChecks {
    * <p>
    * Called once the provisional records are deleted, in the transaction the statement ran in; the counter never goes below what it
    * held when the statement started.
+   * <p>
+   * What has to hold for a give-back to be right, in one place: every lightweight edge the statement connects while a provisional
+   * record is pending is reported ({@link #lightEdgeConnected}); a write is classified property-less only when
+   * {@code MutableDocument.arePropertiesAssigned()} is still false when it is counted (the flag is reset by a save that reaches the
+   * page, never by the deferred update that is counted, and {@code aPropertyWrittenWhileTheProvisionalRecordIsPendingStillRefusesTheCommit}
+   * fails without it); a record created by the statement is given back only when it is deleted in the transaction or is an edge
+   * segment with no edge; and whatever cannot be shown is kept, which only ever refuses a commit that could have been allowed.
    */
   private void retractJournaledWrites() {
     if (journal == null || journalOverflowed || journal.isEmpty())
