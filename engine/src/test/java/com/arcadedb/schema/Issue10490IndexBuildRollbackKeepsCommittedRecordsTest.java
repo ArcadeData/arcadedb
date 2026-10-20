@@ -175,6 +175,66 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
         .isInstanceOf(DuplicatedKeyException.class);
   }
 
+  /**
+   * A record updated before the index existed and again after it: the second update diffs against the last indexed state of
+   * the record, and the reconciliation of the first one has to leave that state behind, or the entry it queued for the
+   * intermediate key stays in the index for good.
+   */
+  @Test
+  void aKeyUpdatedBeforeAndAgainAfterTheIndexWasCreatedLeavesNoStaleEntry() {
+    final String type = createTypeWithThreeCommittedRecords("TwiceUpd");
+
+    database.begin();
+    database.command("sql", "UPDATE " + type + " SET k = 5 WHERE k = 1");
+    database.command("sql", "CREATE INDEX ON " + type + " (k) NOTUNIQUE");
+    database.command("sql", "UPDATE " + type + " SET k = 7 WHERE k = 5");
+    database.commit();
+
+    assertThat(find("SELECT FROM %s WHERE k = 1", type)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 5", type)).as("the intermediate key").isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 7", type)).isEqualTo(1);
+    assertThat(entries(type)).isEqualTo(3L);
+  }
+
+  /** The same for a record the transaction created: created, updated, indexed, updated again. */
+  @Test
+  void aCreatedKeyUpdatedBeforeAndAgainAfterTheIndexWasCreatedLeavesNoStaleEntry() {
+    final String type = createTypeWithThreeCommittedRecords("TwiceNew");
+
+    database.begin();
+    database.command("sql", "INSERT INTO " + type + " SET k = 4, s = 'w4', tags = ['a4']");
+    database.command("sql", "UPDATE " + type + " SET k = 5 WHERE k = 4");
+    database.command("sql", "CREATE INDEX ON " + type + " (k) NOTUNIQUE");
+    database.command("sql", "UPDATE " + type + " SET k = 7 WHERE k = 5");
+    database.commit();
+
+    assertThat(find("SELECT FROM %s WHERE k = 4", type)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 5", type)).as("the intermediate key").isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 7", type)).isEqualTo(1);
+    assertThat(entries(type)).isEqualTo(4L);
+  }
+
+  /** An index that already existed keeps the diff base it had: the reconciliation of the new one must not replace it. */
+  @Test
+  void anIndexThatAlreadyExistedStillDiffsAgainstItsOwnLastState() {
+    final String type = createTypeWithThreeCommittedRecords("OtherIdx");
+    database.command("sql", "CREATE INDEX ON " + type + " (s) UNIQUE");
+
+    database.begin();
+    database.command("sql", "UPDATE " + type + " SET k = 5, s = 'x1' WHERE k = 1");
+    database.command("sql", "CREATE INDEX ON " + type + " (k) NOTUNIQUE");
+    database.command("sql", "UPDATE " + type + " SET k = 7, s = 'x2' WHERE k = 5");
+    database.commit();
+
+    assertThat(find("SELECT FROM %s WHERE k = 5", type)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 7", type)).isEqualTo(1);
+    assertThat(scan("SELECT FROM " + type + " WHERE s = 'w1'")).as("the first value of s").isZero();
+    assertThat(scan("SELECT FROM " + type + " WHERE s = 'x1'")).as("the intermediate value of s").isZero();
+    assertThat(scan("SELECT FROM " + type + " WHERE s = 'x2'")).isEqualTo(1);
+    for (final Index index : database.getSchema().getType(type).getAllIndexes(true))
+      assertThat(index.countEntries()).as(index.getName()).isEqualTo(3L);
+  }
+
   /** More writes than one chunk of the reconciliation holds: the chunk boundaries must not lose or repeat a record. */
   @Test
   void aTransactionWritingMoreThanOneChunkIsReconciledInFull() {

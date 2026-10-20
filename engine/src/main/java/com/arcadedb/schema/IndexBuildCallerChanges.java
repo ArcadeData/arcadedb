@@ -109,6 +109,11 @@ final class IndexBuildCallerChanges {
           indexer.removeFromIndex(index, rid, before);
         else
           indexer.updateDocument(before, pending, thisIndex);
+
+        // A record the caller wrote is updated again from here on against what the indexes hold for it now, not against what the
+        // committed buffer says: the next update must remove the entry queued above, not the one the buffer implies
+        if (pending != null)
+          indexer.snapshotAfterBuild(tx, pending, index);
       }
     }
   }

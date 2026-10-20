@@ -559,6 +559,65 @@ public class DocumentIndexer {
   }
 
   /**
+   * Records, as the state a later update of the record inside this transaction diffs against, what the indexes hold for
+   * {@code pending} once {@code built} has been built over its pending state (issue #10490).
+   * <p>
+   * An update diffs against {@link TransactionContext#getLastIndexedSnapshot} when there is one and against the committed
+   * buffer otherwise, and neither knows that an index created after the record was written has been brought up to its
+   * pending state: the next update would remove and add from the committed (or the creation) values, and the entry queued for
+   * the intermediate value would stay in the index for good. The snapshot built here takes the values of the properties
+   * {@code built} indexes from {@code pending}, and those of every other index from the diff source it had, an earlier snapshot
+   * or the buffer, since the reconciliation did not touch them. Nothing is recorded for a record the transaction did not
+   * write: its buffer is its pending state.
+   */
+  public void snapshotAfterBuild(final TransactionContext tx, final Document pending, final IndexInternal built) {
+    final RID rid = pending.getIdentity();
+    if (rid == null || tx.getWrittenRecord(rid) == null)
+      return;
+
+    final List<IndexInternal> indexes = getInvolvedIndexes(pending);
+    if (indexes == null || indexes.isEmpty())
+      return;
+
+    Document baseline = tx.getLastIndexedSnapshot(rid);
+    if (baseline == null)
+      try {
+        baseline = database.getOriginalDocument(pending);
+      } catch (final IllegalStateException e) {
+        // No buffer to read: the other indexes are given the pending values, the best state left to describe them
+        baseline = pending;
+      }
+
+    final Map<String, Object> values = new LinkedHashMap<>();
+    for (final IndexInternal index : indexes) {
+      final Document source = index == built ? pending : baseline;
+      final List<String> keyNames = index.getPropertyNames();
+      final String[] propertyNames = new String[keyNames.size()];
+      final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNames);
+
+      for (int i = 0; i < propertyNames.length; ++i) {
+        // the same keys updateDocument() stores: the root of a list read per item, the map as a whole, the value otherwise
+        final String key;
+        final Object value;
+        if (expansions[i] == KeyExpansion.LIST_ITEM) {
+          final int dot = propertyNames[i].indexOf('.');
+          key = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+          value = source.get(key);
+        } else if (expansions[i] == KeyExpansion.MAP_KEY || expansions[i] == KeyExpansion.MAP_VALUE) {
+          key = propertyNames[i];
+          value = source.get(key);
+        } else {
+          key = propertyNames[i];
+          value = getPropertyValue(source, key);
+        }
+        if (!values.containsKey(key) || index == built)
+          values.put(key, copyForSnapshot(value));
+      }
+    }
+    tx.setLastIndexedSnapshot(rid, new DetachedDocument(pending, values));
+  }
+
+  /**
    * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
    * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
    * retroactively change the snapshot and hide an index delta.
