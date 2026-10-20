@@ -2796,12 +2796,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     directoryLock.writeLock().lock();
     try {
-      final int colCount = columns.size();
       final int tsColIdx = findTimestampColumnIndex();
       final int[] filterColumns = tagFilter != null ? tagFilterColumns(tagFilter) : null;
 
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
-      final RebuiltBlocks rebuilt = new RebuiltBlocks();
+      final RebuildPlan rebuilt = new RebuildPlan(tsColIdx);
       long deleted = 0L;
 
       for (final BlockEntry entry : blockDirectory) {
@@ -2833,14 +2832,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (doomedCount == timestamps.length)
           continue;
 
-        rebuildWithout(entry, timestamps, doomed, tsColIdx, colCount, rebuilt);
+        rebuilt.add(entry, timestamps, doomed);
       }
 
       if (deleted == 0L)
         return 0L;
 
-      rewriteWithBlocks(retained, rebuilt.compressed, rebuilt.meta, rebuilt.stats, rebuilt.tagDistinctValues, rebuilt.granularities(),
-          0L);
+      // the rebuilt blocks are built as the rewrite reaches them, one at a time: a delete over a store of blocks that all mix tags
+      // does not hold the store
+      rewriteWithBlocks(retained, rebuilt);
       // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows. After
       // the rewrite, so a rewrite that failed does not make a walk fail for a change that never happened; a walk reads the epoch under
       // the directory read lock, which this write lock excludes until both are done
@@ -2880,25 +2880,65 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return doomed;
   }
 
-  /** The blocks a delete rebuilt from the rows that stay, as the lists {@link #rewriteWithBlocks} takes. */
-  private static final class RebuiltBlocks {
-    final List<byte[][]>   compressed        = new ArrayList<>();
-    final List<long[]>     meta              = new ArrayList<>();
-    final List<BlockStats> stats             = new ArrayList<>();
-    final List<String[][]> tagDistinctValues = new ArrayList<>();
-    private long[]         granularities     = new long[4];
-    private int            size;
+  /**
+   * The blocks a delete rebuilds from the rows that stay, PLANNED and not built: for each, the block it comes from, the rows that go
+   * and the place it takes in the time order, which is all {@link #rewriteWithBlocks} needs to order the file. A block is built when
+   * the rewrite reaches it, so the memory a delete holds is the plan - a bitset of a few bytes per thousand rows for each block - and
+   * one rebuilt block at a time, not every rebuilt block until the file is written.
+   */
+  private final class RebuildPlan implements NewBlocks {
+    private final int             tsColIdx;
+    private final List<BlockEntry> entries = new ArrayList<>();
+    private final List<BitSet>     doomed  = new ArrayList<>();
+    private final List<long[]>     metas   = new ArrayList<>();
 
-    /** The downsampling granularity of the block just added, which a rebuilt block keeps. */
-    void addGranularity(final long granularity) {
-      if (size == granularities.length)
-        granularities = Arrays.copyOf(granularities, size * 2);
-      granularities[size++] = granularity;
+    private RebuildPlan(final int tsColIdx) {
+      this.tsColIdx = tsColIdx;
     }
 
-    long[] granularities() {
-      return Arrays.copyOf(granularities, size);
+    /** Plans the block {@code entry} becomes without the rows in {@code doomedRows}, which are not all of them. */
+    void add(final BlockEntry entry, final long[] timestamps, final BitSet doomedRows) {
+      final int first = doomedRows.nextClearBit(0);
+      final int last = doomedRows.previousClearBit(timestamps.length - 1);
+      entries.add(entry);
+      doomed.add(doomedRows);
+      metas.add(new long[] { timestamps[first], timestamps[last], timestamps.length - doomedRows.cardinality() });
     }
+
+    @Override
+    public int size() {
+      return entries.size();
+    }
+
+    @Override
+    public long[] meta(final int index) {
+      return metas.get(index);
+    }
+
+    @Override
+    public NewBlock build(final int index) throws IOException {
+      final BlockEntry entry = entries.get(index);
+      // Read again, and not kept from the planning: the decoded timestamps of a block are eight bytes a row, more than the block
+      return rebuildWithout(entry, decompressTimestamps(entry, tsColIdx), doomed.get(index), tsColIdx, columns.size());
+    }
+  }
+
+  /**
+   * The blocks a rewrite of the sealed file adds to the ones it keeps. {@link #rewriteWithBlocks} needs the place of every one in the
+   * time order before it writes the first, and a block itself only when it writes it: a source that builds a block when asked holds
+   * none of them for longer than its own write.
+   */
+  private interface NewBlocks {
+    int size();
+
+    /** {@code {minTimestamp, maxTimestamp, sampleCount}} of block {@code index}. */
+    long[] meta(int index);
+
+    NewBlock build(int index) throws IOException;
+  }
+
+  /** A block ready to be written: its compressed columns, statistics, declared tag values and downsampling granularity. */
+  private record NewBlock(byte[][] compressed, BlockStats stats, String[][] tagDistinctValues, long granularityMs) {
   }
 
   /** The non-timestamp column indices a tag filter conditions on, ascending and without repeats. */
@@ -2910,11 +2950,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Adds to the lists the block {@code entry} becomes without the rows in {@code doomed}: every column decoded through the codec it
-   * was written with, the surviving rows picked, and the block's statistics and declared tag values recomputed from them.
+   * The block {@code entry} becomes without the rows in {@code doomed}: every column decoded through the codec it was written with,
+   * the surviving rows picked, and the block's statistics and declared tag values recomputed from them.
    */
-  private void rebuildWithout(final BlockEntry entry, final long[] timestamps, final BitSet doomed, final int tsColIdx,
-      final int colCount, final RebuiltBlocks out) throws IOException {
+  private NewBlock rebuildWithout(final BlockEntry entry, final long[] timestamps, final BitSet doomed, final int tsColIdx,
+      final int colCount) throws IOException {
     final int kept = timestamps.length - doomed.cardinality();
     final long[] keptTimestamps = new long[kept];
     int k = 0;
@@ -2962,11 +3002,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
     }
 
-    out.compressed.add(compressedCols);
-    out.meta.add(new long[] { keptTimestamps[0], keptTimestamps[kept - 1], kept });
-    out.stats.add(stats.build());
-    out.tagDistinctValues.add(tagDistinctValues);
-    out.addGranularity(entry.downsampledGranularityMs);
+    // a rebuilt block keeps the granularity of the block it comes from
+    return new NewBlock(compressedCols, stats.build(), tagDistinctValues, entry.downsampledGranularityMs);
   }
 
   /**
@@ -3521,6 +3558,31 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
       final List<String[][]> newTagDistinctValues, final long[] newBlocksGranularities, final long newBlocksGranularityMs)
       throws IOException {
+    rewriteWithBlocks(retained, new NewBlocks() {
+      @Override
+      public int size() {
+        return newCompressed.size();
+      }
+
+      @Override
+      public long[] meta(final int index) {
+        return newMeta.get(index);
+      }
+
+      @Override
+      public NewBlock build(final int index) {
+        return new NewBlock(newCompressed.get(index), newStats.get(index),
+            newTagDistinctValues != null ? newTagDistinctValues.get(index) : null,
+            newBlocksGranularities != null ? newBlocksGranularities[index] : newBlocksGranularityMs);
+      }
+    });
+  }
+
+  /**
+   * {@link #rewriteWithBlocks(List, List, List, List, List, long[], long)} over a source that builds each new block when the rewrite
+   * reaches it, so it holds it for as long as it takes to write it and no longer.
+   */
+  private void rewriteWithBlocks(final List<BlockEntry> retained, final NewBlocks newBlocks) throws IOException {
 
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
@@ -3529,11 +3591,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // always in ascending order (required by binary search in iterateRange/scanRange).
     // A negative index means a "new" (downsampled) block; non-negative means retained.
     record WriteSpec(long minTs, boolean retained, int idx) {}
-    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newCompressed.size());
+    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newBlocks.size());
     for (int i = 0; i < retained.size(); i++)
       writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
-    for (int b = 0; b < newCompressed.size(); b++)
-      writeOrder.add(new WriteSpec(newMeta.get(b)[0], false, b));
+    for (int b = 0; b < newBlocks.size(); b++)
+      writeOrder.add(new WriteSpec(newBlocks.meta(b)[0], false, b));
     writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
     // Build new directory in a local list — do NOT modify blockDirectory until after the
@@ -3546,12 +3608,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, newDirectory);
         } else {
           final int b = spec.idx();
-          final long[] meta = newMeta.get(b);
-          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-              newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, newBlockId());
+          final long[] meta = newBlocks.meta(b);
+          final NewBlock block = newBlocks.build(b);
+          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
+              colCount, block.tagDistinctValues(), newBlockId());
           // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
-          entry.downsampledGranularityMs = newBlocksGranularities != null ? newBlocksGranularities[b] : newBlocksGranularityMs;
+          entry.downsampledGranularityMs = block.granularityMs();
           newDirectory.add(entry);
         }
       }

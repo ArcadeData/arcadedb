@@ -400,6 +400,51 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
     assertMatchesModel();
   }
 
+  /**
+   * A delete over a store of many blocks that all mix tags rebuilds every one of them, one at a time as the rewrite reaches it: each
+   * keeps its place in the time order, retained blocks stay between rebuilt ones, and none is lost, duplicated or left declaring a tag
+   * it no longer holds.
+   */
+  @Test
+  void aTagDeleteOverManyMixedBlocksRebuildsEachInPlace() throws Exception {
+    create(1);
+    final int blocks = 25;
+    final int perBlock = 40;
+    for (int b = 0; b < blocks; b++) {
+      append(b * perBlock, (b + 1) * perBlock);
+      engine().compactAll();
+    }
+    final TimeSeriesSealedStore sealed = engine().getShard(0).getSealedStore();
+    final int blocksBefore = sealed.getBlockCount();
+    assertThat(blocksBefore).as("sealed blocks before").isGreaterThanOrEqualTo(blocks);
+    assertMatchesModel();
+
+    // every block holds all four hosts: all of them are rebuilt
+    final long expectedOne = model.stream().filter(s -> s.host.equals("h1")).count();
+    model.removeIf(s -> s.host.equals("h1"));
+    try (final ResultSet rs = database.command("sql", "DELETE FROM M WHERE host = 'h1'")) {
+      assertThat(rs.next().<Long>getProperty("count")).isEqualTo(expectedOne);
+    }
+    assertThat(sealed.getBlockCount()).as("no block disappears: each keeps the other hosts").isEqualTo(blocksBefore);
+    assertMatchesModel();
+
+    // the first half of the time only: the blocks of the first half are rebuilt, the ones of the second are retained between them
+    final long half = BASE + (blocks * perBlock / 2) * 1_000L;
+    final Predicate<Sample> firstHalfOfOne = s -> s.host.equals("h2") && s.ts < half;
+    final long expectedTwo = model.stream().filter(firstHalfOfOne).count();
+    model.removeIf(firstHalfOfOne);
+    try (final ResultSet rs = database.command("sql", "DELETE FROM M WHERE host = 'h2' AND ts < " + half)) {
+      assertThat(rs.next().<Long>getProperty("count")).isEqualTo(expectedTwo);
+    }
+    assertThat(sealed.getBlockCount()).isEqualTo(blocksBefore);
+    assertMatchesModel();
+
+    // and the file takes samples, and a compaction, afterwards
+    append(blocks * perBlock, blocks * perBlock + 100);
+    engine().compactAll();
+    assertMatchesModel();
+  }
+
   /** The rows {@code [from, to)} of a bucket of {@code rows} rows holding {@code perPage} per page, by index. */
   private record RowRange(String what, BiFunction<Integer, Integer, int[]> of) {
     @Override
