@@ -239,6 +239,29 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
   }
 
   /**
+   * A hub is billed for its own degree, not for the mean: a read from a vertex of a few edges leaves the view unbuilt, a read from
+   * one with thousands of edges visits more entries than the view costs and builds it, and both answer what the records answer.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aReadFromAHubIsBilledForItsRealDegree(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    database.transaction(() -> {
+      for (int i = 0; i < 6000; i++)
+        vertices.get(0).asVertex().modify().newEdge("K", vertices.get(1 + random.nextInt(VERTICES - 1)));
+    });
+    awaitView(view);
+    assertThat(view.pinned().getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K")).isPositive();
+
+    assertThat(pointCount(5)).isEqualTo(pointCountWithoutTheView(view, 5));
+    assertThat(view.pinned().getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K")).as("a vertex of a few edges does not build it")
+        .isPositive();
+
+    assertThat(pointCount(0)).isEqualTo(pointCountWithoutTheView(view, 0));
+    assertThat(view.pinned().getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K")).as("the hub's 6000 edges pay for it").isZero();
+  }
+
+  /**
    * The renumbering of a view with deleted vertices asks the view once: the visits of a read are counted once, so the view is
    * built by the read that brings the sum to its cost, not earlier.
    */

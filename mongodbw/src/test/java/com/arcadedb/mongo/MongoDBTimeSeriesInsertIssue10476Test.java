@@ -21,6 +21,10 @@ package com.arcadedb.mongo;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoClient;
@@ -223,6 +227,22 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
         new ClassCastException(), new IndexOutOfBoundsException()))
       assertThatThrownBy(() -> MongoTimeSeriesInserts.refusal(new CommandExecutionException("Error appending", fault))).as(
           fault.getClass().getSimpleName()).isInstanceOf(CommandExecutionException.class);
+
+    // a value the type refuses is the document's, with the code MongoDB gives a bad value
+    for (final RuntimeException invalid : List.of(new ValidationException("v is mandatory"), new IllegalArgumentException("bad v"))) {
+      final MongoServerError error = MongoTimeSeriesInserts.refusal(invalid);
+      assertThat(error.getCode()).as(invalid.getClass().getSimpleName()).isEqualTo(ErrorCode.BadValue.getValue());
+    }
+
+    // a refusal of our own is returned as it is
+    final MongoServerError own = new MongoServerError(ErrorCode.BadValue, "no _id");
+    assertThat(MongoTimeSeriesInserts.refusal(own)).isSameAs(own);
+
+    // what is not the document's fails the command: a conflict to retry, a timeout, a lack of permission, a schema that changed
+    for (final RuntimeException transientOrNot : List.of(new ConcurrentModificationException("page changed"),
+        new TimeoutException("shard busy"), new SecurityException("not allowed"), new SchemaException("type dropped")))
+      assertThatThrownBy(() -> MongoTimeSeriesInserts.refusal(transientOrNot)).as(transientOrNot.getClass().getSimpleName())
+          .isSameAs(transientOrNot);
   }
 
   private List<Sample> samples() {

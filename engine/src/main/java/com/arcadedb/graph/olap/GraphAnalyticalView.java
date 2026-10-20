@@ -257,7 +257,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
     final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
     // The entries the reads that did not take a neighbour view of this snapshot visited per node instead, by the key of the view
-    // (issue #10471): the view that was never built is built once they add up to what it costs, see neighborViewForVisits()
+    // (issue #10471): the view that was never built is built once they add up to what it costs, see neighborViewForVisits(). Like
+    // the views, it lives and dies with the snapshot: a commit replaces the snapshot and the reads start from nothing
     final Map<String, LongAdder> neighborViewDemand = new ConcurrentHashMap<>();
     // Every edge type this snapshot answers for, as the array the views are asked with (see slicesOf): built on first use. Two
     // threads may both build it; either array is right

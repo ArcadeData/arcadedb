@@ -76,6 +76,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private static final int PARALLEL_THRESHOLD = 8192;
   // The paths each walker turns into rows per round of the row path: what bounds the rows held at once (issue #9738)
   private static final int ROWS_PER_ROUND     = 16_384;
+  // Up to this many sources the entries of the first hop are counted per source to estimate what the chain visits, above it the mean
+  // degree stands for them: counting is a lookup each, worth it for a point read and not for a scan
+  private static final int COUNTED_SOURCES    = 1024;
 
   private final GraphTraversalProvider provider;
 
@@ -268,7 +271,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices). Asked for after the
     // sources are known: a view packs the adjacency of the whole graph, and a chain that starts from a handful of vertices does
     // not pay for building one while the view has an overlay, which every commit replaces (issue #10471)
-    final long[] hopVisits = expectedVisits(totalSources);
+    final long[] hopVisits = expectedVisits(sourceNodeIds, totalSources);
     final NeighborView[] hopViews = new NeighborView[chainLength];
     // From the last hop back: it expects the most entries, so it is the one that builds a view the hops before it share (two hops
     // of one edge type read the same view), and they then find it built instead of each adding to the demand for it
@@ -879,20 +882,39 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   }
 
   /**
-   * The entries each hop is expected to visit when the chain starts from {@code sources} vertices: the fan-out of the hops walked
-   * so far, multiplied in. A provider that does not know its degrees (or a hop's types) makes the hop expect every entry there
-   * is, so the view is asked for as it always was. A target label that thins a hop is ignored, which overestimates: a view
-   * that was not worth building is built, never the reverse.
+   * The entries each hop is expected to visit when the chain starts from the first {@code sources} of {@code sourceNodeIds}: the
+   * entries the sources really have for the first hop (a hub is billed for its own degree, not for the mean), and for each hop
+   * after it the fan-out of the hops walked so far, multiplied in at the mean degree. Counting the sources is a lookup each, so
+   * it is done for a point read and not for a scan of thousands of vertices, which is billed at the mean. A provider that does
+   * not know its degrees (or a hop's types) makes the hop expect every entry there is, so the view is asked for as it always
+   * was. A target label that thins a hop is ignored, which overestimates: a view that was not worth building is built, never
+   * the reverse.
    */
-  private long[] expectedVisits(final long sources) {
+  private long[] expectedVisits(final int[] sourceNodeIds, final int sources) {
     final long[] visits = new long[hopDirections.length];
     double reached = sources;
     for (int i = 0; i < visits.length; i++) {
-      final double degree = provider.getMeanDegree(hopDirections[i], hopEdgeTypes[i]);
-      reached = degree < 0 ? Long.MAX_VALUE : Math.min(reached * degree, Long.MAX_VALUE);
+      double entries = i == 0 && sources <= COUNTED_SOURCES ? countedEntries(sourceNodeIds, sources) : -1;
+      if (entries < 0) {
+        final double degree = provider.getMeanDegree(hopDirections[i], hopEdgeTypes[i]);
+        entries = degree < 0 ? Long.MAX_VALUE : reached * degree;
+      }
+      reached = Math.min(entries, Long.MAX_VALUE);
       visits[i] = (long) reached;
     }
     return visits;
+  }
+
+  /** The entries of the first hop the sources have, -1 when the provider cannot count them. */
+  private double countedEntries(final int[] sourceNodeIds, final int sources) {
+    long entries = 0;
+    for (int s = 0; s < sources; s++) {
+      final long degree = provider.countEdges(sourceNodeIds[s], hopDirections[0], hopEdgeTypes[0]);
+      if (degree < 0)
+        return -1;
+      entries += degree;
+    }
+    return entries;
   }
 
   private TrackedTypes resolveTrackedTypes(final Database database, final long[] hopVisits) {

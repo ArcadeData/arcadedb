@@ -558,7 +558,9 @@ public interface GraphTraversalProvider {
 
   /**
    * The mean number of adjacency entries a node has in {@code direction} over {@code edgeTypes}, or {@code -1} when the provider
-   * does not know. What a read multiplies by the nodes it starts from to estimate the entries it will visit.
+   * does not know. What a read multiplies by the nodes it starts from to estimate the entries it will visit. A mean says nothing of
+   * a hub: a read that starts from few nodes counts their entries itself ({@link #countEdges}) for its first hop, and only the
+   * hops after it are estimated by the mean.
    */
   default double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
     return -1.0;

@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.TimeSeriesType;
@@ -28,7 +29,6 @@ import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
-import de.bwaldvogel.mongo.exception.MongoServerException;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -60,6 +60,10 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MongoTimeSeriesInserts {
+  /** What a {@link CommandExecutionException} wraps when the server failed, and not the document: the disk, or the code itself. */
+  private static final List<Class<? extends Throwable>> SERVER_FAULTS = List.of(IOException.class, NullPointerException.class,
+      IllegalStateException.class, ClassCastException.class, IndexOutOfBoundsException.class);
+
   private MongoTimeSeriesInserts() {
   }
 
@@ -117,25 +121,37 @@ final class MongoTimeSeriesInserts {
   }
 
   /**
-   * The failure as MongoDB reports a document it rejects. The engine's refusal of a sample is the caller's doing, though most of
-   * its refusals (an undeclared key, a value the column cannot hold) are not typed as such, so every {@link
-   * CommandExecutionException} is one - but for the ones that wrap an I/O error or a fault of the code itself (a null, a state, a
-   * cast, an index), which are the server's: they fail the command and are not blamed on the document, so an ordered batch does
-   * not stop on a bug as if on a bad sample.
+   * The failure as MongoDB reports a document it rejects, as a write error with its index. Only what says the document is wrong is
+   * one: our own refusal of its {@code _id}, a value the type refuses ({@link ErrorCategory#VALIDATION}), and the engine's refusal
+   * of a sample (an undeclared key, a value the column cannot hold), which carries no type of its own and so is a {@link
+   * CommandExecutionException} that wraps no fault of the server (see {@link #SERVER_FAULTS}).
+   * <p>
+   * Everything else is not the document's, and fails the command with the code MongoDB gives it, the samples before it stored:
+   * a conflict to retry, a timeout, a stop on request, a lack of permission, a schema that changed meanwhile, an I/O error, a
+   * fault of the code. An ordered batch does not stop on those as on a bad sample, and a transient failure is not blamed on the
+   * client's data.
+   *
+   * @throws RuntimeException {@code e} itself, when it is not a refusal of the document
    */
   static MongoServerError refusal(final RuntimeException e) {
-    final MongoServerException wire = MongoDBDatabaseWrapper.wireException(e.getMessage(), e);
-    if (wire instanceof MongoServerError coded)
+    if (e instanceof MongoServerError coded)
       return coded;
-    if (e instanceof CommandExecutionException && !isFaultOfTheServer(e))
-      return new MongoServerError(ErrorCode.BadValue, e.getMessage());
-    throw e;
+    return switch (ErrorCategory.of(e)) {
+      case VALIDATION -> new MongoServerError(ErrorCode.BadValue, e.getMessage());
+      case SERVER -> {
+        if (e instanceof CommandExecutionException && !isFaultOfTheServer(e))
+          yield new MongoServerError(ErrorCode.BadValue, e.getMessage());
+        throw e;
+      }
+      default -> throw e;
+    };
   }
 
   private static boolean isFaultOfTheServer(final RuntimeException e) {
-    return CauseChain.contains(e, IOException.class) || CauseChain.contains(e, NullPointerException.class)
-        || CauseChain.contains(e, IllegalStateException.class) || CauseChain.contains(e, ClassCastException.class)
-        || CauseChain.contains(e, IndexOutOfBoundsException.class);
+    for (final Class<? extends Throwable> fault : SERVER_FAULTS)
+      if (CauseChain.contains(e, fault))
+        return true;
+    return false;
   }
 
   private static Document writeError(final int index, final MongoServerError error) {
