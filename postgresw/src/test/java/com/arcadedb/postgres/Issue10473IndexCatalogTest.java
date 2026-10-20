@@ -497,6 +497,72 @@ class Issue10473IndexCatalogTest {
     assertThat(column(answer, "def")).containsExactly("CREATE INDEX \"Plain[order]\" ON \"Plain\" USING btree (\"order\")");
   }
 
+  // ---------------------------------------------------------------- the JDBC driver
+
+  /** The set-returning function the JDBC driver lists an index's key columns with: a row per element, the calls in step. */
+  @Test
+  void expandarrayTurnsAnIndexIntoARowPerKeyColumn() {
+    final PostgresCatalog.Answer answer = resolve("""
+        select ci.relname as idx, (information_schema._pg_expandarray(i.indkey)).n as position,
+               (information_schema._pg_expandarray(i.indkey)).x as attnum
+        from pg_class ci join pg_index i on ci.oid = i.indexrelid order by 1, 2""");
+
+    assertThat(column(answer, "idx")).containsExactly("Big[id]", "Big[name,v]", "Big[name,v]");
+    assertThat(column(answer, "position")).containsExactly(1, 1, 2);
+    assertThat(column(answer, "attnum")).containsExactly(1, 2, 3);
+  }
+
+  /** The driver's {@code getPrimaryKeys} wraps the expansion in a derived table and reads {@code (result.KEYS).x} outside it. */
+  @Test
+  void aMemberOfAnExpandedPairIsReadFromADerivedTable() {
+    final PostgresCatalog.Answer answer = resolve("""
+        SELECT result.TABLE_NAME, result.COLUMN_NAME, result.KEY_SEQ, result.IDX FROM
+         (SELECT ct.relname AS TABLE_NAME, a.attname AS COLUMN_NAME, (information_schema._pg_expandarray(i.indkey)).n AS KEY_SEQ,
+                 ci.relname AS IDX, information_schema._pg_expandarray(i.indkey) AS KEYS, a.attnum AS A_ATTNUM
+          FROM pg_catalog.pg_class ct JOIN pg_catalog.pg_attribute a ON (ct.oid = a.attrelid)
+               JOIN pg_catalog.pg_index i ON (a.attrelid = i.indrelid) JOIN pg_catalog.pg_class ci ON (ci.oid = i.indexrelid)
+          WHERE true AND ct.relname = 'Big') result
+        where result.A_ATTNUM = (result.KEYS).x ORDER BY result.table_name, result.idx, result.key_seq""");
+
+    assertThat(column(answer, "column_name")).containsExactly("id", "name", "v");
+    assertThat(column(answer, "key_seq")).containsExactly(1, 1, 2);
+    assertThat(column(answer, "idx")).containsExactly("Big[id]", "Big[name,v]", "Big[name,v]");
+  }
+
+  @Test
+  void anArrayWithNoElementProducesNoRow() {
+    final PostgresCatalog.Answer answer = resolve(
+        "select (information_schema._pg_expandarray(i.indexprs)).n as position from pg_index i");
+
+    assertThat(answer.rows).isEmpty();
+  }
+
+  /** The driver reads whether an index key is descending from the bit of {@code indoption}, a vector subscripted from 0. */
+  @Test
+  void theBitOfAnIndexOptionIsReadWithTheBitwiseOperator() {
+    final PostgresCatalog.Answer answer = resolve("""
+        select CASE i.indoption[0] & 1::smallint WHEN 1 THEN 'D' ELSE 'A' END as direction, 6 & 3 as bits, 5 & 1 as odd
+        from pg_index i where i.indnatts = 1""");
+
+    assertThat(column(answer, "direction")).containsExactly("A");
+    assertThat(column(answer, "bits")).containsExactly(2L);
+    assertThat(column(answer, "odd")).containsExactly(1L);
+  }
+
+  /** SQL's TRIM, with the side and the characters, which the driver strips the quotes of an index column with. */
+  @Test
+  void trimTakesTheCharactersNamedOffTheSideNamed() {
+    final PostgresCatalog.Answer answer = resolve("""
+        select trim(both '"' from '"Name"') as both_sides, trim(leading '"' from '"Name"') as leading_only,
+               trim(trailing '"' from '"Name"') as trailing_only, trim(both from '  pad ') as spaces, trim('  pad ') as plain,
+               btrim('xxpadxx', 'x') as characters
+        from pg_class where relname = 'Big'""");
+
+    assertThat(answer.rows.get(0)).containsEntry("both_sides", "Name").containsEntry("leading_only", "Name\"")
+        .containsEntry("trailing_only", "\"Name").containsEntry("spaces", "pad").containsEntry("plain", "pad")
+        .containsEntry("characters", "pad");
+  }
+
   // ---------------------------------------------------------------- the join
 
   @Test

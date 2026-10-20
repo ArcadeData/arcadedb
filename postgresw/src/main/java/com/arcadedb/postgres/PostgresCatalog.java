@@ -490,10 +490,25 @@ public class PostgresCatalog {
       if (!containsSetOperation(tokens))
         return null;
       final Answer answer = resolveBounded(tokens, new Context(database, userName), true);
-      return answer == DECLINED ? null : answer;
+      return answer == DECLINED ? null : textOfVectors(answer);
     }
 
-    return resolveBounded(tokens, new Context(database, userName), false);
+    return textOfVectors(resolveBounded(tokens, new Context(database, userName), false));
+  }
+
+  /**
+   * The answer with its {@code int2vector} and {@code oidvector} values (an index's {@code indkey}) as the text a client reads
+   * them as, the values separated by a space. Done on the answer of the statement, not of a derived table or a sub-select: those
+   * go on reading them as the arrays they are, so that {@code indkey[0]} is the first key.
+   */
+  private static Answer textOfVectors(final Answer answer) {
+    if (answer == null || answer.rows == null)
+      return answer;
+    for (final Map<String, Object> row : answer.rows)
+      for (final Map.Entry<String, Object> column : row.entrySet())
+        if (column.getValue() instanceof PostgresCatalogIndexes.Vector vector)
+          column.setValue(vector.toString());
+    return answer;
   }
 
   /**
@@ -1961,7 +1976,8 @@ public class PostgresCatalog {
 
     final List<Map<String, Object>> answered;
     if (projection.aggregated || statement.groupBy != null) {
-      if (!windows.isEmpty())
+      // a set-returning call under a grouping would have to be expanded before the rows are grouped
+      if (!windows.isEmpty() || !projection.expansions.isEmpty())
         return DECLINED;
       answered = aggregate(statement, projection, surviving, from, context, columnsByRelation, outer);
       if (answered == null)
@@ -1970,20 +1986,37 @@ public class PostgresCatalog {
       answered = new ArrayList<>(surviving.size());
       for (int i = 0; i < surviving.size(); i++) {
         final Joined joined = surviving.get(i);
-        final Map<String, Object> projected = projectRow(projection,
-            new RowResolver(joined.row(), joined.nulled(), from, context, outer).withWindows(windows, i));
-        if (projected == null)
-          // A projected column this catalog cannot compute: answering the rest of the row would be answering
-          // a different question from the one asked.
-          return DECLINED;
-        answered.add(projected);
+        final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer).withWindows(windows, i);
+
+        // A set-returning call turns the row into one for each element of its array, the calls of the row in step: the row
+        // is projected as many times as the longest of them says, none for an array that has no element
+        int projections = 1;
+        if (!projection.expansions.isEmpty()) {
+          projections = 0;
+          for (final PostgresCatalogExpression.ExpandArray expansion : projection.expansions) {
+            final int rows = expansion.rows(resolver);
+            if (rows < 0)
+              return DECLINED;
+            projections = Math.max(projections, rows);
+          }
+        }
+
+        for (int position = 0; position < projections; position++) {
+          final Map<String, Object> projected = projectRow(projection, resolver.withExpansion(position));
+          if (projected == null)
+            // A projected column this catalog cannot compute: answering the rest of the row would be answering
+            // a different question from the one asked.
+            return DECLINED;
+          answered.add(projected);
+        }
       }
 
       // With no rows to project - an empty database, or a filter that matched nothing - the projection was
       // never evaluated, so a column this catalog cannot produce would go unnoticed and the client would be
       // told the query succeeded. Evaluate it once against an all-null row of the same shape to find out.
       if (answered.isEmpty() && !neverHasRows && projectRow(projection,
-          new RowResolver(probeRow(from, columnsByRelation), null, from, context, outer).withWindows(windows, 0)) == null)
+          new RowResolver(probeRow(from, columnsByRelation), null, from, context, outer).withWindows(windows, 0)
+              .withExpansion(0)) == null)
         return DECLINED;
     }
 
@@ -2016,8 +2049,7 @@ public class PostgresCatalog {
       final Object value = item.expression.evaluate(resolver);
       if (value == PostgresCatalogExpression.UNKNOWN)
         return null;
-      // an int2vector or oidvector is read as text by a client, its values separated by a space
-      projected.put(item.alias, value instanceof PostgresCatalogIndexes.Vector ? value.toString() : value);
+      projected.put(item.alias, value);
     }
     return projected;
   }
@@ -2228,7 +2260,9 @@ public class PostgresCatalog {
       for (final Map<String, Object> row : rows) {
         final Object value = row.get(key);
         if (value != null) {
-          final PostgresType sampled = PostgresType.getTypeForValue(value);
+          // an int2vector or oidvector travels as text, see textOfVectors
+          final PostgresType sampled = value instanceof PostgresCatalogIndexes.Vector ? PostgresType.VARCHAR :
+              PostgresType.getTypeForValue(value);
           type = sampled.isArrayType() || sampled.isNativeScalarType() ? sampled : PostgresType.VARCHAR;
           break;
         }
@@ -2350,8 +2384,13 @@ public class PostgresCatalog {
     }
   }
 
-  /** A parsed projection, and whether it aggregates - which turns the rows it is evaluated over into groups. */
-  private record Projection(List<ProjectionItem> items, boolean aggregated) {
+  /**
+   * A parsed projection, and whether it aggregates - which turns the rows it is evaluated over into groups.
+   *
+   * @param expansions the set-returning calls it holds, each of which turns a row into one for every element of its array
+   */
+  private record Projection(List<ProjectionItem> items, boolean aggregated,
+                            List<PostgresCatalogExpression.ExpandArray> expansions) {
     List<String> keys() {
       final List<String> keys = new ArrayList<>(items.size());
       for (final ProjectionItem item : items)
@@ -2367,6 +2406,7 @@ public class PostgresCatalog {
       return null;
 
     final List<ProjectionItem> projection = new ArrayList<>(items.size());
+    final List<PostgresCatalogExpression.ExpandArray> expansions = new ArrayList<>();
     final Set<String> keys = new HashSet<>();
     boolean aggregated = false;
 
@@ -2398,6 +2438,7 @@ public class PostgresCatalog {
       if (expression == null)
         return null;
       aggregated |= parser.isAggregated();
+      expansions.addAll(parser.expansions());
 
       String alias = null;
       if (!parser.atEnd()) {
@@ -2426,7 +2467,7 @@ public class PostgresCatalog {
       projection.add(new ProjectionItem(expression, uniqueColumnKey(alias, keys)));
     }
 
-    return new Projection(projection, aggregated);
+    return new Projection(projection, aggregated, expansions);
   }
 
   private static String defaultAlias(final PostgresCatalogExpression expression) {
@@ -2482,6 +2523,8 @@ public class PostgresCatalog {
 
     private Map<PostgresCatalogExpression.WindowCall, Object[]> windows;
     private int                                                 rowIndex;
+    /** Which row of its set-returning calls the projection is on, -1 when it is on none, see {@link #withExpansion}. */
+    private int                                                 expansion = -1;
     /** The rows an aggregate is computed over, null when this resolver is not evaluating a group. */
     private List<Joined>                                        group;
 
@@ -2503,6 +2546,17 @@ public class PostgresCatalog {
     RowResolver withGroup(final List<Joined> group) {
       this.group = group;
       return this;
+    }
+
+    /** The row being projected is the {@code position}th (from 0) a set-returning call of the projection produces. */
+    RowResolver withExpansion(final int position) {
+      this.expansion = position;
+      return this;
+    }
+
+    @Override
+    public int expansion() {
+      return expansion;
     }
 
     @Override
