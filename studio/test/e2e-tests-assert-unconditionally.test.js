@@ -268,8 +268,9 @@ function callbackBody(masked, openParen, closeParen) {
 const DECLARATION_HEAD = /^\s*['"`]/;
 
 // Every test(...) / test.only(...) / test.fixme(...) declaration (test.skip has no body to run): its title, line, the number
-// of expect(...) calls its body runs unconditionally, and whether the body could not be analysed at all. A declaration is
-// never dropped: a body the scanner cannot read is reported as `unanalysable`, so the suite fails instead of shrinking
+// of expect(...) calls its body runs unconditionally, whether the body could not be analysed at all, and whether the title
+// is a literal. A declaration is never dropped: a body the scanner cannot read is reported as `unanalysable`, so the suite
+// fails instead of shrinking
 function scanTests(src) {
   const masked = maskNonCode(src);
   const tests = [];
@@ -283,22 +284,23 @@ function scanTests(src) {
     const title = (/^\s*(['"`])((?:\\.|(?!\1).)*)\1/.exec(src.substring(openParen + 1)) || [])[2] || "(unnamed)";
     const line = lineOf(src, m.index);
     const body = callbackBody(masked, openParen, closeParen);
+    const literalTitle = DECLARATION_HEAD.test(masked.substring(openParen + 1, closeParen));
     // `test(` and `test.only(` only ever declare. test.fixme / test.fail / test.slow declare when they open with a title or
     // carry their body after the first argument (a computed title: test.fail(name, async () => {...})); they annotate
     // otherwise, even when the condition is a function of the fixtures: test.fixme(({ browserName }) => ..., "why")
     const annotates = /\.\s*(?:fixme|fail|slow)\s*\($/.test(m[0])
-      && !DECLARATION_HEAD.test(masked.substring(openParen + 1, closeParen))
+      && !literalTitle
       && (body === null || body[2] < argumentEnd(masked, openParen + 1, closeParen));
     if (annotates) {
       header.lastIndex = closeParen;
       continue;
     }
     if (body === null) {
-      tests.push({ title, line, assertions: 0, unanalysable: true });
+      tests.push({ title, line, assertions: 0, unanalysable: true, literalTitle });
       header.lastIndex = closeParen;
       continue;
     }
-    tests.push({ title, line, assertions: countOwnAssertions(masked, body[0], body[1]), unanalysable: false });
+    tests.push({ title, line, assertions: countOwnAssertions(masked, body[0], body[1]), unanalysable: false, literalTitle });
     // a test(...) declared inside this one is not visited (Playwright refuses it at run time); countDeclarations sees it, so
     // the suite's cross-check reports the gap
     header.lastIndex = closeParen;
@@ -313,6 +315,13 @@ function scanTests(src) {
 // counted, so the scan, not the census, is what catches that one (it reports it as unanalysable when it has no inline body)
 function countDeclarations(src) {
   return (maskNonCode(src).match(/(?<![\w.])test(?:\s*\.\s*(?:only|fixme|fail|slow))?\s*\(\s*['"`]/g) || []).length;
+}
+
+// The two counts of one source, compared like for like: the declarations the scan returned with a literal title (a
+// computed-title test is in the scan but cannot be in the census) against the census. They are compared per source, never
+// summed over several: an extra computed-title entry in one spec must not cancel a declaration missed in another
+function censusGap(src) {
+  return { scanned: scanTests(src).filter((t) => t.literalTitle).length, declared: countDeclarations(src) };
 }
 
 // --- The scanner ---------------------------------------------------------------------------------------------------
@@ -603,28 +612,49 @@ test("the census counts a declaration the scan steps over, so the suite's cross-
   assert.equal(scanTests(spread).length, 2);
 });
 
+test("a computed-title test cannot cancel a literal-title declaration the scan missed", () => {
+  // the census counts literal titles only, so the two sides are compared on literal titles, one source at a time: summed
+  // over the suite, the extra entry of a computed-title test would hide the nested declaration the scan never visited
+  const src = `
+    test(name, async () => { expect(1).toBe(1); });
+    test('outer', async () => {
+      expect(1).toBe(1);
+      test('inner', async () => { expect(1).toBe(1); });
+    });
+  `;
+  assert.equal(scanTests(src).length, 2);
+  assert.deepEqual(censusGap(src), { scanned: 1, declared: 2 });
+
+  const agreeing = `
+    test(name, async () => { expect(1).toBe(1); });
+    test('plain', async () => { expect(1).toBe(1); });
+    test.fail(title, async () => { expect(1).toBe(1); });
+  `;
+  assert.deepEqual(censusGap(agreeing), { scanned: 1, declared: 1 });
+});
+
 // --- The suite -----------------------------------------------------------------------------------------------------
 
 test("every end-to-end test asserts unconditionally", () => {
   const specs = fs.readdirSync(SPEC_DIR).filter((f) => f.endsWith(".spec.ts")).sort();
   assert.ok(specs.length > 0, "the e2e specs are read");
 
-  let total = 0;
   let declared = 0;
   const offenders = [];
   for (const spec of specs) {
     const src = fs.readFileSync(path.join(SPEC_DIR, spec), "utf8");
-    declared += countDeclarations(src);
+    const gap = censusGap(src);
+    declared += gap.declared;
+    assert.equal(gap.scanned, gap.declared, `e2e-studio/tests/${spec}: the scan saw ${gap.scanned} tests with a literal title, the census counts `
+      + `${gap.declared}. A declaration nested inside another test's body is skipped by the scan, and a title the scanner cannot see `
+      + "would shrink the suite it checks without failing the build.");
     for (const t of scanTests(src)) {
-      total++;
       if (t.unanalysable) offenders.push(`e2e-studio/tests/${spec}:${t.line}  ${t.title}  (the body is not an inline function, so it cannot be analysed)`);
       else if (t.assertions === 0) offenders.push(`e2e-studio/tests/${spec}:${t.line}  ${t.title}`);
     }
   }
   assert.ok(declared > 0, "the census finds the suite's tests");
-  assert.ok(total >= declared, `the scan must see every test the census counts (scanned ${total}, declared ${declared}): a shape the scanner `
-    + "stops seeing would otherwise shrink the suite it checks without failing the build");
-  assert.deepEqual(offenders, [], "these tests run no expect() at their own nesting level: an assertion behind an if, try, catch, "
+  assert.deepEqual(offenders, [],"these tests run no expect() at their own nesting level: an assertion behind an if, try, catch, "
     + "loop, callback, &&, || or ?: (braces or not) is skipped exactly when the feature under test is missing, so the test cannot fail. "
     + "Drive the real control and assert unconditionally, or delete the probe and let the missing control fail the test.");
 });
