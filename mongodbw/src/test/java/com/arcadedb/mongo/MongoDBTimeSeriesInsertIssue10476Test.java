@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoClient;
@@ -30,11 +31,14 @@ import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.InsertManyOptions;
 import org.bson.Document;
+import de.bwaldvogel.mongo.exception.ErrorCode;
+import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -206,6 +210,19 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
     plain.insertOne(new Document("a", 1));
 
     assertThat(plain.countDocuments()).isEqualTo(1);
+  }
+
+  /** A refusal of a sample is the document's; a fault of the code or of the disk is the server's and fails the command. */
+  @Test
+  void onlyTheRefusalsOfASampleAreBlamedOnTheDocument() {
+    final MongoServerError refused = MongoTimeSeriesInserts.refusal(new CommandExecutionException("property 'x' is not a declared column"));
+    assertThat(refused.getCode()).isEqualTo(ErrorCode.BadValue.getValue());
+    assertThat(refused.getMessage()).contains("not a declared column");
+
+    for (final Throwable fault : List.of(new IOException("disk"), new NullPointerException(), new IllegalStateException("closed"),
+        new ClassCastException(), new IndexOutOfBoundsException()))
+      assertThatThrownBy(() -> MongoTimeSeriesInserts.refusal(new CommandExecutionException("Error appending", fault))).as(
+          fault.getClass().getSimpleName()).isInstanceOf(CommandExecutionException.class);
   }
 
   private List<Sample> samples() {

@@ -146,6 +146,19 @@ public class PostgresCatalog {
       "array_agg");
 
   /**
+   * The relations a statement reads by joining their rows (issue #10473), because it reads one of them twice or because their
+   * rows are not the ones of a table or a column. A statement naming any of them is answered by {@link #resolveJoined}; a type
+   * the user called one of these names is theirs, as it is for every relation this catalog does not model.
+   */
+  private static final Set<String> JOINED_RELATIONS = Set.of("pg_index", "pg_indexes", "pg_constraint", "pg_inherits", "pg_policy",
+      "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace",
+      "information_schema.table_constraints", "information_schema.key_column_usage");
+
+  /** The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema. */
+  private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
+      "pg_publication_rel", "pg_publication_namespace");
+
+  /**
    * A catalog query that would spend more work than this server gives one statement - a client regular expression
    * that backtracks, sub-selects correlated deep enough to multiply. The client is told so, with PostgreSQL's
    * {@code program_limit_exceeded}, rather than handed an empty answer that would look like an empty catalog.
@@ -204,19 +217,6 @@ public class PostgresCatalog {
         ? "The catalog relation \"" + relation + "\" is not supported by this server"
         : "This catalog query has a shape this server does not support");
   }
-
-  /**
-   * The relations a statement reads by joining their rows (issue #10473), because it reads one of them twice or because their
-   * rows are not the ones of a table or a column. A statement naming any of them is answered by {@link #resolveJoined}; a type
-   * the user called one of these names is theirs, as it is for every relation this catalog does not model.
-   */
-  private static final Set<String> JOINED_RELATIONS = Set.of("pg_index", "pg_indexes", "pg_constraint", "pg_inherits", "pg_policy",
-      "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace",
-      "information_schema.table_constraints", "information_schema.key_column_usage");
-
-  /** The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema. */
-  private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
-      "pg_publication_rel", "pg_publication_namespace");
 
   /**
    * The emulated relations and the columns each one has. A column outside its relation's set makes the query

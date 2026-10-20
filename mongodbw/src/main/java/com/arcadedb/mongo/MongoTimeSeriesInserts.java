@@ -48,7 +48,11 @@ import java.util.Map;
  * <p>
  * Like SQL's, the append is not part of a transaction: every sample is durable when its statement returns. So a batch is not
  * atomic, and one the engine refuses is reported by its index in {@code writeErrors}, as MongoDB does for a document it
- * rejects: an ordered batch stops there, an unordered one goes on.
+ * rejects: an ordered batch stops there, an unordered one goes on. A command that fails midway (the server's own fault) leaves the
+ * samples before it stored, and a client that retries the whole {@code insert} writes them again: a sample has no {@code _id} to
+ * tell it was written, so retry only from the index the reply names.
+ * <p>
+ * The statement text is the same for every sample of a type, so the engine's statement cache parses it once.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -112,15 +116,23 @@ final class MongoTimeSeriesInserts {
   /**
    * The failure as MongoDB reports a document it rejects. The engine's refusal of a sample is the caller's doing, though most of
    * its refusals (an undeclared key, a value the column cannot hold) are not typed as such, so every {@link
-   * CommandExecutionException} is one - but for the one that wraps an I/O error, which is the server's and fails the command.
+   * CommandExecutionException} is one - but for the ones that wrap an I/O error or a fault of the code itself (a null, a state, a
+   * cast, an index), which are the server's: they fail the command and are not blamed on the document, so an ordered batch does
+   * not stop on a bug as if on a bad sample.
    */
-  private static MongoServerError refusal(final RuntimeException e) {
+  static MongoServerError refusal(final RuntimeException e) {
     final MongoServerException wire = MongoDBDatabaseWrapper.wireException(e.getMessage(), e);
     if (wire instanceof MongoServerError coded)
       return coded;
-    if (e instanceof CommandExecutionException && !CauseChain.contains(e, IOException.class))
+    if (e instanceof CommandExecutionException && !isFaultOfTheServer(e))
       return new MongoServerError(ErrorCode.BadValue, e.getMessage());
     throw e;
+  }
+
+  private static boolean isFaultOfTheServer(final RuntimeException e) {
+    return CauseChain.contains(e, IOException.class) || CauseChain.contains(e, NullPointerException.class)
+        || CauseChain.contains(e, IllegalStateException.class) || CauseChain.contains(e, ClassCastException.class)
+        || CauseChain.contains(e, IndexOutOfBoundsException.class);
   }
 
   private static Document writeError(final int index, final MongoServerError error) {

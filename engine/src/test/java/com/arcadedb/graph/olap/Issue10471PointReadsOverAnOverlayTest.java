@@ -30,6 +30,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -158,6 +159,41 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
     commitAFewEdges();
     awaitView(view);
     assertThat(view.pinned().getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNull();
+  }
+
+  /**
+   * The constant-time answer to "does the overlay touch this slice" is the one the walk of every changed node gives: after random
+   * additions and deletions of edges, in both directions, for a type that has edges and one that has none.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void theConstantTimeCheckOfASliceAgreesWithTheNodesTheOverlayChanges(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+
+    for (int round = 0; round < 12; round++) {
+      final int additions = random.nextInt(3);
+      database.transaction(() -> {
+        for (int i = 0; i < additions; i++)
+          vertices.get(random.nextInt(VERTICES)).asVertex().modify().newEdge("K", vertices.get(random.nextInt(VERTICES)));
+        if (random.nextBoolean())
+          vertices.get(random.nextInt(VERTICES)).asVertex().getEdges(Vertex.DIRECTION.OUT, "K").forEach(edge -> {
+            if (random.nextBoolean())
+              edge.delete();
+          });
+      });
+      awaitView(view);
+
+      final DeltaOverlay overlay = view.pinned().snapshot().overlay;
+      if (overlay == null)
+        continue;
+      for (final String slice : new String[] { "K", "NoSuchEdgeType" })
+        for (final boolean outgoing : new boolean[] { true, false }) {
+          final BitSet changed = new BitSet();
+          overlay.markChangedNodes(slice, outgoing, changed);
+          assertThat(overlay.changesNodes(slice, outgoing)).as("round " + round + " " + slice + (outgoing ? " out" : " in"))
+              .isEqualTo(!changed.isEmpty());
+        }
+    }
   }
 
   private GraphAnalyticalView createView(final String mode) {

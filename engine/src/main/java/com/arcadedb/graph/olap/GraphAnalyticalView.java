@@ -1924,6 +1924,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (cost == 0L || expectedVisits >= cost)
       return true;
     final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
+    // saturated: once the reads have spent the cost the view is built, so nothing adds to the sum after that (it stays below twice
+    // the cost, and cannot overflow)
+    if (demand.sum() >= cost)
+      return true;
     demand.add(expectedVisits);
     return demand.sum() >= cost;
   }
@@ -1960,8 +1964,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private double meanDegree(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
-    final String[] slices = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : allEdgeTypes(snap).toArray(new String[0]);
+    final String[] slices = slicesOf(snap, resolveEdgeTypes(requestedEdgeTypes));
     return (double) adjacencyEntries(snap, direction, slices) / Math.max(1, nodeCountOf(snap));
   }
 
