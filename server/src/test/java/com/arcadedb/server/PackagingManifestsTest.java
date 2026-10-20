@@ -81,7 +81,11 @@ class PackagingManifestsTest {
   private static final Pattern MOUNT_PATH  = Pattern.compile("^\\s*mountPath: (\\S+)\\s*$", Pattern.MULTILINE);
   private static final Pattern VOLUME      = Pattern.compile("^VOLUME\\s*\\[(.*)]\\s*$", Pattern.MULTILINE);
   private static final Pattern QUOTED      = Pattern.compile("\"([^\"]+)\"");
-  /** A Compose short-syntax mount of a named volume, {@code - <name>:<container path>[:<mode>]}. */
+  /**
+   * A Compose short-syntax mount of a named volume, {@code - <name>:<container path>[:<mode>]}. A bind mount
+   * ({@code ./dir:/path}) or a long-syntax entry ({@code type: volume}, {@code source:}, {@code target:}) does not
+   * match: switching the quickstart to long syntax needs this pattern extended, or every mount reads as missing.
+   */
   private static final Pattern COMPOSE_MOUNT = Pattern.compile("(?m)^\\s*- ([A-Za-z0-9][A-Za-z0-9_.-]*):(/[^:\\s]+)(?::\\w+)?\\s*$");
 
   @Test
@@ -407,8 +411,8 @@ class PackagingManifestsTest {
       mounts.put(mount.group(2), mount.group(1));
 
     for (final String volume : declaredVolumes(DOCKERFILE, read(DOCKERFILE))) {
-      assertThat(mounts).as("%s mounts nothing on the image's '%s' volume, so it resolves to an anonymous one", COMPOSE,
-          volume).containsKey(volume);
+      assertThat(mounts).as("%s mounts no named volume (short syntax `- <name>:<path>`) on the image's '%s' volume, so it"
+          + " resolves to an anonymous one", COMPOSE, volume).containsKey(volume);
       assertThat(declared).as("%s mounts '%s' on %s, which is not a named volume it declares", COMPOSE, mounts.get(volume),
           volume).contains(mounts.get(volume));
     }
@@ -419,7 +423,8 @@ class PackagingManifestsTest {
   void nativeRunHintsKeepTheConfigVolumeAcrossRm() {
     // Issue #10402: `docker run --rm` deletes the anonymous volumes of the container it removes, so a hint that mounts
     // only databases loses every user, group and API token the server wrote to config. A named volume survives `--rm`
-    // and, unlike a bind mount of an empty directory, is seeded with the image's default config files.
+    // and, unlike a bind mount of an empty directory, is seeded with the image's default config files. The name may not
+    // contain a '/', so a bind mount such as `-v ./config:/home/arcadedb/config` is rejected on purpose.
     for (final String hint : List.of(NATIVE_DOCKER_SH, NATIVE_DOC))
       assertThat(read(hint)).as("%s tells the reader to run the image without a named volume on config", hint)
           .containsPattern("-v \"?[A-Za-z0-9_.-]+:/home/arcadedb/config\"?");

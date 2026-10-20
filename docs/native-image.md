@@ -336,6 +336,8 @@ docker run --rm -p 2480:2480 -p 5432:5432 \
   API tokens created at runtime (`server-users.jsonl`, `server-groups.json`, `server-api-tokens.json`)
   to `config`, so the example mounts a **named volume** there: it survives `--rm` and, unlike a bind
   mount of an empty directory, is seeded with the image's default config files on first use.
+  `backups`, `replication` and `log` stay anonymous in the example and are deleted with the
+  container: mount a named volume on `backups` too if you take backups inside the container.
 - A **bind mount** keeps the ownership of the host directory, so it must be writable by UID 1000
   (`chown 1000:1000` it, as above). This applies to every bind-mounted path, not only `databases`:
   a bind-mounted `config` or `log` the server cannot write fails the start with an
