@@ -1638,7 +1638,8 @@ public class GraphDatabaseChecker {
    * the two counts: what the far side holds beyond what was carried over is planned here.
    * <p>
    * Costs a full adjacency walk of the side that can answer, which is why it runs in fix mode only and only when a list is
-   * being rebuilt.
+   * being rebuilt. The tallies are bounded by the lightweight edges of the lists being rebuilt, not by the graph: the walk
+   * hands over only the entries that name one of those vertices.
    */
   private void collectLightEdgeFarCopies(final RepairPlan plan) {
     final Map<TransactionContext.LightEdgeEntry, LightEdgeTally> tallies = new HashMap<>();
