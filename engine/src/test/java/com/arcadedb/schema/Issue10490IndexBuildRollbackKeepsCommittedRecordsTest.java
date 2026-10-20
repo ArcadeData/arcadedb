@@ -153,36 +153,49 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
   }
 
   /**
-   * The committed phase of the build commits on its own, so a failure while the caller's pending records are being queued must
-   * not leave an index behind that the next write trusts: a UNIQUE index built over a pending duplicate of a committed key
-   * either refuses at the CREATE INDEX, and is then gone, or refuses at the commit, and the rollback leaves it complete.
+   * A pending duplicate of a committed key is queued on the caller's transaction like any other write, so a UNIQUE index built
+   * over it is created and the duplicate is refused where every unique violation is, at the caller's commit. The committed phase
+   * of the build has committed on its own by then, and what the refused commit leaves behind is a complete index that goes on
+   * refusing duplicates, not one the next write cannot trust.
    */
   @Test
-  void aPendingDuplicateOfACommittedKeyLeavesNoHalfBuiltUniqueIndex() {
+  void aPendingDuplicateOfACommittedKeyIsRefusedAtTheCommitAndLeavesACompleteUniqueIndex() {
     final String type = createTypeWithThreeCommittedRecords("PendingDup");
 
     database.begin();
     database.command("sql", "INSERT INTO " + type + " SET k = 1, s = 'dup', tags = ['dup']");
-    boolean refusedAtCreate = false;
-    try {
-      database.command("sql", "CREATE INDEX ON " + type + " (k) UNIQUE");
-      database.commit();
-    } catch (final RuntimeException e) {
-      refusedAtCreate = true;
-      if (database.isTransactionActive())
-        database.rollback();
-    }
-    assertThat(refusedAtCreate).as("the duplicate is refused one way or the other").isTrue();
+    database.command("sql", "CREATE INDEX ON " + type + " (k) UNIQUE");
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(DuplicatedKeyException.class);
+    if (database.isTransactionActive())
+      database.rollback();
 
     assertThat(scan("SELECT FROM " + type + " WHERE k = 1")).as("only the committed record is left").isEqualTo(1);
-    final boolean indexed = database.getSchema().getType(type).getAllIndexes(true).stream().findAny().isPresent();
-    if (indexed)
-      assertThat(entries(type)).as("an index that is left holds every committed record").isEqualTo(3L);
+    assertThat(entries(type)).as("the index holds every committed record").isEqualTo(3L);
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO " + type + " SET k = 1").close()))
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
 
-    // whatever is left must let the committed keys be written again only once
-    if (indexed)
-      assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO " + type + " SET k = 1").close()))
-          .isInstanceOf(DuplicatedKeyException.class);
+  /** More writes than one chunk of the reconciliation holds: the chunk boundaries must not lose or repeat a record. */
+  @Test
+  void aTransactionWritingMoreThanOneChunkIsReconciledInFull() {
+    final String type = createTypeWithThreeCommittedRecords("Chunks");
+    final int inserted = IndexBuilder.BUILD_BATCH_SIZE + 123;
+
+    database.begin();
+    for (int i = 0; i < inserted; i++)
+      database.newDocument(type).set("k", 1000 + i).set("s", "w").save();
+    database.command("sql", "UPDATE " + type + " SET k = 9 WHERE k = 1");
+    database.command("sql", "DELETE FROM " + type + " WHERE k = 2");
+    database.command("sql", "CREATE INDEX ON " + type + " (k) NOTUNIQUE");
+    database.commit();
+
+    assertThat(find("SELECT FROM %s WHERE k = 1", type)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 2", type)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 9", type)).isEqualTo(1);
+    assertThat(find("SELECT FROM %s WHERE k = 3", type)).isEqualTo(1);
+    assertThat(find("SELECT FROM %s WHERE k = " + (1000 + inserted - 1), type)).isEqualTo(1);
+    assertThat(find("SELECT FROM %s WHERE k = 1000", type)).isEqualTo(1);
+    assertThat(entries(type)).isEqualTo(2L + inserted);
   }
 
   @Test

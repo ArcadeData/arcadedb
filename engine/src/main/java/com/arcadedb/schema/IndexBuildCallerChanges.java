@@ -77,32 +77,39 @@ final class IndexBuildCallerChanges {
     if (written.isEmpty())
       return;
 
-    // The committed version of each record, read with the caller's transaction set aside, so what the caller wrote cannot
-    // masquerade as committed. Held in memory for the whole pass: it is one record per write of the caller's transaction in this
-    // bucket, which is what a DDL statement run inside a large uncommitted transaction pays, never one per record of the bucket
-    final Document[] committed = new Document[written.size()];
-    try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
-      for (int i = 0; i < committed.length; i++)
-        committed[i] = readDocument(database, null, written.get(i));
-    }
-
     final DocumentIndexer indexer = database.getIndexer();
     final List<IndexInternal> thisIndex = List.of(index);
     long indexed = indexedSoFar;
-    for (int i = 0; i < committed.length; i++) {
-      final RID rid = written.get(i);
-      final Document pending = readDocument(database, tx, rid);
 
-      if (committed[i] == null) {
-        if (pending != null) {
-          indexer.addToIndex(index, rid, pending);
-          if (callback != null)
-            callback.onDocumentIndexed(pending, ++indexed);
-        }
-      } else if (pending == null)
-        indexer.removeFromIndex(index, rid, committed[i]);
-      else
-        indexer.updateDocument(committed[i], pending, thisIndex);
+    // In chunks, so the committed versions held in memory at once are bounded by the chunk and not by the size of the caller's
+    // transaction: a DDL statement run inside a large uncommitted transaction would otherwise hold one document per write
+    for (int from = 0; from < written.size(); from += IndexBuilder.BUILD_BATCH_SIZE) {
+      final int to = Math.min(from + IndexBuilder.BUILD_BATCH_SIZE, written.size());
+
+      // The committed version of each record, read with the caller's transaction set aside, so what the caller wrote cannot
+      // masquerade as committed
+      final Document[] committed = new Document[to - from];
+      try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
+        for (int i = from; i < to; i++)
+          committed[i - from] = readDocument(database, null, written.get(i));
+      }
+
+      for (int i = from; i < to; i++) {
+        final RID rid = written.get(i);
+        final Document before = committed[i - from];
+        final Document pending = readDocument(database, tx, rid);
+
+        if (before == null) {
+          if (pending != null) {
+            indexer.addToIndex(index, rid, pending);
+            if (callback != null)
+              callback.onDocumentIndexed(pending, ++indexed);
+          }
+        } else if (pending == null)
+          indexer.removeFromIndex(index, rid, before);
+        else
+          indexer.updateDocument(before, pending, thisIndex);
+      }
     }
   }
 

@@ -155,6 +155,37 @@ class Issue10488NestedNumericArrayParamTest extends TestHelper {
     assertThat(((List<?>) nested.get("deep")).get(1)).isInstanceOf(double[].class);
   }
 
+  /**
+   * The unwrapper replaces {@code long[]} and {@code double[]} and nothing else, because those are the only arrays the request
+   * parser leaves in a value. This ties the two: a primitive array of any other kind showing up in a parsed request has to be
+   * added to {@code Type.unwrapNestedPrimitiveArrays} too.
+   */
+  @Test
+  void theRequestParserLeavesNoPrimitiveArrayTheUnwrapperDoesNotReplace() {
+    final Map<String, Object> parsed = new JSONObject(
+        "{\"a\":[1,2],\"b\":[1.5],\"c\":[1,2.5],\"d\":[[1],[2.5],[\"x\"]],\"e\":[\"x\"],\"f\":[true],\"g\":[1e3],"
+            + "\"h\":[12345678901234567890],\"i\":{\"j\":[[1,2],[3]],\"k\":[0.5,0.25]},\"l\":[],\"m\":[null,1],\"n\":[[]]}")
+        .toMap(true);
+
+    assertThat(Type.unwrapNestedPrimitiveArrays(parsed)).isNotNull();
+    assertThat(primitiveArraysIn(Type.unwrapNestedPrimitiveArrays(parsed))).as("arrays left after the unwrap").isEmpty();
+    assertThat(primitiveArraysIn(parsed)).as("arrays the parser leaves").allMatch(
+        array -> array == long[].class || array == double[].class);
+  }
+
+  private static List<Class<?>> primitiveArraysIn(final Object value) {
+    final List<Class<?>> found = new ArrayList<>();
+    if (value != null && value.getClass().isArray())
+      found.add(value.getClass());
+    else if (value instanceof Map<?, ?> map)
+      for (final Object item : map.values())
+        found.addAll(primitiveArraysIn(item));
+    else if (value instanceof List<?> list)
+      for (final Object item : list)
+        found.addAll(primitiveArraysIn(item));
+    return found;
+  }
+
   @Test
   void unwrapKeepsASetASet() {
     final Object unwrapped = Type.unwrapNestedPrimitiveArrays(new LinkedHashSet<Object>(List.of(new long[] { 1L })));

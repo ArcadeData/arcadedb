@@ -552,7 +552,7 @@ public abstract class IndexBuilder<T extends Index> {
    * </ol>
    * No writer can slip in between the two: every caller runs inside the schema's write lock ({@code recordFileChanges}), which
    * no other transaction commits under, and the index is registered on its type before the first step, so what the caller writes
-   * afterwards is indexed live. A failure in the second step leaves the committed entries of a component the callers then drop
+   * afterwards is indexed live. The second step reads the committed version of the caller's writes a chunk at a time. A failure in the second step leaves the committed entries of a component the callers then drop
    * (the cleanup arms of {@code TypeIndexBuilder#create} and {@code BucketIndexBuilder}, the guard around the super-type
    * propagation), the same as a failure anywhere in a build.
    */
