@@ -224,7 +224,12 @@ public class ComparisonExpression implements BooleanExpression {
     // relationships, which the RID cannot tell apart and LightEdgeRID.isSameEdge can (issue #10008)
     if (left instanceof Identifiable leftIdentifiable
         && right instanceof Identifiable rightIdentifiable) {
-      final boolean equal = LightEdgeRID.isSameEdge(leftIdentifiable.getIdentity(), rightIdentifiable.getIdentity());
+      final RID leftRid = leftIdentifiable.getIdentity();
+      final RID rightRid = rightIdentifiable.getIdentity();
+      // An embedded document has no RID and is equal to another by its content, which its own equals() compares; against a record
+      // it is never equal (issue #10380)
+      final boolean equal = leftRid != null && rightRid != null ? LightEdgeRID.isSameEdge(leftRid, rightRid)
+          : leftRid == null && rightRid == null && leftIdentifiable.equals(rightIdentifiable);
       if (operator == Operator.EQUALS)
         return equal;
       if (operator == Operator.NOT_EQUALS)
@@ -359,6 +364,23 @@ public class ComparisonExpression implements BooleanExpression {
     // String comparison (strings only compare with strings), by code point, as the index orders them (issue #8422)
     if (left instanceof String && right instanceof String) {
       final int comparison = BinaryComparator.compareStrings((String) left, (String) right);
+      return switch (operator) {
+        case EQUALS -> comparison == 0;
+        case NOT_EQUALS -> comparison != 0;
+        case LESS_THAN -> comparison < 0;
+        case GREATER_THAN -> comparison > 0;
+        case LESS_THAN_OR_EQUAL -> comparison <= 0;
+        case GREATER_THAN_OR_EQUAL -> comparison >= 0;
+      };
+    }
+
+    // BINARY values compare by their bytes, unsigned, as ORDER BY, min()/max() and SQL do, and a BINARY value is not a list: coerced to
+    // one, its bytes were compared as signed numbers, so 0x80 was below 0x7f, and the value equalled the list of the same numbers,
+    // which no DISTINCT or GROUP BY key can follow (issue #10380)
+    if (left instanceof byte[] || right instanceof byte[]) {
+      if (!(left instanceof byte[] leftBytes && right instanceof byte[] rightBytes))
+        return differentTypes();
+      final int comparison = BinaryComparator.compareBytes(leftBytes, rightBytes);
       return switch (operator) {
         case EQUALS -> comparison == 0;
         case NOT_EQUALS -> comparison != 0;

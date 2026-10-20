@@ -24,9 +24,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -136,6 +138,19 @@ public class DeferredExistenceChecks {
    */
   private int sweepAt = SWEEP_THRESHOLD;
 
+  /**
+   * For a record still in {@link #pending}, how many updates it took while it was provisional, which are writes the transaction
+   * counted ({@link TransactionContext#countCompletedRecordWrite}) and which taking the record back retracts again. Tallied by
+   * {@link #updateCounted} at the moment the write is counted, never earlier: validation runs before a listener can veto the update
+   * or an index can refuse it, and a count given back for a write that was not made cancels one that stands. Created on the first
+   * such update, so the usual statement that never updates a record before completing it pays nothing.
+   */
+  private Map<RID, Integer> deferredUpdates;
+
+  /** The transaction the statement ran in when this scope was opened, and what it had counted by then: see {@link #deleteProvisionalRecord}. */
+  private TransactionContext txAtOpen;
+  private long               writesAtOpen;
+
   /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */
   private boolean active = false;
 
@@ -181,6 +196,8 @@ public class DeferredExistenceChecks {
       return null;
 
     scope.active = true;
+    scope.txAtOpen = database.getTransactionIfExists();
+    scope.writesAtOpen = scope.txAtOpen != null ? scope.txAtOpen.getCompletedRecordWrites() : 0L;
     return scope;
   }
 
@@ -197,6 +214,8 @@ public class DeferredExistenceChecks {
     active = false;
     unresolved.clear();
     pending.clear();
+    deferredUpdates = null;
+    txAtOpen = null;
     patternCreateDepth = 0;
     sweepAt = SWEEP_THRESHOLD;
     disarm();
@@ -272,6 +291,27 @@ public class DeferredExistenceChecks {
   }
 
   /**
+   * Tallies an update of a record that is still provisional, called by the update path right after it counted the write
+   * ({@link TransactionContext#countCompletedRecordWrite}): the retraction of {@link #deleteProvisionalRecord} gives back what was
+   * counted for the record, no more. An update that completed the record is not tallied, as the record and that write stay.
+   */
+  static void updateCounted(final DatabaseInternal database, final RID rid) {
+    if (rid == null)
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    if (context == null)
+      return;
+
+    final DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
+    if (scope == null || !scope.active || !scope.isPending(rid))
+      return;
+    if (scope.deferredUpdates == null)
+      scope.deferredUpdates = new HashMap<>();
+    scope.deferredUpdates.merge(rid, 1, Integer::sum);
+  }
+
+  /**
    * Forgets a record that has just validated cleanly, so the pending set holds only what is still incomplete.
    * Called on the ordinary update path, where the {@code SET} that completes a provisional record runs.
    */
@@ -296,6 +336,9 @@ public class DeferredExistenceChecks {
       // statement's row count.
       scope.resolve();
       scope.pending.remove(rid);
+      if (scope.deferredUpdates != null)
+        // Completed, so it stays: its writes are the statement's to keep
+        scope.deferredUpdates.remove(rid);
 
       // Nothing incomplete left, so this scope stops making every other write in the JVM look for it. Without this
       // the counter would stay up for the rest of the statement, and a bulk upsert - which holds a provisional
@@ -401,12 +444,15 @@ public class DeferredExistenceChecks {
         record = (Document) database.lookupByRID(rid, true);
       } catch (final RecordNotFoundException | ClassCastException e) {
         // Rolled back, or deleted later in the same statement: there is nothing left to constrain.
+        forgetTally(rid);
         continue;
       }
 
       final String violation = firstUnmetExistenceConstraint(record);
-      if (violation == null)
+      if (violation == null) {
+        forgetTally(rid);
         continue;
+      }
 
       violations.add(violation);
       incomplete.add(rid);
@@ -478,8 +524,21 @@ public class DeferredExistenceChecks {
   private boolean deleteProvisionalRecord(final RID rid) {
     try {
       final Record record = database.lookupByRID(rid, false);
-      if (record != null)
+      if (record != null) {
         database.deleteRecord(record);
+        // The statement created this record and now takes it back, with every update it took meanwhile: nothing of it stands, so the
+        // writes the transaction counted for it (the creation, those updates, this delete) are given back, and a caller that goes on
+        // after the ValidationException is not told that part of the statement is left behind (issue #10379)
+        final Integer updates = deferredUpdates != null ? deferredUpdates.remove(rid) : null;
+        // The two writes every provisional record counted besides its tallied updates: its creation, counted when LocalDatabase
+        // created it (createRecordNoLock), and the delete just made, counted by deleteRecordInternal. The test
+        // Issue10379FailedStatementInCallerTransactionTest pins that the counter is where it was after the take-back.
+        // Never below what the transaction had counted when the statement started. In another transaction than the statement started
+        // in nothing is given back: the commit is refused, as for any half-applied statement
+        final TransactionContext tx = database.getTransaction();
+        if (tx == txAtOpen)
+          tx.retractCompletedRecordWrites(2L + (updates != null ? updates : 0), writesAtOpen);
+      }
       return true;
     } catch (final RecordNotFoundException e) {
       // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
@@ -540,15 +599,26 @@ public class DeferredExistenceChecks {
     }
   }
 
+  /** A record that leaves {@link #pending} without being taken back keeps no tally of updates, so a RID reused later starts from none. */
+  private void forgetTally(final RID rid) {
+    if (deferredUpdates != null)
+      deferredUpdates.remove(rid);
+  }
+
   /** Drops from {@link #pending} every record the statement has completed since it was registered. */
   private void sweep() {
     for (final Iterator<RID> it = pending.iterator(); it.hasNext(); ) {
       final RID rid = it.next();
       try {
-        if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null)
+        if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null) {
           it.remove();
+          if (deferredUpdates != null)
+            deferredUpdates.remove(rid);
+        }
       } catch (final RecordNotFoundException | ClassCastException e) {
         it.remove();
+        if (deferredUpdates != null)
+          deferredUpdates.remove(rid);
       }
     }
   }

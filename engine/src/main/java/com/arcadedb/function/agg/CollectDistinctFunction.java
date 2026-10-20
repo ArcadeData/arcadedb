@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.agg;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.DistinctNumberWrapper;
 import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.HeapBufferingFunction;
@@ -28,10 +27,8 @@ import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -79,7 +76,7 @@ public class CollectDistinctFunction implements StatelessFunction, HeapBuffering
     // twins apart (issue #10008); a number across its Java types, so INTEGER 1 and FLOAT 1.0 are one value as under
     // Cypher's `=` (issue #5789); a list or map by its canonicalized elements
     if (value != null) {
-      final boolean added = distinctValues.add(needsKey(value) ? new DistinctNumberWrapper(value) : value);
+      final boolean added = distinctValues.add(DistinctNumericKey.needsKey(value) ? new DistinctNumberWrapper(value) : value);
       if (limit == null) {
         limit = OperationHeapLimit.of(context, "collect(DISTINCT)");
         ownLimit = true;
@@ -106,10 +103,5 @@ public class CollectDistinctFunction implements StatelessFunction, HeapBuffering
     for (final Object value : distinctValues)
       result.add(value instanceof DistinctNumberWrapper wrapper ? wrapper.getOriginal() : value);
     return result;
-  }
-
-  /** Whether {@code value} keys by something other than itself: see {@link DistinctNumericKey#canonicalize}. */
-  private static boolean needsKey(final Object value) {
-    return value instanceof Number || value instanceof Identifiable || value instanceof Collection || value instanceof Map;
   }
 }

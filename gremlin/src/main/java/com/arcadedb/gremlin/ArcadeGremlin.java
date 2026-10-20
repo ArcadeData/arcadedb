@@ -21,7 +21,9 @@ package com.arcadedb.gremlin;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryTerminatedException;
@@ -84,6 +86,13 @@ public class ArcadeGremlin extends ArcadeQuery {
           (Boolean) parameters.remove("$profileExecution") :
           false;
 
+      // The transaction the thread holds and what it counted so far: a traversal runs while its result is read, after command() has
+      // returned, so a failure of a later row is raised where the check of the dispatcher cannot see it (issue #10379). The
+      // transaction may not be open yet: the graph opens it while the result is read
+      final DatabaseInternal internalDatabase = graph.database instanceof DatabaseInternal internal ? internal : null;
+      final TransactionContext txAtStart = internalDatabase != null ? internalDatabase.getTransactionIfExists() : null;
+      final long writesBefore = txAtStart != null ? txAtStart.getCompletedRecordWrites() : 0L;
+
       final Iterator<?> resultSet = executeStatement();
 
       // Issue #7408: the plan is collected from the run the caller drains, never from a second one.
@@ -94,22 +103,32 @@ public class ArcadeGremlin extends ArcadeQuery {
       final IteratorResultSet result = new IteratorResultSet(new Iterator() {
         @Override
         public boolean hasNext() {
-          if (runningQuery != null)
-            runningQuery.checkNotTerminated("the gremlin traversal");
-          return resultSet.hasNext();
+          try {
+            if (runningQuery != null)
+              runningQuery.checkNotTerminated("the gremlin traversal");
+            return resultSet.hasNext();
+          } catch (final RuntimeException | Error e) {
+            refuseCommitOfHalfAppliedTraversal(internalDatabase, txAtStart, writesBefore, e);
+            throw e;
+          }
         }
 
         @Override
         public Object next() {
-          final Object next = resultSet.next();
-          if (next instanceof Document document)
-            return new ResultInternal(document);
-          else if (next instanceof ArcadeElement<?> element)
-            return new ResultInternal(element.getBaseElement());
-          else if (next instanceof Map)
-            return mapToResult((Map<Object, Object>) next);
-          // A list, a path or a set can hold maps (fold(), path().by(elementMap())), which follow the naming of the row's own (#9781)
-          return new ResultInternal(CollectionUtils.singletonMap("result", normalizeNested(next)));
+          try {
+            final Object next = resultSet.next();
+            if (next instanceof Document document)
+              return new ResultInternal(document);
+            else if (next instanceof ArcadeElement<?> element)
+              return new ResultInternal(element.getBaseElement());
+            else if (next instanceof Map)
+              return mapToResult((Map<Object, Object>) next);
+            // A list, a path or a set can hold maps (fold(), path().by(elementMap())), which follow the naming of the row's own (#9781)
+            return new ResultInternal(CollectionUtils.singletonMap("result", normalizeNested(next)));
+          } catch (final RuntimeException | Error e) {
+            refuseCommitOfHalfAppliedTraversal(internalDatabase, txAtStart, writesBefore, e);
+            throw e;
+          }
         }
       }) {
         @Override
@@ -149,6 +168,19 @@ public class ArcadeGremlin extends ArcadeQuery {
     } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
+  }
+
+  /**
+   * A traversal that failed after it wrote part of its records inside the caller's transaction cannot be committed: the engine has no
+   * savepoint to take it back to, see {@link TransactionContext#refuseCommitIfWrittenSince}.
+   */
+  private static void refuseCommitOfHalfAppliedTraversal(final DatabaseInternal database, final TransactionContext txAtStart,
+      final long writesBefore, final Throwable cause) {
+    // The transaction in force now, which the traversal itself may have opened since it started: that one is another context, or
+    // the same one begun again, and counts from the value it had at the start
+    final TransactionContext tx = database != null ? database.getTransactionIfExists() : null;
+    if (tx != null && tx.isActive())
+      tx.refuseCommitIfWrittenSince(tx == txAtStart ? writesBefore : 0L, cause);
   }
 
   /**
