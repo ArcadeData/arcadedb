@@ -20,6 +20,7 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
@@ -42,17 +43,23 @@ import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 public class ApiTokenConfiguration {
-  public static final  String                                FILE_NAME    = "server-api-tokens.json";
-  private static final String                                TOKEN_PREFIX = "at-";
-  private static final int                                   SUFFIX_LEN   = 4;
-  private static final int                                   TOKEN_BYTES  = 32;
-  private static final SecureRandom                          SECURE_RANDOM = new SecureRandom();
+  public static final  String       FILE_NAME       = "server-api-tokens.json";
+  /** Where a {@link #FILE_NAME} that cannot be loaded is preserved. */
+  public static final  String       ERROR_FILE_NAME = "server-api-tokens-error.json";
+  /** Prefix of the watcher thread's name; the watched file's path is appended to it. See {@link #startWatching}. */
+  public static final  String       WATCHER_PREFIX  = "arcadedb-api-tokens-watcher";
+  private static final String       TOKEN_PREFIX    = "at-";
+  private static final int          SUFFIX_LEN      = 4;
+  private static final int          TOKEN_BYTES     = 32;
+  private static final SecureRandom SECURE_RANDOM   = new SecureRandom();
   private final        String                                filePath;
   // Volatile reference to a map that is REPLACED, never cleared in place, whenever the whole token set is
   // rebuilt (load, and the replicated apply of issue #7373). Readers - authenticateByApiToken, on Undertow
@@ -60,11 +67,24 @@ public class ApiTokenConfiguration {
   // clear()-then-repopulate leaves behind, which would read as "this token does not exist" and fail an
   // authentication that should have succeeded. Single-entry mutations still go through the live map.
   private volatile     ConcurrentHashMap<String, JSONObject> tokens       = new ConcurrentHashMap<>();
+  // The watcher's baseline. VOLATILE for the timer thread's unsynchronized comparison, as in SecurityGroupFileRepository.
+  private volatile     long                                  fileLastUpdated = 0L;
+  // VOLATILE for the timer task's stale-instance check; written under the monitor only.
+  private volatile     Timer                                 watcher;
+  // Whether the tokens in force are NEWER than the file: the last write failed (a replicated install publishes before
+  // it persists, issue #7373). Guarded by the monitor; reload() refuses to re-read an older file while it is set.
+  private              boolean                               diskBehind;
 
   public ApiTokenConfiguration(final String configPath) {
     this.filePath = Paths.get(configPath, FILE_NAME).toString();
   }
 
+  /**
+   * The FIRST load, at startup: publishes {@link #FILE_NAME}, or the empty store when there is none. A file that cannot
+   * be parsed, or is not a token document, also leaves the store EMPTY (fail-closed, see {@link #onLoadFailure}).
+   * <p>
+   * Not what a running server calls when the file changes: that is {@link #reload()}, whose policy is the opposite one.
+   */
   public synchronized void load() {
     final File file = new File(filePath);
     if (!file.exists()) {
@@ -72,48 +92,8 @@ public class ApiTokenConfiguration {
       return;
     }
 
-    final ConcurrentHashMap<String, JSONObject> loaded = new ConcurrentHashMap<>();
-
-    try (final FileInputStream fis = new FileInputStream(file)) {
-      final JSONObject json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
-      if (!json.has("tokens")) {
-        tokens = loaded;
-        return;
-      }
-
-      final JSONArray tokenArray = json.getJSONArray("tokens");
-      boolean needsSave = false;
-
-      // EXPIRED ENTRIES ARE LOADED like any other, and refused like any other by isExpired() at every read
-      // (issue #7601). Dropping them here is what this used to do, and in a cluster that was a node-local edit
-      // of a REPLICATED document: it ran at whatever moment each node happened to restart, so the nodes' token
-      // sets - and with them the #7509 compare-and-set fingerprints computed from them - drifted apart with no
-      // entry applied and nothing logged. #pruneExpired is where the removal lives now: on the write paths,
-      // which reach every node in one entry. The only rewrite this loop still asks for is the legacy plaintext
-      // migration below.
-      for (int i = 0; i < tokenArray.length(); i++) {
-        final JSONObject tokenJson = tokenArray.getJSONObject(i);
-
-        // Backward compatibility: migrate plaintext tokens to hashed
-        if (tokenJson.has("token") && !tokenJson.has("tokenHash")) {
-          final String plaintext = tokenJson.getString("token");
-          final String hash = hashToken(plaintext);
-          tokenJson.put("tokenHash", hash);
-          tokenJson.put("tokenSuffix", plaintext.length() > SUFFIX_LEN
-              ? plaintext.substring(plaintext.length() - SUFFIX_LEN) : plaintext);
-          tokenJson.remove("token");
-          tokenJson.remove("tokenPrefix");
-          needsSave = true;
-        }
-
-        loaded.put(tokenJson.getString("tokenHash"), tokenJson);
-      }
-
-      tokens = loaded;
-
-      if (needsSave)
-        save();
-
+    try {
+      readFile(file);
     } catch (final IOException e) {
       // The partially-built map is discarded: a file this node could not read through must not silently
       // narrow the token set it was already serving.
@@ -130,6 +110,168 @@ public class ApiTokenConfiguration {
     }
   }
 
+  /**
+   * Re-reads {@link #FILE_NAME} on a running server, from {@link #startWatching}'s watcher (issue #10383). The token half
+   * of the rule issue #10326 set for the users file: a file that is missing, unreadable, unparseable or not a token
+   * document keeps the tokens already in force. A missing file is logged at WARNING; any other failure at SEVERE, and a
+   * file that could be read is preserved as {@link #ERROR_FILE_NAME}.
+   * <p>
+   * {@link #load()}'s fail-closed EMPTY store is right at startup, when there is nothing in force to keep. As a reload
+   * it revoked every API token of a running server because of one bad read - and before this watcher existed it ran
+   * only as a side effect of a users-file reload, so nothing re-read the file afterwards and the revocation outlasted
+   * the restore of the file for the rest of the process lifetime.
+   * <p>
+   * Also refuses while the tokens in force have not reached the disk ({@link #diskBehind}): the file then holds an
+   * OLDER token set - say, one with a token a replicated revocation has since removed - and re-reading it would put
+   * that token back. The #7752 retry ({@link #persistCurrent}) clears the condition.
+   *
+   * @return {@code true} when the file's token set was published, {@code false} when the tokens in force were kept
+   */
+  synchronized boolean reload() {
+    final File file = new File(filePath);
+    // Says outright that the previous tokens stay VALID: an operator who edited the file to revoke one must not read
+    // "keeping" as "your revocation is pending".
+    final String keeping = "keeping the " + tokens.size() + " API tokens already in force, which keep authenticating until a "
+        + "valid file is read (a token removed by this edit is NOT revoked)";
+
+    if (diskBehind) {
+      // Stamped, so the refusal is logged once per change of the file rather than once per tick.
+      fileLastUpdated = file.lastModified();
+      LogManager.instance().log(this, Level.WARNING,
+          "File '%s' changed, but the API tokens in force have not been written to it yet (the last write failed); %s. Make the "
+              + "configuration directory writable again: the next successful write lifts this, and it writes the tokens in force "
+              + "OVER this edit. To apply the edit instead, restart the server once the directory is writable", FILE_NAME, keeping);
+      return false;
+    }
+
+    if (!file.exists()) {
+      LogManager.instance().log(this, Level.WARNING, "File '%s' is missing, %s", FILE_NAME, keeping);
+      return false;
+    }
+
+    try {
+      readFile(file);
+      return true;
+    } catch (final IOException | RuntimeException e) {
+      // ANY failure, not only JSONException: an entry of an unexpected shape must neither replace the tokens in force nor
+      // escape into the watcher's java.util.Timer, which an uncaught exception kills.
+      SecurityUserFileRepository.preserveInError(this, file, errorFile(), e, keeping);
+      return false;
+    }
+  }
+
+  /**
+   * Reads {@code file} and publishes its token set in one reference swap, migrating legacy plaintext entries. Nothing is
+   * published when anything throws.
+   *
+   * @throws IOException   if the file cannot be read
+   * @throws JSONException if it does not parse, has no {@code tokens} array, or an entry has no {@code tokenHash}
+   */
+  private void readFile(final File file) throws IOException {
+    // Stamped BEFORE the read: a file that fails is not re-read on every tick, and an edit landing after this point has
+    // a newer stamp and is picked up by the next one.
+    fileLastUpdated = file.lastModified();
+
+    final JSONObject json;
+    try (final FileInputStream fis = new FileInputStream(file)) {
+      json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
+    }
+
+    // A document with no 'tokens' key is NOT "no tokens" - an empty set is spelled "tokens": [], and every writer here
+    // emits the key unconditionally (the same reading applyReplicated() makes). It used to load as the empty set with
+    // nothing logged and no copy kept, and the next save() then wrote the empty set over it.
+    if (!json.has("tokens"))
+      throw new JSONException("'" + FILE_NAME + "' has no 'tokens' array");
+
+    final ConcurrentHashMap<String, JSONObject> loaded = new ConcurrentHashMap<>();
+    final JSONArray tokenArray = json.getJSONArray("tokens");
+    boolean needsSave = false;
+
+    // EXPIRED ENTRIES ARE LOADED like any other, and refused like any other by isExpired() at every read
+    // (issue #7601). Dropping them here is what this used to do, and in a cluster that was a node-local edit
+    // of a REPLICATED document: it ran at whatever moment each node happened to restart, so the nodes' token
+    // sets - and with them the #7509 compare-and-set fingerprints computed from them - drifted apart with no
+    // entry applied and nothing logged. #pruneExpired is where the removal lives now: on the write paths,
+    // which reach every node in one entry. The only rewrite this loop still asks for is the legacy plaintext
+    // migration below.
+    for (int i = 0; i < tokenArray.length(); i++) {
+      final JSONObject tokenJson = tokenArray.getJSONObject(i);
+
+      // Backward compatibility: migrate plaintext tokens to hashed
+      if (tokenJson.has("token") && !tokenJson.has("tokenHash")) {
+        final String plaintext = tokenJson.getString("token");
+        final String hash = hashToken(plaintext);
+        tokenJson.put("tokenHash", hash);
+        tokenJson.put("tokenSuffix", plaintext.length() > SUFFIX_LEN
+            ? plaintext.substring(plaintext.length() - SUFFIX_LEN) : plaintext);
+        tokenJson.remove("token");
+        tokenJson.remove("tokenPrefix");
+        needsSave = true;
+      }
+
+      loaded.put(tokenJson.getString("tokenHash"), tokenJson);
+    }
+
+    tokens = loaded;
+
+    if (needsSave)
+      save();
+  }
+
+  /**
+   * Schedules the {@link #FILE_NAME} modification watcher, which calls {@link #reload()} (issue #10383). Idempotent and
+   * one-shot per instance, like {@link SecurityGroupFileRepository#startWatching()}: {@link #stop()} cancels it for
+   * good, and {@code ArcadeDBServer} builds a new {@code ServerSecurity}, and with it a new instance of this class, on
+   * every start.
+   * <p>
+   * The token file used to have no watcher of its own: it was re-read only as a side effect of a
+   * {@code server-users.jsonl} reload, so an operator's edit of it stayed invisible until that unrelated file changed.
+   * <p>
+   * The server's own writes bump the file's stamp without advancing the baseline, so each costs one redundant reload of
+   * the document just written - the trade {@link SecurityGroupFileRepository#save} explains: advancing the baseline after
+   * a write would swallow an operator edit landing in the same window.
+   *
+   * @param checkEveryMs the polling period; nothing is scheduled when it is not positive
+   */
+  public synchronized void startWatching(final int checkEveryMs) {
+    if (watcher != null || checkEveryMs <= 0)
+      return;
+
+    final File file = new File(filePath);
+    // The file's current stamp is the baseline, as for the group watcher: without it the first tick would treat a file
+    // nobody touched since the startup load as changed.
+    if (fileLastUpdated == 0L && file.exists())
+      fileLastUpdated = file.lastModified();
+
+    final Timer timer = new Timer(WATCHER_PREFIX + "[" + filePath + "]", true);
+    watcher = timer;
+    timer.schedule(new TimerTask() {
+      @Override
+      public void run() {
+        if (watcher != timer)
+          return;
+        try {
+          if (file.exists() && file.lastModified() > fileLastUpdated) {
+            LogManager.instance().log(this, Level.INFO, "API-token configuration changed, reloading it...");
+            reload();
+          }
+        } catch (final Throwable e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
+        }
+      }
+    }, checkEveryMs, checkEveryMs);
+  }
+
+  /** Cancels the watcher. Synchronized against {@link #startWatching}'s check-then-act, as the group repository's is. */
+  public synchronized void stop() {
+    if (watcher != null)
+      watcher.cancel();
+  }
+
+  private File errorFile() {
+    return new File(new File(filePath).getParentFile(), ERROR_FILE_NAME);
+  }
+
   /** Owner-only (mode 600) on POSIX systems; silently skipped elsewhere (e.g. Windows). */
   private static void restrictToOwner(final Path file) {
     try {
@@ -142,31 +284,19 @@ public class ApiTokenConfiguration {
   }
 
   /**
-   * Preserves an unparseable token file beside itself and leaves the store empty. Copying it aside matters more
-   * here than the log line does: the very next {@link #save} - a token minted, or any replicated token entry -
-   * overwrites the live file with the empty document, and the evidence of what the node used to hold would be
-   * gone with it.
+   * Preserves an unparseable token file beside itself as {@link #ERROR_FILE_NAME} and leaves the store empty - the
+   * FIRST-load policy only, see {@link #reload()} for the running server's. Copying it aside matters more here than the
+   * log line does: the very next {@link #save} - a token minted, or any replicated token entry - overwrites the live
+   * file with the empty document, and the evidence of what the node used to hold would be gone with it.
+   * <p>
+   * The copy goes through the same helper as the users and groups files, which writes it owner-only before it becomes
+   * visible: it holds the same token hashes, names, scopes and expiry as the live file.
    */
   private void onLoadFailure(final RuntimeException failure) {
     tokens = new ConcurrentHashMap<>();
-
-    final Path corrupt = Paths.get(filePath);
-    final Path preserved = corrupt.resolveSibling(FILE_NAME.replace(".json", "-error.json"));
-    try {
-      Files.copy(corrupt, preserved, StandardCopyOption.REPLACE_EXISTING);
-      // The copy is created fresh, so it takes the umask's permissions rather than the 0600 the live file is
-      // written with. It holds the same token hashes, names, scopes and expiry, so it gets the same treatment -
-      // preserving evidence must not mean publishing it to every account on the host.
-      restrictToOwner(preserved);
-    } catch (final IOException | RuntimeException e) {
-      LogManager.instance().log(this, Level.WARNING, "Could not preserve the unreadable API-token file as '%s'", e,
-          preserved);
-    }
-
-    LogManager.instance().log(this, Level.SEVERE,
-        "API-token file '%s' could not be parsed; it has been copied to '%s' and this node starts with NO API "
-            + "tokens, so none of them authenticates until the file is restored. Users and groups are unaffected",
-        failure, filePath, preserved);
+    SecurityUserFileRepository.preserveInError(this, new File(filePath), errorFile(), failure,
+        "this node starts with NO API tokens, so none of them authenticates until the file is restored (users and groups are "
+            + "unaffected)");
   }
 
   public synchronized void save() {
@@ -204,8 +334,10 @@ public class ApiTokenConfiguration {
 
     try {
       writeAtomically(file.toPath(), bytes);
+      diskBehind = false;
       return null;
     } catch (final IOException e) {
+      diskBehind = true;
       return e;
     }
   }
