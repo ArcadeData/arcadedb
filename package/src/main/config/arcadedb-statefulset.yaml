@@ -14,6 +14,10 @@
 # - Create the secret   : kubectl create secret generic arcadedb-credentials \
 #                           --namespace arcadedb --from-literal=rootPassword='<choose-a-strong-password>' \
 #                           --from-literal=clusterToken="$(openssl rand -hex 32)"
+#   A Secret created before the `clusterToken` key was required lacks it, and the pods then stay in
+#   ContainerCreating ("couldn't find key clusterToken"). Add it to the existing Secret with:
+#                         kubectl patch secret arcadedb-credentials --namespace arcadedb \
+#                           -p "{\"stringData\":{\"clusterToken\":\"$(openssl rand -hex 32)\"}}"
 # - Create cluster      : kubectl apply -f arcadedb-statefulset.yaml
 # - List the pods       : kubectl get pods --namespace arcadedb
 # - Run console         : kubectl exec -it arcadedb-0 --namespace arcadedb -- bin/console.sh

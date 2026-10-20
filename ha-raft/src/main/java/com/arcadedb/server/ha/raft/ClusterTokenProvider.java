@@ -181,11 +181,11 @@ class ClusterTokenProvider {
    * @throws ConfigurationException if the password file is configured but cannot be read, or is empty.
    */
   private static String resolveRootPassword(final ContextConfiguration config) {
-    final String inline = valueOf(config, GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    final String inline = nonEmptyValue(config, GlobalConfiguration.SERVER_ROOT_PASSWORD);
     if (inline != null)
       return inline;
 
-    final String passwordPath = valueOf(config, GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH);
+    final String passwordPath = nonEmptyValue(config, GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH);
     if (passwordPath == null)
       return null;
 
@@ -200,7 +200,7 @@ class ClusterTokenProvider {
    * Returns the setting from the server's configuration, falling back to the global default (system property), or
    * {@code null} when neither carries a non-empty value.
    */
-  private static String valueOf(final ContextConfiguration config, final GlobalConfiguration setting) {
+  private static String nonEmptyValue(final ContextConfiguration config, final GlobalConfiguration setting) {
     String value = config.getValueAsString(setting);
     if (value == null || value.isEmpty())
       value = setting.getValueAsString();
