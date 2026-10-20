@@ -301,6 +301,9 @@ public final class TimeSeriesStorableRows {
           if (constraints == null && !text)
             continue;
           final Object value = storedValue(source, row, c, kinds[c]);
+          // The result of storableValue is dropped on purpose: the source keeps the text it holds, which is what the shard stores. That
+          // holds while storableValue only checks a STRING/TEXT value and never rewrites it (trims it, normalizes it); a rewrite would
+          // have to be applied to the source here, or what is validated would not be what is stored
           if (text)
             try {
               valueColumns[c].storableValue(database, value);

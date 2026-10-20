@@ -121,7 +121,9 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
    *
    * @param typeColumns the full column list of the TimeSeries type, timestamp column included
    * @param capacity    expected number of samples; the batch grows on demand if exceeded
-   * @param database    the database of the type, or {@code null} to read such text with the default formats
+   * @param database    the database of the type, or {@code null} to read such text with the default formats and the JVM's time zone,
+   *                    which names another instant than an {@code INSERT} does whenever that zone is not UTC. Use
+   *                    {@link TimeSeriesEngine#newBatch(int)}, which passes it
    */
   public TimeSeriesBatch(final List<ColumnDefinition> typeColumns, final int capacity, final Database database) {
     this.database = database;

@@ -26,6 +26,9 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -232,6 +235,33 @@ class Issue10487PrimitiveAppendStorableTest extends TestHelper {
     assertThat(Double.longBitsToDouble(batch.getRawValue(row, 3))).isEqualTo(7.9d);
     batch.setValue(row, 5, null);
     assertThat(batch.isNull(row, 5)).isTrue();
+  }
+
+  /**
+   * A batch built without a database (the public constructor) reads date text with the default formats and the JVM's time zone, as
+   * {@code ColumnDefinition.storableValue} does with no database; one made by the engine reads it as the INSERT does, so the two name
+   * the same instant only when the JVM's zone is UTC.
+   */
+  @Test
+  void setValueOnABatchWithoutADatabaseReadsDateTextWithTheDefaultFormats() {
+    database.command("sql", "CREATE TIMESERIES TYPE D TIMESTAMP ts TAGS (host STRING) FIELDS (t DATETIME) SHARDS 1");
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("D");
+    final LocalDateTime text = LocalDateTime.of(2020, 1, 2, 3, 4, 5);
+
+    final TimeSeriesBatch withoutDatabase = new TimeSeriesBatch(type.getTsColumns(), 1);
+    final int row = withoutDatabase.addRow(1000L);
+    withoutDatabase.setValue(row, 1, "2020-01-02 03:04:05");
+    assertThat(withoutDatabase.getRawValue(row, 1)).isEqualTo(text.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+
+    final TimeSeriesBatch withDatabase = type.getEngine().newBatch(1);
+    final int other = withDatabase.addRow(1000L);
+    withDatabase.setValue(other, 1, "2020-01-02 03:04:05");
+    // the text names the same instant the INSERT stores for it: the wall clock of the text read as UTC
+    assertThat(withDatabase.getRawValue(other, 1)).isEqualTo(text.toInstant(ZoneOffset.UTC).toEpochMilli());
+
+    // a number is a count in the column's unit, whatever the constructor
+    withoutDatabase.setValue(row, 1, 1_577_934_246_000L);
+    assertThat(withoutDatabase.getRawValue(row, 1)).isEqualTo(1_577_934_246_000L);
   }
 
   private TimeSeriesEngine engine() {
