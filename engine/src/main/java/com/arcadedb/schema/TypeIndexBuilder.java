@@ -854,21 +854,28 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
-   * Whether a build asked for in the DEFAULT mode takes the sorted build all the same (issue #10334): a UNIQUE LSM_TREE index
-   * over a type holding at least {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS} records. The record-at-a-time
-   * build commits every batch through the uniqueness check, which looks each key up in the index being built, and that lookup
-   * reads every page written so far - nothing compacts an index while it is built - so the build time grows with the square of
-   * the record count. The sorted build refuses a duplicate key in its sorted stream instead, within a bounded memory budget.
+   * Whether a build asked for in the DEFAULT mode takes the sorted build all the same: a UNIQUE LSM_TREE index over a type holding at
+   * least {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS} records (issue #10334), or a NOTUNIQUE one over a type
+   * holding at least {@link GlobalConfiguration#INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS} (issue #10267).
+   * <p>
+   * For a UNIQUE index the record-at-a-time build commits every batch through the uniqueness check, which looks each key up in the
+   * index being built, and that lookup reads every page written so far - nothing compacts an index while it is built - so the build
+   * time grows with the square of the record count. The sorted build refuses a duplicate key in its sorted stream instead, within a
+   * bounded memory budget. For a NOTUNIQUE index nothing is quadratic: the record-at-a-time build pays the transaction bookkeeping of
+   * every key, which a bulk build over existing records does not need, and the sorted build skips it, so its threshold is far
+   * higher and only where the saving is felt.
    * <p>
    * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal()}). The record count is the buckets' cached
    * counters, polymorphic like the build itself, so asking costs nothing; a counter that is off after an unclean shutdown only
    * picks the other build, which produces the same index.
    */
   private boolean isSortedBuildChosenFor(final List<Bucket> buckets) {
-    if (buildMode != IndexBuildMode.DEFAULT || !unique || indexType != Schema.INDEX_TYPE.LSM_TREE)
+    if (buildMode != IndexBuildMode.DEFAULT || indexType != Schema.INDEX_TYPE.LSM_TREE)
       return false;
 
-    final long minRecords = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS);
+    final GlobalConfiguration threshold = unique ? GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS :
+        GlobalConfiguration.INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS;
+    final long minRecords = database.getConfiguration().getValueAsLong(threshold);
     if (minRecords <= 0)
       return false;
 
@@ -880,16 +887,19 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
     final String refusal = sortedBuildRefusal();
     if (refusal != null) {
-      // Said out loud: on a type this large the record-at-a-time build is the slow one, and this is the only place that knows why
-      LogManager.instance().log(this, Level.INFO,
-          "Building unique index on %s%s over %,d records one record at a time, which slows down as the index grows: %s",
-          metadata.typeName, metadata.propertyNames, records, refusal);
+      if (unique)
+        // Said out loud: on a type this large the record-at-a-time build is the slow one, and this is the only place that knows why
+        LogManager.instance().log(this, Level.INFO,
+            "Building unique index on %s%s over %,d records one record at a time, which slows down as the index grows: %s",
+            metadata.typeName, metadata.propertyNames, records, refusal);
+      else
+        LogManager.instance().log(this, Level.FINE, "Building index on %s%s over %,d records one record at a time: %s",
+            metadata.typeName, metadata.propertyNames, records, refusal);
       return false;
     }
 
-    LogManager.instance().log(this, Level.INFO, "Building unique index on %s%s over %,d records with the sorted build (%s=%,d)",
-        metadata.typeName, metadata.propertyNames, records, GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS.getKey(),
-        minRecords);
+    LogManager.instance().log(this, Level.INFO, "Building %s index on %s%s over %,d records with the sorted build (%s=%,d)",
+        unique ? "unique" : "non-unique", metadata.typeName, metadata.propertyNames, records, threshold.getKey(), minRecords);
     return true;
   }
 

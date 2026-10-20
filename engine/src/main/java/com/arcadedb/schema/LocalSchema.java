@@ -2285,13 +2285,17 @@ public class LocalSchema implements Schema {
                 // schema serialization (toJSON) calls TypeIndex.getPropertyNames(), which fails on an
                 // empty wrapper.
                 //
-                // The lookup walks UP from `type`, the subtype that owned the bucket component, to find whichever
-                // type declares the wrapper. LocalDocumentType#dropSubIndexesNoLongerCovered calls in here with that
-                // walk deliberately broken - it drops components precisely because the link was just severed - so it
-                // repeats this cleanup itself against the wrapper's real owner, and depends on this one being a
-                // harmless no-op rather than on it succeeding. Keep the two in step if this ever stops walking up.
+                // The walk UP from `type`, the subtype that owned the bucket component, finds whichever type declares
+                // the wrapper only while the link between them stands. LocalDocumentType#dropSubIndexesNoLongerCovered
+                // and dropType call in here with that link already severed - they drop components precisely because it
+                // was just severed - so the wrapper is also taken off the type that declares it, by name (issue #10412):
+                // dropType left an indexed super type that had lost its own buckets holding a wrapper with no sub-index
+                // after dropping its last sub type, which the next schema save failed on ("is not valid")
                 if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
                   type.removeTypeIndexInternal(parentTypeIndex);
+                  final LocalDocumentType declaringType = getTypeOrNull(parentTypeIndex.getTypeName());
+                  if (declaringType != null && declaringType != type)
+                    declaringType.removeTypeIndexInternal(parentTypeIndex);
                   removeIndexDuringLoad(parentTypeIndex.getName());
                 }
               }
@@ -5690,7 +5694,11 @@ public class LocalSchema implements Schema {
           IndexInternal.INDEX_STATUS.UNAVAILABLE))
         throw new IndexException("Cannot prepare empty index '" + indexName + "' for population");
 
-      type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
+      // Bound to the type that OWNS the bucket, as the sub-indexes minted by LocalDocumentType.createSubIndexesFor and the ones a
+      // schema load binds are (issue #10412): CREATE INDEX on a type that already had sub types came here with the declaring type
+      // for the bucket of a sub type too, so the sub-index named the declaring type until the next open re-bound it, and a rename
+      // or a DROP TYPE in between looked for the sub-index under the wrong type
+      bindBucketIndexToItsOwner(type, getBucketOwner(bucket.getFileId()), index, bucket.getFileId(), propertyNames, propIndex);
 
       // Re-set metadata after addIndexInternal populated propertyNames, to propagate
       // caseInsensitiveKeys to the underlying mutable/compacted indexes.
@@ -5721,16 +5729,33 @@ public class LocalSchema implements Schema {
    */
   private static void addLoadedIndex(final LocalDocumentType declaringType, final Map<Integer, LocalDocumentType> ownerOfBucket,
       final IndexInternal index, final int bucketId, final String[] propertyNames) {
-    final LocalDocumentType owner = ownerOfBucket.get(bucketId);
+    bindBucketIndexToItsOwner(declaringType, ownerOfBucket.get(bucketId), index, bucketId, propertyNames, null);
+  }
+
+  /**
+   * The one place a sub-index is bound to a type, shared by the schema load and by the creation of a bucket index (issue #10412):
+   * the sub-index of a bucket that a sub type of {@code declaringType} owns is bound to that sub type, under the wrapper of the
+   * type that declares the index, so the layout is the same right after the creation and after every load.
+   *
+   * @param declaringType    the type that declares the index
+   * @param owner            the type that owns the bucket, null when none does
+   * @param index            the bucket index to bind
+   * @param bucketId         the bucket the index sits on
+   * @param propertyNames    the indexed properties
+   * @param declaringWrapper the wrapper of the index on {@code declaringType} when the caller has it, null to mint it
+   */
+  private static void bindBucketIndexToItsOwner(final LocalDocumentType declaringType, final LocalDocumentType owner,
+      final IndexInternal index, final int bucketId, final String[] propertyNames, final TypeIndex declaringWrapper) {
     if (owner == null || owner == declaringType || !owner.instanceOf(declaringType.getName()))
       // The bucket is the declaring type's own, or belongs to a type that does not inherit from it: a schema written by hand
       // keeps the binding it has always had
-      declaringType.addIndexInternal(index, bucketId, propertyNames, null);
+      declaringType.addIndexInternal(index, bucketId, propertyNames, declaringWrapper);
     else
       // The declaring type's wrapper is minted here when this sub-index is the first of its index to be read (they are read in
       // name order, so the sub type's can come before the declaring type's own). It is staged by publishIndexDuringLoad like
       // any wrapper minted during a load, so a reader never sees it before the load publishes the schema
-      owner.addIndexInternal(index, bucketId, propertyNames, declaringType.typeIndexFor(index, propertyNames));
+      owner.addIndexInternal(index, bucketId, propertyNames,
+          declaringWrapper != null ? declaringWrapper : declaringType.typeIndexFor(index, propertyNames));
   }
 
   protected boolean isSchemaLoaded() {

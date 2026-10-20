@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -63,10 +64,13 @@ class Issue9291SortedBuildRunsTest extends TestHelper {
     final AtomicReference<SortedIndexBuildMetrics> captured = new AtomicReference<>();
     TypeIndexBuilder.setSortedBuildMetricsTestHook(captured::set);
     try {
-      // 128 MB lets a run hold 43,690 entries, so the 32,768-entry probe is reached before the first spill
+      // A run of 120,000 entries holds the whole low-cardinality prefix and the first 20,000 distinct keys, so the 32,768-entry
+      // probe is reached with sharing on; the second run is all distinct keys, which fill the shared-key table and end the sharing
+      LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(120_000);
       database.getSchema().buildTypeIndex("Sorted", new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE)
           .withBuildMode(IndexBuildMode.SORTED).withBuildMemoryBudget(128L << 20).withUnique(false).create();
     } finally {
+      LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(0);
       TypeIndexBuilder.setSortedBuildMetricsTestHook(null);
     }
     database.command("sql", "CREATE INDEX ON Plain (k) NOTUNIQUE");

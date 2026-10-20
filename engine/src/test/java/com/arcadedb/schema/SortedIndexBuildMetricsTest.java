@@ -21,7 +21,9 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
@@ -29,8 +31,15 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SortedIndexBuildMetricsTest extends TestHelper {
+  @AfterEach
+  void clearEntriesPerRunLimit() {
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(0);
+  }
+
   @Test
   void capturesExternalRunsMaterializedMergesAndPublication() {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the 1 MB budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final AtomicReference<SortedIndexBuildMetrics> captured = new AtomicReference<>();
     TypeIndexBuilder.setSortedBuildMetricsTestHook(captured::set);
     try {
@@ -177,6 +186,8 @@ class SortedIndexBuildMetricsTest extends TestHelper {
 
   @Test
   void capturesBoundedMergeParallelism() {
+    // Four runs of the table, as the 24 MB budget gave at 3,072 bytes an entry (issue #10267)
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit((int) ((24L << 20) / 3_072L));
     final AtomicReference<SortedIndexBuildMetrics> captured = new AtomicReference<>();
     TypeIndexBuilder.setSortedBuildMetricsTestHook(captured::set);
     try {
