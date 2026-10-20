@@ -43,15 +43,31 @@ final class SelfDialChannels {
    * @return how many probes were sent
    */
   static AtomicInteger leadBackToItself(final RaftHAServer raft) {
+    final AtomicInteger probes = new AtomicInteger();
+    raft.setSelfDialProbeTransportForTesting(leadingBackTo(raft, probes));
+    return probes;
+  }
+
+  /**
+   * One channel of {@code raft} that leads back to {@code raft}, counting the probes sent over it into {@code probes}
+   * (issue #10374).
+   */
+  static RaftHAServer.SelfDialProbeTransport leadingBackTo(final RaftHAServer raft, final AtomicInteger probes) {
     final RaftServer itself = (RaftServer) Proxy.newProxyInstance(RaftServer.class.getClassLoader(),
         new Class<?>[] { RaftServer.class }, (proxy, method, args) -> "getId".equals(method.getName()) ? raft.getLocalPeerId() : null);
     final RaftServer guarded = GuardedRaftServer.wrap(itself, raft::onMisdirectedRaftRequest);
-    final AtomicInteger probes = new AtomicInteger();
-    raft.setSelfDialProbeTransportForTesting(probe -> {
+    return probe -> {
       probes.incrementAndGet();
       return guarded.requestVote(probe);
-    });
-    return probes;
+    };
+  }
+
+  /** One channel that reaches the member it is meant for, counting the probes sent over it into {@code probes}. */
+  static RaftHAServer.SelfDialProbeTransport reachingTheMember(final AtomicInteger probes) {
+    return probe -> {
+      probes.incrementAndGet();
+      return answeredByTheMember(probe);
+    };
   }
 
   /**
