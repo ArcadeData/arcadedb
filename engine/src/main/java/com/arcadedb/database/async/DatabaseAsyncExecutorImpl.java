@@ -34,6 +34,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
+import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
@@ -2018,16 +2019,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void appendSamples(final String typeName, final long[] timestamps, final Object[]... columnValues) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
     final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // CONVERTED AND HELD TO THE COLUMN CONSTRAINTS HERE, ON THE CALLER'S THREAD, LIKE EVERY OTHER SURFACE: A REFUSAL REACHES THE
+    // CALLER INSTEAD OF STORING THE SAMPLE OR LOSING THE BATCH INSIDE THE WORKER (issue #10381)
+    final TimeSeriesRowSource source = TimeSeriesStorableRows.requireStorable(database, tsType, engine, timestamps, columnValues);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
-    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, timestamps, columnValues), true,
-        backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);
   }
 
   @Override
   public void appendSamples(final String typeName, final TimeSeriesRowSource source) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
     final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // THE CONSTRAINTS THE TYPE DECLARES HOLD FOR A PRIMITIVE SOURCE TOO (issue #10381)
+    TimeSeriesStorableRows.requireConstraints(database, tsType, source);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);

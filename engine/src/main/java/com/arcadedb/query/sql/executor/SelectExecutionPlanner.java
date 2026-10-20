@@ -3075,7 +3075,7 @@ public class SelectExecutionPlanner {
    */
   private static long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
     if (expr instanceof BetweenCondition between) {
-      final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+      final String fieldName = between.getFirst() != null ? identifierText(between.getFirst()) : null;
       if (timestampColumn.equals(fieldName)) {
         final Object fromVal = between.getSecond().execute((Identifiable) null, context);
         final Object toVal = between.getThird().execute((Identifiable) null, context);
@@ -3090,8 +3090,8 @@ public class SelectExecutionPlanner {
       }
     } else if (expr instanceof BinaryCondition binary) {
       // Check if one side is the timestamp column and the other is a value
-      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+      final String rightStr = binary.right != null ? identifierText(binary.right) : null;
       final boolean leftIsTs = timestampColumn.equals(leftStr);
       final boolean rightIsTs = timestampColumn.equals(rightStr);
 
@@ -3157,6 +3157,44 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * The name a TIMESERIES push-down compares with a column name: the text of {@code operand}, trimmed, without the back-quotes that
+   * quote an identifier ({@code `value`} names the column {@code value}). A quoted column used to be left out of the push-down, which
+   * costs a SELECT only a residual filter and a DELETE its statement (issue #10342).
+   */
+  private static String identifierText(final Object operand) {
+    if (operand == null)
+      return null;
+    final String text = operand.toString().trim();
+    return text.length() > 2 && text.charAt(0) == '`' && text.charAt(text.length() - 1) == '`' ? text.substring(1, text.length() - 1) : text;
+  }
+
+  /**
+   * What a {@code DELETE} over a TIMESERIES type names (issue #10342): a time range on the timestamp column and the tag
+   * equalities, exactly as the WHERE says them.
+   */
+  record TimeSeriesDeleteScope(long fromTs, long toTs, TagFilter tagFilter) {
+  }
+
+  /**
+   * The samples a {@code DELETE FROM <timeseries type> WHERE ...} removes, or {@code null} when the WHERE says more than a time range
+   * and tag equalities (issue #10342). A DELETE is not undone by reading the result again, so the engine is given the predicate only
+   * when it IS the WHERE: the same extraction a SELECT of the same WHERE pushes into the scan, under the proof that nothing is left
+   * for a residual filter ({@link #isTimeSeriesWhereFullyPushedDown}). An OR, a predicate on a FIELD column, a tag compared with a
+   * parameter that is null or that its column cannot read, two equalities on one tag: none is a scope.
+   *
+   * @param whereClause the WHERE of the statement, {@code null} for every sample
+   */
+  static TimeSeriesDeleteScope timeSeriesDeleteScope(final LocalTimeSeriesType tsType, final WhereClause whereClause,
+      final CommandContext context) {
+    final List<AndBlock> flattened = whereClause == null ? null : whereClause.flatten();
+    if (!isTimeSeriesWhereFullyPushedDown(tsType, flattened, context, false))
+      return null;
+    final long[] range = extractTimeRangeUnion(flattened, tsType.getTimestampColumn(), context);
+    final TagFilter tagFilter = extractTagFilter(flattened, tsType.getTsColumns(), tsType.getTimestampColumn(), context);
+    return new TimeSeriesDeleteScope(range[0], range[1], tagFilter);
+  }
+
+  /**
    * Extracts a TagFilter from the flattened WHERE clause by matching equality predicates on TAG columns.
    * <p>
    * The flattened WHERE is in DNF form: a list of AndBlocks where the overall predicate is the OR of
@@ -3184,8 +3222,8 @@ public class SelectExecutionPlanner {
           continue;
         if (!(binary.operator instanceof EqualsCompareOperator))
           continue;
-        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+        final String rightStr = binary.right != null ? identifierText(binary.right) : null;
         if (leftStr == null || rightStr == null)
           continue;
         // Skip timestamp predicates, already handled by time range extraction
@@ -3614,18 +3652,23 @@ public class SelectExecutionPlanner {
    */
   private boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
       final CommandContext context, final boolean withFieldFilter) {
-    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+    return isTimeSeriesWhereFullyPushedDown(tsType, info.flattenedWhereClause, context, withFieldFilter);
+  }
+
+  private static boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final List<AndBlock> flattenedWhereClause,
+      final CommandContext context, final boolean withFieldFilter) {
+    if (flattenedWhereClause == null || flattenedWhereClause.isEmpty())
       return true;
     // An OR pushes the union of the per-block tag values, a superset that relies on the residual
     // filter to drop false positives.
-    if (info.flattenedWhereClause.size() > 1)
+    if (flattenedWhereClause.size() > 1)
       return false;
 
     final String timestampColumn = tsType.getTimestampColumn();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final Set<String> constrainedTags = new HashSet<>();
 
-    for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : flattenedWhereClause.getFirst().getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
         continue;
 
@@ -3739,8 +3782,8 @@ public class SelectExecutionPlanner {
       final CommandContext context) {
     if (!(binary.operator instanceof EqualsCompareOperator))
       return null;
-    final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-    final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+    final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+    final String rightStr = binary.right != null ? identifierText(binary.right) : null;
     final String tag = isTimeSeriesTagColumn(columns, leftStr) ? leftStr : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
     if (tag == null)
       return null;
