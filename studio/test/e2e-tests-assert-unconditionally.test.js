@@ -172,6 +172,7 @@ function countOwnAssertions(masked, from, to) {
   let newline = false;
   let head = false; // an if/for/while/with was just read: its "(" opens a head
   let member = false; // the last token was ".": the word that follows is a property name, never a keyword
+  let doOpen = 0; // `do` statements whose closing `while (...)` has not been read yet
   let k = from;
   while (k < to) {
     const c = masked[k];
@@ -192,7 +193,11 @@ function countOwnAssertions(masked, from, to) {
       } else if (!member && TRANSPARENT_KEYWORDS.has(word)) {
         // the position is unchanged, and so is the line break seen so far
       } else {
-        head = !member && HEAD_KEYWORDS.has(word);
+        // the `while` right behind the body of a `do` closes that statement, it does not open a head of its own
+        const doTail = !member && word === "while" && doOpen > 0 && nesting.length === 0 && state === "start";
+        if (doTail) doOpen--;
+        else if (!member && word === "do" && nesting.length === 0) doOpen++;
+        head = !member && !doTail && HEAD_KEYWORDS.has(word);
         state = !member && (OPERATOR_KEYWORDS.has(word) || head) ? "operator" : "operand";
         newline = false;
       }
@@ -284,6 +289,8 @@ function scanTests(src) {
       continue;
     }
     tests.push({ title, line, assertions: countOwnAssertions(masked, body[0], body[1]), unanalysable: false });
+    // a test(...) declared inside this one is not visited (Playwright refuses it at run time); countDeclarations sees it, so
+    // the suite's cross-check reports the gap
     header.lastIndex = closeParen;
   }
   return tests;
@@ -389,6 +396,7 @@ const CONDITIONAL_SHAPES = [
   ["braced while", "while (ok) { expect(1).toBe(1); }"],
   ["braceless while", "while (ok) expect(1).toBe(1);"],
   ["braceless do", "do expect(1).toBe(1); while (ok);"],
+  ["braceless while right after a do-while", "do { log(); } while (a);\nwhile (b) expect(1).toBe(1);"],
   ["try", "try { expect(1).toBe(1); } catch (e) { log(e); }"],
   ["catch", "try { log(); } catch (e) { expect(e).toBeDefined(); }"],
   ["finally", "try { log(); } finally { expect(1).toBe(1); }"],
@@ -421,6 +429,9 @@ const UNCONDITIONAL_SHAPES = [
   ["after a declaration, no semicolon", "const n = [1].length\nawait expect(n).toBe(1)"],
   ["after a typed declaration", "const errors: string[] = [];\nexpect(errors).toEqual([]);"],
   ["after a cast, no semicolon", "const s = (window as any).x\nexpect(s).toBe(1)"],
+  ["after a do-while, no semicolon", "do { log(); } while (ok)\nexpect(1).toBe(1)"],
+  ["after a do-while", "do { log(); } while (ok);\nexpect(1).toBe(1);"],
+  ["after a braceless do-while", "do log(); while (ok);\nexpect(1).toBe(1);"],
   ["after a property named default", "const v = opts.default\nexpect(v).toBe(1)"],
   ["after a property named of", "const w = x.of\nexpect(w).toBe(1)"],
   ["after a property named in", "const w = x?.in\nexpect(w).toBe(1)"],
