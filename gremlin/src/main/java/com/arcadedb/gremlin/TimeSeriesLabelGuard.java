@@ -51,7 +51,9 @@ import java.util.List;
  * <p>
  * Only a label the predicate asks FOR is refused - an equality, a {@code within()}, and those inside {@code and()}/{@code or()}.
  * A negation ({@code neq}, {@code without}, {@code not(hasLabel(...))}) asks a question whose answer - no element carries the
- * label - is correct, so it is answered, as Cypher answers {@code WHERE NOT n:Ev}.
+ * label - is correct, so it is answered, as Cypher answers {@code WHERE NOT n:Ev}. A pattern predicate on the label
+ * ({@code TextP.startingWith('E')}, a custom {@code BiPredicate}) is not refused either: it names no type, so it matches no
+ * time-series type and answers nothing for it, a known limit of the check.
  */
 final class TimeSeriesLabelGuard {
   private TimeSeriesLabelGuard() {

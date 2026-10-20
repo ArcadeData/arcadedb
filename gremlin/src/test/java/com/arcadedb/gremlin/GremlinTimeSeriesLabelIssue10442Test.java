@@ -20,6 +20,7 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.structure.T;
@@ -28,6 +29,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,12 +42,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class GremlinTimeSeriesLabelIssue10442Test {
   private static final String MESSAGE = "'Ev', a TIMESERIES type";
+  private static final String DB_PATH = "./target/testgremlin-timeseries-10442";
 
   private ArcadeGraph graph;
 
   @BeforeEach
   void setUp() {
-    graph = ArcadeGraph.open("./target/testgremlin-timeseries-10442");
+    // a directory left by a crashed run would be opened, and the type below created twice
+    FileUtils.deleteRecursively(new File(DB_PATH));
+    graph = ArcadeGraph.open(DB_PATH);
     final BasicDatabase database = graph.getDatabase();
     database.command("sqlscript", """
         CREATE TIMESERIES TYPE Ev TIMESTAMP ts PRECISION MILLISECOND TAGS (k STRING) FIELDS (v DOUBLE);
