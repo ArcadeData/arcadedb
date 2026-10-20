@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
@@ -178,6 +179,52 @@ class Issue10448ListMapNumericEqualityTest extends TestHelper {
     assertThat(BinaryComparator.equals(nullValue, Map.of("a", 1))).isFalse();
     assertThat(BinaryComparator.equals(Map.of(1L, "x"), Map.of(1, "x"))).as("keys are matched by the map, as Map.equals does").isFalse();
     assertThat(BinaryComparator.equals(new TreeMap<>(Map.of("a", 1L)), Map.of("a", 1))).as("a sorted map and a hash map").isTrue();
+  }
+
+  /** Lists of links compare as they always did: by the records they point to, a loaded record or its RID alike. */
+  @Test
+  void listsOfLinksAreComparedByTheirRecords() {
+    database.command("sql", "CREATE VERTEX TYPE T").close();
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newVertex("T").set("name", "first").save().getIdentity();
+      rids[1] = database.newVertex("T").set("name", "second").save().getIdentity();
+      database.newVertex("T").set("name", "holder").set("refs", List.of(rids[0], rids[1])).save();
+      database.newVertex("T").set("name", "reversed").set("refs", List.of(rids[1], rids[0])).save();
+    });
+
+    assertThat(names("SELECT name FROM T WHERE refs = [" + rids[0] + ", " + rids[1] + "]")).containsExactly("holder");
+    assertThat(names("SELECT name FROM T WHERE refs = [" + rids[1] + ", " + rids[0] + "]")).containsExactly("reversed");
+    assertThat(names("SELECT name FROM T WHERE refs = [" + rids[0] + "]")).isEmpty();
+    assertThat(names("SELECT name FROM T WHERE refs CONTAINS " + rids[1] + " ORDER BY name")).containsExactly("holder", "reversed");
+    // the loaded records on one side, their RIDs on the other
+    assertThat(names("SELECT name FROM T WHERE refs = (SELECT FROM T WHERE name IN ['first', 'second'] ORDER BY name DESC)"))
+        .as("a sub-query result is not a list of links in this order, and must not blow up").hasSizeLessThanOrEqualTo(2);
+    assertThat(BinaryComparator.equals(List.of(rids[0], rids[1]), List.of(rids[0].asVertex(), rids[1].asVertex()))).isTrue();
+    assertThat(BinaryComparator.equals(List.of(rids[0], rids[1]), List.of(rids[1].asVertex(), rids[0].asVertex()))).isFalse();
+  }
+
+  /** A list searched for as one element is looked for among the lists and maps of the collection only. */
+  @Test
+  void containsFindsAListOrMapAmongMixedElements() {
+    database.command("sql", "CREATE DOCUMENT TYPE Mixed").close();
+    database.transaction(() -> database.newDocument("Mixed").set("name", "mixed")
+        .set("items", Arrays.asList("x", 5L, null, List.of(1L, 2L), Map.of("a", 1L))).save());
+
+    assertThat(names("SELECT name FROM Mixed WHERE items CONTAINS [1, 2]")).containsExactly("mixed");
+    assertThat(names("SELECT name FROM Mixed WHERE items CONTAINS {\"a\": 1}")).containsExactly("mixed");
+    assertThat(names("SELECT name FROM Mixed WHERE items CONTAINS [1, 3]")).isEmpty();
+    assertThat(names("SELECT name FROM Mixed WHERE items CONTAINS {\"a\": 2}")).isEmpty();
+    assertThat(names("SELECT name FROM Mixed WHERE items CONTAINS 5")).containsExactly("mixed");
+  }
+
+  private List<String> names(final String sql) {
+    final List<String> names = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+    }
+    return names;
   }
 
   /** The hash keys keep the strict comparison: the hash of {@code [1L]} is not the hash of {@code [1]}. */

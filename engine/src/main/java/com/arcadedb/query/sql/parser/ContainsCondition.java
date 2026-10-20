@@ -168,8 +168,10 @@ public class ContainsCondition extends BooleanExpression {
       return true;
     if (!(value instanceof List || value instanceof Map))
       return false;
+    // only an element of the same kind can be that list or map: anything else was never equal to it, and is not asked
+    final boolean list = value instanceof List;
     for (final Object o : collection)
-      if (o != null && QueryOperatorEquals.equals(o, value))
+      if ((list ? o instanceof List : o instanceof Map) && QueryOperatorEquals.equals(o, value))
         return true;
     return false;
   }
