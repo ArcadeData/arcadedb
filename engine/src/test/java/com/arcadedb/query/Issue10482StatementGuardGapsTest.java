@@ -265,6 +265,23 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     assertThat(count("R")).isZero();
   }
 
+  /**
+   * The edge between two existing vertices that have no edge list yet makes the statement create their edge segments, while the
+   * provisional record is pending: they hold the edge that stands, so they are not empty and nothing of them is given back.
+   */
+  @Test
+  void aStandingEdgeSegmentCreatedBesideTheProvisionalRecordIsNeverGivenBack() {
+    database.begin();
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 17}) WITH v MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:R {w: 1}]->(n)").close(), ValidationException.class);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+
+    assertThat(count("V")).isZero();
+    assertThat(count("R")).isZero();
+  }
+
   /** A record the statement deletes is a write that stands, whatever happens to the provisional record created beside it. */
   @Test
   void aDeleteOfAnExistingRecordBesideTheTakenBackRecordStillRefusesTheCommit() {
