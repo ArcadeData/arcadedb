@@ -564,22 +564,13 @@ public interface Schema {
      * Whether a build of this index type may run INSIDE a transaction opened by whoever is writing, which is what
      * lets it index the records that transaction has written and not yet committed (issue #6324, item 1).
      * <p>
-     * True for every index family. Each build stages its entries on the transaction it runs in, exactly as a live
-     * write does, and they are applied at commit through the same replay: the dense vector build queues one entry per
-     * record through {@code DocumentIndexer.addToIndex} and, on the freshly created index every schema path builds,
-     * finds no committed vector to build a graph over (the graph is built on first use after the commit, as for any
-     * write); the sparse one routes every record through {@code put}. The dense search also merges the transaction's
-     * own queued entries into its answer (issue #7378), so a dense index built inside the transaction answers inside
-     * it too.
+     * True for every family: each build stages its entries on the transaction it runs in, as a live write does, and
+     * the commit replay applies them. The vector families were excluded until issue #10438, and their nested-transaction
+     * build committed an empty index whenever the writes it should cover were still pending.
      * <p>
-     * The vector families used to be excluded, on the grounds that their search read only committed files. Built in a
-     * nested transaction of their own instead, they could not see the caller's uncommitted inserts, read the committed
-     * image of the records it had updated, and - since the caller's writes predate the index, none of them had queued
-     * an entry either - committed an empty index: a {@code CREATE INDEX ... LSM_VECTOR} in the same {@code sqlscript}
-     * as the writes it should cover answered every search with no rows (issue #10438).
-     * <p>
-     * Kept as a per-family predicate, rather than removed, so a future family whose build cannot run inside a caller's
-     * transaction has the one place to say so.
+     * A shared build cannot commit in chunks, so every entry stays queued until the caller commits. For a vector index
+     * over a large bucket that is one heavy entry per record held in memory, so such an index is best created in a
+     * request of its own. Kept as a predicate so a future family that cannot share has one place to say so.
      */
     public boolean buildCanShareCallerTransaction() {
       return true;
