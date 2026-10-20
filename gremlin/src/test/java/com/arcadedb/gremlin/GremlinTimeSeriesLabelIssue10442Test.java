@@ -125,6 +125,11 @@ class GremlinTimeSeriesLabelIssue10442Test {
     assertThat(graph.traversal().V().hasLabel(P.without("Ev")).count().next()).isEqualTo(2L);
     assertThat(graph.traversal().V().not(__.hasLabel("Ev")).count().next()).isEqualTo(2L);
     assertThat(graph.traversal().V().not(__.out("Ev")).count().next()).isEqualTo(2L);
+    // nested inside the body of not()
+    assertThat(graph.traversal().V().not(__.and(__.hasLabel("Ev"), __.has("name", "x"))).count().next()).isEqualTo(2L);
+    assertThat(graph.traversal().V().not(__.where(__.out("Ev"))).count().next()).isEqualTo(2L);
+    // two negations ask for the label again
+    assertThatThrownBy(() -> graph.traversal().V().not(__.not(__.hasLabel("Ev"))).count().next()).hasStackTraceContaining(MESSAGE);
   }
 
   @Test

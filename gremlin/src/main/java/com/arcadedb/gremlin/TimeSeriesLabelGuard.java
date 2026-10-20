@@ -28,8 +28,10 @@ import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.HasContainerHolder;
+import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.NotStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.EmptyStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.util.ConnectiveP;
 import org.apache.tinkerpop.gremlin.structure.T;
@@ -60,8 +62,8 @@ final class TimeSeriesLabelGuard {
    * @throws CommandSemanticException when a {@code has()} step or a hop of {@code traversal} asks for the label of a time-series type
    */
   static void check(final Schema schema, final Traversal.Admin<?, ?> traversal) {
-    // the body of not(): every label it names is negated
-    if (traversal.getParent() instanceof NotStep)
+    // inside the body of not(), however deep (not(and(hasLabel('Ev'), ...))): every label it names is negated
+    if (isNegated(traversal))
       return;
 
     final List<Step> steps = traversal.getSteps();
@@ -84,6 +86,20 @@ final class TimeSeriesLabelGuard {
     }
   }
 
+  /**
+   * Whether {@code traversal} sits under an odd number of {@code not()} steps, walking its parents up to the root.
+   */
+  private static boolean isNegated(final Traversal.Admin<?, ?> traversal) {
+    boolean negated = false;
+    TraversalParent parent = traversal.getParent();
+    while (parent != null && !(parent instanceof EmptyStep)) {
+      if (parent instanceof NotStep)
+        negated = !negated;
+      parent = parent.asStep().getTraversal().getParent();
+    }
+    return negated;
+  }
+
   private static void checkPredicate(final Schema schema, final P<?> predicate) {
     if (predicate == null)
       return;
@@ -95,6 +111,7 @@ final class TimeSeriesLabelGuard {
       return;
     }
 
+    // any other predicate (neq, without, a TextP, a custom BiPredicate) names no label it asks for, so it is not refused
     final Object value = predicate.getValue();
     if (predicate.getBiPredicate() == Compare.eq)
       checkName(schema, value);
