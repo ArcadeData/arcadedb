@@ -22,6 +22,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
+import org.apache.tinkerpop.gremlin.process.traversal.TextP;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.junit.jupiter.api.AfterEach;
@@ -151,5 +152,13 @@ class GremlinTimeSeriesLabelIssue10442Test {
   void addVertexOfTimeSeriesTypeFails() {
     // already an error before #10442: the type is not a vertex type
     assertThatThrownBy(() -> graph.traversal().addV("Ev").next()).hasStackTraceContaining("'Ev' is not a vertex");
+    assertThatThrownBy(() -> graph.traversal().V().has("name", "x").addE("Ev").to(__.V().has("name", "y")).next())
+        .hasStackTraceContaining("'Ev' is not a edge");
+  }
+
+  @Test
+  void patternPredicateOnTheLabelIsNotRefused() {
+    // a documented limit of the guard: a TextP names no type, so it is answered (nothing carries a label starting with 'E')
+    assertThat(graph.traversal().V().hasLabel(TextP.startingWith("E")).count().next()).isEqualTo(0L);
   }
 }
