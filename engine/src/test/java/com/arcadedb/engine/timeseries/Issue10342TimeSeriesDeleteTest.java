@@ -285,6 +285,25 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
     assertMatchesModel();
   }
 
+  /** A back-quoted type name is the type, as everywhere else in the planner. */
+  @Test
+  void aBackQuotedTypeNameIsTheTimeSeriesType() throws Exception {
+    create(1);
+    append(0, 100);
+
+    final Predicate<Sample> predicate = s -> s.host.equals("h1");
+    final long expected = model.stream().filter(predicate).count();
+    // a quoted column is the column for the SELECT push-down too, so the DELETE removes exactly what this returns
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM `M` WHERE `host` = 'h1' AND `ts` >= " + BASE)) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(expected);
+    }
+    model.removeIf(predicate);
+    try (final ResultSet rs = database.command("sql", "DELETE FROM `M` WHERE `host` = 'h1' AND `ts` >= " + BASE)) {
+      assertThat(rs.next().<Long>getProperty("count")).isEqualTo(expected);
+    }
+    assertMatchesModel();
+  }
+
   /** EXPLAIN shows the scope, and runs nothing. */
   @Test
   void explainShowsTheScopeAndDeletesNothing() throws Exception {

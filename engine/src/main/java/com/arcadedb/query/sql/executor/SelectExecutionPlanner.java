@@ -3075,7 +3075,7 @@ public class SelectExecutionPlanner {
    */
   private static long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
     if (expr instanceof BetweenCondition between) {
-      final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+      final String fieldName = between.getFirst() != null ? identifierText(between.getFirst()) : null;
       if (timestampColumn.equals(fieldName)) {
         final Object fromVal = between.getSecond().execute((Identifiable) null, context);
         final Object toVal = between.getThird().execute((Identifiable) null, context);
@@ -3090,8 +3090,8 @@ public class SelectExecutionPlanner {
       }
     } else if (expr instanceof BinaryCondition binary) {
       // Check if one side is the timestamp column and the other is a value
-      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+      final String rightStr = binary.right != null ? identifierText(binary.right) : null;
       final boolean leftIsTs = timestampColumn.equals(leftStr);
       final boolean rightIsTs = timestampColumn.equals(rightStr);
 
@@ -3157,6 +3157,18 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * The name a TIMESERIES push-down compares with a column name: the text of {@code operand}, trimmed, without the back-quotes that
+   * quote an identifier ({@code `value`} names the column {@code value}). A quoted column used to be left out of the push-down, which
+   * costs a SELECT only a residual filter and a DELETE its statement (issue #10342).
+   */
+  private static String identifierText(final Object operand) {
+    if (operand == null)
+      return null;
+    final String text = operand.toString().trim();
+    return text.length() > 2 && text.charAt(0) == '`' && text.charAt(text.length() - 1) == '`' ? text.substring(1, text.length() - 1) : text;
+  }
+
+  /**
    * What a {@code DELETE} over a TIMESERIES type names (issue #10342): a time range on the timestamp column and the tag
    * equalities, exactly as the WHERE says them.
    */
@@ -3210,8 +3222,8 @@ public class SelectExecutionPlanner {
           continue;
         if (!(binary.operator instanceof EqualsCompareOperator))
           continue;
-        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+        final String rightStr = binary.right != null ? identifierText(binary.right) : null;
         if (leftStr == null || rightStr == null)
           continue;
         // Skip timestamp predicates, already handled by time range extraction
@@ -3770,8 +3782,8 @@ public class SelectExecutionPlanner {
       final CommandContext context) {
     if (!(binary.operator instanceof EqualsCompareOperator))
       return null;
-    final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-    final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+    final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+    final String rightStr = binary.right != null ? identifierText(binary.right) : null;
     final String tag = isTimeSeriesTagColumn(columns, leftStr) ? leftStr : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
     if (tag == null)
       return null;
