@@ -280,9 +280,9 @@ public class ApiTokenConfiguration {
     protected String refusal() {
       if (!diskBehind)
         return null;
-      return "the API tokens in force have not been written to it yet (the last write failed). Make the configuration "
-          + "directory writable again: the next successful write lifts this, and it writes the tokens in force OVER this edit. "
-          + "To apply the edit instead, restart the server once the directory is writable";
+      return "the API tokens in force have not been written to it yet (the last write failed), so it is not read: make the "
+          + "configuration directory writable again - the next successful write lifts this and writes the tokens in force OVER "
+          + "this edit - or, to apply the edit instead, restart the server once the directory is writable";
     }
   }
 

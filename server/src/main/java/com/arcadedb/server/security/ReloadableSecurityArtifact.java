@@ -70,7 +70,9 @@ abstract class ReloadableSecurityArtifact<T> {
   /**
    * @param owner       the store this policy belongs to, the requester its log lines are attributed to. Separate from
    *                    {@code lock} because the users store locks on a private object, not on {@code ServerSecurity}
-   * @param lock        the store's lock, held across every read and publish
+   * @param lock        the store's lock, held across every read and publish. The stores differ ON PURPOSE: groups and
+   *                    tokens pass their own monitor so a reload serializes with their synchronized writers, the users
+   *                    store a private object because {@code ServerSecurity}'s monitor is held across Raft round trips
    * @param file        the live file
    * @param errorFile   where a file that cannot be used is preserved
    * @param watcherName the prefix of the watcher thread's name; the file's path is appended to it
@@ -126,8 +128,8 @@ abstract class ReloadableSecurityArtifact<T> {
    * leave what is there. The default preserves the file and falls back. A store overrides it only where its first load
    * has a different, pinned, answer:
    * <ul>
-   *   <li>the users store refuses to start on a failure that is not a bad file (anything but an I/O error or a
-   *       {@code JSONException}), by rethrowing it;</li>
+   *   <li>the users store rethrows anything other than an {@code IOException} or a {@code JSONException}, so the
+   *       server refuses to start;</li>
    *   <li>the tokens store keeps what it holds on an I/O error ({@code Issue7373ClusterWideGroupsAndTokensTest}).</li>
    * </ul>
    */
@@ -212,7 +214,7 @@ abstract class ReloadableSecurityArtifact<T> {
       final String refusal = refusal();
       if (refusal != null) {
         fileLastUpdated = file.lastModified();
-        LogManager.instance().log(owner, Level.WARNING, "File '%s' changed, but %s; %s", file.getName(), refusal, keeping());
+        LogManager.instance().log(owner, Level.WARNING, "File '%s' changed, but %s. Until then, %s", file.getName(), refusal, keeping());
         return false;
       }
 
