@@ -318,7 +318,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           askForRootPassword();
       }
 
-      apiTokenConfig.load();
+      // Issue #10383: the token file is read here at STARTUP only, and from then on by its own watcher. This used to run on
+      // every users-file reload too, with the first-load policy: a token file that was absent or unparseable at that
+      // moment emptied the token set of a running server - because of a file it had not been asked to re-read - and
+      // nothing re-read it afterwards, so the revocation outlasted the restore of the file.
+      if (!reload) {
+        apiTokenConfig.load();
+        apiTokenConfig.startWatching(checkConfigReloadEveryMs);
+      }
 
       // Schedule periodic cleanup of stale token failure entries
       if (tokenFailureCleanupTimer == null) {
@@ -374,6 +381,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     users = new ConcurrentHashMap<>();
     if (groupRepository != null)
       groupRepository.stop();
+    if (apiTokenConfig != null)
+      apiTokenConfig.stop();
 
     // shutdown() rather than shutdownNow(), with the queue drained by hand, because neither one alone is right
     // here. shutdownNow() interrupts a walk that may be inside ArcadeDBServer.getDatabase(), turning a normal
@@ -1890,9 +1899,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     //
     // - no usable 'databases' section and every authorization lookup - getDatabaseGroupsConfiguration, called
     //   per request - throws instead of answering;
-    // - no 'version' and the document is written out anyway, but SecurityGroupFileRepository.load() discards a
-    //   versionless file on the next restart and falls back to createDefault(), which is the silent widening
-    //   to the default permissions the repository's own atomic-write comment exists to prevent.
+    // - no 'version' and the document is written out anyway, but SecurityGroupFileRepository.load() refuses a
+    //   versionless file on the next restart and falls back to the default document (preserving the refused one
+    //   since issue #10383), which is the widening to the default permissions the repository's own atomic-write
+    //   comment exists to prevent. SecurityGroupFileRepository.shapeProblem() is the file reader's side of the same
+    //   two checks.
     if (!root.has("databases") || !(root.get("databases") instanceof JSONObject))
       throw new ServerSecurityException(
           "Replicated group document has no usable 'databases' section; refusing to install it over the current "
