@@ -2325,7 +2325,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * store a root password nobody can type. Only the final CR/LF is removed: interior characters and
    * trailing spaces are left alone, since those can legitimately belong to the password.
    */
-  static String stripTrailingNewline(final String password) {
+  public static String stripTrailingNewline(final String password) {
     if (password == null)
       return null;
     if (password.endsWith("\r\n"))

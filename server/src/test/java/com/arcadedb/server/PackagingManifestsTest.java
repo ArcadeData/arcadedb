@@ -169,6 +169,35 @@ class PackagingManifestsTest {
   }
 
   @Test
+  void statefulSetNamesAnHaClusterTokenSource() {
+    // Issue #10462: an HA node authenticates its peers with a cluster token. Without an explicit one it is derived from
+    // the root password, and a manifest that keeps that password off the command line must not leave the cluster's
+    // authentication hanging on that fallback alone: it names the token's own secret, mounted from the same Secret.
+    final String manifest = codeOf(read(STATEFULSET));
+    assertThat(manifest).contains("-D" + GlobalConfiguration.HA_ENABLED.getKey() + "=true");
+    if (manifest.contains("-D" + GlobalConfiguration.SERVER_ROOT_PASSWORD.getKey() + "="))
+      return;
+
+    assertThat(manifest).as("the cluster token must not be passed as a command-line argument")
+        .doesNotContain("-D" + GlobalConfiguration.HA_CLUSTER_TOKEN.getKey() + "=");
+    final Matcher path = Pattern.compile("-D" + Pattern.quote(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH.getKey()) + "=([^\"\\s]+)")
+        .matcher(manifest);
+    assertThat(path.find()).as("an HA StatefulSet with no inline root password must set %s",
+        GlobalConfiguration.HA_CLUSTER_TOKEN_PATH.getKey()).isTrue();
+
+    final String tokenPath = path.group(1);
+    final String directory = tokenPath.substring(0, tokenPath.lastIndexOf('/'));
+    final String file = tokenPath.substring(tokenPath.lastIndexOf('/') + 1);
+    assertThat(matches(MOUNT_PATH, manifest)).as("no volume is mounted at the configured cluster token directory")
+        .contains(directory);
+    assertThat(manifest).as("the mounted Secret projects no '%s' item, so the token file never exists", file)
+        .containsPattern("(?m)^\\s*- key: " + Pattern.quote(file) + "\\s*\\n\\s*path: " + Pattern.quote(file) + "\\s*$");
+    // The instructions at the top of the manifest create that Secret: they have to fill the key the pods mount.
+    assertThat(read(STATEFULSET)).as("the documented `kubectl create secret` does not set the '%s' key", file)
+        .contains("--from-literal=" + file + "=");
+  }
+
+  @Test
   void statefulSetProbesTheEndpointTheServerRegisters() {
     final String manifest = read(STATEFULSET);
     // Registered unauthenticated in HttpServer as /api/v1 + /ready.

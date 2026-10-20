@@ -1682,7 +1682,8 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
-      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
+      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user. "
+          + "With HA enabled and no arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath, the cluster token is derived from this password",
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
