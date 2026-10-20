@@ -52,7 +52,7 @@ jobs:
       - name: Run pre-commit
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13.0"
+
           cache: "pip"
       # Every step below needs PyYAML, so it gets its own step rather than hiding inside the first
       # one that happens to run - reordering those would otherwise break the rest confusingly.
@@ -1047,7 +1047,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13.0"
+
           cache: "pip"
           cache-dependency-path: "e2e-python/requirements*.txt"
 

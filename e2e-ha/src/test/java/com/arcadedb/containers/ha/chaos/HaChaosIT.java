@@ -97,11 +97,12 @@ class HaChaosIT extends ContainersTestTemplate {
     final List<GenericContainer<?>> nodes = new ArrayList<>();
     for (int i = 0; i < config.nodes(); i++)
       nodes.add(createPersistentArcadeContainer("arcadedb-" + i, serverList.toString(), "majority", network,
-          // ARCADEDB_OPTS_MEMORY follows JAVA_OPTS on the server's command line, so chaos.serverOpts override defaults
+          // the JVM image's server.sh puts ARCADEDB_OPTS_MEMORY on the command line, the native binary takes these as
+          // arguments: either way chaos.serverOpts reach the server after the image's defaults and override them
           ("-Xms" + config.nodeHeap() + " -Xmx" + config.nodeHeap() + " " + config.serverOpts()).trim(),
           2 * config.nodeHeapBytes()));
-    // server.sh passes its own -Djava.util.logging.config.file after every user option, so a different logging
-    // configuration has to replace the file itself
+    // both images name their own -Djava.util.logging.config.file (server.sh after every user option, the native image in
+    // its entrypoint), so a different logging configuration has to replace the file itself
     if (!config.logConfig().isEmpty())
       for (final GenericContainer<?> node : nodes)
         node.withCopyFileToContainer(MountableFile.forHostPath(config.logConfig()), "/home/arcadedb/config/arcadedb-log.properties");
