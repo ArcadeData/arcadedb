@@ -2917,7 +2917,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (int i = doomed.nextClearBit(0); i < timestamps.length; i = doomed.nextClearBit(i + 1))
       keptTimestamps[k++] = timestamps[i];
 
-    // The distinct values as the block declared them, and the ONE instance of each (issue #8793), as a merge keeps them
+    // The block's declared values only intern the strings (issue #8793): what the rebuilt block declares is computed below from the rows
+    // that stay, so a value only the deleted rows held is no longer declared. The ONE instance of each, as a merge keeps them
     final Map<String, String> canonical = new HashMap<>();
     if (entry.tagDistinctValues != null)
       for (final String[] declared : entry.tagDistinctValues)

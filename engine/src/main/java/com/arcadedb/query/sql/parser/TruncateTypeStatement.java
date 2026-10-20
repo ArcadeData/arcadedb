@@ -272,7 +272,8 @@ public class TruncateTypeStatement extends DDLStatement {
     try {
       deleted = tsType.requireEngine(SecurityDatabaseUser.ACCESS.DELETE_RECORD).truncate();
     } catch (final IOException e) {
-      throw new CommandExecutionException("Error truncating the TIMESERIES type '" + tsType.getName() + "'", e);
+      throw new CommandExecutionException("Error truncating the TIMESERIES type '" + tsType.getName() + "': some of the samples may "
+          + "already be deleted, and running the statement again deletes the rest", e);
     }
 
     final ResultInternal result = new ResultInternal(context.getDatabase());

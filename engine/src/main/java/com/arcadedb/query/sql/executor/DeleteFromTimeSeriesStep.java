@@ -72,7 +72,9 @@ public class DeleteFromTimeSeriesStep extends AbstractExecutionStep {
       try {
         deleted = engine.deleteSamples(fromTs, toTs, tagFilter);
       } catch (final IOException e) {
-        throw new CommandExecutionException("Error deleting samples from the TIMESERIES type '" + tsType.getName() + "'", e);
+        // the shards before the one that failed are deleted: say so, and that running the statement again finishes the job
+        throw new CommandExecutionException("Error deleting samples from the TIMESERIES type '" + tsType.getName() + "': some of the "
+            + "samples may already be deleted, and running the statement again deletes the rest", e);
       }
 
       final ResultInternal row = new ResultInternal(context.getDatabase());
