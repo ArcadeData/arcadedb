@@ -196,10 +196,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    * <p>
    * A refusal only {@code addSuperType} (a partition the subtype cannot take, an index that cannot be propagated) or
    * {@code setCustomValue} can know about comes once the type is registered, and a refused CREATE must leave nothing behind: the type
-   * is taken back, in the same
-   * frame, so the one publication carries the schema as it was. The buckets the type found or was given were somebody's or nobody's
-   * before the statement: they are detached first, so the drop does not take their records (issue #10394). The refusals that can
-   * be known beforehand are checked before the create ({@link #checkSuperTypesBeforeCreate}), which leaves no window at all.
+   * is taken back, in the same frame, so the one publication carries the schema as it was. The buckets the type found or was given
+   * were somebody's or nobody's before the statement: they are detached first, so the drop does not take their records (issue
+   * #10394). The refusals that can be known beforehand are checked before the create ({@link #checkSuperTypesBeforeCreate}), which
+   * leaves no window at all.
    */
   private void createAndLink(final Schema schema, final String typeName, final DocumentType[] superclasses,
       final Set<String> bucketsOfOthers, final Map<String, Object> custom) {

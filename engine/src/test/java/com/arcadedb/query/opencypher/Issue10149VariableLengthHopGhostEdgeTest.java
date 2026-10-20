@@ -31,6 +31,8 @@ import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Iterator;
 import java.util.Set;
@@ -121,6 +123,41 @@ class Issue10149VariableLengthHopGhostEdgeTest extends TestHelper {
       assertThat(names(FROM_GA + "-[:LINK*1..1]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gc");
       assertThat(names(FROM_GA + "-[:LINK*2..2]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gb");
     }
+  }
+
+  /**
+   * Two relationships to the same vertex, one of them a ghost: the vertex is reached through the live one whichever the order of the
+   * two entries. Listed first, the ghost is skipped and reported without spending the vertex; listed second, the vertex was found already
+   * and the ghost is not probed at all (the probe is paid once per vertex reached).
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void aLiveEntryToTheSameVertexReachesItWhicheverOrderTheGhostIsListedIn(final boolean ghostFirst) {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("G").set("name", "ga").save();
+      final MutableVertex b = database.newVertex("G").set("name", "gb").save();
+      a.newEdge("LINK", b).set("tag", ghostFirst ? "ghost" : "live").save();
+      a.newEdge("LINK", b).set("tag", ghostFirst ? "live" : "ghost").save();
+    });
+    deleteTheGhost();
+    final Vertex start = vertex("ga");
+
+    final long before = GhostEdgeReporter.getTotalSkipped();
+    for (final String distinct : new String[] { "DISTINCT ", "" })
+      for (final String hop : new String[] { "*1..1", "*1..3", ":LINK*1..2" })
+        assertThat(names(FROM_GA + "-[" + hop + "]->(b:G) RETURN " + distinct + "b.name", "b.name")).as("%s%s", distinct, hop)
+            .containsExactly("gb");
+    for (final boolean detectCycles : new boolean[] { true, false }) {
+      assertThat(names(new BreadthFirstTraverser(Direction.OUT, new String[] { "LINK" }, 1, 3, false, detectCycles).traverse(start)))
+          .as("BFS, cycles detected: %s", detectCycles).containsExactly("gb");
+      assertThat(names(new DepthFirstTraverser(Direction.OUT, new String[] { "LINK" }, 1, 3, false, detectCycles).traverse(start)))
+          .as("DFS, cycles detected: %s", detectCycles).containsExactly("gb");
+      assertThat(names(new BreadthFirstTraverser(Direction.OUT, new String[] { "LINK" }, 1, 3, false, detectCycles)
+          .traverseDistinctEndpoints(start))).as("distinct endpoints, cycles detected: %s", detectCycles).containsExactly("gb");
+    }
+    if (ghostFirst)
+      assertThat(GhostEdgeReporter.getTotalSkipped()).as("a ghost listed before the live entry is probed and reported")
+          .isGreaterThan(before);
   }
 
   /** The anomaly is reported by every shape, not only by the one that loads the relationship. */
@@ -244,11 +281,15 @@ class Issue10149VariableLengthHopGhostEdgeTest extends TestHelper {
         c.newEdge("LINK", b).set("tag", "live-cb").save();
     });
 
+    deleteTheGhost();
+  }
+
+  /** Only the edge record tagged "ghost" goes: the entries naming it in the adjacency lists of both ends stay behind. */
+  private void deleteTheGhost() {
     final RID ghost;
     try (final ResultSet rs = database.query("opencypher", "MATCH (:G {name: 'ga'})-[r:LINK {tag: 'ghost'}]->(:G {name: 'gb'}) RETURN r")) {
       ghost = ((Edge) rs.next().getProperty("r")).getIdentity();
     }
-    // Only the edge record goes: the entries naming it in the adjacency lists of both ends stay behind
     database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, ghost));
   }
 
