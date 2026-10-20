@@ -265,6 +265,24 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     }
   }
 
+  /** What a statement that crossed the limit of the journal left in the scope is gone with it: the next statement journals again. */
+  @Test
+  void aStatementAfterOneThatCrossedTheLimitOfTheJournalIsJournaledAgain() {
+    database.begin();
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 13}) WITH v UNWIND range(1, 5000) AS i CREATE (v)-[:R {w: i}]->(v)").close(), ValidationException.class);
+    database.rollback();
+
+    database.begin();
+    database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
+    assertRefusedWith(() -> database.command("opencypher", "CREATE (v:V {k: 14})-[:R {w: 1}]->(v)").close(), ValidationException.class);
+    database.commit();
+
+    assertThat(rowOf(1)).isEqualTo("w=0,s=A");
+    assertThat(count("V")).isZero();
+    assertThat(count("R")).isZero();
+  }
+
   @Test
   void aPropertyWrittenOnAnExistingRecordBesideTheTakenBackEdgeStillRefusesTheCommit() {
     database.begin();

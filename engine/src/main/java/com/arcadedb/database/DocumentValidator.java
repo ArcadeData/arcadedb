@@ -61,7 +61,8 @@ public class DocumentValidator {
 
   // Threads with a link-target deferral open (issue #10483), so the write path pays one volatile read for it unless a restore is running
   private static final AtomicInteger      LINK_TARGET_DEFERRING_THREADS = new AtomicInteger();
-  private static final ThreadLocal<int[]> LINK_TARGET_DEFERRAL_DEPTH    = ThreadLocal.withInitial(() -> new int[1]);
+  // No initial value: a thread that never opens a scope allocates nothing, whatever the others do
+  private static final ThreadLocal<int[]> LINK_TARGET_DEFERRAL_DEPTH    = new ThreadLocal<>();
 
   /**
    * The scope returned by {@link #deferLinkTargetTypeChecks()}. Closing it ends the scope once: a second close is ignored, so it can
@@ -103,21 +104,29 @@ public class DocumentValidator {
    * needs it. Closing it from another thread throws and leaves it open on the owner, whose writes stay relaxed until it closes it.
    */
   public static LinkTargetTypeDeferral deferLinkTargetTypeChecks() {
-    if (LINK_TARGET_DEFERRAL_DEPTH.get()[0]++ == 0)
+    int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
+    if (depth == null) {
+      depth = new int[1];
+      LINK_TARGET_DEFERRAL_DEPTH.set(depth);
+    }
+    if (depth[0]++ == 0)
       LINK_TARGET_DEFERRING_THREADS.incrementAndGet();
     return new LinkTargetTypeScope();
   }
 
   private static void endLinkTargetTypeDeferral() {
     final int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
-    if (depth[0] > 0 && --depth[0] == 0) {
+    if (depth != null && depth[0] > 0 && --depth[0] == 0) {
       LINK_TARGET_DEFERRING_THREADS.decrementAndGet();
       LINK_TARGET_DEFERRAL_DEPTH.remove();
     }
   }
 
   private static boolean linkTargetTypeCheckDeferred() {
-    return LINK_TARGET_DEFERRING_THREADS.get() != 0 && LINK_TARGET_DEFERRAL_DEPTH.get()[0] > 0;
+    if (LINK_TARGET_DEFERRING_THREADS.get() == 0)
+      return false;
+    final int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
+    return depth != null && depth[0] > 0;
   }
 
   public static void validate(final MutableDocument document) throws ValidationException {

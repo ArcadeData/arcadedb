@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -246,6 +247,15 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
     try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
       assertThatThrownBy(() -> target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath()))
           .hasStackTraceContaining("declared as").hasStackTraceContaining("'Wanted'");
+
+      // The import that failed left no deferral open on this thread: the same wrong-type link is refused again
+      final Function<RID, Object> wrap = wrapperOf(declaration);
+      target.transaction(() -> {
+        final MutableDocument other = target.newDocument("Other");
+        other.save();
+        assertThatThrownBy(() -> target.newVertex("Holder").set("p", wrap.apply(other.getIdentity())).save()).isInstanceOf(
+            ValidationException.class);
+      });
     } finally {
       file.delete();
     }
