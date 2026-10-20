@@ -186,6 +186,57 @@ class Issue10488NestedNumericArrayParamTest extends TestHelper {
     return found;
   }
 
+  /** A list holding an integer beyond the int range: the elements are an Integer and a Long, as the literal's are. */
+  @Test
+  void aNestedListWithALongBeyondTheIntRangeEqualsTheLiteralAndGroupsWithIt() {
+    database.command("sql", "CREATE DOCUMENT TYPE Big");
+    final Map<String, Object> request = new JSONObject("{\"params\":{\"m\":{\"a\":[5000000000,1]}}}").toMap(true);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> params = (Map<String, Object>) request.get("params");
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Big SET k = 'param', m = :m", params).close();
+      database.command("sql", "INSERT INTO Big SET k = 'literal', m = {\"a\": [5000000000, 1]}").close();
+    });
+
+    assertThat(keys("SELECT k FROM Big WHERE m.a = [5000000000, 1] ORDER BY k")).containsExactly("literal", "param");
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Big GROUP BY m")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(2L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /** Every way a map or a list reaches a record funnels through the one place that unwraps: the setters, the map and JSON loads, MERGE and CONTENT. */
+  @Test
+  void everyPathThatAssignsAPropertyStoresTheNestedListAsAList() {
+    database.command("sql", "CREATE DOCUMENT TYPE Paths");
+    final Map<String, Object> nested = new HashMap<>();
+    nested.put("a", new long[] { 1L, 2L });
+
+    final Map<String, Object> contentRow = new HashMap<>();
+    contentRow.put("k", "content");
+    contentRow.put("m", nested);
+    final Map<String, Object> mergeParams = new HashMap<>();
+    mergeParams.put("m", nested);
+
+    database.transaction(() -> {
+      database.newDocument("Paths").set("k", "set").set("m", nested).save();
+      database.newDocument("Paths").set(Map.of("k", "setMap", "m", nested)).save();
+      database.newDocument("Paths").fromMap(contentRow).set("k", "fromMap").save();
+      database.newDocument("Paths").set("k", "merge").save();
+      database.command("sql", "INSERT INTO Paths CONTENT :row", Map.of("row", contentRow)).close();
+      database.command("sql", "UPDATE Paths MERGE {\"m\": {\"a\": [1, 2]}} WHERE k = 'merge'").close();
+    });
+    database.transaction(() -> {
+      database.command("sql", "UPDATE Paths SET m = :m WHERE k = 'merge'", mergeParams).close();
+      database.command("sql", "UPDATE Paths CONTENT :row WHERE k = 'setMap'", Map.of("row", Map.of("k", "setMap", "m", nested))).close();
+    });
+
+    assertThat(keys("SELECT k FROM Paths WHERE m.a.type() = 'LIST' ORDER BY k")).containsExactly("content", "fromMap", "merge", "set",
+        "setMap");
+    assertThat(keys("SELECT k FROM Paths WHERE m.a = [1, 2] ORDER BY k")).containsExactly("content", "fromMap", "merge", "set", "setMap");
+  }
+
   @Test
   void unwrapKeepsASetASet() {
     final Object unwrapped = Type.unwrapNestedPrimitiveArrays(new LinkedHashSet<Object>(List.of(new long[] { 1L })));

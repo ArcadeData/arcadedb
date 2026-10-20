@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -173,6 +174,85 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
     assertThat(entries(type)).as("the index holds every committed record").isEqualTo(3L);
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO " + type + " SET k = 1").close()))
         .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  /** The caller deletes a committed row and inserts another with the same key before the UNIQUE index exists. */
+  @Test
+  void aUniqueIndexOverADeletedAndReinsertedKeyFollowsTheOutcomeOfTheTransaction() {
+    final String committed = createTypeWithThreeCommittedRecords("ReinsertCm");
+    final String rolledBack = createTypeWithThreeCommittedRecords("ReinsertRb");
+
+    database.begin();
+    database.command("sql", "DELETE FROM " + committed + " WHERE k = 1");
+    database.command("sql", "INSERT INTO " + committed + " SET k = 1, s = 'again', tags = ['again']");
+    database.command("sql", "CREATE INDEX ON " + committed + " (k) UNIQUE");
+    database.commit();
+    assertThat(scan("SELECT FROM " + committed + " WHERE k = 1 AND s = 'again'")).as("the new row answers the key").isEqualTo(1);
+    assertThat(scan("SELECT FROM " + committed + " WHERE k = 1")).isEqualTo(1);
+    assertThat(entries(committed)).isEqualTo(3L);
+
+    database.begin();
+    database.command("sql", "DELETE FROM " + rolledBack + " WHERE k = 1");
+    database.command("sql", "INSERT INTO " + rolledBack + " SET k = 1, s = 'again', tags = ['again']");
+    database.command("sql", "CREATE INDEX ON " + rolledBack + " (k) UNIQUE");
+    database.rollback();
+    assertThat(scan("SELECT FROM " + rolledBack + " WHERE k = 1 AND s = 'w1'")).as("the committed row answers the key").isEqualTo(1);
+    assertThat(scan("SELECT FROM " + rolledBack + " WHERE k = 1")).isEqualTo(1);
+    assertThat(entries(rolledBack)).isEqualTo(3L);
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO " + rolledBack + " SET k = 1").close()))
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  /**
+   * A failure while the caller's pending records are being queued leaves nothing behind: the committed entries are already
+   * committed by then, so the index has to be dropped by the builder that created it, whichever builder that is, and a second
+   * attempt must not find it "already there". The failure is raised by the progress callback on a record only the caller wrote.
+   */
+  @Test
+  void aFailureWhileQueueingTheCallersRecordsDropsTheTypeIndexAndAllowsARetry() {
+    final String type = createTypeWithThreeCommittedRecords("FailType");
+
+    database.begin();
+    database.command("sql", "INSERT INTO " + type + " SET k = 9, s = 'w9', tags = ['a9']");
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex(type, new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false).withCallback((document, total) -> failOnTheCallersRecord(document)).create())
+        .hasStackTraceContaining("injected failure");
+    database.rollback();
+
+    assertThat(database.getSchema().getType(type).getAllIndexes(true)).as("no index left behind").isEmpty();
+
+    final Index retried = database.getSchema().buildTypeIndex(type, new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(false).create();
+    assertThat(retried.countEntries()).isEqualTo(3L);
+  }
+
+  @Test
+  void aFailureWhileQueueingTheCallersRecordsDropsTheBucketIndexAndAllowsARetry() {
+    final DocumentType type = database.getSchema().createDocumentType("FailBucket", 1);
+    type.createProperty("k", Type.INTEGER);
+    final String bucket = type.getBuckets(false).getFirst().getName();
+    database.transaction(() -> {
+      for (int i = 1; i <= 3; i++)
+        database.newDocument("FailBucket").set("k", i).save();
+    });
+
+    database.begin();
+    database.newDocument("FailBucket").set("k", 9).save();
+    assertThatThrownBy(() -> database.getSchema().buildBucketIndex("FailBucket", bucket, new String[] { "k" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).withCallback((document, total) -> failOnTheCallersRecord(document))
+        .create()).hasStackTraceContaining("injected failure");
+    database.rollback();
+
+    assertThat(database.getSchema().getType("FailBucket").getAllIndexes(true)).as("no index left behind").isEmpty();
+
+    final Index retried = database.getSchema().buildBucketIndex("FailBucket", bucket, new String[] { "k" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
+    assertThat(retried.countEntries()).isEqualTo(3L);
+  }
+
+  private static void failOnTheCallersRecord(final Document document) {
+    if (document.getInteger("k") == 9)
+      throw new IllegalStateException("injected failure");
   }
 
   /**
