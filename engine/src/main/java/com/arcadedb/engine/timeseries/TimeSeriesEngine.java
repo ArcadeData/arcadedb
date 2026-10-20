@@ -1303,7 +1303,8 @@ public class TimeSeriesEngine implements AutoCloseable {
     final long[] deleted = new long[1];
     // the shard a delete failed on, with its failure: the shards before it are done and the session publishes them
     final int[] failedShard = { -1 };
-    final Exception[] failure = new Exception[1];
+    final IOException[] ioFailure = new IOException[1];
+    final RuntimeException[] runtimeFailure = new RuntimeException[1];
     boolean ran = false;
     try {
       for (int attempt = 0; attempt < DELETE_SESSION_ATTEMPTS && !ran; attempt++) {
@@ -1315,19 +1316,24 @@ public class TimeSeriesEngine implements AutoCloseable {
         }
         deleted[0] = 0L;
         failedShard[0] = -1;
-        failure[0] = null;
+        ioFailure[0] = null;
+        runtimeFailure[0] = null;
         // One session for all shards, like retention: the pages and the sealed bytes of the whole statement are one replication unit
         ran = db.runWithCompactionReplication(() -> {
           for (final TimeSeriesShard shard : shards) {
+            // Not thrown out of the session: the shards before this one have committed their pages into the session's buffer, and a
+            // session that ends in an exception is not published, so under HA the followers would keep samples this node deleted
+            // while the wrapper quarantined this database to resync it. The session ends normally, publishes what is done, and the
+            // failure is thrown below, once the followers hold what the leader holds.
             try {
               shard.runSealedRewrite(() -> deleted[0] += shard.deleteSamplesLocked(fromTs, toTs, tagFilter));
-            } catch (final IOException | RuntimeException e) {
-              // Not thrown out of the session: the shards before this one have committed their pages into the session's buffer, and a
-              // session that ends in an exception is not published, so under HA the followers would keep samples this node deleted
-              // while the wrapper quarantined this database to resync it. The session ends normally, publishes what is done, and the
-              // failure is thrown below, once the followers hold what the leader holds.
+            } catch (final IOException e) {
               failedShard[0] = shard.getShardIndex();
-              failure[0] = e;
+              ioFailure[0] = e;
+              break;
+            } catch (final RuntimeException e) {
+              failedShard[0] = shard.getShardIndex();
+              runtimeFailure[0] = e;
               break;
             }
           }
@@ -1354,11 +1360,10 @@ public class TimeSeriesEngine implements AutoCloseable {
     for (final TimeSeriesShard shard : shards)
       if (failedShard[0] < 0 || shard.getShardIndex() < failedShard[0])
         shard.sealedDeletePublished();
-    if (failure[0] != null) {
-      if (failure[0] instanceof IOException)
-        throw (IOException) failure[0];
-      throw (RuntimeException) failure[0];
-    }
+    if (ioFailure[0] != null)
+      throw ioFailure[0];
+    if (runtimeFailure[0] != null)
+      throw runtimeFailure[0];
     return deleted[0];
   }
 

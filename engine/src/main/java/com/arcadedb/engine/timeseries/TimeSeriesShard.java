@@ -983,7 +983,7 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Removes the samples with a timestamp in {@code [fromTs, toTs]} and tags satisfying {@code tagFilter} from the mutable pages and
    * from the sealed blocks of this shard (issue #10342), and answers how many. The sealed layer is rewritten as retention rewrites it
-   * and the mutable pages are replaced inside one transaction ({@link TimeSeriesBucket#deleteSamples}).
+   * and the mutable pages are compacted in place inside one transaction ({@link TimeSeriesBucket#deleteSamples}).
    * <p>
    * Called from {@link #runSealedRewrite}, so under the compaction write lock and the sealed-file mutex: no append, compaction,
    * merge, retention or downsample can interleave, and no reader can see the two layers apart. And inside the replication session

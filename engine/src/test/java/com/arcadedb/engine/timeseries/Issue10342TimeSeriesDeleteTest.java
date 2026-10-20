@@ -19,6 +19,8 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.Result;
@@ -45,6 +47,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
@@ -392,6 +395,74 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
     assertMatchesModel();
 
     append(rows, rows + 500);
+    assertMatchesModel();
+    engine().compactAll();
+    assertMatchesModel();
+  }
+
+  /** The rows {@code [from, to)} of a bucket of {@code rows} rows holding {@code perPage} per page, by index. */
+  private record RowRange(String what, BiFunction<Integer, Integer, int[]> of) {
+    @Override
+    public String toString() {
+      return what;
+    }
+  }
+
+  static Stream<RowRange> rowRanges() {
+    return Stream.of(
+        new RowRange("the first row", (p, rows) -> new int[] { 0, 1 }),
+        new RowRange("a row at each side of a page boundary", (p, rows) -> new int[] { p - 1, p + 1 }),
+        new RowRange("a whole page in the middle", (p, rows) -> new int[] { p, 2 * p }),
+        new RowRange("the partial last page", (p, rows) -> new int[] { 3 * p, rows }),
+        new RowRange("a row of the partial last page", (p, rows) -> new int[] { 3 * p + 2, 3 * p + 3 }),
+        new RowRange("the last full page and the partial one", (p, rows) -> new int[] { 2 * p, rows }),
+        new RowRange("the second half of a page to the middle of the next", (p, rows) -> new int[] { p / 2, p + p / 2 }),
+        new RowRange("all but the first row", (p, rows) -> new int[] { 1, rows }),
+        new RowRange("every row, short of the shortcut", (p, rows) -> new int[] { 0, rows }));
+  }
+
+  /**
+   * The mutable pages are compacted in place: the rows that stay move down over the ones removed, byte for byte, and the pages before
+   * the first removed row are not written at all. Every shape of removal against the page boundaries - the first row, a boundary, a
+   * whole page, the partial last page, everything - ends with the rows the model holds, in order, packed in the fewest pages, the
+   * counters of the header and of every page right, and a bucket that takes samples and a compaction afterwards.
+   */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("rowRanges")
+  void theMutablePagesAreCompactedInPlace(final RowRange range) throws Exception {
+    create(1);
+    final TimeSeriesBucket bucket = engine().getShard(0).getMutableBucket();
+    final int perPage = bucket.getMaxSamplesPerPage();
+    final int rows = 3 * perPage + 5;
+    append(0, rows);
+    assertThat(bucket.getDataPageCount()).as("data pages before").isEqualTo(4);
+
+    final int[] bounds = range.of().apply(perPage, rows);
+    final long from = BASE + bounds[0] * 1_000L;
+    final long to = BASE + bounds[1] * 1_000L;
+    // the pages that end before the first removed row: what a delete has no reason to write
+    final int untouchedPages = bounds[0] / perPage;
+    final int[] versionsBefore = new int[untouchedPages + 1];
+    for (int p = 1; p <= untouchedPages; p++)
+      versionsBefore[p] = ((DatabaseInternal) database).getPageManager()
+          .getMostRecentVersionOfPage(new PageId(database, bucket.getFileId(), p), bucket.getPageSize());
+
+    final Predicate<Sample> predicate = s -> s.ts >= from && s.ts < to;
+    final long expected = model.stream().filter(predicate).count();
+    model.removeIf(predicate);
+    try (final ResultSet rs = database.command("sql", "DELETE FROM M WHERE ts >= " + from + " AND ts < " + to)) {
+      assertThat(rs.next().<Long>getProperty("count")).as("deleted").isEqualTo(expected);
+    }
+
+    assertThat(bucket.getSampleCount()).as("samples of the bucket").isEqualTo(model.size());
+    assertThat(bucket.getDataPageCount()).as("data pages: packed, no hole").isEqualTo((model.size() + perPage - 1) / perPage);
+    for (int p = 1; p <= untouchedPages; p++)
+      assertThat(((DatabaseInternal) database).getPageManager()
+          .getMostRecentVersionOfPage(new PageId(database, bucket.getFileId(), p), bucket.getPageSize()))
+          .as("page %d ends before the first removed row: not written", p).isEqualTo(versionsBefore[p]);
+    assertMatchesModel();
+
+    append(rows, rows + 2 * perPage);
     assertMatchesModel();
     engine().compactAll();
     assertMatchesModel();
