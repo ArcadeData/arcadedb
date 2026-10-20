@@ -32,11 +32,21 @@ services:
         -Darcadedb.server.rootPassword=playwithdata
         -Darcadedb.dumpConfigAtStartup=true
         -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
-    # Without this mount the image's `VOLUME /home/arcadedb/databases` resolves to a fresh anonymous
-    # volume on every `up`, so the imported database is lost on the next `down`/`up` cycle while the
-    # named volume declared below stays empty.
+    # One named volume per directory the image declares as a VOLUME. An unmounted one resolves to an
+    # anonymous volume, which `docker compose down -v`, `docker compose rm` or recreating the stack
+    # under another project name silently discards: for `databases` that is the imported database,
+    # for `config` every user, group and API token created at runtime (server-users.jsonl,
+    # server-groups.json, server-api-tokens.json). A named volume is seeded from the image the first
+    # time it is used, so `config` starts with the image's default files; later image upgrades do not
+    # refresh files already in the volume. For the same reason `rootPassword` above takes effect only
+    # on the first start: once server-users.jsonl holds the root user, change its password through the
+    # server (or remove the volume) rather than by editing the setting.
     volumes:
       - arcade_db_vol:/home/arcadedb/databases
+      - arcade_config_vol:/home/arcadedb/config
+      - arcade_backups_vol:/home/arcadedb/backups
+      - arcade_replication_vol:/home/arcadedb/replication
+      - arcade_log_vol:/home/arcadedb/log
     # /api/v1/ready is the server's own unauthenticated readiness endpoint. Without a healthcheck a
     # crash-looping container under `restart: always` still reports as "running". wget comes from the
     # BusyBox base image, so no extra tooling is needed.
@@ -49,6 +59,10 @@ services:
     restart: always
 volumes:
   arcade_db_vol:
+  arcade_config_vol:
+  arcade_backups_vol:
+  arcade_replication_vol:
+  arcade_log_vol:
 
 networks:
   default:
