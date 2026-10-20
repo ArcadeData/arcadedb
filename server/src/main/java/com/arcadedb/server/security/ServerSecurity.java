@@ -39,10 +39,12 @@ import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
+import com.arcadedb.utility.FileUtils;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -67,6 +69,8 @@ import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public static final  int                             LATEST_VERSION       = 2;
+  /** Prefix of the users-file watcher thread's name; the watched file's path is appended to it. */
+  public static final  String                          USERS_WATCHER_PREFIX = "arcadedb-security-users-watcher";
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -107,7 +111,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
     }
   });
-  private              Timer                           reloadConfigurationTimer;
+  // The users half of the reload policy shared with the group and token stores (issue #10404), and its watcher.
+  private final        UsersPolicy                     usersPolicy;
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
   private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
@@ -196,6 +201,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
     usersRepository = new SecurityUserFileRepository(configPath);
+    usersPolicy = new UsersPolicy(configPath);
     groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload(latestConfiguration -> {
       refreshAllDatabasePermissions();
       return null;
@@ -242,7 +248,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Issue #7545: schedules the {@code server-groups.json} reload watcher, once, for the lifetime of this
    * service - the mirror of the {@code groupRepository.stop()} that {@link #stopService()} has always done.
    * <p>
-   * It used to be scheduled only as a side effect of {@link SecurityGroupFileRepository#load()}, i.e. only on a
+   * It used to be scheduled only as a side effect of {@code SecurityGroupFileRepository}'s first load, i.e. only on a
    * node that reached {@link SecurityGroupFileRepository#getGroups()} while the in-memory document was still
    * absent. A node seeded by a replicated {@code SECURITY_GROUPS_ENTRY} before it opened any database gets its
    * document published straight into memory by {@link #applyReplicatedGroups}, so that branch never ran and the
@@ -267,95 +273,118 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * server saves the users in force over the bad file.
    */
   public void loadUsers() {
-    try {
-      final Map<String, ServerSecurityUser> previousUsers = this.users;
-      // Issue #10326: a RELOAD - the users-file watcher below, on a running server - has users in force to fall back
-      // on, the first load has none (stopService() empties the map, and a first load always publishes at least root).
-      // A reload that cannot read the file keeps them, the way the groups watcher keeps its document: falling back to
-      // createDefault() there dropped every user but a passwordless root at once, revoked their sessions, and had
-      // askForRootPassword() save the new root over the operator's file.
-      final boolean reload = !previousUsers.isEmpty();
+    // Issue #10326: a RELOAD - the users-file watcher, on a running server - has users in force to fall back on, the first
+    // load has none (stopService() empties the map, and a first load always publishes at least root).
+    final boolean reload = usersPolicy.hasInForce();
+    usersPolicy.reload();
 
-      Map<String, ServerSecurityUser> newUsers = null;
-      try {
-        if (!reload)
-          newUsers = toUsers(usersRepository.getUsers());
-        else {
-          final List<JSONObject> records = usersRepository.loadRecords();
-          if (records.isEmpty())
-            // Typically an editor caught between truncating the file and writing it: the next tick sees the content.
-            LogManager.instance().log(this, Level.WARNING, "File '%s' is missing or empty, keeping the %d users already in force",
-                SecurityUserFileRepository.FILE_NAME, previousUsers.size());
-          else
-            newUsers = toUsers(records);
+    // Issue #10383: the token file is read here at STARTUP only, and from then on by its own watcher. This used to run on
+    // every users-file reload too, with the first-load policy: a token file that was absent or unparseable at that
+    // moment emptied the token set of a running server - because of a file it had not been asked to re-read - and
+    // nothing re-read it afterwards, so the revocation outlasted the restore of the file.
+    if (!reload) {
+      apiTokenConfig.load();
+      apiTokenConfig.startWatching(checkConfigReloadEveryMs);
+    }
+
+    // Schedule periodic cleanup of stale token failure entries
+    if (tokenFailureCleanupTimer == null) {
+      tokenFailureCleanupTimer = new Timer(true);
+      tokenFailureCleanupTimer.schedule(new TimerTask() {
+        @Override
+        public void run() {
+          final long now = System.currentTimeMillis();
+          tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
+          passwordFailures.entrySet().removeIf(e -> now - e.getValue()[1] > PASSWORD_LOCKOUT_MS);
         }
-      } catch (final RuntimeException | IOException e) {
-        // The USERS repository (issue #10321): the groups one named server-groups.json in the SEVERE and wrote the
-        // valid groups document as the "corrupt" file, while the users file that failed was saved over below.
-        if (reload)
-          // ANY failure on reload, not only JSONException: whatever a record of an unexpected shape throws must neither
-          // replace the users in force nor escape into the watcher's java.util.Timer, which an uncaught exception kills.
-          usersRepository.saveInError(e, "keeping the " + previousUsers.size() + " users already in force");
-        else if (e instanceof JSONException) {
-          usersRepository.saveInError(e);
-          newUsers = toUsers(SecurityUserFileRepository.createDefault());
-        } else
-          throw e;
-      }
+      }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
+    }
 
-      if (newUsers != null) {
-        // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
-        // previous complete map or this one, never an empty intermediate state.
-        this.users = newUsers;
+    usersPolicy.startWatching(checkConfigReloadEveryMs);
+  }
 
-        // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password
-        // rotated - an operator editing the file directly, or a peer's file being re-read - and the bearer
-        // path only requires the name to still resolve. Same comparison the replicated path makes. A no-op at
-        // startup, when no session exists yet.
-        invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
+  /**
+   * The users half of the reload policy shared with the group and token stores (issue #10404): the records of
+   * {@code server-users.jsonl} turned into users, a single {@code root} as the first load's fallback, and the swap into
+   * {@link #users}. Two answers differ from the default policy:
+   * <ul>
+   *   <li>its baseline is the repository's stamp, which {@link SecurityUserFileRepository#save} advances: a user change
+   *       made through the server is not re-read. In a cluster that matters, because a replicated install publishes
+   *       before it writes, and re-reading a file a moment older than the users in force would revert them;</li>
+   *   <li>a first load that fails with anything but a bad file - an I/O error or a {@code JSONException} - is not
+   *       recoverable by falling back and is rethrown, refusing to start.</li>
+   * </ul>
+   * Locked on its own monitor rather than on {@code ServerSecurity}'s, which the cluster-wide mutations hold across a
+   * Raft round trip: a watcher tick must not queue behind one.
+   */
+  private final class UsersPolicy extends ReloadableSecurityArtifact<Map<String, ServerSecurityUser>> {
+    private UsersPolicy(final String configPath) {
+      this(new File(FileUtils.appendSeparatorIfMissing(configPath)));
+    }
 
-        if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
+    private UsersPolicy(final File dir) {
+      super(ServerSecurity.this, new Object(), new File(dir, SecurityUserFileRepository.FILE_NAME),
+          new File(dir, SecurityUserFileRepository.ERROR_FILE_NAME), USERS_WATCHER_PREFIX, "User file");
+    }
+
+    /** {@code null} for an empty file: typically an editor caught between truncating the file and writing it. */
+    @Override
+    protected Map<String, ServerSecurityUser> read() throws IOException {
+      final List<JSONObject> records = usersRepository.loadRecords();
+      return records.isEmpty() ? null : toUsers(records);
+    }
+
+    @Override
+    protected Map<String, ServerSecurityUser> fallback() {
+      return toUsers(SecurityUserFileRepository.createDefault());
+    }
+
+    @Override
+    protected void publish(final Map<String, ServerSecurityUser> newUsers, final boolean isFallback) {
+      final Map<String, ServerSecurityUser> previous = users;
+      // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the previous
+      // complete map or this one, never an empty intermediate state.
+      users = newUsers;
+
+      // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password rotated - an
+      // operator editing the file directly, or a peer's file being re-read - and the bearer path only requires the name
+      // to still resolve. Same comparison the replicated path makes. A no-op at startup, when no session exists yet.
+      invalidateAuthSessionsOfRevokedPrincipals(previous, newUsers);
+
+      if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
+        try {
           askForRootPassword();
-      }
+        } catch (final IOException e) {
+          throw new ServerException("Error on starting Security service", e);
+        }
+    }
 
-      // Issue #10383: the token file is read here at STARTUP only, and from then on by its own watcher. This used to run on
-      // every users-file reload too, with the first-load policy: a token file that was absent or unparseable at that
-      // moment emptied the token set of a running server - because of a file it had not been asked to re-read - and
-      // nothing re-read it afterwards, so the revocation outlasted the restore of the file.
-      if (!reload) {
-        apiTokenConfig.load();
-        apiTokenConfig.startWatching(checkConfigReloadEveryMs);
-      }
+    @Override
+    protected boolean hasInForce() {
+      return !users.isEmpty();
+    }
 
-      // Schedule periodic cleanup of stale token failure entries
-      if (tokenFailureCleanupTimer == null) {
-        tokenFailureCleanupTimer = new Timer(true);
-        tokenFailureCleanupTimer.schedule(new TimerTask() {
-          @Override
-          public void run() {
-            final long now = System.currentTimeMillis();
-            tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
-            passwordFailures.entrySet().removeIf(e -> now - e.getValue()[1] > PASSWORD_LOCKOUT_MS);
-          }
-        }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
-      }
+    @Override
+    protected String keeping() {
+      return "keeping the " + users.size() + " users already in force";
+    }
 
-      final long fileLastModified = usersRepository.getFileLastModified();
-      if (fileLastModified > -1 && reloadConfigurationTimer == null) {
-        reloadConfigurationTimer = new Timer();
-        reloadConfigurationTimer.schedule(new TimerTask() {
-          @Override
-          public void run() {
-            if (usersRepository.isUserFileChanged()) {
-              LogManager.instance().log(this, Level.INFO, "Reloading user files...");
-              loadUsers();
-            }
-          }
-        }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
-      }
+    @Override
+    protected Map<String, ServerSecurityUser> onFirstLoadFailure(final Exception failure) {
+      if (failure instanceof IOException || failure instanceof JSONException)
+        return super.onFirstLoadFailure(failure);
+      throw failure instanceof RuntimeException r ? r : new ServerException("Error on starting Security service", failure);
+    }
 
-    } catch (final IOException e) {
-      throw new ServerException("Error on starting Security service", e);
+    /** The repository's own lock, which also serializes the preservation with its saves. */
+    @Override
+    protected void preserve(final Exception failure, final String outcome) {
+      usersRepository.saveInError(failure, outcome);
+    }
+
+    @Override
+    protected boolean fileChanged() {
+      return file.exists() && usersRepository.isUserFileChanged();
     }
   }
 
@@ -371,8 +400,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   @Override
   public void stopService() {
-    if (reloadConfigurationTimer != null)
-      reloadConfigurationTimer.cancel();
+    usersPolicy.stop();
     if (tokenFailureCleanupTimer != null) {
       tokenFailureCleanupTimer.cancel();
       tokenFailureCleanupTimer = null;
