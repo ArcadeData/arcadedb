@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.SchemaException;
@@ -302,6 +303,16 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
     // a refusal of our own is returned as it is
     final MongoServerError own = new MongoServerError(ErrorCode.BadValue, "no _id");
     assertThat(MongoTimeSeriesInserts.refusal(own)).isSameAs(own);
+
+    // the default of an untyped refusal of the engine is the document's, unless it wraps one of the faults listed above: a cause
+    // the list does not know is a refused sample, not a failed command
+    final MongoServerError unlisted = MongoTimeSeriesInserts.refusal(
+        new CommandExecutionException("Error appending", new UnsupportedOperationException("column")));
+    assertThat(unlisted.getCode()).isEqualTo(ErrorCode.BadValue.getValue());
+
+    // an arithmetic error is the engine's own category and is not decided by that default
+    final ArithmeticErrorException overflow = new ArithmeticErrorException("integer overflow");
+    assertThatThrownBy(() -> MongoTimeSeriesInserts.refusal(overflow)).isSameAs(overflow);
 
     // what is not the document's fails the command: a conflict to retry, a timeout, a lack of permission, a schema that changed
     for (final RuntimeException transientOrNot : List.of(new ConcurrentModificationException("page changed"),

@@ -302,6 +302,33 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
     assertThat(dense.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).as("the renumbered view is held").isNotNull();
   }
 
+  /** A held renumbered view of a slice is found by the key it was stored under, the delegate's view having been given back. */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aHeldRenumberedSliceViewIsFoundWhateverBecameOfTheDelegatesView(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    database.transaction(() -> {
+      commitEdges();
+      vertices.get(5).asVertex().delete();
+    });
+    awaitView(view);
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(view.pinned());
+    assertThat(dense).as("a view with a deleted vertex has holes in its ids").isInstanceOf(DenseNodeIdProvider.class);
+    final GraphTraversalProvider delegate = ((DenseNodeIdProvider) dense).getDelegate();
+    final NeighborView built = dense.getNeighborViewOfSlice(Vertex.DIRECTION.OUT, "K");
+    assertThat(built).isNotNull();
+
+    ((GraphAnalyticalView.Pinned) delegate).snapshot().mergedNeighborViews.values().forEach(SoftReference::clear);
+
+    // the snapshot gave its view back, so a read of one visit does not pay for it again (or the test proves nothing)
+    assertThat(delegate.getNeighborViewOfSliceBuildCost(Vertex.DIRECTION.OUT, "K")).isGreaterThan(1);
+    assertThat(delegate.getNeighborViewOfSliceForVisits(1, Vertex.DIRECTION.OUT, "K")).as("the delegate does not rebuild for one visit")
+        .isNull();
+
+    // and the renumbered view that was built is still served, found by the key it was stored under
+    assertThat(dense.getNeighborViewOfSliceForVisits(1, Vertex.DIRECTION.OUT, "K")).isSameAs(built);
+  }
+
   /**
    * A view the memory pressure gave back (it is held softly) is earned again by the reads, not rebuilt by the first small read
    * after it: what they spent on it went with it.

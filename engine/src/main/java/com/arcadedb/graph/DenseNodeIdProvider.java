@@ -246,7 +246,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
 
   @Override
   public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
-    return cachedView("slice|" + direction + "|" + edgeType, () -> translate(delegate.getNeighborViewOfSlice(direction, edgeType)));
+    return cachedView(sliceKey(direction, edgeType), () -> translate(delegate.getNeighborViewOfSlice(direction, edgeType)));
   }
 
   @Override
@@ -368,6 +368,11 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
     return direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
   }
 
+  /** The key of a slice view: the one place it is spelled, so the lookup of a held view cannot drift from the one that stores it. */
+  private static String sliceKey(final Vertex.DIRECTION direction, final String edgeType) {
+    return "slice|" + direction + "|" + edgeType;
+  }
+
   /** The translated view of {@code key} if one is held, without building it. */
   private NeighborView heldView(final String key) {
     final SoftReference<NeighborView> held = views.get(key);
@@ -425,7 +430,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   @Override
   public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
       final String edgeType) {
-    final NeighborView held = heldView("slice|" + direction + "|" + edgeType);
+    final NeighborView held = heldView(sliceKey(direction, edgeType));
     if (held != null)
       return held;
     if (delegate.getNeighborViewOfSliceForVisits(expectedVisits, direction, edgeType) == null)

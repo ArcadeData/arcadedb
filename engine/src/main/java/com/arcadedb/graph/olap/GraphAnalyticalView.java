@@ -1942,6 +1942,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // A view that costs something although one was built for this key was given back under memory pressure (it is held softly):
     // what the reads spent on it is gone with it, and they earn it again, instead of the first small read after the eviction
     // finding the demand already spent and rebuilding the whole view for itself, which is what this accounting exists to prevent
+    // (the cost is not zero here, so an entry for the key is a reference that was cleared: a held view would have made it zero)
     final SoftReference<NeighborView> evicted = snap.mergedNeighborViews.get(key);
     final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
     if (evicted != null && snap.mergedNeighborViews.remove(key, evicted))

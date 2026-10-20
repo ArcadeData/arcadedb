@@ -124,7 +124,9 @@ final class MongoTimeSeriesInserts {
    * The failure as MongoDB reports a document it rejects, as a write error with its index. Only what says the document is wrong is
    * one: our own refusal of its {@code _id}, a value the type refuses ({@link ErrorCategory#VALIDATION}), and the engine's refusal
    * of a sample (an undeclared key, a value the column cannot hold), which carries no type of its own and so is a {@link
-   * CommandExecutionException} that wraps no fault of the server (see {@link #SERVER_FAULTS}).
+   * CommandExecutionException} that wraps no fault of the server (see {@link #SERVER_FAULTS}). That last one is a default, not a
+   * proof: the engine gives the refusal of a sample no type of its own, so a cause the list does not know is taken for the
+   * document's. The list names what a bug of the code looks like, and a test pins both sides of it.
    * <p>
    * Everything else is not the document's, and fails the command with the code MongoDB gives it, the samples before it stored:
    * a conflict to retry, a timeout, a stop on request, a lack of permission, a schema that changed meanwhile, an I/O error, a
