@@ -152,6 +152,39 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
     assertThat(find("SELECT FROM %s WHERE k = 1", type)).isEqualTo(1);
   }
 
+  /**
+   * The committed phase of the build commits on its own, so a failure while the caller's pending records are being queued must
+   * not leave an index behind that the next write trusts: a UNIQUE index built over a pending duplicate of a committed key
+   * either refuses at the CREATE INDEX, and is then gone, or refuses at the commit, and the rollback leaves it complete.
+   */
+  @Test
+  void aPendingDuplicateOfACommittedKeyLeavesNoHalfBuiltUniqueIndex() {
+    final String type = createTypeWithThreeCommittedRecords("PendingDup");
+
+    database.begin();
+    database.command("sql", "INSERT INTO " + type + " SET k = 1, s = 'dup', tags = ['dup']");
+    boolean refusedAtCreate = false;
+    try {
+      database.command("sql", "CREATE INDEX ON " + type + " (k) UNIQUE");
+      database.commit();
+    } catch (final RuntimeException e) {
+      refusedAtCreate = true;
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+    assertThat(refusedAtCreate).as("the duplicate is refused one way or the other").isTrue();
+
+    assertThat(scan("SELECT FROM " + type + " WHERE k = 1")).as("only the committed record is left").isEqualTo(1);
+    final boolean indexed = database.getSchema().getType(type).getAllIndexes(true).stream().findAny().isPresent();
+    if (indexed)
+      assertThat(entries(type)).as("an index that is left holds every committed record").isEqualTo(3L);
+
+    // whatever is left must let the committed keys be written again only once
+    if (indexed)
+      assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO " + type + " SET k = 1").close()))
+          .isInstanceOf(DuplicatedKeyException.class);
+  }
+
   @Test
   void aTransactionThatCreatedAndThenUpdatedOrDeletedRecordsLeavesTheIndexConsistent() {
     final String type = createTypeWithThreeCommittedRecords("Mixed");

@@ -873,18 +873,13 @@ public class DateUtils {
    * onto the database's zone needs one: without a database there is no zone to consult and the wall-clock is kept.
    */
   private static LocalDateTime dropZone(final Database database, final ZonedDateTime parsed, final OffsetPolicy offsetPolicy) {
-    switch (offsetPolicy) {
-    case CONVERT_TO_UTC:
+    if (offsetPolicy == OffsetPolicy.CONVERT_TO_UTC)
       return parsed.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
-    case REBASE_TO_DATABASE_ZONE:
-      if (database != null) {
-        final ZoneId zoneId = database.getSchema().getZoneId();
-        if (zoneId != null)
-          return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
-      }
-      break;
-    default:
-      break;
+
+    if (offsetPolicy == OffsetPolicy.REBASE_TO_DATABASE_ZONE && database != null) {
+      final ZoneId zoneId = database.getSchema().getZoneId();
+      if (zoneId != null)
+        return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
     }
     return parsed.toLocalDateTime();
   }

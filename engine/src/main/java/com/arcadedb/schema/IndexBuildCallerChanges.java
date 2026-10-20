@@ -78,7 +78,8 @@ final class IndexBuildCallerChanges {
       return;
 
     // The committed version of each record, read with the caller's transaction set aside, so what the caller wrote cannot
-    // masquerade as committed
+    // masquerade as committed. Held in memory for the whole pass: it is one record per write of the caller's transaction in this
+    // bucket, which is what a DDL statement run inside a large uncommitted transaction pays, never one per record of the bucket
     final Document[] committed = new Document[written.size()];
     try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
       for (int i = 0; i < committed.length; i++)

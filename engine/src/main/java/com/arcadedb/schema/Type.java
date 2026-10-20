@@ -2705,6 +2705,9 @@ public enum Type {
    * {@code GROUP BY} tell the two apart (issue #10488). The array that IS the value is left alone: its target decides what it
    * becomes (a list, an {@code ARRAY_OF_FLOATS}).
    * <p>
+   * Only {@code long[]} and {@code double[]} are replaced: they are the two shapes {@code JSONArray.toPrimitiveNumericArrayOrNull}
+   * produces, and the only ones a request can leave in a value. A new shape added there has to be added here.
+   * <p>
    * Nothing is copied unless something is to be replaced, so the common case costs one walk over the nested containers and no
    * garbage. A container holding a replacement is copied, in the same family: a {@link List} to an {@link ArrayList}, a
    * {@link Set} to a {@link LinkedHashSet}, a {@link Map} to a {@link LinkedHashMap}.
@@ -2719,7 +2722,9 @@ public enum Type {
 
   private static boolean holdsNestedPrimitiveArray(final Collection<?> items) {
     for (final Object item : items) {
-      if (item == null)
+      // The scalars come first: the common content of a list is numbers and text, and a vector held as a list of floats runs
+      // through here on every write
+      if (item == null || item instanceof Number || item instanceof String)
         continue;
       if (item instanceof long[] || item instanceof double[])
         return true;
