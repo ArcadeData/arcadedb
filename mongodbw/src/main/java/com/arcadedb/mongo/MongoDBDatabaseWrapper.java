@@ -21,7 +21,6 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -130,7 +129,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   public Document handleCommand(final Channel channel, final String command, final Document document,
       final DatabaseResolver databaseResolver,
       final Oplog opLog) {
-    ProtocolContext.set("mongo");
+    // NOT TAGGED HERE: MongoDBBackend TAGS EVERY ENTRY POINT THE LIBRARY CALLS WITH A CLIENT'S REQUEST, THIS ONE AMONG THEM
+    // (ISSUE #10390)
     try {
       if ("find".equalsIgnoreCase(command))
         return find(document);
@@ -157,8 +157,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
     } catch (final Exception e) {
       throw wireException("Error on executing MongoDB '" + command + "' command", e);
-    } finally {
-      ProtocolContext.clear();
     }
   }
 

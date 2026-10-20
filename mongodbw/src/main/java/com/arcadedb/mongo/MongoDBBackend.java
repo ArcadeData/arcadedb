@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
@@ -28,19 +29,36 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
+import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.BinData;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import de.bwaldvogel.mongo.exception.MongoServerException;
+import de.bwaldvogel.mongo.wire.message.MongoMessage;
+import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * The ArcadeDB side of the bundled mongo-java-server. Every call the library's Netty handler makes with a client's request
+ * enters through one of the {@code MongoBackend} methods overridden here, and each of them tags the thread with the
+ * {@value #MONGO_PROTOCOL} protocol for its duration (issue #10390). The tag lives here, where the module's work begins,
+ * and not on one of the {@code MongoDatabase} methods the library calls next: it reaches the database wrapper through
+ * several doors ({@code handleCommand}; {@code handleQuery} for an OP_QUERY; {@code drop} for a {@code dropDatabase};
+ * {@code dropCollection} and {@code unregisterCollection} for a {@code renameCollection}), and a thread that reaches one
+ * of them untagged reads {@link ProtocolContext#INTERNAL}, which exempts it from the HA gate that refuses client work on a
+ * database whose directory is being replaced from the leader's snapshot, and reports it as the engine's own work.
+ */
 public class MongoDBBackend extends AbstractMongoBackend {
+  /** The protocol a MongoDB client's work is attributed to by the query metrics, the trace spans and the HA gate. */
+  static final String MONGO_PROTOCOL = "mongo";
+
   // MongoDB error codes (see https://github.com/mongodb/mongo/blob/master/src/mongo/base/error_codes.yml)
   private static final int    AUTHENTICATION_FAILED = 18;
   private static final int    UNAUTHORIZED          = 13;
@@ -75,6 +93,52 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   @Override
   public Document handleCommand(final Channel channel, final String databaseName, final String command, final Document query) {
+    final String enclosing = tagAsMongo();
+    try {
+      return handleClientCommand(channel, databaseName, command, query);
+    } finally {
+      restoreProtocol(enclosing);
+    }
+  }
+
+  /** An OP_QUERY on a collection: the library hands it to the database's {@code handleQuery}, past every command. */
+  @Override
+  public QueryResult handleQuery(final MongoQuery query) {
+    final String enclosing = tagAsMongo();
+    try {
+      return super.handleQuery(query);
+    } finally {
+      restoreProtocol(enclosing);
+    }
+  }
+
+  /** An OP_MSG: the library unwraps it into {@link #handleCommand}, which gives this tag back when it returns. */
+  @Override
+  public Document handleMessage(final MongoMessage message) {
+    final String enclosing = tagAsMongo();
+    try {
+      return super.handleMessage(message);
+    } finally {
+      restoreProtocol(enclosing);
+    }
+  }
+
+  /**
+   * Reads no database today ({@code AbstractMongoBackend} answers with an empty list), and is tagged anyway so that a
+   * library version that starts reading one here does not run untagged.
+   */
+  @Override
+  public Collection<Document> getCurrentOperations(final MongoQuery query) {
+    final String enclosing = tagAsMongo();
+    try {
+      return super.getCurrentOperations(query);
+    } finally {
+      restoreProtocol(enclosing);
+    }
+  }
+
+  private Document handleClientCommand(final Channel channel, final String databaseName, final String command,
+      final Document query) {
     if ("saslStart".equalsIgnoreCase(command))
       return handleSaslStart(channel, databaseName, query);
     else if ("saslContinue".equalsIgnoreCase(command))
@@ -171,8 +235,32 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   @Override
   public void handleClose(final Channel channel) {
-    authenticatedUsers.remove(channel);
-    super.handleClose(channel);
+    final String enclosing = tagAsMongo();
+    try {
+      authenticatedUsers.remove(channel);
+      super.handleClose(channel);
+    } finally {
+      restoreProtocol(enclosing);
+    }
+  }
+
+  /**
+   * Tags the current thread as serving a MongoDB client and returns the tag it carried before, for
+   * {@link #restoreProtocol}. The entry points nest (an OP_MSG is unwrapped into a command), so the inner one must give the
+   * outer one its tag back rather than clear it.
+   */
+  private static String tagAsMongo() {
+    final String enclosing = ProtocolContext.get();
+    ProtocolContext.set(MONGO_PROTOCOL);
+    return enclosing;
+  }
+
+  private static void restoreProtocol(final String enclosing) {
+    if (ProtocolContext.INTERNAL.equals(enclosing))
+      // THE SAME VALUE AS set(INTERNAL), WHICH IS THE THREAD-LOCAL'S DEFAULT, BUT WITHOUT AN ENTRY LEFT ON THE POOLED NETTY THREAD
+      ProtocolContext.clear();
+    else
+      ProtocolContext.set(enclosing);
   }
 
   /**
