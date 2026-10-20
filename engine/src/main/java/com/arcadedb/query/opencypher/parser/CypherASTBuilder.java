@@ -1136,14 +1136,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Parse procedure name: namespace symbolicNameString
     final Cypher25Parser.ProcedureNameContext nameCtx = ctx.procedureName();
-    final StringBuilder procedureName = new StringBuilder();
-    if (nameCtx.namespace() != null) {
-      // Namespace is (symbolicNameString DOT)*
-      for (final Cypher25Parser.SymbolicNameStringContext nsCtx : nameCtx.namespace().symbolicNameString()) {
-        procedureName.append(stripBackticks(nsCtx.getText())).append(".");
-      }
-    }
-    procedureName.append(stripBackticks(nameCtx.symbolicNameString().getText()));
+    final String procedureName = ParserUtils.qualifiedName(nameCtx.namespace(), nameCtx.symbolicNameString());
 
     // Parse arguments
     final List<Expression> arguments = new ArrayList<>();
@@ -1173,7 +1166,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       yieldWhere = visitWhereClause(ctx.whereClause());
     }
 
-    return new CallClause(procedureName.toString(), arguments, yieldItems, yieldWhere, optional);
+    return new CallClause(procedureName, arguments, yieldItems, yieldWhere, optional);
   }
 
   public SubqueryClause visitSubqueryClause(final Cypher25Parser.SubqueryClauseContext ctx) {
@@ -1507,7 +1500,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private boolean isArgumentOfExistsFunction(final ParseTree node) {
     for (ParseTree p = node.getParent(); p != null; p = p.getParent()) {
       if (p instanceof Cypher25Parser.FunctionInvocationContext funcCtx)
-        return "exists".equalsIgnoreCase(funcCtx.functionName().getText());
+        return "exists".equalsIgnoreCase(ParserUtils.qualifiedName(funcCtx.functionName().namespace(), funcCtx.functionName().symbolicNameString()));
     }
     return false;
   }

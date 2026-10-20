@@ -21,6 +21,9 @@ package com.arcadedb.utility;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
@@ -388,9 +391,12 @@ public class DateUtils {
         timestamp = Long.parseLong(string);
       else
         return dateTimeToTimestamp(database, parseDateTime(database, string), precisionToUse);
-    } else
+    } else {
+      // Checked last so the engine's own types pay nothing for it (issue #10441)
+      final Object unwrapped = unwrapCypherTemporal(value);
       // UNSUPPORTED
-      return null;
+      return unwrapped != null ? dateTimeToTimestamp(database, unwrapped, precisionToUse) : null;
+    }
 
     return timestamp;
   }
@@ -432,12 +438,31 @@ public class DateUtils {
         case Number number -> numberToEpochUnits(number);
         case String string -> FileUtils.isLong(string) ? Long.parseLong(string) :
             dateTimeToTimestampExact(database, parseDateTime(database, string), precisionToUse);
-        default -> null;
+        default -> {
+          final Object unwrapped = unwrapCypherTemporal(value);
+          yield unwrapped != null ? dateTimeToTimestampExact(database, unwrapped, precisionToUse) : null;
+        }
       };
     } catch (final ArithmeticException e) {
       throw new IllegalArgumentException("Date/time value " + value + " is outside the range a " + precisionToUse.toString()
           .toLowerCase(Locale.ENGLISH) + "-precision timestamp can represent");
     }
+  }
+
+  /**
+   * The {@code java.time} value inside an openCypher temporal that names a moment - {@code datetime()},
+   * {@code localdatetime()} and {@code date()} - or {@code null} for anything else, a time of day and a duration
+   * included, since neither is a point on the timeline. Cypher hands its own wrappers to every SQL function it calls,
+   * and a property it wrote reads back as one, so without this every date/time conversion refused the values Cypher
+   * itself produces (issue #10441).
+   */
+  private static Object unwrapCypherTemporal(final Object value) {
+    return switch (value) {
+      case CypherDateTime dateTime -> dateTime.getValue();
+      case CypherLocalDateTime localDateTime -> localDateTime.getValue();
+      case CypherDate date -> date.getValue();
+      default -> null;
+    };
   }
 
   /** Epoch seconds plus a nanosecond fraction as a count of the unit {@code unitsPerSecond} names, refusing an overflow. */
@@ -455,9 +480,10 @@ public class DateUtils {
   /**
    * THE one converter from any of the engine's date/time representations to epoch milliseconds. Accepts everything
    * {@link #dateTimeToTimestamp(Object, ChronoUnit)} accepts - {@link Date}, {@link Calendar}, {@link LocalDateTime},
-   * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number} and a
-   * {@link String} in any format the engine parses - reading a zone-less value at UTC, which is how the engine's own
-   * DATETIME representation is anchored.
+   * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number}, a
+   * {@link String} in any format the engine parses, and the openCypher {@link CypherDateTime},
+   * {@link CypherLocalDateTime} and {@link CypherDate} (issue #10441) - reading a zone-less value at UTC, which is how
+   * the engine's own DATETIME representation is anchored.
    * <p>
    * #8152: three near-copies of this conversion lived in three packages, each covering a different subset of the
    * types, and a {@code return 0} / {@code return Long.MIN_VALUE} fall-through for the rest. When
