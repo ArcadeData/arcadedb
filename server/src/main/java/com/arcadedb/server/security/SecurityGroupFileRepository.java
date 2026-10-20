@@ -37,8 +37,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.util.Timer;
-import java.util.TimerTask;
 import java.util.logging.Level;
 
 public class SecurityGroupFileRepository {
@@ -51,14 +49,9 @@ public class SecurityGroupFileRepository {
   private final       String                     securityConfPath;
   private final       File                       file;
   private final       int                        checkConfigReloadEveryMs;
-  // VOLATILE for the same reader as the timer reference below: the TimerTask compares against this without
-  // taking the monitor its two writers (load() and startWatching()) hold. A non-volatile long may be read in
-  // halves, and a stale read costs one delayed detection tick; one volatile read per tick costs nothing.
-  private volatile    long                       fileLastUpdated = 0L;
-  // VOLATILE for the one reader that deliberately does not take the monitor: the TimerTask's stale-instance
-  // check, which runs on the timer thread. Written once per instance, read once per tick, so the barrier costs
-  // nothing measurable. It is NOT what makes stop() safe - see stop().
-  private volatile    Timer                      checkFileUpdatedTimer;
+  // The reload policy and the watcher, shared with the users and token stores (issue #10404). Locked on THIS monitor,
+  // so a reload serializes with save(), applyReplicated() and persistCurrent().
+  private final       Policy                     policy;
   private             Callable<Void, JSONObject> reloadCallback  = null;
   private volatile    JSONObject                 latestGroupConfiguration;
   // Whether the document in force is NEWER than the file (issue #10403): a replicated install publishes before it
@@ -73,23 +66,17 @@ public class SecurityGroupFileRepository {
     this.securityConfPath = FileUtils.appendSeparatorIfMissing(securityConfPath);
     file = new File(this.securityConfPath, FILE_NAME);
     this.checkConfigReloadEveryMs = checkConfigReloadEveryMs;
+    this.policy = new Policy();
   }
 
   /**
-   * Cancels the watcher. SYNCHRONIZED, and it has to be: the check and the cancel are one action against
-   * {@link #startWatching()}, which is check-then-act too. An unsynchronized {@code stop()} that read the field
-   * in the window between that method's null check and its assignment would see {@code null}, return without
-   * cancelling, and leave the timer created a moment later polling a stopped repository for the life of the
-   * JVM - which an embedded multi-node process (every HA fixture) would accumulate one of per stopped node.
-   * {@code volatile} does not close that window; only the monitor does.
-   * <p>
-   * It cannot deadlock or stall a shutdown: {@link Timer#cancel()} discards the queue without waiting for a
-   * running task, and the longest this can wait for the monitor is one in-flight read or write of a small JSON
-   * document.
+   * Cancels the watcher, for good: see {@link ReloadableSecurityArtifact#stop()}. Synchronized on this monitor, which
+   * is the lock the policy itself takes, so the modifier changes nothing but keeps the contract readable at this level
+   * ({@code Issue7545GroupsWatcherStartedTest} pins it). It cannot deadlock or stall a shutdown; the longest it can wait
+   * for the monitor is one in-flight read or write of a small JSON document.
    */
   public synchronized void stop() {
-    if (checkFileUpdatedTimer != null)
-      checkFileUpdatedTimer.cancel();
+    policy.stop();
   }
 
   public synchronized void save(final JSONObject configuration) throws IOException {
@@ -104,10 +91,10 @@ public class SecurityGroupFileRepository {
     // that edit would never be read, which is this very issue in miniature (CWE-863). Taken first, the baseline
     // is at most the pre-persist stamp, persist() moves the file past it, and nothing can be swallowed.
     //
-    // The price, which is the point rather than an oversight: this method never advances fileLastUpdated, so
+    // The price, which is the point rather than an oversight: this method never advances the watcher's baseline, so
     // persist()'s own modification-time bump looks like an external edit to the next watcher tick and costs one
     // redundant load() plus permission refresh after an admin group save. Long-standing behaviour, not new here
-    // - it held whenever the watcher existed at all. Do NOT "fix" it by stamping fileLastUpdated from the file
+    // - it held whenever the watcher existed at all. Do NOT "fix" it by stamping the baseline from the file
     // after persist(): an operator edit landing in that window would become the baseline and be swallowed, which
     // is the CWE-863 hole above. Reloading a document identical to the one just saved is the cheap side of that
     // trade.
@@ -219,11 +206,6 @@ public class SecurityGroupFileRepository {
     SecurityUserFileRepository.preserveInError(this, file, new File(securityConfPath, ERROR_FILE_NAME), e);
   }
 
-  /** As {@link #saveInError(Exception)}, with {@code outcome} saying in the SEVERE what this node does instead (issue #10383). */
-  synchronized void saveInError(final Exception e, final String outcome) {
-    SecurityUserFileRepository.preserveInError(this, file, new File(securityConfPath, ERROR_FILE_NAME), e, outcome);
-  }
-
   public JSONObject getGroups() {
     // Double-checked locking on the volatile field: the hot read path stays lock-free, while a concurrent
     // first-time lazy init cannot race two threads both running load()/createDefault().
@@ -232,7 +214,8 @@ public class SecurityGroupFileRepository {
       synchronized (this) {
         cfg = latestGroupConfiguration;
         if (cfg == null) {
-          firstLoad();
+          startWatching();
+          policy.firstLoad();
           cfg = latestGroupConfiguration;
         }
       }
@@ -241,101 +224,27 @@ public class SecurityGroupFileRepository {
   }
 
   /**
-   * Schedules the {@link #FILE_NAME} modification watcher. Idempotent, and callable before the document exists:
-   * the task checks {@code file.exists()} on every tick.
+   * Schedules the {@link #FILE_NAME} modification watcher, which calls {@link #reload()} and, when that published a
+   * document, the {@link #onReload} callback. Idempotent, one-shot and callable before the document exists: see
+   * {@link ReloadableSecurityArtifact#startWatching}.
    * <p>
-   * Split out of {@link #load()} for issue #7545. Scheduling it there tied the watcher's existence to the
-   * document being ABSENT when the store was first reached, because {@code load()} runs only from
-   * {@link #getGroups()}'s lazy-init branch. {@link #applyReplicated} publishes the document straight into
-   * {@code latestGroupConfiguration}, so on a node whose first contact with the group store is a replicated
-   * {@code SECURITY_GROUPS_ENTRY} - a freshly added peer with no database open yet, which is exactly the node
-   * {@code ServerSecurity.seedGroupsClusterWide} sends a group document to - that branch was never entered
-   * again and the file was never watched for the lifetime of the process. A hand-edited
-   * {@code server-groups.json} on such a node was then ignored until restart.
+   * Split out of the first load for issue #7545. Scheduling it there tied the watcher's existence to the document
+   * being ABSENT when the store was first reached, because the first load runs only from {@link #getGroups()}'s
+   * lazy-init branch. {@link #applyReplicated} publishes the document straight into {@code latestGroupConfiguration}, so
+   * on a node whose first contact with the group store is a replicated {@code SECURITY_GROUPS_ENTRY} - a freshly added
+   * peer with no database open yet, which is exactly the node {@code ServerSecurity.seedGroupsClusterWide} sends a group
+   * document to - that branch was never entered again and the file was never watched for the lifetime of the process.
    * <p>
-   * Every publisher now calls this, and {@code ServerSecurity.startService()} calls it once at startup so the
-   * watcher's lifetime is the service's rather than the first document's - {@code stopService()} already
-   * cancelled it through {@link #stop()}.
+   * Every publisher therefore calls this, and {@code ServerSecurity.startService()} calls it once at startup so the
+   * watcher's lifetime is the service's rather than the first document's - {@code stopService()} cancels it through
+   * {@link #stop()}.
    * <p>
-   * One-shot per instance, as the {@code load()} guard it replaced was: {@link #stop()} cancels the timer and
-   * leaves the reference set, so a stopped repository does not start watching again. That is not a restart hole
-   * - {@code ArcadeDBServer} builds a new {@code ServerSecurity}, and with it a new repository, on every start
-   * ({@code grep -rn 'new ServerSecurity(' server/src/main/java} finds exactly one site, in
-   * {@code startInternal()}, and {@code stopInternal()} is the only caller of {@code stopService()}).
-   * <p>
-   * The timer is a DAEMON, which the one it replaced was not. It used to exist only on a server that had
-   * already touched the group document; it now exists on every started repository, so a caller that skips
-   * {@link #stop()} must not be able to hold a JVM open. Same choice as {@code ServerSecurity}'s
-   * {@code tokenFailureCleanupTimer}.
+   * A brand-new install has no file whose stamp could become the baseline; the default document the first load then
+   * writes through {@link #save} costs one "configuration changed" line and one reload of the document just written on
+   * the first tick. Long-standing, and left alone for the reason spelled out in {@link #save}.
    */
   public synchronized void startWatching() {
-    if (checkFileUpdatedTimer != null)
-      return;
-
-    // Adopt the file's current modification time as the baseline. The watcher fires on
-    // `lastModified() > fileLastUpdated`, and fileLastUpdated stays 0 until something actually reads the file -
-    // so on a server restart, where this now runs before any read, the first tick would treat a
-    // server-groups.json nobody had touched as changed, log "Server groups configuration changed, reloading
-    // it..." and run a full permission refresh on every single start. Nothing has been read or published at
-    // this point, so a baseline here can only mean "report changes from now on", which is what a watcher
-    // started at this moment is for; load() overwrites the field with what it really read, as it always did.
-    //
-    // It covers the server that already HAS a server-groups.json, which is every server after its first boot.
-    // A brand-new install does not have one yet, so there is no stamp to adopt; createDefault() then writes the
-    // file through save(), which leaves fileLastUpdated at 0, and the first tick logs one "configuration
-    // changed" and reloads the document it just wrote. Long-standing behaviour, unchanged here, and left alone
-    // for the reason spelled out in save(): the only cure is to stamp the file after writing it, and that is
-    // the swallowed-edit hazard this repository exists to avoid. One log line on first boot is the cheap side.
-    if (fileLastUpdated == 0L && file.exists())
-      fileLastUpdated = file.lastModified();
-
-    // The document path discriminates the thread: a single JVM can run several embedded nodes (every HA test
-    // fixture does), each with its own config directory and its own watcher, and a fixed name leaves a thread
-    // dump unable to say which node a given watcher belongs to. That ambiguity is new in practice rather than
-    // in principle, because the watcher now exists on EVERY started node instead of only the ones that had
-    // touched the group document.
-    final Timer timer = new Timer(WATCHER_PREFIX + "[" + file.getPath() + "]", true);
-    checkFileUpdatedTimer = timer;
-    timer.schedule(new TimerTask() {
-      @Override
-      public void run() {
-        // CHECK THE INSTANCE IS NOT CHANGED (THIS COULD HAPPEN DURING TESTS)
-        if (checkFileUpdatedTimer == timer)
-          try {
-            if (file.exists() && file.lastModified() > fileLastUpdated) {
-              LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
-              // reload(), never load() (issue #10383): the file changed on a RUNNING server, so a document this node
-              // cannot use keeps the groups in force instead of falling back to the default and saving it over the
-              // operator's file. The permission refresh runs only when a new document was actually published.
-              if (reload() && reloadCallback != null)
-                reloadCallback.call(latestGroupConfiguration);
-            }
-          } catch (final Throwable e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
-          }
-      }
-    }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
-  }
-
-  /**
-   * The FIRST load: publishes {@link #FILE_NAME}, or the default document when there is no file yet.
-   * <p>
-   * A file that exists but cannot be used - unreadable, unparseable, or a document without a usable {@code version}
-   * and {@code databases} - THROWS, so {@link #getGroups()} preserves it as {@link #ERROR_FILE_NAME} before it falls
-   * back to the default (issue #10383). It used to turn a document without {@code version} into "there is no
-   * document" and save the default over it with no copy kept.
-   * <p>
-   * Never reached by the watcher, which calls {@link #reload()}: the default is a first-load policy only.
-   */
-  protected synchronized JSONObject load() throws IOException {
-    startWatching();
-
-    final JSONObject json = readFile();
-    if (json == null)
-      return installDefault();
-
-    latestGroupConfiguration = json;
-    return json;
+    policy.startWatching(checkConfigReloadEveryMs);
   }
 
   /**
@@ -346,7 +255,10 @@ public class SecurityGroupFileRepository {
    * {@link #FILE_NAME}: the operator's file stays byte for byte what they wrote, so they can fix it in place and the next
    * tick picks the fix up.
    * <p>
-   * Before any document has been published there is nothing to keep, and this is the first load.
+   * Before any document has been published there is nothing to keep, and this is the first load: it publishes the file,
+   * or the default document - saved - when there is no file or one that cannot be used, which is preserved as
+   * {@link #ERROR_FILE_NAME} BEFORE the default is saved over it (issue #10321). The policy is
+   * {@link ReloadableSecurityArtifact}'s, shared with the users and token stores (issue #10404).
    * <p>
    * Also refuses while the document in force has not reached the disk ({@link #diskBehind}, issue #10403): the file then
    * holds an OLDER document - say, one with a group a replicated deletion has since removed, or a permission it has
@@ -358,61 +270,17 @@ public class SecurityGroupFileRepository {
    *         {@code false} when the groups in force were kept
    */
   synchronized boolean reload() {
-    final JSONObject current = latestGroupConfiguration;
-    if (current == null) {
-      firstLoad();
-      return true;
-    }
-
-    if (diskBehind) {
-      // Stamped, so the refusal is logged once per change of the file rather than once per tick.
-      if (file.exists())
-        fileLastUpdated = file.lastModified();
-      LogManager.instance().log(this, Level.WARNING,
-          "File '%s' changed, but the groups in force have not been written to it yet (the last write of a replicated group "
-              + "document failed); %s. Make the configuration directory writable again: the next successful write lifts this, "
-              + "and it writes the groups in force OVER this edit. Make a group change through the server once the directory "
-              + "is writable instead: a hand edit cannot win over a replicated document, which a restart would also replay", FILE_NAME,
-          KEEPING_GROUPS);
-      return false;
-    }
-
-    final JSONObject json;
-    try {
-      json = readFile();
-    } catch (final IOException | RuntimeException e) {
-      // ANY failure, not only JSONException: whatever an unexpected shape throws must neither replace the groups in
-      // force nor escape into the watcher's java.util.Timer.
-      saveInError(e, KEEPING_GROUPS);
-      return false;
-    }
-
-    if (json == null) {
-      // Typically an editor caught between deleting and writing the file: the next tick sees the content.
-      LogManager.instance().log(this, Level.WARNING, "File '%s' is missing, %s", FILE_NAME, KEEPING_GROUPS);
-      return false;
-    }
-
-    latestGroupConfiguration = json;
-    return true;
+    return policy.reload();
   }
 
   /**
-   * Reads {@link #FILE_NAME} into a document fit to be published, migrated to the latest version. Writes nothing
-   * except the migration's own save of a valid older document.
+   * Reads {@link #FILE_NAME}, which exists, into a document fit to be published, migrated to the latest version. Writes
+   * nothing except the migration's own save of a valid older document.
    *
-   * @return the document, or {@code null} when there is no file
    * @throws IOException   if the file cannot be read
    * @throws JSONException if it does not parse, or is not a group document (see {@link #shapeProblem})
    */
   private JSONObject readFile() throws IOException {
-    if (!file.exists())
-      return null;
-
-    // Stamped BEFORE the read, as the users repository does: a file that fails is not re-read on every tick, and an
-    // edit landing after this point has a newer stamp and is picked up by the next one.
-    fileLastUpdated = file.lastModified();
-
     final JSONObject json;
     try (final FileInputStream fis = new FileInputStream(file)) {
       json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
@@ -435,7 +303,7 @@ public class SecurityGroupFileRepository {
    *   <li>no {@code databases} object, and every authorization lookup - {@code getDatabaseGroupsConfiguration},
    *       called per request - throws instead of answering;</li>
    *   <li>no {@code version}, and the document cannot be told apart from one of an unknown format (a version that is
-   *       not a number fails later, in {@link #readFile()}, with a {@link JSONException} too).</li>
+   *       not a number fails later, in {@code readFile()}, with a {@link JSONException} too).</li>
    * </ul>
    */
   static String shapeProblem(final JSONObject json) {
@@ -446,28 +314,67 @@ public class SecurityGroupFileRepository {
     return null;
   }
 
-  /** The first load with its fallback: the one place a file that cannot be used is replaced by the default. */
-  private void firstLoad() {
-    try {
-      load();
-    } catch (final Exception e) {
-      // saveInError() logs the failure, naming the file it was preserved as. BEFORE the default is saved over the
-      // operator's file: from then on the copy is the only one left (issue #10321).
-      saveInError(e);
-      installDefault();
+  /**
+   * The groups half of the shared reload policy (issue #10404): the file's document, the default document as the first
+   * load's fallback, and the {@link #onReload} callback after a watcher reload published something.
+   */
+  private final class Policy extends ReloadableSecurityArtifact<JSONObject> {
+    private Policy() {
+      super(SecurityGroupFileRepository.this, SecurityGroupFileRepository.this, SecurityGroupFileRepository.this.file,
+          new File(securityConfPath, ERROR_FILE_NAME), WATCHER_PREFIX, "Server groups configuration");
     }
-  }
 
-  /** Publishes the default document and saves it. Reached only by a FIRST load that found nothing it could use. */
-  private JSONObject installDefault() {
-    final JSONObject json = createDefault();
-    try {
-      save(json);
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving default group configuration to file '%s'", e, FILE_NAME);
-      latestGroupConfiguration = json;
+    @Override
+    protected JSONObject read() throws IOException {
+      return readFile();
     }
-    return json;
+
+    @Override
+    protected JSONObject fallback() {
+      return createDefault();
+    }
+
+    /** The default is SAVED, and only here: the one place a file that cannot be used is replaced by the default. */
+    @Override
+    protected void publish(final JSONObject json, final boolean isFallback) {
+      if (!isFallback) {
+        latestGroupConfiguration = json;
+        return;
+      }
+      try {
+        save(json);
+      } catch (final IOException e) {
+        LogManager.instance().log(SecurityGroupFileRepository.this, Level.SEVERE,
+            "Error on saving default group configuration to file '%s'", e, FILE_NAME);
+        latestGroupConfiguration = json;
+      }
+    }
+
+    @Override
+    protected boolean hasInForce() {
+      return latestGroupConfiguration != null;
+    }
+
+    @Override
+    protected String keeping() {
+      return KEEPING_GROUPS;
+    }
+
+    @Override
+    protected String refusal() {
+      if (!diskBehind)
+        return null;
+      return "the groups in force have not been written to it yet (the last write of a replicated group document failed), "
+          + "so it is not read: make the configuration directory writable again - the next successful write lifts this and "
+          + "writes the groups in force OVER this edit - and make a group change through the server instead: a hand edit "
+          + "cannot win over a replicated document, which a restart would also replay";
+    }
+
+    @Override
+    protected void onReloaded() {
+      if (reloadCallback != null)
+        reloadCallback.call(latestGroupConfiguration);
+    }
   }
 
   /**
@@ -526,8 +433,8 @@ public class SecurityGroupFileRepository {
 
   /**
    * The default group document. Builds it and nothing else (issue #10383): it used to save itself too, so every path
-   * that reached it - including a reload that merely failed to read the file - wrote over the operator's file.
-   * {@link #installDefault()} is the one place that saves it.
+   * that reached it - including a reload that merely failed to read the file - wrote over the operator's file. The
+   * first load's fallback ({@code Policy.publish}) is the one place that saves it.
    */
   public JSONObject createDefault() {
     final JSONObject json = new JSONObject();

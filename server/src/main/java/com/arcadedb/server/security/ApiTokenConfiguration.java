@@ -43,8 +43,6 @@ import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -67,47 +65,33 @@ public class ApiTokenConfiguration {
   // clear()-then-repopulate leaves behind, which would read as "this token does not exist" and fail an
   // authentication that should have succeeded. Single-entry mutations still go through the live map.
   private volatile     ConcurrentHashMap<String, JSONObject> tokens       = new ConcurrentHashMap<>();
-  // The watcher's baseline. VOLATILE for the timer thread's unsynchronized comparison, as in SecurityGroupFileRepository.
-  private volatile     long                                  fileLastUpdated = 0L;
-  // VOLATILE for the timer task's stale-instance check; written under the monitor only.
-  private volatile     Timer                                 watcher;
+  // The reload policy and the watcher, shared with the users and group stores (issue #10404). Locked on THIS monitor, so
+  // a reload serializes with every synchronized writer below.
+  private final        Policy                                policy;
   // Whether the tokens in force are NEWER than the file: the last write failed (a replicated install publishes before
   // it persists, issue #7373). Guarded by the monitor; reload() refuses to re-read an older file while it is set.
   private              boolean                               diskBehind;
 
   public ApiTokenConfiguration(final String configPath) {
     this.filePath = Paths.get(configPath, FILE_NAME).toString();
+    this.policy = new Policy();
   }
 
   /**
    * The FIRST load, at startup: publishes {@link #FILE_NAME}, or the empty store when there is none. A file that cannot
-   * be parsed, or is not a token document, also leaves the store EMPTY (fail-closed, see {@link #onLoadFailure}).
+   * be parsed, or is not a token document, also leaves the store EMPTY (fail-closed): a file that exists but does not
+   * parse - truncated by a crash mid-write, hand-edited, or restored from the wrong backup - must not abort server
+   * startup, and empty is the fail-CLOSED direction for credentials, so no token authenticates until the operator
+   * restores the file. Copying it aside as {@link #ERROR_FILE_NAME} matters more than the log line: the very next
+   * {@link #save} - a token minted, or any replicated token entry - overwrites the live file with the empty document.
+   * <p>
+   * A file that cannot be READ (an I/O error) leaves the tokens already in memory alone instead: it must not silently
+   * narrow a token set this node was already serving.
    * <p>
    * Not what a running server calls when the file changes: that is {@link #reload()}, whose policy is the opposite one.
    */
   public synchronized void load() {
-    final File file = new File(filePath);
-    if (!file.exists()) {
-      tokens = new ConcurrentHashMap<>();
-      return;
-    }
-
-    try {
-      readFile(file);
-    } catch (final IOException e) {
-      // The partially-built map is discarded: a file this node could not read through must not silently
-      // narrow the token set it was already serving.
-      LogManager.instance().log(this, Level.WARNING, "Error loading API tokens from '%s'", e, filePath);
-    } catch (final RuntimeException e) {
-      // A file that exists but does not parse - truncated by a crash mid-write, hand-edited, or restored from
-      // the wrong backup - raises JSONException, which is UNCHECKED. Letting it out of here aborted server
-      // startup: load() is called from ServerSecurity.loadUsers(), whose own catch is IOException-only, and
-      // that is called straight from ArcadeDBServer.start(). The users and group stores both degrade to a
-      // default instead of refusing to boot; this one crashed the server. It now degrades too, and to the EMPTY
-      // store rather than to anything else, because empty is the fail-CLOSED direction for credentials: no
-      // token authenticates until the operator restores the file.
-      onLoadFailure(e);
-    }
+    policy.firstLoad();
   }
 
   /**
@@ -128,50 +112,16 @@ public class ApiTokenConfiguration {
    * @return {@code true} when the file's token set was published, {@code false} when the tokens in force were kept
    */
   synchronized boolean reload() {
-    final File file = new File(filePath);
-    // Says outright that the previous tokens stay VALID: an operator who edited the file to revoke one must not read
-    // "keeping" as "your revocation is pending".
-    final String keeping = "keeping the " + tokens.size() + " API tokens already in force, which keep authenticating until a "
-        + "valid file is read (a token removed by this edit is NOT revoked)";
-
-    if (diskBehind) {
-      // Stamped, so the refusal is logged once per change of the file rather than once per tick.
-      fileLastUpdated = file.lastModified();
-      LogManager.instance().log(this, Level.WARNING,
-          "File '%s' changed, but the API tokens in force have not been written to it yet (the last write failed); %s. Make the "
-              + "configuration directory writable again: the next successful write lifts this, and it writes the tokens in force "
-              + "OVER this edit. To apply the edit instead, restart the server once the directory is writable", FILE_NAME, keeping);
-      return false;
-    }
-
-    if (!file.exists()) {
-      LogManager.instance().log(this, Level.WARNING, "File '%s' is missing, %s", FILE_NAME, keeping);
-      return false;
-    }
-
-    try {
-      readFile(file);
-      return true;
-    } catch (final IOException | RuntimeException e) {
-      // ANY failure, not only JSONException: an entry of an unexpected shape must neither replace the tokens in force nor
-      // escape into the watcher's java.util.Timer, which an uncaught exception kills.
-      SecurityUserFileRepository.preserveInError(this, file, errorFile(), e, keeping);
-      return false;
-    }
+    return policy.reload();
   }
 
   /**
-   * Reads {@code file} and publishes its token set in one reference swap, migrating legacy plaintext entries. Nothing is
-   * published when anything throws.
+   * Reads {@code file} into a token set, migrating legacy plaintext entries in the returned copy. Publishes nothing.
    *
    * @throws IOException   if the file cannot be read
    * @throws JSONException if it does not parse, has no {@code tokens} array, or an entry has no {@code tokenHash}
    */
-  private void readFile(final File file) throws IOException {
-    // Stamped BEFORE the read: a file that fails is not re-read on every tick, and an edit landing after this point has
-    // a newer stamp and is picked up by the next one.
-    fileLastUpdated = file.lastModified();
-
+  private LoadedTokens readFile(final File file) throws IOException {
     final JSONObject json;
     try (final FileInputStream fis = new FileInputStream(file)) {
       json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
@@ -212,17 +162,16 @@ public class ApiTokenConfiguration {
       loaded.put(tokenJson.getString("tokenHash"), tokenJson);
     }
 
-    tokens = loaded;
+    return new LoadedTokens(loaded, needsSave);
+  }
 
-    if (needsSave)
-      save();
+  /** A token set read from the file, and whether it carried legacy plaintext entries that have to be saved hashed. */
+  private record LoadedTokens(ConcurrentHashMap<String, JSONObject> tokens, boolean migrated) {
   }
 
   /**
    * Schedules the {@link #FILE_NAME} modification watcher, which calls {@link #reload()} (issue #10383). Idempotent and
-   * one-shot per instance, like {@link SecurityGroupFileRepository#startWatching()}: {@link #stop()} cancels it for
-   * good, and {@code ArcadeDBServer} builds a new {@code ServerSecurity}, and with it a new instance of this class, on
-   * every start.
+   * one-shot per instance: see {@link ReloadableSecurityArtifact#startWatching}.
    * <p>
    * The token file used to have no watcher of its own: it was re-read only as a side effect of a
    * {@code server-users.jsonl} reload, so an operator's edit of it stayed invisible until that unrelated file changed.
@@ -234,38 +183,12 @@ public class ApiTokenConfiguration {
    * @param checkEveryMs the polling period; nothing is scheduled when it is not positive
    */
   public synchronized void startWatching(final int checkEveryMs) {
-    if (watcher != null || checkEveryMs <= 0)
-      return;
-
-    final File file = new File(filePath);
-    // The file's current stamp is the baseline, as for the group watcher: without it the first tick would treat a file
-    // nobody touched since the startup load as changed.
-    if (fileLastUpdated == 0L && file.exists())
-      fileLastUpdated = file.lastModified();
-
-    final Timer timer = new Timer(WATCHER_PREFIX + "[" + filePath + "]", true);
-    watcher = timer;
-    timer.schedule(new TimerTask() {
-      @Override
-      public void run() {
-        if (watcher != timer)
-          return;
-        try {
-          if (file.exists() && file.lastModified() > fileLastUpdated) {
-            LogManager.instance().log(this, Level.INFO, "API-token configuration changed, reloading it...");
-            reload();
-          }
-        } catch (final Throwable e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
-        }
-      }
-    }, checkEveryMs, checkEveryMs);
+    policy.startWatching(checkEveryMs);
   }
 
-  /** Cancels the watcher. Synchronized against {@link #startWatching}'s check-then-act, as the group repository's is. */
+  /** Cancels the watcher, for good: see {@link ReloadableSecurityArtifact#stop()}. */
   public synchronized void stop() {
-    if (watcher != null)
-      watcher.cancel();
+    policy.stop();
   }
 
   private File errorFile() {
@@ -284,19 +207,83 @@ public class ApiTokenConfiguration {
   }
 
   /**
-   * Preserves an unparseable token file beside itself as {@link #ERROR_FILE_NAME} and leaves the store empty - the
-   * FIRST-load policy only, see {@link #reload()} for the running server's. Copying it aside matters more here than the
-   * log line does: the very next {@link #save} - a token minted, or any replicated token entry - overwrites the live
-   * file with the empty document, and the evidence of what the node used to hold would be gone with it.
-   * <p>
-   * The copy goes through the same helper as the users and groups files, which writes it owner-only before it becomes
-   * visible: it holds the same token hashes, names, scopes and expiry as the live file.
+   * The tokens half of the shared reload policy (issue #10404). Two answers differ from the default policy and are
+   * pinned by tests: a first load that cannot READ the file keeps what is in memory
+   * ({@code Issue7373ClusterWideGroupsAndTokensTest}), and a reload refuses while the tokens in force are newer than the
+   * file ({@link #diskBehind}).
    */
-  private void onLoadFailure(final RuntimeException failure) {
-    tokens = new ConcurrentHashMap<>();
-    SecurityUserFileRepository.preserveInError(this, new File(filePath), errorFile(), failure,
-        "this node starts with NO API tokens, so none of them authenticates until the file is restored (users and groups are "
-            + "unaffected)");
+  private final class Policy extends ReloadableSecurityArtifact<LoadedTokens> {
+    private Policy() {
+      super(ApiTokenConfiguration.this, ApiTokenConfiguration.this, new File(filePath), errorFile(), WATCHER_PREFIX,
+          "API-token configuration");
+    }
+
+    @Override
+    protected LoadedTokens read() throws IOException {
+      return readFile(file);
+    }
+
+    /** The empty store: fail-closed, no token authenticates. */
+    @Override
+    protected LoadedTokens fallback() {
+      return new LoadedTokens(new ConcurrentHashMap<>(), false);
+    }
+
+    /**
+     * One reference swap, so a concurrent authentication never sees a half-rebuilt store. A legacy file is saved hashed
+     * right after; that write does not advance the watcher's baseline (see {@link SecurityGroupFileRepository#save}), so
+     * the next tick re-reads the file once and publishes the same, now hashed, token set.
+     */
+    @Override
+    protected void publish(final LoadedTokens loaded, final boolean isFallback) {
+      tokens = loaded.tokens();
+      if (loaded.migrated())
+        save();
+    }
+
+    /**
+     * Always: an EMPTY token set is a token set in force too. A reload never turns into a first load here, which is
+     * what makes a revocation by hand-edit safe from a later unreadable file.
+     */
+    @Override
+    protected boolean hasInForce() {
+      return true;
+    }
+
+    /**
+     * Says outright that the previous tokens stay VALID: an operator who edited the file to revoke one must not read
+     * "keeping" as "your revocation is pending".
+     */
+    @Override
+    protected String keeping() {
+      return "keeping the " + tokens.size() + " API tokens already in force, which keep authenticating until a "
+          + "valid file is read (a token removed by this edit is NOT revoked)";
+    }
+
+    @Override
+    protected String fallingBack() {
+      return "this node starts with NO API tokens, so none of them authenticates until the file is restored (users and groups "
+          + "are unaffected)";
+    }
+
+    @Override
+    protected LoadedTokens onFirstLoadFailure(final Exception failure) {
+      if (failure instanceof IOException) {
+        // The file could not be read through: whatever is in memory stays, and there is nothing that could be copied.
+        LogManager.instance().log(ApiTokenConfiguration.this, Level.WARNING, "Error loading API tokens from '%s'", failure, filePath);
+        return null;
+      }
+      return super.onFirstLoadFailure(failure);
+    }
+
+    @Override
+    protected String refusal() {
+      if (!diskBehind)
+        return null;
+      return "the API tokens in force have not been written to it yet (the last write failed), so it is not read: make the "
+          + "configuration directory writable again - the next successful write lifts this and writes the tokens in force OVER "
+          + "this edit - or, to apply the edit instead, restart the server once the directory is writable";
+    }
   }
 
   public synchronized void save() {

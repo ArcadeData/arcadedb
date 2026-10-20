@@ -2716,8 +2716,30 @@ public class TransactionContext implements Transaction {
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
-      concludePhase2(committed, commitFailureCause);
+      try {
+        concludePhase2(committed, commitFailureCause);
+      } finally {
+        restoreInterruptIfCause(commitFailureCause);
+      }
     }
+  }
+
+  /**
+   * Hands back the cancellation an {@link InterruptedException} carried, once a failed 2nd phase has been concluded
+   * (#10416). Raising it as a {@link TransactionException} consumed the flag, and the caller is the one that has to see it.
+   * <p>
+   * Restored HERE, after {@link #concludePhase2}, and not where the exception is caught: concluding the failure reads and
+   * writes files (the rollback reloads the records, the fence is logged), and an NIO channel that a thread with the flag
+   * set uses is closed under it ({@code ClosedByInterruptException}), which would turn one cancelled commit into a closed
+   * file for every thread of the database.
+   * <p>
+   * Only the DIRECT cause is looked at, on purpose: phase 2 raises an interrupt in exactly one shape, the
+   * {@link TransactionException} of {@code publishCommittedPagesInternal}. One found deeper in a chain was already handled
+   * by whoever wrapped it.
+   */
+  private static void restoreInterruptIfCause(final Throwable failure) {
+    if (failure != null && failure.getCause() instanceof InterruptedException)
+      Thread.currentThread().interrupt();
   }
 
   /**
@@ -2732,6 +2754,10 @@ public class TransactionContext implements Transaction {
    * {@link #completeCommit()} / {@link #concludeFailedPhase2(Throwable)}. A failure past the WAL append does fence the
    * database right away, on the thread that observed it, so no other transaction can commit on top of the orphaned
    * record before the locks are released.
+   * <p>
+   * An interrupt is raised as a {@link TransactionException} caused by the {@link InterruptedException}, with the flag
+   * NOT restored: the conclusion of the failure still does file I/O, so the flag goes back once that is done, by the
+   * caller ({@link #commit2ndPhase} does, see {@link #restoreInterruptIfCause}) - #10416.
    */
   public void publishCommittedPages(final TransactionPhase1 changes) {
     // The pages become visible before the delta reaches the BM25 counters: a scan that overlaps that window reads documents the
@@ -2829,6 +2855,8 @@ public class TransactionContext implements Transaction {
       if (corpusDeltas != null)
         corpusDeltas.applyCommitted();
     } catch (final IOException | InterruptedException e) {
+      // AN InterruptedException IS CARRIED AS THE CAUSE, ITS FLAG RESTORED BY WHOEVER CONCLUDES THE FAILED PHASE, ONCE THE
+      // FILES IT TOUCHES ARE DONE WITH: commit2ndPhase, SEE restoreInterruptIfCause (#10416)
       fenceIfPastPointOfNoReturn(e);
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());

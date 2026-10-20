@@ -169,7 +169,8 @@ public class MatchEdgeTraverser {
           // direction != null already proved item.getMethod() != null (see getExpandIntoDirection()), which is
           // what extractEdgeLabels() dereferences without its own null check - keep this call after that guard.
           final String[] edgeTypes = MatchExecutionPlanner.extractEdgeLabels(edge);
-          final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
+          // Pinned for the statement, so the two ids and the connection belong to one snapshot (issue #10415)
+          final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, edgeTypes);
           if (provider != null) {
             final int srcId = provider.getNodeId(sourceVertex.getIdentity());
             final int tgtId = provider.getNodeId(targetElem.getIdentity());

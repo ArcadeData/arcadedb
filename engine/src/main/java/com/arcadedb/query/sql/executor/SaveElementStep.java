@@ -341,11 +341,23 @@ public class SaveElementStep extends AbstractExecutionStep {
       converted = Type.convert(database, value, col.getDataType().getJavaImplementation(database),
           tsType.getPolymorphicPropertyIfExists(col.getName()));
     } catch (final RuntimeException e) {
-      throw col.unstorable(value, e);
+      throw refusedBySql(col, value, e);
     }
     if (converted == null)
-      throw col.unstorable(value, null);
+      throw refusedBySql(col, value, null);
     return converted;
+  }
+
+  /**
+   * {@link ColumnDefinition#unstorable}, in the words the wire protocols refuse a value in, plus the rule SQL reads a temporal
+   * value by. The wire reads a number, and text of digits, as a count in the column's own unit, so a value they store can be one SQL
+   * refuses (text of digits) or stores as another instant (a number in a column that is not in milliseconds), and an operator who
+   * wrote the same literal from both places should not have to read the refusal as a defect of this one (issue #10398).
+   */
+  private static IllegalArgumentException refusedBySql(final ColumnDefinition col, final Object value, final Throwable cause) {
+    return new IllegalArgumentException(col.unstorable(value, cause).getMessage()
+        + ". In SQL a number is epoch milliseconds (epoch days for a DATE) and text is a date in the database's format; the line"
+        + " protocol and gRPC read a number, and text of digits, as a count in the column's own unit", cause);
   }
 
   /**

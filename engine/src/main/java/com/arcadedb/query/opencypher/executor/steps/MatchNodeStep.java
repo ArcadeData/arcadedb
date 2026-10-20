@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
@@ -665,8 +666,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // A non-vertex type with the same name (edge/document type) matches no node pattern: labels
         // and relationship types are separate namespaces in Cypher, so yield 0 rows instead of
         // failing with a ClassCastException while casting edges to vertices (issue #5194)
-        if (!(type instanceof VertexType))
+        if (!(type instanceof VertexType)) {
+          // ...except a time-series type: a static label naming one was refused at planning, a dynamic one is only known
+          // here, and zero rows would read as a series with no samples (issue #10440)
+          Labels.requireNotTimeSeriesType(type, "label");
           return Collections.emptyIterator();
+        }
 
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
@@ -756,6 +761,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // tryFindAndUseIndexFromWhere, tryPartitionPrunedIterator), which is why it treats properties/WHERE
       // as safe to ignore for a multi-label or label-less pattern. If a future change ever gives this
       // branch an index/partition fast path of its own, isRowIndependentFullScan() must be revisited too.
+      // A static label was refused when the statement was planned (TimeSeriesPatternGuard), a dynamic one is only known
+      // here (issue #10440): only then are the labels looked up, so a static multi-label scan opened per row pays nothing
+      if (pattern.hasDynamicLabels()) {
+        final Schema schema = context.getDatabase().getSchema();
+        for (int i = 0; i < labels.size(); i++)
+          Labels.requireNotTimeSeriesType(schema.getTypeOrNull(labels.get(i)), "label");
+      }
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
           (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels,
               pattern.isLabelDisjunction());
@@ -1069,6 +1081,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * only narrows the candidates; anything it cannot answer exactly (an element that is a list or a map, a right side that
    * is not a list, a concurrent index drop) returns null and leaves the scan in charge. When several IN-lists could be
    * seeked, the one with the fewest distinct elements is.
+   * <p>
+   * The seek returns the records key by key in the order of the list (each key at its first place), where the scan returns them in
+   * storage order. A MATCH without an ORDER BY promises neither, so a seek that restored storage order would only cost what it
+   * is there to save - every record read before the first is returned, and the early stop of a LIMIT lost - for an order no other
+   * index access in the engine honours (issue #10392). Under an ORDER BY the two answer alike.
    */
   private Iterator<Identifiable> tryInListIndexSeek(final DocumentType type, final String label,
       final Result currentInputResult) {

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
@@ -168,6 +169,16 @@ public interface CommandContext {
   default IncomingEdgeLookup getIncomingEdgeLookup() {
     final CommandContext parent = getParent();
     return parent != null ? parent.getIncomingEdgeLookup() : null;
+  }
+
+  /**
+   * The graph views the statement this command belongs to has pinned (issue #10415): the scope the statement opened, handed out
+   * by every context derived from it, so every operator of the statement reads one snapshot of each view. Null when no statement
+   * opened one, and never created here: a scope created at the root of a script would outlive the statement that asked.
+   */
+  default GraphViewPins getGraphViewPins() {
+    final CommandContext parent = getParent();
+    return parent != null ? parent.getGraphViewPins() : null;
   }
 
   /**

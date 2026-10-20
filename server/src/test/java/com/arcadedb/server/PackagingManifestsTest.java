@@ -67,6 +67,7 @@ class PackagingManifestsTest {
   private static final String NATIVE_WORKFLOW    = ".github/workflows/native-image.yml";
   private static final String NATIVE_DOCKER_SH   = "native/scripts/build-native-docker.sh";
   private static final String BUILDER_README     = "package/README-BUILDER.md";
+  private static final String NATIVE_DOC         = "docs/native-image.md";
 
   /** The UID and GID every ArcadeDB image runs as, so their volumes are interchangeable (issue #10319). */
   private static final int    IMAGE_UID   = 1000;
@@ -80,6 +81,12 @@ class PackagingManifestsTest {
   private static final Pattern MOUNT_PATH  = Pattern.compile("^\\s*mountPath: (\\S+)\\s*$", Pattern.MULTILINE);
   private static final Pattern VOLUME      = Pattern.compile("^VOLUME\\s*\\[(.*)]\\s*$", Pattern.MULTILINE);
   private static final Pattern QUOTED      = Pattern.compile("\"([^\"]+)\"");
+  /**
+   * A Compose short-syntax mount of a named volume, {@code - <name>:<container path>[:<mode>]}. A bind mount
+   * ({@code ./dir:/path}) or a long-syntax entry ({@code type: volume}, {@code source:}, {@code target:}) does not
+   * match: switching the quickstart to long syntax needs this pattern extended, or every mount reads as missing.
+   */
+  private static final Pattern COMPOSE_MOUNT = Pattern.compile("(?m)^\\s*- ([A-Za-z0-9][A-Za-z0-9_.-]*):(/[^:\\s]+)(?::\\w+)?\\s*$");
 
   @Test
   void statefulSetUsesOnlyTheVariableFormKubernetesExpands() {
@@ -388,6 +395,39 @@ class PackagingManifestsTest {
         .doesNotContain("\nversion:");
     assertThat(compose).as("without a healthcheck a crash-looping container still reports as running")
         .contains("healthcheck:");
+  }
+
+  @Test
+  void composeMountsANamedVolumeOnEveryVolumeTheImageDeclares() {
+    // Issue #10402: the quickstart mounted a named volume on databases only, so the image's config VOLUME (where the
+    // server writes server-users.jsonl, server-groups.json and server-api-tokens.json) resolved to an anonymous one, and
+    // `docker compose down -v` or a different project name silently dropped every user, group and API token created at
+    // runtime. Every directory the image declares must land on a named volume the file also declares.
+    final String compose = codeOf(read(COMPOSE));
+    final Set<String> declared = blockEntryKeys(compose, "volumes:");
+    final Map<String, String> mounts = new LinkedHashMap<>();
+    final Matcher mount = COMPOSE_MOUNT.matcher(compose);
+    while (mount.find())
+      mounts.put(mount.group(2), mount.group(1));
+
+    for (final String volume : declaredVolumes(DOCKERFILE, read(DOCKERFILE))) {
+      assertThat(mounts).as("%s mounts no named volume (short syntax `- <name>:<path>`) on the image's '%s' volume, so it"
+          + " resolves to an anonymous one", COMPOSE, volume).containsKey(volume);
+      assertThat(declared).as("%s mounts '%s' on %s, which is not a named volume it declares", COMPOSE, mounts.get(volume),
+          volume).contains(mounts.get(volume));
+    }
+    assertThat(mounts.values()).as("%s mounts one named volume on two directories", COMPOSE).doesNotHaveDuplicates();
+  }
+
+  @Test
+  void nativeRunHintsKeepTheConfigVolumeAcrossRm() {
+    // Issue #10402: `docker run --rm` deletes the anonymous volumes of the container it removes, so a hint that mounts
+    // only databases loses every user, group and API token the server wrote to config. A named volume survives `--rm`
+    // and, unlike a bind mount of an empty directory, is seeded with the image's default config files. The name may not
+    // contain a '/', so a bind mount such as `-v ./config:/home/arcadedb/config` is rejected on purpose.
+    for (final String hint : List.of(NATIVE_DOCKER_SH, NATIVE_DOC))
+      assertThat(read(hint)).as("%s tells the reader to run the image without a named volume on config", hint)
+          .containsPattern("-v \"?[A-Za-z0-9_.-]+:/home/arcadedb/config\"?");
   }
 
   @Test

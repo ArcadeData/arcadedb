@@ -422,10 +422,13 @@ cat <<EOF
 
   docker run --rm -p 2480:2480 \\
     -v "\$(pwd)/databases:/home/arcadedb/databases" \\
+    -v arcadedb-config:/home/arcadedb/config \\
     $TAG \\
     -Darcadedb.server.rootPassword=PlayWithData123!
 
 The image runs as UID/GID 1000:1000, so a bind-mounted directory must be writable by it
-(chown 1000:1000 databases). Neither base image has a shell, so -D flags go as trailing
-arguments, not via -e ARCADEDB_SETTINGS. See docs/native-image.md "Running the container".
+(chown 1000:1000 databases). The named config volume keeps the users, groups and API
+tokens the server writes there across --rm, which deletes anonymous volumes. Neither base
+image has a shell, so -D flags go as trailing arguments, not via -e ARCADEDB_SETTINGS.
+See docs/native-image.md "Running the container".
 EOF

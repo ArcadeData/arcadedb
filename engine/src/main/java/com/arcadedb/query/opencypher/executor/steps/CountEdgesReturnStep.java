@@ -108,7 +108,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // Try GAV provider for accelerated edge counting
     final Database db = context.getDatabase();
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, edgeTypes);
 
     if (groupingExpressions.length == 1) {
       // Single-key fast path: use raw Object as map key

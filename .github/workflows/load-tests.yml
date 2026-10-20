@@ -7,7 +7,16 @@ on:
 
 jobs:
   setup:
+    name: setup (${{ matrix.image }})
     runs-on: ubuntu-latest
+    # Same suite twice: against the JVM image built below, and against the published native nightly. A native failure is
+    # a failure, so no continue-on-error; fail-fast off so one leg's red never cancels the other
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [jvm, native]
+    env:
+      TEST_IMAGE_ARGS: ${{ matrix.image == 'native' && '-Darcadedb.test.image=arcadedata/arcadedb:latest-native -Darcadedb.test.native=true' || '' }}
     permissions:
       contents: write
       packages: write
@@ -21,7 +30,7 @@ jobs:
       - name: Run pre-commit
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13.0"
+
           cache: "pip"
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
@@ -40,26 +49,54 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Set up QEMU
+        if: matrix.image == 'jvm'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
+        if: matrix.image == 'jvm'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build and package with Maven Docker profile
+        if: matrix.image == 'jvm'
         run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors  --show-version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The native image is pulled, not built: a GraalVM build is far too slow for this job. `latest-native` is the
+      # nightly from native-image.yml; digest and creation time name the build tested (the image has no version label)
+      - name: Pull native image
+        if: matrix.image == 'native'
+        run: |
+          set -euo pipefail
+          docker pull arcadedata/arcadedb:latest-native
+          docker image inspect --format '{{index .RepoDigests 0}} created {{.Created}}' arcadedata/arcadedb:latest-native
+
+      - name: Build test modules
+        if: matrix.image == 'native'
+        run: ./mvnw -B -q install -DskipTests -pl load-tests -am
+
       - name: Load Tests
-        run: ./mvnw verify -Pintegration --batch-mode --errors --fail-never --show-version -pl load-tests
+        run: |
+          # TEST_IMAGE_ARGS is unquoted on purpose: two arguments on the native leg, none on the JVM one
+          # shellcheck disable=SC2086
+          ./mvnw verify -Pintegration --batch-mode --errors --fail-never --show-version -pl load-tests ${TEST_IMAGE_ARGS}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload container stdout
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success() || failure()
+        with:
+          name: load-tests-container-logs${{ matrix.image == 'native' && '-native' || '' }}
+          path: load-tests/target/container-logs/
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Tests Reporter
         uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         with:
-          name: IT Tests Report
+          name: IT Tests Report${{ matrix.image == 'native' && ' (native)' || '' }}
           path: "**/failsafe-reports/TEST*.xml"
           list-tests: "failed"
           list-suites: "failed"

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -30,7 +31,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class MaterializedViewImpl implements MaterializedView {
+public class MaterializedViewImpl implements MaterializedView, TypeNameDependant {
   private final Database database;
   private final String name;
   // volatile, not final: a rename of a source type rewrites them in place (#10096), see retargetSourceType()
@@ -142,6 +143,46 @@ public class MaterializedViewImpl implements MaterializedView {
       renamed.add(sourceTypeName.equals(oldName) ? newName : sourceTypeName);
     sourceTypeNames = List.copyOf(renamed);
     query = newQuery;
+  }
+
+  /** Refuses the drop of its backing type and of every source type (issue #10096). */
+  @Override
+  public void checkTypeDrop(final LocalSchema schema, final String typeName, final String canonicalTypeName) {
+    final List<String> sources = sourceTypeNames;
+    final List<String> typeNames = new ArrayList<>(sources.size() + 1);
+    typeNames.add(backingTypeName);
+    typeNames.addAll(sources);
+    TypeNameDependant.checkNamesResolve(schema, typeName, "materialized view", name, dropStatement(), typeNames);
+    if (backingTypeName.equals(canonicalTypeName))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + name
+          + "'. Drop the materialized view first with: " + dropStatement());
+    for (final String sourceTypeName : sources)
+      if (canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(schema, sourceTypeName)))
+        throw new SchemaException("Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + name
+            + "'. Drop the materialized view first with: " + dropStatement());
+  }
+
+  /**
+   * Refuses the rename of the backing type, which the view is named after, and of a source type its query cannot be re-pointed
+   * at with certainty (issue #10096).
+   */
+  @Override
+  public void checkTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (backingTypeName.equals(oldName))
+      throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for materialized view '" + name
+          + "': a view is named after its backing type. Drop the materialized view first with: " + dropStatement());
+    if (sourceTypeNames.contains(oldName) && schema.retargetQuery(query, oldName, newName) == null)
+      throw LocalSchema.cannotRepointQuery(oldName, newName, "materialized view", name, dropStatement());
+  }
+
+  @Override
+  public void carryTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (sourceTypeNames.contains(oldName))
+      retargetSourceType(oldName, newName, schema.retargetedQuery("materialized view", name, query, oldName, newName));
+  }
+
+  private String dropStatement() {
+    return "DROP MATERIALIZED VIEW " + name;
   }
 
   /**

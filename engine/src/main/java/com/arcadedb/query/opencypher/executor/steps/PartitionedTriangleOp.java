@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
@@ -718,7 +719,7 @@ public final class PartitionedTriangleOp implements CountOp {
     }
 
     // Try GAV provider for accelerated neighbor lookups
-    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
+    final GraphTraversalProvider gavProvider = GraphViewPins.pinAlone(GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType));
 
     // The edge list of every vertex is read ONCE (issue #9400): the triangle loop below meets each vertex once per
     // neighbour, and reloading its edges each time dominated the whole count. Only the in-partition neighbours are kept,
