@@ -20,6 +20,8 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
+import com.arcadedb.database.DocumentValidator.LinkTargetTypeDeferral;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
@@ -27,7 +29,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -49,7 +50,9 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.misc.ValueTypeHints;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -941,7 +944,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var oldRid = new RID(document.getString("r"));
     var imported = database.newDocument(document.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, document.getJSONObject(ValueTypeHints.KEY, null));
-    imported.save();
+    saveReadRecord(imported, unresolvedLinks);
     ridIndex.put(oldRid, imported.getIdentity());
     if (!unresolvedLinks.isEmpty())
       pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
@@ -958,11 +961,29 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var oldRid = new RID(vertex.getString("r"));
     var imported = database.newVertex(vertex.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, vertex.getJSONObject(ValueTypeHints.KEY, null));
-    imported.save();
+    saveReadRecord(imported, unresolvedLinks);
     ridIndex.put(oldRid, imported.getIdentity());
     if (!unresolvedLinks.isEmpty())
       pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
     context.createdVertices.incrementAndGet();
+  }
+
+  /**
+   * Saves a record read from the file. One that holds a link to a record the file has not reached yet (a forward reference, see
+   * {@link #pendingLinkReconciliation}) is saved with the check of the link's target type suspended: the link still holds the
+   * identity the target had in the SOURCE database, which in this one names a record of another type - or none - so the check would
+   * refuse every restore of a {@code LINK OF T}, {@code LIST OF T} or {@code MAP OF T} that points at a record exported later, and
+   * the exporter writes every vertex before every document. Nothing else is relaxed, and the check is not dropped:
+   * {@link #reconcileUnresolvedLinks} saves the record again with the real link, and that save validates all of it (issue #10483).
+   */
+  private static void saveReadRecord(final MutableDocument imported, final List<PendingLink> unresolvedLinks) {
+    if (unresolvedLinks.isEmpty()) {
+      imported.save();
+      return;
+    }
+    try (final var ignored = DocumentValidator.deferLinkTargetTypeChecks()) {
+      imported.save();
+    }
   }
 
   /**
@@ -985,15 +1006,32 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-    MutableEdge imported = sourceVertex.newEdge(edgeType, newIn);
-    if (!(imported instanceof LightEdge)) {
-      // A lightweight edge has no record: it is already connected by newEdge, carries no properties, and
-      // rejects fromMap()/save() by design.
-      var unresolvedLinks = loadProperties(database, imported, properties, edge.getJSONObject(ValueTypeHints.KEY, null));
-      imported.save();
-      if (!unresolvedLinks.isEmpty())
-        pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+    // The edge is created WITH its properties, not created empty and given them by a second save: the creation validates the
+    // record, so an edge type with a MANDATORY property refused every edge, and a READONLY one refused the second save as an
+    // alteration (issue #10483). A lightweight edge has no record: it is connected by the creation, carries no properties, and
+    // rejects fromMap()/save() by design.
+    final boolean lightweight = database.getSchema().getType(edgeType) instanceof EdgeType type && type.isLightweight();
+    final List<PendingLink> unresolvedLinks = new ArrayList<>(0);
+    final LinkTargetTypeDeferral[] deferral = new LinkTargetTypeDeferral[1];
+    final MutableEdge imported;
+    try {
+      imported = database.getGraphEngine().newEdgeInitializedReportingVeto(sourceVertex, edgeType, newIn, lightweight ?
+          null :
+          newEdge -> {
+            unresolvedLinks.addAll(loadProperties(database, newEdge, properties, edge.getJSONObject(ValueTypeHints.KEY, null)));
+            // the creation saves the edge right after this: see saveReadRecord
+            if (!unresolvedLinks.isEmpty())
+              deferral[0] = DocumentValidator.deferLinkTargetTypeChecks();
+          });
+    } finally {
+      if (deferral[0] != null)
+        deferral[0].close();
     }
+    if (imported == null)
+      throw RecordVetoedException.ofCreateEdge(edgeType, sourceVertex, newIn);
+
+    if (!lightweight && !unresolvedLinks.isEmpty())
+      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
 
     context.createdEdges.incrementAndGet();
   }
@@ -1249,21 +1287,25 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private Object remapLinkValue(final Object value, final String property, final Object[] path,
       final List<PendingLink> unresolved) {
-    if (!(value instanceof String string))
-      return value;
-
     final RID oldRid;
-    try {
-      oldRid = new RID(string);
-    } catch (final Exception e) {
-      // Not a RID-shaped string. Schema says this is a LINK, but the data disagrees - leave it for the normal
-      // property conversion/validation path to deal with rather than silently swallowing it here.
+    if (value instanceof RID rid)
+      // A link the type tree decoded is a RID already, whatever the declaration says: a MAP OF LINK with the key "t" is read through
+      // a tree, and was left on its source RID because only a String was mapped (issue #10483)
+      oldRid = rid;
+    else if (value instanceof String string)
+      try {
+        oldRid = new RID(string);
+      } catch (final Exception e) {
+        // Not a RID-shaped string. Schema says this is a LINK, but the data disagrees - leave it for the normal
+        // property conversion/validation path to deal with rather than silently swallowing it here.
+        return value;
+      }
+    else
       return value;
-    }
 
     final RID newRid = ridIndex.get(oldRid);
     if (newRid != null)
-      return newRid.toString();
+      return value instanceof RID ? newRid : newRid.toString();
 
     unresolved.add(new PendingLink(property, path, oldRid));
     return value;
@@ -1336,8 +1378,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           }
         }
 
+        // The record was saved with the check of its links' target types suspended (see saveReadRecord): this is where it is made.
+        // A save validates the whole record; a record none of whose links was found to replace is validated as it stands
         if (changed)
           mutable.save();
+        else
+          mutable.validate();
       } catch (final Exception e) {
         // Same per-record failure handling as the main import loop (issue #6468): logged, counted, and either aborts the
         // whole import or is skipped per -onRowError, exactly like any other record failure, instead of propagating raw and

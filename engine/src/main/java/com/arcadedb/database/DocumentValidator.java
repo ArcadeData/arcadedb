@@ -41,6 +41,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -57,6 +58,45 @@ public class DocumentValidator {
   private static final int  REGEXP_SEARCH_MAX_LENGTH = 64;
   private static final int  REGEXP_SEARCH_MAX_PROBES = 65_536;
   private static final long REGEXP_SEARCH_TIMEOUT_MS = 1_000;
+
+  // Threads with a link-target deferral open (issue #10483), so the write path pays one volatile read for it unless a restore is running
+  private static final AtomicInteger      LINK_TARGET_DEFERRING_THREADS = new AtomicInteger();
+  private static final ThreadLocal<int[]> LINK_TARGET_DEFERRAL_DEPTH    = ThreadLocal.withInitial(() -> new int[1]);
+  private static final LinkTargetTypeDeferral END_LINK_TARGET_DEFERRAL  = DocumentValidator::endLinkTargetTypeDeferral;
+
+  /**
+   * The scope returned by {@link #deferLinkTargetTypeChecks()}; closing it cannot fail, so a try-with-resources on it needs no catch.
+   */
+  public interface LinkTargetTypeDeferral extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  /**
+   * Suspends, on the calling thread until the returned scope is closed, the check that the record a {@code LINK OF T}, {@code LIST OF T}
+   * or {@code MAP OF T} points at is a {@code T}. For a restore that writes the records in the order of a file and so meets a link
+   * BEFORE the record it names: the link still holds the identity it had in the source database, which names - if anything - a record
+   * of another type in this one, and refusing the write for that would refuse every restore of such a schema (issue #10483). The caller
+   * owes the check back: it writes the record again once the link is resolved, and that write validates the whole record, this check
+   * included. Nothing else is relaxed - MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are checked as always. Scopes nest.
+   */
+  public static LinkTargetTypeDeferral deferLinkTargetTypeChecks() {
+    if (LINK_TARGET_DEFERRAL_DEPTH.get()[0]++ == 0)
+      LINK_TARGET_DEFERRING_THREADS.incrementAndGet();
+    return END_LINK_TARGET_DEFERRAL;
+  }
+
+  private static void endLinkTargetTypeDeferral() {
+    final int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
+    if (depth[0] > 0 && --depth[0] == 0) {
+      LINK_TARGET_DEFERRING_THREADS.decrementAndGet();
+      LINK_TARGET_DEFERRAL_DEPTH.remove();
+    }
+  }
+
+  private static boolean linkTargetTypeCheckDeferred() {
+    return LINK_TARGET_DEFERRING_THREADS.get() != 0 && LINK_TARGET_DEFERRAL_DEPTH.get()[0] > 0;
+  }
 
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
@@ -1160,10 +1200,10 @@ public class DocumentValidator {
         throwValidationException(document.getType(), p,
             "has been declared as LINK but an EMBEDDED document is used. Value: " + fieldValue);
 
-      if (ofType != null) {
+      if (ofType != null && !linkTargetTypeCheckDeferred()) {
         final RID rid = ((Identifiable) fieldValue).getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-        if (!embSchemaType.instanceOf(ofType))
+        if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
           throwValidationException(document.getType(), p,
               "has been declared as LINK of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: "
                   + fieldValue);
@@ -1251,12 +1291,15 @@ public class DocumentValidator {
             "has been declared as " + declaredAs(isMap, ofType) + " but an embedded document of type '" + embeddedDocument.getType().getName()
                 + "' is used. Value: " + fieldValue);
     } else if (item instanceof Identifiable identifiable) {
-      final RID rid = identifiable.getIdentity();
-      final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-      if (!embSchemaType.instanceOf(ofType))
-        throwValidationException(document.getType(), p,
-            "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + embSchemaType.getName() + "' is used. Value: "
-                + fieldValue);
+      if (!linkTargetTypeCheckDeferred()) {
+        final RID rid = identifiable.getIdentity();
+        final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
+        if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
+          throwValidationException(document.getType(), p,
+              "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + (embSchemaType != null ?
+                  embSchemaType.getName() :
+                  null) + "' is used. Value: " + fieldValue);
+      }
     } else if (!(item instanceof String link && RID.is(link)))
       // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted
       throwValidationException(document.getType(), p,
