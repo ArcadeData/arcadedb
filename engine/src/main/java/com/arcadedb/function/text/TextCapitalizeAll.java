@@ -55,16 +55,18 @@ public class TextCapitalizeAll extends AbstractTextFunction {
     final StringBuilder result = new StringBuilder(str.length());
     boolean capitalizeNext = true;
 
-    for (int i = 0; i < str.length(); i++) {
-      final char c = str.charAt(i);
+    // By code point (issue #10484): a cased letter outside the BMP is two UTF-16 units, and neither of them has a case
+    for (int i = 0; i < str.length(); ) {
+      final int c = str.codePointAt(i);
+      i += Character.charCount(c);
       if (Character.isWhitespace(c)) {
         capitalizeNext = true;
-        result.append(c);
+        result.appendCodePoint(c);
       } else if (capitalizeNext) {
-        result.append(Character.toUpperCase(c));
+        result.appendCodePoint(Character.toUpperCase(c));
         capitalizeNext = false;
       } else {
-        result.append(c);
+        result.appendCodePoint(c);
       }
     }
 
