@@ -644,9 +644,11 @@ public class BinaryComparator {
   }
 
   /**
-   * Two maps are equal when they hold the same keys (matched as the map matches them) and the values of each key are equal under
-   * the rule of {@link #equals(Object, Object)}, so a value of {@code Long} 1 and one of {@code Integer} 1 are one value (issue
-   * #10448). A key mapped to {@code null} is a key, as in {@link Map#equals}.
+   * Two maps are equal when they hold the same keys and the values of each key are equal under the rule of
+   * {@link #equals(Object, Object)}, so a value of {@code Long} 1 and one of {@code Integer} 1 are one value (issue #10448). The
+   * keys are matched by the map itself, that is by {@code equals()}/{@code hashCode()}: a map keyed by {@code Long} 1 is not one
+   * keyed by {@code Integer} 1, as a document's MAP property is keyed by String. A key mapped to {@code null} is a key, as in
+   * {@link Map#equals}.
    */
   private static boolean mapsEqual(final Map<?, ?> a, final Map<?, ?> b) {
     if (a.size() != b.size())

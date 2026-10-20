@@ -19,12 +19,16 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -145,6 +149,60 @@ class Issue10448ListMapNumericEqualityTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM D GROUP BY li")) {
       assertThat(rs.stream().count()).isEqualTo(1L);
     }
+  }
+
+  @Test
+  void theComparatorHandlesNullsNestingAndSizes() {
+    assertThat(BinaryComparator.equals(List.of(1L, 2L), List.of(1, 2))).isTrue();
+    assertThat(BinaryComparator.equals(new LinkedList<>(List.of(1L, 2L)), new ArrayList<>(List.of(1, 2)))).as("two implementations").isTrue();
+    assertThat(BinaryComparator.equals(List.of(), List.of())).isTrue();
+    assertThat(BinaryComparator.equals(List.of(1), List.of(1, 1))).as("size").isFalse();
+    assertThat(BinaryComparator.equals(List.of(1, 2), List.of(2, 1))).as("order").isFalse();
+    assertThat(BinaryComparator.equals(Arrays.asList(1L, null), Arrays.asList(1, null))).isTrue();
+    assertThat(BinaryComparator.equals(Arrays.asList(1L, null), Arrays.asList(1, 2))).isFalse();
+    assertThat(BinaryComparator.equals(Arrays.asList(null, 1L), Arrays.asList(1, null))).isFalse();
+
+    assertThat(BinaryComparator.equals(List.of(List.of(1L), Map.of("a", List.of(2L))), List.of(List.of(1), Map.of("a", List.of(2)))))
+        .as("nested").isTrue();
+    assertThat(BinaryComparator.equals(List.of(List.of(1L), Map.of("a", List.of(2L))), List.of(List.of(1), Map.of("a", List.of(3)))))
+        .as("nested, one value apart").isFalse();
+
+    final Map<String, Object> nullValue = new HashMap<>();
+    nullValue.put("a", null);
+    final Map<String, Object> otherKey = new HashMap<>();
+    otherKey.put("b", null);
+    assertThat(BinaryComparator.equals(Map.of("a", 1L), Map.of("a", 1))).isTrue();
+    assertThat(BinaryComparator.equals(Map.of("a", 1L), Map.of("a", 1, "b", 2))).as("size").isFalse();
+    assertThat(BinaryComparator.equals(nullValue, new HashMap<>(nullValue))).isTrue();
+    assertThat(BinaryComparator.equals(nullValue, otherKey)).as("a null value is still a key").isFalse();
+    assertThat(BinaryComparator.equals(nullValue, Map.of("a", 1))).isFalse();
+    assertThat(BinaryComparator.equals(Map.of(1L, "x"), Map.of(1, "x"))).as("keys are matched by the map, as Map.equals does").isFalse();
+    assertThat(BinaryComparator.equals(new TreeMap<>(Map.of("a", 1L)), Map.of("a", 1))).as("a sorted map and a hash map").isTrue();
+  }
+
+  /** The hash keys keep the strict comparison: the hash of {@code [1L]} is not the hash of {@code [1]}. */
+  @Test
+  void theExactComparisonForHashKeysStaysStrict() {
+    assertThat(BinaryComparator.equalsExact(List.of(1L, 2L), List.of(1, 2))).isFalse();
+    assertThat(BinaryComparator.equalsExact(List.of(1, 2), List.of(1, 2))).isTrue();
+    assertThat(BinaryComparator.equalsExact(Map.of("a", 1L), Map.of("a", 1))).isFalse();
+    assertThat(BinaryComparator.equalsExact(Map.of("a", 1), Map.of("a", 1))).isTrue();
+  }
+
+  /** The values that group together do not depend on the element class either, and are not changed by the comparison of {@code =}. */
+  @Test
+  void groupByAndDistinctAgreeOnTheClassOfTheElements() {
+    createThreeVertices();
+    long groups;
+    try (final ResultSet rs = database.query("sql", "SELECT li FROM D GROUP BY li")) {
+      groups = rs.stream().count();
+    }
+    long distinct;
+    try (final ResultSet rs = database.query("sql", "SELECT DISTINCT li FROM D")) {
+      distinct = rs.stream().count();
+    }
+    assertThat(groups).isEqualTo(1L);
+    assertThat(distinct).isEqualTo(groups);
   }
 
   /** The scan answers {@code li = [1, 2]} with every vertex; a BY ITEM index (one entry per item) must give the same rows. */
