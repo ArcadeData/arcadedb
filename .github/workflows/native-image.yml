@@ -245,6 +245,19 @@ jobs:
           "$MUSL_GCC" --version
           "$MUSL_GCC" -print-file-name=libz.a
 
+      # Safety net under the builder's heap cap (-J-Xmx11g in native/pom.xml): the free Linux runners have 16GB and no
+      # headroom for a native-image peak, and running out kills the VM with no OOM message, only "The runner has
+      # received a shutdown signal" (nightly run 39380825176). Swap turns a spike into a slower build instead.
+      - name: Add swap (Linux)
+        if: ${{ matrix.os_name == 'linux' }}
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 8G /swapfile.native
+          sudo chmod 600 /swapfile.native
+          sudo mkswap /swapfile.native
+          sudo swapon /swapfile.native
+          free -h
+
       - name: Build native image
         shell: bash
         run: |
