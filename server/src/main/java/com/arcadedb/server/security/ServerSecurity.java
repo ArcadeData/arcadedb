@@ -359,9 +359,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         }
     }
 
+    /**
+     * A replicated list whose write failed is in force even when it is EMPTY (issue #10451): without the second clause the
+     * reload would treat it as nothing to keep and take the first-load path, which never consults {@link #refusal()}, and
+     * publish the older file.
+     */
     @Override
     protected boolean hasInForce() {
-      return !users.isEmpty();
+      return !users.isEmpty() || usersRepository.isDiskBehind();
     }
 
     @Override
@@ -385,6 +390,30 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     @Override
     protected boolean fileChanged() {
       return file.exists() && usersRepository.isUserFileChanged();
+    }
+
+    /**
+     * Refuses while the users in force have not reached the disk (issue #10451): a replicated list is published even when
+     * its write fails (issue #7137), so the file then holds an OLDER list - with a user the cluster has since dropped, or a
+     * password it has since rotated - and publishing it would undo the replicated change on this node. The #7752 retry
+     * ({@link #retryReplicatedSecurityPersistence}), or any later successful save, lifts the refusal.
+     * <p>
+     * The base class stamps its own baseline on a refusal; this store watches the repository's stamp instead
+     * ({@link #fileChanged()}), so it is advanced here too, or the refusal would be logged again on every tick.
+     * <p>
+     * The check and the stamp are not one atomic step, on purpose. A successful {@code save()} in between stamps the
+     * file it wrote, which is the stamp this would read. A hand edit in between is taken as seen without being read,
+     * which is the refusal's own outcome: the next successful write overwrites that edit with the users in force.
+     */
+    @Override
+    protected String refusal() {
+      if (!usersRepository.isDiskBehind())
+        return null;
+      usersRepository.markFileSeen();
+      return "the users in force have not been written to it yet (the last write of a replicated user list failed), so it "
+          + "is not read: make the configuration directory writable again - the next successful write lifts this and writes "
+          + "the users in force OVER this edit - and make a user change through the server instead: a hand edit cannot win "
+          + "over a replicated user list, which a restart would also replay";
     }
   }
 
@@ -1730,6 +1759,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // is accepted deliberately here, and it does not hide: the only caller logs every one of these at SEVERE
       // with the cause attached (ArcadeStateMachine.applySecurityUsersEntry), which is the visibility the
       // similarly-widened catches in RaftHAServer had to add a log-level bump to get.
+      //
+      // Both callers publish the list whether or not it was written (the replicated install, and the #7752 retry of what
+      // is already in force), so the file is now OLDER than the users in force (issue #10451): see UsersPolicy.refusal().
+      usersRepository.markDiskBehind();
       return e;
     }
   }

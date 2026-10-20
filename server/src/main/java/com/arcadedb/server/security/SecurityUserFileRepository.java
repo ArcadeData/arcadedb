@@ -51,6 +51,16 @@ public class SecurityUserFileRepository {
   // Serializes all writers (local mutations, config reload, Raft apply) so their output never interleaves.
   private final        Object saveLock         = new Object();
   private volatile     long   fileLastModified = -1;
+  // Whether the users in force are NEWER than the file (issue #10451): a replicated list is published in memory even when
+  // its write fails (issue #7137). Set by markDiskBehind() from the Raft apply thread, which must not take the
+  // ServerSecurity monitor, cleared by any successful save() - every save writes the users that are, or are about to be,
+  // in force. A save that FAILS leaves it as it was: the local path publishes nothing when its write fails, so it cannot
+  // put the disk behind memory, and it cannot bring a disk that already was behind level either. VOLATILE because the
+  // watcher's reload reads it under ServerSecurity's users-policy lock, not under saveLock. Set AFTER the failed write,
+  // never before: a local save succeeding in between would clear it and the failure that follows would leave it clear.
+  // In memory only: after a restart the older file is loaded, and the replicated list comes back from the Raft log,
+  // whose entry the #7752 durability floor keeps out of every snapshot checkpoint until the list is on disk.
+  private volatile     boolean diskBehind;
 
   public SecurityUserFileRepository(String securityConfPath) {
     // EITHER SEPARATOR CONVENTION (ISSUE #7588)
@@ -98,6 +108,31 @@ public class SecurityUserFileRepository {
       }
 
       fileLastModified = file.lastModified();
+      diskBehind = false;
+    }
+  }
+
+  /**
+   * Records that the users in force did not reach {@link #FILE_NAME}: the replicated install of issue #7137 published a
+   * list whose write failed. Until the next successful {@link #save}, the file holds an OLDER list and a reload must not
+   * read it (issue #10451).
+   */
+  void markDiskBehind() {
+    diskBehind = true;
+  }
+
+  /** Whether the users in force have not reached {@link #FILE_NAME} yet. See {@link #markDiskBehind()}. */
+  boolean isDiskBehind() {
+    return diskBehind;
+  }
+
+  /**
+   * Takes the file's current stamp as seen without reading it, so {@link #isUserFileChanged()} stops reporting a change
+   * the caller has decided not to load: the watcher's refusal of issue #10451 would otherwise log on every tick.
+   */
+  void markFileSeen() {
+    synchronized (saveLock) {
+      fileLastModified = new File(securityConfPath, FILE_NAME).lastModified();
     }
   }
 
