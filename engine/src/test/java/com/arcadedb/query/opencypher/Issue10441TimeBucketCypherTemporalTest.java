@@ -104,9 +104,9 @@ class Issue10441TimeBucketCypherTemporalTest extends TestHelper {
   void otherTimeSeriesFunctionsAcceptCypherDatetimeTimestamps() {
     // ts.first / ts.last read their timestamp through the same DateUtils conversion
     assertThat(single("UNWIND [{v: 1, t: datetime('2026-10-19T08:00:02Z')}, {v: 2, t: datetime('2026-10-19T08:00:01Z')}] AS r "
-        + "RETURN ts.first(r.v, r.t) AS b")).isEqualTo(2);
+        + "RETURN ts.first(r.v, r.t) AS b")).isEqualTo(2L);
     assertThat(single("UNWIND [{v: 1, t: localdatetime('2026-10-19T08:00:02')}, {v: 2, t: localdatetime('2026-10-19T08:00:01')}] AS r "
-        + "RETURN ts.last(r.v, r.t) AS b")).isEqualTo(1);
+        + "RETURN ts.last(r.v, r.t) AS b")).isEqualTo(1L);
   }
 
   @Test
@@ -123,11 +123,26 @@ class Issue10441TimeBucketCypherTemporalTest extends TestHelper {
     assertThat(single("RETURN `ts`.`timeBucket`('1m', 1792396833000) AS b")).isEqualTo(BUCKET);
   }
 
+  @Test
+  void backtickedExistsStillTestsThePattern() {
+    // the function name is unescaped before the exists(pattern) special case reads it, so the quoted spelling keeps
+    // testing the pattern instead of becoming a non-null check that is always true
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1})-[:R]->(:P {id: 2})").close());
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (n:P) RETURN n.id AS id, `exists`((n)-[:R]->()) AS e ORDER BY id")) {
+      final Result first = rs.next();
+      assertThat((Boolean) first.getProperty("e")).isTrue();
+      final Result second = rs.next();
+      assertThat((Boolean) second.getProperty("e")).isFalse();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   private Object single(final String cypher) {
     try (final ResultSet rs = database.query("opencypher", cypher)) {
       final Object value = rs.next().getProperty("b");
       assertThat(rs.hasNext()).isFalse();
-      return value instanceof Number n ? n.intValue() : asLocalDateTime(value);
+      return value instanceof Number n ? n.longValue() : asLocalDateTime(value);
     }
   }
 

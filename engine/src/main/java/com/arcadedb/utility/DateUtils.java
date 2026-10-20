@@ -392,7 +392,8 @@ public class DateUtils {
       else
         return dateTimeToTimestamp(database, parseDateTime(database, string), precisionToUse);
     } else {
-      // Checked last so the engine's own types pay nothing for it (issue #10441)
+      // Checked last so the engine's own types pay nothing for it (issue #10441). The recursion is one level deep: the
+      // unwrapped value is always a java.time type, which one of the branches above answers
       final Object unwrapped = unwrapCypherTemporal(value);
       // UNSUPPORTED
       return unwrapped != null ? dateTimeToTimestamp(database, unwrapped, precisionToUse) : null;
@@ -439,6 +440,7 @@ public class DateUtils {
         case String string -> FileUtils.isLong(string) ? Long.parseLong(string) :
             dateTimeToTimestampExact(database, parseDateTime(database, string), precisionToUse);
         default -> {
+          // one level of recursion at most: the unwrapped value is a java.time type a case above answers (issue #10441)
           final Object unwrapped = unwrapCypherTemporal(value);
           yield unwrapped != null ? dateTimeToTimestampExact(database, unwrapped, precisionToUse) : null;
         }
