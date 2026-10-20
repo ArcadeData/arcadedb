@@ -2710,7 +2710,9 @@ public enum Type {
    * <p>
    * Nothing is copied unless something is to be replaced, so the common case costs one walk over the nested containers and no
    * garbage. A container holding a replacement is copied, in the same family: a {@link List} to an {@link ArrayList}, a
-   * {@link Set} to a {@link LinkedHashSet}, a {@link Map} to a {@link LinkedHashMap}.
+   * {@link Set} to a {@link LinkedHashSet}, a {@link Map} to a {@link LinkedHashMap}. A sorted or otherwise special container
+   * ({@code TreeMap}, {@code TreeSet}, a custom comparator) therefore loses its type and its ordering rule when it holds an
+   * array, and keeps both when it does not; a stored value is read back as the plain family anyway.
    */
   public static Object unwrapNestedPrimitiveArrays(final Object value) {
     if (value instanceof Collection<?> collection)

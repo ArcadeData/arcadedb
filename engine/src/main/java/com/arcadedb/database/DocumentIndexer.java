@@ -586,7 +586,9 @@ public class DocumentIndexer {
       try {
         baseline = database.getOriginalDocument(pending);
       } catch (final IllegalStateException e) {
-        // No buffer to read: the other indexes are given the pending values, the best state left to describe them
+        // No buffer to read: the other indexes are given the pending values, the best state left to describe them. Benign: with
+        // no earlier snapshot, no index was changed by the writes that came before, so the pending values of their properties
+        // are the ones they already hold
         LogManager.instance().log(this, Level.FINE, "No original buffer for record %s: the indexes other than '%s' are described by "
             + "its pending values in the snapshot of the next update", rid, built.getName());
         baseline = pending;
@@ -614,6 +616,8 @@ public class DocumentIndexer {
           key = propertyNames[i];
           value = getPropertyValue(source, key);
         }
+        // One value per property name: the built index wins over the others for a property they share. They cannot disagree in
+        // practice, an index that existed was brought to the pending state by the update that changed it (and left a snapshot)
         if (!values.containsKey(key) || index == built)
           values.put(key, copyForSnapshot(value));
       }

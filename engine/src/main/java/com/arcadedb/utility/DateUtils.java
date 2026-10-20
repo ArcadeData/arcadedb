@@ -662,7 +662,10 @@ public class DateUtils {
 
   /** What becomes of the offset of an offset-bearing input once it is parsed into a zone-less {@link LocalDateTime}. */
   private enum OffsetPolicy {
-    /** Move the instant onto the database's configured zone (the bulk path: a client in another zone stores the instant it meant). */
+    /**
+     * Move the instant onto the database's configured zone (the bulk path: a client in another zone stores the instant it
+     * meant). It agrees with {@link #CONVERT_TO_UTC} only for a database whose zone is UTC; reconciling the two is issue #10498.
+     */
     REBASE_TO_DATABASE_ZONE,
     /** Drop the offset: the wall clock written is the wall clock read. */
     KEEP_WALL_CLOCK,
