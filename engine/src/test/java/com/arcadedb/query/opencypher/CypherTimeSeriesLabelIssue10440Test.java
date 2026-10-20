@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * pattern now fails with an error naming the type instead of reporting that there is no data.
  */
 class CypherTimeSeriesLabelIssue10440Test {
-  private static final String MESSAGE = "TIMESERIES type 'Ev'";
+  private static final String MESSAGE = "'Ev', a TIMESERIES type";
 
   private Database database;
 
@@ -106,6 +106,10 @@ class CypherTimeSeriesLabelIssue10440Test {
       // the write clauses failed before too, but with an opaque message
       "MERGE (e:Ev {k: 'z'}) RETURN e",
       "CREATE (e:Ev {k: 'z'}) RETURN e",
+      // patterns in a FOREACH body, and in a pattern predicate of a SET or a DELETE
+      "MATCH (p:P) FOREACH (x IN [1] | MERGE (:Ev {k: 'z'}))",
+      "MATCH (p:P) SET p.hasEv = EXISTS { (p)-->(:Ev) }",
+      "MATCH (p:P) WITH p WHERE (p)-->(:Ev) DETACH DELETE p",
       // EXPLAIN plans the same statement
       "EXPLAIN MATCH (e:Ev) RETURN e"
   })
@@ -114,7 +118,8 @@ class CypherTimeSeriesLabelIssue10440Test {
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining(MESSAGE);
     // the read-only entry point plans the same way
-    if (!query.startsWith("MERGE") && !query.startsWith("CREATE"))
+    if (!query.startsWith("MERGE") && !query.startsWith("CREATE") && !query.contains("FOREACH") && !query.contains(" SET ")
+        && !query.contains("DELETE"))
       assertThatThrownBy(() -> drain(database.query("cypher", query)))
           .isInstanceOf(CommandSemanticException.class)
           .hasMessageContaining(MESSAGE);
@@ -144,7 +149,7 @@ class CypherTimeSeriesLabelIssue10440Test {
 
     assertThatThrownBy(() -> drain(database.query("cypher", "MATCH (e:Later) RETURN e")))
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("TIMESERIES type 'Later'");
+        .hasMessageContaining("'Later', a TIMESERIES type");
   }
 
   @Test
@@ -154,6 +159,8 @@ class CypherTimeSeriesLabelIssue10440Test {
         .isEqualTo(1L);
     // an unknown label still matches nothing, without an error
     assertThat(drain(database.query("cypher", "MATCH (n:DoesNotExist) RETURN n"))).isEmpty();
+    // labels are case-sensitive, as type names are: 'ev' names no type, so it is an unknown label, not the time-series type
+    assertThat(drain(database.query("cypher", "MATCH (n:ev) RETURN n"))).isEmpty();
     // a label check that stays a predicate (a negation is never hoisted into the pattern) asks about a bound vertex, and
     // the answer - no vertex carries the label - is correct
     assertThat(drain(database.query("cypher", "MATCH (p:P) WHERE NOT p:Ev RETURN p"))).hasSize(2);

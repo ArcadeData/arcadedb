@@ -608,9 +608,9 @@ public final class Labels {
    */
   public static void requireNotTimeSeriesType(final DocumentType type, final String kind) {
     if (type instanceof TimeSeriesType)
-      throw new CommandSemanticException("The " + kind + " '" + type.getName() + "' names the TIMESERIES type '" + type.getName()
-          + "': Cypher does not query time-series types, whose samples are neither nodes nor relationships. Query it with SQL ("
-          + "SELECT FROM `" + type.getName() + "`) or PromQL instead");
+      throw new CommandSemanticException("Cypher cannot match the " + kind + " '" + type.getName() + "', a TIMESERIES type: "
+          + "time-series samples are neither nodes nor relationships. Query it with SQL (SELECT FROM `" + type.getName()
+          + "`) or PromQL instead");
   }
 
   /**
