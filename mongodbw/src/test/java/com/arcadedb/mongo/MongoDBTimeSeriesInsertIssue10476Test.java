@@ -37,12 +37,15 @@ import com.mongodb.client.model.InsertManyOptions;
 import org.bson.Document;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
+import org.bson.types.Binary;
+import org.bson.types.Decimal128;
 import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -214,6 +217,42 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
     plain.insertOne(new Document("a", 1));
 
     assertThat(plain.countDocuments()).isEqualTo(1);
+  }
+
+  /** The numbers a driver sends in each of the BSON types a DOUBLE field can be written with. */
+  @Test
+  void everyNumericTypeOfBsonIsStoredInADoubleField() {
+    collection.insertOne(new Document("ts", T0).append("k", "int").append("v", 3));
+    collection.insertOne(new Document("ts", T0 + 1).append("k", "long").append("v", 4L));
+    collection.insertOne(new Document("ts", T0 + 2).append("k", "double").append("v", 5.5));
+    collection.insertOne(new Document("ts", T0 + 3).append("k", "decimal").append("v", new Decimal128(new BigDecimal("6.25"))));
+
+    assertThat(samples()).containsExactly(new Sample(T0, "int", 3.0), new Sample(T0 + 1, "long", 4.0),
+        new Sample(T0 + 2, "double", 5.5), new Sample(T0 + 3, "decimal", 6.25));
+  }
+
+  /**
+   * A value of a BSON type a column cannot hold - a nested document, an array, binary data - is the document's fault, reported as
+   * a write error that names the column, and not a failure of the command.
+   */
+  @Test
+  void aValueOfATypeTheColumnCannotHoldIsRefusedAsTheDocumentsNotAsAFailedCommand() {
+    final List<Document> documents = List.of(new Document("ts", T0).append("k", "c").append("v", new Document("nested", 1)),
+        new Document("ts", T0 + 1).append("k", "c").append("v", List.of(1.0, 2.0)),
+        new Document("ts", T0 + 2).append("k", List.of("a", "b")).append("v", 1.0),
+        new Document("ts", T0 + 3).append("k", new Document("nested", "tag")).append("v", 1.0),
+        new Document("ts", T0 + 4).append("k", "c").append("v", new Binary(new byte[] { 1, 2, 3 })),
+        new Document("ts", T0 + 5).append("k", "fine").append("v", 9.0));
+
+    assertThatThrownBy(() -> collection.insertMany(documents, new InsertManyOptions().ordered(false))).isInstanceOf(
+        MongoBulkWriteException.class).satisfies(e -> {
+      final MongoBulkWriteException bulk = (MongoBulkWriteException) e;
+      assertThat(bulk.getWriteErrors()).extracting(error -> error.getIndex()).containsExactly(0, 1, 2, 3, 4);
+      assertThat(bulk.getWriteErrors()).allSatisfy(error -> assertThat(error.getCode()).isNotEqualTo(26));
+      assertThat(bulk.getWriteResult().getInsertedCount()).isEqualTo(1);
+    });
+
+    assertThat(samples()).containsExactly(new Sample(T0 + 5, "fine", 9.0));
   }
 
   /** A refusal of a sample is the document's; a fault of the code or of the disk is the server's and fails the command. */

@@ -37,7 +37,15 @@ import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -327,6 +335,103 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
       spent += read;
     }
     assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).as("earned again").isNotNull();
+  }
+
+  /** An estimate that is negative, or the largest a long holds, neither takes away from the demand nor overflows it. */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void anEstimateOutOfRangeIsHarmless(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    commitAFewEdges();
+    awaitView(view);
+    final GraphAnalyticalView.Pinned pinned = view.pinned();
+    final long cost = pinned.getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K");
+    final long read = DEGREE * DEGREE;
+
+    assertThat(pinned.getNeighborViewForVisits(Long.MIN_VALUE, Vertex.DIRECTION.OUT, "K")).isNull();
+    assertThat(pinned.getNeighborViewForVisits(-1, Vertex.DIRECTION.OUT, "K")).isNull();
+
+    // what the reads spent before is all there is: the negative ones did not take any of it away
+    long spent = 0;
+    while (spent + read < cost) {
+      assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNull();
+      spent += read;
+    }
+    assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNotNull();
+
+    // and the largest estimate a long holds is a read that pays for the view of any snapshot, at once
+    commitAFewEdges();
+    awaitView(view);
+    assertThat(view.pinned().getNeighborViewForVisits(Long.MAX_VALUE, Vertex.DIRECTION.OUT, "K")).isNotNull();
+  }
+
+  /**
+   * Readers racing at the threshold, with the memory pressure clearing the view meanwhile: nobody fails, every view handed out is a
+   * view of the snapshot (the same one while it is held), and the reads end up with it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void readersRacingAtTheThresholdAndTheEvictionAllGetAnAnswer(final String mode) throws Exception {
+    final GraphAnalyticalView view = createView(mode);
+    commitAFewEdges();
+    awaitView(view);
+    final GraphAnalyticalView.Pinned pinned = view.pinned();
+    final long read = DEGREE * DEGREE;
+    final int readers = 8;
+
+    final ExecutorService pool = Executors.newFixedThreadPool(readers + 1);
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicInteger failures = new AtomicInteger();
+    final Set<NeighborView> handedOut = ConcurrentHashMap.newKeySet();
+    final CountDownLatch start = new CountDownLatch(1);
+    try {
+      final List<Future<?>> done = new ArrayList<>();
+      for (int r = 0; r < readers; r++)
+        done.add(pool.submit(() -> {
+          try {
+            start.await();
+            for (int i = 0; i < 3000; i++) {
+              final NeighborView served = pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K");
+              if (served != null) {
+                assertThat(served.nodeCount()).isEqualTo(pinned.getNodeIdUpperBound());
+                handedOut.add(served);
+              }
+            }
+          } catch (final Throwable t) {
+            failures.incrementAndGet();
+          }
+        }));
+      // the memory pressure: clears the references of the snapshot now and then
+      final Future<?> pressure = pool.submit(() -> {
+        try {
+          start.await();
+          while (!stop.get()) {
+            pinned.snapshot().mergedNeighborViews.values().forEach(SoftReference::clear);
+            Thread.sleep(1);
+          }
+        } catch (final Throwable t) {
+          failures.incrementAndGet();
+        }
+      });
+
+      start.countDown();
+      for (final Future<?> reader : done)
+        reader.get(120, TimeUnit.SECONDS);
+      stop.set(true);
+      pressure.get(30, TimeUnit.SECONDS);
+    } finally {
+      stop.set(true);
+      pool.shutdownNow();
+    }
+
+    assertThat(failures.get()).as("readers and eviction that failed").isZero();
+    assertThat(handedOut).as("the 24000 reads, many times the cost of the view, got it at least once").isNotEmpty();
+    // once the pressure stops, the reads get the view and keep it
+    NeighborView last = null;
+    for (int i = 0; i < 100_000 && last == null; i++)
+      last = pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K");
+    assertThat(last).isNotNull();
+    assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isSameAs(last);
   }
 
   /** The chains that walk both directions, or track their relationships, take the per-node path of a hop with no view. */

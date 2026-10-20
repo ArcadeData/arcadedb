@@ -1931,8 +1931,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * when they have spent as much as it costs and never when the next commit comes first. Whatever the reads, the work wasted on
    * per-node reads or on a view nobody read again is bounded by the cost of the view.
    */
-  private static boolean neighborViewPaysFor(final Snapshot snap, final long expectedVisits, final Vertex.DIRECTION direction,
+  private static boolean neighborViewPaysFor(final Snapshot snap, final long requestedVisits, final Vertex.DIRECTION direction,
       final String[] slices, final String key) {
+    // an estimate is not negative: a caller that overflowed one must not take away what the other reads spent
+    final long expectedVisits = Math.max(0L, requestedVisits);
     final long cost = overlayViewBuildCost(snap, direction, slices, key);
     if (cost == 0L || expectedVisits >= cost)
       return true;
