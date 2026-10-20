@@ -1753,6 +1753,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             return refusedUpdateOfQueuedRecordDoomsCommit(record);
       }
     } catch (final RuntimeException | Error e) {
+      // Whatever refused the update, a validation, a listener, even an Error: the values are on the queued instance, and over-refusing
+      // the commit is the safe side of not knowing why it failed. Counting changes nothing for an exception that is rethrown as is
       countRefusedUpdateOfQueuedRecord(record);
       throw e;
     }

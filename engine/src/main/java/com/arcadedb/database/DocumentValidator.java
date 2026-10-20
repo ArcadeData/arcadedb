@@ -1235,9 +1235,9 @@ public class DocumentValidator {
         final RID rid = ((Identifiable) fieldValue).getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
         if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
-          throwValidationException(document.getType(), p,
-              "has been declared as LINK of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: "
-                  + fieldValue);
+          throwValidationException(document.getType(), p, "has been declared as LINK of '" + ofType + "' but a link to " + (
+              embSchemaType != null ? "type '" + embSchemaType + "'" : "a record in a bucket that belongs to no type") + " is used. Value: "
+              + fieldValue);
       }
     }
     break;
@@ -1326,10 +1326,9 @@ public class DocumentValidator {
         final RID rid = identifiable.getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
         if (embSchemaType == null || !embSchemaType.instanceOf(ofType)) {
-          final String linkedTypeName = embSchemaType != null ? embSchemaType.getName() : null;
-          throwValidationException(document.getType(), p,
-              "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + linkedTypeName + "' is used. Value: "
-                  + fieldValue);
+          throwValidationException(document.getType(), p, "has been declared as " + declaredAs(isMap, ofType) + " but a link to " + (
+              embSchemaType != null ? "type '" + embSchemaType.getName() + "'" : "a record in a bucket that belongs to no type")
+              + " is used. Value: " + fieldValue);
         }
       }
     } else if (!(item instanceof String link && RID.is(link)))
