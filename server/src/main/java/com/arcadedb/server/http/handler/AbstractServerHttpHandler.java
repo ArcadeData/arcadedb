@@ -101,6 +101,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -132,6 +133,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final int    MAX_PRESIZED_REQUEST_BODY     = 1024 * 1024;
   // The longest parser verdict told to a client or logged for a body that did not parse (issue #10395)
   private static final int    MAX_PARSE_FAILURE_LENGTH      = 200;
+  // The parser's own verdict, "End of input at line 1 column 13": a few words, then where it stopped. Anchored at the start and
+  // without a colon or a quote in the words, so "Not a JSON Object: <the body>" never matches, whatever the body holds. The
+  // " path $.name" the parser appends is left out: it names a member of the body
+  private static final Pattern PARSE_POSITION               = Pattern.compile("^[A-Za-z .()']+ at line \\d+ column \\d+");
 
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
@@ -2588,23 +2593,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * What a client is told of a body that did not parse, and what the log keeps: the first line of the innermost cause, which is the
-   * parser's own verdict with its position ("End of input at line 1 column 13 path $.command"), capped. Never the message of the
-   * wrapper the JSON classes throw: it repeats the whole body, which can be megabytes and can hold a password (issue #10395).
+   * What a client is told of a body that did not parse, and what the log keeps: the first line of the innermost cause when it is the
+   * parser's own verdict with its position ("End of input at line 1 column 13"), capped. Never the message of the wrapper the JSON
+   * classes throw: it repeats the whole body, which can be megabytes and can hold a password. And never a message without a
+   * position either: "Not a JSON Object: &lt;the body&gt;", what a scalar body raises, quotes it (issue #10395).
    */
   static String describeParseFailure(final Throwable failure) {
     Throwable cause = failure;
     while (cause.getCause() != null && cause.getCause() != cause)
       cause = cause.getCause();
 
-    String message = cause.getMessage();
-    if (message == null || message.isBlank())
-      return cause.getClass().getSimpleName();
+    final String message = cause.getMessage();
+    final Matcher position = message != null ? PARSE_POSITION.matcher(message) : null;
+    if (position == null || !position.find())
+      return "the body is not a JSON object";
 
-    final int endOfLine = message.indexOf('\n');
-    if (endOfLine >= 0)
-      message = message.substring(0, endOfLine);
-    return message.length() > MAX_PARSE_FAILURE_LENGTH ? message.substring(0, MAX_PARSE_FAILURE_LENGTH) + "..." : message;
+    final String verdict = position.group();
+    return verdict.length() > MAX_PARSE_FAILURE_LENGTH ? verdict.substring(0, MAX_PARSE_FAILURE_LENGTH) + "..." : verdict;
   }
 
   /**

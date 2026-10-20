@@ -230,12 +230,16 @@ public class TypeBuilder<T> {
 
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-      // Every super type is asked before the first one is linked or the first bucket is made, so a refusal of the last leaves the
-      // type as it was (issue #10394)
+      final List<LocalDocumentType> toLink = new ArrayList<>();
       if (superTypes != null)
         for (final LocalDocumentType sup : superTypes)
-          if (!t.getSuperTypes().contains(sup))
-            t.checkCanAddSuperType(sup, true);
+          if (!t.getSuperTypes().contains(sup) && !toLink.contains(sup))
+            toLink.add(sup);
+
+      // Every super type is asked before the first one is linked or the first bucket is made, so a refusal of the last leaves the
+      // type as it was (issue #10394). create() runs this under the database write lock, which the checks need
+      for (final LocalDocumentType sup : toLink)
+        t.checkCanAddSuperType(sup, true);
 
       if (t.buckets.size() < buckets) {
         // A bucket another type owns is refused by addBucket, but only after the ones before it are attached: the refused growth
@@ -254,26 +258,23 @@ public class TypeBuilder<T> {
         }
       }
 
-      final List<LocalDocumentType> linked = new ArrayList<>();
-      if (superTypes != null)
-        try {
-          for (final LocalDocumentType sup : superTypes) {
-            if (!t.getSuperTypes().contains(sup)) {
-              t.addSuperType(sup);
-              linked.add(sup);
-            }
-          }
-        } catch (final RuntimeException e) {
-          // Each link is undone by addSuperType itself when it refuses, the ones before it are not: they are given back here, so the
-          // type is not left under some of the super types it asked for (issue #10394)
-          for (final LocalDocumentType sup : linked.reversed())
-            try {
-              t.removeSuperType(sup);
-            } catch (final RuntimeException unlinkFailure) {
-              e.addSuppressed(unlinkFailure);
-            }
-          throw e;
+      final List<LocalDocumentType> linked = new ArrayList<>(toLink.size());
+      try {
+        for (final LocalDocumentType sup : toLink) {
+          t.addSuperType(sup);
+          linked.add(sup);
         }
+      } catch (final RuntimeException e) {
+        // Each link is undone by addSuperType itself when it refuses, the ones before it are not: they are given back here, so the
+        // type is not left under some of the super types it asked for (issue #10394)
+        for (final LocalDocumentType sup : linked.reversed())
+          try {
+            t.removeSuperType(sup);
+          } catch (final RuntimeException unlinkFailure) {
+            e.addSuppressed(unlinkFailure);
+          }
+        throw e;
+      }
 
       if (!linked.isEmpty()) {
         schema.saveConfiguration();

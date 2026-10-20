@@ -71,6 +71,19 @@ class Issue10395MalformedPayloadIT extends BaseGraphServerTest {
   }
 
   @Test
+  void theRefusalDoesNotQuoteWhatSitsAtTheFailurePosition() throws Exception {
+    // The parser names a position, not a snippet: a secret-like token right where the body stops making sense must not come back
+    for (final String body : new String[] { "{\"command\":\"x\",\"password\":\"hunter2\" hunter2-secret}",
+        "{\"command\":\"x\" \"password\":\"hunter2\"}", "{hunter2-secret:", "[hunter2-secret,", "hunter2-secret",
+        "\"hunter2 at line 5 column 3\"", "hunter2 at line 5 column 3" }) {
+      final Response response = post("/api/v1/server", body);
+
+      assertThat(response.code).as(body).isEqualTo(400);
+      assertThat(response.body).as(body).contains("Invalid JSON payload").doesNotContain("hunter2");
+    }
+  }
+
+  @Test
   void aMissingBodyOnTheServerCommandRouteAnswers400NotAnNpe() throws Exception {
     for (final String body : new String[] { null, "", "  ", "\n", "{}" }) {
       final Response response = post("/api/v1/server", body);
