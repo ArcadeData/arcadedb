@@ -1006,31 +1006,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-    // The edge is created WITH its properties, not created empty and given them by a second save: the creation validates the
-    // record, so an edge type with a MANDATORY property refused every edge, and a READONLY one refused the second save as an
-    // alteration (issue #10483). A lightweight edge has no record: it is connected by the creation, carries no properties, and
-    // rejects fromMap()/save() by design.
     final boolean lightweight = database.getSchema().getType(edgeType) instanceof EdgeType type && type.isLightweight();
     final List<PendingLink> unresolvedLinks = new ArrayList<>(0);
-    final LinkTargetTypeDeferral[] deferral = new LinkTargetTypeDeferral[1];
-    final MutableEdge imported;
-    // Connecting the edge updates the records of its two vertices (their edge lists), and an update validates the whole record: a
-    // vertex that still waits for the target of one of its links (see saveReadRecord) would be refused for it here
-    try (final LinkTargetTypeDeferral ignored = pendingLinkReconciliation.containsKey(newOut) || pendingLinkReconciliation.containsKey(
-        newIn) ? DocumentValidator.deferLinkTargetTypeChecks() : null) {
-      imported = database.getGraphEngine().newEdgeInitializedReportingVeto(sourceVertex, edgeType, newIn, lightweight ?
-          null :
-          newEdge -> {
-            unresolvedLinks.addAll(loadProperties(database, newEdge, properties, edge.getJSONObject(ValueTypeHints.KEY, null)));
-            // The creation saves the edge right after this, on this thread (the initializer runs inside the call, never later or elsewhere),
-            // so the scope opened here is the one the save runs in and the finally below closes: see saveReadRecord
-            if (!unresolvedLinks.isEmpty())
-              deferral[0] = DocumentValidator.deferLinkTargetTypeChecks();
-          });
-    } finally {
-      if (deferral[0] != null)
-        deferral[0].close();
-    }
+    final boolean endpointWaitsForALink = pendingLinkReconciliation.containsKey(newOut) || pendingLinkReconciliation.containsKey(newIn);
+    final MutableEdge imported = createEdgeWithProperties(database, sourceVertex, edgeType, newIn, lightweight, endpointWaitsForALink,
+        properties, edge.getJSONObject(ValueTypeHints.KEY, null), unresolvedLinks);
     if (imported == null)
       throw RecordVetoedException.ofCreateEdge(edgeType, sourceVertex, newIn);
 
@@ -1038,6 +1018,40 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
 
     context.createdEdges.incrementAndGet();
+  }
+
+  /**
+   * Creates the edge WITH its properties, not empty and given them by a second save: the creation validates the record, so an edge type
+   * with a MANDATORY property refused every edge, and a READONLY one refused the second save as an alteration (issue #10483). A
+   * lightweight edge has no record: it is connected by the creation, carries no properties, and rejects fromMap()/save() by design.
+   * <p>
+   * The check of the target type of a link is suspended in two cases, and validated again by {@link #reconcileUnresolvedLinks}:
+   * connecting the edge updates the records of its two vertices (their edge lists), and an update validates the whole record, so a
+   * vertex that still waits for the target of one of its links (see {@link #saveReadRecord}) would be refused for it
+   * ({@code endpointWaitsForALink}); and the edge's own links, when one waits for its target.
+   *
+   * @param unresolvedLinks receives the links of the edge that wait for their target
+   *
+   * @return the edge, or null when a before-create listener vetoed it
+   */
+  private MutableEdge createEdgeWithProperties(final DatabaseInternal database, final Vertex sourceVertex, final String edgeType,
+      final RID newIn, final boolean lightweight, final boolean endpointWaitsForALink, final JSONObject properties,
+      final JSONObject hints, final List<PendingLink> unresolvedLinks) {
+    final LinkTargetTypeDeferral[] ownLinksDeferral = new LinkTargetTypeDeferral[1];
+    try (final LinkTargetTypeDeferral ignored = endpointWaitsForALink ? DocumentValidator.deferLinkTargetTypeChecks() : null) {
+      return database.getGraphEngine().newEdgeInitializedReportingVeto(sourceVertex, edgeType, newIn, lightweight ?
+          null :
+          newEdge -> {
+            unresolvedLinks.addAll(loadProperties(database, newEdge, properties, hints));
+            // The creation saves the edge right after this, on this thread (the initializer runs inside the call, never later or
+            // elsewhere), so the scope opened here is the one the save runs in and the finally below closes
+            if (!unresolvedLinks.isEmpty())
+              ownLinksDeferral[0] = DocumentValidator.deferLinkTargetTypeChecks();
+          });
+    } finally {
+      if (ownLinksDeferral[0] != null)
+        ownLinksDeferral[0].close();
+    }
   }
 
   @Override
@@ -1383,7 +1397,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         }
 
         // The record was saved with the check of its links' target types suspended (see saveReadRecord): this is where it is made.
-        // A save validates the whole record; a record none of whose links was found to replace is validated as it stands
+        // A save validates the whole record; a record none of whose links was found to replace is validated as it stands. That is one
+        // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore
         if (changed)
           mutable.save();
         else
