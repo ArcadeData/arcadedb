@@ -205,6 +205,34 @@ class Issue10448ListMapNumericEqualityTest extends TestHelper {
     assertThat(distinct).isEqualTo(groups);
   }
 
+  /**
+   * A regular index on a list holds the whole list as its key, element classes included, so it must answer {@code li = [1, 2]}
+   * with the rows the scan answers, whichever class the elements were written with.
+   */
+  @Test
+  void aRegularIndexOnAListAnswersWholeListEqualityAsTheScanDoes() {
+    for (final String type : List.of("P", "R")) {
+      database.command("sql", "CREATE VERTEX TYPE " + type).close();
+      database.command("sql", "CREATE PROPERTY " + type + ".li LIST").close();
+      if (type.equals("R"))
+        database.command("sql", "CREATE INDEX ON R (li) NOTUNIQUE").close();
+      database.transaction(() -> {
+        database.newVertex(type).set("k", "long").set("li", List.of(1L, 2L)).save();
+        database.newVertex(type).set("k", "integer").set("li", List.of(1, 2)).save();
+        database.newVertex(type).set("k", "other").set("li", List.of(2, 3)).save();
+      });
+    }
+    for (final String condition : List.of("li = [1, 2]", "li = [2, 3]", "li <> [1, 2]", "li IN [[1, 2]]", "li IN [[1, 2], [2, 3]]")) {
+      final List<String> scan = keys("SELECT k FROM P WHERE " + condition + " ORDER BY k");
+      final List<String> indexed = keys("SELECT k FROM R WHERE " + condition + " ORDER BY k");
+      assertThat(indexed).as(condition).isEqualTo(scan);
+    }
+    assertThat(keys("SELECT k FROM R WHERE li = [1, 2] ORDER BY k")).containsExactly("integer", "long");
+    try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT k FROM R WHERE li = [1, 2]")) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).as("the index is the one asked").contains("FETCH FROM INDEX");
+    }
+  }
+
   /** The scan answers {@code li = [1, 2]} with every vertex; a BY ITEM index (one entry per item) must give the same rows. */
   @Test
   void byItemIndexAnswersWholeListEqualityAsTheScanDoes() {
