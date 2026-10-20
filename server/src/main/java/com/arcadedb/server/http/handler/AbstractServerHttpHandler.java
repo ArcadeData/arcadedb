@@ -101,6 +101,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -130,6 +131,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * here.
    */
   private static final int    MAX_PRESIZED_REQUEST_BODY     = 1024 * 1024;
+  // The longest parser verdict told to a client or logged for a body that did not parse (issue #10395)
+  private static final int    MAX_PARSE_FAILURE_LENGTH      = 200;
+  // The parser's own verdict, "End of input at line 1 column 13": a few words, then where it stopped. Anchored at the start and
+  // without a colon or a quote in the words, so "Not a JSON Object: <the body>" never matches, whatever the body holds. The
+  // " path $.name" the parser appends is left out: it names a member of the body
+  private static final Pattern PARSE_POSITION               = Pattern.compile("^[A-Za-z .()']+ at line \\d+ column \\d+");
 
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
@@ -880,6 +887,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       JSONObject payload = null;
       JSONArray payloadAsArray = null;
       String payloadAsString = null;
+      String malformedPayload = null;
       if (mustExecuteOnWorkerThread()) {
         payloadAsString = parseRequestPayload(exchange);
         // The body can only be read once from the exchange, so keep the raw text available to handlers whose
@@ -899,7 +907,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             } else
               payload = new JSONObject(trimmedPayload);
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
+            malformedPayload = describeParseFailure(e);
+            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", malformedPayload);
           }
         }
       }
@@ -985,7 +994,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       final ExecutionResponse response;
-      if (payloadAsArray != null && !acceptsArrayPayload())
+      if (malformedPayload != null && refusesMalformedPayload())
+        // A body that was sent and could not be parsed is not "no body": a handler given a null payload for it would run as if
+        // the client had sent nothing (a begin with the database default, a security seed with defaults) or dereference it
+        // (issue #10395). Refused once here, naming the parse error, so no handler has to remember to tell the two apart
+        response = new ExecutionResponse(400, error2json("Invalid JSON payload",
+            "The request body must be a valid JSON object: " + malformedPayload, null, null, null));
+      else if (payloadAsArray != null && !acceptsArrayPayload())
         // A top-level JSON array reached a route that only understands a JSON object: answer with an explicit
         // client error instead of running the handler with a null payload, which surfaced as a misleading
         // "field is null" message (or worse as a silent no-op) with no hint that the body shape was wrong.
@@ -2563,6 +2578,38 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   protected boolean requiresJsonPayload() {
     return true;
+  }
+
+  /**
+   * Returns true (the default) when the shared pipeline answers HTTP 400 to a request body that could not be parsed as JSON,
+   * naming the parse error, instead of invoking {@link #execute(HttpServerExchange, ServerSecurityUser, JSONObject)} with a null
+   * payload that is indistinguishable from "no body was sent" (issue #10395). Blank bodies are no body and are never refused.
+   * <p>
+   * A handler whose protocol has an error of its own for an unparseable body overrides this to false and reads the raw text
+   * from {@link #RAW_PAYLOAD}: the MCP endpoint answers JSON-RPC {@code -32700} over HTTP 200, never a transport error.
+   */
+  protected boolean refusesMalformedPayload() {
+    return true;
+  }
+
+  /**
+   * What a client is told of a body that did not parse, and what the log keeps: the first line of the innermost cause when it is the
+   * parser's own verdict with its position ("End of input at line 1 column 13"), capped. Never the message of the wrapper the JSON
+   * classes throw: it repeats the whole body, which can be megabytes and can hold a password. And never a message without a
+   * position either: "Not a JSON Object: &lt;the body&gt;", what a scalar body raises, quotes it (issue #10395).
+   */
+  static String describeParseFailure(final Throwable failure) {
+    Throwable cause = failure;
+    while (cause.getCause() != null && cause.getCause() != cause)
+      cause = cause.getCause();
+
+    final String message = cause.getMessage();
+    final Matcher position = message != null ? PARSE_POSITION.matcher(message) : null;
+    if (position == null || !position.find())
+      return "the body is not a JSON object";
+
+    final String verdict = position.group();
+    return verdict.length() > MAX_PARSE_FAILURE_LENGTH ? verdict.substring(0, MAX_PARSE_FAILURE_LENGTH) + "..." : verdict;
   }
 
   /**

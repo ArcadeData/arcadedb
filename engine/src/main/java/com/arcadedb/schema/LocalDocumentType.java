@@ -1191,9 +1191,13 @@ public class LocalDocumentType implements DocumentType {
       return;
     }
 
-    throw new SchemaException("Cannot add super type '" + superType.getName() + "' to type '" + name
-        + "' because a TIMESERIES type ("
-        + (affected != null ? affected.getName() : superType.getName())
+    throw timeSeriesHierarchyRefusal(name, superType.getName(), affected != null ? affected.getName() : superType.getName());
+  }
+
+  private static SchemaException timeSeriesHierarchyRefusal(final String typeName, final String superTypeName,
+      final String timeSeriesTypeName) {
+    return new SchemaException("Cannot add super type '" + superTypeName + "' to type '" + typeName
+        + "' because a TIMESERIES type (" + timeSeriesTypeName
         + ") only stores the TIMESTAMP, TAGS and FIELDS columns declared in CREATE TIMESERIES TYPE, whether it is "
         + "an end of this link or sits below it in the hierarchy: a polymorphic property inherited across it would "
         + "be silently dropped by every write");
@@ -2989,6 +2993,47 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Every refusal {@link #addSuperType(DocumentType, boolean)} can give before it changes anything, in one place so that the linkage
+   * and the callers that must know BEFORE they change something ask the same questions: a caller that links several super types
+   * asks them all before it links the first, so a refusal of the last leaves nothing linked (issue #10394).
+   * <p>
+   * Under the database write lock, as the linkage is: the checks walk the {@link #subTypes} lists {@code linkSuperType} mutates.
+   *
+   * @param newLinkage {@code false} for the callers that re-establish a linkage that already holds, which have nothing new to
+   *                   validate and must still open a database written before a check existed (see
+   *                   {@link #addSuperType(DocumentType, boolean)})
+   */
+  void checkCanAddSuperType(final LocalDocumentType superType, final boolean newLinkage) {
+    checkTimeSeriesHierarchy(superType);
+
+    // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
+    // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Skipped for a linkage that already holds.
+    if (newLinkage) {
+      final Property constraint = superType.findPropertyAppliedToEmptyRecord();
+      if (constraint != null) {
+        final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
+        if (lightweight != null)
+          LocalEdgeType.checkCanBeLightweight(lightweight.getName(), superType);
+      }
+    }
+  }
+
+  /**
+   * The refusals of {@link #checkCanAddSuperType} that a type NOT CREATED YET can already be told, so that {@link TypeBuilder} asks
+   * them before it registers anything: a new type has no sub types and is no time series, so what is left is the super type being a
+   * time series, and the new type being a LIGHTWEIGHT edge type that would inherit a property it cannot honour (issue #10394).
+   * <p>
+   * Public only because the {@code CREATE ... TYPE} statements, in another package, ask the same questions before they create the type;
+   * internal to the schema and the statements that build types, not an API for applications.
+   */
+  public static void checkSuperTypeOfNewType(final String typeName, final LocalDocumentType superType, final boolean lightweightEdge) {
+    if (superType instanceof LocalTimeSeriesType)
+      throw timeSeriesHierarchyRefusal(typeName, superType.getName(), superType.getName());
+    if (lightweightEdge)
+      LocalEdgeType.checkCanBeLightweight(typeName, superType);
+  }
+
+  /**
    * Links {@code superType} above this type.
    *
    * @param createIndexes {@code true} for a NEW linkage, which is validated (time series hierarchy, a LIGHTWEIGHT edge type
@@ -3045,25 +3090,12 @@ public class LocalDocumentType implements DocumentType {
     recordFileChanges(() -> {
       final LocalDocumentType embeddedSuperType = (LocalDocumentType) superType;
 
-      // Inside the callback, immediately before the mutation it guards: checkTimeSeriesHierarchy's descendant walk
-      // reads the (mutable) subTypes list of this type and every one below it, and linkSuperType is what mutates
-      // those same lists. Checked here, both are serialised by the database write lock recordFileChanges takes; read
-      // any earlier and a concurrent addSuperType/removeSuperType elsewhere in the hierarchy could structurally
-      // modify a list this walk is iterating, straight into a ConcurrentModificationException.
-      checkTimeSeriesHierarchy(superType);
-
-      // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
-      // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Under the same lock, and for the
-      // same reason, as the check above: it walks the subTypes lists linkSuperType mutates. Skipped for createIndexes=false,
-      // which marks a linkage that already holds (see addSuperType(DocumentType, boolean)).
-      if (createIndexes) {
-        final Property constraint = embeddedSuperType.findPropertyAppliedToEmptyRecord();
-        if (constraint != null) {
-          final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
-          if (lightweight != null)
-            LocalEdgeType.checkCanBeLightweight(lightweight.getName(), embeddedSuperType);
-        }
-      }
+      // Inside the callback, immediately before the mutation it guards: the checks walk the (mutable) subTypes list of this
+      // type and every one below it, and linkSuperType is what mutates those same lists. Checked here, both are serialised by
+      // the database write lock recordFileChanges takes; read any earlier and a concurrent addSuperType/removeSuperType
+      // elsewhere in the hierarchy could structurally modify a list this walk is iterating, straight into a
+      // ConcurrentModificationException.
+      checkCanAddSuperType(embeddedSuperType, createIndexes);
 
       // CHECK FOR CONFLICT WITH PROPERTIES NAMES. Here for the same reason checkTimeSeriesHierarchy is, and the
       // reason it used to be outside the callback is that it only logs: getPolymorphicPropertyNames() recurses over

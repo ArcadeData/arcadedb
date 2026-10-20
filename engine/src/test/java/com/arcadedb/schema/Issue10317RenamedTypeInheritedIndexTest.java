@@ -163,6 +163,44 @@ class Issue10317RenamedTypeInheritedIndexTest extends TestHelper {
     assertThat(count("T5", "x")).isEqualTo(1L);
   }
 
+  /**
+   * A database renamed by a version before #10317 holds the sub-index of an inherited index under the OLD type name, in its
+   * metadata and in its file name. Nothing has to repair it by hand (issue #10394): the schema load binds every sub-index to the
+   * type that owns its bucket (#10093, #10412) and names the type in its metadata, so opening the database with this version is
+   * the repair, and the DROP TYPE of the super type that used to fail finds the sub-index. The file keeps the older prefix, which
+   * nothing reads: a later rename leaves a file that does not carry the type's name where it is.
+   */
+  @Test
+  void aSchemaRenamedByAnOlderVersionIsRepairedByTheLoad() {
+    createSuperAndSubType();
+    insert("T10", "x");
+    database.getSchema().getType("T10").rename("T11");
+
+    // What the older version left behind: the sub-index naming the type as it was before the rename
+    subIndexOn("T11").updateTypeName("T10");
+    database.getSchema().getEmbedded().saveConfiguration();
+    assertThat(subIndexOn("T11").getTypeName()).isEqualTo("T10");
+    // updateTypeName moves the file with the name: the stale layout is on disk too, not only in the metadata
+    assertThat(componentNameOf(subIndexOn("T11"))).startsWith("T10_");
+
+    reopenDatabase();
+
+    assertThat(subIndexOn("T11").getTypeName()).isEqualTo("T11");
+    assertThat(componentNameOf(subIndexOn("T11"))).as("the file keeps the older prefix, which nothing reads").startsWith("T10_");
+    assertThat(count("T5", "x")).isEqualTo(1L);
+
+    database.command("sql", "DROP TYPE T5");
+
+    assertThat(database.getSchema().existsType("T5")).isFalse();
+    assertThat(database.getSchema().getType("T11").getAllIndexes(true)).isEmpty();
+    assertThat(database.countType("T11", true)).isEqualTo(1L);
+
+    reopenDatabase();
+
+    assertThat(database.getSchema().existsType("T5")).isFalse();
+    assertThat(database.countType("T11", true)).isEqualTo(1L);
+  }
+
   private void createSuperAndSubType() {
     database.command("sql", "CREATE DOCUMENT TYPE T5");
     database.command("sql", "CREATE PROPERTY T5.p STRING");
@@ -197,6 +235,10 @@ class Issue10317RenamedTypeInheritedIndexTest extends TestHelper {
           assertThat(((DatabaseInternal) database).getFileManager().getFile(subIndex.getFileId()).getComponentName())
               .as("file of the sub-index " + subIndex.getName()).startsWith(owner + "_");
         }
+  }
+
+  private String componentNameOf(final IndexInternal subIndex) {
+    return ((DatabaseInternal) database).getFileManager().getFile(subIndex.getFileId()).getComponentName();
   }
 
   private static File fileStartingWith(final File directory, final String prefix) {

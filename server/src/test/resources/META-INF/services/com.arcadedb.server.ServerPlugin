@@ -1,4 +1,5 @@
 com.arcadedb.server.http.ArrayPayloadTestPlugin
+com.arcadedb.server.http.LenientArrayPayloadTestPlugin
 com.arcadedb.server.plugin.DatabaseLifecycleTestPlugin
 com.arcadedb.server.Issue7025ShutdownHookOpenDatabasesBoundTest$HookDuringStartPlugin
 com.arcadedb.server.plugin.ServerSettingVetoTestPlugin
