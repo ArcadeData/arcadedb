@@ -187,6 +187,57 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
   }
 
   @Test
+  void deleteManyAcceptsNestedAndAndBothBoundsInOneOperatorDocument() {
+    assertThat(collection.deleteMany(new Document("$and", List.of(new Document("$and", List.of(new Document("k", "a"))),
+        new Document("ts", new Document("$gt", T0).append("$lt", T2))))).getDeletedCount()).isEqualTo(1);
+    assertThat(values()).containsExactlyInAnyOrder(1.0, 3.0);
+  }
+
+  @Test
+  void deleteManyAcceptsAWholeDoubleTimestamp() {
+    assertThat(collection.deleteMany(Filters.lte("ts", (double) T1)).getDeletedCount()).isEqualTo(2);
+    assertThat(values()).containsExactly(3.0);
+  }
+
+  @Test
+  void deleteManyRefusesATimestampSqlWouldNarrow() {
+    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", T1 + 0.5))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
+    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", 1e30))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
+    assertThatThrownBy(() -> collection.deleteMany(new Document("$and", List.of()))).isInstanceOf(MongoException.class);
+    assertThat(collection.countDocuments()).isEqualTo(3);
+  }
+
+  @Test
+  void deleteManyRefusesANumericTagValueSqlWouldCoerce() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sqlscript", """
+        CREATE TIMESERIES TYPE Num TIMESTAMP ts PRECISION MILLISECOND TAGS (n INTEGER, f DOUBLE) FIELDS (v DOUBLE);
+        INSERT INTO Num SET ts = %d, n = 1, f = 0.5, v = 1.0;
+        INSERT INTO Num SET ts = %d, n = 2, f = 1.5, v = 2.0;
+        """.formatted(T0, T1));
+    final MongoCollection<Document> num = client.getDatabase(getDatabaseName()).getCollection("Num");
+
+    // out of the range of the INTEGER tag, or not whole: SQL would narrow it to another series
+    assertThatThrownBy(() -> num.deleteMany(Filters.eq("n", 1e30))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Num' with the condition on 'n'");
+    assertThatThrownBy(() -> num.deleteMany(Filters.eq("n", 4294967297L))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Num' with the condition on 'n'");
+    assertThatThrownBy(() -> num.deleteMany(Filters.eq("n", 1.5))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Num' with the condition on 'n'");
+    // a NaN never equals itself in MongoDB
+    assertThatThrownBy(() -> num.deleteMany(Filters.eq("f", Double.NaN))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Num' with the condition on 'f'");
+    assertThat(num.countDocuments()).isEqualTo(2);
+
+    // a value of the tag's range, whole or as a whole double, is applied
+    assertThat(num.deleteMany(Filters.eq("n", 1.0)).getDeletedCount()).isEqualTo(1);
+    assertThat(num.deleteMany(Filters.eq("f", 1.5)).getDeletedCount()).isEqualTo(1);
+    assertThat(num.countDocuments()).isEqualTo(0);
+  }
+
+  @Test
   void filteredUpdateIsRefusedNamingTheType() {
     assertThatThrownBy(() -> collection.updateMany(Filters.eq("k", "a"), Updates.set("v", 9.0))).isInstanceOf(MongoException.class)
         .hasMessageContaining("Cannot update the samples of the TIMESERIES type 'Ev'");

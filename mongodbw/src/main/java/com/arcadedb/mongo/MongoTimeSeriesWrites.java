@@ -48,6 +48,9 @@ import java.util.Map;
  * returns.
  */
 final class MongoTimeSeriesWrites {
+  // 2^63: the first double past Long.MAX_VALUE, which no double holds exactly
+  private static final double LONG_UPPER_BOUND = 0x1p63;
+
   private MongoTimeSeriesWrites() {
   }
 
@@ -145,31 +148,63 @@ final class MongoTimeSeriesWrites {
   }
 
   /**
-   * A timestamp operand in milliseconds: a whole number, or a date when the type is known to store milliseconds.
+   * A timestamp operand in milliseconds: a whole number in the range of a long, or a date when the type is known to store
+   * milliseconds.
    */
   private static long timestampOf(final TimeSeriesType type, final String column, final Object value) {
     if (value instanceof Integer || value instanceof Long)
       return ((Number) value).longValue();
-    if (value instanceof Double d && d == Math.rint(d) && !Double.isInfinite(d))
+    if (value instanceof Double d && isWhole(d) && d >= Long.MIN_VALUE && d < LONG_UPPER_BOUND)
       return d.longValue();
-    if (type.isPrecisionHonoured()) {
-      if (value instanceof Date date)
-        return date.getTime();
-      if (value instanceof Instant instant)
-        return instant.toEpochMilli();
+    if (value instanceof Date || value instanceof Instant) {
+      if (!type.isPrecisionHonoured())
+        throw new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
+            + "' with a date on '" + column + "': the type declares the precision " + type.getPrecision()
+            + ", so its timestamps are not known to be in milliseconds. Compare '" + column + "' with a number in the unit of the "
+            + "stored timestamps, or confirm the unit with ALTER TIMESERIES TYPE " + type.getName() + " PRECISION MILLISECOND");
+      return value instanceof Date date ? date.getTime() : ((Instant) value).toEpochMilli();
     }
     throw unsupported(type, column);
   }
 
+  /**
+   * Whether SQL compares {@code value} with a tag of type {@code tagType} the way MongoDB would: a value of another kind, or one SQL
+   * would have to narrow (out of the range of an integral tag, a fraction, a double a FLOAT cannot hold exactly, a NaN), is coerced
+   * by SQL to a value MongoDB would not have matched, so the delete would remove another series.
+   */
   private static boolean sameKind(final Type tagType, final Object value) {
     return switch (tagType) {
       case STRING -> value instanceof String;
       case BOOLEAN -> value instanceof Boolean;
-      case BYTE, SHORT, INTEGER, LONG -> value instanceof Integer || value instanceof Long
-          || value instanceof Double d && d == Math.rint(d) && !Double.isInfinite(d);
-      case FLOAT, DOUBLE -> value instanceof Integer || value instanceof Long || value instanceof Double;
+      case BYTE -> fitsIntegral(value, Byte.MIN_VALUE, Byte.MAX_VALUE);
+      case SHORT -> fitsIntegral(value, Short.MIN_VALUE, Short.MAX_VALUE);
+      case INTEGER -> fitsIntegral(value, Integer.MIN_VALUE, Integer.MAX_VALUE);
+      case LONG -> fitsIntegral(value, Long.MIN_VALUE, Long.MAX_VALUE);
+      // a whole number is held exactly by a float up to 2^24, by a double up to 2^53
+      case FLOAT -> exactWhole(value, 1L << 24) || value instanceof Double d && Double.isFinite(d) && (double) (float) d.doubleValue() == d;
+      case DOUBLE -> exactWhole(value, 1L << 53) || value instanceof Double d && Double.isFinite(d);
       default -> false;
     };
+  }
+
+  private static boolean fitsIntegral(final Object value, final long min, final long max) {
+    if (value instanceof Integer || value instanceof Long) {
+      final long v = ((Number) value).longValue();
+      return v >= min && v <= max;
+    }
+    // a whole double inside the range; the upper bound of a long is not a double, so it is compared exclusively with 2^63
+    return value instanceof Double d && isWhole(d) && d >= min && (max == Long.MAX_VALUE ? d < LONG_UPPER_BOUND : d <= max);
+  }
+
+  private static boolean exactWhole(final Object value, final long limit) {
+    if (!(value instanceof Integer) && !(value instanceof Long))
+      return false;
+    final long v = ((Number) value).longValue();
+    return v >= -limit && v <= limit;
+  }
+
+  private static boolean isWhole(final double d) {
+    return Double.isFinite(d) && d == Math.rint(d);
   }
 
   private static MongoServerError unsupported(final TimeSeriesType type, final String key) {
