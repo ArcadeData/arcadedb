@@ -49,7 +49,10 @@ import java.util.logging.Level;
  * which is the store's own lock: the groups and tokens stores pass their monitor, so a reload serializes with their
  * {@code synchronized} writers (save, the replicated install of #7373) exactly as it did when the policy lived in each
  * class. The one deliberately unsynchronized reader is the watcher's tick, which compares the file's stamp against the
- * {@code volatile} baseline before taking the lock.
+ * {@code volatile} baseline before taking the lock. The users store is the exception on the WRITER side: its replicated
+ * install runs on the Raft apply thread and must not take any lock, so the lock cannot keep it out of the window between a
+ * read and its publish. That store captures what is in force in {@link #beginLoad()} and publishes with a compare-and-set
+ * against it, so a read a later install superseded is dropped instead of reverting the install (issue #10460).
  *
  * @param <T> what a successful read of the file produces
  */
@@ -66,6 +69,9 @@ abstract class ReloadableSecurityArtifact<T> {
   private volatile long   fileLastUpdated = 0L;
   // VOLATILE for the tick's stale-instance check; written under the lock only. See stop() for why the lock and not this.
   private volatile Timer  watcher;
+  // Test seam (issue #10460): run after read() and before publish(), so a test can land a concurrent change in that window
+  // deterministically instead of racing for it. Null outside tests.
+  volatile         Runnable afterRead;
 
   /**
    * @param owner       the store this policy belongs to, the requester its log lines are attributed to. Separate from
@@ -102,11 +108,27 @@ abstract class ReloadableSecurityArtifact<T> {
   protected abstract T fallback();
 
   /**
-   * Makes {@code value} the one in force.
+   * Makes {@code value} the one in force, unless what is in force changed since {@link #beginLoad()}.
+   * <p>
+   * The lock serializes this with every writer that takes it, but a store can also have a writer that must not take it:
+   * the users store's replicated install runs on the Raft apply thread lock-free (issue #10460). Such a store compares
+   * what is in force against what {@link #beginLoad()} captured, atomically with the swap, and declines to publish a read
+   * that a later install has superseded.
    *
    * @param isFallback whether it is a first load's {@link #fallback()} rather than what the file holds
+   *
+   * @return whether {@code value} is now in force; {@code false} only when it was superseded
    */
-  protected abstract void publish(T value, boolean isFallback);
+  protected abstract boolean publish(T value, boolean isFallback);
+
+  /**
+   * Called under the lock at the start of a {@link #firstLoad()} or {@link #reload()}, before anything is read: the store
+   * captures what is in force here, for {@link #publish} to compare against (issue #10460). Nothing by default, for a
+   * store whose every writer takes the lock.
+   */
+  protected void beginLoad() {
+    // Nothing to capture by default: the groups and tokens stores serialize every writer on the lock.
+  }
 
   /**
    * Whether something is in force, i.e. whether {@link #reload()} has something to keep. When it has not, the reload
@@ -170,28 +192,34 @@ abstract class ReloadableSecurityArtifact<T> {
    * The first load: publishes what the file holds, or {@link #fallback()} when there is no file or no document in it, or
    * whatever {@link #onFirstLoadFailure} answers when the file cannot be used.
    *
-   * @return whether a value was published: {@code false} only when {@link #onFirstLoadFailure} answered {@code null}
+   * @return whether a value was published: {@code false} only when {@link #onFirstLoadFailure} answered {@code null}, or
+   *         when what was read had been superseded by the time it was published (see {@link #publish})
    */
   final boolean firstLoad() {
     synchronized (lock) {
-      T value;
-      boolean isFallback = false;
-      try {
-        value = readIfExists();
-      } catch (final IOException | RuntimeException e) {
-        value = onFirstLoadFailure(e);
-        if (value == null)
-          return false;
-        isFallback = true;
-      }
-
-      if (value == null) {
-        value = fallback();
-        isFallback = true;
-      }
-      publish(value, isFallback);
-      return true;
+      beginLoad();
+      return loadFirst();
     }
+  }
+
+  /** {@link #firstLoad()} without the lock or {@link #beginLoad()}, which its caller already holds and called. */
+  private boolean loadFirst() {
+    T value;
+    boolean isFallback = false;
+    try {
+      value = readIfExists();
+    } catch (final IOException | RuntimeException e) {
+      value = onFirstLoadFailure(e);
+      if (value == null)
+        return false;
+      isFallback = true;
+    }
+
+    if (value == null) {
+      value = fallback();
+      isFallback = true;
+    }
+    return publish(value, isFallback);
   }
 
   /**
@@ -204,12 +232,15 @@ abstract class ReloadableSecurityArtifact<T> {
    * With nothing in force there is nothing to keep, and this is the first load.
    *
    * @return {@code true} when a value was published - the file's, or on a first load the fallback - and {@code false}
-   *         when what is in force was kept (or a first load published nothing)
+   *         when what is in force was kept (or a first load published nothing, or what it read was superseded)
    */
   final boolean reload() {
     synchronized (lock) {
+      // BEFORE hasInForce(): a first load reached from here must compare against what was in force when this decided it
+      // was one, or an install landing in between would be published over.
+      beginLoad();
       if (!hasInForce())
-        return firstLoad();
+        return loadFirst();
 
       final String refusal = refusal();
       if (refusal != null) {
@@ -233,8 +264,7 @@ abstract class ReloadableSecurityArtifact<T> {
         return false;
       }
 
-      publish(value, false);
-      return true;
+      return publish(value, false);
     }
   }
 
@@ -242,7 +272,11 @@ abstract class ReloadableSecurityArtifact<T> {
     if (!file.exists())
       return null;
     fileLastUpdated = file.lastModified();
-    return read();
+    final T value = read();
+    final Runnable hook = afterRead;
+    if (hook != null)
+      hook.run();
+    return value;
   }
 
   /**
