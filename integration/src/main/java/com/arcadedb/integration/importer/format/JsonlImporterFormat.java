@@ -1008,7 +1008,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     final boolean lightweight = database.getSchema().getType(edgeType) instanceof EdgeType type && type.isLightweight();
     final List<PendingLink> unresolvedLinks = new ArrayList<>(0);
-    final boolean endpointWaitsForALink = pendingLinkReconciliation.containsKey(newOut) || pendingLinkReconciliation.containsKey(newIn);
+    final boolean endpointWaitsForALink =
+        !pendingLinkReconciliation.isEmpty() && (pendingLinkReconciliation.containsKey(newOut) || pendingLinkReconciliation.containsKey(newIn));
     final MutableEdge imported = createEdgeWithProperties(database, sourceVertex, edgeType, newIn, lightweight, endpointWaitsForALink,
         properties, edge.getJSONObject(ValueTypeHints.KEY, null), unresolvedLinks);
     if (imported == null)
