@@ -3735,6 +3735,18 @@
       "type": "org.apache.lucene.util.fst.GrowableByteArrayDataOutput"
     },
     {
+      "type": "org.apache.ratis.grpc.server.GrpcServerProtocolClient",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "org.apache.ratis.grpc.server.GrpcStubPool",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "org.apache.ratis.grpc.server.GrpcStubPool$Stub",
+      "allDeclaredFields": true
+    },
+    {
       "type": "org.apache.ratis.metrics.impl.MetricRegistriesImpl"
     },
     {
