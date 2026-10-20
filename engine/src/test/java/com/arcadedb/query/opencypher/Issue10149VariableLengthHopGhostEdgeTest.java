@@ -34,7 +34,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -80,7 +82,8 @@ class Issue10149VariableLengthHopGhostEdgeTest extends TestHelper {
     for (final String hop : new String[] { ":LINK*1..3", ":LINK*1..1", ":LINK*1..", ":LINK*", "*1..3" }) {
       assertThat(names(FROM_GA + "-[" + hop + "]->(b:G) RETURN DISTINCT b.name AS name", "name"))
           .as("DISTINCT, relationship unread: %s", hop).containsExactly("gc");
-      assertThat(names(FROM_GA + "-[" + hop + "]->(b:G) RETURN b.name AS name", "name"))
+      // The raw rows: the set of them would hide a ghost answered as a second row
+      assertThat(rows(FROM_GA + "-[" + hop + "]->(b:G) RETURN b.name AS name", "name"))
           .as("not DISTINCT, relationship unread: %s", hop).containsExactly("gc");
       assertThat(names(FROM_GA + "-[" + hop + "]->(b:G) RETURN b.name AS name, count(*) AS c", "name"))
           .as("aggregated: %s", hop).containsExactly("gc");
@@ -119,45 +122,58 @@ class Issue10149VariableLengthHopGhostEdgeTest extends TestHelper {
     ghostEdge(true);
 
     for (final String distinct : new String[] { "DISTINCT ", "" }) {
-      assertThat(names(FROM_GA + "-[:LINK*1..3]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gb", "gc");
-      assertThat(names(FROM_GA + "-[:LINK*1..1]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gc");
-      assertThat(names(FROM_GA + "-[:LINK*2..2]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gb");
+      assertThat(rows(FROM_GA + "-[:LINK*1..3]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gb", "gc");
+      assertThat(rows(FROM_GA + "-[:LINK*1..1]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gc");
+      assertThat(rows(FROM_GA + "-[:LINK*2..2]->(b:G) RETURN " + distinct + "b.name", "b.name")).containsExactly("gb");
     }
   }
 
   /**
-   * Two relationships to the same vertex, one of them a ghost: the vertex is reached through the live one whichever the order of the
-   * two entries. Listed first, the ghost is skipped and reported without spending the vertex; listed second, the vertex was found already
-   * and the ghost is not probed at all (the probe is paid once per vertex reached).
+   * Two relationships to the same vertex, one of them a ghost: the vertex is reached through the live one, once, whichever of the two
+   * entries the walk meets first. The newest entry of an adjacency list is the first one walked, so the ghost is created last to be met
+   * first. Met first, the ghost is probed, skipped and reported without spending the vertex; met second, the vertex has been found
+   * already and the ghost is not probed at all (the probe is paid once per vertex reached), so a walk that finds each vertex once
+   * reports nothing.
    */
   @ParameterizedTest
   @ValueSource(booleans = { true, false })
-  void aLiveEntryToTheSameVertexReachesItWhicheverOrderTheGhostIsListedIn(final boolean ghostFirst) {
+  void aLiveEntryToTheSameVertexReachesItWhicheverEntryTheWalkMeetsFirst(final boolean ghostMetFirst) {
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("G").set("name", "ga").save();
       final MutableVertex b = database.newVertex("G").set("name", "gb").save();
-      a.newEdge("LINK", b).set("tag", ghostFirst ? "ghost" : "live").save();
-      a.newEdge("LINK", b).set("tag", ghostFirst ? "live" : "ghost").save();
+      a.newEdge("LINK", b).set("tag", ghostMetFirst ? "live" : "ghost").save();
+      a.newEdge("LINK", b).set("tag", ghostMetFirst ? "ghost" : "live").save();
     });
     deleteTheGhost();
     final Vertex start = vertex("ga");
+    final String[] types = { "LINK" };
 
-    final long before = GhostEdgeReporter.getTotalSkipped();
+    // The raw rows, not their set: a walk that followed both entries answers the vertex twice
     for (final String distinct : new String[] { "DISTINCT ", "" })
       for (final String hop : new String[] { "*1..1", "*1..3", ":LINK*1..2" })
-        assertThat(names(FROM_GA + "-[" + hop + "]->(b:G) RETURN " + distinct + "b.name", "b.name")).as("%s%s", distinct, hop)
+        assertThat(rows(FROM_GA + "-[" + hop + "]->(b:G) RETURN " + distinct + "b.name", "b.name")).as("%s%s", distinct, hop)
             .containsExactly("gb");
-    for (final boolean detectCycles : new boolean[] { true, false }) {
-      assertThat(names(new BreadthFirstTraverser(Direction.OUT, new String[] { "LINK" }, 1, 3, false, detectCycles).traverse(start)))
-          .as("BFS, cycles detected: %s", detectCycles).containsExactly("gb");
-      assertThat(names(new DepthFirstTraverser(Direction.OUT, new String[] { "LINK" }, 1, 3, false, detectCycles).traverse(start)))
-          .as("DFS, cycles detected: %s", detectCycles).containsExactly("gb");
-      assertThat(names(new BreadthFirstTraverser(Direction.OUT, new String[] { "LINK" }, 1, 3, false, detectCycles)
-          .traverseDistinctEndpoints(start))).as("distinct endpoints, cycles detected: %s", detectCycles).containsExactly("gb");
-    }
-    if (ghostFirst)
-      assertThat(GhostEdgeReporter.getTotalSkipped()).as("a ghost listed before the live entry is probed and reported")
-          .isGreaterThan(before);
+
+    // With the cycles detected each walk finds the vertex once: the ghost is probed only if it is met first
+    final long expectedProbes = ghostMetFirst ? 1L : 0L;
+    long before = GhostEdgeReporter.getTotalSkipped();
+    assertThat(rows(new BreadthFirstTraverser(Direction.OUT, types, 1, 3, false, true).traverseDistinctEndpoints(start)))
+        .as("distinct endpoints").containsExactly("gb");
+    assertThat(GhostEdgeReporter.getTotalSkipped() - before).as("probes of the distinct-endpoint walk").isEqualTo(expectedProbes);
+
+    before = GhostEdgeReporter.getTotalSkipped();
+    assertThat(rows(new BreadthFirstTraverser(Direction.OUT, types, 1, 3, false, true).traverse(start))).as("BFS").containsExactly("gb");
+    assertThat(GhostEdgeReporter.getTotalSkipped() - before).as("probes of the BFS vertex walk").isEqualTo(expectedProbes);
+
+    before = GhostEdgeReporter.getTotalSkipped();
+    assertThat(rows(new DepthFirstTraverser(Direction.OUT, types, 1, 3, false, true).traverse(start))).as("DFS").containsExactly("gb");
+    assertThat(GhostEdgeReporter.getTotalSkipped() - before).as("probes of the DFS vertex walk").isEqualTo(expectedProbes);
+
+    // Without cycle detection nothing is remembered, so every entry is probed, and the vertex is still answered once
+    before = GhostEdgeReporter.getTotalSkipped();
+    assertThat(rows(new BreadthFirstTraverser(Direction.OUT, types, 1, 3, false, false).traverse(start))).as("BFS, walk").containsExactly("gb");
+    assertThat(rows(new DepthFirstTraverser(Direction.OUT, types, 1, 3, false, false).traverse(start))).as("DFS, walk").containsExactly("gb");
+    assertThat(GhostEdgeReporter.getTotalSkipped() - before).as("one probe of the ghost per walk, whichever entry is met first").isEqualTo(2L);
   }
 
   /** The anomaly is reported by every shape, not only by the one that loads the relationship. */
@@ -297,6 +313,26 @@ class Issue10149VariableLengthHopGhostEdgeTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT FROM G WHERE name = ?", name)) {
       return rs.next().getVertex().orElseThrow();
     }
+  }
+
+  /** The names of the vertices, one per vertex the walk answers, in name order: a vertex answered twice shows twice. */
+  private static List<String> rows(final Iterator<Vertex> vertices) {
+    final List<String> rows = new ArrayList<>();
+    while (vertices.hasNext())
+      rows.add(vertices.next().getString("name"));
+    rows.sort(null);
+    return rows;
+  }
+
+  /** The values of {@code column} the query returns, one per row, in value order: a row answered twice shows twice. */
+  private List<String> rows(final String query, final String column) {
+    final List<String> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext())
+        rows.add(rs.next().getProperty(column));
+    }
+    rows.sort(null);
+    return rows;
   }
 
   private static Set<String> names(final Iterator<Vertex> vertices) {

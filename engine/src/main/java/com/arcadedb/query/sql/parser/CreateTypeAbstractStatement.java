@@ -158,8 +158,8 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // Refused here, before anything is created, whenever the statement can already tell (#9846)
     checkSuperTypesBeforeCreate(typeName, superclasses);
 
-    // Evaluated before anything is created: a value that cannot be computed refuses the statement, which then leaves nothing behind
-    final Map<String, Object> custom = evaluateCustomProperties(context);
+    // Filled under the lock below, see there
+    final Map<String, Object> custom = new LinkedHashMap<>();
 
     // One schema publication for the whole statement, see above. The quiescence is outside the frame, the write lock is the frame
     final DatabaseInternal database = context.getDatabase();
@@ -174,6 +174,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
             throw new TypeAlreadyExistsException(typeName);
           return true;
         }
+        // Evaluated here: only for a type that is still to be created, so a statement that finds it there answers IF NOT EXISTS without
+        // computing anything, and before anything is created, so a value that cannot be computed refuses the statement and leaves
+        // nothing behind
+        custom.putAll(evaluateCustomProperties(context));
         // Read under the same lock, only for a statement that links super types, the one step that can refuse once the type exists:
         // a bucket a concurrent statement made between a snapshot taken before the lock and the create would be taken for the type's
         // own by the take-back, which would drop its records
