@@ -3259,10 +3259,9 @@ public class LocalDocumentType implements DocumentType {
     // Decided BEFORE the transactions below, while the answer is still about the transaction that was already there -
     // see IndexBuilder#buildSharesCallerTransaction, which owns the predicate for every call site.
     //
-    // Per index rather than once: a family that cannot share a caller's transaction (the vector ones, whose search
-    // path reads through the page cache rather than through the transaction) keeps building in one go whatever the
-    // caller holds. That is also the LIMIT of this - a propagated vector index does not see the caller's uncommitted
-    // writes, and never has.
+    // Per index rather than once: a family that cannot share a caller's transaction keeps building in one go whatever
+    // the caller holds, and does not see the caller's uncommitted writes. Every family can share it since issue #10438,
+    // which made the vector ones join; the per-index test is kept so a family that cannot has the place to say so.
     final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
     final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
 
