@@ -265,6 +265,22 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     assertThat(count("R")).isZero();
   }
 
+  /** A record the statement deletes is a write that stands, whatever happens to the provisional record created beside it. */
+  @Test
+  void aDeleteOfAnExistingRecordBesideTheTakenBackRecordStillRefusesTheCommit() {
+    database.begin();
+    assertRefusedWith(() -> database.command("opencypher", "CREATE (v:V {k: 16}) WITH v MATCH (m:T {k: 2}) DELETE m").close(),
+        ValidationException.class);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE k = 2")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
+    }
+    assertThat(count("V")).isZero();
+  }
+
   /** The conservative paths together: a lightweight edge and a property on existing vertices stand beside a regular edge that is taken back. */
   @Test
   void aMixedStatementWhoseWritesPartlyStandStillRefusesTheCommit() {
