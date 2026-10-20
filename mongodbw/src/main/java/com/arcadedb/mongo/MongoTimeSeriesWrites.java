@@ -47,8 +47,8 @@ import java.util.Map;
  * returns.
  */
 final class MongoTimeSeriesWrites {
-  // 2^63: the first double past Long.MAX_VALUE, which no double holds exactly
-  private static final double LONG_UPPER_BOUND = 0x1p63;
+  // 2^53: past it a double no longer holds every whole number, so the one the client meant may already be a neighbour of it
+  private static final double EXACT_DOUBLE_BOUND = 0x1p53;
 
   private MongoTimeSeriesWrites() {
   }
@@ -147,13 +147,13 @@ final class MongoTimeSeriesWrites {
   }
 
   /**
-   * A timestamp operand in milliseconds: a whole number in the range of a long, or a date when the type is known to store
-   * milliseconds.
+   * A timestamp operand in milliseconds: a whole number (a double only up to 2^53, where it still holds every whole number), or a
+   * date when the type is known to store milliseconds.
    */
   private static long timestampOf(final TimeSeriesType type, final String column, final Object value) {
     if (value instanceof Integer || value instanceof Long)
       return ((Number) value).longValue();
-    if (value instanceof Double d && isWhole(d) && d >= Long.MIN_VALUE && d < LONG_UPPER_BOUND)
+    if (value instanceof Double d && isWhole(d) && Math.abs(d) <= EXACT_DOUBLE_BOUND)
       return d.longValue();
     // the BSON decoder hands a date over as an Instant
     if (value instanceof Instant instant) {
@@ -192,8 +192,8 @@ final class MongoTimeSeriesWrites {
       final long v = ((Number) value).longValue();
       return v >= min && v <= max;
     }
-    // a whole double inside the range; the upper bound of a long is not a double, so it is compared exclusively with 2^63
-    return value instanceof Double d && isWhole(d) && d >= min && (max == Long.MAX_VALUE ? d < LONG_UPPER_BOUND : d <= max);
+    // a whole double inside the range, and up to 2^53, where it still holds every whole number
+    return value instanceof Double d && isWhole(d) && Math.abs(d) <= EXACT_DOUBLE_BOUND && d >= min && d <= max;
   }
 
   private static boolean exactWhole(final Object value, final long limit) {

@@ -688,7 +688,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * Deletes the samples of a TIMESERIES type each entry names (issue #10464), see {@link MongoTimeSeriesWrites}. Every entry is
    * translated before any runs: the engine's delete is not part of the transaction, so an entry refused after another ran would
-   * leave that one applied.
+   * leave that one applied. A failure while an entry runs (an I/O error of the engine) still leaves the entries before it applied:
+   * the command is not atomic across its entries, as MongoDB's own unordered deletes are not.
    */
   private int deleteSamples(final TimeSeriesType type, final List<Document> deletes, final MongoFilter.RegexBudget budget) {
     final List<String> statements = new ArrayList<>(deletes.size());

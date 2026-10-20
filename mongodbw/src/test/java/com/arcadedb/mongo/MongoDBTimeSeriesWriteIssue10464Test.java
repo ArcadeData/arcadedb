@@ -208,6 +208,9 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
         .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
     assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", 1e30))).isInstanceOf(MongoException.class)
         .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
+    // whole, inside a long, but past 2^53: the double may already be a neighbour of the millisecond the client meant
+    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", 1e17))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
     assertThatThrownBy(() -> collection.deleteMany(new Document("$and", List.of()))).isInstanceOf(MongoException.class);
     assertThat(collection.countDocuments()).isEqualTo(3);
   }
