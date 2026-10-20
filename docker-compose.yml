@@ -38,7 +38,9 @@ services:
     # for `config` every user, group and API token created at runtime (server-users.jsonl,
     # server-groups.json, server-api-tokens.json). A named volume is seeded from the image the first
     # time it is used, so `config` starts with the image's default files; later image upgrades do not
-    # refresh files already in the volume.
+    # refresh files already in the volume. For the same reason `rootPassword` above takes effect only
+    # on the first start: once server-users.jsonl holds the root user, change its password through the
+    # server (or remove the volume) rather than by editing the setting.
     volumes:
       - arcade_db_vol:/home/arcadedb/databases
       - arcade_config_vol:/home/arcadedb/config
