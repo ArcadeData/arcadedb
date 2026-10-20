@@ -255,6 +255,32 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
     assertThat(samples()).containsExactly(new Sample(T0 + 5, "fine", 9.0));
   }
 
+  /**
+   * The values the engine cannot read as the column's type - text for a number, a boolean or a document for the timestamp, a
+   * timestamp that is not a date, a sample without its timestamp - are each a write error of their own document, with the index
+   * of that document, and the reply counts only the samples that were stored.
+   */
+  @Test
+  void aValueOfTheWrongTypeIsAWriteErrorOfItsDocumentAndTheReplyCountsWhatWasStored() {
+    final List<Document> documents = List.of(new Document("ts", T0).append("k", "a").append("v", 1.0),
+        new Document("ts", T0 + 1).append("k", "a").append("v", "not a number"),
+        new Document("ts", "not a date").append("k", "a").append("v", 2.0),
+        new Document("ts", true).append("k", "a").append("v", 3.0),
+        new Document("ts", new Document("when", T0)).append("k", "a").append("v", 4.0),
+        new Document("k", "a").append("v", 5.0),
+        new Document("ts", T0 + 6).append("k", "a").append("v", 6.0));
+
+    assertThatThrownBy(() -> collection.insertMany(documents, new InsertManyOptions().ordered(false))).isInstanceOf(
+        MongoBulkWriteException.class).satisfies(e -> {
+      final MongoBulkWriteException bulk = (MongoBulkWriteException) e;
+      assertThat(bulk.getWriteErrors()).extracting(error -> error.getIndex()).containsExactly(1, 2, 3, 4, 5);
+      assertThat(bulk.getWriteErrors()).allSatisfy(error -> assertThat(error.getCode()).isNotEqualTo(26));
+      assertThat(bulk.getWriteResult().getInsertedCount()).isEqualTo(2);
+    });
+
+    assertThat(samples()).containsExactly(new Sample(T0, "a", 1.0), new Sample(T0 + 6, "a", 6.0));
+  }
+
   /** A refusal of a sample is the document's; a fault of the code or of the disk is the server's and fails the command. */
   @Test
   void onlyTheRefusalsOfASampleAreBlamedOnTheDocument() {
