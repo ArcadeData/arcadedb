@@ -338,12 +338,6 @@
                     </metadataRepository>
                     <buildArgs>
                         <buildArg>--no-fallback</buildArg>
-                        <!-- Caps the builder's heap. Left alone, native-image takes 80% of RAM (12.66GB on a 16GB
-                             runner) and the process needs ~3GB on top: peak RSS sat at 15.3-15.8GB on the free GitHub
-                             runners and one more night of growth killed the linux-amd64 VM mid-build ("The runner has
-                             received a shutdown signal", nightly run 39380825176, twice). A capped heap costs more GC
-                             time, an uncapped one costs the whole runner. -->
-                        <buildArg>-J-Xmx11g</buildArg>
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                         <buildArg>--enable-url-protocols=http,https</buildArg>
                         <buildArg>--add-modules=jdk.incubator.vector</buildArg>

@@ -245,9 +245,11 @@ jobs:
           "$MUSL_GCC" --version
           "$MUSL_GCC" -print-file-name=libz.a
 
-      # Safety net under the builder's heap cap (-J-Xmx11g in native/pom.xml): the free Linux runners have 16GB and no
-      # headroom for a native-image peak, and running out kills the VM with no OOM message, only "The runner has
-      # received a shutdown signal" (nightly run 39380825176). Swap turns a spike into a slower build instead.
+      # native-image takes 80% of RAM as heap (12.66GB on the free 16GB Linux runners) plus ~3GB for the process: peak
+      # RSS sat at 15.3-15.8GB, and with the runner's own 2GB of swap one more night of growth killed the linux-amd64
+      # VM mid-build with no OOM message, only "The runner has received a shutdown signal" (nightly run 39380825176,
+      # twice). Capping the heap is no way out: at -J-Xmx11g the build thrashed in GC and died with OutOfMemoryError
+      # (run 39398603373), its live set needs the default heap. So give the process room beyond RAM instead.
       - name: Add swap (Linux)
         if: ${{ matrix.os_name == 'linux' }}
         run: |
