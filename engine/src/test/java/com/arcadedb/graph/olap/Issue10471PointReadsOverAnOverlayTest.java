@@ -287,6 +287,11 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
       spent += read;
     }
     assertThat(dense.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNotNull();
+
+    // the view of the snapshot is given back under memory pressure; the renumbered one is held on its own and still serves
+    ((GraphAnalyticalView.Pinned) ((DenseNodeIdProvider) dense).getDelegate()).snapshot().mergedNeighborViews.values()
+        .forEach(SoftReference::clear);
+    assertThat(dense.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).as("the renumbered view is held").isNotNull();
   }
 
   /**

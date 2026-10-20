@@ -899,6 +899,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         final double degree = provider.getMeanDegree(hopDirections[i], hopEdgeTypes[i]);
         entries = degree < 0 ? Long.MAX_VALUE : reached * degree;
       }
+      // a double over several hops can reach infinity: the minimum keeps it at the largest estimate a long holds
       reached = Math.min(entries, Long.MAX_VALUE);
       visits[i] = (long) reached;
     }
