@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -38,6 +39,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.TimeSeriesType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -426,6 +428,9 @@ public class GraphQLResultSet implements ResultSet {
                 }
               }
 
+              if (type != null)
+                requireNotTimeSeriesType(type);
+
               if (current.getElement().isPresent()) {
                 final Vertex vertex = current.getElement().get().asVertex();
                 final Iterable<Vertex> connected =
@@ -443,6 +448,17 @@ public class GraphQLResultSet implements ResultSet {
       }
     }
     return projectionValue;
+  }
+
+  /**
+   * Refuses a {@code @relationship} whose type names a TIMESERIES type (issue #10442, the GraphQL side of #10440). A time-series
+   * type keeps its samples in its own engine and they are not edges, so no vertex is connected through one: the field would
+   * answer an empty list, which reads as "no data", while a field returning the type itself reads the samples with SQL.
+   */
+  private void requireNotTimeSeriesType(final String typeName) {
+    if (schema.getDatabase().getSchema().getTypeOrNull(typeName) instanceof TimeSeriesType)
+      throw new CommandSemanticException("GraphQL @relationship cannot follow the type '" + typeName + "', a TIMESERIES type: "
+          + "time-series samples are not edges. Declare a query field returning the type to read its samples instead");
   }
 
   /**
