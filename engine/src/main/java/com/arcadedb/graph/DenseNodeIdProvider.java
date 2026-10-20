@@ -19,9 +19,13 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 
+import java.lang.ref.SoftReference;
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 
 /**
  * A {@link GraphTraversalProvider} whose node ID space has no holes in it, wrapped around one whose has.
@@ -59,6 +63,8 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   private final int[]                  toDelegate;
   /** Delegate ID -> dense ID, {@code -1} for a hole. */
   private final int[]                  toDense;
+  /** The translated neighbour views, see {@link #cachedView}. */
+  private final ConcurrentHashMap<String, SoftReference<NeighborView>> views = new ConcurrentHashMap<>();
 
   /**
    * Returns {@code provider} itself when its node IDs are already compact, and a renumbering wrapper around it
@@ -80,6 +86,9 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
     if (bound == provider.getNodeCount())
       // Compact already: every ID below the bound is a live node, which is the space this class would build.
       return provider;
+    // A view's snapshot never changes, so neither does its renumbering: built once and kept with the snapshot (issue #10411)
+    if (provider instanceof GraphAnalyticalView.Pinned pinned)
+      return pinned.denseIds(() -> new DenseNodeIdProvider(pinned, bound));
     return new DenseNodeIdProvider(provider, bound);
   }
 
@@ -237,7 +246,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
 
   @Override
   public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
-    return translate(delegate.getNeighborViewOfSlice(direction, edgeType));
+    return cachedView("slice|" + direction + "|" + edgeType, () -> translate(delegate.getNeighborViewOfSlice(direction, edgeType)));
   }
 
   @Override
@@ -352,7 +361,24 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    return translate(delegate.getNeighborView(direction, edgeTypes));
+    final String key = direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
+    return cachedView(key, () -> translate(delegate.getNeighborView(direction, edgeTypes)));
+  }
+
+  /**
+   * A translated view, built once per key: the renumbering is fixed for the life of this instance, and an instance kept with a
+   * view's snapshot serves every query on it. Soft, like the delegate's own views, so a copy of a large graph is given back
+   * under memory pressure. A delegate with no view for the key answers null, which is not kept.
+   */
+  private NeighborView cachedView(final String key, final Supplier<NeighborView> builder) {
+    final SoftReference<NeighborView> cached = views.get(key);
+    NeighborView view = cached != null ? cached.get() : null;
+    if (view == null) {
+      view = builder.get();
+      if (view != null)
+        views.put(key, new SoftReference<>(view));
+    }
+    return view;
   }
 
   private NeighborView translate(final NeighborView view) {

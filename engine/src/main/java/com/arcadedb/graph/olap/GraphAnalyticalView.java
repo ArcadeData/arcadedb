@@ -255,6 +255,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
     final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
+    // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
+    // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
+    volatile SoftReference<GraphTraversalProvider> denseIds;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
@@ -2495,6 +2498,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     /** The snapshot itself, for a kernel of this package that reads its arrays directly. */
     Snapshot snapshot() {
       return snap;
+    }
+
+    /**
+     * This snapshot's ids renumbered onto a gapless range: the one {@code builder} makes, built once per snapshot and shared by
+     * every query that reads it, so the renumbering and the neighbour views it translates are not rebuilt per query (issue
+     * #10411).
+     */
+    public GraphTraversalProvider denseIds(final Supplier<GraphTraversalProvider> builder) {
+      final SoftReference<GraphTraversalProvider> cached = snap.denseIds;
+      GraphTraversalProvider dense = cached != null ? cached.get() : null;
+      if (dense == null) {
+        dense = builder.get();
+        snap.denseIds = new SoftReference<>(dense);
+      }
+      return dense;
     }
 
     @Override

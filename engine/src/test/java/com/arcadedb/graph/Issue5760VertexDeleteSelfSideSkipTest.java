@@ -396,6 +396,46 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
   }
 
   /**
+   * A unidirectional type stores a self-loop in the vertex's OUTGOING list only, so the incoming walk has nothing to skip: the
+   * outgoing walk deletes it, once, and it leaves no record behind.
+   */
+  @Test
+  void aUnidirectionalSelfLoopIsDeletedWithItsVertex() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Loop", 1);
+      database.getSchema().buildEdgeType().withName("ONEWAY").withTotalBuckets(4).withBidirectional(false).create();
+    });
+    final RID[] holder = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("Loop").save();
+      v.newEdge("ONEWAY", v);
+      holder[0] = v.getIdentity();
+    });
+    database.transaction(() -> assertThat(database.countType("ONEWAY", false)).isEqualTo(1L));
+
+    final AtomicLong events = new AtomicLong();
+    final BeforeRecordDeleteListener probe = record -> {
+      if (record instanceof Edge)
+        events.incrementAndGet();
+      return true;
+    };
+    database.getSchema().getType("ONEWAY").getEvents().registerListener(probe);
+    try {
+      database.transaction(() -> holder[0].asVertex().delete());
+    } finally {
+      database.getSchema().getType("ONEWAY").getEvents().unregisterListener(probe);
+    }
+
+    assertThat(events.get()).isEqualTo(1);
+    database.transaction(() -> {
+      assertThat(database.existsRecord(holder[0])).isFalse();
+      assertThat(database.countType("ONEWAY", false)).as("the self-loop is gone with its vertex").isZero();
+    });
+
+    assertIntegrityClean();
+  }
+
+  /**
    * Creates a vertex carrying a single self-loop of the given edge type, deletes it, and returns how many delete
    * events the edge type saw. Also asserts the delete actually happened, so a count of 0 cannot pass as a result.
    */
