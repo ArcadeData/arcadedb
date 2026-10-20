@@ -2175,6 +2175,30 @@ public class TransactionContext implements Transaction {
     return totalImpactedPages > 0 || !indexChanges.isEmpty();
   }
 
+  /**
+   * Whether this transaction has written to any of the given files: a page of one of them modified or created, or a
+   * deferred record update queued for a record in one of them (issue #10450). The deferred update already pins its own
+   * page when it is queued ({@link #addUpdatedRecord}), so the last test only keeps the answer independent of that.
+   * Costs one pass over the pages and the queued updates, so it is meant for DDL-time decisions, not for a hot path.
+   */
+  public boolean hasChangesInFiles(final IntHashSet fileIds) {
+    if (fileIds.isEmpty())
+      return false;
+    if (modifiedPages != null)
+      for (final PageId pageId : modifiedPages.keySet())
+        if (fileIds.contains(pageId.getFileId()))
+          return true;
+    if (newPages != null)
+      for (final PageId pageId : newPages.keySet())
+        if (fileIds.contains(pageId.getFileId()))
+          return true;
+    if (updatedRecords != null)
+      for (final RID rid : updatedRecords.keySet())
+        if (fileIds.contains(rid.getBucketId()))
+          return true;
+    return false;
+  }
+
   public int getModifiedPages() {
     int result = 0;
     if (modifiedPages != null)

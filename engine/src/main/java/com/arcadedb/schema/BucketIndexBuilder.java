@@ -96,16 +96,16 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
   /** Creates the sub-index on this builder's bucket, resolving the bucket from the type by name. */
   private Index createIndexOnBucket(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
       final boolean build) {
-    Bucket bucket = null;
-    for (final Bucket b : type.getBuckets(true)) {
-      if (bucketName.equals(b.getName())) {
-        bucket = b;
-        break;
-      }
-    }
-
-    return schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy,
+    return schema.createBucketIndex(type, keyTypes, findBucket(type), typeName, indexType, unique, pageSize, nullStrategy,
         callback, propertyNames, null, batchSize, metadata, build);
+  }
+
+  /** The bucket of {@code type} (polymorphically) named by this builder, or {@code null} when there is none. */
+  private Bucket findBucket(final LocalDocumentType type) {
+    for (final Bucket b : type.getBuckets(true))
+      if (bucketName.equals(b.getName()))
+        return b;
+    return null;
   }
 
   @Override
@@ -183,8 +183,12 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
       }
 
       // Asked before the transactions below, while the answer is still about the transaction that was already there
-      // (issue #6324, item 1). See IndexBuilder#buildSharesCallerTransaction.
-      final boolean sharesCallerTransaction = buildSharesCallerTransaction();
+      // (issue #6324, item 1), and about the one bucket this build scans (issue #10450). See
+      // IndexBuilder#buildSharesCallerTransaction.
+      // An unknown bucket name scans nothing, so it never shares; createIndexOnBucket refuses it right after anyway.
+      final Bucket indexedBucket = findBucket(type);
+      final List<Bucket> scannedBuckets = indexedBucket != null ? List.of(indexedBucket) : List.of();
+      final boolean sharesCallerTransaction = buildSharesCallerTransaction(scannedBuckets);
 
       return schema.recordFileChanges(() -> {
         final AtomicReference<Index> result1 = new AtomicReference<>();

@@ -473,8 +473,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final ReplacedIndexDefinition[] replaced = new ReplacedIndexDefinition[1];
 
     // Asked here because below this line there is ALWAYS a transaction, and the answer is about the one that was
-    // already there (issue #6324, item 1). See IndexBuilder#buildSharesCallerTransaction.
-    final boolean sharesCallerTransaction = buildSharesCallerTransaction();
+    // already there (issue #6324, item 1), and about the buckets this build scans (issue #10450). See
+    // IndexBuilder#buildSharesCallerTransaction.
+    final boolean sharesCallerTransaction = buildSharesCallerTransaction(buckets);
 
     final TypeIndex created;
     // Set when another creator built an index on these properties after the lookup above (issue #9741, below)
@@ -862,7 +863,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
-   * Asks EVERY transaction stacked on this thread, not only the innermost one {@link #callerTransactionHasChanges} answers for: the
+   * Asks EVERY transaction stacked on this thread, not only the innermost one {@link #callerTransactionHasChangesIn} answers for: the
    * sorted build sets the whole stack aside ({@link CommittedReadScope}), so an empty nested transaction over an outer one that
    * wrote a record would hide that record from the scan - and nothing would add it to the index when the outer one commits.
    */

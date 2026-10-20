@@ -3079,7 +3079,7 @@ public class LocalDocumentType implements DocumentType {
    * <ul>
    *   <li>the async quiescence is taken by the CALLER, outside {@code recordFileChanges}: that runs under the
    *       database write lock, which is the lock an async worker needs to commit;</li>
-   *   <li>{@link IndexBuilder#callerTransactionHasChanges} is asked BEFORE any transaction of ours opens, while the
+   *   <li>{@link IndexBuilder#callerTransactionHasChangesIn} is asked BEFORE any transaction of ours opens, while the
    *       answer is still about the transaction that was already there;</li>
    *   <li>{@code created} is declared HERE, outside the propagation, because a step that refuses AFTER the indexes
    *       are committed still has to take them away;</li>
@@ -3263,7 +3263,9 @@ public class LocalDocumentType implements DocumentType {
     // the caller holds, and does not see the caller's uncommitted writes. Every family can share it since issue #10438,
     // which made the vector ones join; the per-index test is kept so a family that cannot has the place to say so.
     final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
-    final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
+    // Asked about THIS type's buckets, the ones createSubIndexesFor builds over: a caller that wrote only elsewhere has
+    // nothing there for the build to see, so the build keeps a transaction of its own (issue #10450).
+    final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChangesIn(database, buckets);
 
     // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the same
     // set. An index family that cannot share the caller's transaction is built INLINE during component creation and
