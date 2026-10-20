@@ -359,9 +359,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         }
     }
 
+    /**
+     * A replicated list whose write failed is in force even when it is EMPTY (issue #10451): without the second clause the
+     * reload would treat it as nothing to keep and take the first-load path, which never consults {@link #refusal()}, and
+     * publish the older file.
+     */
     @Override
     protected boolean hasInForce() {
-      return !users.isEmpty();
+      return !users.isEmpty() || usersRepository.isDiskBehind();
     }
 
     @Override

@@ -146,6 +146,25 @@ class Issue10451UsersDiskBehindReloadTest {
     assertThat(passwordWorks("alice", PASSWORD)).as("the rotated-away password must stay rejected").isFalse();
   }
 
+  /**
+   * An EMPTY replicated list whose write failed is in force too: it must not read as "nothing in force", which would take
+   * the first-load path - the one that never refuses - and publish the older file.
+   */
+  @Test
+  void anEmptyReplicatedListWhoseWriteFailedIsNotUndoneByTheWatcher() throws Exception {
+    security.applyReplicatedUsers(payload(withAlice()));
+    assertThat(security.existsUser("alice")).isTrue();
+
+    makeReadOnly();
+    assumeTrue(applyFails("[]"), "the directory is still writable (running as a superuser?)");
+    assertThat(security.getUsers()).isEmpty();
+
+    touch(usersFile);
+    await().pollDelay(QUIET).atMost(QUIET.plusSeconds(5)).until(() -> true);
+    assertThat(security.existsUser("alice")).as("the watcher must not republish the older file over an empty list").isFalse();
+    assertThat(security.existsUser("root")).isFalse();
+  }
+
   /** A successful local save puts the disk level with memory again: the next hand edit is applied. */
   @Test
   void aSuccessfulLocalSaveLiftsTheRefusal() throws Exception {
