@@ -32,6 +32,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -254,11 +257,16 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
     assertMatchesModel();
   }
 
-  /** A delete is not part of the transaction: like the append, it is durable when it returns. */
+  /**
+   * A delete is not part of the transaction: like the append, it is durable when it returns, in both layers - the sealed block it
+   * rebuilds and the mutable pages it compacts - and so is a truncate.
+   */
   @Test
   void aRollbackDoesNotBringTheSamplesBack() throws Exception {
     create(1);
     append(0, 100);
+    engine().compactAll();
+    append(100, 200);
 
     database.begin();
     database.command("sql", "DELETE FROM M WHERE host = 'h0'").close();
@@ -266,6 +274,51 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
 
     model.removeIf(s -> s.host.equals("h0"));
     assertMatchesModel();
+
+    database.begin();
+    database.command("sql", "TRUNCATE TYPE M").close();
+    database.rollback();
+
+    model.clear();
+    assertMatchesModel();
+  }
+
+  /**
+   * A block that fails its CRC aborts the delete. A block the delete rebuilds is written with a fresh CRC, so a damaged one that was
+   * rebuilt anyway would come out looking sound: the delete reads it checked, fails, and removes nothing from either layer.
+   */
+  @Test
+  void aDamagedSealedBlockAbortsTheDeleteInsteadOfBeingRebuilt() throws Exception {
+    create(1);
+    append(0, 100);
+    engine().compactAll();
+    append(100, 150);
+
+    // inside the last block's compressed data: the final four bytes of the file are that block's stored CRC
+    final File sealed = new File(database.getDatabasePath(), "M_shard_0.ts.sealed");
+    assertThat(sealed).exists();
+    flipByteAt(sealed, sealed.length() - 8);
+    // a block this process wrote is trusted without being read back: make it look at what is on disk
+    engine().getShard(0).getSealedStore().clearCRCValidationCache();
+    try {
+      assertThatThrownBy(() -> database.command("sql", "DELETE FROM M WHERE host = 'h1'").close()).hasStackTraceContaining("CRC mismatch");
+    } finally {
+      flipByteAt(sealed, sealed.length() - 8);
+      engine().getShard(0).getSealedStore().clearCRCValidationCache();
+    }
+
+    // nothing was deleted, in either layer
+    assertMatchesModel();
+  }
+
+  /** Flips one bit at {@code offset} of {@code file}, the least the format has to notice. */
+  private static void flipByteAt(final File file, final long offset) throws IOException {
+    try (final RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+      raf.seek(offset);
+      final int b = raf.read();
+      raf.seek(offset);
+      raf.write(b ^ 0x01);
+    }
   }
 
   @Test
