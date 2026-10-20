@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.AlreadyExistsException;
@@ -36,8 +37,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
-
-import com.arcadedb.database.Identifiable;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -158,8 +157,18 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // Refused here, before anything is created, whenever the statement can already tell (#9846)
     checkSuperTypesBeforeCreate(typeName, superclasses);
 
-    // Filled under the lock below, see there
-    final Map<String, Object> custom = new LinkedHashMap<>();
+    // Computed BEFORE the write lock, which must not wait on a user expression (a slow function or a subquery would hold every writer
+    // of the database). A value that cannot be computed is kept, not thrown yet: it refuses the statement only if the type is still to be
+    // created once the lock is taken, so a statement that lost the race for an IF NOT EXISTS type answers that it is there
+    Map<String, Object> computed = Map.of();
+    RuntimeException customRefusal = null;
+    try {
+      computed = evaluateCustomProperties(context);
+    } catch (final RuntimeException e) {
+      customRefusal = e;
+    }
+    final Map<String, Object> custom = computed;
+    final RuntimeException refusedCustom = customRefusal;
 
     // One schema publication for the whole statement, see above. The quiescence is outside the frame, the write lock is the frame
     final DatabaseInternal database = context.getDatabase();
@@ -174,10 +183,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
             throw new TypeAlreadyExistsException(typeName);
           return true;
         }
-        // Evaluated here: only for a type that is still to be created, so a statement that finds it there answers IF NOT EXISTS without
-        // computing anything, and before anything is created, so a value that cannot be computed refuses the statement and leaves
-        // nothing behind
-        custom.putAll(evaluateCustomProperties(context));
+        // A value that could not be computed refuses the statement here, for a type that is still to be created and before anything is
+        // created, so it leaves nothing behind
+        if (refusedCustom != null)
+          throw refusedCustom;
         // Read under the same lock, only for a statement that links super types, the one step that can refuse once the type exists:
         // a bucket a concurrent statement made between a snapshot taken before the lock and the create would be taken for the type's
         // own by the take-back, which would drop its records

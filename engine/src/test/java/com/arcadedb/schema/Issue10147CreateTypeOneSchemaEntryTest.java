@@ -20,11 +20,17 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.CreateVertexTypeStatement;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -247,6 +253,56 @@ class Issue10147CreateTypeOneSchemaEntryTest extends TestHelper {
     assertThat(thrown.getSuppressed()).as("the take-back succeeded").isEmpty();
     assertThat(database.getSchema().existsType("Valued")).isFalse();
     assertThat(database.getSchema().getBuckets()).extracting(bucket -> bucket.getName()).noneMatch(name -> name.startsWith("Valued_"));
+  }
+
+  /**
+   * A value that cannot be computed refuses a statement for a type that is still to be created, and leaves nothing behind. A statement
+   * that lost the race for an {@code IF NOT EXISTS} type does not fail on it: it answers that the type is there, which is what makes the
+   * statement safe to repeat. The race is made at the one point it can happen, between the first look at the schema and the lock, and the
+   * value is computed before the lock because a user expression must not hold every writer of the database.
+   */
+  @Test
+  void aCustomValueThatCannotBeComputedRefusesTheStatementUnlessItLostTheRaceForAnIfNotExistsType() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    final Throwable alone = catchThrowable(() -> statementWithAFailingCustomValue("Unvalued", false, false).executeDDL(context));
+    assertThat(alone).isInstanceOf(CommandExecutionException.class).hasMessageContaining("the value cannot be computed");
+    assertThat(database.getSchema().existsType("Unvalued")).as("a refused statement leaves nothing behind").isFalse();
+
+    try (final ResultSet answer = statementWithAFailingCustomValue("Raced", true, true).executeDDL(context)) {
+      assertThat(answer.next().<Boolean>getProperty("created")).as("the type is there, made by the statement that won").isFalse();
+    }
+    assertThat(database.getSchema().existsType("Raced")).isTrue();
+
+    // Without IF NOT EXISTS the loser is still told the type is there, not that a value failed
+    assertThat(catchThrowable(() -> statementWithAFailingCustomValue("RacedAgain", false, true).executeDDL(context)))
+        .isInstanceOf(TypeAlreadyExistsException.class);
+  }
+
+  /**
+   * A {@code CREATE VERTEX TYPE} whose one {@code CUSTOM} value throws when it is computed. With {@code losesTheRace} another statement
+   * creates the type right after the statement first looked at the schema.
+   */
+  private CreateVertexTypeStatement statementWithAFailingCustomValue(final String typeName, final boolean ifNotExists,
+      final boolean losesTheRace) {
+    final CreateVertexTypeStatement statement = new CreateVertexTypeStatement() {
+      @Override
+      protected void checkSuperTypes(final Schema schema, final CommandContext context) {
+        super.checkSuperTypes(schema, context);
+        if (losesTheRace)
+          schema.createVertexType(typeName);
+      }
+    };
+    statement.name = new Identifier(typeName);
+    statement.ifNotExists = ifNotExists;
+    statement.customProperties.put(new Identifier("k"), new Expression() {
+      @Override
+      public Object execute(final Identifiable currentRecord, final CommandContext context) {
+        throw new CommandExecutionException("the value cannot be computed");
+      }
+    });
+    return statement;
   }
 
   private LocalSchema schema() {

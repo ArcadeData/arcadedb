@@ -61,12 +61,16 @@ public final class GhostEdgeReporter {
     report(cause.getMessage());
   }
 
-  /** {@code detail} is formatted by the logger, and only if FINE is on: nothing is built per ghost for a log nobody reads. */
+  /**
+   * {@code detail} is formatted by the logger, and only if FINE is on: nothing is built per ghost for a log nobody reads, not even the
+   * array of its arguments, which the level guard keeps off a graph with many ghosts.
+   */
   private static void report(final Object detail) {
     final long total = totalSkipped.incrementAndGet();
 
-    LogManager.instance().log(GhostEdgeReporter.class, Level.FINE,
-        "Skipped ghost edge during traversal (%s); total skipped since startup=%d", detail, total);
+    if (LogManager.instance().isLoggable(GhostEdgeReporter.class, Level.FINE))
+      LogManager.instance().log(GhostEdgeReporter.class, Level.FINE,
+          "Skipped ghost edge during traversal (%s); total skipped since startup=%d", detail, total);
 
     if (shouldEmitWarning(System.nanoTime()))
       LogManager.instance().log(GhostEdgeReporter.class, Level.WARNING,
