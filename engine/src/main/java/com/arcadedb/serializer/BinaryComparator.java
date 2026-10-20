@@ -653,19 +653,20 @@ public class BinaryComparator {
   private static boolean mapsEqual(final Map<?, ?> a, final Map<?, ?> b) {
     if (a.size() != b.size())
       return false;
-    try {
-      for (final Map.Entry<?, ?> entry : a.entrySet()) {
+    for (final Map.Entry<?, ?> entry : a.entrySet()) {
+      final Object other;
+      try {
         final Object key = entry.getKey();
-        final Object value = entry.getValue();
-        final Object other = b.get(key);
+        other = b.get(key);
         if (other == null && !b.containsKey(key))
           return false;
-        if (!equals(value, other))
-          return false;
+      } catch (final ClassCastException | NullPointerException e) {
+        // a sorted or null-hostile map asked for a key of a class it cannot hold: not one of its keys. Only the lookup is guarded, so
+        // a failure of the comparison of the values below is not taken for a missing key
+        return false;
       }
-    } catch (final ClassCastException | NullPointerException e) {
-      // a sorted or null-hostile map asked for a key of a class it cannot hold: not one of its keys
-      return false;
+      if (!equals(entry.getValue(), other))
+        return false;
     }
     return true;
   }

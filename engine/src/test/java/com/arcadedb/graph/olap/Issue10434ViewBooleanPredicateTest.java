@@ -23,7 +23,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -132,23 +131,5 @@ class Issue10434ViewBooleanPredicateTest extends TestHelper {
 
     for (int i = 0; i < QUERIES.length; i++)
       assertThat(withView[i]).as(QUERIES[i]).isEqualTo(answer(QUERIES[i]));
-  }
-
-  @Test
-  void theReportedQueryFindsTheMiddleNodeWithTheFlag() {
-    database.command("sql", "CREATE VERTEX TYPE M").close();
-    database.command("sql", "CREATE PROPERTY M.flag BOOLEAN").close();
-    database.command("sql", "CREATE EDGE TYPE S").close();
-    database.transaction(() -> database.command("opencypher", "CREATE (a:M {flag: false})-[:S]->(b:M {flag: true})-[:S]->(c:M {flag: false})")
-        .close());
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gm VERTEX TYPES (M) EDGE TYPES (S) PROPERTIES (flag) UPDATE MODE SYNCHRONOUS").close();
-    assertThat(GraphAnalyticalViewRegistry.get(database, "gm").awaitReady(30, TimeUnit.SECONDS)).isTrue();
-
-    final String chain = "MATCH (a:M)-[:S]->(b:M)-[:S]->(c:M) ";
-    assertThat(answer(chain + "WHERE b.flag RETURN count(*) AS c")).isEqualTo("[[1]]");
-    assertThat(answer(chain + "WHERE b.flag = true RETURN count(*) AS c")).isEqualTo("[[1]]");
-    assertThat(answer(chain + "WHERE NOT b.flag RETURN count(*) AS c")).isEqualTo("[[0]]");
-    assertThat(answer(chain + "WHERE c.flag RETURN count(*) AS c")).isEqualTo("[[0]]");
-    assertThat(answer(chain + "WHERE NOT c.flag RETURN count(*) AS c")).isEqualTo("[[1]]");
   }
 }

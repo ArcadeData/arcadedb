@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -70,7 +71,7 @@ class Issue10305ViewSameSlotCreateDeleteTest extends TestHelper {
   private List<String> recordEdges() {
     final List<String> edges = new ArrayList<>();
     for (final Iterator<?> it = database.iterateType("E", true); it.hasNext(); ) {
-      final Edge edge = ((com.arcadedb.database.Record) it.next()).asEdge();
+      final Edge edge = ((Record) it.next()).asEdge();
       edges.add(id(edge.getOut()) + "->" + id(edge.getIn()));
     }
     Collections.sort(edges);

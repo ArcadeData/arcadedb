@@ -223,11 +223,9 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
     final int[] acceptedBuckets = hopBucketIds[hop];
     for (final int neighborId : neighbors) {
       // The type and the bucket the pattern gives this node, which the walk would otherwise bind without asking (issue #10435)
-      if (acceptedBuckets != null) {
-        final RID neighbor = provider.getRID(neighborId);
-        if (neighbor == null || Arrays.binarySearch(acceptedBuckets, neighbor.getBucketId()) < 0)
-          continue;
-      }
+      // (the bucket id alone: no RID is built in the loop over every neighbour, and -1 for a node the view does not map is in no bucket)
+      if (acceptedBuckets != null && Arrays.binarySearch(acceptedBuckets, provider.getBucketId(neighborId)) < 0)
+        continue;
       pathNodeIds[hop + 1] = neighborId;
 
       if (hop == chainLen - 1) {
