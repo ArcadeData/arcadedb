@@ -4140,8 +4140,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #5596: an in-chunk edge append is invisible to the slot map on purpose - the commutative edge-append merge
       // owns it - so the in-place rewrite of the segment below is declared covered by THAT merge instead. Only when
       // the append was really registered (TransactionContext.trackEdgeAppend) and the page is not already
-      // excluded: a segment write nobody tracked (an edge removal, addAll, a bulk load) stays undeclared and can
-      // therefore never be rebased away, whether or not its writer remembered to poison the page.
+      // excluded: a write to a segment nobody appended to (addAll, a bulk load) stays undeclared and can therefore
+      // never be rebased away. A segment that DID receive tracked appends is declared as a whole, whatever else this
+      // transaction changed in it: an append-plus-removal buffer looks exactly like an append-only one, so a removal
+      // from such a segment is safe only because its writer excluded the page (EdgeLinkedList.updateRewrittenSegment,
+      // #10375).
       final boolean edgeAppendReplayable = !slotCandidate && slotTx != null && slotTx.isEdgeAppendMergeEnabled()//
               && slotTx.isEdgeAppendTracked(rid) && !slotTx.isEdgeAppendPagePoisoned(fileId, pageId);
 
