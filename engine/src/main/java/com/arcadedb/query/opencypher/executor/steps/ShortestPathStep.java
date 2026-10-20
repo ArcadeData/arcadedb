@@ -815,7 +815,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
    */
   public static Object[] shortestPathArguments(final Vertex source, final Vertex target, final String direction,
       final Object edgeTypeParam, final HopBounds bounds) {
-    // maxDepth counts the vertices on the path rather than the relationships between them, hence maxHops + 1.
+    // maxDepth counts the relationships on the path, the same unit as the pattern's upper hop bound (issue #10439).
     final Integer maxDepth = bounds.maxDepthParameter();
     if (maxDepth != null)
       return new Object[] { source, target, direction, edgeTypeParam,
@@ -905,10 +905,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     /**
      * The upper bound expressed as {@code SQLFunctionShortestPath}'s {@code maxDepth}, which counts the
-     * vertices on the path rather than the relationships between them, or {@code null} when unbounded.
+     * relationships on the path just like the pattern's own bound, or {@code null} when unbounded (issue #10439).
      */
     public Integer maxDepthParameter() {
-      return max == Integer.MAX_VALUE ? null : max + 1;
+      return max == Integer.MAX_VALUE ? null : max;
     }
 
     @Override
