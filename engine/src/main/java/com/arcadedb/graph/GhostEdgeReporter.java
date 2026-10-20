@@ -18,6 +18,10 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 
@@ -64,6 +68,42 @@ public final class GhostEdgeReporter {
           "Ghost (dangling) edges encountered and skipped during traversal (total skipped since startup=%d). "
               + "A dangling edge-segment pointer indicates a data-integrity anomaly, e.g. incomplete HA "
               + "replication or a partially rolled-back transaction.", total);
+  }
+
+  /**
+   * Records and logs that the adjacency entry naming {@code edgeRid} was skipped, for a walk that found it out from the bucket
+   * ({@link #edgeRecordExists}) and so has no {@link RecordNotFoundException} of its own to hand over.
+   */
+  public static void reportSkipped(final RID edgeRid) {
+    reportSkipped(new RecordNotFoundException("Record " + edgeRid + " not found", edgeRid));
+  }
+
+  /**
+   * Whether the record of the edge named by an adjacency entry is still there, answered by the bucket without reading the record: the
+   * probe of a walk that follows entries on the endpoints they hold and so never loads the edge, which is where a ghost goes unnoticed
+   * (issues #10148, #10149). A lightweight edge has no record of its own, its adjacency entry is all there is of it.
+   * <p>
+   * Asked through the transaction, so an edge the open transaction wrote is there. The permission to read the edge's bucket is not
+   * asked: the walk reads nothing of the edge and hands back only the vertex the entry names, exactly as it did before the probe, so
+   * the answer reaches no one as a record; a user who may traverse the entry must not need a grant the traversal never needed.
+   */
+  public static boolean edgeRecordExists(final Database database, final RID edgeRid) {
+    if (edgeRid == null || edgeRid.getPosition() < 0)
+      return true;
+    final Bucket bucket = database.getSchema().getBucketByIdIfExists(edgeRid.getBucketId());
+    if (bucket == null)
+      return false;
+    return bucket instanceof LocalBucket local ? local.isRecordPresent(edgeRid) : bucket.existsRecord(edgeRid);
+  }
+
+  /**
+   * {@link #edgeRecordExists} for a walk that skips a ghost: false, after reporting it, when the entry names a record that is gone.
+   */
+  public static boolean isLiveEntry(final Database database, final RID edgeRid) {
+    if (edgeRecordExists(database, edgeRid))
+      return true;
+    reportSkipped(edgeRid);
+    return false;
   }
 
   /**

@@ -45,10 +45,27 @@ public interface Fault {
   }
 
   /**
-   * True when no node may reformat its Raft storage while this fault's step runs (inject, hold, heal and checkpoint):
-   * the fault alone gives no node a reason to discard its log, so a reformat means recovery took the destructive path.
+   * True when a reformat of its Raft storage by any node while this fault's step runs (inject, hold, heal and checkpoint) is a
+   * violation: the fault alone gives no node a reason to discard its log, so a reformat means recovery took the destructive
+   * path. That holds when a majority stays up and no node is cut off or killed uncleanly: the freeze faults and the graceful
+   * restarts. A SIGKILL, a partition or a toxic link can leave a minority genuinely diverged, so for those a reformat can be the
+   * right recovery.
+   * <p>
+   * This decides only whether a reformat FAILS the step. The runner reads the counters on every step and reports a reformat of any
+   * step in {@code steps.log} and in {@code summary.json}, so the decision about which faults may reformat is not also the
+   * decision about whether anyone can see it (issue #10159). Every fault states its answer: see {@code FaultsTest}.
    */
   default boolean forbidsReformat() {
     return false;
+  }
+
+  /**
+   * The nodes whose server process this fault restarted during its step, valid once {@link #heal} has run. The in-place restart
+   * counts are kept by the server process, so a restarted node counts from zero again: for these nodes the count after the step
+   * is what the step did, and for every other node it is the count after minus the count before. A count that went down does not
+   * tell a restart from a miscount, and one that came back equal tells nothing, which is why the fault says it.
+   */
+  default int[] restartedNodes(final ClusterState state) {
+    return new int[0];
   }
 }

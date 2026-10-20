@@ -44,6 +44,10 @@ final class FakeNodeControl implements NodeControl {
   final int[]            reformatted      = new int[5];
   /** An unpaused node restarts Ratis in place reformatting (or recovering) its storage. */
   boolean                reformatOnUnpause;
+  /** A started node reformats its Raft storage while it comes back up, as the new server process counts it. */
+  boolean                reformatOnStart;
+  /** Like {@link #reformatOnStart}, for one node only (-1 for none). */
+  int                    reformatOnStartOfNode = -1;
   boolean                recoverOnUnpause;
   /** An unpaused node's server process restarts: its counts drop to zero. */
   boolean                processRestartsOnUnpause;
@@ -60,16 +64,23 @@ final class FakeNodeControl implements NodeControl {
   @Override
   public void kill(final int node) {
     log("kill:" + node);
+    // The counts live in the server process: a new process starts them from zero
+    recovered[node] = 0;
+    reformatted[node] = 0;
   }
 
   @Override
   public void stopGracefully(final int node) {
     log("stop:" + node);
+    recovered[node] = 0;
+    reformatted[node] = 0;
   }
 
   @Override
   public void start(final int node) {
     log("start:" + node);
+    if (reformatOnStart || reformatOnStartOfNode == node)
+      ++reformatted[node];
   }
 
   @Override

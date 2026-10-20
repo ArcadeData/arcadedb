@@ -37,6 +37,8 @@ public final class ChaosReport implements AutoCloseable {
   private final ChaosConfig    config;
   private final BufferedWriter steps;
   private final BufferedWriter trends;
+  // Reformats of the Raft storage over the run, of every step: a fault that may reformat does not fail the run, so this is where it shows
+  private       int            reformats;
 
   public ChaosReport(final Path dir, final ChaosConfig config) throws IOException {
     Files.createDirectories(dir);
@@ -54,6 +56,7 @@ public final class ChaosReport implements AutoCloseable {
   }
 
   public synchronized void step(final StepRecord record) throws IOException {
+    reformats += record.reformats();
     steps.write(record.toLine());
     steps.newLine();
     steps.flush();
@@ -90,6 +93,10 @@ public final class ChaosReport implements AutoCloseable {
     Files.writeString(dir.resolve("ledger-diff.txt"), text.toString(), StandardCharsets.UTF_8);
   }
 
+  private synchronized int reformats() {
+    return reformats;
+  }
+
   public void summary(final ChaosResult result, final Ledger ledger, final long lateCommits) throws IOException {
     final JSONObject counts = new JSONObject()
         .put("acked", ledger.count(Ledger.ACKED))
@@ -109,6 +116,7 @@ public final class ChaosReport implements AutoCloseable {
         .put("steps", result.steps())
         .put("ledger", counts)
         .put("lateCommits", lateCommits)
+        .put("reformats", reformats())
         .put("replay", config.replayCommand());
     Files.writeString(dir.resolve("summary.json"), summary.toString(2), StandardCharsets.UTF_8);
   }

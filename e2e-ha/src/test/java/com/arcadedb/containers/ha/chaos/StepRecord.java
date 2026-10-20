@@ -21,12 +21,14 @@ package com.arcadedb.containers.ha.chaos;
 
 /**
  * One line of {@code steps.log}. {@code ackedDuringHold} is -1 for faults that do not expect writes to stay available.
+ * {@code reformats} is how many times the nodes reformatted their Raft storage during the step, whether or not the fault
+ * forbids it (issue #10159).
  */
 public record StepRecord(int step, String fault, String targets, int leaderBefore, int leaderAfter, long timeToLeaderMs,
-                         long convergenceMs, long ackedDuringHold, long acked, long unknown, long failed) {
+                         long convergenceMs, long ackedDuringHold, long acked, long unknown, long failed, int reformats) {
   public String toLine() {
     return "step=" + step + " fault=" + fault + " targets=" + targets + " leader=" + leaderBefore + "->" + leaderAfter
         + " timeToLeaderMs=" + timeToLeaderMs + " convergenceMs=" + convergenceMs + " ackedDuringHold=" + ackedDuringHold
-        + " acked=" + acked + " unknown=" + unknown + " failed=" + failed;
+        + " acked=" + acked + " unknown=" + unknown + " failed=" + failed + " reformats=" + reformats;
   }
 }
