@@ -197,11 +197,11 @@ public final class ExistingRecordsCheck {
           + "' could not be read to check it", e);
     }
     if (violation[1] != null)
-      // A SAMPLE CANNOT BE DELETED OR UPDATED (issue #10336): THE REMEDY IS A COPY OF THE CONFORMING SAMPLES
+      // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342)
       throw new CommandExecutionException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
-          + "type '" + type.getName() + "' violates it, " + violation[1] + ". A sample cannot be deleted or updated: declare the "
-          + "constraint on a new TIMESERIES type and copy the conforming samples into it with INSERT INTO <new type> FROM SELECT "
-          + "FROM " + type.getName() + " WHERE ...");
+          + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
+          + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
+          + "<value> ...], and insert them again if they are to be kept");
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,

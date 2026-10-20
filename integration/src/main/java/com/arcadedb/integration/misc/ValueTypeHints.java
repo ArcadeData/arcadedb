@@ -47,9 +47,11 @@ import java.util.Base64;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -109,6 +111,23 @@ public final class ValueTypeHints {
   private static final String ARRAY_OF_FLOATS   = "ARRAY_OF_FLOATS";
   private static final String ARRAY_OF_DOUBLES  = "ARRAY_OF_DOUBLES";
 
+  /**
+   * The element types of a {@code LIST OF} / {@code MAP OF} declaration that need no type tree: the JSON the graph serializer
+   * writes for an element is what the declaration reads back, or what the importer's number pass restores from the declaration
+   * (the non-finite markers of FLOAT and DOUBLE, the text of a DECIMAL, see {@code JsonlImporterFormat#restoreNumberFidelity}).
+   * Every other element type is written WITH the tree, so it is encoded and restored by the very code a scalar of that type is:
+   * the serializer writes a DATE inside a container as epoch milliseconds, not as the epoch day a scalar DATE is read from, a
+   * BINARY as a JSON array, and a DATETIME_MICROS/NANOS with the precision of the millisecond (issue #10391). An allow-list, so a
+   * type added later is written with the tree until someone shows it needs none; {@code Issue10391JsonlDeclaredContainerRoundTripTest}
+   * round-trips every type in every shape.
+   */
+  private static final Set<Type> READ_BACK_IN_CONTAINER = EnumSet.of(Type.BOOLEAN, Type.INTEGER, Type.SHORT, Type.LONG, Type.BYTE,
+      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.DATETIME, Type.DATETIME_SECOND, Type.LINK, Type.OFFSET_TIME,
+      Type.LOCAL_TIME, Type.DURATION);
+
+  /** The scalar declarations whose value the declaration cannot read back from the JSON of the graph serializer. */
+  private static final Set<Type> NOT_READ_BACK_AS_SCALAR = EnumSet.of(Type.ZONED_DATETIME);
+
   private ValueTypeHints() {
   }
 
@@ -137,7 +156,7 @@ public final class ValueTypeHints {
       final Object value = entry.getValue();
       if (value == null)
         continue;
-      if (skipDeclared && type != null && isRestoredByDeclaration(type.getPolymorphicPropertyIfExists(entry.getKey())))
+      if (skipDeclared && type != null && isRestoredByDeclaration(type.getPolymorphicPropertyIfExists(entry.getKey()), value))
         continue;
 
       final Encoded encoded = encode(value, linksAsText);
@@ -152,8 +171,11 @@ public final class ValueTypeHints {
     return hints;
   }
 
-  /** Whether the declaration alone gives the value back its type: a scalar, a link, or a list or map of a declared scalar. */
-  private static boolean isRestoredByDeclaration(final Property property) {
+  /**
+   * Whether the declaration alone gives {@code value} back its type: a scalar, a link, or a list or map of an element type the
+   * declaration reads back from the JSON the graph serializer wrote (issue #10391).
+   */
+  private static boolean isRestoredByDeclaration(final Property property, final Object value) {
     if (property == null)
       return false;
     final Type type = property.getType();
@@ -164,9 +186,44 @@ public final class ValueTypeHints {
       if (ofType == null)
         return false;
       final Type elementType = Type.getTypeByName(ofType);
-      return elementType != null && elementType != Type.EMBEDDED && elementType != Type.LIST && elementType != Type.MAP;
+      if (elementType == null || !READ_BACK_IN_CONTAINER.contains(elementType))
+        return false;
+      return type == Type.LIST || !(value instanceof Map<?, ?> map) || !isLostWithoutTree(map);
     }
-    return true;
+    if (NOT_READ_BACK_AS_SCALAR.contains(type))
+      return false;
+    return (type != Type.ARRAY_OF_FLOATS && type != Type.ARRAY_OF_DOUBLES) || !hasNonFinite(value);
+  }
+
+  /**
+   * A map the JSON of the graph serializer does not carry back whatever its declared element type: a "t" key, which the reader
+   * takes for the type of an embedded document, and a non-finite FLOAT/DOUBLE value, which the serializer writes as null where a
+   * list item or a scalar travels as the {@link NonFiniteNumbers} marker (issue #10391).
+   */
+  private static boolean isLostWithoutTree(final Map<?, ?> map) {
+    if (map.containsKey("t"))
+      return true;
+    for (final Object element : map.values())
+      if (isNonFinite(element))
+        return true;
+    return false;
+  }
+
+  /** Whether a {@code float[]} or {@code double[]} holds a NaN or an infinity, which the serializer writes as null. */
+  private static boolean hasNonFinite(final Object value) {
+    if (value instanceof float[] floats) {
+      for (final float f : floats)
+        if (!Float.isFinite(f))
+          return true;
+    } else if (value instanceof double[] doubles)
+      for (final double d : doubles)
+        if (!Double.isFinite(d))
+          return true;
+    return false;
+  }
+
+  private static boolean isNonFinite(final Object value) {
+    return value instanceof Double d && !Double.isFinite(d) || value instanceof Float f && !Float.isFinite(f);
   }
 
   /**

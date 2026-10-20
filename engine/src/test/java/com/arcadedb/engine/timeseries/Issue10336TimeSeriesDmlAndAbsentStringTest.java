@@ -34,8 +34,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #10336: {@code DELETE FROM} a TIMESERIES type reported its matching samples as deleted and kept them, {@code UPDATE}
  * reported {@code count: 0} and {@code TRUNCATE TYPE} reported success, so the advice of the {@code ALTER PROPERTY} refusal ("delete
- * the non-conforming samples first") could not be followed. A sample is immutable: the three statements are refused, naming what
- * does work. And a STRING column stores a sample with no value for it as the empty text, so a MIN or REGEXP accepted that sample
+ * the non-conforming samples first") could not be followed. A sample is immutable: UPDATE is refused, naming what does work, and
+ * since #10342 DELETE (by time range and tags) and TRUNCATE TYPE do remove samples. And a STRING column stores a sample with no value for it as the empty text, so a MIN or REGEXP accepted that sample
  * at write time and refused it once stored: the write path now judges the text the column will hold, as {@code ALTER} does, and
  * the outcome no longer depends on the order of the two.
  *
@@ -60,12 +60,25 @@ class Issue10336TimeSeriesDmlAndAbsentStringTest extends TestHelper {
     return rows.toString();
   }
 
+  /**
+   * Since #10342 a DELETE by time range and tags removes samples; what it cannot name exactly (a predicate on a FIELD column) is still
+   * refused, and keeps every sample, as the DELETE that used to report them deleted did not.
+   */
   @Test
-  void deleteIsRefusedAndKeepsTheSamples() {
-    assertThatThrownBy(() -> database.command("sql", "DELETE FROM D1 WHERE ts = 1000").close())
+  void deleteWithAPredicateItCannotNameExactlyIsRefusedAndKeepsTheSamples() {
+    assertThatThrownBy(() -> database.command("sql", "DELETE FROM D1 WHERE i = 1").close())
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("TIMESERIES type 'D1'").hasMessageContaining("DELETE");
-    assertThatThrownBy(() -> database.command("sql", "DELETE FROM D1").close()).isInstanceOf(CommandExecutionException.class);
+    assertThatThrownBy(() -> database.command("sql", "DELETE FROM D1 WHERE ts = 1000 OR t = 'h'").close())
+        .isInstanceOf(CommandExecutionException.class);
     assertThat(rows("D1")).isEqualTo(SAMPLES);
+  }
+
+  @Test
+  void deleteByTimeRemovesTheSampleAndReportsIt() {
+    try (final ResultSet rs = database.command("sql", "DELETE FROM D1 WHERE ts = 1000")) {
+      assertThat(rs.next().<Number>getProperty("count").longValue()).isEqualTo(1L);
+    }
+    assertThat(rows("D1")).isEqualTo("[{\"t\":\"h\",\"s\":\"cd\",\"i\":2}]");
   }
 
   @Test
@@ -77,13 +90,13 @@ class Issue10336TimeSeriesDmlAndAbsentStringTest extends TestHelper {
     assertThat(rows("D1")).isEqualTo(SAMPLES);
   }
 
+  /** Since #10342 TRUNCATE TYPE removes the samples (it used to report success and keep them). */
   @Test
-  void truncateTypeIsRefusedAndKeepsTheSamples() {
-    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE D1").close())
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("TIMESERIES type 'D1'");
-    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE D1 UNSAFE").close())
-        .isInstanceOf(CommandExecutionException.class);
-    assertThat(rows("D1")).isEqualTo(SAMPLES);
+  void truncateTypeRemovesTheSamples() {
+    try (final ResultSet rs = database.command("sql", "TRUNCATE TYPE D1")) {
+      assertThat(rs.next().<Number>getProperty("count").longValue()).isEqualTo(2L);
+    }
+    assertThat(rows("D1")).isEqualTo("[]");
   }
 
   @Test
@@ -157,9 +170,18 @@ class Issue10336TimeSeriesDmlAndAbsentStringTest extends TestHelper {
     database.command("sql", "INSERT INTO D1 SET ts = 3000, t = 'h', s = 'x', i = 3");
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY D1.s MIN 2").close())
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("timestamp 3000")
-        .hasMessageContaining("INSERT INTO").hasMessageNotContaining("Delete the non-conforming samples");
+        .hasMessageContaining("Delete the non-conforming samples first").hasMessageContaining("DELETE FROM D1 WHERE ts = 3000");
 
-    // THE REMEDY THE MESSAGE NAMES: A NEW TYPE THAT DECLARES THE CONSTRAINT, AND THE CONFORMING SAMPLES COPIED INTO IT
+    // THE REMEDY THE MESSAGE NAMES (issue #10342): THE SAMPLE IS DELETED BY ITS TIME, AND THE CONSTRAINT CAN BE DECLARED
+    database.command("sql", "DELETE FROM D1 WHERE ts = 3000").close();
+    database.command("sql", "ALTER PROPERTY D1.s MIN 2").close();
+    assertThat(rows("D1")).isEqualTo(SAMPLES);
+  }
+
+  /** The other way out, which needs no delete: a new type that declares the constraint, and the conforming samples copied into it. */
+  @Test
+  void theConformingSamplesCanBeCopiedIntoANewType() {
+    database.command("sql", "INSERT INTO D1 SET ts = 3000, t = 'h', s = 'x', i = 3");
     database.command("sql", "CREATE TIMESERIES TYPE D2 TIMESTAMP ts TAGS (t STRING) FIELDS (s STRING, i INTEGER)");
     database.command("sql", "ALTER PROPERTY D2.s MIN 2");
     database.command("sql", "INSERT INTO D2 FROM SELECT ts, t, s, i FROM D1 WHERE s.length() >= 2");

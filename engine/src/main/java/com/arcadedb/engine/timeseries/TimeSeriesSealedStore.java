@@ -1215,7 +1215,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (coarsened)
         throw new TimeSeriesWalkCoarsenedException(
             "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
-                + "' was replaced by a downsample (or by a merge of small blocks this read could not follow) while this read was in flight, so no"
+                + "' was replaced by a downsample (or by a merge of small blocks this read could not follow, or removed by a delete of"
+                + " samples) while this read was in flight, so no"
                 + " answer it can still produce is a consistent one: the rows already returned came from the old blocks and"
                 + " the rows remaining sit in their replacements. Run the read again to get a whole answer");
 
@@ -2783,6 +2784,249 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Removes every sample whose timestamp is in {@code [fromTs, toTs]} and whose tags satisfy {@code tagFilter} (issue #10342),
+   * and answers how many it removed. Nothing is rewritten, and no walk in flight is disturbed, when no sample matches.
+   * <p>
+   * What a block costs depends on how much of it the predicate takes, and it is decided on the block's entry whenever the entry
+   * can say:
+   * <ul>
+   * <li>outside the time range, or declaring no value of the filtered tags: copied as it is, like retention copies a block it
+   * keeps;</li>
+   * <li>inside the time range and declaring the filtered tags homogeneous (or no filter at all): dropped, with no read of its
+   * columns - the shape {@code DELETE ... WHERE ts < X} and {@code TRUNCATE TYPE} take for nearly every block;</li>
+   * <li>anything else: its timestamps (and the filtered tag columns, when the block mixes tag values) are decoded to find the rows;
+   * a block that loses all of them is dropped, one that loses none is copied, and one that loses some is REBUILT from the rows that
+   * stay - every column decoded through the codec it was written with and encoded again, its statistics and declared tag values
+   * recomputed from those rows, as a merge of small blocks does ({@link #prepareMerge}).</li>
+   * </ul>
+   * A block is rebuilt in place: it keeps its position in the time order and the granularity marker of a downsampled block, and
+   * takes a fresh identity, since its rows are no longer the rows of the block it replaces.
+   * <p>
+   * The file is rewritten as retention rewrites it ({@link #truncateBefore}), to a temp file swapped in atomically, under the
+   * directory write lock; the caller holds the shard's compaction write lock and its sealed-file mutex
+   * ({@code TimeSeriesShard.runSealedRewrite}). A walk in flight that meets a block this removed fails like one that meets a block
+   * a downsample replaced ({@link TimeSeriesWalkCoarsenedException}): the rows it already handed over came from blocks that no
+   * longer exist, and no answer it can still produce is a whole one.
+   *
+   * @param tagFilter the tag conditions, or {@code null} for any tags
+   */
+  public long deleteSamples(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
+    if (fromTs > toTs)
+      return 0L;
+
+    directoryLock.writeLock().lock();
+    try {
+      final int tsColIdx = findTimestampColumnIndex();
+      final int[] filterColumns = tagFilter != null ? tagFilterColumns(tagFilter) : null;
+
+      final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
+      final RebuildPlan rebuilt = new RebuildPlan(tsColIdx);
+      long deleted = 0L;
+
+      for (final BlockEntry entry : blockDirectory) {
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
+          retained.add(entry);
+          continue;
+        }
+        final BlockMatchResult tagMatch = blockMatchesTagFilter(entry, tagFilter);
+        if (tagMatch == BlockMatchResult.SKIP) {
+          retained.add(entry);
+          continue;
+        }
+        if (tagMatch == BlockMatchResult.FAST_PATH && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
+          deleted += entry.sampleCount;
+          continue;
+        }
+
+        // CRC-checked by the read, and the CRC is the block's: decompressTimestamps validates the metadata and every column before it
+        // decodes one, so a block rebuilt below was whole when it was read. It is written with a fresh CRC, which would launder a
+        // damaged one
+        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+        final BitSet doomed = rowsToDelete(entry, timestamps, tagMatch, tagFilter, filterColumns, fromTs, toTs, tsColIdx);
+        final int doomedCount = doomed.cardinality();
+        if (doomedCount == 0) {
+          retained.add(entry);
+          continue;
+        }
+        deleted += doomedCount;
+        if (doomedCount == timestamps.length)
+          continue;
+
+        rebuilt.add(entry, timestamps, doomed);
+      }
+
+      if (deleted == 0L)
+        return 0L;
+
+      // the rebuilt blocks are built as the rewrite reaches them, one at a time: a delete over a store of blocks that all mix tags
+      // does not hold the store
+      rewriteWithBlocks(retained, rebuilt);
+      // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows. After
+      // the rewrite, so a rewrite that failed does not make a walk fail for a change that never happened; a walk reads the epoch under
+      // the directory read lock, which this write lock excludes until both are done
+      downsampleEpoch++;
+      return deleted;
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * The rows of a block the predicate takes: those in {@code [fromTs, toTs]}, and, when the block mixes tag values
+   * ({@link BlockMatchResult#SLOW_PATH}), those whose tags satisfy the filter, tested the way a scan tests them.
+   */
+  private BitSet rowsToDelete(final BlockEntry entry, final long[] timestamps, final BlockMatchResult tagMatch,
+      final TagFilter tagFilter, final int[] filterColumns, final long fromTs, final long toTs, final int tsColIdx) throws IOException {
+    final BitSet doomed = new BitSet(timestamps.length);
+    final int from = lowerBound(timestamps, fromTs);
+    final int to = upperBound(timestamps, toTs);
+    if (from >= to)
+      return doomed;
+
+    if (tagMatch == BlockMatchResult.FAST_PATH) {
+      doomed.set(from, to);
+      return doomed;
+    }
+
+    final Object[][] tagColumns = decompressColumns(entry, filterColumns, tsColIdx);
+    final Object[] probe = new Object[filterColumns.length + 1];
+    for (int i = from; i < to; i++) {
+      probe[0] = timestamps[i];
+      for (int c = 0; c < tagColumns.length; c++)
+        probe[c + 1] = tagColumns[c][i];
+      if (tagFilter.matchesMapped(probe, filterColumns))
+        doomed.set(i);
+    }
+    return doomed;
+  }
+
+  /**
+   * The blocks a delete rebuilds from the rows that stay, PLANNED and not built: for each, the block it comes from, the rows that go
+   * and the place it takes in the time order, which is all {@link #rewriteWithBlocks} needs to order the file. A block is built when
+   * the rewrite reaches it, so the memory a delete holds is the plan - a bitset of a few bytes per thousand rows for each block - and
+   * one rebuilt block at a time, not every rebuilt block until the file is written.
+   */
+  private final class RebuildPlan implements NewBlocks {
+    private final int             tsColIdx;
+    private final List<BlockEntry> entries = new ArrayList<>();
+    private final List<BitSet>     doomed  = new ArrayList<>();
+    private final List<long[]>     metas   = new ArrayList<>();
+
+    private RebuildPlan(final int tsColIdx) {
+      this.tsColIdx = tsColIdx;
+    }
+
+    /** Plans the block {@code entry} becomes without the rows in {@code doomedRows}, which are not all of them. */
+    void add(final BlockEntry entry, final long[] timestamps, final BitSet doomedRows) {
+      final int first = doomedRows.nextClearBit(0);
+      final int last = doomedRows.previousClearBit(timestamps.length - 1);
+      entries.add(entry);
+      doomed.add(doomedRows);
+      metas.add(new long[] { timestamps[first], timestamps[last], timestamps.length - doomedRows.cardinality() });
+    }
+
+    @Override
+    public int size() {
+      return entries.size();
+    }
+
+    @Override
+    public long[] meta(final int index) {
+      return metas.get(index);
+    }
+
+    @Override
+    public NewBlock build(final int index) throws IOException {
+      final BlockEntry entry = entries.get(index);
+      // Read again, and not kept from the planning: the decoded timestamps of a block are eight bytes a row, more than the block
+      return rebuildWithout(entry, decompressTimestamps(entry, tsColIdx), doomed.get(index), tsColIdx, columns.size());
+    }
+  }
+
+  /**
+   * The blocks a rewrite of the sealed file adds to the ones it keeps. {@link #rewriteWithBlocks} needs the place of every one in the
+   * time order before it writes the first, and a block itself only when it writes it: a source that builds a block when asked holds
+   * none of them for longer than its own write.
+   */
+  private interface NewBlocks {
+    int size();
+
+    /** {@code {minTimestamp, maxTimestamp, sampleCount}} of block {@code index}. */
+    long[] meta(int index);
+
+    NewBlock build(int index) throws IOException;
+  }
+
+  /** A block ready to be written: its compressed columns, statistics, declared tag values and downsampling granularity. */
+  private record NewBlock(byte[][] compressed, BlockStats stats, String[][] tagDistinctValues, long granularityMs) {
+  }
+
+  /** The non-timestamp column indices a tag filter conditions on, ascending and without repeats. */
+  private static int[] tagFilterColumns(final TagFilter tagFilter) {
+    final BitSet columnSet = new BitSet();
+    for (final TagFilter.Condition condition : tagFilter.getConditions())
+      columnSet.set(condition.columnIndex());
+    return columnSet.stream().toArray();
+  }
+
+  /**
+   * The block {@code entry} becomes without the rows in {@code doomed}: every column decoded through the codec it was written with,
+   * the surviving rows picked, and the block's statistics and declared tag values recomputed from them.
+   */
+  private NewBlock rebuildWithout(final BlockEntry entry, final long[] timestamps, final BitSet doomed, final int tsColIdx,
+      final int colCount) throws IOException {
+    final int kept = timestamps.length - doomed.cardinality();
+    final long[] keptTimestamps = new long[kept];
+    int k = 0;
+    for (int i = doomed.nextClearBit(0); i < timestamps.length; i = doomed.nextClearBit(i + 1))
+      keptTimestamps[k++] = timestamps[i];
+
+    // The block's declared values only intern the strings (issue #8793): what the rebuilt block declares is computed below from the rows
+    // that stay, so a value only the deleted rows held is no longer declared. The ONE instance of each, as a merge keeps them
+    final Map<String, String> canonical = new HashMap<>();
+    if (entry.tagDistinctValues != null)
+      for (final String[] declared : entry.tagDistinctValues)
+        if (declared != null)
+          for (final String value : declared)
+            canonical.putIfAbsent(value, value);
+
+    final byte[][] compressedCols = new byte[colCount][];
+    final StatsBuilder stats = new StatsBuilder(columns);
+    final String[][] tagDistinctValues = new String[colCount][];
+    for (int c = 0; c < colCount; c++) {
+      if (c == tsColIdx) {
+        compressedCols[c] = DeltaOfDeltaCodec.encode(keptTimestamps);
+        continue;
+      }
+      final ColumnDefinition column = columns.get(c);
+      final Object[] decoded = decodeColumn(column, readBytes(entry.columnOffsets[c], entry.columnSizes[c]));
+      if (decoded.length != timestamps.length)
+        throw new IOException("Sealed block at offset " + entry.blockStartOffset + " declares " + timestamps.length
+            + " sample(s) but column '" + column.getName() + "' decodes to " + decoded.length);
+      final Object[] values = new Object[kept];
+      k = 0;
+      for (int i = doomed.nextClearBit(0); i < decoded.length; i = doomed.nextClearBit(i + 1))
+        values[k++] = decoded[i];
+
+      compressedCols[c] = compressColumn(column, values);
+      if (hasNumericStats(c))
+        stats.add(c, values);
+      if (column.getRole() == ColumnDefinition.ColumnRole.TAG) {
+        final LinkedHashSet<String> distinct = new LinkedHashSet<>();
+        for (final Object value : values) {
+          final String text = value != null ? value.toString() : "";
+          final String shared = canonical.get(text);
+          distinct.add(shared != null ? shared : text);
+        }
+        tagDistinctValues[c] = distinct.toArray(new String[0]);
+      }
+    }
+
+    // a rebuilt block keeps the granularity of the block it comes from
+    return new NewBlock(compressedCols, stats.build(), tagDistinctValues, entry.downsampledGranularityMs);
+  }
+
+  /**
    * Downsamples blocks older than cutoffTs to the given granularity.
    * Blocks already at the target resolution or coarser are left untouched (idempotency).
    * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
@@ -3323,6 +3567,42 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void rewriteWithBlocks(final List<BlockEntry> retained,
       final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
       final List<String[][]> newTagDistinctValues, final long newBlocksGranularityMs) throws IOException {
+    rewriteWithBlocks(retained, newCompressed, newMeta, newStats, newTagDistinctValues, null, newBlocksGranularityMs);
+  }
+
+  /**
+   * @param newBlocksGranularities the downsampling granularity of each new block, or {@code null} to give all of them
+   *                               {@code newBlocksGranularityMs}: a block rebuilt from a downsampled one is as coarse as it was
+   */
+  private void rewriteWithBlocks(final List<BlockEntry> retained,
+      final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
+      final List<String[][]> newTagDistinctValues, final long[] newBlocksGranularities, final long newBlocksGranularityMs)
+      throws IOException {
+    rewriteWithBlocks(retained, new NewBlocks() {
+      @Override
+      public int size() {
+        return newCompressed.size();
+      }
+
+      @Override
+      public long[] meta(final int index) {
+        return newMeta.get(index);
+      }
+
+      @Override
+      public NewBlock build(final int index) {
+        return new NewBlock(newCompressed.get(index), newStats.get(index),
+            newTagDistinctValues != null ? newTagDistinctValues.get(index) : null,
+            newBlocksGranularities != null ? newBlocksGranularities[index] : newBlocksGranularityMs);
+      }
+    });
+  }
+
+  /**
+   * {@link #rewriteWithBlocks(List, List, List, List, List, long[], long)} over a source that builds each new block when the rewrite
+   * reaches it, so it holds it for as long as it takes to write it and no longer.
+   */
+  private void rewriteWithBlocks(final List<BlockEntry> retained, final NewBlocks newBlocks) throws IOException {
 
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
@@ -3331,11 +3611,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // always in ascending order (required by binary search in iterateRange/scanRange).
     // A negative index means a "new" (downsampled) block; non-negative means retained.
     record WriteSpec(long minTs, boolean retained, int idx) {}
-    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newCompressed.size());
+    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newBlocks.size());
     for (int i = 0; i < retained.size(); i++)
       writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
-    for (int b = 0; b < newCompressed.size(); b++)
-      writeOrder.add(new WriteSpec(newMeta.get(b)[0], false, b));
+    for (int b = 0; b < newBlocks.size(); b++)
+      writeOrder.add(new WriteSpec(newBlocks.meta(b)[0], false, b));
     writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
     // Build new directory in a local list — do NOT modify blockDirectory until after the
@@ -3348,12 +3628,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, newDirectory);
         } else {
           final int b = spec.idx();
-          final long[] meta = newMeta.get(b);
-          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-              newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, newBlockId());
+          final long[] meta = newBlocks.meta(b);
+          final NewBlock block = newBlocks.build(b);
+          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
+              colCount, block.tagDistinctValues(), newBlockId());
           // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
-          entry.downsampledGranularityMs = newBlocksGranularityMs;
+          entry.downsampledGranularityMs = block.granularityMs();
           newDirectory.add(entry);
         }
       }

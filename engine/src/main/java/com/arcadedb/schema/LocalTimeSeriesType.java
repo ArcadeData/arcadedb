@@ -159,14 +159,15 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   /**
-   * The refusal of a statement that would remove or rewrite stored samples ({@code DELETE}, {@code UPDATE}, {@code TRUNCATE TYPE}),
-   * which no storage layer of a TIMESERIES type supports: the statements used to report rows as deleted, or success, and keep every
-   * sample (issue #10336). Names what does remove samples, and how to keep a subset.
+   * The refusal of a statement that would rewrite stored samples ({@code UPDATE}), which no storage layer of a TIMESERIES type supports:
+   * the statement used to report 0 rows, and kept every sample (issue #10336). Names what does change the samples of a type: a sample
+   * is deleted - by time range and tags, or all of them - and written again (issue #10342).
    */
   public String immutableSamplesRefusal(final String statement) {
-    return "Cannot " + statement + " the samples of the TIMESERIES type '" + getName() + "': a sample cannot be deleted or updated once "
-        + "written. The RETENTION of the type removes the samples older than it and DROP TYPE removes all of them; to keep a subset, "
-        + "copy it into a new TIMESERIES type with INSERT INTO <new type> FROM SELECT FROM " + getName() + " WHERE ...";
+    return "Cannot " + statement + " the samples of the TIMESERIES type '" + getName() + "': a sample cannot be updated once written. To "
+        + "change one, delete it with DELETE FROM " + getName() + " WHERE " + getTimestampColumn() + " = <timestamp> [AND <tag> = <value>"
+        + " ...] and insert it again; DELETE with a time range and TRUNCATE TYPE remove more, and the RETENTION of the type removes the "
+        + "samples older than it";
   }
 
   /**

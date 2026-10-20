@@ -71,7 +71,9 @@ import com.arcadedb.utility.FileUtils;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -1040,9 +1042,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /**
    * Undoes what the generic JSON parse does to numbers on the record path (issue #8871), driven by the declared
    * property types: FLOAT/DOUBLE values exported as the {@link NonFiniteNumbers} markers ("PosInfinity", "NegInfinity")
-   * are decoded back (scalar or LIST OF FLOAT/DOUBLE), and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from
-   * their JSON text instead of the double the parse produced, which dropped every digit past the 17th. A property with
-   * no declared type is left as it is: there is no schema to say that a marker string is a number.
+   * are decoded back (scalar, LIST OF or MAP OF FLOAT/DOUBLE), and DECIMAL values (scalar, LIST OF or MAP OF DECIMAL) are
+   * re-read from their JSON text instead of the double the parse produced, which dropped every digit past the 17th. A
+   * property with no declared type is left as it is: there is no schema to say that a marker string is a number.
+   * <p>
+   * A LIST OF / MAP OF DATE or BINARY is read from the type tree when the file has one; the same pass restores the elements of
+   * a file written before the tree covered them ({@link #restoreElement}).
    */
   private static void restoreNumberFidelity(final DocumentType type, final JSONObject json, final Map<String, Object> map) {
     if (type == null)
@@ -1066,22 +1071,87 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       } else if (propertyType == Type.LIST && entry.getValue() instanceof List<?> list) {
         // json2map built a fresh mutable ArrayList, so the items are replaced in place and nothing is allocated
         @SuppressWarnings("unchecked") final List<Object> items = (List<Object>) list;
-        final String ofType = property.getOfType();
-        if (Type.DECIMAL.name().equalsIgnoreCase(ofType)) {
+        final Type elementType = restoredElementType(property);
+        if (elementType == Type.DECIMAL) {
           final JSONArray array = json.getJSONArray(entry.getKey());
           for (int i = 0; i < items.size(); ++i)
             if (items.get(i) instanceof Number)
               items.set(i, array.getBigDecimal(i));
-        } else if (Type.DOUBLE.name().equalsIgnoreCase(ofType) || Type.FLOAT.name().equalsIgnoreCase(ofType)) {
+        } else if (elementType != null)
           for (int i = 0; i < items.size(); ++i)
-            if (items.get(i) instanceof String text) {
-              final Double marker = NonFiniteNumbers.decode(text);
-              if (marker != null)
-                items.set(i, marker);
-            }
-        }
+            items.set(i, restoreElement(elementType, items.get(i)));
+      } else if (propertyType == Type.MAP && entry.getValue() instanceof Map<?, ?> container) {
+        // the same restoration as the LIST above, for the same element types: a MAP OF is not a second-class container (issue #10391)
+        @SuppressWarnings("unchecked") final Map<String, Object> values = (Map<String, Object>) container;
+        final Type elementType = restoredElementType(property);
+        if (elementType == Type.DECIMAL) {
+          final JSONObject object = json.getJSONObject(entry.getKey());
+          for (final Map.Entry<String, Object> mapEntry : values.entrySet())
+            if (mapEntry.getValue() instanceof Number)
+              mapEntry.setValue(object.getBigDecimal(mapEntry.getKey()));
+        } else if (elementType != null)
+          for (final Map.Entry<String, Object> mapEntry : values.entrySet())
+            mapEntry.setValue(restoreElement(elementType, mapEntry.getValue()));
       }
     }
+  }
+
+  /**
+   * The element type of a {@code LIST OF} / {@code MAP OF} property when the elements may need restoring from the JSON the
+   * generic parse produced, {@code null} for the element types that never do (so a list of strings or longs is not walked).
+   */
+  private static Type restoredElementType(final Property property) {
+    final String ofType = property.getOfType();
+    if (ofType == null)
+      return null;
+    final Type elementType = Type.getTypeByName(ofType);
+    if (elementType == null)
+      return null;
+    return switch (elementType) {
+      case DECIMAL, DOUBLE, FLOAT, DATE, BINARY -> elementType;
+      default -> null;
+    };
+  }
+
+  /**
+   * One element of a declared container, restored from what the generic parse made of it:
+   * <ul>
+   *   <li>FLOAT/DOUBLE: the {@link NonFiniteNumbers} marker string is the number it stands for;</li>
+   *   <li>DATE: an export written before the type tree covered a DATE inside a container holds the serializer's epoch
+   *   MILLISECONDS at UTC midnight, where the scalar the declaration reads is an epoch DAY. The tree now writes the date as text,
+   *   so a number can only be one of those files (issue #10391);</li>
+   *   <li>BINARY: an export of the same age holds the bytes as a JSON array, never converted back.</li>
+   * </ul>
+   * Returns {@code item} itself when there is nothing to restore.
+   */
+  private static Object restoreElement(final Type elementType, final Object item) {
+    switch (elementType) {
+    case FLOAT, DOUBLE -> {
+      if (item instanceof String text) {
+        final Double marker = NonFiniteNumbers.decode(text);
+        if (marker != null)
+          return marker;
+      }
+    }
+    case DATE -> {
+      if (item instanceof Number millis)
+        return Instant.ofEpochMilli(millis.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
+    }
+    case BINARY -> {
+      if (item instanceof List<?> bytes) {
+        final byte[] result = new byte[bytes.size()];
+        for (int i = 0; i < result.length; ++i)
+          if (bytes.get(i) instanceof Number number)
+            result[i] = number.byteValue();
+          else
+            return item;
+        return result;
+      }
+    }
+    default -> {
+    }
+    }
+    return item;
   }
 
   /**

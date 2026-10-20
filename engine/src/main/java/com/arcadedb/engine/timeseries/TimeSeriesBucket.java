@@ -1389,11 +1389,20 @@ public class TimeSeriesBucket extends PaginatedComponent {
     }
 
     // Recompute header stats from the remaining pages (upToPage+1..totalDataPages)
-    final int totalDataPages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+    writeHeaderCountersFromPages(tx, headerPage, upToPage + 1, headerPage.readInt(HEADER_DATA_PAGE_COUNT));
+    // Keep HEADER_DATA_PAGE_COUNT unchanged so cleared pages can be reused by new inserts
+  }
+
+  /**
+   * Writes the header counters (sample count, min and max timestamp) as the sum and the extremes of the headers of data pages
+   * {@code fromPage..toPage}, read through the transaction so a page it modified is read as modified.
+   */
+  private void writeHeaderCountersFromPages(final TransactionContext tx, final MutablePage headerPage, final int fromPage,
+      final int toPage) throws IOException {
     long sampleCount = 0;
     long minTs = Long.MAX_VALUE;
     long maxTs = Long.MIN_VALUE;
-    for (int p = upToPage + 1; p <= totalDataPages; p++) {
+    for (int p = fromPage; p <= toPage; p++) {
       final BasePage page = tx.getPage(new PageId(database, fileId, p), pageSize);
       final int count = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
       if (count > 0) {
@@ -1407,7 +1416,6 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
     }
     writeHeaderCounters(headerPage, sampleCount, minTs, maxTs);
-    // Keep HEADER_DATA_PAGE_COUNT unchanged so cleared pages can be reused by new inserts
   }
 
   /**
@@ -1425,6 +1433,143 @@ public class TimeSeriesBucket extends PaginatedComponent {
     headerPage.writeInt(HEADER_DATA_PAGE_COUNT, 0);
     // Physical pages are not touched: committing a single header page is O(1) regardless
     // of how many data pages were previously allocated, preventing OOM on large datasets.
+  }
+
+  /**
+   * Removes from the data pages every sample whose timestamp is in {@code [fromTs, toTs]} and whose tags satisfy {@code tagFilter}
+   * (issue #10342), in the CURRENT transaction, which the caller commits: it commits whole or not at all.
+   * <p>
+   * <b>The pages are compacted in place.</b> A row is fixed-width and holds everything it has - the timestamp, the null bitmap, the
+   * dictionary ids of the tags, the values - so a row that stays is moved, byte for byte, over the rows removed before it, from its
+   * page to the page it lands on, which is never a later one. Nothing is decoded, boxed or interned, and nothing is held: the heap
+   * this takes is one row, whatever the bucket's size or its compaction threshold. A page before the first removed row is not
+   * written, and pages the rows no longer reach are given up by lowering the page count in the header, as {@link #clearDataPages()}
+   * gives them up; they are reused by the appends that follow.
+   * <p>
+   * Nothing is written when no sample matches. A range that misses the bucket's own min/max timestamps, which the header holds,
+   * ends the call before a page is read, a page whose own min/max or tags rule it out is not read row by row, and deleting everything
+   * ({@code Long.MIN_VALUE .. Long.MAX_VALUE}, no filter) reads nothing and touches only the header page.
+   * <p>
+   * The caller keeps appends and compactions out ({@code TimeSeriesShard}'s compaction write lock): the pages read here are the pages
+   * moved below.
+   *
+   * @param tagFilter the tag conditions, or {@code null} for any tags
+   *
+   * @return how many samples were removed
+   */
+  public long deleteSamples(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
+    if (fromTs > toTs)
+      return 0L;
+
+    if (fromTs == Long.MIN_VALUE && toTs == Long.MAX_VALUE && tagFilter == null) {
+      final long all = getSampleCount();
+      if (all > 0)
+        clearDataPages();
+      return all;
+    }
+
+    final long[] bounds = getMinMaxTimestamps();
+    if (bounds[1] < fromTs || bounds[0] > toTs)
+      return 0L;
+
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    if (tagFilter != null && matchers == null)
+      // A condition no value in the dictionary can satisfy: nothing can match.
+      return 0L;
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
+
+    final TransactionContext tx = database.getTransaction();
+    final int dataPageCount = getDataPageCount();
+
+    // The first row to remove: the pages before it stay as they are, and the rows before it on its own page stay where they are
+    int firstPage = 0;
+    int firstRow = 0;
+    search:
+    for (int pageNum = 1; pageNum <= dataPageCount; pageNum++) {
+      final BasePage page = tx.getPage(new PageId(database, fileId, pageNum), pageSize);
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (sampleCount == 0 || page.readLong(DATA_MAX_TS_OFFSET) < fromTs || page.readLong(DATA_MIN_TS_OFFSET) > toTs)
+        continue;
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation))
+        continue;
+      for (int row = 0; row < sampleCount; row++)
+        if (isDoomed(page, DATA_ROWS_OFFSET + row * rowSize, fromTs, toTs, matchers)) {
+          firstPage = pageNum;
+          firstRow = row;
+          break search;
+        }
+    }
+    if (firstPage == 0)
+      return 0L;
+
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    final int maxSamplesPerPage = getMaxSamplesPerPage();
+    final byte[] rowBytes = new byte[rowSize];
+
+    // The page the rows that stay are written to, and how many it holds. It is never ahead of the page being read, and on that page
+    // never ahead of the row being read, so a row is moved only over rows that were read already: reading from the page and writing
+    // to it needs no copy of either. The rows of the first page before the first removed row are already in place.
+    int destPageNum = firstPage;
+    MutablePage dest = tx.getPageToModify(new PageId(database, fileId, destPageNum), pageSize, false);
+    int destRows = firstRow;
+    long destMin = Long.MAX_VALUE;
+    long destMax = Long.MIN_VALUE;
+    for (int row = 0; row < firstRow; row++) {
+      final long ts = dest.readLong(DATA_ROWS_OFFSET + row * rowSize);
+      if (ts < destMin)
+        destMin = ts;
+      if (ts > destMax)
+        destMax = ts;
+    }
+
+    long deleted = 0L;
+    for (int pageNum = firstPage; pageNum <= dataPageCount; pageNum++) {
+      // The first page is read as modified (it is the page being written); a later one is read as it is committed, even when the
+      // destination reaches it while it is being read: the modified copy is a copy, and the rows ahead of the cursor are the same
+      final BasePage source = pageNum == firstPage ? dest : tx.getPage(new PageId(database, fileId, pageNum), pageSize);
+      final int sampleCount = source.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      for (int row = pageNum == firstPage ? firstRow : 0; row < sampleCount; row++) {
+        final int sourceOffset = DATA_ROWS_OFFSET + row * rowSize;
+        if (isDoomed(source, sourceOffset, fromTs, toTs, matchers)) {
+          deleted++;
+          continue;
+        }
+        if (destRows == maxSamplesPerPage) {
+          flushDataPageHeader(dest, destRows, destMin, destMax);
+          dest = tx.getPageToModify(new PageId(database, fileId, ++destPageNum), pageSize, false);
+          destRows = 0;
+          destMin = Long.MAX_VALUE;
+          destMax = Long.MIN_VALUE;
+        }
+        final long ts = source.readLong(sourceOffset);
+        source.readByteArray(sourceOffset, rowBytes);
+        dest.writeByteArray(DATA_ROWS_OFFSET + destRows * rowSize, rowBytes);
+        destRows++;
+        if (ts < destMin)
+          destMin = ts;
+        if (ts > destMax)
+          destMax = ts;
+      }
+    }
+
+    // The last page written holds rows, or it is the first page and nothing stays on it: then it is given up like the pages after it
+    final int newPageCount;
+    if (destRows > 0) {
+      flushDataPageHeader(dest, destRows, destMin, destMax);
+      newPageCount = destPageNum;
+    } else
+      newPageCount = destPageNum - 1;
+
+    headerPage.writeInt(HEADER_DATA_PAGE_COUNT, newPageCount);
+    writeHeaderCountersFromPages(tx, headerPage, 1, newPageCount);
+    return deleted;
+  }
+
+  /** Whether the row at {@code rowOffset} of the page is in the time range and satisfies the prepared tag conditions. */
+  private boolean isDoomed(final BasePage page, final int rowOffset, final long fromTs, final long toTs, final TagMatcher[] matchers) {
+    final long ts = page.readLong(rowOffset);
+    return ts >= fromTs && ts <= toTs && (matchers == null || matchesTagFilter(page, rowOffset, matchers));
   }
 
   public List<ColumnDefinition> getColumns() {
