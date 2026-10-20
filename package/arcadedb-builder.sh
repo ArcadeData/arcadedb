@@ -911,6 +911,13 @@ generate_dockerfile() {
   log_info "Generating Dockerfile..."
 
   if [[ "$DRY_RUN" != true ]]; then
+    # Every directory the image declares as a VOLUME must exist in the distribution: Docker creates a missing one owned
+    # by root, which the 1000:1000 runtime user cannot write to. The base assemblies ship them all, so this only guards
+    # a distribution that lost an empty one; `COPY --chown` below then hands each to the runtime user.
+    if ! mkdir -p "${dist_dir}/config" "${dist_dir}/databases" "${dist_dir}/replication" "${dist_dir}/backups" "${dist_dir}/log"; then
+      error_exit "Failed to create the volume directories in: $dist_dir"
+    fi
+
     cat >"$dockerfile" <<'EOF'
 FROM eclipse-temurin:25-jre-alpine
 
@@ -940,7 +947,10 @@ USER ${ARCADEDB_USER}
 
 EXPOSE 2480 2434
 
-VOLUME ["${ARCADEDB_HOME}/databases", "${ARCADEDB_HOME}/backups", "${ARCADEDB_HOME}/log"]
+# The same five volumes as package/src/main/docker/Dockerfile and the native images (issue #10387). config is written at
+# runtime (server-users.jsonl, server-groups.json, server-api-tokens.json) and replication holds HA state, so neither
+# may live in the container layer.
+VOLUME ["${ARCADEDB_HOME}/config", "${ARCADEDB_HOME}/databases", "${ARCADEDB_HOME}/replication", "${ARCADEDB_HOME}/backups", "${ARCADEDB_HOME}/log"]
 
 CMD ["./bin/server.sh"]
 EOF
