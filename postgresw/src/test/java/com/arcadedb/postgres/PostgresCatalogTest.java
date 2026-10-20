@@ -250,7 +250,8 @@ class PostgresCatalogTest {
             + "WHERE table_name = 'Article' ORDER BY ordinal_position");
 
     assertThat(names(answer.rows, "column_name")).containsExactly("id", "title");
-    assertThat(answer.rows.get(0)).containsEntry("data_type", "int4");
+    // the SQL standard name, as format_type() reads it (issue #10370); udt_name is the one that stays int4
+    assertThat(answer.rows.get(0)).containsEntry("data_type", "integer");
     assertThat(answer.rows.get(0)).containsEntry("is_nullable", "YES");
     assertThat(answer.rows.get(1)).containsEntry("is_nullable", "NO");
   }

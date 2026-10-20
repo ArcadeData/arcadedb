@@ -21,6 +21,8 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.ImmutableLightEdge;
@@ -71,8 +73,13 @@ public class RemoteVertex {
     appendBoundTypes(query, edgeTypes, params);
 
     query.append(").size() as count from ").append(vertex.getIdentity());
-    final ResultSet resultSet = remoteDatabase.query("sql", query.toString(), params);
-    return resultSet.next().<Number>getProperty("count").longValue();
+    try (final ResultSet resultSet = remoteDatabase.query("sql", query.toString(), params)) {
+      // the query is anchored to the vertex's own RID: it answers nothing only when the vertex no longer exists
+      if (!resultSet.hasNext())
+        throw new RecordNotFoundException("Record " + vertex.getIdentity() + " not found", vertex.getIdentity());
+
+      return resultSet.next().<Number>getProperty("count").longValue();
+    }
   }
 
   /**
@@ -319,11 +326,15 @@ public class RemoteVertex {
     if (targetType != null)
       command.append(" TYPE:").append(Identifier.quote(targetType));
     if (targetBucket != null)
-      command.append(' ').append(Identifier.quote(targetBucket));
+      command.append(" BUCKET:").append(Identifier.quote(targetBucket));
 
-    final ResultSet resultSet = remoteDatabase.command("sql", command.toString());
+    try (final ResultSet resultSet = remoteDatabase.command("sql", command.toString())) {
+      // MOVE VERTEX answers a row per vertex it moved: none means the source vertex does not exist
+      if (!resultSet.hasNext())
+        throw new RecordNotFoundException("Record " + vertex.getIdentity() + " not found", vertex.getIdentity());
 
-    return resultSet.nextIfAvailable().getVertex().get().getIdentity();
+      return resultSet.next().getVertex().get().getIdentity();
+    }
   }
 
   @Deprecated
@@ -336,6 +347,8 @@ public class RemoteVertex {
   }
 
   public MutableEdge newEdge(String edgeType, final Identifiable toVertex, Object... properties) {
+    // WHAT THE CALLER ASKED FOR, KEPT FOR THE MESSAGE OF A REFUSAL: edgeType is rewritten below when it names a bucket
+    final String requestedType = edgeType;
 
     final String bucketName;
     if (edgeType.startsWith("bucket:")) {
@@ -392,9 +405,15 @@ public class RemoteVertex {
         params.put(paramName, propValue);
       }
     }
-    final ResultSet resultSet = remoteDatabase.command("sql", query.toString(), params);
+    try (final ResultSet resultSet = remoteDatabase.command("sql", query.toString(), params)) {
+      // A CREATE EDGE a before-create listener vetoed answers no row at all (SaveElementStep drops it, and the plan has no CountStep).
+      // A syntax or type error would have come back as a server error, so an empty answer is the veto - the exception the embedded
+      // engine raises for it (issue #10373)
+      if (!resultSet.hasNext())
+        throw RecordVetoedException.ofCreateEdge(requestedType, vertex, toVertex);
 
-    return new RemoteMutableEdge((RemoteImmutableEdge) resultSet.next().getEdge().get());
+      return new RemoteMutableEdge((RemoteImmutableEdge) resultSet.next().getEdge().get());
+    }
   }
 
   /**

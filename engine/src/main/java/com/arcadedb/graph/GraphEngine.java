@@ -339,7 +339,7 @@ public class GraphEngine {
                              final Object... edgeProperties) {
     final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, null, edgeProperties);
     if (edge == null)
-      throw vetoedEdge(edgeTypeName, fromVertex.getIdentity(), toVertex);
+      throw RecordVetoedException.ofCreateEdge(edgeTypeName, fromVertex, toVertex);
     return edge;
   }
 
@@ -426,11 +426,6 @@ public class GraphEngine {
   private static VertexNotFoundException deletedEndpoint(final RID vertexRID, final String side) {
     return new VertexNotFoundException(
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
-  }
-
-  private static RecordVetoedException vetoedEdge(final String edgeTypeName, final RID fromVertexRID, final Identifiable toVertex) {
-    return new RecordVetoedException("Cannot create edge of type '" + edgeTypeName + "' from " + fromVertexRID + " to "
-        + (toVertex != null ? toVertex.getIdentity() : null) + ": a beforeCreate listener vetoed it");
   }
 
   /** @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired */

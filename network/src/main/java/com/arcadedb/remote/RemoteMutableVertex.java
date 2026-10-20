@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
@@ -72,6 +73,21 @@ public class RemoteMutableVertex extends MutableVertex {
     rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
+  }
+
+  /**
+   * Through the server, as the immutable vertex does: the inherited one reaches for an embedded database this record has none of.
+   * As in the embedded engine, the move creates a new record: it answers the new RID and this instance keeps the old one, so the
+   * caller continues with {@code lookupByRID(newRid)}, not with a {@code save()} or {@code reload()} of this instance.
+   */
+  @Override
+  public RID moveToType(final String targetType) {
+    return internal.moveTo(targetType, null);
+  }
+
+  @Override
+  public RID moveToBucket(final String targetBucket) {
+    return internal.moveTo(null, targetBucket);
   }
 
   /**

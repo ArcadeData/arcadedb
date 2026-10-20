@@ -510,6 +510,33 @@ public enum PostgresType {
   }
 
   /**
+   * The SQL name PostgreSQL prints this type under - {@code integer}, not {@code int4} - which is what {@code format_type()}, a
+   * {@code regtype} cast and {@code information_schema.columns.data_type} answer (issues #10228, #10370). {@link #typeName} is the
+   * other spelling, {@code pg_type.typname} and {@code information_schema.columns.udt_name}. An array is its element's SQL name
+   * and {@code []}. The one place a catalog column that carries the SQL name reads it from, so a new constant declares both
+   * spellings here and no writer can reach for {@link #typeName} by accident.
+   */
+  public String sqlName() {
+    if (isArrayType()) {
+      final PostgresType element = byCode(elementCode);
+      return element == null ? typeName : element.sqlName() + "[]";
+    }
+    return switch (this) {
+      case SMALLINT -> "smallint";
+      case INTEGER -> "integer";
+      case LONG -> "bigint";
+      case REAL -> "real";
+      case DOUBLE -> "double precision";
+      case CHAR -> "\"char\"";
+      case BOOLEAN -> "boolean";
+      case TIMESTAMP -> "timestamp without time zone";
+      case VARCHAR -> "character varying";
+      case BPCHAR -> "character";
+      default -> typeName;
+    };
+  }
+
+  /**
    * Returns the type carrying the given OID, or null when this protocol has no such type. Unlike
    * {@code deserializeAsText}/{@code deserializeAsBinary}, which reject an unknown OID, a catalog lookup
    * for a type ArcadeDB cannot produce is a legitimate answer of "no row" rather than an error.

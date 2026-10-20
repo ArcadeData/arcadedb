@@ -135,20 +135,75 @@ public class PostgresCatalog {
   private static final String PG_CATALOG_SCHEMA = "pg_catalog";
 
   /**
+   * The relations a driver joins to {@code pg_type} to find out what a type is: where it lives, what it is an array or a
+   * composite of, what its values are. {@code pg_range} and {@code pg_enum} are among them though they are not modelled.
+   */
+  private static final Set<String> TYPE_RESOLUTION_RELATIONS = Set.of("pg_type", "pg_namespace", "pg_class", "pg_attribute",
+      "pg_range", "pg_enum");
+
+  /** The aggregates that make a type lookup a query whose one row an empty answer would lose (see isTypeResolutionProbe). */
+  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or", "string_agg",
+      "array_agg");
+
+  /**
    * A catalog query that would spend more work than this server gives one statement - a client regular expression
    * that backtracks, sub-selects correlated deep enough to multiply. The client is told so, with PostgreSQL's
    * {@code program_limit_exceeded}, rather than handed an empty answer that would look like an empty catalog.
    */
-  public static final class WorkLimitExceeded extends RuntimeException {
+  public static final class WorkLimitExceeded extends Refusal {
     public static final String SQLSTATE = "54000";
 
     WorkLimitExceeded() {
-      super("The catalog query needs more work than one statement may spend: simplify it");
+      super("The catalog query needs more work than one statement may spend: simplify it", SQLSTATE);
     }
   }
 
-  /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
+  /**
+   * A catalog query this server refuses, with the SQLSTATE the client acts on. The text is written by this class and holds no
+   * stored value (at most the name of a relation the client typed), and the cause is the client's query, never a fault of the
+   * server: so production mode keeps the message, as it does for a refused SET, and logs no SEVERE stack trace for it.
+   */
+  public abstract static class Refusal extends RuntimeException {
+    public final String sqlState;
+
+    Refusal(final String message, final String sqlState) {
+      super(message);
+      this.sqlState = sqlState;
+    }
+  }
+
+  /**
+   * A catalog query that cannot be answered honestly: it names a relation this class does not model, or has a shape it cannot
+   * evaluate. The caller refuses it with {@link UnsupportedCatalogQuery} (issue #10371) - an empty result set would read as an
+   * empty catalog, and an ungrouped {@code count(*)} over it would lose its one row.
+   */
   public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null, false);
+
+  /**
+   * A catalog query this server will not answer, told to the client with PostgreSQL's {@code feature_not_supported} instead of
+   * an empty answer that would read as an empty catalog (issue #10371): the reasoning that refuses a statement for its cost
+   * with {@link WorkLimitExceeded} does not depend on why the statement was refused. PostgreSQL's own {@code undefined_table}
+   * would claim the relation does not exist, which a real PostgreSQL has.
+   */
+  public static final class UnsupportedCatalogQuery extends Refusal {
+    public static final String SQLSTATE = "0A000";
+
+    UnsupportedCatalogQuery(final String message) {
+      super(message, SQLSTATE);
+    }
+  }
+
+  /**
+   * The refusal of a query {@link #resolve} answered {@link #DECLINED}, naming the catalog relation it could not model when
+   * there is one, so the client reads WHY rather than only that.
+   */
+  public static UnsupportedCatalogQuery refusalOf(final String query) {
+    final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+    final String relation = tokens == null ? null : unmodelledRelation(tokens);
+    return new UnsupportedCatalogQuery(relation != null
+        ? "The catalog relation \"" + relation + "\" is not supported by this server"
+        : "This catalog query has a shape this server does not support");
+  }
 
   /**
    * The emulated relations and the columns each one has. A column outside its relation's set makes the query
@@ -265,6 +320,11 @@ public class PostgresCatalog {
   }
 
   private PostgresCatalog() {
+  }
+
+  /** The names of the relations this catalog models, for a test that holds every one of them to the same contract. */
+  static Set<String> modelledRelations() {
+    return Collections.unmodifiableSet(RELATIONS.keySet());
   }
 
   /**
@@ -748,6 +808,82 @@ public class PostgresCatalog {
   }
 
   /**
+   * The catalog relations a statement reads, as written in the catalog ({@code pg_index}, {@code information_schema.tables}), in
+   * the order they appear. A function call is not a relation, and neither is {@code pg_type.oid}: a name qualified by anything
+   * but {@code pg_catalog} or {@code information_schema} is a column reference, whose relation is named where it is read from.
+   */
+  private static Set<String> catalogRelationsRead(final List<PostgresCatalogToken> tokens) {
+    final Set<String> relations = new LinkedHashSet<>();
+    for (int i = 0; i < tokens.size(); i++) {
+      final PostgresCatalogToken token = tokens.get(i);
+      if (token.type != PostgresCatalogToken.Type.IDENTIFIER)
+        continue;
+
+      String name = token.text.toLowerCase(Locale.ENGLISH);
+      int last = i;
+      if (i + 2 < tokens.size() && tokens.get(i + 1).isSymbol(".")
+          && tokens.get(i + 2).type == PostgresCatalogToken.Type.IDENTIFIER) {
+        last = i + 2;
+        final String member = tokens.get(i + 2).text.toLowerCase(Locale.ENGLISH);
+        if (name.equals("pg_catalog"))
+          name = member;
+        else if (name.equals("information_schema"))
+          name = name + "." + member;
+        else {
+          i = last;
+          continue;
+        }
+      }
+
+      final boolean called = last + 1 < tokens.size() && tokens.get(last + 1).isSymbol("(");
+      if (!called && isCatalogRelationName(name))
+        relations.add(name);
+      i = last;
+    }
+    return relations;
+  }
+
+  /** The first catalog relation the statement reads that this class does not model, or null when there is none. */
+  private static String unmodelledRelation(final List<PostgresCatalogToken> tokens) {
+    for (final String relation : catalogRelationsRead(tokens))
+      if (!RELATIONS.containsKey(relation))
+        return relation;
+    return null;
+  }
+
+  /**
+   * Whether the query is a <b>type-resolution probe</b>: it reads {@code pg_type}, nothing outside
+   * {@link #TYPE_RESOLUTION_RELATIONS}, and no aggregate. This is the one place a declined catalog query keeps the empty answer
+   * instead of being refused (issue #10371), a deliberate compatibility shim and not a default.
+   * <p>
+   * What a probe asks is "which type is this name, or this OID?", at the moment a driver meets one it does not know: pgjdbc
+   * sends seven such lookups, with a derived table over {@code generate_series}, a second alias of {@code pg_type} and a
+   * correlated sub-select in them, shapes this catalog cannot evaluate. This server's {@code pg_type} is the closed set of types
+   * it can produce, which a driver already knows, so "no such type" is an answer the driver is built to handle - it falls back
+   * to the text form - where an error would fail {@code DatabaseMetaData.getTypeInfo()} and every call that meets a new OID. A
+   * count over the same relations is not a probe: an empty answer to it loses the one row PostgreSQL always sends.
+   * <p>
+   * The rule errs toward refusing, so a driver release that adds an aggregate or another relation to its type lookup would turn
+   * the call into an error rather than a wrong answer; {@code Issue10371UnmodelledRelationTest} pins the shapes of today's
+   * pgjdbc lookups and fails first.
+   */
+  public static boolean isTypeResolutionProbe(final String query) {
+    final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+    if (tokens == null)
+      return false;
+
+    final Set<String> relations = catalogRelationsRead(tokens);
+    if (!relations.contains("pg_type") || !TYPE_RESOLUTION_RELATIONS.containsAll(relations))
+      return false;
+
+    for (int i = 0; i + 1 < tokens.size(); i++)
+      if (tokens.get(i).type == PostgresCatalogToken.Type.IDENTIFIER && tokens.get(i + 1).isSymbol("(")
+          && AGGREGATES.contains(tokens.get(i).text.toLowerCase(Locale.ENGLISH)))
+        return false;
+    return true;
+  }
+
+  /**
    * Whether the statement names one of the relations this catalog models, which is what makes a statement it
    * cannot otherwise read a catalog query rather than an ordinary one. The test is against the modelled names
    * exactly: a type the user called {@code pg_notes} is their table, and swallowing statements about it -
@@ -1097,10 +1233,14 @@ public class PostgresCatalog {
     final String schema = context.schema();
     final int oid = oidOf(type.getName());
 
+    // relhasindex and hasindexes are FALSE because pg_index is not modelled (issue #10371): every query that would enumerate a
+    // table's indexes names it and is refused, so a catalog that said "this relation has indexes" would send psql's \d, which
+    // reads the flag first, straight into that refusal. The flag follows what this catalog can show, not what the type has.
+    // TODO #10473: model pg_index, then answer !type.getAllIndexes(false).isEmpty() again (here and in pg_tables.hasindexes)
     return singletonRow(context)//
         .with("pg_class", "oid", oid, "relname", type.getName(), "relnamespace", SCHEMA_OID, "relowner", OWNER_OID,//
             "relkind", "r", "relpersistence", "p", "relnatts", type.getPropertyNames().size(),//
-            "relhasindex", !type.getAllIndexes(false).isEmpty(), "relhasrules", Boolean.FALSE,//
+            "relhasindex", Boolean.FALSE, "relhasrules", Boolean.FALSE,//
             "relhastriggers", Boolean.FALSE, "relhassubclass", !type.getSubTypes().isEmpty(),//
             "relispartition", Boolean.FALSE, "relisshared", Boolean.FALSE, "relispopulated", Boolean.TRUE,//
             "relrowsecurity", Boolean.FALSE, "relforcerowsecurity", Boolean.FALSE, "relchecks", 0,//
@@ -1111,7 +1251,7 @@ public class PostgresCatalog {
         .with("pg_am", "oid", HEAP_ACCESS_METHOD_OID, "amname", "heap", "amhandler", "heap_tableam_handler",
             "amtype", "t")//
         .with("pg_tables", "schemaname", schema, "tablename", type.getName(), "tableowner", context.userName(),//
-            "hasindexes", !type.getAllIndexes(false).isEmpty(), "hasrules", Boolean.FALSE, "hastriggers", Boolean.FALSE,//
+            "hasindexes", Boolean.FALSE, "hasrules", Boolean.FALSE, "hastriggers", Boolean.FALSE,//
             "rowsecurity", Boolean.FALSE)//
         .with("information_schema.tables", "table_catalog", schema, "table_schema", schema, "table_name",
             type.getName(), "table_type", "BASE TABLE", "is_insertable_into", "YES", "is_typed", "NO");
@@ -1141,9 +1281,16 @@ public class PostgresCatalog {
             .with("information_schema.columns", "table_catalog", schema, "table_schema", schema, "table_name",
                 type.getName(), "column_name", property.getName(), "ordinal_position", ordinal,//
                 "column_default", defaultValue == null ? null : defaultValue.toString(),//
-                "is_nullable", notNull ? "NO" : "YES", "data_type", pgType.typeName, "udt_catalog", schema,//
-                "udt_schema", PG_CATALOG_SCHEMA, "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
-                "is_updatable", "YES", "numeric_precision_radix", numericPrecisionRadix(pgType));
+                // data_type is the SQL standard name and udt_name the pg_type one: PostgreSQL keeps the two apart, and an
+                // array is the literal ARRAY in the first (its element type is another relation's business) - issue #10370
+                "is_nullable", notNull ? "NO" : "YES", "data_type", pgType.isArrayType() ? "ARRAY" : pgType.sqlName(),
+                "udt_catalog", schema, "udt_schema", PG_CATALOG_SCHEMA, "udt_name", pgType.typeName, "is_identity", "NO",
+                "is_generated", "NEVER", "is_updatable", "YES",//
+                // no column here declares a length, a precision or a scale, which is PostgreSQL's typmod -1: the figures below
+                // are the ones it answers for a built-in type declared bare
+                "character_octet_length", characterOctetLength(pgType), "numeric_precision", numericPrecision(pgType),
+                "numeric_precision_radix", numericPrecisionRadix(pgType), "numeric_scale", numericScale(pgType),
+                "datetime_precision", datetimePrecision(pgType));
 
         if (defaultValue != null)
           // pg_attrdef's adbin is a parsed expression that pg_get_expr() prints; here it holds the text
@@ -1172,14 +1319,53 @@ public class PostgresCatalog {
   /**
    * information_schema.columns.numeric_precision_radix: 2 for the binary/approximate numeric types PostgreSQL
    * itself reports it for, but 10 for NUMERIC specifically - it is the one numeric type PostgreSQL stores and
-   * reports precision in base 10 rather than base 2 (issue #6447). DECIMAL used to map to DOUBLE, so the flat
-   * "every native scalar type answers 2" below was accidentally correct for it; now that it maps to NUMERIC,
-   * it needs its own case.
+   * reports precision in base 10 rather than base 2 (issue #6447). NULL for a type that is not a number, where
+   * every native scalar type used to answer 2 (issue #10370).
    */
   private static Integer numericPrecisionRadix(final PostgresType pgType) {
-    if (pgType == PostgresType.NUMERIC)
-      return 10;
-    return pgType.isNativeScalarType() ? 2 : null;
+    return switch (pgType) {
+      case SMALLINT, INTEGER, LONG, REAL, DOUBLE -> 2;
+      case NUMERIC -> 10;
+      // PostgreSQL's _pg_numeric_precision_radix is NULL for every type that is not a number (issue #10370)
+      default -> null;
+    };
+  }
+
+  /** information_schema.columns.numeric_precision of a column declared bare: the bits of the number, NULL for a NUMERIC. */
+  private static Integer numericPrecision(final PostgresType pgType) {
+    return switch (pgType) {
+      case SMALLINT -> 16;
+      case INTEGER -> 32;
+      case LONG -> 64;
+      case REAL -> 24;
+      case DOUBLE -> 53;
+      default -> null;
+    };
+  }
+
+  /** information_schema.columns.numeric_scale: 0 for the integers, NULL for the approximate types and a bare NUMERIC. */
+  private static Integer numericScale(final PostgresType pgType) {
+    return switch (pgType) {
+      case SMALLINT, INTEGER, LONG -> 0;
+      default -> null;
+    };
+  }
+
+  /** information_schema.columns.datetime_precision: a DATE has no fraction, a TIMESTAMP declared bare keeps microseconds. */
+  private static Integer datetimePrecision(final PostgresType pgType) {
+    return switch (pgType) {
+      case DATE -> 0;
+      case TIMESTAMP -> 6;
+      default -> null;
+    };
+  }
+
+  /** information_schema.columns.character_octet_length of a text column with no declared length: 2^30, PostgreSQL's own. */
+  private static Integer characterOctetLength(final PostgresType pgType) {
+    return switch (pgType) {
+      case TEXT, VARCHAR, BPCHAR -> 1 << 30;
+      default -> null;
+    };
   }
 
   private static List<DocumentType> sortedTypes(final Context context) {
@@ -1976,28 +2162,7 @@ public class PostgresCatalog {
       if (type == PostgresType.BPCHAR && (arguments.size() < 2 || !(arguments.get(1) instanceof Number typmod)
           || typmod.intValue() < 0))
         return type.typeName;
-      return displayName(type);
-    }
-
-    /** The name PostgreSQL prints a type under, which is what {@code regtype} and {@code format_type()} answer. */
-    private static String displayName(final PostgresType type) {
-      if (type.isArrayType()) {
-        final PostgresType element = PostgresType.byCode(type.elementCode);
-        return element == null ? type.typeName : displayName(element) + "[]";
-      }
-      return switch (type) {
-        case SMALLINT -> "smallint";
-        case INTEGER -> "integer";
-        case LONG -> "bigint";
-        case REAL -> "real";
-        case DOUBLE -> "double precision";
-        case CHAR -> "\"char\"";
-        case BOOLEAN -> "boolean";
-        case TIMESTAMP -> "timestamp without time zone";
-        case VARCHAR -> "character varying";
-        case BPCHAR -> "character";
-        default -> type.typeName;
-      };
+      return type.sqlName();
     }
 
     /**
@@ -2078,7 +2243,7 @@ public class PostgresCatalog {
      */
     private static String typeNamed(final int oid) {
       final PostgresType type = PostgresType.byCode(oid);
-      return type == null ? null : displayName(type);
+      return type == null ? null : type.sqlName();
     }
 
     private static String unqualify(final String written) {

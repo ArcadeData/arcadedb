@@ -120,6 +120,36 @@ class Issue8931ProductionErrorConcealmentIT extends PostgresWireProtocolTestBase
     assertThat(error.get('M')).contains(SECRET);
   }
 
+  /**
+   * A refused catalog query is text the protocol layer wrote, with no stored value in it (the relation named is the one the client
+   * typed), and a client mistake rather than a server fault: production mode keeps its explanation, as it does for a refused SET
+   * (issue #10371). Concealed, the client would read "an internal error happened" for a question it can only fix by asking another.
+   */
+  @Test
+  void aRefusedCatalogQueryKeepsItsExplanationInProductionMode() throws Exception {
+    final Map<Character, String> error = withMode("production", (out, in) -> {
+      sendSimpleQuery(out, "select count(*) from pg_catalog.pg_proc");
+      return failureOf(readUntilReadyForQuery(in));
+    });
+
+    assertThat(error.get('C')).isEqualTo("0A000");
+    assertThat(error.get('M')).contains("pg_proc").isNotEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
+  }
+
+  /** The same for the refusal of a catalog query that costs too much (issue #10228): fixed text, a client-driven failure. */
+  @Test
+  void aCatalogQueryOverItsWorkBudgetKeepsItsExplanationInProductionMode() throws Exception {
+    final Map<Character, String> error = withMode("production", (out, in) -> {
+      sendSimpleQuery(out, "CREATE DOCUMENT TYPE " + "x".repeat(40) + " IF NOT EXISTS");
+      readUntilReadyForQuery(in);
+      sendSimpleQuery(out, "select relname from pg_catalog.pg_class where relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$'");
+      return failureOf(readUntilReadyForQuery(in));
+    });
+
+    assertThat(error.get('C')).isEqualTo("54000");
+    assertThat(error.get('M')).contains("more work").isNotEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
+  }
+
   private interface WireScript {
     Map<Character, String> run(DataOutputStream out, DataInputStream in) throws Exception;
   }
