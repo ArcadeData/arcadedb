@@ -738,16 +738,13 @@ public class GraphEngine {
       }, (rid, exception) -> true);
     }
 
-    // COLLECTED BEFORE ANYTHING IS WRITTEN: THE WALK READS EVERY LIST, AND THE ONES BEING REBUILT MUST BE READ AS THEY WERE.
-    // ONE FLAT LIST OF (vertex, edge, far vertex) TRIPLES PER DIRECTION
-    final List<RID> lightOut = new ArrayList<>();
-    final List<RID> lightIn = new ArrayList<>();
-    forEachLightEdgeFarCopy(reconnectOutVertices, reconnectInVertices, (vertex, direction, edgeRID, farVertex) -> {
-      final List<RID> target = direction == Vertex.DIRECTION.OUT ? lightOut : lightIn;
-      target.add(vertex);
-      target.add(edgeRID);
-      target.add(farVertex);
-    });
+    // COLLECTED BEFORE ANYTHING IS WRITTEN: THE WALK SCANS THE VERTEX BUCKETS, WHICH THE WRITES BELOW MODIFY. PRIMITIVE TRIPLES
+    // PER DIRECTION: A RESTORED HUB CAN HAVE MILLIONS OF LIGHTWEIGHT EDGES
+    final PendingLinks lightOut = new PendingLinks(database);
+    final PendingLinks lightIn = new PendingLinks(database);
+    forEachLightEdgeFarCopy(reconnectOutVertices, reconnectInVertices,
+        (vertex, direction, edgeRID, farVertex) -> (direction == Vertex.DIRECTION.OUT ? lightOut : lightIn).add(vertex, edgeRID,
+            farVertex));
 
     for (final Edge e : outEdgesToReconnect) {
       final MutableVertex vertex = e.getOutVertex().modify();
@@ -759,18 +756,16 @@ public class GraphEngine {
       getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
     }
 
-    relinkTriples(lightOut, Vertex.DIRECTION.OUT);
-    relinkTriples(lightIn, Vertex.DIRECTION.IN);
+    relinkAll(lightOut, Vertex.DIRECTION.OUT);
+    relinkAll(lightIn, Vertex.DIRECTION.IN);
 
-    final long lightOutCount = lightOut.size() / 3;
-    final long lightInCount = lightIn.size() / 3;
-    return new long[] { outEdgesToReconnect.size() + lightOutCount, inEdgesToReconnect.size() + lightInCount, lightOutCount,
-        lightInCount };
+    return new long[] { outEdgesToReconnect.size() + lightOut.size(), inEdgesToReconnect.size() + lightIn.size(), lightOut.size(),
+        lightIn.size() };
   }
 
-  private void relinkTriples(final List<RID> triples, final Vertex.DIRECTION direction) {
-    for (int i = 0; i < triples.size(); i += 3)
-      relinkEdgeListEntry(triples.get(i).asVertex(true), direction, triples.get(i + 1), triples.get(i + 2));
+  private void relinkAll(final PendingLinks links, final Vertex.DIRECTION direction) {
+    for (int i = 0; i < links.size(); i++)
+      relinkEdgeListEntry(links.vertex(i).asVertex(true), direction, links.edge(i), links.other(i));
   }
 
   /** Receives a lightweight edge entry that belongs in a list being rebuilt, see {@link #forEachLightEdgeFarCopy}. */
@@ -827,7 +822,8 @@ public class GraphEngine {
     if (bidirectionalBuckets.isEmpty())
       return;
 
-    final long[] walked = new long[2];
+    // LISTS WALKED, COPIES FOUND, VERTICES THAT COULD NOT BE READ, LISTS THAT COULD NOT BE READ IN FULL
+    final long[] walked = new long[4];
     final long beginTime = System.currentTimeMillis();
 
     // ONE WALK PER SIDE: AN OUT LIST BEING REBUILT IS READ FROM THE FAR IN LISTS, AN IN LIST FROM THE FAR OUT LISTS
@@ -847,23 +843,33 @@ public class GraphEngine {
           try {
             far = (VertexInternal) record.asVertex(true);
           } catch (final Exception e) {
-            // AN UNREADABLE VERTEX HOLDS NO COPY ANYBODY CAN READ
+            // AN UNREADABLE VERTEX HOLDS NO COPY ANYBODY CAN READ: COUNTED, SO A PARTIAL RECOVERY IS VISIBLE
+            ++walked[2];
             return true;
           }
           final RID farRID = far.getIdentity();
           ++walked[0];
-          readEdgeListEntries(far, farDirection, (edgeRID, neighbour) -> {
+          final Exception unreadable = readEdgeListEntries(far, farDirection, (edgeRID, neighbour) -> {
             if (edgeRID != null && neighbour != null && edgeRID.getPosition() < 0 && bidirectionalBuckets.contains(
                 edgeRID.getBucketId()) && targets.contains(neighbour)) {
               ++walked[1];
               consumer.accept(neighbour, targetDirection, edgeRID, farRID);
             }
           });
+          if (unreadable != null)
+            ++walked[3];
           return true;
-        }, (rid, exception) -> true);
+        }, (rid, exception) -> {
+          ++walked[2];
+          return true;
+        });
     }
 
-    // FINE: THE CALLERS REPORT WHAT THE REPAIR DID, THIS ONLY SAYS WHAT THE WALK COST
+    // A COPY IN AN UNREADABLE VERTEX OR LIST IS NOT FOUND: SAID AT WARNING, AS THE RECOVERY MAY BE PARTIAL. THE WALK'S COST AT FINE
+    if (walked[2] > 0 || walked[3] > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Searching the lightweight edges of the edge lists being rebuilt: %d vertex record(s) and %d edge list(s) could not be read, a lightweight edge whose only copy was there is not recovered",
+          walked[2], walked[3]);
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "Found %d lightweight edge copies walking %d edge lists in %d ms", walked[1],
           walked[0], System.currentTimeMillis() - beginTime);
