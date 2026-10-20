@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -184,6 +185,40 @@ class Issue10394CreateTypeRegistersLastTest extends TestHelper {
     assertThat(database.getSchema().getType("Plain").getSubTypes()).isEmpty();
   }
 
+  /**
+   * The unlink of a super type linked earlier in the same growth is {@code removeSuperType}, which also drops the sub-indexes the
+   * link propagated: the refusal comes from the second super type, after the first has put an index over the grown type's bucket.
+   */
+  @Test
+  void growingATypeOntoARefusedSecondSuperTypeTakesTheIndexesOfTheFirstWithIt() {
+    database.command("sql", "CREATE DOCUMENT TYPE Indexed");
+    database.command("sql", "CREATE PROPERTY Indexed.p STRING");
+    database.command("sql", "CREATE INDEX ON Indexed (p) NOTUNIQUE");
+    createExternalSuperType();
+    database.getSchema().createDocumentType("Grown");
+    squat("Grown_0_ext");
+    final int indexFilesBefore = subIndexCountOf("Indexed");
+
+    assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("Grown").withIgnoreIfExists(true)
+        .withSuperType("Indexed").withSuperType("Holder").create())
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Grown_0_ext");
+
+    assertThat(database.getSchema().getType("Grown").getSuperTypes()).isEmpty();
+    assertThat(database.getSchema().getType("Indexed").getSubTypes()).isEmpty();
+    assertThat(database.getSchema().getType("Grown").getAllIndexes(true)).isEmpty();
+    assertThat(subIndexCountOf("Indexed")).isEqualTo(indexFilesBefore);
+
+    reopenDatabase();
+
+    assertThat(database.getSchema().getType("Grown").getSuperTypes()).isEmpty();
+    assertThat(database.getSchema().getType("Grown").getAllIndexes(true)).isEmpty();
+    assertThat(subIndexCountOf("Indexed")).isEqualTo(indexFilesBefore);
+    // The type still takes records, and the index of the super type it never joined holds none of them
+    database.transaction(() -> database.newDocument("Grown").set("p", "x").save());
+    assertThat(database.query("sql", "SELECT FROM Indexed WHERE p = 'x'").stream().count()).isZero();
+  }
+
   @Test
   void aTypeUnderValidSuperTypesIsStillCreatedWithEveryLink() {
     database.getSchema().createDocumentType("A");
@@ -211,6 +246,14 @@ class Issue10394CreateTypeRegistersLastTest extends TestHelper {
 
   private void createTimeSeriesType(final String name) {
     database.command("sql", "CREATE TIMESERIES TYPE " + name + " TIMESTAMP ts TAGS (sensor STRING) FIELDS (temperature DOUBLE)");
+  }
+
+  /** The bucket indexes of every index {@code typeName} declares: one per bucket of the types the index covers. */
+  private int subIndexCountOf(final String typeName) {
+    int count = 0;
+    for (final TypeIndex index : database.getSchema().getType(typeName).getAllIndexes(false))
+      count += index.getIndexesOnBuckets().length;
+    return count;
   }
 
   /** A super type with an EXTERNAL property: every type below it needs a paired {@code <bucket>_ext} bucket. */

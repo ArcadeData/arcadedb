@@ -99,6 +99,20 @@ class Issue10395MalformedPayloadIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aRouteThatTakesABodyThatIsNotJsonIsNotAffected() throws Exception {
+    // The line protocol of the time series write route is text, not JSON: that route says so (requiresJsonPayload) and its body
+    // is never parsed as JSON, so the refusal of an unparseable one must not reach it
+    final Response created = post("/api/v1/command/" + getDatabaseName(),
+        "{\"language\":\"sql\",\"command\":\"CREATE TIMESERIES TYPE cpu TIMESTAMP ts TAGS (host STRING) FIELDS (usage DOUBLE)\"}");
+    assertThat(created.code).isEqualTo(200);
+
+    final Response written = post("/api/v1/ts/" + getDatabaseName() + "/write?precision=ms",
+        "cpu,host=server1 usage=55.3 1000\ncpu,host=server2 usage=72.1 2000\n");
+
+    assertThat(written.code).isEqualTo(204);
+  }
+
+  @Test
   void aRefusedBodyDoesNotLeaveTheNextRequestOnTheSameWorkerRefused() throws Exception {
     assertThat(post("/api/v1/server", "{\"command\":").code).isEqualTo(400);
     assertThat(post("/api/v1/server", "{\"command\":\"list databases\"}").code).isEqualTo(200);

@@ -343,7 +343,7 @@ public class TypeBuilder<T> {
         }
 
         if (superTypes != null)
-          for (LocalDocumentType sup : superTypes)
+          for (final LocalDocumentType sup : superTypes)
             c.addSuperType(sup);
 
         schema.updateSecurity();
@@ -376,7 +376,11 @@ public class TypeBuilder<T> {
           created.removeBucket(bucket);
       schema.dropType(typeName);
     } catch (final RuntimeException takeBackFailure) {
+      // Added to the refusal, which stays what the caller sees, and logged: a suppressed exception is easy to miss, and a type that
+      // could not be taken back is still registered
       refusal.addSuppressed(takeBackFailure);
+      LogManager.instance().log(this, Level.WARNING, "Cannot take back the type '%s' after its creation was refused (%s): %s",
+          takeBackFailure, typeName, refusal.getMessage(), takeBackFailure.getMessage());
     }
   }
 

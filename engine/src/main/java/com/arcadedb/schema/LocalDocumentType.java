@@ -3003,17 +3003,17 @@ public class LocalDocumentType implements DocumentType {
    *                   validate and must still open a database written before a check existed (see
    *                   {@link #addSuperType(DocumentType, boolean)})
    */
-  void checkCanAddSuperType(final DocumentType superType, final boolean newLinkage) {
+  void checkCanAddSuperType(final LocalDocumentType superType, final boolean newLinkage) {
     checkTimeSeriesHierarchy(superType);
 
     // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
     // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Skipped for a linkage that already holds.
     if (newLinkage) {
-      final Property constraint = ((LocalDocumentType) superType).findPropertyAppliedToEmptyRecord();
+      final Property constraint = superType.findPropertyAppliedToEmptyRecord();
       if (constraint != null) {
         final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
         if (lightweight != null)
-          LocalEdgeType.checkCanBeLightweight(lightweight.getName(), (LocalDocumentType) superType);
+          LocalEdgeType.checkCanBeLightweight(lightweight.getName(), superType);
       }
     }
   }
