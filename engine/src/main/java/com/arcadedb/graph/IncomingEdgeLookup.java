@@ -1032,6 +1032,9 @@ public final class IncomingEdgeLookup {
      * creation order: {@link #dropsScanned} and {@link #dropsCreated} consume what they answer, so asking twice about one
      * entry miscounts.
      * <p>
+     * Example: the scan found 2 twins of a pair, the transaction created 1 more and then deleted 2 of them. The created twin
+     * takes the first delete and the last scanned one the second, so one scanned twin is left, numbered 0 of 1.
+     * <p>
      * The deletes of a triple are not matched to its creates by order: a delete recorded before a twin was created can take
      * that twin out, and the twin it was recorded against stay. Twins are indistinguishable, so the count and the numbering
      * of the twins left are the same either way.

@@ -84,7 +84,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * {@code LSMTreeFullTextIndex.documentLength}). Bumped whenever that rule changes, so the counters measured under the old one
    * are rescanned like the ones measured with another analyzer (issue #10397).
    */
-  static final int LENGTH_MEASURE_VERSION = 1;
+  public static final int LENGTH_MEASURE_VERSION = 1;
 
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
@@ -1020,6 +1020,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
       sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
       totalDocs.set(definition.getLong("ft_totalDocs", 0L));
       countersEpoch.set(epoch);
+      // THE PAIR IS REPLACED WHOLE, SO WHAT IT WAS MEASURED WITH IS TOO: A PAIR WITHOUT A SIGNATURE IS NOT THE ONE THIS NODE FOUND OFF,
+      // AND KEEPING THE SIGNATURE OF THE OLD ONE WOULD RESCAN COUNTERS THE LEADER JUST RECOMPUTED
       countersMeasuredWith = definition.getString("ft_lengthSignature", null);
     }
     // Counted as a mutation so a scan racing this adoption does not call its own result exact

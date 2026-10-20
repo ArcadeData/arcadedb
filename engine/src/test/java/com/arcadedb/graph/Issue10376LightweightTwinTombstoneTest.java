@@ -191,6 +191,60 @@ class Issue10376LightweightTwinTombstoneTest extends TestHelper {
    * One statement reads the incoming side (taking the scan), creates {@code created} twins, deletes {@code deleted} of
    * the twins it can see, and reads the incoming side again: the overlay is the only thing that can answer the last read.
    */
+  /** Each lookup builds its own overlay and asks it once per entry: asking again, in the same statement, answers the same. */
+  @Test
+  void aLookupAskedAgainInTheSameStatementAnswersTheSame() {
+    createSchema(true);
+    createTwins(3);
+
+    final ResultSet rs = database.command("opencypher", "MATCH (v:V {n:'v'}), (w:V {n:'w'}) MATCH (w)<-[r:T]-() WITH v, w, collect(r) AS rs "
+        + "UNWIND rs[0..1] AS one DELETE one WITH v, w, count(one) AS deleted CREATE (v)-[:T]->(w) WITH w, deleted "
+        + "MATCH (w)<-[r1:T]-() WITH w, count(r1) AS first MATCH (w)<-[r2:T]-() WITH w, first, count(r2) AS second "
+        + "RETURN first, second, COUNT { (w)<-[:T]-() } AS third, COUNT { (w)<-[:T]-() } AS fourth");
+    final Result row = rs.next();
+    rs.close();
+
+    for (final String name : new String[] { "first", "second", "third", "fourth" })
+      assertThat(row.<Number>getProperty(name).longValue()).as(name).isEqualTo(3L);
+    assertThat(committedIncoming()).isEqualTo(3L);
+  }
+
+  @Test
+  void hundredsOfTwinsAreCountedAndNumberedOnePerRelationship() {
+    createSchema(true);
+    createTwins(300);
+
+    final ResultSet rs = database.command("opencypher", "MATCH (v:V {n:'v'}), (w:V {n:'w'}) OPTIONAL MATCH (w)<-[seed:T]-() "
+        + "WITH v, w, count(seed) AS seeded UNWIND range(1, 200) AS i CREATE (v)-[:T]->(w) WITH w, count(*) AS made "
+        + "MATCH (w)<-[r:T]-() WITH w, collect(r) AS rs UNWIND rs[0..250] AS one DELETE one WITH w, count(one) AS gone "
+        + "MATCH (w)<-[r2:T]-() RETURN count(r2) AS n, count(DISTINCT r2) AS relationships");
+    final Result row = rs.next();
+    rs.close();
+
+    assertThat(row.<Number>getProperty("n").longValue()).isEqualTo(250L);
+    assertThat(row.<Number>getProperty("relationships").longValue()).as("every twin is a relationship of its own").isEqualTo(250L);
+    assertThat(committedIncoming()).isEqualTo(250L);
+  }
+
+  /** The key of a tombstone is the triple: the same for the identity read off a list and for the one stripped of it. */
+  @Test
+  void theKeyOfATombstoneIsTheTripleAlone() {
+    createSchema(true);
+    createTwins(2);
+
+    final Edge edge = v.asVertex().getEdges(Vertex.DIRECTION.OUT, "T").iterator().next();
+    final LightEdgeRID read = (LightEdgeRID) edge.getIdentity();
+    assertThat(read.getOriginSegment()).as("read off a list, it knows where from").isNotNull();
+
+    final LightEdgeRID key = read.withoutOrigin();
+
+    assertThat(key.getOriginSegment()).isNull();
+    assertThat(key).isEqualTo(read);
+    assertThat(read).isEqualTo(key);
+    assertThat(key.hashCode()).isEqualTo(read.hashCode());
+    assertThat(new LightEdgeRID(database, read.getBucketId(), w, v)).as("another pair").isNotEqualTo(key);
+  }
+
   @Test
   void theDeletesOfATripleAreCountedAfterASequence() {
     createSchema(true);

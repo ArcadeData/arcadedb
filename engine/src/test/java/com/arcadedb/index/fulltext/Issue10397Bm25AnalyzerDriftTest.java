@@ -183,6 +183,30 @@ class Issue10397Bm25AnalyzerDriftTest extends TestHelper {
     assertThat(describe().get("measuredWithCurrentAnalyzer")).isEqualTo(true);
   }
 
+  /**
+   * Pins the rule that counts the tokens of a document to its version. If this fails because the rule changed (what a null
+   * value, an empty text or a token counts for), bump {@code FullTextIndexMetadata.LENGTH_MEASURE_VERSION} with the new numbers:
+   * the counters persisted by the old rule are then rescanned instead of trusted.
+   */
+  @Test
+  void theRuleThatCountsTheTokensIsPinnedToItsVersion() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE PROPERTY Doc.tag STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"similarity\": \"BM25\"}");
+    });
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Doc SET content = 'alpha beta gamma'");
+      database.command("sql", "INSERT INTO Doc SET content = 'one'");
+      database.command("sql", "INSERT INTO Doc SET content = 'the quick brown fox', tag = 'x'");
+      database.command("sql", "INSERT INTO Doc SET tag = 'no content'");
+    });
+
+    assertThat(metadata().getCountersPair()).as("documents and tokens: a null value is a document of no token").containsExactly(4L, 8L);
+    assertThat(FullTextIndexMetadata.LENGTH_MEASURE_VERSION).as("the version of the rule these numbers are of").isEqualTo(1);
+  }
+
   private Map<String, Object> describe() {
     return LSMTreeFullTextIndex.describeCorpusCounters(database.getSchema().getIndexByName(INDEX));
   }
