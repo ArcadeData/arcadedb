@@ -139,6 +139,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       typeName = name.getStringValue();
 
     final Schema schema = context.getDatabase().getSchema();
+    // A fast path only: whether the type is there is decided again under the write lock, with the create
     if (schema.existsType(typeName)) {
       if (ifNotExists)
         return alreadyThere(context, typeName);
@@ -193,8 +194,9 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   /**
    * Creates the type, links its super types and applies its {@code CUSTOM} values, inside the one frame the caller opened.
    * <p>
-   * A refusal only {@code addSuperType} can know about (a partition the subtype cannot take, an index that cannot be propagated)
-   * comes once the type is registered, and a refused CREATE must leave nothing behind: the type is taken back, in the same
+   * A refusal only {@code addSuperType} (a partition the subtype cannot take, an index that cannot be propagated) or
+   * {@code setCustomValue} can know about comes once the type is registered, and a refused CREATE must leave nothing behind: the type
+   * is taken back, in the same
    * frame, so the one publication carries the schema as it was. The buckets the type found or was given were somebody's or nobody's
    * before the statement: they are detached first, so the drop does not take their records (issue #10394). The refusals that can
    * be known beforehand are checked before the create ({@link #checkSuperTypesBeforeCreate}), which leaves no window at all.
@@ -206,6 +208,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     try {
       for (final DocumentType c : superclasses)
         type.addSuperType(c);
+
+      // Inside the same take-back: setting a value is a schema change of its own, and one that is refused leaves the type behind too
+      for (final Map.Entry<String, Object> entry : custom.entrySet())
+        type.setCustomValue(entry.getKey(), entry.getValue());
     } catch (final RuntimeException e) {
       try {
         for (final Bucket bucket : new ArrayList<>(type.getBuckets(false)))
@@ -219,9 +225,6 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       }
       throw e;
     }
-
-    for (final Map.Entry<String, Object> entry : custom.entrySet())
-      type.setCustomValue(entry.getKey(), entry.getValue());
   }
 
   /** The {@code CUSTOM} values of the statement, computed, in the order they were declared. */

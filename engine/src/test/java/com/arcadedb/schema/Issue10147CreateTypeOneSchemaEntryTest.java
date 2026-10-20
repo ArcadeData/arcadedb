@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.List;
 
@@ -206,6 +208,45 @@ class Issue10147CreateTypeOneSchemaEntryTest extends TestHelper {
     assertThat(SchemaSessionCounter.count((LocalDatabase) database, () -> database.command("sql", "CREATE VERTEX TYPE Fine EXTENDS A").close()))
         .isEqualTo(1);
     assertThat(schema().getVersion() - versionBefore).isEqualTo(1);
+  }
+
+  /**
+   * A value that is refused once the type exists (setting it is a schema change of its own) takes the type back like a refused link: the
+   * statement ends with the refusal, nothing of the type is left, and the take-back, which succeeds here, adds nothing suppressed.
+   */
+  @Test
+  void aRefusedCustomValueTakesTheTypeBack() {
+    final SchemaException refusal = new SchemaException("the value is refused");
+    final CreateVertexTypeStatement parsed = (CreateVertexTypeStatement) ((DatabaseInternal) database).getStatementCache()
+        .get("CREATE VERTEX TYPE Valued CUSTOM k = 1");
+    final CreateVertexTypeStatement statement = new CreateVertexTypeStatement() {
+      @Override
+      protected DocumentType createType(final Schema schema, final String typeName) {
+        // A real type, so that the take-back has something to take back, which refuses the one step after it
+        final DocumentType real = schema.createVertexType(typeName);
+        return (DocumentType) Proxy.newProxyInstance(DocumentType.class.getClassLoader(), new Class<?>[] { DocumentType.class },
+            (proxy, method, args) -> {
+              if (method.getName().equals("setCustomValue"))
+                throw refusal;
+              try {
+                return method.invoke(real, args);
+              } catch (final InvocationTargetException e) {
+                throw e.getCause();
+              }
+            });
+      }
+    };
+    statement.name = parsed.name;
+    statement.customProperties.putAll(parsed.customProperties);
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    final Throwable thrown = catchThrowable(() -> statement.executeDDL(context));
+
+    assertThat(thrown).isSameAs(refusal);
+    assertThat(thrown.getSuppressed()).as("the take-back succeeded").isEmpty();
+    assertThat(database.getSchema().existsType("Valued")).isFalse();
+    assertThat(database.getSchema().getBuckets()).extracting(bucket -> bucket.getName()).noneMatch(name -> name.startsWith("Valued_"));
   }
 
   private LocalSchema schema() {
