@@ -3022,6 +3022,9 @@ public class LocalDocumentType implements DocumentType {
    * The refusals of {@link #checkCanAddSuperType} that a type NOT CREATED YET can already be told, so that {@link TypeBuilder} asks
    * them before it registers anything: a new type has no sub types and is no time series, so what is left is the super type being a
    * time series, and the new type being a LIGHTWEIGHT edge type that would inherit a property it cannot honour (issue #10394).
+   * <p>
+   * Public only because the {@code CREATE ... TYPE} statements, in another package, ask the same questions before they create the type;
+   * internal to the schema and the statements that build types, not an API for applications.
    */
   public static void checkSuperTypeOfNewType(final String typeName, final LocalDocumentType superType, final boolean lightweightEdge) {
     if (superType instanceof LocalTimeSeriesType)

@@ -271,7 +271,10 @@ public class TypeBuilder<T> {
           try {
             t.removeSuperType(sup);
           } catch (final RuntimeException unlinkFailure) {
+            // Logged as well as suppressed, as in the take-back: a type left under a super type it was refused is easy to miss
             e.addSuppressed(unlinkFailure);
+            LogManager.instance().log(this, Level.WARNING, "Cannot unlink the super type '%s' from the type '%s' after its growth was refused: %s",
+                unlinkFailure, sup.getName(), typeName, unlinkFailure.getMessage());
           }
         throw e;
       }

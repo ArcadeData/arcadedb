@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
@@ -164,6 +165,38 @@ class Issue10394CreateTypeRegistersLastTest extends TestHelper {
     assertNothingLeftOf("Z");
     assertThat(database.getSchema().existsBucket("Y_0")).isTrue();
     assertThat(database.getSchema().existsBucket("Free")).isTrue();
+  }
+
+  /**
+   * The link of the first super type indexed the records of the found bucket (an index file over data that is not the type's to
+   * lose), and the second one is refused. The take-back drops that index file with the type, never the bucket nor its records.
+   */
+  @Test
+  void theTakeBackKeepsTheRecordsOfAFoundBucketTheLinkIndexed() {
+    database.command("sql", "CREATE DOCUMENT TYPE Indexed");
+    database.command("sql", "CREATE PROPERTY Indexed.p STRING");
+    database.command("sql", "CREATE INDEX ON Indexed (p) NOTUNIQUE");
+    createExternalSuperType();
+    squat("W_0_ext");
+    database.getSchema().createBucket("W_0");
+    database.transaction(() -> ((DatabaseInternal) database).createRecord(database.newDocument("Indexed").set("p", "kept"), "W_0"));
+    final int indexFilesBefore = subIndexCountOf("Indexed");
+
+    assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("W").withSuperType("Indexed").withSuperType("Holder")
+        .create())
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("W_0_ext");
+
+    assertNothingLeftOf("W", "W_0", "W_0_ext");
+    assertThat(database.getSchema().existsBucket("W_0")).isTrue();
+    assertThat(database.countBucket("W_0")).isEqualTo(1L);
+    assertThat(subIndexCountOf("Indexed")).isEqualTo(indexFilesBefore);
+
+    reopenDatabase();
+
+    assertThat(database.getSchema().existsBucket("W_0")).isTrue();
+    assertThat(database.countBucket("W_0")).isEqualTo(1L);
+    assertThat(subIndexCountOf("Indexed")).isEqualTo(indexFilesBefore);
   }
 
   @Test
