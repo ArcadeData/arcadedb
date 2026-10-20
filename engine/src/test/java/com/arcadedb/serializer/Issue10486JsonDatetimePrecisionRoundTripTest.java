@@ -19,6 +19,7 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -28,6 +29,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -105,6 +109,26 @@ class Issue10486JsonDatetimePrecisionRoundTripTest extends TestHelper {
       final MutableDocument back = database.newDocument(documentType(type).getName());
       back.fromJSON(new JSONObject("{\"p\":" + MILLIS_OF_SECONDS + "}"));
       assertThat(back.get("p")).as(type.name()).isEqualTo(SECONDS);
+    }
+  }
+
+  /**
+   * A database whose datetimes are {@code ZonedDateTime} and whose schema zone is not UTC: the text of a micros/nanos column carries
+   * no offset and is read back in the schema zone, so the value has to be rendered in that zone, not in the zone it happens to hold.
+   */
+  @Test
+  void aZonedDatetimeInAnotherZoneThanTheSchemaRoundTripsToTheSameInstant() {
+    final ZoneId schemaZone = ZoneId.of("America/New_York");
+    database.getSchema().setZoneId(schemaZone);
+    ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(ZonedDateTime.class);
+
+    for (final Type type : new Type[] { Type.DATETIME_MICROS, Type.DATETIME_NANOS }) {
+      final ZonedDateTime utc = ZonedDateTime.of(type == Type.DATETIME_MICROS ? MICROS : NANOS, ZoneOffset.UTC);
+      final MutableDocument source = database.newDocument(documentType(type).getName()).set("p", utc);
+
+      final MutableDocument back = database.newDocument(source.getTypeName());
+      back.fromJSON(new JSONObject(source.toJSON(false).toString()));
+      assertThat(((ZonedDateTime) back.get("p")).toInstant()).as(type.name()).isEqualTo(utc.toInstant());
     }
   }
 

@@ -80,6 +80,15 @@ class Issue10485SqlSplitReplaceCodePointsTest extends TestHelper {
     assertThat(sql("SELECT :s.split(:c) AS v", "s", "a" + P + "\uDE00b", "c", "\uDE00")).isEqualTo(List.of("a" + P, "b"));
   }
 
+  /** A lone high surrogate right before a pair: the occurrence that starts inside the pair is skipped, the one before it is not. */
+  @Test
+  void aLoneSurrogateRightBeforeAPairMatchesOnlyItself() {
+    final String s = "\uD83D" + P;
+    assertThat(sql("SELECT :s.split(:c) AS v", "s", s, "c", "\uD83D")).isEqualTo(List.of("", P));
+    assertThat(sql("SELECT :s.replace(:c, '-') AS v", "s", s, "c", "\uD83D")).isEqualTo("-" + P);
+    assertThat(sql("SELECT :s.split(:c) AS v", "s", "\uD83D\uD83D" + P, "c", "\uD83D\uD83D")).isEqualTo(List.of("", P));
+  }
+
   @Test
   void splitTreatsTheDelimiterAsALiteralAndStaysTheListItWas() {
     assertThat(sql("SELECT 'a.b.c'.split('.') AS v")).isEqualTo(List.of("a", "b", "c"));

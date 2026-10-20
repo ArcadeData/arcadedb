@@ -599,13 +599,17 @@ public class JsonSerializer {
    * read it - so a count in the column's own unit (seconds, microseconds, nanoseconds) came back in 1970, in the year 51972 or in
    * the year 50004715. A column that milliseconds hold without losing a digit, DATETIME and DATETIME_SECOND, is therefore written
    * as milliseconds. A DATETIME_MICROS or DATETIME_NANOS column, which milliseconds would truncate, is written as the text the HTTP
-   * API answers for it, with all its digits, which reading it back truncates to the column's precision.
+   * API answers for it, with all its digits, which reading it back truncates to the column's precision. That text has no offset and is
+   * read in the schema zone, so a {@code ZonedDateTime} is rendered in that zone, at the same instant.
    */
   private Object temporalToJSON(final Object value, final Type type) {
     if (type == Type.DATETIME_MICROS || type == Type.DATETIME_NANOS) {
       final String dateTimeFormat = database != null ? database.getSchema().getDateTimeFormat() :
           GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
-      return formatTemporalForPrecision(value, type, dateTimeFormat, null);
+      final Object inSchemaZone = database != null && value instanceof ZonedDateTime zoned ?
+          zoned.withZoneSameInstant(database.getSchema().getZoneId()) :
+          value;
+      return formatTemporalForPrecision(inSchemaZone, type, dateTimeFormat, null);
     }
     return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
   }
