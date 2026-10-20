@@ -166,8 +166,8 @@ class Issue10376LightweightTwinTombstoneTest extends TestHelper {
 
     database.transaction(() -> database.command("opencypher", "MATCH (n) OPTIONAL MATCH (n)-[r]-() DELETE r, n").close());
 
+    // THE EDGES ARE LIGHTWEIGHT, SO THERE IS NO RECORD TO COUNT: THE VERTICES GOING IS THE RESULT, AND THEY GO ONLY ONCE NONE HOLDS AN EDGE
     assertThat(database.countType("V", false)).isZero();
-    assertThat(database.countType("T", false)).isZero();
   }
 
   @Test
@@ -181,14 +181,49 @@ class Issue10376LightweightTwinTombstoneTest extends TestHelper {
 
     database.transaction(() -> database.command("opencypher", "MATCH (a)-[r]->(b) DELETE a, r, b").close());
 
-    assertThat(database.countType("R", false)).isZero();
-    assertThat(database.countType("S", false)).isZero();
+    // ONLY THE ISOLATED n3 IS LEFT, AND THE EDGES ARE LIGHTWEIGHT: THEY ARE COUNTED THROUGH THE LISTS OF THE VERTEX, NOT AS RECORDS
+    assertThat(database.countType("A", false) + database.countType("B", false)).isEqualTo(1L);
+    for (final Iterator<Record> it = database.iterateType("B", false); it.hasNext(); )
+      assertThat(it.next().asVertex().countEdges(Vertex.DIRECTION.BOTH, "R", "S")).isZero();
   }
 
   /**
    * One statement reads the incoming side (taking the scan), creates {@code created} twins, deletes {@code deleted} of
    * the twins it can see, and reads the incoming side again: the overlay is the only thing that can answer the last read.
    */
+  @Test
+  void theDeletesOfATripleAreCountedAfterASequence() {
+    createSchema(true);
+    final int bucket = database.getSchema().getType("T").getFirstBucketId();
+    final LightEdgeRID pair = new LightEdgeRID(database, bucket, v, w);
+    final LightEdgeRID otherPair = new LightEdgeRID(database, bucket, w, v);
+    final UnidirectionalEdgeChanges changes = new UnidirectionalEdgeChanges();
+    changes.scanTaken();
+
+    final long[] sequences = new long[7];
+    for (int i = 0; i < sequences.length; i++) {
+      changes.edgeDeleted(i % 3 == 2 ? otherPair : pair);
+      sequences[i] = changes.getSequence();
+    }
+
+    assertThat(changes.hasTwinDeletions()).isTrue();
+    assertThat(changes.hasDeletions()).as("the record-backed deletions are another structure").isFalse();
+    // THE SEQUENCE OF A TRIPLE ASCENDS WITH GAPS WHERE THE OTHER TRIPLE WAS DELETED: PAIR TOOK 0, 1, 3, 4 AND 6
+    assertThat(changes.twinsDeletedAfter(pair, 0L)).isEqualTo(5);
+    assertThat(changes.twinsDeletedAfter(pair, sequences[0])).isEqualTo(4);
+    assertThat(changes.twinsDeletedAfter(pair, sequences[2])).isEqualTo(3);
+    assertThat(changes.twinsDeletedAfter(pair, sequences[4])).isEqualTo(1);
+    assertThat(changes.twinsDeletedAfter(pair, sequences[6])).isZero();
+    assertThat(changes.twinsDeletedAfter(otherPair, sequences[2] - 1)).isEqualTo(2);
+    assertThat(changes.twinsDeletedAfter(otherPair, sequences[2])).isEqualTo(1);
+    assertThat(changes.twinsDeletedAfter(new LightEdgeRID(database, bucket, v, v), 0L)).isZero();
+    assertThat(changes.size()).isEqualTo(7);
+
+    changes.transactionEnded();
+    assertThat(changes.hasTwinDeletions()).isFalse();
+    assertThat(changes.twinsDeletedAfter(pair, 0L)).isZero();
+  }
+
   private void checkMix(final int committed, final int created, final int deleted) {
     resetData();
     createTwins(committed);

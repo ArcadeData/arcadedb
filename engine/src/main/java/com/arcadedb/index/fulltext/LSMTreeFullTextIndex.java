@@ -973,7 +973,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   static String corpusDriftMessage(final String indexName, final String typeName, final long persisted, final long live,
       final boolean scanRacedWriters) {
-    final String repair = "REBUILD INDEX `" + indexName + "` WITH statsOnly = true";
+    final String repair = repairStatement(indexName);
     if (persisted == live && scanRacedWriters)
       return "BM25 corpus counters of full-text index '" + indexName + "' on type '" + typeName + "' come from a scan that raced "
           + "concurrent writers (count=" + live + "); recomputing. To repair them on every node run: " + repair;
@@ -988,7 +988,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   static String analyzerDriftMessage(final String indexName, final String typeName, final String measuredWith, final String current) {
     return "BM25 corpus counters of full-text index '" + indexName + "' on type '" + typeName + "' were measured with '" + measuredWith
         + "' and the index now analyzes with '" + current + "', so the document lengths they sum are not the current ones; recomputing."
-        + " To repair them on every node run: REBUILD INDEX `" + indexName + "` WITH statsOnly = true";
+        + " To repair them on every node run: " + repairStatement(indexName);
+  }
+
+  /** The statement that recomputes the counters of the logical index on every node, ready to run. */
+  private static String repairStatement(final String indexName) {
+    return "REBUILD INDEX `" + indexName + "` WITH statsOnly = true";
   }
 
   /**

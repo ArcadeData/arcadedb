@@ -1029,14 +1029,20 @@ public final class IncomingEdgeLookup {
      * are twins: a created edge read back is a new object with no list to be read off, which would number it 0 as well.</li>
      * </ul>
      * One lookup builds one of these, and asks it once per scanned entry in index order and once per created entry in
-     * creation order.
+     * creation order: {@link #dropsScanned} and {@link #dropsCreated} consume what they answer, so asking twice about one
+     * entry miscounts.
+     * <p>
+     * The deletes of a triple are not matched to its creates by order: a delete recorded before a twin was created can take
+     * that twin out, and the twin it was recorded against stay. Twins are indistinguishable, so the count and the numbering
+     * of the twins left are the same either way.
      */
     private final class TwinOverlay {
       private final UnidirectionalEdgeChanges changes;
       private final boolean                   deletions;
       // BY TRIPLE, THE TWINS THE TRANSACTION CREATED SINCE THE SCAN: A TRIPLE WITH NONE IS NOT HERE, ITS DELETES ALL FALL ON
-      // SCANNED TWINS AND ARE READ OFF THE CHANGES WHEN ITS RUN IS MET
-      private final Map<RID, TwinGroup>       groups = new HashMap<>();
+      // SCANNED TWINS AND ARE READ OFF THE CHANGES WHEN ITS RUN IS MET. ALLOCATED WITH THE FIRST CREATED TWIN: A LOOKUP OVER
+      // RECORD-BACKED EDGES, OR OVER TWINS THE TRANSACTION ONLY DELETED, NEVER NEEDS IT
+      private       Map<RID, TwinGroup>       groups = Collections.emptyMap();
       // THE RUN OF SCANNED TWINS ASKED ABOUT LAST, WHERE THE ENTRIES TAKEN OUT START IN IT, AND HOW MANY CREATED TWINS ARE LIVE
       private       int                       runFirst;
       private       int                       runLast = -1;
@@ -1052,6 +1058,8 @@ public final class IncomingEdgeLookup {
             continue;
           TwinGroup group = groups.get(triple);
           if (group == null) {
+            if (groups.isEmpty())
+              groups = new HashMap<>();
             group = new TwinGroup(deletions ? changes.twinsDeletedAfter(triple, builtAt) : 0);
             groups.put(triple, group);
           }
@@ -1181,6 +1189,9 @@ public final class IncomingEdgeLookup {
 
     /** The overlay of the lightweight edges of {@code target}, or null when the transaction changed none of them since the scan. */
     private TwinOverlay twinsOf(final RID target, final UnidirectionalEdgeChanges changes) {
+      // NOTHING DELETED AND NOTHING CREATED INTO THE TARGET: NO TWIN CAN HAVE CHANGED, AND THE LOOKUP COSTS WHAT IT DID BEFORE
+      if (!changes.hasTwinDeletions() && changes.createdInto(typeName, target).isEmpty())
+        return null;
       final TwinOverlay twins = new TwinOverlay(target, changes);
       return twins.isNeeded() ? twins : null;
     }

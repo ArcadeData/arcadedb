@@ -222,11 +222,18 @@ public final class UnidirectionalEdgeChanges {
       sequences[size++] = sequence;
     }
 
+    /** How many of the sequences are above {@code afterSequence}: they ascend, so the first one that is is found by halving. */
     int after(final long afterSequence) {
-      int count = 0;
-      for (int i = size - 1; i >= 0 && sequences[i] > afterSequence; i--)
-        ++count;
-      return count;
+      int low = 0;
+      int high = size;
+      while (low < high) {
+        final int mid = (low + high) >>> 1;
+        if (sequences[mid] > afterSequence)
+          high = mid;
+        else
+          low = mid + 1;
+      }
+      return size - low;
     }
   }
 }

@@ -430,7 +430,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
         metadata.put("ft_countersEpoch", countersEpoch.get());
       }
       // What the pair was measured with, NOT what the index analyzes with now: a save between a change of the analyzer and the
-      // rescan it arms must not record the new one next to the old counters, or no later session would ever find them off
+      // rescan it arms must not record the new one next to the old counters, or no later session would ever find them off.
+      // Counters persisted before the signature existed have none: they are recorded as measured with the current analyzer, so an
+      // analyzer changed between the upgrade and the first save goes unseen. There is nothing to compare them with, and rescanning
+      // every existing index at the upgrade would cost more than the drift it could find
       final String measuredWith = countersMeasuredWith;
       metadata.put("ft_lengthSignature", measuredWith != null ? measuredWith : getLengthSignature());
       metadata.put("ft_countersValid", true);
