@@ -341,6 +341,44 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
   }
 
   /**
+   * A mutable bucket of several data pages is cleared and written again whole: the page boundaries, the partial last page and the
+   * header counters come out as a bucket that was never deleted from, and it takes samples, and a compaction, afterwards.
+   */
+  @Test
+  void aMutableBucketOfSeveralPagesIsRewrittenWhole() throws Exception {
+    create(1);
+    final TimeSeriesBucket bucket = engine().getShard(0).getMutableBucket();
+    final int rows = 3 * bucket.getMaxSamplesPerPage() + 123;
+    append(0, rows);
+    final int pagesBefore = bucket.getDataPageCount();
+    assertThat(pagesBefore).as("data pages before").isGreaterThanOrEqualTo(4);
+
+    final long cutoff = BASE + (rows / 2) * 1_000L;
+    final Predicate<Sample> predicate = s -> s.host.equals("h2") && s.ts < cutoff;
+    final long expected = model.stream().filter(predicate).count();
+    model.removeIf(predicate);
+    try (final ResultSet rs = database.command("sql", "DELETE FROM M WHERE host = 'h2' AND ts < " + cutoff)) {
+      assertThat(rs.next().<Long>getProperty("count")).isEqualTo(expected);
+    }
+
+    assertThat(bucket.getSampleCount()).isEqualTo(model.size());
+    assertMatchesModel();
+
+    // the first half of the time, whatever the series: the bucket shrinks by pages
+    final Predicate<Sample> firstHalf = s -> s.ts < cutoff;
+    model.removeIf(firstHalf);
+    database.command("sql", "DELETE FROM M WHERE ts < " + cutoff).close();
+    assertThat(bucket.getDataPageCount()).as("data pages after").isLessThan(pagesBefore);
+    assertThat(bucket.getSampleCount()).isEqualTo(model.size());
+    assertMatchesModel();
+
+    append(rows, rows + 500);
+    assertMatchesModel();
+    engine().compactAll();
+    assertMatchesModel();
+  }
+
+  /**
    * A delete that stopped after some of the shards (a failure part way through the loop) is finished by running it again: what is
    * gone is not deleted twice, and the shards it did not reach are.
    */

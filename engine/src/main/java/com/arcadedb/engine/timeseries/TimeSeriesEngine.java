@@ -1318,10 +1318,16 @@ public class TimeSeriesEngine implements AutoCloseable {
       Thread.currentThread().interrupt();
       throw new IOException("Deleting samples of type " + typeName + " interrupted", e);
     }
-    if (!ran)
+    if (!ran) {
+      // so an operator who sees the statement refused can tell why: the session is held by a maintenance pass, or the leadership moved
+      LogManager.instance().log(this, Level.WARNING,
+          "Gave up deleting samples of the TIMESERIES type '%s': the replication session stayed held by another maintenance pass (a "
+              + "compaction, a retention, a delete) or the leadership moved; nothing was deleted by the attempts that did not run", null,
+          typeName);
       throw new NeedRetryException("Cannot delete the samples of the TIMESERIES type '" + typeName + "' now: another maintenance pass "
           + "(a compaction, a retention, a delete) holds the replication session, or the leadership moved. Nothing was deleted: run the "
           + "statement again");
+    }
     // published, for every shard: the sealed files this statement rewrote, or that an earlier one failed to ship, are on the followers
     for (final TimeSeriesShard shard : shards)
       shard.sealedDeletePublished();
