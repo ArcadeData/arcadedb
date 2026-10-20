@@ -332,7 +332,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Raft round trip: a watcher tick must not queue behind one.
    */
   private final class UsersPolicy extends ReloadableSecurityArtifact<Map<String, ServerSecurityUser>> {
-    // What was in force when the current load began, for publish()'s compare-and-set. Guarded by the policy's lock.
+    // What was in force when the current load began, for publish()'s compare-and-set. Guarded by the policy's lock, and
+    // always set before publish() reads it: the base class calls publish() only from firstLoad() and reload(), both of
+    // which call beginLoad() first under that lock.
     private Map<String, ServerSecurityUser> inForceAtLoad;
 
     private UsersPolicy(final String configPath) {
@@ -378,8 +380,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (!USERS.compareAndSet(ServerSecurity.this, previous, newUsers)) {
         LogManager.instance().log(ServerSecurity.this, Level.WARNING,
             "File '%s' was read while the users in force changed (a replicated user list or a user change was installed): "
-                + "what was read is older than that change and is not applied, keeping the %d users in force", file.getName(),
-            users.size());
+                + "what was read is older than that change and is not applied, keeping the %d users in force. A hand edit "
+                + "made before that change is not applied either: the change's write replaced it, or, if that write failed, "
+                + "the file is not read until the users in force reach it. Make the edit again, through the server",
+            file.getName(), users.size());
         return false;
       }
 

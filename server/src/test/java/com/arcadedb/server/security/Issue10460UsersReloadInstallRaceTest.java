@@ -158,6 +158,25 @@ class Issue10460UsersReloadInstallRaceTest {
   }
 
   /**
+   * The first-load branch of a reload: an empty replicated list that reached the disk is "nothing in force", so the reload
+   * falls back to the default root. A list installed while that load runs must not be replaced by the fallback - which is
+   * why what is in force is captured BEFORE the reload decides it is a first load, not inside the first load.
+   */
+  @Test
+  void aFirstLoadDoesNotPublishItsFallbackOverAReplicatedListInstalledDuringIt() throws Exception {
+    security.applyReplicatedUsers("[]");
+    assertThat(security.getUsers()).isEmpty();
+
+    final String withAlice = payload(List.of(aliceJson()));
+    duringTheNextReload(() -> security.applyReplicatedUsers(withAlice));
+    touch(usersFile);
+    security.loadUsers();
+
+    assertThat(security.existsUser("alice")).as("the fallback must not replace a list installed during the first load").isTrue();
+    assertThat(security.existsUser("root")).isFalse();
+  }
+
+  /**
    * The same-shape sibling on a single server: a LOCAL user change saves the file and then edits the users in force, both
    * outside the watcher's lock. A reload that read the file before the save must not publish over the change either - the
    * save stamps the file as seen, so nothing would ever re-read it and the new user would be gone until a restart.
