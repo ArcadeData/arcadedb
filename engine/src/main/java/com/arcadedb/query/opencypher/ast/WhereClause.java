@@ -154,7 +154,34 @@ public class WhereClause {
       // the var.property ones, and a bare (a)-[:T]-(b) names none (issue #9282)
       collectPatternVariables(patternPredicate, vars);
       collectFromText(expr.getText(), vars);
-    }
+    } else if (expr instanceof BooleanCoercionExpression coercion) {
+      // A bare predicate: WHERE b.flag, WHERE NOT b.flag, WHERE coalesce(b.flag, false). The node it reads went unnoticed, so a
+      // fused chain deferred its load and the predicate was decided on a vertex that was never bound (issue #10434)
+      collectExpressionVariables(coercion.getExpression(), vars);
+    } else
+      // Any other predicate type: the walk reaches every expression nested in it
+      collectWithWalker(expr, vars);
+  }
+
+  /**
+   * The names the complete {@link CypherExpressionWalker} reaches in a predicate or expression no arm above models. It names the
+   * iteration variable of a nested comprehension too, which only ever costs the caller its optimization, never a binding; a shape
+   * the walk gives up on falls back to the text.
+   */
+  private static void collectWithWalker(final BooleanExpression expr, final Set<String> vars) {
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expr);
+    if (referenced.isComplete())
+      vars.addAll(referenced.getNames());
+    else
+      collectFromText(expr.getText(), vars);
+  }
+
+  private static void collectWithWalker(final Expression expr, final Set<String> vars) {
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expr);
+    if (referenced.isComplete())
+      vars.addAll(referenced.getNames());
+    else
+      collectFromText(expr.getText(), vars);
   }
 
   private static void collectPatternVariables(final PatternPredicateExpression predicate, final Set<String> vars) {
@@ -207,7 +234,10 @@ public class WhereClause {
         innerVars.remove(listPred.getVariable());
         vars.addAll(innerVars);
       }
-    }
+    } else if (expr != null && !(expr instanceof LiteralExpression) && !(expr instanceof ParameterExpression))
+      // Every expression type the arms above do not model (CASE, an index or slice, a map, reduce(), a subquery...) is read by the
+      // walk, or its variable would be missed and the vertex it names never bound (issue #10434)
+      collectWithWalker(expr, vars);
   }
 
   /**

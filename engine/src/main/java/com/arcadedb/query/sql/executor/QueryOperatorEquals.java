@@ -28,6 +28,8 @@ import com.arcadedb.utility.DateUtils;
 
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class QueryOperatorEquals {
@@ -53,6 +55,11 @@ public class QueryOperatorEquals {
 
     // EmbeddedDocument has null identity; the Identifiable branch below would misroute it as a sub-query result.
     if (left instanceof EmbeddedDocument && right instanceof EmbeddedDocument)
+      return BinaryComparator.equals(left, right);
+
+    // Two lists or two maps of different implementations (a stored ArrayList against an immutable List.of() parameter) are compared
+    // as they are, not converted into one another first: the elements follow the numeric rule of "=" (issue #10448)
+    if (left instanceof List && right instanceof List || left instanceof Map && right instanceof Map)
       return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {
