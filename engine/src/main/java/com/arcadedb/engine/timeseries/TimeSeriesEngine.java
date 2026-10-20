@@ -1268,8 +1268,9 @@ public class TimeSeriesEngine implements AutoCloseable {
    * undone by one.
    * <p>
    * Under HA it runs on the leader and ships, in one replication unit, the mutable pages it rewrote and the sealed bytes of every shard
-   * it changed, as a compaction does. A session another maintenance pass holds is waited for, a few seconds at most, then refused with
-   * a {@link NeedRetryException}: nothing was deleted by an attempt that did not run.
+   * it changed, as a compaction does. A node that is not the leader refuses at once with a {@link NeedRetryException} that is not
+   * retryable on this node. A session another maintenance pass holds is waited for, a few seconds at most, then refused with a
+   * {@link NeedRetryException}: nothing was deleted by an attempt that did not run.
    * <p>
    * Deleting what is already gone deletes nothing, so a statement that failed half way can be run again. Readers are held off for the
    * rewrite of a shard (the compaction write lock, as retention holds it), and a long read that straddles it fails with
@@ -1284,12 +1285,23 @@ public class TimeSeriesEngine implements AutoCloseable {
       return 0L;
 
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
+    // A follower never gets the replication session: a statement that reaches one (a client-managed transaction runs on the follower
+    // it is open on) is refused at once, and a retry on this node is refused again, so the error says it is not worth one
+    if (!db.isLeader())
+      throw new NeedRetryException("Cannot delete the samples of the TIMESERIES type '" + typeName + "' on this node: it is not the "
+          + "leader of the cluster. Nothing was deleted: run the statement on the leader") {
+        @Override
+        public boolean isRetryableOnThisNode() {
+          return false;
+        }
+      };
+
     final long[] deleted = new long[1];
     boolean ran = false;
     try {
       for (int attempt = 0; attempt < DELETE_SESSION_ATTEMPTS && !ran; attempt++) {
         if (attempt > 0) {
-          // waiting for a session helps only a leader: a node that is not one is refused again by every attempt
+          // the leadership can move while waiting: then the wait is over
           if (!db.isLeader())
             break;
           RetryBackoff.sleep(attempt - 1, 20L, 500L);
@@ -1307,9 +1319,9 @@ public class TimeSeriesEngine implements AutoCloseable {
       throw new IOException("Deleting samples of type " + typeName + " interrupted", e);
     }
     if (!ran)
-      throw new NeedRetryException("Cannot delete the samples of the TIMESERIES type '" + typeName + "' now: this node is not the "
-          + "leader of the cluster, or another maintenance pass (a compaction, a retention, a delete) holds the replication session. "
-          + "Nothing was deleted: run the statement again");
+      throw new NeedRetryException("Cannot delete the samples of the TIMESERIES type '" + typeName + "' now: another maintenance pass "
+          + "(a compaction, a retention, a delete) holds the replication session, or the leadership moved. Nothing was deleted: run the "
+          + "statement again");
     return deleted[0];
   }
 

@@ -555,13 +555,16 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
       try {
         started.await();
         for (int i = 0; i < writes; i++)
-          for (int attempt = 0; attempt < 10; attempt++)
+          for (int attempt = 0; ; attempt++)
             try {
               engine().appendSamples(new long[] { writerBase + i * 1_000L }, new Object[] { "w" }, new Object[] { "eu" },
                   new Object[] { (double) i }, new Object[] { i }, new Object[] { "s" }, new Object[] { true });
               break;
             } catch (final ConcurrentModificationException e) {
-              // a retry of the same sample: the append that lost the race stored nothing
+              // a retry of the same sample: the append that lost the race stored nothing. Running out of retries is a failure of the
+              // test, not a sample quietly missing from the count below
+              if (attempt >= 9)
+                throw new AssertionError("sample " + i + " lost ten races against the delete", e);
             }
       } catch (final Throwable t) {
         failure.compareAndSet(null, t);
@@ -583,6 +586,7 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
 
     if (failure.get() != null)
       throw new AssertionError("the writer failed", failure.get());
+    assertThat(writer.isAlive()).as("the writer finished").isFalse();
     assertThat(deleted).as("every sample the rounds appended was deleted by the round").isEqualTo(120L);
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM M")) {
       assertThat(rs.next().<Long>getProperty("c")).as("the samples the writer appended").isEqualTo((long) writes);

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.AfterEach;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10342: {@code DELETE FROM <timeseries type> WHERE ...} and {@code TRUNCATE TYPE} remove samples from the mutable pages and
@@ -70,6 +72,13 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     waitForAllServers();
     assertThat(awaitCountOn(followerIndex, 150L)).as("the follower holds the samples before the delete").isEqualTo(150L);
     assertThat(sealedSamples(followerIndex)).as("the follower holds the sealed blocks").isEqualTo(sealedSamples(leaderIndex)).isPositive();
+
+    // a follower never holds the replication session: a delete that reaches the engine of one (a client-managed transaction runs on the
+    // follower it is open on) is refused at once, as not worth retrying on that node, and removes nothing
+    assertThatThrownBy(() -> engine(followerIndex).deleteSamples(Long.MIN_VALUE, Long.MAX_VALUE, null))
+        .isInstanceOfSatisfying(NeedRetryException.class, e -> assertThat(e.isRetryableOnThisNode()).isFalse())
+        .hasMessageContaining("not the leader");
+    assertThat(count(followerIndex)).as("the refused delete removed nothing").isEqualTo(150L);
 
     // a delete that drops sealed blocks, rebuilds one and rewrites the mutable pages
     try (final ResultSet rs = leaderDb.command("sql",
