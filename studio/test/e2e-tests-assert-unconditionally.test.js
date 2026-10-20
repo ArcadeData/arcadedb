@@ -155,7 +155,13 @@ const TRANSPARENT_KEYWORDS = new Set(["await", "return"]);
 // Words that continue an expression or open a governed statement, so an expect() right behind them is not a statement of
 // its own
 const OPERATOR_KEYWORDS = new Set(["else", "do", "typeof", "void", "new", "in", "of", "instanceof", "case", "default", "yield", "delete", "throw"]);
-const EXPECT_CALL = /^expect(?:\.(?:soft|poll))?\s*\(/;
+const EXPECT_CALL = /expect(?:\s*\.\s*(?:soft|poll))?\s*\(/y;
+
+// Whether the word at `at` opens a call to expect, expect.soft or expect.poll, however the call is spaced
+function callsExpectAt(masked, at) {
+  EXPECT_CALL.lastIndex = at;
+  return EXPECT_CALL.test(masked);
+}
 
 // Counts the expect(...) calls in masked[from, to) that run on EVERY execution of that range: the range read as a statement
 // list, an expect() counts only when it is the first thing of a statement that nothing governs. That is a question about
@@ -185,7 +191,7 @@ function countOwnAssertions(masked, from, to) {
       while (end < to && /[\w$]/.test(masked[end])) end++;
       const word = masked.substring(k, end);
       const startsStatement = nesting.length === 0 && (state === "start" || (state === "operand" && newline));
-      const isAssertion = !member && word === "expect" && EXPECT_CALL.test(masked.substring(k, Math.min(to, k + 14)));
+      const isAssertion = !member && word === "expect" && callsExpectAt(masked, k);
       if (isAssertion && startsStatement) {
         own++;
         state = "operand";
@@ -233,8 +239,8 @@ function argumentEnd(masked, from, closeParen) {
 }
 
 // The range [from, to) of the inline function a test(...) call declares as its body, looked for among the call's own
-// arguments only (not inside a parameter list or a details object): `=> {...}`, `=> expression`, `function (...) {...}`;
-// null when the call carries none
+// arguments only (not inside a parameter list or a details object): `=> {...}`, `=> expression`, `function (...) {...}`,
+// plus the offset of the "=>" or "function" that introduces it; null when the call carries none
 function callbackBody(masked, openParen, closeParen) {
   let depth = 0;
   for (let k = openParen + 1; k < closeParen; k++) {
@@ -244,14 +250,14 @@ function callbackBody(masked, openParen, closeParen) {
     else if (depth === 0 && c === "=" && masked[k + 1] === ">") {
       let body = k + 2;
       while (body < closeParen && /\s/.test(masked[body])) body++;
-      if (masked[body] === "{") return [body + 1, matching(masked, body, "{", "}")];
-      return [body, argumentEnd(masked, body, closeParen)];
+      if (masked[body] === "{") return [body + 1, matching(masked, body, "{", "}"), k];
+      return [body, argumentEnd(masked, body, closeParen), k];
     } else if (depth === 0 && c === "f" && /^function\b/.test(masked.substring(k, k + 9)) && !/[\w.$]/.test(masked[k - 1])) {
       const params = masked.indexOf("(", k);
       const paramsEnd = params < 0 ? -1 : matching(masked, params, "(", ")");
       const body = paramsEnd < 0 ? -1 : masked.indexOf("{", paramsEnd);
       if (body < 0 || body > closeParen) return null;
-      return [body + 1, matching(masked, body, "{", "}")];
+      return [body + 1, matching(masked, body, "{", "}"), k];
     }
   }
   return null;
@@ -267,7 +273,7 @@ const DECLARATION_HEAD = /^\s*['"`]/;
 function scanTests(src) {
   const masked = maskNonCode(src);
   const tests = [];
-  const header = /(?<![\w.])test(?:\.(?:only|fixme|fail|slow))?\s*\(/g;
+  const header = /(?<![\w.])test(?:\s*\.\s*(?:only|fixme|fail|slow))?\s*\(/g;
   let m;
   while ((m = header.exec(masked)) !== null) {
     const openParen = m.index + m[0].length - 1;
@@ -276,13 +282,17 @@ function scanTests(src) {
 
     const title = (/^\s*(['"`])((?:\\.|(?!\1).)*)\1/.exec(src.substring(openParen + 1)) || [])[2] || "(unnamed)";
     const line = lineOf(src, m.index);
-    // `test(` and `test.only(` only ever declare; test.fixme / test.fail / test.slow declare when they open with a title and
-    // otherwise annotate, even when their condition is a function of the fixtures: test.fixme(({ browserName }) => ..., "why")
-    if (/\.(?:fixme|fail|slow)\s*\($/.test(m[0]) && !DECLARATION_HEAD.test(masked.substring(openParen + 1, closeParen))) {
+    const body = callbackBody(masked, openParen, closeParen);
+    // `test(` and `test.only(` only ever declare. test.fixme / test.fail / test.slow declare when they open with a title or
+    // carry their body after the first argument (a computed title: test.fail(name, async () => {...})); they annotate
+    // otherwise, even when the condition is a function of the fixtures: test.fixme(({ browserName }) => ..., "why")
+    const annotates = /\.\s*(?:fixme|fail|slow)\s*\($/.test(m[0])
+      && !DECLARATION_HEAD.test(masked.substring(openParen + 1, closeParen))
+      && (body === null || body[2] < argumentEnd(masked, openParen + 1, closeParen));
+    if (annotates) {
       header.lastIndex = closeParen;
       continue;
     }
-    const body = callbackBody(masked, openParen, closeParen);
     if (body === null) {
       tests.push({ title, line, assertions: 0, unanalysable: true });
       header.lastIndex = closeParen;
@@ -302,7 +312,7 @@ function scanTests(src) {
 // body) shows up here as a gap. It is still a one-way check: a declaration with a computed title (`test(name, ...)`) is not
 // counted, so the scan, not the census, is what catches that one (it reports it as unanalysable when it has no inline body)
 function countDeclarations(src) {
-  return (maskNonCode(src).match(/(?<![\w.])test(?:\.(?:only|fixme|fail|slow))?\s*\(\s*['"`]/g) || []).length;
+  return (maskNonCode(src).match(/(?<![\w.])test(?:\s*\.\s*(?:only|fixme|fail|slow))?\s*\(\s*['"`]/g) || []).length;
 }
 
 // --- The scanner ---------------------------------------------------------------------------------------------------
@@ -421,6 +431,8 @@ const UNCONDITIONAL_SHAPES = [
   ["returned", "return expect(1).toBe(1);"],
   ["soft", "expect.soft(1).toBe(1);"],
   ["poll", "await expect.poll(async () => 1).toBe(1);"],
+  ["poll, call split over lines", "await expect.poll\n  (async () => 1).toBe(1);"],
+  ["soft, spaced member access", "expect . soft (1).toBe(1);"],
   ["after a braced conditional", "if (ok) { log(); }\nexpect(1).toBe(1);"],
   ["after a braceless conditional", "if (ok) log();\nexpect(1).toBe(1);"],
   ["after a braceless else", "if (ok) log(); else other();\nexpect(1).toBe(1);"],
@@ -527,6 +539,28 @@ test("test.fixme, test.fail and test.slow annotations are not declarations", () 
     });
   `;
   assert.deepEqual(scanTests(src).map((t) => t.title), ["real"]);
+});
+
+test("test.fixme, test.fail and test.slow with a computed title and an inline body declare a test", () => {
+  const src = `
+    test.fail(title, async () => { expect(1).toBe(1); });
+    test.fixme(name, { tag: '@x' }, async () => { if (ok) expect(1).toBe(1); });
+    test.slow(({ browserName }) => browserName === 'firefox');
+    test.fixme(({ browserName }) => browserName === 'webkit', 'why');
+    test.fixme(ok, 'why');
+  `;
+  assert.deepEqual(scanTests(src).map((t) => [t.assertions, t.unanalysable]), [[1, false], [0, false]]);
+});
+
+test("member access spaced from test is still a declaration", () => {
+  const src = `
+    test .only('spaced', async () => { expect(1).toBe(1); });
+    test
+      .fixme('split', async () => { if (ok) expect(1).toBe(1); });
+    test . describe ('suite', () => { });
+  `;
+  assert.deepEqual(scanTests(src).map((t) => [t.title, t.assertions]), [["spaced", 1], ["split", 0]]);
+  assert.equal(countDeclarations(src), 2);
 });
 
 test("the declaration census counts without going through the scan", () => {
