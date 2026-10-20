@@ -79,6 +79,8 @@ public class DocumentValidator {
    * of another type in this one, and refusing the write for that would refuse every restore of such a schema (issue #10483). The caller
    * owes the check back: it writes the record again once the link is resolved, and that write validates the whole record, this check
    * included. Nothing else is relaxed - MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are checked as always. Scopes nest.
+   * <p>
+   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources.
    */
   public static LinkTargetTypeDeferral deferLinkTargetTypeChecks() {
     if (LINK_TARGET_DEFERRAL_DEPTH.get()[0]++ == 0)
@@ -1294,11 +1296,12 @@ public class DocumentValidator {
       if (!linkTargetTypeCheckDeferred()) {
         final RID rid = identifiable.getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-        if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
+        if (embSchemaType == null || !embSchemaType.instanceOf(ofType)) {
+          final String linkedTypeName = embSchemaType != null ? embSchemaType.getName() : null;
           throwValidationException(document.getType(), p,
-              "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + (embSchemaType != null ?
-                  embSchemaType.getName() :
-                  null) + "' is used. Value: " + fieldValue);
+              "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + linkedTypeName + "' is used. Value: "
+                  + fieldValue);
+        }
       }
     } else if (!(item instanceof String link && RID.is(link)))
       // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted

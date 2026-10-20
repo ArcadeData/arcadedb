@@ -166,6 +166,13 @@ public class DeferredExistenceChecks {
   /** True once {@link #journal} reached {@link #JOURNAL_LIMIT}: it was dropped, and nothing more is journaled until the scope closes. */
   private boolean journalOverflowed;
 
+  /**
+   * True once the statement connected a lightweight edge while a provisional record was pending. Such an edge is an entry in the edge
+   * lists of its two vertices and no record, so nothing in {@link #journal} says whether it stands or was removed with the provisional
+   * record: the property-less updates of the vertices are then never given back (see {@link #retractJournaledWrites}).
+   */
+  private boolean lightEdgeConnected;
+
   /** The transaction the statement ran in when this scope was opened, and what it had counted by then: see {@link #deleteProvisionalRecord}. */
   private TransactionContext txAtOpen;
   private long               writesAtOpen;
@@ -236,6 +243,7 @@ public class DeferredExistenceChecks {
     deferredUpdates = null;
     journal = null;
     journalOverflowed = false;
+    lightEdgeConnected = false;
     txAtOpen = null;
     patternCreateDepth = 0;
     sweepAt = SWEEP_THRESHOLD;
@@ -348,6 +356,20 @@ public class DeferredExistenceChecks {
       scope.journalWrite(rid, false, true, false);
   }
 
+  /**
+   * Notes that the statement connected a lightweight edge, called by the graph engine for every one of them. A statement with no
+   * provisional record pending pays one volatile read.
+   */
+  public static void lightEdgeConnected(final DatabaseInternal database) {
+    if (!anyScopeArmed())
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
+    if (scope != null && scope.active && scope.armed)
+      scope.lightEdgeConnected = true;
+  }
+
   private static DeferredExistenceChecks scopeOf(final DatabaseInternal database, final RID rid) {
     if (rid == null)
       return null;
@@ -394,8 +416,9 @@ public class DeferredExistenceChecks {
    * <p>
    * What the statement did to a record that EXISTED before it is given back only when it is the other end of such an edge: updates
    * that assigned no property (the edge list of the vertex grew, then shrank again with the edge), and only when no record the
-   * statement created is left, since an edge that stands is what those updates were for. Anything else the statement wrote - a
-   * property set, a record deleted, an edge between existing vertices - keeps its count, and the commit stays refused.
+   * statement created is left and it connected no lightweight edge, since an edge that stands is what those updates were for (a
+   * lightweight edge is no record, so nothing says whether it was removed with the provisional one). Anything else the statement wrote -
+   * a property set, a record deleted, an edge between existing vertices - keeps its count, and the commit stays refused.
    * <p>
    * Called once the provisional records are deleted, in the transaction the statement ran in; the counter never goes below what it
    * held when the statement started.
@@ -420,7 +443,7 @@ public class DeferredExistenceChecks {
         createdRecordStands = true;
     }
 
-    if (!createdRecordStands)
+    if (!createdRecordStands && !lightEdgeConnected)
       for (final WriteTally tally : journal.values())
         if (!tally.created && !tally.deleted && !tally.content)
           given += tally.writes;
@@ -491,6 +514,7 @@ public class DeferredExistenceChecks {
         // What the statement wrote so far stands, so a later provisional record has no claim on it
         scope.journal = null;
         scope.journalOverflowed = false;
+        scope.lightEdgeConnected = false;
       }
     }
   }

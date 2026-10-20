@@ -200,6 +200,51 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     assertThat(rowOf(1)).isEqualTo("w=0,s=s");
   }
 
+  /**
+   * A lightweight edge is an entry in the edge lists of its two vertices and no record: the one between two existing vertices stands
+   * when the provisional record is taken back, and the writes counted for the vertices are what refuses the commit.
+   */
+  @Test
+  void aLightweightEdgeBetweenTwoExistingRecordsThatStandsStillRefusesTheCommit() {
+    database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
+    // the two vertices have an edge list already, so the lightweight edge only appends to it: updates that assign no property
+    database.command("opencypher", "MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:R {w: 0}]->(n)").close();
+
+    database.begin();
+    database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 10}) WITH v MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:L]->(n)").close(), ValidationException.class);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+
+    assertThat(rowOf(1)).isEqualTo("w=0,s=s");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:T)-[r:L]->(:T) RETURN count(r) AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
+  }
+
+  /**
+   * The journal follows a bounded number of records. A statement that writes more beside its provisional record than it holds gives it
+   * up and gives back nothing but what the provisional record itself counted, which keeps the commit refused rather than risk giving
+   * back a write that stands.
+   */
+  @Test
+  void aStatementThatWritesPastTheLimitOfTheJournalKeepsTheCommitRefused() {
+    database.begin();
+    database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
+    // 5,000 edges is more records than the journal follows; all of them are taken back with the vertex they leave from and arrive at
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 11}) WITH v UNWIND range(1, 5000) AS i CREATE (v)-[:R {w: i}]->(v)").close(), ValidationException.class);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+
+    assertThat(rowOf(1)).isEqualTo("w=0,s=s");
+    assertThat(count("V")).isZero();
+    assertThat(count("R")).isZero();
+  }
+
   @Test
   void aPropertyWrittenOnAnExistingRecordBesideTheTakenBackEdgeStillRefusesTheCommit() {
     database.begin();

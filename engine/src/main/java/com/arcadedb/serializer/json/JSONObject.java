@@ -65,6 +65,10 @@ public class JSONObject implements Map<String, Object> {
    * be reflected back through an exception. See {@link #describe(JsonElement)} and {@link #truncate(String)}.
    */
   static final        int               MAX_ERROR_VALUE_LENGTH = 64;
+  // The days a date can be from 1970 and still be a count of epoch milliseconds that fits a long (about +-292 million years)
+  private static final long             MILLIS_PER_DAY         = 86_400_000L;
+  private static final long             MAX_EPOCH_DAY          = Long.MAX_VALUE / MILLIS_PER_DAY;
+  private static final long             MIN_EPOCH_DAY          = Long.MIN_VALUE / MILLIS_PER_DAY;
   private final       JsonObject        object;
   private             String            dateFormatAsString     = null;
   private             DateTimeFormatter dateFormat             = null;
@@ -895,10 +899,6 @@ public class JSONObject implements Map<String, Object> {
     };
   }
 
-  private static final long MILLIS_PER_DAY   = 86_400_000L;
-  private static final long MAX_EPOCH_DAY_MS = Long.MAX_VALUE / MILLIS_PER_DAY;
-  private static final long MIN_EPOCH_DAY_MS = Long.MIN_VALUE / MILLIS_PER_DAY;
-
   /**
    * A date as the epoch milliseconds of its UTC midnight, as every temporal is written. A {@code long} of milliseconds ends at about
    * 292 million years from 1970, and {@code toEpochMilli()} throws past it, which failed the whole record on the way out (issue
@@ -906,7 +906,7 @@ public class JSONObject implements Map<String, Object> {
    */
   private static JsonElement localDateToElement(final LocalDate localDate) {
     final long epochDay = localDate.toEpochDay();
-    if (epochDay > MAX_EPOCH_DAY_MS || epochDay < MIN_EPOCH_DAY_MS)
+    if (epochDay > MAX_EPOCH_DAY || epochDay < MIN_EPOCH_DAY)
       return new JsonPrimitive(localDate.toString());
     return new JsonPrimitive(epochDay * MILLIS_PER_DAY);
   }
