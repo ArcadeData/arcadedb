@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -367,10 +368,11 @@ public class OrderByStep extends AbstractExecutionStep {
         if (nan1) return 1;
         if (nan2) return -1;
 
-        // Compare lists element-by-element
-        if (v1 instanceof List && v2 instanceof List) {
-          final List<?> l1 = (List<?>) v1;
-          final List<?> l2 = (List<?>) v2;
+        // Compare lists element-by-element. An array that is not a BINARY value is a sequence, ordered like the list of its elements
+        // (issue #10380)
+        if ((v1 instanceof List || MultiValue.isSequenceArray(v1)) && (v2 instanceof List || MultiValue.isSequenceArray(v2))) {
+          final List<?> l1 = MultiValue.getMultiValueAsList(v1);
+          final List<?> l2 = MultiValue.getMultiValueAsList(v2);
           final int minSize = Math.min(l1.size(), l2.size());
           for (int i = 0; i < minSize; i++) {
             final int cmp = compareValues(l1.get(i), l2.get(i));

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -67,16 +68,17 @@ public class TextRpad extends AbstractTextFunction {
     }
 
     final String padStr = asString(args[2]);
-    final char padChar = padStr != null && !padStr.isEmpty() ? padStr.charAt(0) : ' ';
+    // The pad is a character, as the width is counted in them: a pad outside the BMP is one, not half a pair (issue #10378)
+    final int padCodePoint = padStr != null && !padStr.isEmpty() ? padStr.codePointAt(0) : ' ';
 
-    if (str.length() >= length)
+    final int size = CypherFunctionHelper.codePointLength(str);
+    if (size >= length)
       return str;
 
-    final StringBuilder result = new StringBuilder(length);
+    final StringBuilder result = new StringBuilder(str.length() + (length - size) * Character.charCount(padCodePoint));
     result.append(str);
-    for (int i = str.length(); i < length; i++) {
-      result.append(padChar);
-    }
+    for (int i = size; i < length; i++)
+      result.appendCodePoint(padCodePoint);
 
     return result.toString();
   }

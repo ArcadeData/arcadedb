@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -58,6 +59,7 @@ public class TextIndexOf extends AbstractTextFunction {
       return null;
 
     final int start = args.length > 2 ? asInt(args[2], 0) : 0;
-    return (long) str.indexOf(substring, start);
+    // The position of a character, not of a UTF-16 code unit (issue #10378)
+    return (long) CypherFunctionHelper.indexOfCodePoints(str, substring, start);
   }
 }
