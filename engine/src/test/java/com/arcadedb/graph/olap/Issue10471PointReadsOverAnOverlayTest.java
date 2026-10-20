@@ -20,6 +20,8 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.DenseNodeIdProvider;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
@@ -194,6 +196,78 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
               .isEqualTo(!changed.isEmpty());
         }
     }
+  }
+
+  /** A change that only deletes edges still touches the slice, in both directions: the shortcut must not read it as untouched. */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aCommitThatOnlyDeletesEdgesIsSeenByTheConstantTimeCheck(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    final List<Edge> deleted = new ArrayList<>();
+    for (final Edge edge : vertices.get(3).asVertex().getEdges(Vertex.DIRECTION.OUT, "K"))
+      deleted.add(edge);
+    database.transaction(() -> deleted.forEach(Edge::delete));
+    awaitView(view);
+
+    final DeltaOverlay overlay = view.pinned().snapshot().overlay;
+    assertThat(overlay).isNotNull();
+    for (final boolean outgoing : new boolean[] { true, false }) {
+      final BitSet changed = new BitSet();
+      overlay.markChangedNodes("K", outgoing, changed);
+      assertThat(changed.isEmpty()).as("the deletion changes nodes " + (outgoing ? "out" : "in")).isFalse();
+      assertThat(overlay.changesNodes("K", outgoing)).isTrue();
+    }
+  }
+
+  /**
+   * A supernode costs far more than the mean degree says. The estimate only decides whether the view is built, never what is
+   * answered: the count from a hub is the one the records give, and the view is still not built for it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aReadFromAHubAnswersWhatTheRecordsAnswer(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    database.transaction(() -> {
+      for (int i = 0; i < 1500; i++)
+        vertices.get(0).asVertex().modify().newEdge("K", vertices.get(1 + random.nextInt(VERTICES - 1)));
+    });
+    awaitView(view);
+
+    assertThat(pointCount(0)).isEqualTo(pointCountWithoutTheView(view, 0));
+    assertThat(pointCount(1)).isEqualTo(pointCountWithoutTheView(view, 1));
+  }
+
+  /**
+   * The renumbering of a view with deleted vertices asks the view once: the visits of a read are counted once, so the view is
+   * built by the read that brings the sum to its cost, not earlier.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aRenumberedViewCountsTheVisitsOfAReadOnce(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    database.transaction(() -> {
+      commitEdges();
+      vertices.get(5).asVertex().delete();
+    });
+    awaitView(view);
+
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(view.pinned());
+    assertThat(dense).as("a view with a deleted vertex has holes in its ids").isInstanceOf(DenseNodeIdProvider.class);
+    final long cost = dense.getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K");
+    assertThat(cost).isPositive();
+    final long read = DEGREE * DEGREE;
+
+    long spent = 0;
+    while (spent + read < cost) {
+      assertThat(dense.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).as("after " + spent + " of " + cost).isNull();
+      spent += read;
+    }
+    assertThat(dense.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNotNull();
+  }
+
+  private void commitEdges() {
+    for (int i = 0; i < 2; i++)
+      vertices.get(random.nextInt(VERTICES)).asVertex().modify().newEdge("K", vertices.get(random.nextInt(VERTICES)));
   }
 
   private GraphAnalyticalView createView(final String mode) {

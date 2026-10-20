@@ -279,6 +279,39 @@ class Issue10473IndexCatalogTest {
     assertThat(resolve("select inhrelid from pg_inherits where inhparent = " + oidOf("Plain")).rows).isEmpty();
   }
 
+  /**
+   * {@code \d} on a type with no index: psql reads {@code relhasindex}, finds it false and sends no index statement, and the ones
+   * it does send for every table (policies, statistics, publications, inheritance) answer instead of being refused.
+   */
+  @Test
+  void psqlDescribesATypeWithNoIndex() {
+    final int table = oidOf("Plain");
+
+    final PostgresCatalog.Answer info = resolve("""
+        SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, c.relhastriggers, c.relrowsecurity, c.relforcerowsecurity, false AS relhasoids, c.relispartition, '', c.reltablespace, CASE WHEN c.reloftype = 0 THEN '' ELSE c.reloftype::pg_catalog.regtype::pg_catalog.text END, c.relpersistence, c.relreplident, am.amname
+        FROM pg_catalog.pg_class c
+         LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)
+        LEFT JOIN pg_catalog.pg_am am ON (c.relam = am.oid)
+        WHERE c.oid = '%d';
+        """.formatted(table));
+    assertThat(column(info, "relhasindex")).containsExactly(false);
+    assertThat(column(info, "amname")).containsExactly("heap");
+
+    // the index statement, were it sent, finds none
+    assertThat(resolve("""
+        SELECT c2.relname, i.indisprimary, i.indisunique, i.indisclustered, i.indisvalid, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true),
+          pg_catalog.pg_get_constraintdef(con.oid, true), contype, condeferrable, condeferred, i.indisreplident, c2.reltablespace
+        FROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i
+          LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))
+        WHERE c.oid = '%d' AND c.oid = i.indrelid AND i.indexrelid = c2.oid
+        ORDER BY i.indisprimary DESC, c2.relname;
+        """.formatted(table)).rows).isEmpty();
+
+    assertThat(resolve("select inhparent from pg_inherits where inhrelid = " + table).rows).isEmpty();
+    assertThat(resolve("select polname from pg_policy where polrelid = " + table).rows).isEmpty();
+    assertThat(resolve("select stxname from pg_statistic_ext where stxrelid = " + table).rows).isEmpty();
+  }
+
   /** psql reads {@code relhasindex} before it lists the indexes of a table. */
   @Test
   void psqlReadsRelhasindexOfEveryTable() {
