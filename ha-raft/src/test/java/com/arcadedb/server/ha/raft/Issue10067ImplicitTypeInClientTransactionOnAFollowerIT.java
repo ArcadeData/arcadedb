@@ -160,10 +160,24 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
    * (issue #8686) cannot tell from a change to a type the transaction wrote to. When the new type is the ONLY schema change since the
    * transaction was prepared, nothing it saved depended on anything the type changed, and the commit goes through, both statements'
    * work in the one transaction.
+   * <p>
+   * Over every shape of implicit type a statement introduces (issue #10147): the follower counts the schema entries applied since the
+   * request and expects exactly one, so a type the leader publishes as several (a composite label {@code A~B}, which is created and
+   * then linked to each of its labels) would have been refused every first time, for a schema change nobody else made.
    */
-  @Test
+  @ParameterizedTest
+  @ValueSource(strings = { "oneLabel", "twoLabels", "threeLabels", "labelAndRelationship" })
   @Timeout(180)
-  void aTransactionThatAlreadyWroteGoesThroughWhenTheTypeIsTheOnlySchemaChange() {
+  void aTransactionThatAlreadyWroteGoesThroughWhenTheTypeIsTheOnlySchemaChange(final String shape) {
+    final String label = "Issue10067Late" + shape;
+    final long id = 1001000L + List.of("oneLabel", "twoLabels", "threeLabels", "labelAndRelationship").indexOf(shape) * 10L;
+    final String newNodes = switch (shape) {
+      case "twoLabels" -> "(b:" + label + ":" + label + "B {name: 'late'})";
+      case "threeLabels" -> "(b:" + label + ":" + label + "B:" + label + "C {name: 'late'})";
+      case "labelAndRelationship" -> "(b:" + label + " {name: 'late'})-[:ISSUE10067_LATE_REL]->(:" + label + "End)";
+      default -> "(b:" + label + " {name: 'late'})";
+    };
+
     final int leader = requireLeaderIndex();
     final int follower = firstFollowerOf(leader);
     final Database followerDb = getServerDatabase(follower, getDatabaseName());
@@ -171,19 +185,19 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
     followerDb.begin();
     try {
       markClientManaged(followerDb);
-      followerDb.command("opencypher", "CREATE (n:V1 {id: 1001000})").close();
+      followerDb.command("opencypher", "CREATE (n:V1 {id: " + id + "})").close();
       // The write above is staged: the type below is created under a transaction that already holds work
-      followerDb.command("opencypher", "CREATE (a:V1 {id: 1001001}), (b:Issue10067Late {name: 'late'})").close();
+      followerDb.command("opencypher", "CREATE (a:V1 {id: " + (id + 1) + "}), " + newNodes).close();
       followerDb.commit();
     } finally {
       if (followerDb.isTransactionActive())
         followerDb.rollback();
     }
 
-    awaitOnEveryServer("Issue10067Late", 1);
+    awaitOnEveryServer(label, 1);
     for (int i = 0; i < getServerCount(); i++)
       try (final ResultSet rs = getServerDatabase(i, getDatabaseName()).query("opencypher",
-          "MATCH (n:V1) WHERE n.id IN [1001000, 1001001] RETURN count(n) AS c")) {
+          "MATCH (n:V1) WHERE n.id IN [" + id + ", " + (id + 1) + "] RETURN count(n) AS c")) {
         assertThat(rs.next().<Number>getProperty("c").longValue()).as("server %d holds both nodes of the transaction", i).isEqualTo(2L);
       }
   }

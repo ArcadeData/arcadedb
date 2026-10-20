@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeEntryRIDIterator;
@@ -445,17 +444,6 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * Whether the record of the edge named by an adjacency entry is still there, answered by the bucket without reading the
-   * record. A lightweight edge has no record of its own: its adjacency entry is all there is of it.
-   */
-  private static boolean edgeRecordExists(final Database database, final RID edgeId) {
-    if (edgeId == null || edgeId.getPosition() < 0)
-      return true;
-    final Bucket bucket = database.getSchema().getBucketByIdIfExists(edgeId.getBucketId());
-    return bucket != null && bucket.existsRecord(edgeId);
-  }
-
-  /**
    * The state of one {@link #collectReachableComponent} walk, and the following of the adjacency entries of the nodes of a level.
    * <p>
    * A neighbour is reached by an adjacency entry only if the edge that entry names still has its record (issue #10148): the walk
@@ -545,10 +533,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
 
     /** Reaches {@code neighborId} through the entry naming {@code edgeId}, unless that edge is a ghost or the filters turn it away. */
     private void reach(final RID edgeId, final RID neighborId) {
-      if (!edgeRecordExists(database, edgeId)) {
-        GhostEdgeReporter.reportSkipped(new RecordNotFoundException("Record " + edgeId + " not found", edgeId));
+      if (!GhostEdgeReporter.isLiveEntry(database, edgeId))
         return;
-      }
 
       if (!visitedNodes.add(neighborId))
         return;

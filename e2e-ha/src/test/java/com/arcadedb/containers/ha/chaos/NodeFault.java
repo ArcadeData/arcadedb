@@ -43,7 +43,9 @@ public final class NodeFault implements Fault {
   }
 
   private final Kind  kind;
-  private       int[] targets = new int[0];
+  private       int[] targets   = new int[0];
+  // What the last injection restarted, kept after heal() clears the targets: the runner asks once the step is over
+  private       int[] restarted = new int[0];
 
   public NodeFault(final Kind kind) {
     this.kind = kind;
@@ -64,6 +66,10 @@ public final class NodeFault implements Fault {
     final Targets.Role role = Targets.role(random);
     final int count = Targets.count(state, random);
     targets = Targets.pick(state, control, random, role, count);
+    // Every target, from before the first one is touched: a kill or stop that fails part way ends the step with that failure, which the
+    // runner reports before it counts anything, so the nodes reached are never read from here. RollingRestartFault, whose failure the
+    // runner can also meet, tracks how far it got
+    restarted = kind == Kind.KILL || kind == Kind.STOP ? targets.clone() : new int[0];
     for (final int node : targets) {
       switch (kind) {
       case KILL -> control.kill(node);
@@ -92,5 +98,20 @@ public final class NodeFault implements Fault {
   @Override
   public boolean expectsWritesAvailable() {
     return true;
+  }
+
+  /**
+   * A graceful stop gives the server its whole shutdown, and a pause is the long pause with a shorter hold: the other nodes stay
+   * healthy and no node has a reason to discard its log. A SIGKILL and an isolation can leave the node genuinely behind or
+   * diverged, so a reformat after them is not a finding on its own.
+   */
+  @Override
+  public boolean forbidsReformat() {
+    return kind == Kind.STOP || kind == Kind.PAUSE;
+  }
+
+  @Override
+  public int[] restartedNodes(final ClusterState state) {
+    return restarted.clone();
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,6 +43,15 @@ class GhostEdgeReporterTest {
     assertThat(GhostEdgeReporter.getTotalSkipped()).isZero();
     GhostEdgeReporter.reportSkipped(new RecordNotFoundException("Record #98:430104 not found", null));
     GhostEdgeReporter.reportSkipped(new RecordNotFoundException("Record #12:7 not found", null));
+    assertThat(GhostEdgeReporter.getTotalSkipped()).isEqualTo(2);
+  }
+
+  // Issue #10149: a walk that found the ghost out from the bucket has no exception to hand over, and must not build one (a stack trace per
+  // ghost) just to be counted
+  @Test
+  void countsASkipReportedByTheEdgeRid() {
+    GhostEdgeReporter.reportSkipped(new RID(12, 7));
+    GhostEdgeReporter.reportSkipped(new RID(12, 8));
     assertThat(GhostEdgeReporter.getTotalSkipped()).isEqualTo(2);
   }
 
