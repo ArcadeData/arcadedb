@@ -324,6 +324,7 @@ deliberately is not a publishable `arcadedata/arcadedb` name.
 mkdir -p databases && sudo chown 1000:1000 databases   # only for a bind mount, see below
 docker run --rm -p 2480:2480 -p 5432:5432 \
   -v "$(pwd)/databases:/home/arcadedb/databases" \
+  -v arcadedb-config:/home/arcadedb/config \
   arcadedata/arcadedb:<version>-native \
   -Darcadedb.server.rootPassword=PlayWithData123!
 ```
@@ -331,6 +332,10 @@ docker run --rm -p 2480:2480 -p 5432:5432 \
 - Both images (`linux/amd64` and `linux/arm64`) run as `1000:1000` by default, the same UID/GID as
   the JVM image, so no `--user` is needed. Anonymous and named volumes (`config`, `databases`,
   `backups`, `replication`, `log`) start owned by `1000:1000` and are writable out of the box.
+- `--rm` deletes the container's anonymous volumes with it. The server writes the users, groups and
+  API tokens created at runtime (`server-users.jsonl`, `server-groups.json`, `server-api-tokens.json`)
+  to `config`, so the example mounts a **named volume** there: it survives `--rm` and, unlike a bind
+  mount of an empty directory, is seeded with the image's default config files on first use.
 - A **bind mount** keeps the ownership of the host directory, so it must be writable by UID 1000
   (`chown 1000:1000` it, as above). This applies to every bind-mounted path, not only `databases`:
   a bind-mounted `config` or `log` the server cannot write fails the start with an
