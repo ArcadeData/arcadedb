@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.awaitility.Awaitility;
@@ -101,6 +102,49 @@ class Issue10491ViewVertexTypeAttachedAfterBuildTest {
   void aVertexDeletedRightAfterTheTypeJoinedIsNotInTheViewAnswer(final GraphAnalyticalView.UpdateMode mode) throws Exception {
     for (int rep = 0; rep < REPS; rep++)
       runOnce(mode, 4, 0, false, "DELETE FROM U WHERE id = 30");
+  }
+
+  /**
+   * The update of a vertex of the joined type meets the same fate as an insert: the listener dropped it, and the rebuild it
+   * dispatched read the old value. Read through the view itself, once it holds the type.
+   */
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aPropertyUpdatedRightAfterTheTypeJoinedIsWhatTheViewHoldsOnceItHoldsTheType(final GraphAnalyticalView.UpdateMode mode)
+      throws Exception {
+    for (int rep = 0; rep < REPS; rep++) {
+      database = new DatabaseFactory(DB_PATH).create();
+      try {
+        database.command("sql", "CREATE VERTEX TYPE Base").close();
+        database.command("sql", "CREATE VERTEX TYPE U").close();
+        database.command("sql", "CREATE EDGE TYPE E1").close();
+        database.transaction(() -> {
+          for (int k = 0; k < 4; k++) {
+            database.command("sql", "INSERT INTO Base SET id = " + k).close();
+            database.command("sql", "INSERT INTO U SET id = " + (30 + k)).close();
+          }
+        });
+        database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (Base) EDGE TYPES (E1) UPDATE MODE " + mode).close();
+        awaitReady();
+
+        database.command("sql", "ALTER TYPE U SUPERTYPE +Base").close();
+        database.transaction(() -> database.command("sql", "UPDATE U SET id = 999 WHERE id = 30").close());
+        awaitReady();
+
+        final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g");
+        Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+            .until(() -> view.isReady() && view.coversVertexType("U"));
+
+        final RID rid;
+        try (final ResultSet rs = database.query("sql", "SELECT @rid AS r FROM U WHERE id = 999")) {
+          rid = rs.next().<RID>getProperty("r");
+        }
+        assertThat(((Number) view.getProperty(view.getNodeId(rid), "id")).intValue()).as("%s, rep %d", mode, rep).isEqualTo(999);
+      } finally {
+        if (database.isOpen())
+          database.drop();
+      }
+    }
   }
 
   private void runOnce(final GraphAnalyticalView.UpdateMode mode, final int existing, final int inserts, final boolean edge)

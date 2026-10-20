@@ -176,6 +176,32 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
         .isInstanceOf(DuplicatedKeyException.class);
   }
 
+  /** A record written before the index and updated after it, whichever way the transaction ends. */
+  @Test
+  void aRecordInsertedBeforeTheIndexAndUpdatedAfterItFollowsTheOutcomeOfTheTransaction() {
+    final String committed = createTypeWithThreeCommittedRecords("InsUpdCm");
+    final String rolledBack = createTypeWithThreeCommittedRecords("InsUpdRb");
+
+    database.begin();
+    database.command("sql", "INSERT INTO " + committed + " SET k = 9, s = 'w9', tags = ['a9']");
+    database.command("sql", "CREATE INDEX ON " + committed + " (k) NOTUNIQUE");
+    database.command("sql", "UPDATE " + committed + " SET k = 10 WHERE k = 9");
+    database.commit();
+    assertThat(find("SELECT FROM %s WHERE k = 9", committed)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 10", committed)).isEqualTo(1);
+    assertThat(entries(committed)).isEqualTo(4L);
+
+    database.begin();
+    database.command("sql", "INSERT INTO " + rolledBack + " SET k = 9, s = 'w9', tags = ['a9']");
+    database.command("sql", "CREATE INDEX ON " + rolledBack + " (k) NOTUNIQUE");
+    database.command("sql", "UPDATE " + rolledBack + " SET k = 10 WHERE k = 9");
+    database.rollback();
+    assertThat(find("SELECT FROM %s WHERE k = 9", rolledBack)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 10", rolledBack)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 1", rolledBack)).isEqualTo(1);
+    assertThat(entries(rolledBack)).isEqualTo(3L);
+  }
+
   /** The caller deletes a committed row and inserts another with the same key before the UNIQUE index exists. */
   @Test
   void aUniqueIndexOverADeletedAndReinsertedKeyFollowsTheOutcomeOfTheTransaction() {
