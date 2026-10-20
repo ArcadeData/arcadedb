@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.RepairTransaction;
@@ -767,6 +768,7 @@ public class GraphDatabaseChecker {
       stats.put("unreadableStripeDirectories", report.unreadableStripeDirectories);
       stats.put("duplicateLightEdges", report.duplicateLightEdges);
       stats.put("salvagedLightEdges", report.salvagedLightEdges);
+      stats.put("recoveredLightEdges", report.recoveredLightEdges);
       stats.put("unsalvageableEdgeLists", report.unsalvageableEdgeLists);
       stats.put("invalidLinks", report.invalidLinks);
       stats.put("warnings", report.warnings);
@@ -797,8 +799,11 @@ public class GraphDatabaseChecker {
   private long applyRepairPlan(final RepairPlan plan, final CheckReport report) {
     applyPendingChainResets(plan, report);
 
-    if (!plan.reconnectOutEdges.isEmpty() || !plan.reconnectInEdges.isEmpty())
+    if (!plan.reconnectOutEdges.isEmpty() || !plan.reconnectInEdges.isEmpty()) {
       collectEdgesToReconnect(plan, report);
+      // #10406: BEFORE ANY LIST IS WRITTEN, SO THE LISTS BEING REBUILT ARE READ EMPTY
+      collectLightEdgeFarCopies(plan);
+    }
 
     final long rebuiltOut = applyPendingLinks(plan.rebuiltOutLinks, Vertex.DIRECTION.OUT, null, report);
     if (rebuiltOut > 0)
@@ -814,6 +819,13 @@ public class GraphDatabaseChecker {
         + applyPendingLinks(plan.salvagedInLinks, Vertex.DIRECTION.IN, null, report);
     if (report.salvagedLightEdges > 0)
       report.warn("carried over " + report.salvagedLightEdges + " lightweight edges from the edge lists that were rebuilt");
+
+    // #10406: THE LIGHTWEIGHT EDGES OF THE UNREADABLE PARTS, REBUILT FROM THEIR COPIES IN THE FAR ENDPOINTS' LISTS
+    report.recoveredLightEdges = applyPendingLinks(plan.recoveredOutLinks, Vertex.DIRECTION.OUT, null, report)
+        + applyPendingLinks(plan.recoveredInLinks, Vertex.DIRECTION.IN, null, report);
+    if (report.recoveredLightEdges > 0)
+      report.warn("rebuilt " + report.recoveredLightEdges
+          + " lightweight edges of the edge lists that were rebuilt from their copies in the far endpoints' lists");
 
     final long backRefs = applyPendingLinks(plan.backRefOutLinks, Vertex.DIRECTION.OUT, plan.reconnectOutEdges, report)
         + applyPendingLinks(plan.backRefInLinks, Vertex.DIRECTION.IN, plan.reconnectInEdges, report);
@@ -950,9 +962,9 @@ public class GraphDatabaseChecker {
         continue;
 
       try {
-        final MutableVertex vertex = database.lookupByRID(vertexRID, true).asVertex(true).modify();
         // getOrCreateEdgeList dispatches on the head record type, so promoted (striped) vertices work too
-        graphEngine.getOrCreateEdgeList(vertex, direction).add(edgeRID, pending.other(i));
+        graphEngine.relinkEdgeListEntry(database.lookupByRID(vertexRID, true).asVertex(true), direction, edgeRID,
+            pending.other(i));
         ++applied;
       } catch (final RecordNotFoundException e) {
         // The vertex is gone - another arm of this same run deleted it - so there is no list to link into.
@@ -1595,49 +1607,100 @@ public class GraphDatabaseChecker {
   private void salvageLightEdges(final VertexInternal vertex, final Vertex.DIRECTION direction, final PendingLinks target,
       final CheckReport report) {
     final RID vertexRID = vertex.getIdentity();
-    final RID head = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
-    if (head == null)
-      return;
-
-    // THE FIRST FAILURE IS KEPT FOR THE WARNING: IT NAMES THE CHUNK OR STRIPE THAT COULD NOT BE READ
-    String firstError = null;
-    final List<RID> chainHeads = new ArrayList<>();
-    try {
-      if (database.lookupByRID(head, true) instanceof StripeDirectory directory) {
-        for (int g = directory.getGenerationCount() - 1; g >= 0; g--)
-          for (int s = 0; s < directory.getStripes(g); s++) {
-            final RID chainHead = directory.getHead(g, s);
-            if (chainHead != null)
-              chainHeads.add(chainHead);
-          }
-      } else
-        chainHeads.add(head);
-    } catch (final Exception e) {
-      firstError = describe(e);
-    }
-
     final Schema schema = database.getSchema();
-    for (final RID chainHead : chainHeads) {
-      try {
-        final EdgeLinkedList chain = new EdgeLinkedList(vertex, direction, (EdgeSegment) database.lookupByRID(chainHead, true));
-        final Iterator<Pair<RID, RID>> entries = chain.entryIterator();
-        while (entries.hasNext()) {
-          final Pair<RID, RID> entry = entries.next();
-          final RID edgeRID = entry.getFirst();
-          final RID other = entry.getSecond();
-          if (edgeRID != null && other != null && edgeRID.getPosition() < 0 && schema.getTypeByBucketId(edgeRID.getBucketId()) != null)
-            target.add(vertexRID, edgeRID, other);
-        }
-      } catch (final Exception e) {
-        if (firstError == null)
-          firstError = describe(e);
-      }
-    }
+    // THE FIRST FAILURE IS KEPT FOR THE WARNING: IT NAMES THE CHUNK OR STRIPE THAT COULD NOT BE READ
+    final Exception firstError = graphEngine.readEdgeListEntries(vertex, direction, (edgeRID, other) -> {
+      if (edgeRID != null && other != null && edgeRID.getPosition() < 0 && schema.getTypeByBucketId(edgeRID.getBucketId()) != null)
+        target.add(vertexRID, edgeRID, other);
+    });
 
     if (firstError != null) {
       ++report.unsalvageableEdgeLists;
+      // #10406: A BIDIRECTIONAL ONE IS REBUILT FROM ITS COPY IN THE FAR ENDPOINT'S LIST, SEE collectLightEdgeFarCopies
       report.warn("vertex " + vertexRID + " " + direction + " edge list could not be read in full before the rebuild (error: "
-          + firstError + "): a lightweight edge stored in its unreadable part has no record to rebuild it from and is lost");
+          + describe(firstError) + "): a lightweight edge of a unidirectional type stored in its unreadable part has no record "
+          + "nor any other copy to rebuild it from and is lost");
+    }
+  }
+
+  /**
+   * Plans the LIGHTWEIGHT edges of the lists being rebuilt that neither the edge records nor the readable part of the
+   * dropped lists could give back (#10406). A lightweight edge of a bidirectional type is stored in both endpoints' lists,
+   * so the copy in the far endpoint's list rebuilds it. The far copies come from two places:
+   * <ul>
+   * <li>the lists of every vertex that are not being rebuilt ({@link GraphEngine#forEachLightEdgeFarCopy});</li>
+   * <li>what {@link #salvageLightEdges} carried over from the dropped lists, which that walk does not read: a copy sitting
+   * in the readable part of another list being rebuilt.</li>
+   * </ul>
+   * Planned with multiplicity, per (vertex, direction, edge type, neighbour): a lightweight type that is not unique can
+   * link the same pair more than once, and the readable part of the dropped list may already hold some of those copies.
+   * The far side holds every copy that was stored, the readable part only some, so the list ends up with the larger of
+   * the two counts: what the far side holds beyond what was carried over is planned here.
+   * <p>
+   * Costs a full adjacency walk of the side that can answer, which is why it runs in fix mode only and only when a list is
+   * being rebuilt.
+   */
+  private void collectLightEdgeFarCopies(final RepairPlan plan) {
+    final Map<TransactionContext.LightEdgeEntry, LightEdgeTally> tallies = new HashMap<>();
+
+    // WHAT THE READABLE PARTS ALREADY CARRY OVER
+    tallyCarriedOver(plan.salvagedOutLinks, true, tallies);
+    tallyCarriedOver(plan.salvagedInLinks, false, tallies);
+
+    // THE FAR COPIES IN THE LISTS THAT ARE STILL THERE
+    graphEngine.forEachLightEdgeFarCopy(plan.reconnectOutEdges, plan.reconnectInEdges,
+        (vertex, direction, edgeRID, farVertex) -> tallyFarCopy(tallies, vertex, direction == Vertex.DIRECTION.OUT, edgeRID,
+            farVertex));
+
+    // THE FAR COPIES CARRIED OVER FROM ANOTHER LIST BEING REBUILT: AN ENTRY (edge, v) OF x's DROPPED IN LIST IS THE EDGE
+    // v -> x, WHICH v's OUT LIST NEEDS AS (edge, x); ONE OF y's DROPPED OUT LIST, OF A BIDIRECTIONAL TYPE, IS y -> v FOR v's IN LIST
+    final Schema schema = database.getSchema();
+    for (int i = 0; i < plan.salvagedInLinks.size(); i++) {
+      final RID v = plan.salvagedInLinks.other(i);
+      if (plan.reconnectOutEdges.contains(v))
+        tallyFarCopy(tallies, v, true, plan.salvagedInLinks.edge(i), plan.salvagedInLinks.vertex(i));
+    }
+    for (int i = 0; i < plan.salvagedOutLinks.size(); i++) {
+      final RID v = plan.salvagedOutLinks.other(i);
+      final RID edgeRID = plan.salvagedOutLinks.edge(i);
+      if (plan.reconnectInEdges.contains(v) && schema.getTypeByBucketId(edgeRID.getBucketId()) instanceof EdgeType type
+          && type.isBidirectional())
+        tallyFarCopy(tallies, v, false, edgeRID, plan.salvagedOutLinks.vertex(i));
+    }
+
+    for (final Map.Entry<TransactionContext.LightEdgeEntry, LightEdgeTally> e : tallies.entrySet()) {
+      final LightEdgeTally tally = e.getValue();
+      final TransactionContext.LightEdgeEntry entry = e.getKey();
+      final PendingLinks target = entry.out() ? plan.recoveredOutLinks : plan.recoveredInLinks;
+      for (int i = tally.carriedOver; i < tally.farCopies; i++)
+        target.add(entry.vertex(), tally.edgeRID, entry.neighbour());
+    }
+  }
+
+  private static void tallyCarriedOver(final PendingLinks carriedOver, final boolean out,
+      final Map<TransactionContext.LightEdgeEntry, LightEdgeTally> tallies) {
+    for (int i = 0; i < carriedOver.size(); i++) {
+      final RID edgeRID = carriedOver.edge(i);
+      tallies.computeIfAbsent(
+          new TransactionContext.LightEdgeEntry(carriedOver.vertex(i), out, edgeRID.getBucketId(), carriedOver.other(i)),
+          k -> new LightEdgeTally(edgeRID)).carriedOver++;
+    }
+  }
+
+  private static void tallyFarCopy(final Map<TransactionContext.LightEdgeEntry, LightEdgeTally> tallies, final RID vertex,
+      final boolean out, final RID edgeRID, final RID farVertex) {
+    tallies.computeIfAbsent(new TransactionContext.LightEdgeEntry(vertex, out, edgeRID.getBucketId(), farVertex),
+        k -> new LightEdgeTally(edgeRID)).farCopies++;
+  }
+
+  /** How many copies of one lightweight (vertex, direction, type, neighbour) each source holds, see {@link #collectLightEdgeFarCopies}. */
+  private static final class LightEdgeTally {
+    final RID edgeRID;
+    int       carriedOver;
+    int       farCopies;
+
+    LightEdgeTally(final RID edgeRID) {
+      this.edgeRID = edgeRID;
     }
   }
 
@@ -2170,6 +2233,13 @@ public class GraphDatabaseChecker {
     /** #10377: LIGHTWEIGHT edges read out of the IN lists about to be dropped. */
     final PendingLinks salvagedInLinks;
     /**
+     * #10406: LIGHTWEIGHT edges of the dropped OUT lists that the readable part could not carry over, rebuilt from their
+     * copies in the far endpoints' IN lists.
+     */
+    final PendingLinks recoveredOutLinks;
+    /** #10406: the IN counterpart of {@link #recoveredOutLinks}, rebuilt from the far endpoints' OUT lists. */
+    final PendingLinks recoveredInLinks;
+    /**
      * #10377: vertices in {@link #reconnectOutEdges} because their head pointer names ANOTHER vertex's list. The entries of
      * that list are not theirs, so none is carried over.
      */
@@ -2184,6 +2254,8 @@ public class GraphDatabaseChecker {
       backRefInLinks = new PendingLinks(database);
       salvagedOutLinks = new PendingLinks(database);
       salvagedInLinks = new PendingLinks(database);
+      recoveredOutLinks = new PendingLinks(database);
+      recoveredInLinks = new PendingLinks(database);
     }
   }
 
@@ -2318,6 +2390,11 @@ public class GraphDatabaseChecker {
     long                        prunedDanglingEntries;
     /** #10377: lightweight edges carried over from a dropped list into its rebuild, see {@code salvageLightEdges}. */
     long                        salvagedLightEdges;
+    /**
+     * #10406: lightweight edges of a dropped list's unreadable part, rebuilt from their copies in the far endpoints' lists,
+     * see {@code collectLightEdgeFarCopies}.
+     */
+    long                        recoveredLightEdges;
     /**
      * #10377: dropped lists that could not be read in full, so any lightweight edge in the unreadable part was lost. The
      * number of such edges is unknowable - they were stored nowhere else - so the LISTS are counted.

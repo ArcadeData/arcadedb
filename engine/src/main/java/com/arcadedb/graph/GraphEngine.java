@@ -68,6 +68,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.logging.Level;
@@ -692,16 +693,22 @@ public class GraphEngine {
    * match found. Used by an emergency vertex restore (a freshly recreated vertex shell has no edges of its own;
    * this finds every surviving edge that still names it) - see {@link #restoreVertexAt}.
    * <p>
+   * A LIGHTWEIGHT edge has no record for that scan to find (#10407). One of a bidirectional type is stored in both
+   * endpoints' lists, so the copy in the far endpoint's list is what rebuilds it, see {@link #forEachLightEdgeFarCopy}. One
+   * of a unidirectional type leaving a rebuilt vertex was stored in that vertex's own list only and cannot come back:
+   * {@link #lightEdgeTypesWithoutFarCopy} names the types that may have lost edges that way.
+   * <p>
    * {@code GraphDatabaseChecker}'s own rebuild-from-surviving-edges repair keeps a separate, near-identical
-   * implementation rather than calling this: it additionally excludes edges the same FIX pass is about to delete
-   * and warns per unreadable edge, both of which need its {@code CheckReport}. Keep the two in sync by hand if the
-   * scan-and-rewire mechanics change here.
+   * implementation of the record scan rather than calling this: it additionally excludes edges the same FIX pass is
+   * about to delete and warns per unreadable edge, both of which need its {@code CheckReport}. Keep the two in sync by
+   * hand if the scan-and-rewire mechanics change here. The lightweight walk is shared.
    * <p>
    * A rebuilt vertex ends up with a brand-new chain; any old, now-orphaned chunks it used to point at are left
    * untouched on disk (harmless - reclaimed by compaction). An edge this transaction cannot read is skipped, not
    * fatal: the surviving, readable edges still reconnect.
    *
-   * @return the number of outgoing and incoming edge entries reconnected, respectively (index 0 = out, 1 = in)
+   * @return the number of outgoing and incoming edge entries reconnected (index 0 = out, 1 = in), and how many of them
+   * were lightweight (index 2 = out, 3 = in)
    */
   public long[] reconnectEdgesFromSurvivors(final Set<RID> reconnectOutVertices, final Set<RID> reconnectInVertices) {
     final List<EdgeType> edgeTypes = new ArrayList<>();
@@ -730,6 +737,16 @@ public class GraphEngine {
       }, (rid, exception) -> true);
     }
 
+    // COLLECTED BEFORE ANYTHING IS WRITTEN: THE WALK READS EVERY LIST, AND THE ONES BEING REBUILT MUST BE READ AS THEY WERE
+    final List<RID> lightEntries = new ArrayList<>();
+    final long[] light = new long[2];
+    forEachLightEdgeFarCopy(reconnectOutVertices, reconnectInVertices, (vertex, direction, edgeRID, farVertex) -> {
+      lightEntries.add(vertex);
+      lightEntries.add(edgeRID);
+      lightEntries.add(farVertex);
+      ++light[direction == Vertex.DIRECTION.OUT ? 0 : 1];
+    });
+
     for (final Edge e : outEdgesToReconnect) {
       final MutableVertex vertex = e.getOutVertex().modify();
       getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
@@ -740,7 +757,164 @@ public class GraphEngine {
       getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
     }
 
-    return new long[] { outEdgesToReconnect.size(), inEdgesToReconnect.size() };
+    // THE WALK HANDS THE OUT ENTRIES OVER FIRST, SO THE FIRST light[0] TRIPLES GO TO THE OUT LISTS
+    for (int i = 0, n = lightEntries.size() / 3; i < n; i++)
+      relinkEdgeListEntry(lightEntries.get(i * 3).asVertex(true), i < light[0] ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN,
+          lightEntries.get(i * 3 + 1), lightEntries.get(i * 3 + 2));
+
+    return new long[] { outEdgesToReconnect.size() + light[0], inEdgesToReconnect.size() + light[1], light[0], light[1] };
+  }
+
+  /** Receives a lightweight edge entry that belongs in a list being rebuilt, see {@link #forEachLightEdgeFarCopy}. */
+  @FunctionalInterface
+  public interface LightEdgeFarCopyConsumer {
+    /**
+     * @param vertex    the vertex whose list is being rebuilt
+     * @param direction the list of {@code vertex} the entry belongs in
+     * @param edgeRID   the lightweight edge's RID, as the far endpoint's list stores it
+     * @param farVertex the other endpoint, whose list the copy was read from
+     */
+    void accept(RID vertex, Vertex.DIRECTION direction, RID edgeRID, RID farVertex);
+  }
+
+  /**
+   * Finds, in the lists of every vertex, the copies of the LIGHTWEIGHT edges the given vertices had in the lists being
+   * rebuilt (#10406, #10407). A lightweight edge has no record, so a rebuild from the edge records cannot see it; one of a
+   * BIDIRECTIONAL type is stored in both endpoints' lists, though:
+   * <ul>
+   * <li>{@code v -> x}, needed in {@code v}'s OUT list, is the entry {@code (edge, v)} of {@code x}'s IN list;</li>
+   * <li>{@code y -> v}, needed in {@code v}'s IN list, is the entry {@code (edge, v)} of {@code y}'s OUT list.</li>
+   * </ul>
+   * The OUT entries are handed to the consumer before the IN ones, each with the multiplicity the far lists hold: a
+   * lightweight type that is not unique can link the same pair more than once.
+   * <p>
+   * A FULL WALK of the adjacency of every vertex, so meant for the repairs only, and only the side that can answer is
+   * walked: the IN lists when an OUT list is rebuilt, the OUT lists when an IN list is. A far list that is itself being
+   * rebuilt is not read - whatever it still holds is the caller's to carry over - while the other list of a vertex being
+   * rebuilt is: a self-loop's other copy is there. A list is read chain by chain, best effort
+   * ({@link #readEdgeListEntries}), so an unreadable part of a far list costs only the copies it held.
+   * <p>
+   * A unidirectional lightweight edge has no far copy, and none is invented: an entry of an edge type that is gone or is
+   * not bidirectional is skipped.
+   */
+  public void forEachLightEdgeFarCopy(final Set<RID> outVertices, final Set<RID> inVertices,
+      final LightEdgeFarCopyConsumer consumer) {
+    if (outVertices.isEmpty() && inVertices.isEmpty())
+      return;
+
+    final List<String> vertexTypes = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof VertexType)
+        vertexTypes.add(type.getName());
+
+    final Map<Integer, Boolean> bidirectionalByBucket = new HashMap<>();
+
+    // ONE WALK PER SIDE, OUT LISTS BEING REBUILT FIRST: THAT KEEPS THE PROMISED ORDER WITHOUT BUFFERING EITHER SIDE
+    for (final Vertex.DIRECTION targetDirection : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
+      final Set<RID> targets = targetDirection == Vertex.DIRECTION.OUT ? outVertices : inVertices;
+      if (targets.isEmpty())
+        continue;
+      // AN OUT LIST BEING REBUILT IS FED BY THE FAR IN LISTS, AN IN LIST BY THE FAR OUT LISTS
+      final Vertex.DIRECTION farDirection = targetDirection == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+      final Set<RID> farListsBeingRebuilt = targetDirection == Vertex.DIRECTION.OUT ? inVertices : outVertices;
+
+      for (final String vertexType : vertexTypes)
+        database.scanType(vertexType, false, record -> {
+          if (farListsBeingRebuilt.contains(record.getIdentity()))
+            return true;
+          final VertexInternal far;
+          try {
+            far = (VertexInternal) record.asVertex(true);
+          } catch (final Exception e) {
+            // AN UNREADABLE VERTEX HOLDS NO COPY ANYBODY CAN READ
+            return true;
+          }
+          final RID farRID = far.getIdentity();
+          readEdgeListEntries(far, farDirection, (edgeRID, neighbour) -> {
+            if (edgeRID != null && neighbour != null && edgeRID.getPosition() < 0 && targets.contains(neighbour)
+                && bidirectionalByBucket.computeIfAbsent(edgeRID.getBucketId(), this::isBidirectionalEdgeBucket))
+              consumer.accept(neighbour, targetDirection, edgeRID, farRID);
+          });
+          return true;
+        }, (rid, exception) -> true);
+    }
+  }
+
+  private boolean isBidirectionalEdgeBucket(final int bucketId) {
+    return database.getSchema().getTypeByBucketId(bucketId) instanceof EdgeType type && type.isBidirectional();
+  }
+
+  /**
+   * The LIGHTWEIGHT edge types in which the rebuild of an OUT list may have lost an edge for good (#10407): a
+   * unidirectional lightweight edge is stored only in its source's OUT list, so no other list holds a copy of it.
+   */
+  public List<String> lightEdgeTypesWithoutFarCopy() {
+    final List<String> names = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof EdgeType edgeType && edgeType.isLightweight() && !edgeType.isBidirectional())
+        names.add(edgeType.getName());
+    return names;
+  }
+
+  /**
+   * Reads every entry of the edge list of {@code vertex} in {@code direction} into {@code consumer} as (edge, other
+   * endpoint), BEST EFFORT, for the repairs that read lists they cannot trust (#10377, #10406): every chain is read on its
+   * own - the single chain of the classic layout, each stripe chain of a promoted list - and a chain that fails is read up
+   * to where it fails, so a lost chunk or stripe costs only the entries it held.
+   *
+   * @return the first failure met, or null when the whole list was read
+   */
+  public Exception readEdgeListEntries(final VertexInternal vertex, final Vertex.DIRECTION direction,
+      final BiConsumer<RID, RID> consumer) {
+    final RID head;
+    try {
+      head = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    } catch (final Exception e) {
+      return e;
+    }
+    if (head == null)
+      return null;
+
+    Exception firstError = null;
+    final List<RID> chainHeads = new ArrayList<>();
+    try {
+      if (database.lookupByRID(head, true) instanceof StripeDirectory directory) {
+        for (int g = directory.getGenerationCount() - 1; g >= 0; g--)
+          for (int s = 0; s < directory.getStripes(g); s++) {
+            final RID chainHead = directory.getHead(g, s);
+            if (chainHead != null)
+              chainHeads.add(chainHead);
+          }
+      } else
+        chainHeads.add(head);
+    } catch (final Exception e) {
+      firstError = e;
+    }
+
+    for (final RID chainHead : chainHeads) {
+      try {
+        final EdgeLinkedList chain = new EdgeLinkedList(vertex, direction, (EdgeSegment) database.lookupByRID(chainHead, true));
+        final Iterator<Pair<RID, RID>> entries = chain.entryIterator();
+        while (entries.hasNext()) {
+          final Pair<RID, RID> entry = entries.next();
+          consumer.accept(entry.getFirst(), entry.getSecond());
+        }
+      } catch (final Exception e) {
+        if (firstError == null)
+          firstError = e;
+      }
+    }
+    return firstError;
+  }
+
+  /**
+   * Re-adds one entry a repair recovered to the edge list of {@code vertex} (#10406, #10407), with the bookkeeping a
+   * lightweight entry appended by a transaction needs (see {@link #lightEdgeEntryAppended}).
+   */
+  public void relinkEdgeListEntry(final Vertex vertex, final Vertex.DIRECTION direction, final RID edgeRID, final RID other) {
+    getOrCreateEdgeList(vertex.modify(), direction).add(edgeRID, other);
+    if (edgeRID.getPosition() < 0)
+      lightEdgeEntryAppended(vertex.getIdentity(), direction, edgeRID.getBucketId(), other);
   }
 
   /**
@@ -780,9 +954,14 @@ public class GraphEngine {
     final Set<RID> asSet = Set.of(targetRid);
     final long[] counts = reconnectEdgesFromSurvivors(asSet, asSet);
 
-    LogManager.instance()
-            .log(this, Level.WARNING, "Restored vertex %s (type=%s): reconnected %d outgoing and %d incoming edge(s) from surviving records",
-                    null, targetRid, typeName, counts[0], counts[1]);
+    LogManager.instance().log(this, Level.WARNING,
+        "Restored vertex %s (type=%s): reconnected %d outgoing and %d incoming edge(s), %d and %d of them lightweight, from surviving records and lists",
+        null, targetRid, typeName, counts[0], counts[1], counts[2], counts[3]);
+    final List<String> unrecoverable = lightEdgeTypesWithoutFarCopy();
+    if (!unrecoverable.isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Restored vertex %s: an outgoing lightweight edge of the unidirectional type(s) %s was stored only in the vertex's own list and cannot be restored",
+          null, targetRid, unrecoverable);
 
     return targetRid.asVertex(true);
   }
