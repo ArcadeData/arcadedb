@@ -27,7 +27,6 @@ import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.TimeSeriesType;
 
 import java.util.List;
 
@@ -96,7 +95,6 @@ public final class TimeSeriesPatternGuard {
       return;
     for (int i = 0; i < names.size(); i++)
       // a lookup per name: a pattern naming no time-series type, which is every pattern of a graph query, costs only that
-      if (schema.getTypeOrNull(names.get(i)) instanceof TimeSeriesType type)
-        Labels.requireNotTimeSeriesType(type, kind);
+      Labels.requireNotTimeSeriesType(schema.getTypeOrNull(names.get(i)), kind);
   }
 }

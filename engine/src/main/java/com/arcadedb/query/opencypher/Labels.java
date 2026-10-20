@@ -581,12 +581,6 @@ public final class Labels {
       return database.iterateType(label, true);
     }
 
-    // A static label was refused when the statement was planned (TimeSeriesPatternGuard), but a dynamic one is only
-    // known now (issue #10440)
-    if (labels != null)
-      for (int i = 0; i < labels.size(); i++)
-        requireNotTimeSeriesType(schema.getTypeOrNull(labels.get(i)), "label");
-
     final List<DocumentType> types = matchingVertexTypes(schema, labels, disjunction);
     if (types.isEmpty())
       return Collections.emptyIterator();

@@ -72,9 +72,8 @@ class CypherTimeSeriesLabelIssue10440Test {
 
   @Test
   void sqlStillSeesTheSamples() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM Ev")) {
-      assertThat(rs.next().<Long>getProperty("n")).isEqualTo(2L);
-    }
+    // the rows themselves, not count(*), whose cached counter is a separate path
+    assertThat(drain(database.query("sql", "SELECT FROM Ev"))).hasSize(2);
   }
 
   @ParameterizedTest
@@ -103,26 +102,35 @@ class CypherTimeSeriesLabelIssue10440Test {
       "MATCH (p:P) RETURN p.name AS n UNION MATCH (e:Ev) RETURN e.k AS n",
       // a relationship type naming the time-series type
       "MATCH ()-[r:Ev]->() RETURN count(r) AS n",
+      // EXPLAIN plans the same statement
+      "EXPLAIN MATCH (e:Ev) RETURN e"
+  })
+  void readPatternOnTimeSeriesTypeFails(final String query) {
+    assertThatThrownBy(() -> drain(database.query("cypher", query)))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(MESSAGE);
+    // the command entry point plans the same way
+    assertThatThrownBy(() -> drain(database.command("cypher", query)))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(MESSAGE);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
       // the write clauses failed before too, but with an opaque message
       "MERGE (e:Ev {k: 'z'}) RETURN e",
       "CREATE (e:Ev {k: 'z'}) RETURN e",
       // patterns in a FOREACH body, and in a pattern predicate of a SET or a DELETE
       "MATCH (p:P) FOREACH (x IN [1] | MERGE (:Ev {k: 'z'}))",
       "MATCH (p:P) SET p.hasEv = EXISTS { (p)-->(:Ev) }",
-      "MATCH (p:P) WITH p WHERE (p)-->(:Ev) DETACH DELETE p",
-      // EXPLAIN plans the same statement
-      "EXPLAIN MATCH (e:Ev) RETURN e"
+      "MATCH (p:P) WITH p WHERE (p)-->(:Ev) DETACH DELETE p"
   })
-  void patternOnTimeSeriesTypeFails(final String query) {
+  void writePatternOnTimeSeriesTypeFails(final String query) {
     assertThatThrownBy(() -> drain(database.command("cypher", query)))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining(MESSAGE);
-    // the read-only entry point plans the same way
-    if (!query.startsWith("MERGE") && !query.startsWith("CREATE") && !query.contains("FOREACH") && !query.contains(" SET ")
-        && !query.contains("DELETE"))
-      assertThatThrownBy(() -> drain(database.query("cypher", query)))
-          .isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining(MESSAGE);
+    // refused before anything ran: the vertices are untouched
+    assertThat(drain(database.query("cypher", "MATCH (p:P) WHERE p.hasEv IS NULL RETURN p"))).hasSize(2);
   }
 
   @Test
@@ -135,6 +143,9 @@ class CypherTimeSeriesLabelIssue10440Test {
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining(MESSAGE);
     assertThatThrownBy(() -> drain(database.query("cypher", "WITH ['P', 'Ev'] AS l MATCH (n:$(l)) RETURN n")))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(MESSAGE);
+    assertThatThrownBy(() -> drain(database.command("cypher", "WITH ['Ev', 'P'] AS l MATCH (n:$(l)) RETURN n")))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining(MESSAGE);
   }
