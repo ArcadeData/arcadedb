@@ -88,6 +88,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
+    // BEFORE ANY REWRITE: THE REWRITES BELOW TAKE THE LABEL OUT OF THE has() STEP (#10442)
+    if (traversal.getGraph().orElse(null) instanceof ArcadeGraph arcadeGraph)
+      TimeSeriesLabelGuard.check(arcadeGraph.database.getSchema(), traversal);
+
     boolean replacedWithFilterByType = false;
     final List<Step> steps = traversal.getSteps();
     for (int i = 1; i < steps.size(); i++) {
