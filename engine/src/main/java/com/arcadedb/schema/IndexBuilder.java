@@ -19,6 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CommittedReadScope;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
@@ -503,7 +505,42 @@ public abstract class IndexBuilder<T extends Index> {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx == null || !tx.hasChanges())
       return false;
+    return tx.hasChangesInFiles(scannedFileIds(database, buckets));
+  }
 
+  /**
+   * The same question as {@link #callerTransactionHasChangesIn}, asked of EVERY active transaction stacked on this thread rather
+   * than only the innermost one, for the sorted build (issue #10466). That build sets the whole stack aside
+   * ({@link CommittedReadScope}), so a write any frame made to the scanned buckets would be missed by the
+   * scan and never added to the index when that frame commits - an empty nested transaction over an outer one that wrote a record
+   * is the shape that matters. A write a frame made ELSEWHERE is invisible to the scan anyway, and the build writes only into
+   * index files it creates itself, which no frame of the caller can hold a page of.
+   *
+   * @param buckets the buckets the build is about to scan
+   */
+  static boolean anyCallerTransactionHasChangesIn(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      return false;
+
+    IntHashSet fileIds = null;
+    for (int i = context.transactions.size() - 1; i > -1; --i) {
+      final TransactionContext tx = context.transactions.get(i);
+      if (!tx.isActive() || !tx.hasChanges())
+        continue;
+      if (fileIds == null)
+        fileIds = scannedFileIds(database, buckets);
+      if (tx.hasChangesInFiles(fileIds))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * The files a scan of {@code buckets} reads: each bucket and the paired external-property bucket a record's content can
+   * live in.
+   */
+  private static IntHashSet scannedFileIds(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
     final LocalSchema schema = database.getSchema().getEmbedded();
     final IntHashSet fileIds = new IntHashSet(buckets.size() * 2);
     for (final Bucket bucket : buckets) {
@@ -519,7 +556,7 @@ public abstract class IndexBuilder<T extends Index> {
           fileIds.add(externalBucketId);
       }
     }
-    return tx.hasChangesInFiles(fileIds);
+    return fileIds;
   }
 
   /**
