@@ -115,12 +115,13 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
   }
 
   /**
-   * A delete that fails on the second shard of the leader leaves the first one rewritten and, as the session is not published, not
-   * shipped: the follower still holds those samples. The statement run again finds nothing left to delete in the first shard and must
-   * ship its file all the same, or the follower would keep the samples for good (a compaction would heal it only when new data arrives).
+   * A delete that fails on the second shard of the leader has already rewritten the first one: its sealed file, and its mutable pages,
+   * which the transaction committed into the replication session's buffer. The session must end normally and publish them, or the
+   * followers would keep samples the leader deleted while the wrapper quarantined the leader to resync it from them. The statement
+   * reports the failure, the follower holds what the leader holds, and running it again finishes the job on both.
    */
   @Test
-  void aDeleteThatFailedOnALaterShardIsMadeGoodOnTheFollowerByRunningItAgain() throws Exception {
+  void aDeleteThatFailedOnALaterShardStillPublishesTheShardsBeforeIt() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
     final int followerIndex = 1 - leaderIndex;
@@ -130,9 +131,10 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     waitForAllServers();
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
-    // every sample sealed: the delete changes sealed files only, which is the case no page write of the session betrays
-    insert(leaderDb, 0, 100);
+    // 60 samples sealed, 40 more in the mutable pages of both shards
+    insert(leaderDb, 0, 60);
     engine(leaderIndex).compactAll();
+    insert(leaderDb, 60, 100);
     waitForAllServers();
     assertThat(awaitCountOn(followerIndex, 100L)).isEqualTo(100L);
 
@@ -145,8 +147,17 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     } finally {
       Files.deleteIfExists(obstruction);
     }
-    assertThat(count(leaderIndex)).as("the first shard of the leader was rewritten").isLessThan(100L);
-    assertThat(count(followerIndex)).as("nothing was published, the follower is as it was").isEqualTo(100L);
+    final long afterTheFailure = count(leaderIndex);
+    assertThat(afterTheFailure).as("the first shard of the leader was rewritten").isLessThan(100L);
+    assertThat(afterTheFailure).as("the second shard is as it was").isGreaterThan(10L);
+
+    // published without waiting for a rerun: the follower holds what the leader holds, in both layers, and the leader was not
+    // quarantined and given the follower's older state back
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, afterTheFailure)).as("follower after the failed statement").isEqualTo(afterTheFailure);
+    assertThat(count(leaderIndex)).as("leader after the failed statement").isEqualTo(afterTheFailure);
+    assertThat(sealedSamples(followerIndex)).as("follower sealed samples").isEqualTo(sealedSamples(leaderIndex));
+    assertThat(mutableSamples(followerIndex)).as("follower mutable samples").isEqualTo(mutableSamples(leaderIndex));
 
     leaderDb.command("sql", "DELETE FROM sensor WHERE ts >= " + (BASE + 10_000L)).close();
     waitForAllServers();
@@ -155,6 +166,7 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     assertThat(awaitCountOn(leaderIndex, expected)).as("leader").isEqualTo(expected);
     assertThat(awaitCountOn(followerIndex, expected)).as("the follower after the statement was run again").isEqualTo(expected);
     assertThat(sealedSamples(followerIndex)).isEqualTo(sealedSamples(leaderIndex));
+    assertThat(mutableSamples(followerIndex)).isEqualTo(mutableSamples(leaderIndex));
     assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get()).as("page-version gaps seen by the follower").isZero();
   }
 

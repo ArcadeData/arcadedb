@@ -1272,9 +1272,13 @@ public class TimeSeriesEngine implements AutoCloseable {
    * retryable on this node. A session another maintenance pass holds is waited for, a few seconds at most, then refused with a
    * {@link NeedRetryException}: nothing was deleted by an attempt that did not run.
    * <p>
-   * Deleting what is already gone deletes nothing, so a statement that failed half way can be run again. Readers are held off for the
-   * rewrite of a shard (the compaction write lock, as retention holds it), and a long read that straddles it fails with
-   * {@link TimeSeriesWalkCoarsenedException} rather than answer from blocks that no longer exist.
+   * A shard that fails (a disk, a page conflict that outlasts its retries) stops the statement: the shards before it are done, and the
+   * session ends normally and publishes them (their pages and sealed bytes), so the followers hold what this node holds; the failure is
+   * thrown after that. Deleting what is already gone deletes nothing, so a statement that failed half way can be run again.
+   * <p>
+   * Readers are held off for the rewrite of a shard (the compaction write lock, as retention holds it), and a long read that straddles
+   * it fails with {@link TimeSeriesWalkCoarsenedException} rather than answer from blocks that no longer exist. A delete with a tag
+   * filter decodes every block that overlaps its range, and holds the shard for as long as that takes.
    *
    * @param tagFilter the tag conditions, or {@code null} for samples of any tags
    *
@@ -1297,6 +1301,9 @@ public class TimeSeriesEngine implements AutoCloseable {
       };
 
     final long[] deleted = new long[1];
+    // the shard a delete failed on, with its failure: the shards before it are done and the session publishes them
+    final int[] failedShard = { -1 };
+    final Exception[] failure = new Exception[1];
     boolean ran = false;
     try {
       for (int attempt = 0; attempt < DELETE_SESSION_ATTEMPTS && !ran; attempt++) {
@@ -1307,10 +1314,23 @@ public class TimeSeriesEngine implements AutoCloseable {
           RetryBackoff.sleep(attempt - 1, 20L, 500L);
         }
         deleted[0] = 0L;
+        failedShard[0] = -1;
+        failure[0] = null;
         // One session for all shards, like retention: the pages and the sealed bytes of the whole statement are one replication unit
         ran = db.runWithCompactionReplication(() -> {
-          for (final TimeSeriesShard shard : shards)
-            shard.runSealedRewrite(() -> deleted[0] += shard.deleteSamplesLocked(fromTs, toTs, tagFilter));
+          for (final TimeSeriesShard shard : shards) {
+            try {
+              shard.runSealedRewrite(() -> deleted[0] += shard.deleteSamplesLocked(fromTs, toTs, tagFilter));
+            } catch (final IOException | RuntimeException e) {
+              // Not thrown out of the session: the shards before this one have committed their pages into the session's buffer, and a
+              // session that ends in an exception is not published, so under HA the followers would keep samples this node deleted
+              // while the wrapper quarantined this database to resync it. The session ends normally, publishes what is done, and the
+              // failure is thrown below, once the followers hold what the leader holds.
+              failedShard[0] = shard.getShardIndex();
+              failure[0] = e;
+              break;
+            }
+          }
           return true;
         });
       }
@@ -1328,9 +1348,17 @@ public class TimeSeriesEngine implements AutoCloseable {
           + "(a compaction, a retention, a delete) holds the replication session, or the leadership moved. Nothing was deleted: run the "
           + "statement again");
     }
-    // published, for every shard: the sealed files this statement rewrote, or that an earlier one failed to ship, are on the followers
+    // published, for every shard the statement got through: the sealed files it rewrote, or that an earlier one failed to ship, are on
+    // the followers. The shard it failed on keeps its marker (its sealed bytes may not have been recorded), the ones after it were not
+    // visited and keep theirs
     for (final TimeSeriesShard shard : shards)
-      shard.sealedDeletePublished();
+      if (failedShard[0] < 0 || shard.getShardIndex() < failedShard[0])
+        shard.sealedDeletePublished();
+    if (failure[0] != null) {
+      if (failure[0] instanceof IOException)
+        throw (IOException) failure[0];
+      throw (RuntimeException) failure[0];
+    }
     return deleted[0];
   }
 
