@@ -1733,7 +1733,7 @@ class CypherExpressionBuilder {
    * silently breaks conditions such as {@code CASE WHEN exists((u)-[:R]->()) ... } (issue #4993).
    */
   Expression parseFunctionInvocation(final Cypher25Parser.FunctionInvocationContext ctx) {
-    final String functionName = ctx.functionName().getText();
+    final String functionName = ParserUtils.qualifiedName(ctx.functionName().namespace(), ctx.functionName().symbolicNameString());
     final boolean distinct = ctx.DISTINCT() != null;
     final List<Expression> arguments = new ArrayList<>();
 

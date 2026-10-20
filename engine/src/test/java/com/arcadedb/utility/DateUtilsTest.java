@@ -18,11 +18,17 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -386,5 +392,38 @@ class DateUtilsTest {
     final LocalDateTime written = LocalDateTime.parse("1960-06-15T12:30:45.123456");
     final long micros = ChronoUnit.MICROS.between(Instant.EPOCH, written.toInstant(ZoneOffset.UTC));
     assertThat(DateUtils.dateTime(null, micros, ChronoUnit.MICROS, LocalDateTime.class, ChronoUnit.MICROS)).isEqualTo(written);
+  }
+
+  /**
+   * Issue #10441: the openCypher temporal wrappers are what Cypher hands every SQL function it calls, and what a property
+   * it wrote reads back as. Every converter answers them as it answers the {@code java.time} value inside.
+   */
+  @Test
+  void convertsCypherTemporalsThatNameAMoment() {
+    final ZonedDateTime zoned = ZonedDateTime.parse("2026-10-19T10:00:33.123456789+02:00");
+    final LocalDateTime local = LocalDateTime.parse("2026-10-19T08:00:33.123456789");
+    final LocalDate date = LocalDate.parse("2026-10-19");
+
+    assertThat(DateUtils.toEpochMillis(new CypherDateTime(zoned))).isEqualTo(DateUtils.toEpochMillis(zoned));
+    assertThat(DateUtils.toEpochMillis(new CypherLocalDateTime(local))).isEqualTo(DateUtils.toEpochMillis(local));
+    assertThat(DateUtils.toEpochMillis(new CypherDate(date))).isEqualTo(DateUtils.toEpochMillis(date));
+
+    for (final ChronoUnit unit : new ChronoUnit[] { ChronoUnit.SECONDS, ChronoUnit.MILLIS, ChronoUnit.MICROS, ChronoUnit.NANOS }) {
+      assertThat(DateUtils.dateTimeToTimestamp(new CypherDateTime(zoned), unit)).isEqualTo(DateUtils.dateTimeToTimestamp(zoned, unit));
+      assertThat(DateUtils.dateTimeToTimestamp(new CypherLocalDateTime(local), unit)).isEqualTo(
+          DateUtils.dateTimeToTimestamp(local, unit));
+      assertThat(DateUtils.dateTimeToTimestampExact(null, new CypherDateTime(zoned), unit)).isEqualTo(
+          DateUtils.dateTimeToTimestampExact(null, zoned, unit));
+      assertThat(DateUtils.dateTimeToTimestampExact(null, new CypherDate(date), unit)).isEqualTo(
+          DateUtils.dateTimeToTimestampExact(null, date, unit));
+    }
+  }
+
+  /** A time of day and a duration are not moments: still refused, never answered with a number that means something else. */
+  @Test
+  void refusesCypherTemporalsThatAreNotAMoment() {
+    assertThat(DateUtils.dateTimeToTimestamp(new CypherLocalTime(LocalTime.of(8, 0)), ChronoUnit.MILLIS)).isNull();
+    assertThat(DateUtils.dateTimeToTimestampExact(null, CypherDuration.parse("PT1M"), ChronoUnit.MILLIS)).isNull();
+    assertThatThrownBy(() -> DateUtils.toEpochMillis(CypherDuration.parse("PT1M"))).isInstanceOf(IllegalArgumentException.class);
   }
 }

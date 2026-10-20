@@ -46,6 +46,21 @@ public class ParserUtils {
 
 
   /**
+   * The dotted name of a function or procedure, {@code namespace symbolicNameString} in the grammar, with every segment
+   * unescaped: {@code sql.`ts.timeBucket`} is {@code sql.ts.timeBucket}, as {@code `ts`.`timeBucket`} is
+   * {@code ts.timeBucket}. The raw {@code getText()} kept the backticks, so a quoted segment never named the function it
+   * quotes (issue #10441).
+   */
+  public static String qualifiedName(final Cypher25Parser.NamespaceContext namespace, final Cypher25Parser.SymbolicNameStringContext name) {
+    if (namespace == null || namespace.symbolicNameString().isEmpty())
+      return stripBackticks(name.getText());
+    final StringBuilder result = new StringBuilder();
+    for (final Cypher25Parser.SymbolicNameStringContext segment : namespace.symbolicNameString())
+      result.append(stripBackticks(segment.getText())).append('.');
+    return result.append(stripBackticks(name.getText())).toString();
+  }
+
+  /**
    * Strips backticks from an escaped symbolic name.
    * Handles both regular backticks and double backticks (escaped backticks).
    *
