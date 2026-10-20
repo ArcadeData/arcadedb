@@ -70,6 +70,13 @@ public class CypherExecutionPlanner {
    * @return execution plan
    */
   public CypherExecutionPlan createExecutionPlan(final ContextConfiguration configuration) {
+    // A pattern naming a time-series type would match nothing and answer as if the series held no samples (issue #10440).
+    // Walked once over the whole statement, UNION branches and subquery bodies included
+    TimeSeriesPatternGuard.check(database.getSchema(), statement);
+    return buildExecutionPlan(configuration);
+  }
+
+  private CypherExecutionPlan buildExecutionPlan(final ContextConfiguration configuration) {
     // Handle UNION statements specially
     if (statement instanceof UnionStatement) {
       return createUnionExecutionPlan((UnionStatement) statement, configuration);
@@ -109,7 +116,7 @@ public class CypherExecutionPlanner {
     for (final CypherStatement subquery : unionStatement.getQueries()) {
       final CypherExecutionPlanner subPlanner = new CypherExecutionPlanner(database, subquery, parameters,
           expressionEvaluator);
-      subqueryPlans.add(subPlanner.createExecutionPlan(configuration));
+      subqueryPlans.add(subPlanner.buildExecutionPlan(configuration));
     }
 
     // Determine if all unions are UNION ALL (no deduplication needed)

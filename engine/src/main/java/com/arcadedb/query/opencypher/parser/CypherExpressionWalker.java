@@ -100,6 +100,10 @@ import java.util.Map;
  * {@link Visitor#forNestedStatement(CypherStatement)}: a check that reads variable kinds re-binds itself to the inner
  * scope there, and one that does not simply keeps the same visitor.
  * <p>
+ * <b>The walk is also what backs {@code TimeSeriesPatternGuard}</b>, which refuses at planning every pattern naming a
+ * time-series type through {@link Visitor#visitPattern} (issue #10440). A clause or expression holding a pattern that this
+ * walk does not reach lets such a pattern through, and it answers zero rows again instead of failing.
+ * <p>
  * <b>Add a case here when introducing an expression type that nests other expressions.</b> The {@code default} arms
  * treat an unrecognised type as a leaf, which is right for a literal or a variable but silently hides whatever a new
  * composite type contains: everything inside it would escape every check that runs through this walker, with nothing
