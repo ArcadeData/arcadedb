@@ -56,7 +56,10 @@ public class SecurityUserFileRepository {
   // ServerSecurity monitor, cleared by any successful save() - every save writes the users that are, or are about to be,
   // in force. A save that FAILS leaves it as it was: the local path publishes nothing when its write fails, so it cannot
   // put the disk behind memory, and it cannot bring a disk that already was behind level either. VOLATILE because the
-  // watcher's reload reads it under ServerSecurity's users-policy lock, not under saveLock.
+  // watcher's reload reads it under ServerSecurity's users-policy lock, not under saveLock. Set AFTER the failed write,
+  // never before: a local save succeeding in between would clear it and the failure that follows would leave it clear.
+  // In memory only: after a restart the older file is loaded, and the replicated list comes back from the Raft log,
+  // whose entry the #7752 durability floor keeps out of every snapshot checkpoint until the list is on disk.
   private volatile     boolean diskBehind;
 
   public SecurityUserFileRepository(String securityConfPath) {
