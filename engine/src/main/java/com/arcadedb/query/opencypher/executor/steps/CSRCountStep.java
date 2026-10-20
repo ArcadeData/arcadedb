@@ -53,7 +53,7 @@ public final class CSRCountStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       final Database db = context.getDatabase();
-      GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, op.edgeTypes());
+      GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, op.edgeTypes());
 
       // An operator anchored on "every vertex" can only be answered off a provider whose node domain is every
       // vertex; one built over a subset of the vertex types would count a subset of the graph (issue #5757).

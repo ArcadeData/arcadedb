@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.TypeNameDependant;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -107,58 +108,7 @@ public class GraphAnalyticalViewPersistence {
     final List<GraphAnalyticalView> restoredViews = new ArrayList<>();
     for (final String gavName : allGavs.keySet()) {
       try {
-        final JSONObject gavDef = allGavs.getJSONObject(gavName);
-        final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(gavName);
-
-        if (gavDef.has("vertexTypes")) {
-          final JSONArray vt = gavDef.getJSONArray("vertexTypes");
-          final String[] types = new String[vt.length()];
-          for (int i = 0; i < vt.length(); i++)
-            types[i] = vt.getString(i);
-          builder.withVertexTypes(types);
-        }
-
-        if (gavDef.has("edgeTypes")) {
-          final JSONArray et = gavDef.getJSONArray("edgeTypes");
-          final String[] types = new String[et.length()];
-          for (int i = 0; i < et.length(); i++)
-            types[i] = et.getString(i);
-          builder.withEdgeTypes(types);
-        }
-
-        if (gavDef.has("propertyFilter")) {
-          final JSONArray pf = gavDef.getJSONArray("propertyFilter");
-          final String[] props = new String[pf.length()];
-          for (int i = 0; i < pf.length(); i++)
-            props[i] = pf.getString(i);
-          builder.withProperties(props);
-        }
-
-        if (gavDef.has("edgePropertyFilter")) {
-          final JSONArray epf = gavDef.getJSONArray("edgePropertyFilter");
-          final String[] edgeProps = new String[epf.length()];
-          for (int i = 0; i < epf.length(); i++)
-            edgeProps[i] = epf.getString(i);
-          builder.withEdgeProperties(edgeProps);
-        }
-
-        final String updateModeStr = gavDef.getString("updateMode", "OFF");
-        builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(updateModeStr));
-        final int ct = gavDef.getInt("compactionThreshold", -1);
-        if (ct >= 0)
-          builder.withCompactionThreshold(ct);
-        if (gavDef.has("useWhenStale"))
-          builder.withUseWhenStale(gavDef.getBoolean("useWhenStale"));
-        final JSONArray hierarchies = gavDef.getJSONArray("contractionHierarchies", null);
-        if (hierarchies != null)
-          for (int i = 0; i < hierarchies.length(); i++) {
-            final JSONObject hierarchy = hierarchies.getJSONObject(i);
-            final JSONArray types = hierarchy.getJSONArray("edgeTypes", null);
-            final String[] edgeTypes = new String[types == null ? 0 : types.length()];
-            for (int t = 0; t < edgeTypes.length; t++)
-              edgeTypes[t] = types.getString(t);
-            builder.withContractionHierarchy(hierarchy.getString("weightProperty"), edgeTypes);
-          }
+        final GraphAnalyticalViewBuilder builder = builderFor(database, gavName, allGavs.getJSONObject(gavName));
         // Defers to a persisted CSR from disk if one plausibly applies (issue #6583, made lazy by #6632 —
         // the actual read waits for a real query or an explicit awaitReady()) and only falls back to the
         // async full rebuild below when there is none — see restoreFromDiskOrBuildAsync() for the check
@@ -214,6 +164,79 @@ public class GraphAnalyticalViewPersistence {
     }
 
     return count;
+  }
+
+  /**
+   * A builder of the view {@code gavDef} defines, named {@code gavName}: every setting the definition persists, so a view built
+   * from it is the one that was saved.
+   */
+  static GraphAnalyticalViewBuilder builderFor(final Database database, final String gavName, final JSONObject gavDef) {
+    final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(gavName);
+
+    final String[] vertexTypes = toArray(gavDef.getJSONArray("vertexTypes", null));
+    if (vertexTypes != null)
+      builder.withVertexTypes(vertexTypes);
+    final String[] edgeTypes = toArray(gavDef.getJSONArray("edgeTypes", null));
+    if (edgeTypes != null)
+      builder.withEdgeTypes(edgeTypes);
+    final String[] properties = toArray(gavDef.getJSONArray("propertyFilter", null));
+    if (properties != null)
+      builder.withProperties(properties);
+    final String[] edgeProperties = toArray(gavDef.getJSONArray("edgePropertyFilter", null));
+    if (edgeProperties != null)
+      builder.withEdgeProperties(edgeProperties);
+
+    builder.withUpdateMode(GraphAnalyticalView.UpdateMode.valueOf(gavDef.getString("updateMode", "OFF")));
+    final int ct = gavDef.getInt("compactionThreshold", -1);
+    if (ct >= 0)
+      builder.withCompactionThreshold(ct);
+    if (gavDef.has("useWhenStale"))
+      builder.withUseWhenStale(gavDef.getBoolean("useWhenStale"));
+    final JSONArray hierarchies = gavDef.getJSONArray("contractionHierarchies", null);
+    if (hierarchies != null)
+      for (int i = 0; i < hierarchies.length(); i++) {
+        final JSONObject hierarchy = hierarchies.getJSONObject(i);
+        final String[] types = toArray(hierarchy.getJSONArray("edgeTypes", null));
+        builder.withContractionHierarchy(hierarchy.getString("weightProperty"), types != null ? types : new String[0]);
+      }
+    return builder;
+  }
+
+  private static String[] toArray(final JSONArray array) {
+    if (array == null)
+      return null;
+    final String[] values = new String[array.length()];
+    for (int i = 0; i < values.length; i++)
+      values[i] = array.getString(i);
+    return values;
+  }
+
+  /**
+   * Builds the view persisted as {@code name} again from its definition, for a view the registry no longer holds: its build
+   * failed on open, which unregisters it so the name can be reused, and the definition stayed. Synchronous, so the reason a
+   * build fails reaches the caller rather than a log line.
+   *
+   * @return the view, built, or null when no definition is persisted under the name
+   */
+  public static GraphAnalyticalView rebuildFromDefinition(final Database database, final String name) {
+    final JSONObject allGavs = database.getSchema().getExtension(EXTENSION_KEY);
+    if (allGavs == null || !allGavs.has(name))
+      return null;
+    return builderFor(database, name, allGavs.getJSONObject(name)).skipPersistence().build();
+  }
+
+  /**
+   * The views persisted in the schema as {@link TypeNameDependant}s (issue #10368): a view stores its vertex and edge types by
+   * name, so a type it lists cannot be dropped from under it and a rename of one is carried to it.
+   */
+  public static List<TypeNameDependant> getTypeNameDependants(final Database database) {
+    final JSONObject allGavs = database.getSchema().getExtension(EXTENSION_KEY);
+    if (allGavs == null || allGavs.isEmpty())
+      return List.of();
+    final List<TypeNameDependant> dependants = new ArrayList<>(allGavs.length());
+    for (final String gavName : allGavs.keySet())
+      dependants.add(new GraphAnalyticalViewTypeDependant(database, gavName, allGavs.getJSONObject(gavName)));
+    return dependants;
   }
 
   /**

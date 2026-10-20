@@ -30,6 +30,7 @@ import com.arcadedb.graph.EdgeToVertexIterable;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -202,9 +203,10 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     // Try CSR-accelerated provider for non-edge path
     if (!Boolean.TRUE.equals(shortestPathContext.edge)) {
       final Database db = shortestPathContext.sourceVertex.getDatabase();
-      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam);
-      // Pinned: the search asks it for node ids, neighbours and RIDs until the paths meet, all of the same numbering (issue #10350)
-      shortestPathContext.provider = provider != null ? provider.pinned() : null;
+      // Pinned: the search asks it for node ids, neighbours and RIDs until the paths meet, all of the same numbering (issue #10350),
+      // the statement's pin when it has one (issue #10415)
+      shortestPathContext.provider = GraphViewPins.pin(context,
+          GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam));
       if (shortestPathContext.provider != null)
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
     }

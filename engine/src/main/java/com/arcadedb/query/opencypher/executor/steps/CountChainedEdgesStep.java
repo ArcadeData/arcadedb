@@ -93,7 +93,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     final Database db = context.getDatabase();
     // Need a provider that covers both first-hop and second-hop edge types
     final String[] allTypes = mergeEdgeTypes(firstHopTypes, secondHopTypes);
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, allTypes);
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, allTypes);
 
     final String[] aliasOutputNames = passThroughAliases.keySet().toArray(new String[0]);
     final String[] aliasVarNames = passThroughAliases.values().toArray(new String[0]);

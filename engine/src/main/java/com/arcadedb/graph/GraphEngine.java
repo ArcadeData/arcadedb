@@ -1857,8 +1857,14 @@ public class GraphEngine {
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
     final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
 
-    final boolean hadOutList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.OUT, force);
-    final boolean hadInList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.IN, force);
+    // A SELF-LOOP IS IN BOTH LISTS: THE INCOMING WALK SKIPS THE ONES THE OUTGOING WALK DELETED, SO EACH IS DELETED, AND
+    // REPORTED TO THE DELETE LISTENERS, ONCE (issue #10369). Only when that walk read its whole list: one cut short by a
+    // tolerated failure may not have reached them
+    final EdgeListWalk outWalk = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.OUT, force, null);
+    final EdgeListWalk inWalk = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.IN, force,
+        outWalk == EdgeListWalk.CUT_SHORT ? null : vertexRID);
+    final boolean hadOutList = outWalk != EdgeListWalk.NO_LIST;
+    final boolean hadInList = inWalk != EdgeListWalk.NO_LIST;
 
     if (hadOutList)
       deleteRemainingChunks(mostUpdatedVertex, Vertex.DIRECTION.OUT);
@@ -2236,10 +2242,14 @@ public class GraphEngine {
    * carries a different meaning entirely, has its own policy in {@link #deleteEdgeOfDeletedVertex}, and must not
    * be mistaken for "this vertex's list is corrupt, delete it anyway".
    *
+   * @param skippedNeighbor the neighbour whose entries the walk passes over, read off the list without touching the edge
+   *                        record, or null to delete every edge
+   *
    * @return whether the vertex has an edge list in this direction at all, i.e. whether there are chunk records left
-   * to drain afterwards.
+   * to drain afterwards, and whether the walk read all of it.
    */
-  private boolean deleteEdgesOf(final VertexInternal vertex, final Vertex.DIRECTION direction, final boolean force) {
+  private EdgeListWalk deleteEdgesOf(final VertexInternal vertex, final Vertex.DIRECTION direction, final boolean force,
+      final RID skippedNeighbor) {
     EdgeLinkedList edges = null;
     Iterator<Edge> iterator = null;
     try {
@@ -2257,7 +2267,7 @@ public class GraphEngine {
         // drain still runs. Pinning before the assignment would leave it null and orphan the chunks as well.
         edges.anchorForFullRemoval();
 
-        iterator = edges.edgeIteratorForRemoval();
+        iterator = edges.edgeIteratorForRemoval(skippedNeighbor);
       }
     } catch (final BrokenChunkChainException e) {
       tolerateBrokenChunkChainEdgeList(e, vertex, direction, force);
@@ -2272,7 +2282,7 @@ public class GraphEngine {
     // than folded into the loop condition, which then read as a disguised while(true) - the reference is never
     // reassigned and every exit below is a break.
     if (iterator == null)
-      return edges != null;
+      return edges != null ? EdgeListWalk.CUT_SHORT : EdgeListWalk.NO_LIST;
 
     while (true) {
       final Edge edge;
@@ -2288,29 +2298,30 @@ public class GraphEngine {
         continue;
       } catch (final BrokenChunkChainException e) {
         tolerateBrokenChunkChainEdgeList(e, vertex, direction, force);
-        break;
+        return EdgeListWalk.CUT_SHORT;
       } catch (final NeedRetryException e) {
         tolerateUnreadableEdgeList(e, vertex, direction, force);
-        break;
+        return EdgeListWalk.CUT_SHORT;
       } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
                      | IndexOutOfBoundsException | IllegalArgumentException | ClassCastException | SchemaException e) {
         tolerateUndecodableEdgeList(e, vertex, direction);
-        break;
+        return EdgeListWalk.CUT_SHORT;
       }
 
-      // A SELF-LOOP ARRIVES HERE TWICE, once from each of the vertex's two lists, and that is expected rather than
-      // guarded against: the second call runs the delete pipeline over a record the first already removed (the
-      // iterator does not filter it out - it resolves the edge with loadContent=false, and a lazy handle to a
-      // record deleted earlier in this transaction still resolves), where the disconnection is skipped on both
-      // sides and bucket.deleteRecord absorbs the RecordNotFoundException. The visible consequence is that
-      // onBeforeDelete fires TWICE for a self-loop, which is what this path did before #5760 as well - the
-      // two-phase walk collected it from each list and called delete() on it twice. Pinned as an exact count by
-      // Issue5760VertexDeleteSelfSideSkipTest.aSelfLoopIsWalkedFromBothListsSoItsDeleteEventFiresTwice, so a
-      // non-idempotent listener meets a documented number rather than a surprise.
+      // A self-loop is in both of the vertex's lists, and reaches here once: the incoming walk skips the vertex itself
+      // when the outgoing one read its whole list (see deleteVertex). It used to arrive twice, the second time over a
+      // record the first had removed, so onBeforeDelete and the after-delete listeners heard of ONE deletion twice. A
+      // record-backed edge carries its RID, which lets a listener tell the replay apart; a lightweight one does not, and
+      // a Graph Analytical View counted the second report as a second edge gone (issue #10369)
       deleteEdgeOfDeletedVertex(edge, vertex, force);
     }
 
-    return edges != null;
+    return EdgeListWalk.WALKED;
+  }
+
+  /** What {@link #deleteEdgesOf} found: no list in the direction, a list it read to the end, or one it could not. */
+  private enum EdgeListWalk {
+    NO_LIST, WALKED, CUT_SHORT
   }
 
   /**

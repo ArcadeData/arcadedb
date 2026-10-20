@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.Vertex;
 
 import java.util.ArrayList;
@@ -46,7 +47,9 @@ import java.util.NoSuchElementException;
  */
 class MatchGAVFusedStep extends AbstractExecutionStep {
   private final List<EdgeTraversal>    edges;
-  private final GraphTraversalProvider provider;
+  // The view as the plan holds it, and as this execution reads it: pinned on first use, for the whole statement (issue #10415)
+  private final GraphTraversalProvider liveProvider;
+  private       GraphTraversalProvider provider;
   private       ResultSet              upstream;
   private       Result                 lastUpstreamRecord;
   private       List<ResultInternal>   bufferedResults;
@@ -55,7 +58,7 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
   MatchGAVFusedStep(final CommandContext context, final List<EdgeTraversal> edges, final GraphTraversalProvider provider) {
     super(context);
     this.edges = edges;
-    this.provider = provider;
+    this.liveProvider = provider;
   }
 
   @Override
@@ -64,6 +67,7 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
     this.lastUpstreamRecord = null;
     this.bufferedResults = null;
     this.bufferIndex = 0;
+    this.provider = null;
   }
 
   @Override
@@ -116,6 +120,8 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
    */
   private List<ResultInternal> computeFusedResults(final Result upstream) {
     final List<ResultInternal> results = new ArrayList<>();
+    if (provider == null)
+      provider = GraphViewPins.pin(context, liveProvider);
 
     // Get the starting point from the first edge's source alias
     final String startAlias = edges.get(0).out ? edges.get(0).edge.out.alias : edges.get(0).edge.in.alias;

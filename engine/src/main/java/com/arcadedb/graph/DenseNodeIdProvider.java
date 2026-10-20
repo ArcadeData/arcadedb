@@ -237,8 +237,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
 
   @Override
   public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
-    // Not renumbered, for the reason given on getNeighborView()
-    return null;
+    return translate(delegate.getNeighborViewOfSlice(direction, edgeType));
   }
 
   @Override
@@ -345,13 +344,44 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
     return delegate.isStale();
   }
 
+  /**
+   * The delegate's view, renumbered into the dense space. Holes exist only while an overlay holds deletions, and a view of a
+   * snapshot with an overlay is a copy of the graph already, built for that snapshot (issue #10411): renumbering it is one more
+   * sequential pass, where answering null sent the caller down the per-node path, one array per node, for every query until the
+   * overlay was compacted. The renumbering is monotonic, so each node's neighbours stay in ascending order.
+   */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    // A packed view IS the delegate's own CSR arrays, addressed by its own node IDs. Renumbering it would mean
-    // copying the whole graph, which is the allocation the view exists to avoid, so the honest answer is the one
-    // the SPI already reserves for "I cannot serve this": the caller falls back to per-node lookups, which this
-    // class does renumber.
-    return null;
+    return translate(delegate.getNeighborView(direction, edgeTypes));
+  }
+
+  private NeighborView translate(final NeighborView view) {
+    if (view == null)
+      return null;
+    final int nodes = toDelegate.length;
+    final int[] source = view.neighbors();
+    final int[] offsets = new int[nodes + 1];
+    for (int dense = 0; dense < nodes; dense++) {
+      final int id = toDelegate[dense];
+      int degree = 0;
+      if (id < view.nodeCount())
+        for (int j = view.offset(id), end = view.offsetEnd(id); j < end; j++)
+          if (denseId(source[j]) >= 0)
+            ++degree;
+      offsets[dense + 1] = offsets[dense] + degree;
+    }
+    final int[] neighbors = new int[offsets[nodes]];
+    int pos = 0;
+    for (int dense = 0; dense < nodes; dense++) {
+      final int id = toDelegate[dense];
+      if (id < view.nodeCount())
+        for (int j = view.offset(id), end = view.offsetEnd(id); j < end; j++) {
+          final int neighbor = denseId(source[j]);
+          if (neighbor >= 0)
+            neighbors[pos++] = neighbor;
+        }
+    }
+    return new NeighborView(nodes, offsets, neighbors);
   }
 
   @Override

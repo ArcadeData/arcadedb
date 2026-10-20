@@ -132,7 +132,18 @@ public class EdgeLinkedList {
    * legitimately skipped on a READ - see {@code StripedEdgeList.addChain}.
    */
   public Iterator<Edge> edgeIteratorForRemoval() {
-    return edgeIterator();
+    return edgeIteratorForRemoval(null);
+  }
+
+  /**
+   * {@link #edgeIteratorForRemoval()} that skips the entries reaching {@code skippedNeighbor}, on the pointer read from the
+   * segment (issue #10369): the incoming walk of a vertex being deleted passes the vertex itself, whose self-loops the
+   * outgoing walk already deleted.
+   */
+  public Iterator<Edge> edgeIteratorForRemoval(final RID skippedNeighbor) {
+    final EdgeIterator iterator = withCensus(new EdgeIterator(lastSegment, vertex.getIdentity(), direction));
+    iterator.excludeNeighborVertex(skippedNeighbor);
+    return iterator;
   }
 
   /**
