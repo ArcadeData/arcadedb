@@ -209,7 +209,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private void unlinkReturnedEntry(final EdgeSegment target) {
     final EdgeSegment container = returnedContainer;
     target.removeEntry(returnedBegin, returnedEnd);
-    ((DatabaseInternal) target.getDatabase()).updateRecord(target);
+    // NOT AN APPEND: THE PAGE MUST LEAVE THE EDGE-APPEND MERGE, OR A REBASE ON A CONCURRENT COMMIT REPLAYS THIS
+    // TRANSACTION'S APPENDS TO THE SEGMENT AND DROPS THE REMOVAL, WHILE THE EDGE RECORD STAYS DELETED (#10375)
+    EdgeLinkedList.updateRewrittenSegment((DatabaseInternal) target.getDatabase(), target);
     returnedContainer = null;
 
     // A hasNext() PEEK MAY HAVE MOVED THE CURSOR TO AN OLDER SEGMENT ALREADY: THEN NO POSITION IT HOLDS IS IN THIS ONE,
@@ -243,7 +245,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       final RID vertex = segment.getRID(position);
       if (returnedEdge.equals(edge) && returnedVertex.equals(vertex)) {
         segment.removeEntry(begin, position.get());
-        ((DatabaseInternal) segment.getDatabase()).updateRecord(segment);
+        // THE LISTENER THAT SENT THE REMOVAL HERE MAY HAVE APPENDED TO THIS VERY SEGMENT: SEE unlinkReturnedEntry (#10375)
+        EdgeLinkedList.updateRewrittenSegment((DatabaseInternal) segment.getDatabase(), segment);
         return;
       }
     }

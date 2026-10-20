@@ -1484,11 +1484,16 @@ public class TransactionContext implements Transaction {
    * appends on that page are ignored at commit (the conflict check below excludes poisoned pages), so a rebase
    * can never silently re-derive the page from committed-state + appends. No-op when the feature is off.
    * <p>
-   * Since #5596 this is the fast, precise opt-OUT, no longer the only line of defence: the merge additionally
-   * requires the page to PROVE that every byte this transaction wrote there was declared replayable by it (see
-   * {@link MutablePage#beginCoveredWrite(int)}), so a forgotten call here costs a retry, not a lost write. That
-   * does NOT make the call redundant - see {@link #poisonSlotRebasePage(int, int)} for the #5608 audit of what
-   * poisoning still buys over the proof (skipped tracking work, and a clean {@code mergesDeclinedByCoverage}).
+   * Since #5596 the merge additionally requires the page to PROVE that every byte this transaction wrote there was
+   * declared replayable by it (see {@link MutablePage#beginCoveredWrite(int)}), so a forgotten call here costs a retry,
+   * not a lost write - but only for a page whose segments this transaction never appended to. The declaration is made
+   * once per segment write, over the segment's FINAL buffer, whenever the segment has tracked appends: a buffer that
+   * carries this transaction's appends AND a removal from the same segment is declared replayable as a whole, and a
+   * forgotten call there loses the removal at rebase (#10375). For a segment, this call is therefore the line of
+   * defence, which is why every non-append segment write goes through
+   * {@code EdgeLinkedList.updateRewrittenSegment}. See {@link #poisonSlotRebasePage(int, int)} for
+   * the #5608 audit of what poisoning buys over the proof elsewhere (skipped tracking work, and a clean
+   * {@code mergesDeclinedByCoverage}).
    */
   public void poisonEdgeAppendPage(final RID segmentRID) {
     if (!edgeAppendMerge)
