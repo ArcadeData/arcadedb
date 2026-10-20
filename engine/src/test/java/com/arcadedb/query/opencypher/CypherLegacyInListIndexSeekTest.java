@@ -39,6 +39,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * A {@code WHERE n.prop IN <list>} on an indexed property seeks the index on the legacy MATCH path too, which every query
  * with an OPTIONAL MATCH takes, instead of scanning the type and comparing each record with every element. Each query is
  * checked against the same predicate on {@code idCopy}, an unindexed copy of {@code id}, so the scan defines the answer.
+ * <p>
+ * The rows are compared as they come back, never sorted first (issue #10392): a comparison that sorts cannot see a difference of
+ * order between the two plans, for any input. Without an ORDER BY the order is not part of the contract, and the seek emits the
+ * keys in the order of the list while the scan emits the records in storage order, so most cases compare the rows in any order
+ * and say so; what IS pinned is what a client can rely on - the same rows, a LIMIT taking rows of the answer, pages that
+ * partition it, and one order under an ORDER BY.
  */
 class CypherLegacyInListIndexSeekTest extends TestHelper {
   private static final String OPTIONAL_TAIL = " OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) RETURN p.id AS id";
@@ -74,7 +80,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String seek = "MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL;
     final String scan = "MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL;
 
-    assertThat(ids(seek, params)).containsExactly(3, 7, 42).isEqualTo(ids(scan, params));
+    assertThat(ids(seek, params)).containsExactlyInAnyOrder(3, 7, 42).containsExactlyInAnyOrderElementsOf(ids(scan, params));
     assertThat(plan(seek, params)).contains("[index: Person[id]]");
     assertThat(plan(scan, params)).doesNotContain("[index:");
   }
@@ -83,7 +89,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
   void listLiteralSeeksTheIndex() {
     final String seek = "MATCH (p:Person) WHERE p.id IN [1, 2, 3]" + OPTIONAL_TAIL;
 
-    assertThat(ids(seek, null)).containsExactly(1, 2, 3);
+    assertThat(ids(seek, null)).containsExactlyInAnyOrder(1, 2, 3);
     assertThat(plan(seek, null)).contains("[index: Person[id]]");
   }
 
@@ -101,14 +107,14 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final Map<String, Object> params = Map.of("ids", List.of(2, 3, 4));
 
     assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids AND p.name <> 'Person3'" + OPTIONAL_TAIL, params))
-        .containsExactly(2, 4);
+        .containsExactlyInAnyOrder(2, 4);
   }
 
   @Test
   void disjunctionIsNotSought() {
     final String query = "MATCH (p:Person) WHERE p.id IN [1, 2] OR p.name = 'Person5'" + OPTIONAL_TAIL;
 
-    assertThat(ids(query, null)).containsExactly(1, 2, 5);
+    assertThat(ids(query, null)).containsExactlyInAnyOrder(1, 2, 5);
     assertThat(plan(query, null)).doesNotContain("[index:");
   }
 
@@ -116,7 +122,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
   void negatedInIsNotSought() {
     final String query = "MATCH (p:Person) WHERE NOT p.id IN [1, 2] AND p.id < 5" + OPTIONAL_TAIL;
 
-    assertThat(ids(query, null)).containsExactly(0, 3, 4);
+    assertThat(ids(query, null)).containsExactlyInAnyOrder(0, 3, 4);
     assertThat(plan(query, null)).doesNotContain("[index:");
   }
 
@@ -125,7 +131,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String seek = "UNWIND [[1, 2], [3], [2, 4], []] AS ids MATCH (p:Person) WHERE p.id IN ids" + OPTIONAL_TAIL;
     final String scan = "UNWIND [[1, 2], [3], [2, 4], []] AS ids MATCH (p:Person) WHERE p.idCopy IN ids" + OPTIONAL_TAIL;
 
-    assertThat(ids(seek, null)).containsExactly(1, 2, 2, 3, 4).isEqualTo(ids(scan, null));
+    assertThat(ids(seek, null)).containsExactlyInAnyOrder(1, 2, 2, 3, 4).containsExactlyInAnyOrderElementsOf(ids(scan, null));
   }
 
   @Test
@@ -133,7 +139,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final Map<String, Object> params = Map.of("ids", List.of("5", 6, "x"));
 
     assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL, params))
-        .isEqualTo(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
   }
 
   @Test
@@ -142,7 +148,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String seek = "MATCH (p:Person) WHERE p.code IN $codes" + OPTIONAL_TAIL;
 
     assertThat(ids(seek, params)).hasSize(10)
-        .isEqualTo(ids("MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
     assertThat(plan(seek, params)).contains("[index: Person[code]]");
   }
 
@@ -156,16 +162,72 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String seek = "MATCH (p:Person) WHERE p.code IN $codes" + OPTIONAL_TAIL;
 
     assertThat(ids(seek, params)).hasSize(305)
-        .isEqualTo(ids("MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
     assertThat(plan(seek, params)).contains("[index: Person[code]]");
     assertThat(ids(seek + " LIMIT 3", params)).hasSize(3);
+  }
+
+  @Test
+  void aListNotInSortedOrderAnswersTheSameRowsAsTheScan() {
+    final Map<String, Object> params = Map.of("ids", List.of(42, 3, 7));
+    final String seek = "MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL;
+    final String scan = "MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL;
+
+    assertThat(ids(seek, params)).containsExactlyInAnyOrder(3, 7, 42).containsExactlyInAnyOrderElementsOf(ids(scan, params));
+    assertThat(plan(seek, params)).contains("[index: Person[id]]");
+  }
+
+  /**
+   * The seek answers key by key in the order of the list, each key once at its first place, where the scan answers in storage order
+   * (issue #10392). Neither is a promise to a query without an ORDER BY; the seek's is pinned because a client that pages such a
+   * query depends on it being the same on every run, and a change of it should be a decision.
+   */
+  @Test
+  void theSeekAnswersKeyByKeyInTheOrderOfTheList() {
+    final Map<String, Object> params = Map.of("ids", List.of(42, 3, 42, 7));
+
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL, params)).containsExactly(42, 3, 7);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [42, 3, 7]" + OPTIONAL_TAIL, null)).containsExactly(42, 3, 7);
+  }
+
+  @Test
+  void aLimitTakesRowsOfTheAnswerOnBothPlans() {
+    final Map<String, Object> params = Map.of("ids", List.of(42, 3, 7));
+
+    for (final String property : new String[] { "id", "idCopy" })
+      assertThat(ids("MATCH (p:Person) WHERE p." + property + " IN $ids" + OPTIONAL_TAIL + " LIMIT 2", params))
+          .as(property).hasSize(2).isSubsetOf(3, 7, 42).doesNotHaveDuplicates();
+  }
+
+  @Test
+  void pagesOfTheSeekPartitionTheAnswer() {
+    final Map<String, Object> params = Map.of("ids", List.of(42, 3, 7, 11, 25));
+
+    for (final String property : new String[] { "id", "idCopy" }) {
+      final List<Integer> paged = new ArrayList<>();
+      for (int skip = 0; skip < 6; skip += 2)
+        paged.addAll(ids("MATCH (p:Person) WHERE p." + property + " IN $ids" + OPTIONAL_TAIL + " SKIP " + skip + " LIMIT 2", params));
+
+      assertThat(paged).as(property).containsExactlyInAnyOrder(3, 7, 11, 25, 42);
+    }
+  }
+
+  @Test
+  void underAnOrderByTheSeekAndTheScanAnswerInTheSameOrder() {
+    final Map<String, Object> params = Map.of("ids", List.of(42, 3, 7, 11));
+    final String order = " ORDER BY id";
+
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL + order, params)).containsExactly(3, 7, 11, 42);
+    assertThat(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL + order, params)).containsExactly(3, 7, 11, 42);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL + order + " LIMIT 2", params)).containsExactly(3, 7);
+    assertThat(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL + order + " LIMIT 2", params)).containsExactly(3, 7);
   }
 
   @Test
   void singleElementListSeeksTheIndex() {
     final String seek = "MATCH (p:Person) WHERE p.id IN [5]" + OPTIONAL_TAIL;
 
-    assertThat(ids(seek, null)).containsExactly(5);
+    assertThat(ids(seek, null)).containsExactlyInAnyOrder(5);
     assertThat(plan(seek, null)).contains("[index: Person[id]]");
   }
 
@@ -175,13 +237,13 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     params.put("ids", Arrays.asList(true, 3.0, 4.5, "7", "7.0", LocalDate.of(2020, 1, 1), 8L, List.of(9), Map.of("a", 1)));
 
     assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL, params))
-        .isEqualTo(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
     params.put("ids", Arrays.asList(true, 3.0, 4.5, "7", "7.0", LocalDate.of(2020, 1, 1), 8L));
     assertThat(ids("MATCH (p:Person) WHERE p.id IN $ids" + OPTIONAL_TAIL, params))
-        .isEqualTo(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("MATCH (p:Person) WHERE p.idCopy IN $ids" + OPTIONAL_TAIL, params));
     params.put("ids", Arrays.asList(1, 2.0, "3"));
     assertThat(ids("MATCH (p:Person) WHERE p.code IN $ids" + OPTIONAL_TAIL, params))
-        .isEqualTo(ids("MATCH (p:Person) WHERE p.codeCopy IN $ids" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("MATCH (p:Person) WHERE p.codeCopy IN $ids" + OPTIONAL_TAIL, params));
   }
 
   @Test
@@ -191,8 +253,8 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
       database.command("opencypher", "CREATE (:Employee {id: 100, idCopy: 100})");
     });
 
-    assertThat(ids("MATCH (p:Employee) WHERE p.id IN [3, 100]" + OPTIONAL_TAIL, null)).containsExactly(100);
-    assertThat(ids("MATCH (p:Person) WHERE p.id IN [3, 100]" + OPTIONAL_TAIL, null)).containsExactly(3, 100);
+    assertThat(ids("MATCH (p:Employee) WHERE p.id IN [3, 100]" + OPTIONAL_TAIL, null)).containsExactlyInAnyOrder(100);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [3, 100]" + OPTIONAL_TAIL, null)).containsExactlyInAnyOrder(3, 100);
   }
 
   @Test
@@ -200,8 +262,8 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     // an element only the candidate can answer is no null: the seek has no value for it, so the scan and the filter answer
     assertThat(ids("MATCH (p:Person) WHERE p.id IN [1, p.idCopy]" + OPTIONAL_TAIL, null)).hasSize(50);
     assertThat(ids("MATCH (p:Person) WHERE p.id IN [p.idCopy]" + OPTIONAL_TAIL, null)).hasSize(50);
-    assertThat(ids("MATCH (p:Person) WHERE p.id IN [p.idCopy + 1, 2]" + OPTIONAL_TAIL, null)).containsExactly(2);
-    assertThat(ids("MATCH (p:Person) WHERE p.id IN [size(p.name) - 7]" + OPTIONAL_TAIL, null)).containsExactly(0);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [p.idCopy + 1, 2]" + OPTIONAL_TAIL, null)).containsExactlyInAnyOrder(2);
+    assertThat(ids("MATCH (p:Person) WHERE p.id IN [size(p.name) - 7]" + OPTIONAL_TAIL, null)).containsExactlyInAnyOrder(0);
     assertThat(plan("MATCH (p:Person) WHERE p.id IN [1, p.idCopy]" + OPTIONAL_TAIL, null)).doesNotContain("[index:");
   }
 
@@ -209,7 +271,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
   void listElementReadingTheMatchedNodeOfAChainedMatchIsNotDropped() {
     final String query = "UNWIND [1, 2] AS k MATCH (p:Person) WHERE p.id IN [k, p.idCopy + 100]" + OPTIONAL_TAIL;
 
-    assertThat(ids(query, null)).containsExactly(1, 2);
+    assertThat(ids(query, null)).containsExactlyInAnyOrder(1, 2);
     assertThat(ids("UNWIND [1] AS k MATCH (p:Person) WHERE p.id IN [p.idCopy, k]" + OPTIONAL_TAIL, null)).hasSize(50);
   }
 
@@ -219,7 +281,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String seek = "UNWIND [1, 2, 3] AS k MATCH (p:Person) WHERE p.code IN $codes" + OPTIONAL_TAIL;
 
     assertThat(ids(seek, params)).hasSize(30)
-        .isEqualTo(ids("UNWIND [1, 2, 3] AS k MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
+        .containsExactlyInAnyOrderElementsOf(ids("UNWIND [1, 2, 3] AS k MATCH (p:Person) WHERE p.codeCopy IN $codes" + OPTIONAL_TAIL, params));
     assertThat(plan(seek, params)).contains("[index: Person[code]]");
   }
 
@@ -228,7 +290,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final Map<String, Object> params = Map.of("codes", List.of("c1", "c2", "c3", "c4"));
     final String seek = "MATCH (p:Person) WHERE p.code IN $codes AND p.id IN [3, 4, 99]" + OPTIONAL_TAIL;
 
-    assertThat(ids(seek, params)).containsExactly(3, 4);
+    assertThat(ids(seek, params)).containsExactlyInAnyOrder(3, 4);
     assertThat(plan(seek, params)).contains("[index: Person[id]]");
   }
 
@@ -277,7 +339,7 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String indexed = "UNWIND ['c1', 'c2', 'c3', 'c4'] AS a MATCH (p:Person) WHERE p.code IN [a]" + OPTIONAL_TAIL;
 
     final long before = typeScans();
-    assertThat(ids(unindexed, null)).hasSize(20).isEqualTo(ids(indexed, null));
+    assertThat(ids(unindexed, null)).hasSize(20).containsExactlyInAnyOrderElementsOf(ids(indexed, null));
     final long scans = typeScans() - before;
     assertThat(scans).as("scans of the type for the unindexed list and the indexed one, which seeks and scans none").isEqualTo(1L);
   }
@@ -286,13 +348,13 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     return ((Number) ((DatabaseInternal) database).getStats().get("iterateType")).longValue();
   }
 
+  /** The ids in the order the query returned them: sorting here would hide the very difference of order between plans (issue #10392). */
   private List<Integer> ids(final String cypher, final Map<String, Object> params) {
     final List<Integer> ids = new ArrayList<>();
     try (final ResultSet rs = params != null ? database.query("opencypher", cypher, params) : database.query("opencypher", cypher)) {
       while (rs.hasNext())
         ids.add(rs.next().<Integer>getProperty("id"));
     }
-    Collections.sort(ids);
     return ids;
   }
 

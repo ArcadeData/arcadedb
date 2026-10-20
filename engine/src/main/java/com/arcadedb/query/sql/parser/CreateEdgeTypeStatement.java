@@ -72,6 +72,8 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
 
   @Override
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
+    super.checkSuperTypesBeforeCreate(typeName, superclasses);
+
     // A lightweight edge has no record, so it cannot honour a MANDATORY or default-valued property of a super type (#9846)
     if (lightweight)
       for (final DocumentType superclass : superclasses)

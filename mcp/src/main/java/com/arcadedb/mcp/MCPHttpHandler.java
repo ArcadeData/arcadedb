@@ -74,6 +74,15 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     return true;
   }
 
+  /**
+   * JSON-RPC has an error of its own for a body that is not valid JSON, {@code -32700} over HTTP 200, which {@link #execute} answers
+   * from the raw text: the transport-level 400 of the shared pipeline would be the wrong protocol (issue #10395).
+   */
+  @Override
+  protected boolean refusesMalformedPayload() {
+    return false;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     // This endpoint carries JSON-RPC over POST only. MCP allows a GET to open an SSE stream instead, which

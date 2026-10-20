@@ -230,6 +230,13 @@ public class TypeBuilder<T> {
 
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+      // Every super type is asked before the first one is linked or the first bucket is made, so a refusal of the last leaves the
+      // type as it was (issue #10394)
+      if (superTypes != null)
+        for (final LocalDocumentType sup : superTypes)
+          if (!t.getSuperTypes().contains(sup))
+            t.checkCanAddSuperType(sup, true);
+
       if (t.buckets.size() < buckets) {
         // A bucket another type owns is refused by addBucket, but only after the ones before it are attached: the refused growth
         // would keep them (issue #10317)
@@ -247,16 +254,28 @@ public class TypeBuilder<T> {
         }
       }
 
-      boolean modified = false;
+      final List<LocalDocumentType> linked = new ArrayList<>();
       if (superTypes != null)
-        for (LocalDocumentType sup : superTypes) {
-          if (!t.getSuperTypes().contains(sup)) {
-            t.addSuperType(sup);
-            modified = true;
+        try {
+          for (final LocalDocumentType sup : superTypes) {
+            if (!t.getSuperTypes().contains(sup)) {
+              t.addSuperType(sup);
+              linked.add(sup);
+            }
           }
+        } catch (final RuntimeException e) {
+          // Each link is undone by addSuperType itself when it refuses, the ones before it are not: they are given back here, so the
+          // type is not left under some of the super types it asked for (issue #10394)
+          for (final LocalDocumentType sup : linked.reversed())
+            try {
+              t.removeSuperType(sup);
+            } catch (final RuntimeException unlinkFailure) {
+              e.addSuppressed(unlinkFailure);
+            }
+          throw e;
         }
 
-      if (modified) {
+      if (!linked.isEmpty()) {
         schema.saveConfiguration();
         schema.updateSecurity();
       }
@@ -273,11 +292,12 @@ public class TypeBuilder<T> {
       throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
 
     return schema.recordFileChanges(() -> {
-      // BEFORE ANYTHING IS CREATED: the type is registered in the schema and given its buckets before its super types are
-      // linked, so the check addSuperType makes would refuse it with a half-built type left behind (issue #9846)
-      if (edgeLightweight && superTypes != null)
+      // BEFORE ANYTHING IS CREATED: the type is registered in the schema, because the buckets and the indexes that follow find it
+      // there, and its super types are linked after that. Every refusal the super types can already give is asked first, or the
+      // refused create would leave a half-built type behind (issues #9846, #10394)
+      if (superTypes != null)
         for (final LocalDocumentType sup : superTypes)
-          LocalEdgeType.checkCanBeLightweight(typeName, sup);
+          LocalDocumentType.checkSuperTypeOfNewType(typeName, sup, edgeLightweight);
 
       // The same for a bucket another type owns, or one listed twice: addBucket refuses it, but only after the type is registered,
       // which left the type behind with the buckets before it (issue #10317)
@@ -300,29 +320,64 @@ public class TypeBuilder<T> {
 
       schema.typeMap().put(typeName, c);
 
-      if (bucketInstances.isEmpty()) {
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
-          if (schema.existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(schema.getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(schema.createBucket(bucketName, pageSize));
+      // The buckets the type did not make: the ones it found under its own names and the ones it was given. They were nobody's
+      // before it, and what the take-back below leaves alone
+      final List<Bucket> notMadeByTheType = new ArrayList<>();
+      try {
+        if (bucketInstances.isEmpty()) {
+          for (int i = 0; i < buckets; ++i) {
+            final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
+            if (schema.existsBucket(bucketName)) {
+              LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
+              final Bucket found = schema.getBucketByName(bucketName);
+              notMadeByTheType.add(found);
+              c.addBucket(found);
+            } else
+              // CREATE A NEW ONE
+              c.addBucket(schema.createBucket(bucketName, pageSize));
+          }
+        } else {
+          notMadeByTheType.addAll(bucketInstances);
+          for (final Bucket bucket : bucketInstances)
+            c.addBucket(bucket);
         }
-      } else {
-        for (final Bucket bucket : bucketInstances)
-          c.addBucket(bucket);
+
+        if (superTypes != null)
+          for (LocalDocumentType sup : superTypes)
+            c.addSuperType(sup);
+
+        schema.updateSecurity();
+      } catch (final RuntimeException e) {
+        takeBack(schema, c, notMadeByTheType, e);
+        throw e;
       }
-
-      if (superTypes != null)
-        for (LocalDocumentType sup : superTypes)
-          c.addSuperType(sup);
-
-      schema.updateSecurity();
 
       return c;
     });
+  }
+
+  /**
+   * Takes back a type {@link #createInternal} registered and could not finish, so that a refused create leaves the schema as it found
+   * it (issue #10394). What can refuse once the type is registered is the linkage of its super types: a paired external-property
+   * bucket another type owns, an index that cannot be propagated, a partition the subtype cannot take. Asking those beforehand
+   * would be a copy of the code that decides them and would still miss an I/O failure, so this is the net under the checks that
+   * are asked beforehand.
+   * <p>
+   * A compensating drop inside the same schema write lock, as {@code CreateTypeAbstractStatement} does for the statement that links
+   * its super types after the create: the type leaves the type map, takes its super type links, its sub-indexes and the buckets it made
+   * with it, and the buckets it found or was given are detached first so they stay where they were. A failure of the take-back itself
+   * is added to the refusal as suppressed, which stays the exception the caller sees.
+   */
+  private void takeBack(final LocalSchema schema, final LocalDocumentType created, final List<Bucket> notMadeByTheType,
+      final RuntimeException refusal) {
+    try {
+      for (final Bucket bucket : notMadeByTheType)
+        if (created.hasBucket(bucket.getName()))
+          created.removeBucket(bucket);
+      schema.dropType(typeName);
+    } catch (final RuntimeException takeBackFailure) {
+      refusal.addSuppressed(takeBackFailure);
+    }
   }
 
   /**

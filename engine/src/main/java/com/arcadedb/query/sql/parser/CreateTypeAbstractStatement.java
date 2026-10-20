@@ -148,8 +148,8 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       for (final DocumentType c : superclasses)
         type.addSuperType(c);
     } catch (final RuntimeException e) {
-      // The safety net for the refusals only addSuperType can know about (a partition the subtype cannot take, a time series
-      // hierarchy): the type is already registered by then, and a refused CREATE must leave nothing behind. This is a
+      // The safety net for the refusals only addSuperType can know about (a partition the subtype cannot take, an index that
+      // cannot be propagated): the type is already registered by then, and a refused CREATE must leave nothing behind. This is a
       // compensating drop, a second schema session, not an atomic undo: one frame around create plus link is not possible,
       // because addSuperType waits for async quiescence OUTSIDE its frame (the write lock is what an async worker needs to
       // commit), so holding the lock across it would stall. The refusals that can be known beforehand are checked before
@@ -193,7 +193,11 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    * Validates the super types against what this statement declares, BEFORE the type is created. The default accepts all.
    */
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
-    // Nothing to refuse for a statement that declares nothing about its super types. CreateEdgeTypeStatement overrides this
+    // A TIMESERIES type is refused as a super type whatever the new type is, and addSuperType would only say so once the type
+    // exists (issue #10394). CreateEdgeTypeStatement adds what only an edge type can be refused for
+    for (final DocumentType superclass : superclasses)
+      if (superclass instanceof LocalDocumentType local)
+        LocalDocumentType.checkSuperTypeOfNewType(typeName, local, false);
   }
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
