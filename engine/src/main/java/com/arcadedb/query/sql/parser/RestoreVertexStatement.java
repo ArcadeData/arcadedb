@@ -42,6 +42,22 @@ import java.util.Set;
  * unconditionally, not gated by {@code CHECK DATABASE}'s corruption heuristics, which never flag a freshly created,
  * legitimately edge-less vertex as needing a rebuild.
  * <p>
+ * A LIGHTWEIGHT edge has no record: one of a bidirectional type is rebuilt from its copy in the far endpoint's list, and
+ * counted apart in {@code reconnectedLightweightOutEdges}/{@code reconnectedLightweightInEdges} (#10407). An outgoing one
+ * of a unidirectional type was stored in the vertex's own list only and cannot be rebuilt:
+ * {@code unrecoverableLightweightEdgeTypes} names the types in which the vertex may have had such edges. Neither can a
+ * lightweight self-loop: both its copies were in the vertex's own lists. No count can be given for either, since no
+ * surviving structure records them.
+ * <p>
+ * COST: finding those copies reads the edge lists of every vertex of the database, on top of the scan of every edge
+ * record the rebuild always did, whenever the schema holds a bidirectional edge type. It cannot be narrowed to the
+ * types declared LIGHTWEIGHT: the deprecated {@code newLightEdge()} stores lightweight entries under regular types too.
+ * Fine for an emergency repair, not for a routine operation.
+ * <p>
+ * The whole rebuild is written in the CALLER's transaction, deliberately, however many edges the vertex had: the restore
+ * is one atomic repair the caller can roll back, and committing part of it from inside the statement would break that
+ * (as #6220 established for {@code TRUNCATE}). A hub with millions of edges is therefore one large transaction.
+ * <p>
  * Restores graph STRUCTURE only: the vertex's original property values are not recoverable from its edges. SET or
  * CONTENT lets the caller supply them if known from another source (a backup, an application log, ...).
  * <p>
@@ -96,6 +112,11 @@ public class RestoreVertexStatement extends SimpleExecStatement {
     result.setProperty("record", restoredRid.toString());
     result.setProperty("reconnectedOutEdges", counts[0]);
     result.setProperty("reconnectedInEdges", counts[1]);
+    // #10407: THE LIGHTWEIGHT PART OF THE TWO COUNTS ABOVE, REBUILT FROM THE COPIES IN THE FAR ENDPOINTS' LISTS, AND THE TYPES
+    // WHOSE OUTGOING LIGHTWEIGHT EDGES HAD NO SUCH COPY (UNIDIRECTIONAL): ANY THE VERTEX HAD ARE LOST
+    result.setProperty("reconnectedLightweightOutEdges", counts[2]);
+    result.setProperty("reconnectedLightweightInEdges", counts[3]);
+    result.setProperty("unrecoverableLightweightEdgeTypes", database.getGraphEngine().lightEdgeTypesWithoutFarCopy());
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

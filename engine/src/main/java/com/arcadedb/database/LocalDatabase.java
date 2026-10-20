@@ -829,8 +829,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
-        // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635)
-        schema.saveConfigurationAtTransactionEnd();
+        // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635). WRITTEN WITH THE INTERRUPT FLAG
+        // CLEARED AND HANDED BACK AFTER: A COMMIT CANCELLED IN ITS 2ND PHASE CARRIES THE FLAG OUT (#10416), AND A CHANNEL WRITTEN
+        // BY A THREAD WITH THE FLAG SET IS CLOSED UNDER THE WRITE
+        final boolean interrupted = Thread.interrupted();
+        try {
+          schema.saveConfigurationAtTransactionEnd();
+        } finally {
+          if (interrupted)
+            Thread.currentThread().interrupt();
+        }
       }
 
       return null;

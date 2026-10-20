@@ -208,6 +208,10 @@ public class DatabaseChecker {
     // they are carried over from the dropped list. salvagedLightEdges is how many were; unsalvageableEdgeLists is how
     // many dropped lists could not be read in full, i.e. how many may have lost lightweight edges for good.
     result.put("salvagedLightEdges", 0L);
+    // Issue #10406: a lightweight edge of a BIDIRECTIONAL type in the unreadable part of a dropped list is also stored in
+    // the far endpoint's list, and is rebuilt from there. recoveredLightEdges is how many were; what unsalvageableEdgeLists
+    // still counts may have lost only lightweight edges of unidirectional types, which have no such copy.
+    result.put("recoveredLightEdges", 0L);
     result.put("unsalvageableEdgeLists", 0L);
     result.put("invalidLinks", 0L);
     // Issue #6090: the ORPHAN EDGE RECORD findings, seeded so a clean run publishes zeros rather than omitting the
