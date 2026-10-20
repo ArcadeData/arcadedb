@@ -128,6 +128,19 @@ class Issue10415ViewPinnedPerStatementTest extends TestHelper {
     next.openGraphViewPins();
     assertThat(GraphViewPins.pin(next, view)).isNotSameAs(first);
     assertThat(GraphViewPins.pin(new BasicCommandContext(), view)).isNotSameAs(first).isInstanceOf(GraphAnalyticalView.Pinned.class);
+
+    // two statements of one script: the script's context opens no scope, so each statement opens its own and the second does
+    // not inherit the first one's pins, while what the script itself evaluates outside a statement holds none
+    final BasicCommandContext script = new BasicCommandContext();
+    final BasicCommandContext firstStatement = new BasicCommandContext();
+    firstStatement.setParentWithoutOverridingChild(script);
+    firstStatement.openGraphViewPins();
+    final BasicCommandContext secondStatement = new BasicCommandContext();
+    secondStatement.setParentWithoutOverridingChild(script);
+    secondStatement.openGraphViewPins();
+    assertThat(script.getGraphViewPins()).isNull();
+    assertThat(secondStatement.getGraphViewPins()).isNotNull().isNotSameAs(firstStatement.getGraphViewPins());
+    assertThat(GraphViewPins.pin(secondStatement, view)).isNotSameAs(GraphViewPins.pin(firstStatement, view));
   }
 
   /**

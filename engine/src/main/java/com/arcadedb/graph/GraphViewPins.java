@@ -85,7 +85,11 @@ public final class GraphViewPins {
 
   /**
    * The provider pinned, or the provider itself when it has nothing to pin yet: a view that was never built has no snapshot,
-   * and a read of it fails just as it did before this pin existed.
+   * and a read of it fails just as it did before this pin existed. That fallback is not kept in the scope, and needs not be:
+   * a caller handed the live view of a view with no snapshot reads nothing from it, every read failing the same way, so a later
+   * caller of the statement that pins the view once it is built cannot mix two snapshots. A view whose restore from disk is
+   * deferred is not such a view: {@code pinned()} waits for the restore. The only {@link IllegalStateException} {@code pinned()}
+   * raises is the one for a view with no snapshot.
    */
   private static GraphTraversalProvider pinnedOrLive(final GraphTraversalProvider provider) {
     try {
