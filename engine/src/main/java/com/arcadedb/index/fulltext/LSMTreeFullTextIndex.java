@@ -911,14 +911,21 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           liveCount += bucket.count();
         final long persisted = ftMetadata.getTotalDocs();
         final boolean rescan = ftMetadata.consumeRescanRequired();
-        if (liveCount != persisted || rescan) {
+        // The count above vouches for the document count only. The sum of the lengths, which decides avgdl and so every score, depends
+        // on the analyzer that measured it: a corpus whose record count is right and whose lengths are not is told by that (issue #10397)
+        final boolean anotherAnalyzer = ftMetadata.isMeasuredWithAnotherAnalyzer();
+        if (liveCount != persisted || rescan || anotherAnalyzer) {
           // Surface the drift so operators can notice it (e.g. counters left inflated by a crash) without reading EXPLAIN.
           // Escalate to WARNING when the divergence is large (> 10% of the live count): small drift self-heals quietly here, but a
           // big gap usually signals a workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
           final boolean large = liveCount > 0 && Math.abs(persisted - liveCount) * 10 > liveCount;
           // The message is an argument, not the format: an index name may contain a '%'
-          LogManager.instance().log(this, large ? Level.WARNING : Level.INFO, "%s", null,
-              corpusDriftMessage(logicalIndexName(), typeName, persisted, liveCount, rescan));
+          if (anotherAnalyzer)
+            LogManager.instance().log(this, Level.WARNING, "%s", null,
+                analyzerDriftMessage(logicalIndexName(), typeName, ftMetadata.getMeasuredWith(), ftMetadata.getLengthSignature()));
+          else
+            LogManager.instance().log(this, large ? Level.WARNING : Level.INFO, "%s", null,
+                corpusDriftMessage(logicalIndexName(), typeName, persisted, liveCount, rescan));
           computeCorpusCounters(false);
         }
       }
@@ -975,6 +982,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * The warning of a drift check that found the lengths of the corpus counters measured with another analyzer than the one the index
+   * now analyzes with: the document count can be right while every length is not. Carries the statement that repairs it on every node.
+   */
+  static String analyzerDriftMessage(final String indexName, final String typeName, final String measuredWith, final String current) {
+    return "BM25 corpus counters of full-text index '" + indexName + "' on type '" + typeName + "' were measured with '" + measuredWith
+        + "' and the index now analyzes with '" + current + "', so the document lengths they sum are not the current ones; recomputing."
+        + " To repair them on every node run: REBUILD INDEX `" + indexName + "` WITH statsOnly = true";
+  }
+
+  /**
    * The BM25 corpus counters of a full-text index as {@code schema:index:<name>} shows them, without running the drift check
    * that reading them through a query would: an operator can look at a drift before anything repairs it.
    *
@@ -991,6 +1008,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     result.put("sumDocLength", pair[1]);
     result.put("avgDocLength", pair[0] > 0 ? (double) pair[1] / pair[0] : 1.0);
     result.put("countersValid", metadata.isCountersValid());
+    result.put("measuredWith", metadata.getMeasuredWith());
+    result.put("measuredWithCurrentAnalyzer", !metadata.isMeasuredWithAnotherAnalyzer());
     result.put("staleCheckDone", metadata.isStaleCheckDone());
     result.put("scans", metadata.getScans());
     result.put("epoch", metadata.getCountersEpoch());
@@ -1435,7 +1454,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // one rid per document. (put() loops addDocument() over its rid array; were remove() ever called with N documents sharing a
     // key it would need the same N decrements, but no caller does that.) docLen is recomputed from the keys supplied at remove
     // time, which are the values the document was indexed with (an update removes the ORIGINAL record's values), and measured by
-    // documentLength() exactly as the put measured it. Only a changed analyzer can make the two disagree.
+    // documentLength() exactly as the put measured it. Only a changed analyzer can make the two disagree, and the drift check finds
+    // that one: the counters are persisted with the analyzer they were measured with (FullTextIndexMetadata.getLengthSignature()).
     if (underlyingIndex.isStoreTermFrequency())
       uncountDocument(docLen);
   }
