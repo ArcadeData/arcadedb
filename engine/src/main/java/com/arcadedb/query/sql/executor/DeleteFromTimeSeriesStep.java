@@ -77,6 +77,8 @@ public class DeleteFromTimeSeriesStep extends AbstractExecutionStep {
 
       final ResultInternal row = new ResultInternal(context.getDatabase());
       row.setProperty("count", deleted);
+      // so a caller can tell, as the result of TRUNCATE TYPE does, that its ROLLBACK will not put the samples back
+      row.setProperty("transactional", false);
       final InternalResultSet result = new InternalResultSet();
       result.add(row);
       return result;

@@ -34,6 +34,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -1461,30 +1462,37 @@ public class TimeSeriesBucket extends PaginatedComponent {
       return 0L;
 
     final List<Object[]> rows = scanRange(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null);
-    final List<Object[]> kept = new ArrayList<>(rows.size());
-    for (final Object[] row : rows) {
+    final BitSet doomed = new BitSet(rows.size());
+    for (int i = 0; i < rows.size(); i++) {
+      final Object[] row = rows.get(i);
       final long timestamp = (Long) row[0];
       if (timestamp >= fromTs && timestamp <= toTs && (tagFilter == null || tagFilter.matches(row)))
-        continue;
-      kept.add(row);
+        doomed.set(i);
     }
-    final long deleted = rows.size() - kept.size();
-    if (deleted == 0L)
+    final int deleted = doomed.cardinality();
+    if (deleted == 0)
       return 0L;
 
-    clearDataPages();
-    if (!kept.isEmpty()) {
-      final int valueColumns = columns.size() - 1; // exclude timestamp
-      final long[] timestamps = new long[kept.size()];
-      final Object[][] columnValues = new Object[valueColumns][kept.size()];
-      for (int i = 0; i < timestamps.length; i++) {
-        final Object[] row = kept.get(i);
-        timestamps[i] = (Long) row[0];
-        for (int c = 0; c < valueColumns; c++)
-          columnValues[c][i] = row[c + 1];
-      }
-      appendSamples(timestamps, columnValues);
+    // the rows that stay go straight into the arrays the append takes, and each row's shell is released as it is copied, so the
+    // bucket is never held three times over
+    final int valueColumns = columns.size() - 1; // exclude timestamp
+    final int kept = rows.size() - deleted;
+    final long[] timestamps = new long[kept];
+    final Object[][] columnValues = new Object[valueColumns][kept];
+    int k = 0;
+    for (int i = 0; i < rows.size(); i++) {
+      final Object[] row = rows.set(i, null);
+      if (doomed.get(i))
+        continue;
+      timestamps[k] = (Long) row[0];
+      for (int c = 0; c < valueColumns; c++)
+        columnValues[c][k] = row[c + 1];
+      k++;
     }
+
+    clearDataPages();
+    if (kept > 0)
+      appendSamples(timestamps, columnValues);
     return deleted;
   }
 

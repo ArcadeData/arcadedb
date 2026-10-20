@@ -2878,11 +2878,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /** The blocks a delete rebuilt from the rows that stay, as the lists {@link #rewriteWithBlocks} takes. */
   private static final class RebuiltBlocks {
-    final List<byte[][]>   compressed       = new ArrayList<>();
-    final List<long[]>     meta             = new ArrayList<>();
-    final List<BlockStats> stats            = new ArrayList<>();
+    final List<byte[][]>   compressed        = new ArrayList<>();
+    final List<long[]>     meta              = new ArrayList<>();
+    final List<BlockStats> stats             = new ArrayList<>();
     final List<String[][]> tagDistinctValues = new ArrayList<>();
-    private long[]         granularities    = new long[4];
+    private long[]         granularities     = new long[4];
     private int            size;
 
     /** The downsampling granularity of the block just added, which a rebuilt block keeps. */

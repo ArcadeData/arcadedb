@@ -987,12 +987,18 @@ public class TimeSeriesShard implements AutoCloseable {
    * buffer and the rewritten sealed bytes are recorded beside it, so under HA followers receive both as one unit, as they receive a
    * compaction.
    * <p>
-   * Not atomic across the two layers on this node: the layer committed first stays deleted if the second fails, and the statement
-   * that reports the failure can simply be run again, because deleting what is already gone deletes nothing.
+   * Not atomic across the two layers on this node: the layer done first stays deleted if the second fails, and the statement that
+   * reports the failure can simply be run again, because deleting what is already gone deletes nothing. The sealed layer goes first
+   * because it is the one that can fail for want of a disk (a temp file, an atomic move); the mutable layer is a single transaction
+   * whose only failure is a page conflict it retries, so a failing delete leaves the shard as it found it far more often than not.
    */
   long deleteSamplesLocked(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
-    long deleted = 0L;
+
+    // The sealed blocks
+    long deleted = sealedStore.deleteSamples(fromTs, toTs, tagFilter);
+    if (deleted > 0L)
+      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
 
     // The mutable pages. An in-flight append of a replicated database may commit page 0 between the begin and the commit below
     // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read
@@ -1018,12 +1024,6 @@ public class TimeSeriesShard implements AutoCloseable {
       }
     }
 
-    // The sealed blocks
-    final long removedSealed = sealedStore.deleteSamples(fromTs, toTs, tagFilter);
-    if (removedSealed > 0L) {
-      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
-      deleted += removedSealed;
-    }
     return deleted;
   }
 

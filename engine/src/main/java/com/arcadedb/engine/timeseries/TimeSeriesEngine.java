@@ -60,7 +60,7 @@ public class TimeSeriesEngine implements AutoCloseable {
   // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER: UP TO TWICE, THE ARRAY COSTS ABOUT WHAT THE CEILING ALREADY ALLOWS
   private static final long FLAT_WINDOW_PER_CEILING = 2L;
   // HOW MANY TIMES A DELETE ASKS FOR THE REPLICATION SESSION BEFORE GIVING UP: THE BACKOFF OF 20 TO 500 MS PER ATTEMPT WAITS A FEW SECONDS AT MOST
-  private static final int  DELETE_SESSION_ATTEMPTS  = 12;
+  private static final int  DELETE_SESSION_ATTEMPTS = 12;
 
   private final DatabaseInternal       database;
   private final String                 typeName;
@@ -1288,8 +1288,12 @@ public class TimeSeriesEngine implements AutoCloseable {
     boolean ran = false;
     try {
       for (int attempt = 0; attempt < DELETE_SESSION_ATTEMPTS && !ran; attempt++) {
-        if (attempt > 0)
+        if (attempt > 0) {
+          // waiting for a session helps only a leader: a node that is not one is refused again by every attempt
+          if (!db.isLeader())
+            break;
           RetryBackoff.sleep(attempt - 1, 20L, 500L);
+        }
         deleted[0] = 0L;
         // One session for all shards, like retention: the pages and the sealed bytes of the whole statement are one replication unit
         ran = db.runWithCompactionReplication(() -> {

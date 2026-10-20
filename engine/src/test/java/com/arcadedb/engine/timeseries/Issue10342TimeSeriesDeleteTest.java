@@ -30,11 +30,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -361,6 +364,113 @@ class Issue10342TimeSeriesDeleteTest extends TestHelper {
       assertThat(rs.next().<Long>getProperty("count")).as("what the first run left").isEqualTo(inTotal - doneByFirst[0]);
     }
     assertMatchesModel();
+  }
+
+  /**
+   * A failure in the sealed rewrite of a shard leaves that shard, and the ones after it, as they were; the shards before it stay
+   * deleted, and running the statement again finishes the job.
+   */
+  @Test
+  void aFailedSealedRewriteLeavesTheShardAsItWasAndRerunningFinishesTheDelete() throws Exception {
+    create(3);
+    populate(Layout.BOTH);
+    final long from = BASE + 50_000L;
+    final long to = BASE + 250_000L;
+    final long[] before = new long[3];
+    for (int s = 0; s < 3; s++)
+      before[s] = engine().getShard(s).countSamples();
+
+    // the temp file of the second shard's sealed rewrite cannot be created: a directory holds its path
+    final Path obstruction = Path.of(database.getDatabasePath(), "M_shard_1.ts.sealed.tmp");
+    Files.createDirectory(obstruction);
+    try {
+      assertThatThrownBy(() -> database.command("sql", "DELETE FROM M WHERE ts >= " + from + " AND ts <= " + to).close())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("TIMESERIES type 'M'");
+    } finally {
+      Files.deleteIfExists(obstruction);
+    }
+
+    assertThat(engine().getShard(0).countSamples()).as("the shard before the failure was deleted").isLessThan(before[0]);
+    assertThat(engine().getShard(1).countSamples()).as("the shard that failed is as it was").isEqualTo(before[1]);
+    assertThat(engine().getShard(2).countSamples()).as("the shard after it was not reached").isEqualTo(before[2]);
+
+    model.removeIf(s -> s.ts >= from && s.ts <= to);
+    database.command("sql", "DELETE FROM M WHERE ts >= " + from + " AND ts <= " + to).close();
+    assertMatchesModel();
+  }
+
+  /** A sample with no tag is declared by its block as the empty text, as a compaction declares it, so the filter finds the rest. */
+  @Test
+  void aPartiallyDeletedBlockWithNullTagsDeclaresWhatItHolds() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE N2 TIMESTAMP ts TAGS (host STRING, region STRING) FIELDS (v DOUBLE) SHARDS 1").close();
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("N2")).getEngine();
+    final int rows = 150;
+    final long[] timestamps = new long[rows];
+    final Object[][] columns = new Object[3][rows];
+    for (int i = 0; i < rows; i++) {
+      timestamps[i] = BASE + i * 1_000L;
+      columns[0][i] = "h" + (i % 2);
+      columns[1][i] = i % 5 == 0 ? null : (i % 2 == 0 ? "eu" : "us");
+      columns[2][i] = (double) i;
+    }
+    engine.appendBatch(Arrays.copyOfRange(timestamps, 0, 100), new Object[][] { Arrays.copyOfRange(columns[0], 0, 100),
+        Arrays.copyOfRange(columns[1], 0, 100), Arrays.copyOfRange(columns[2], 0, 100) });
+    engine.compactAll();
+    engine.appendBatch(Arrays.copyOfRange(timestamps, 100, rows), new Object[][] { Arrays.copyOfRange(columns[0], 100, rows),
+        Arrays.copyOfRange(columns[1], 100, rows), Arrays.copyOfRange(columns[2], 100, rows) });
+
+    database.command("sql", "DELETE FROM N2 WHERE host = 'h1' AND ts < " + (BASE + 80_000L)).close();
+
+    assertThat(engine.checkIntegrity(TimeSeriesIntegrity.Options.deepOnly()).problems()).as("integrity problems").isEmpty();
+    long eu = 0;
+    long us = 0;
+    for (int i = 0; i < rows; i++) {
+      if (i % 2 == 1 && BASE + i * 1_000L < BASE + 80_000L)
+        continue;
+      if (i % 5 != 0 && i % 2 == 0)
+        eu++;
+      else if (i % 5 != 0)
+        us++;
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM N2 WHERE region = 'eu'")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(eu);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM N2 WHERE region = 'us'")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(us);
+    }
+  }
+
+  /** A block rebuilt from a downsampled one is as coarse as it was, so the next downsampling pass leaves it alone. */
+  @Test
+  void aRebuiltDownsampledBlockKeepsItsGranularityMarker() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE D TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 1").close();
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("D")).getEngine();
+    final int rows = 600;
+    final long[] timestamps = new long[rows];
+    final Object[][] columns = new Object[2][rows];
+    for (int i = 0; i < rows; i++) {
+      timestamps[i] = i * 1_000L;
+      columns[0][i] = i % 2 == 0 ? "a" : "b";
+      columns[1][i] = (double) i;
+    }
+    engine.appendBatch(timestamps, columns);
+    engine.compactAll();
+
+    // two series share every bucket, so only the marker (not the spacing of the samples) tells the block is already coarse
+    final List<DownsamplingTier> tiers = List.of(new DownsamplingTier(1L, 60_000L));
+    engine.applyDownsampling(tiers, 1_000_000L);
+    final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
+    final long afterFirstPass = sealed.getDownsampleRewriteCount();
+    engine.applyDownsampling(tiers, 1_000_000L);
+    assertThat(sealed.getDownsampleRewriteCount()).as("the downsampling is idempotent").isEqualTo(afterFirstPass);
+
+    try (final ResultSet rs = database.command("sql", "DELETE FROM D WHERE host = 'a' AND ts < 120000")) {
+      assertThat(rs.next().<Long>getProperty("count")).isPositive();
+    }
+    final long afterDelete = sealed.getDownsampleRewriteCount();
+    engine.applyDownsampling(tiers, 1_000_000L);
+    assertThat(sealed.getDownsampleRewriteCount()).as("the rebuilt block is not downsampled again").isEqualTo(afterDelete);
+    assertThat(engine.checkIntegrity(TimeSeriesIntegrity.Options.deepOnly()).problems()).as("integrity problems").isEmpty();
   }
 
   /** The bounds a SELECT takes in a WHERE are the bounds a DELETE takes: a date as text (read in UTC), and a parameter. */
