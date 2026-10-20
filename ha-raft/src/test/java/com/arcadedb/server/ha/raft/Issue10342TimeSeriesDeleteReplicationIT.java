@@ -19,6 +19,8 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -168,6 +170,42 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     assertThat(sealedSamples(followerIndex)).isEqualTo(sealedSamples(leaderIndex));
     assertThat(mutableSamples(followerIndex)).isEqualTo(mutableSamples(leaderIndex));
     assertThat(ArcadeStateMachine.TEST_WAL_GAP_COUNTER.get()).as("page-version gaps seen by the follower").isZero();
+  }
+
+  /**
+   * A delete cannot take the replication session while another maintenance pass (a compaction, a retention, a DDL) holds it: it waits
+   * a few seconds, then is refused with an error that is worth retrying and says nothing was deleted, and it removes nothing on either
+   * node. Once the session is free the same delete goes through.
+   */
+  @Test
+  void aDeleteRefusedForWantOfTheReplicationSessionRemovesNothing() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE TIMESERIES TYPE sensor TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2").close();
+    waitForAllServers();
+    insert(leaderDb, 0, 30);
+    waitForAllServers();
+    assertThat(awaitCountOn(followerIndex, 30L)).isEqualTo(30L);
+
+    final FileManager fileManager = ((DatabaseInternal) leaderDb).getFileManager();
+    assertThat(fileManager.startRecordingChanges()).as("the replication session is free").isTrue();
+    try {
+      assertThatThrownBy(() -> engine(leaderIndex).deleteSamples(BASE + 10_000L, Long.MAX_VALUE, null))
+          .isInstanceOfSatisfying(NeedRetryException.class, e -> assertThat(e.isRetryableOnThisNode()).isTrue())
+          .hasMessageContaining("holds the replication session").hasMessageContaining("Nothing was deleted");
+    } finally {
+      fileManager.stopRecordingChanges();
+    }
+    assertThat(count(leaderIndex)).as("the refused delete removed nothing on the leader").isEqualTo(30L);
+    assertThat(count(followerIndex)).as("the refused delete removed nothing on the follower").isEqualTo(30L);
+
+    leaderDb.command("sql", "DELETE FROM sensor WHERE ts >= " + (BASE + 10_000L)).close();
+    waitForAllServers();
+    assertThat(awaitCountOn(leaderIndex, 10L)).as("leader").isEqualTo(10L);
+    assertThat(awaitCountOn(followerIndex, 10L)).as("follower").isEqualTo(10L);
   }
 
   private void insert(final Database db, final int from, final int to) {
