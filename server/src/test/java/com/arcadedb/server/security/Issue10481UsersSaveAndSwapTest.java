@@ -79,8 +79,11 @@ class Issue10481UsersSaveAndSwapTest {
 
   @AfterEach
   void tearDown() {
-    if (security != null)
+    if (security != null) {
+      security.afterLocalUsersSave(null);
+      security.beforeReplicatedUsersSwap(null);
       security.stopService();
+    }
     GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS.reset();
     GlobalConfiguration.SERVER_ROOT_PASSWORD.reset();
     FileUtils.deleteRecursively(new File(CONFIG_PATH));
@@ -147,7 +150,7 @@ class Issue10481UsersSaveAndSwapTest {
   }
 
   /**
-   * Starts {@code action} on a thread and waits until it is done or cannot go on: parked on a lock held by the caller, which is what
+   * Starts {@code action} on a thread and waits until it is done or cannot go on: blocked on a lock held by the caller, which is what
    * the protection of the pair looks like from outside. Without it the action runs to the end here, which is the interleaving of the
    * issue.
    */
@@ -157,9 +160,9 @@ class Issue10481UsersSaveAndSwapTest {
     thread.start();
     final long deadline = System.nanoTime() + 10_000_000_000L;
     while (System.nanoTime() < deadline) {
+      // The lock is a monitor: a thread that cannot go on is BLOCKED on it, and any other state is a thread still on its way
       final Thread.State state = thread.getState();
-      if (state == Thread.State.TERMINATED || state == Thread.State.BLOCKED || state == Thread.State.WAITING
-          || state == Thread.State.TIMED_WAITING)
+      if (state == Thread.State.TERMINATED || state == Thread.State.BLOCKED)
         break;
       Thread.onSpinWait();
     }

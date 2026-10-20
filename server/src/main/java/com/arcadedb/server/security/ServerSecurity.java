@@ -133,7 +133,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * cluster-wide mutators hold it across the consensus round trip that install completes). Landing between the other's save and swap, each
    * wrote its list over the other's save and swapped its own in, leaving memory and {@code server-users.jsonl} with different lists. This
    * lock is held for a file write and a reference swap and nothing else, never across a Raft entry or a session wait, so the apply thread
-   * can take it without waiting on anything that waits for the apply thread. Taken after the monitor, never before.
+   * can take it without waiting on anything that waits for the apply thread. Taken after the monitor, never before: no code path takes
+   * the monitor, or waits for another thread, while holding it. Keep it that way when adding a writer of the users file.
    */
   private final        Object                          usersFileLock = new Object();
   private volatile     Runnable                        afterLocalUsersSave;
