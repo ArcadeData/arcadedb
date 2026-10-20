@@ -141,6 +141,13 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
   }
 
   @Test
+  void deleteManyWithAnAndOfEmptyFiltersRemovesEverySample() {
+    // like MongoDB, {$and: [{}]} matches every document
+    assertThat(collection.deleteMany(new Document("$and", List.of(new Document()))).getDeletedCount()).isEqualTo(3);
+    assertThat(collection.countDocuments()).isEqualTo(0);
+  }
+
+  @Test
   void deleteOneIsRefusedNamingTheType() {
     assertThatThrownBy(() -> collection.deleteOne(Filters.eq("k", "a"))).isInstanceOf(MongoException.class)
         .hasMessageContaining("Cannot delete one sample of the TIMESERIES type 'Ev'");
@@ -211,7 +218,8 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
     // whole, inside a long, but past 2^53: the double may already be a neighbour of the millisecond the client meant
     assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", 1e17))).isInstanceOf(MongoException.class)
         .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
-    assertThatThrownBy(() -> collection.deleteMany(new Document("$and", List.of()))).isInstanceOf(MongoException.class);
+    assertThatThrownBy(() -> collection.deleteMany(new Document("$and", List.of()))).isInstanceOf(MongoException.class)
+        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on '$and'");
     assertThat(collection.countDocuments()).isEqualTo(3);
   }
 
