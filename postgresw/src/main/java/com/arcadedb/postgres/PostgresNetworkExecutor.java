@@ -1599,14 +1599,37 @@ public class PostgresNetworkExecutor extends Thread {
       return new CatalogAnswer(types, getColumns(types));
 
     final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
-    if (answer != null && answer.rows != null)
-      return new CatalogAnswer(toResults(answer.rows), answer.columns);
+    if (answer != null) {
+      if (answer.rows != null)
+        return new CatalogAnswer(toResults(answer.rows), answer.columns);
 
-    if (answer == PostgresCatalog.DECLINED || PostgresCatalog.containsIgnoreCase(query, "pg_catalog")
-        || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
+      // An answer with no rows to send is a refusal, whatever the reason: a new reason cannot fall into the empty result set by
+      // default, which would read as an empty catalog and lose the one row of an ungrouped count (issue #10371)
+      return refuseCatalogQuery(query, parameters);
+    }
+
+    // The one deliberate compatibility shim: a statement that names pg_catalog or pg_type but reads no emulated relation -
+    // SELECT pg_catalog.set_config(...), the session probes pg_dump and friends send - is given the empty result set it has
+    // always been given, rather than handed to ArcadeDB's SQL engine, which has no such function and would fail the probe
+    if (PostgresCatalog.containsIgnoreCase(query, "pg_catalog") || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
       return new CatalogAnswer(Collections.emptyList(), Map.of());
 
     return null;
+  }
+
+  /**
+   * Refuses a catalog query the resolver declined, with {@code feature_not_supported} (issue #10371). Not while its placeholders
+   * are unbound: a Parse, or a Describe of a statement, sees the query before the values of its filters arrive, and a shape whose
+   * resolver needs a value to recognise it declines until they do (issue #8562). That is not the answer yet, so it is deferred as
+   * an empty one and asked again at Execute, where the same refusal is final.
+   * <p>
+   * Nor a type-resolution probe ({@link PostgresCatalog#isTypeResolutionProbe}): the lookups a driver sends to name a type it does
+   * not know keep the empty "no such type" they have always been given, the one deliberate shim of this refusal.
+   */
+  private static CatalogAnswer refuseCatalogQuery(final String query, final Object[] parameters) {
+    if (parameters.length < PostgresCatalog.countPlaceholders(query) || PostgresCatalog.isTypeResolutionProbe(query))
+      return new CatalogAnswer(Collections.emptyList(), Map.of());
+    throw PostgresCatalog.refusalOf(query);
   }
 
   private static List<Result> toResults(final List<Map<String, Object>> rows) {
@@ -4170,6 +4193,8 @@ public class PostgresNetworkExecutor extends Thread {
       return setting.sqlState;
     if (error instanceof PostgresCatalog.WorkLimitExceeded)
       return PostgresCatalog.WorkLimitExceeded.SQLSTATE; // program_limit_exceeded (issue #10228)
+    if (error instanceof PostgresCatalog.UnsupportedCatalogQuery)
+      return PostgresCatalog.UnsupportedCatalogQuery.SQLSTATE; // feature_not_supported (issue #10371)
     return switch (ErrorCategory.of(error)) {
       // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
       // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)
