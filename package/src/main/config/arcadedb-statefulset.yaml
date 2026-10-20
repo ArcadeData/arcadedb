@@ -146,12 +146,14 @@ spec:
             - "-c"
             - >-
               mkdir -p /mnt/data0/config && cd /home/arcadedb/config &&
-              for f in *; do [ -e "/mnt/data0/config/$f" ] || cp -R "$f" /mnt/data0/config/ || exit 1; done
+              for f in * .[!.]*; do [ -e "$f" ] || continue; [ -e "/mnt/data0/config/$f" ] ||
+              cp -R "$f" /mnt/data0/config/ || exit 1; done
           volumeMounts:
             - name: datadir
               mountPath: /mnt/data0
       containers:
         - name: arcadedb
+          # Bump together with the `seed-config` init container's image, which copies this image's config defaults.
           image: arcadedata/arcadedb:latest
           imagePullPolicy: IfNotPresent
           env:

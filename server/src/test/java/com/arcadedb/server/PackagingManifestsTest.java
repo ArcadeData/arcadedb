@@ -231,7 +231,8 @@ class PackagingManifestsTest {
 
     assertThat(seed).as("the seed does not read the image's config directory").contains("/home/arcadedb/config");
     assertThat(seed).as("the seed does not write the configured config directory").contains(configDir.group(1));
-    assertThat(seed).as("the seed must skip a file that already exists").contains("[ -e ");
+    assertThat(seed).as("the seed must test each target with `[ -e ]` and skip one that already exists: copying over it"
+        + " would reset the users, groups and API tokens the claim is there to keep").contains("[ -e ");
     assertThat(seed).as("the seed must run the image the server runs, or it copies another version's defaults")
         .contains("image: " + imageOf(manifest.substring(main)));
     assertThat(seed).as("the seed must mount the volume claim")
@@ -677,10 +678,6 @@ class PackagingManifestsTest {
   }
 
   /**
-   * Names of the {@code - name: X} entries of the block introduced by the given key, scoped by
-   * indentation so a same-named entry in a sibling block cannot satisfy the lookup.
-   */
-  /**
    * Where the StatefulSet's volume claim is mounted. Every container mounting it must use the same path, or a directory
    * the init container seeds is not the one the server reads.
    */
@@ -700,6 +697,10 @@ class PackagingManifestsTest {
     return image.group(1);
   }
 
+  /**
+   * Names of the {@code - name: X} entries of the block introduced by the given key, scoped by
+   * indentation so a same-named entry in a sibling block cannot satisfy the lookup.
+   */
   private static Set<String> blockEntryNames(final String yaml, final String blockKey) {
     return collectBlock(yaml, blockKey, ENTRY_NAME);
   }
