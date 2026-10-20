@@ -424,17 +424,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (countersValid) {
       // The pair and its epoch are read together with the writers that move them as a unit (a commit's delta, an adoption), so a
       // save never records a new epoch next to an old pair, nor half of a delta
+      final String measuredWith;
       synchronized (countersLock) {
         metadata.put("ft_totalDocs", totalDocs.get());
         metadata.put("ft_sumDocLength", sumDocLength.get());
         metadata.put("ft_countersEpoch", countersEpoch.get());
+        // What the pair was measured with, read with it: a scan that publishes a new pair publishes its signature under the same
+        // lock, so a save never records the signature of a scan next to the pair from before it
+        measuredWith = countersMeasuredWith;
       }
       // What the pair was measured with, NOT what the index analyzes with now: a save between a change of the analyzer and the
       // rescan it arms must not record the new one next to the old counters, or no later session would ever find them off.
       // Counters persisted before the signature existed have none: they are recorded as measured with the current analyzer, so an
       // analyzer changed between the upgrade and the first save goes unseen. There is nothing to compare them with, and rescanning
       // every existing index at the upgrade would cost more than the drift it could find
-      final String measuredWith = countersMeasuredWith;
       metadata.put("ft_lengthSignature", measuredWith != null ? measuredWith : getLengthSignature());
       metadata.put("ft_countersValid", true);
     }
@@ -732,11 +735,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param sumDocLength sum of document lengths
    */
   public void setCounters(final long totalDocs, final long sumDocLength) {
-    this.totalDocs.set(totalDocs);
-    this.sumDocLength.set(sumDocLength);
+    // THE PAIR AND WHAT IT WAS MEASURED WITH MOVE TOGETHER FOR A SAVE (writeToJSON) AND FOR getCountersPair()
+    synchronized (countersLock) {
+      this.totalDocs.set(totalDocs);
+      this.sumDocLength.set(sumDocLength);
+      this.countersMeasuredWith = getLengthSignature();
+    }
     // The volatile write to countersValid below comes AFTER the two counter writes in program order: by the JMM, a reader that
     // observes countersValid == true is guaranteed to also see these counter values (volatile-write / volatile-read edge).
-    this.countersMeasuredWith = getLengthSignature();
     this.countersValid = true;
     this.staleChecked.set(true); // freshly computed counters are by definition consistent with the live data
   }
@@ -765,10 +771,16 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
     final long lenDelta = sumDocLength - lenAtStart;
     final long docsDelta = totalDocs - docsAtStart;
-    final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
-    final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
-    // THE SCAN ANALYZED THE CORPUS WITH THE CURRENT ANALYZER, WHATEVER THE COUNTERS WERE MEASURED WITH BEFORE
-    this.countersMeasuredWith = getLengthSignature();
+    final long newLen;
+    final long newDocs;
+    // ONE UNIT FOR A SAVE (writeToJSON), WHICH READS THE PAIR AND WHAT IT WAS MEASURED WITH UNDER THIS LOCK: IT NEVER RECORDS THE
+    // SIGNATURE OF THIS SCAN NEXT TO THE PAIR FROM BEFORE IT
+    synchronized (countersLock) {
+      newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
+      newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+      // THE SCAN ANALYZED THE CORPUS WITH THE CURRENT ANALYZER, WHATEVER THE COUNTERS WERE MEASURED WITH BEFORE
+      this.countersMeasuredWith = getLengthSignature();
+    }
     this.countersValid = true;
     scans.incrementAndGet();
     countersGeneration.incrementAndGet();

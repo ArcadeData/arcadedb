@@ -921,8 +921,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           final boolean large = liveCount > 0 && Math.abs(persisted - liveCount) * 10 > liveCount;
           // The message is an argument, not the format: an index name may contain a '%'
           if (anotherAnalyzer)
-            LogManager.instance().log(this, Level.WARNING, "%s", null,
-                analyzerDriftMessage(logicalIndexName(), typeName, ftMetadata.getMeasuredWith(), ftMetadata.getLengthSignature()));
+            LogManager.instance().log(this, Level.WARNING, "%s", null, analyzerDriftMessage(logicalIndexName(), typeName,
+                ftMetadata.getMeasuredWith(), ftMetadata.getLengthSignature(), persisted, liveCount));
           else
             LogManager.instance().log(this, large ? Level.WARNING : Level.INFO, "%s", null,
                 corpusDriftMessage(logicalIndexName(), typeName, persisted, liveCount, rescan));
@@ -985,9 +985,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * The warning of a drift check that found the lengths of the corpus counters measured with another analyzer than the one the index
    * now analyzes with: the document count can be right while every length is not. Carries the statement that repairs it on every node.
    */
-  static String analyzerDriftMessage(final String indexName, final String typeName, final String measuredWith, final String current) {
+  static String analyzerDriftMessage(final String indexName, final String typeName, final String measuredWith, final String current,
+      final long persisted, final long live) {
     return "BM25 corpus counters of full-text index '" + indexName + "' on type '" + typeName + "' were measured with '" + measuredWith
-        + "' and the index now analyzes with '" + current + "', so the document lengths they sum are not the current ones; recomputing."
+        + "' and the index now analyzes with '" + current + "', so the document lengths they sum are not the current ones (documents: "
+        + "persisted=" + persisted + ", live=" + live + "); recomputing."
         + " To repair them on every node run: " + repairStatement(indexName);
   }
 

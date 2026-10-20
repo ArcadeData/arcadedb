@@ -320,6 +320,32 @@ class Issue10376LightweightTwinTombstoneTest extends TestHelper {
     }
   }
 
+  /**
+   * A transaction keeps its changes across its statements, and a later statement takes a scan of its own that already holds the
+   * earlier ones: only the deletes made after that scan are overlaid on it.
+   */
+  @Test
+  void aLaterStatementOfTheTransactionIgnoresTheDeletesTheEarlierOnesMade() {
+    createSchema(true);
+    createTwins(3);
+    final String deleteOneThenCount = "MATCH (w:V {n:'w'})<-[r:T]-() WITH w, collect(r) AS rs UNWIND rs[0..1] AS one DELETE one "
+        + "WITH w, count(one) AS deleted OPTIONAL MATCH (w)<-[r2:T]-() RETURN count(r2) AS n";
+    final long[] answers = new long[3];
+
+    database.transaction(() -> {
+      answers[0] = single("opencypher", deleteOneThenCount);
+      answers[1] = single("opencypher", deleteOneThenCount);
+      // THE SCAN OF THIS STATEMENT HOLDS BOTH EARLIER DELETES: IT CREATES TWO TWINS OVER ITS ONE TWIN LEFT AND DELETES ONE OF THEM
+      answers[2] = single("opencypher", "MATCH (v:V {n:'v'}), (w:V {n:'w'}) OPTIONAL MATCH (w)<-[s:T]-() WITH v, w, count(s) AS seeded "
+          + "UNWIND range(1, 2) AS i CREATE (v)-[:T]->(w) WITH w, count(*) AS made MATCH (w)<-[r:T]-() "
+          + "WITH w, collect(r) AS rs UNWIND rs[0..1] AS one DELETE one WITH w, count(one) AS deleted "
+          + "OPTIONAL MATCH (w)<-[r2:T]-() RETURN count(r2) AS n");
+    });
+
+    assertThat(answers).containsExactly(2L, 1L, 2L);
+    assertThat(committedIncoming()).isEqualTo(2L);
+  }
+
   @Test
   void theDeletesOfATripleAreCountedAfterASequence() {
     createSchema(true);
