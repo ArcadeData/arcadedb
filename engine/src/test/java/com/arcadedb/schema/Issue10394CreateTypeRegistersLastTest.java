@@ -199,6 +199,49 @@ class Issue10394CreateTypeRegistersLastTest extends TestHelper {
     assertThat(subIndexCountOf("Indexed")).isEqualTo(indexFilesBefore);
   }
 
+  /**
+   * The statement links its super types after it creates the type, and takes the type back when one refuses. The buckets it was
+   * given (BUCKET Free) and the ones it found under its own names (C_0) were there before the statement and hold records: they
+   * stay. A bucket the statement made for a name that did not exist (BUCKET Fresh) was made for the type and goes with it.
+   */
+  @Test
+  void aRefusedStatementKeepsTheBucketsThatExistedBeforeIt() {
+    createExternalSuperType();
+    squat("Free_ext");
+    squat("C_0_ext");
+    squat("Fresh_ext");
+    database.getSchema().createDocumentType("Plain");
+    database.getSchema().createBucket("Free");
+    database.getSchema().createBucket("C_0");
+    database.transaction(() -> {
+      ((DatabaseInternal) database).createRecord(database.newDocument("Plain").set("p", "free"), "Free");
+      ((DatabaseInternal) database).createRecord(database.newDocument("Plain").set("p", "found"), "C_0");
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE B EXTENDS Holder BUCKET Free"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("Free_ext");
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS Holder"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("C_0_ext");
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE D EXTENDS Holder BUCKET Fresh"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("Fresh_ext");
+
+    assertThat(database.getSchema().existsType("B")).isFalse();
+    assertThat(database.getSchema().existsType("C")).isFalse();
+    assertThat(database.getSchema().existsType("D")).isFalse();
+    assertThat(database.getSchema().existsBucket("Free")).isTrue();
+    assertThat(database.countBucket("Free")).isEqualTo(1L);
+    assertThat(database.getSchema().existsBucket("C_0")).isTrue();
+    assertThat(database.countBucket("C_0")).isEqualTo(1L);
+    assertThat(database.getSchema().existsBucket("Fresh")).as("made for the type that was refused").isFalse();
+
+    reopenDatabase();
+
+    assertThat(database.countBucket("Free")).isEqualTo(1L);
+    assertThat(database.countBucket("C_0")).isEqualTo(1L);
+    assertThat(database.getSchema().existsType("B")).isFalse();
+    assertThat(database.getSchema().existsType("C")).isFalse();
+  }
+
   @Test
   void growingATypeOntoARefusedSecondSuperTypeLeavesItAsItWas() {
     database.getSchema().createDocumentType("Plain");

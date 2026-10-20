@@ -180,10 +180,13 @@ class Issue10317RenamedTypeInheritedIndexTest extends TestHelper {
     subIndexOn("T11").updateTypeName("T10");
     database.getSchema().getEmbedded().saveConfiguration();
     assertThat(subIndexOn("T11").getTypeName()).isEqualTo("T10");
+    // updateTypeName moves the file with the name: the stale layout is on disk too, not only in the metadata
+    assertThat(componentNameOf(subIndexOn("T11"))).startsWith("T10_");
 
     reopenDatabase();
 
     assertThat(subIndexOn("T11").getTypeName()).isEqualTo("T11");
+    assertThat(componentNameOf(subIndexOn("T11"))).as("the file keeps the older prefix, which nothing reads").startsWith("T10_");
     assertThat(count("T5", "x")).isEqualTo(1L);
 
     database.command("sql", "DROP TYPE T5");
@@ -232,6 +235,10 @@ class Issue10317RenamedTypeInheritedIndexTest extends TestHelper {
           assertThat(((DatabaseInternal) database).getFileManager().getFile(subIndex.getFileId()).getComponentName())
               .as("file of the sub-index " + subIndex.getName()).startsWith(owner + "_");
         }
+  }
+
+  private String componentNameOf(final IndexInternal subIndex) {
+    return ((DatabaseInternal) database).getFileManager().getFile(subIndex.getFileId()).getComponentName();
   }
 
   private static File fileStartingWith(final File directory, final String prefix) {

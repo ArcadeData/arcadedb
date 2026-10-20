@@ -20,11 +20,13 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -32,14 +34,18 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.FileUtils;
 
 import com.arcadedb.database.Identifiable;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public abstract class CreateTypeAbstractStatement extends DDLStatement {
@@ -132,6 +138,9 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // Refused here, before anything is created, whenever the statement can already tell (#9846)
     checkSuperTypesBeforeCreate(typeName, superclasses);
 
+    // Taken before the create, and only for a statement that links super types, the one step that can refuse once the type exists
+    final Set<String> bucketsOfOthers = superclasses.length > 0 ? bucketsThatExistBeforeTheCreate(context, typeName) : Set.of();
+
     final DocumentType type;
     try {
       type = createType(schema, typeName);
@@ -153,11 +162,17 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       // compensating drop, a second schema session, not an atomic undo: one frame around create plus link is not possible,
       // because addSuperType waits for async quiescence OUTSIDE its frame (the write lock is what an async worker needs to
       // commit), so holding the lock across it would stall. The refusals that can be known beforehand are checked before
-      // the create (checkSuperTypesBeforeCreate), which leaves no window at all
+      // the create (checkSuperTypesBeforeCreate), which leaves no window at all. The buckets the type found or was given were
+      // somebody's or nobody's before the statement: they are detached first, so the drop does not take their records (issue #10394)
       try {
+        for (final Bucket bucket : new ArrayList<>(type.getBuckets(false)))
+          if (bucketsOfOthers.contains(bucket.getName()))
+            type.removeBucket(bucket);
         schema.dropType(typeName);
       } catch (final RuntimeException dropFailure) {
         e.addSuppressed(dropFailure);
+        LogManager.instance().log(this, Level.WARNING, "Cannot take back the type '%s' after its creation was refused (%s): %s",
+            dropFailure, typeName, e.getMessage(), dropFailure.getMessage());
       }
       throw e;
     }
@@ -174,6 +189,35 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     }
 
     return new InternalResultSet(result);
+  }
+
+  /**
+   * The buckets the new type is going to find in the schema, by name: the ones the statement names ({@code BUCKET a, b}) and the
+   * ones it would name itself ({@code <type>_0 ...}) that exist already. A bucket the statement creates for a name that did not
+   * exist is the type's own, and is left out. Only these few names are looked up, never the buckets of the schema, so the cost
+   * does not grow with it.
+   */
+  private Set<String> bucketsThatExistBeforeTheCreate(final CommandContext context, final String typeName) {
+    final Schema schema = context.getDatabase().getSchema();
+    final Set<String> existing = new HashSet<>();
+    if (buckets != null && !buckets.isEmpty()) {
+      for (final BucketIdentifier b : buckets)
+        if (b.bucketName != null) {
+          if (schema.existsBucket(b.bucketName.getStringValue()))
+            existing.add(b.bucketName.getStringValue());
+        } else
+          existing.add(schema.getBucketById(b.bucketId.value.intValue()).getName());
+    } else {
+      final int count = totalBucketNo != null ?
+          totalBucketNo.getValue().intValue() :
+          context.getDatabase().getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS);
+      final String prefix = FileUtils.encode(typeName, schema.getEncoding()) + "_";
+      // The builder refuses more than 32 buckets: the same bound keeps a wrong count from looping
+      for (int i = 0; i < Math.min(count, 32); ++i)
+        if (schema.existsBucket(prefix + i))
+          existing.add(prefix + i);
+    }
+    return existing;
   }
 
   /**
