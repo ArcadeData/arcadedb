@@ -107,6 +107,41 @@ class Issue10483DeferredLinkTargetTypeCheckTest extends TestHelper {
     assertThat(database.countType("Holder", false)).isEqualTo(2L);
   }
 
+  /** A second close ends nothing: it cannot lift the deferral of an enclosing scope. */
+  @Test
+  void closingAScopeTwiceEndsItOnce() {
+    try (final LinkTargetTypeDeferral outer = DocumentValidator.deferLinkTargetTypeChecks()) {
+      final LinkTargetTypeDeferral inner = DocumentValidator.deferLinkTargetTypeChecks();
+      inner.close();
+      inner.close();
+      // the outer scope is still open
+      save(holderLinking(other));
+    }
+    assertThatThrownBy(() -> save(holderLinking(other))).isInstanceOf(ValidationException.class);
+    assertThat(database.countType("Holder", false)).isEqualTo(1L);
+  }
+
+  /** A scope closed from another thread is a mistake that is reported, and the thread that opened it keeps its deferral. */
+  @Test
+  void aScopeClosedFromAnotherThreadIsRefused() throws Exception {
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    try (final LinkTargetTypeDeferral scope = DocumentValidator.deferLinkTargetTypeChecks()) {
+      final Thread thread = new Thread(() -> {
+        try {
+          scope.close();
+        } catch (final Throwable t) {
+          failure.set(t);
+        }
+      });
+      thread.start();
+      thread.join();
+      // still deferred here
+      save(holderLinking(other));
+    }
+    assertThat(failure.get()).isInstanceOf(IllegalStateException.class).hasMessageContaining("thread that opened it");
+    assertThatThrownBy(() -> save(holderLinking(other))).isInstanceOf(ValidationException.class);
+  }
+
   @Test
   void aScopeBelongsToItsThread() throws Exception {
     final AtomicReference<Throwable> otherThreadFailure = new AtomicReference<>();

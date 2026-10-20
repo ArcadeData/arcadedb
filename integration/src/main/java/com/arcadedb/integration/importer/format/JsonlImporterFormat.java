@@ -20,9 +20,9 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.DocumentValidator.LinkTargetTypeDeferral;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
@@ -38,6 +38,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
@@ -50,7 +51,6 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.misc.ValueTypeHints;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -981,7 +981,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       imported.save();
       return;
     }
-    try (final var ignored = DocumentValidator.deferLinkTargetTypeChecks()) {
+    try (final LinkTargetTypeDeferral ignored = DocumentValidator.deferLinkTargetTypeChecks()) {
       imported.save();
     }
   }
@@ -1022,7 +1022,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           null :
           newEdge -> {
             unresolvedLinks.addAll(loadProperties(database, newEdge, properties, edge.getJSONObject(ValueTypeHints.KEY, null)));
-            // the creation saves the edge right after this: see saveReadRecord
+            // The creation saves the edge right after this, on this thread (the initializer runs inside the call, never later or elsewhere),
+            // so the scope opened here is the one the save runs in and the finally below closes: see saveReadRecord
             if (!unresolvedLinks.isEmpty())
               deferral[0] = DocumentValidator.deferLinkTargetTypeChecks();
           });

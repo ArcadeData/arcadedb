@@ -62,14 +62,31 @@ public class DocumentValidator {
   // Threads with a link-target deferral open (issue #10483), so the write path pays one volatile read for it unless a restore is running
   private static final AtomicInteger      LINK_TARGET_DEFERRING_THREADS = new AtomicInteger();
   private static final ThreadLocal<int[]> LINK_TARGET_DEFERRAL_DEPTH    = ThreadLocal.withInitial(() -> new int[1]);
-  private static final LinkTargetTypeDeferral END_LINK_TARGET_DEFERRAL  = DocumentValidator::endLinkTargetTypeDeferral;
 
   /**
-   * The scope returned by {@link #deferLinkTargetTypeChecks()}; closing it cannot fail, so a try-with-resources on it needs no catch.
+   * The scope returned by {@link #deferLinkTargetTypeChecks()}. Closing it ends the scope once: a second close is ignored, so it can
+   * neither end an enclosing scope nor lift the deferral of another one, and a try-with-resources on it needs no catch. It has to be
+   * closed on the thread that opened it, or {@link IllegalStateException} tells the caller it was not.
    */
   public interface LinkTargetTypeDeferral extends AutoCloseable {
     @Override
     void close();
+  }
+
+  private static final class LinkTargetTypeScope implements LinkTargetTypeDeferral {
+    private final Thread  owner = Thread.currentThread();
+    private       boolean closed;
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      if (Thread.currentThread() != owner)
+        throw new IllegalStateException("A link target type deferral has to be closed on the thread that opened it ('" + owner.getName()
+            + "'), not on '" + Thread.currentThread().getName() + "'");
+      closed = true;
+      endLinkTargetTypeDeferral();
+    }
   }
 
   /**
@@ -85,7 +102,7 @@ public class DocumentValidator {
   public static LinkTargetTypeDeferral deferLinkTargetTypeChecks() {
     if (LINK_TARGET_DEFERRAL_DEPTH.get()[0]++ == 0)
       LINK_TARGET_DEFERRING_THREADS.incrementAndGet();
-    return END_LINK_TARGET_DEFERRAL;
+    return new LinkTargetTypeScope();
   }
 
   private static void endLinkTargetTypeDeferral() {
