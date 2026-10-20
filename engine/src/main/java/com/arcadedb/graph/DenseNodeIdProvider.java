@@ -401,15 +401,17 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   @Override
   public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
-    return delegate.getNeighborViewForVisits(expectedVisits, direction, edgeTypes) == null ? null : getNeighborView(direction, edgeTypes);
+    if (delegate.getNeighborViewForVisits(expectedVisits, direction, edgeTypes) == null)
+      return null;
+    return getNeighborView(direction, edgeTypes);
   }
 
   @Override
   public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
       final String edgeType) {
-    return delegate.getNeighborViewOfSliceForVisits(expectedVisits, direction, edgeType) == null ?
-        null :
-        getNeighborViewOfSlice(direction, edgeType);
+    if (delegate.getNeighborViewOfSliceForVisits(expectedVisits, direction, edgeType) == null)
+      return null;
+    return getNeighborViewOfSlice(direction, edgeType);
   }
 
   private NeighborView translate(final NeighborView view) {

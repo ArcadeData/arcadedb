@@ -1935,14 +1935,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final long cost = overlayViewBuildCost(snap, direction, slices, key);
     if (cost == 0L || expectedVisits >= cost)
       return true;
+
+    // A view that costs something although one was built for this key was given back under memory pressure (it is held softly):
+    // what the reads spent on it is gone with it, and they earn it again, instead of the first small read after the eviction
+    // finding the demand already spent and rebuilding the whole view for itself, which is what this accounting exists to prevent
+    final SoftReference<NeighborView> evicted = snap.mergedNeighborViews.get(key);
     final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
-    // The check, the add and the check again are not one atomic step, on purpose: readers racing at the threshold may overshoot it
-    // by a read or ask for the view together, and the build is one per snapshot and key whoever asks (cachedNeighborView), so the
-    // cost of the race is at most the few reads that could have been served by it
-    // saturated: once the reads have spent the cost the view is built, so nothing adds to the sum after that (it stays below twice
-    // the cost, and cannot overflow)
-    if (demand.sum() >= cost)
-      return true;
+    if (evicted != null && snap.mergedNeighborViews.remove(key, evicted))
+      demand.reset();
+
+    // The add and the sum are not one atomic step, on purpose: readers racing at the threshold may overshoot it by a read or ask for
+    // the view together, and the build is one per snapshot and key whoever asks (cachedNeighborView), so the race costs at most the
+    // few reads that could have been served by it. The sum stays below twice the cost: the read that reaches the cost builds the
+    // view, and a read that finds it built returns above without adding
     demand.add(expectedVisits);
     return demand.sum() >= cost;
   }

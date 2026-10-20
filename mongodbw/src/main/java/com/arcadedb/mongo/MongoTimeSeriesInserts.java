@@ -52,7 +52,10 @@ import java.util.Map;
  * samples before it stored, and a client that retries the whole {@code insert} writes them again: a sample has no {@code _id} to
  * tell it was written, so retry only from the index the reply names.
  * <p>
- * The statement text is the same for every sample of a type, so the engine's statement cache parses it once.
+ * The statement text is the same for every sample of a type, so the engine's statement cache parses it once. What a batch costs
+ * is a statement and a shard commit per sample, so the throughput of an {@code insertMany} is the one of that many single
+ * {@code INSERT}s: a client that ingests large volumes of samples is better served by the line protocol or the HTTP time-series
+ * endpoint, which append a batch to the engine in one call.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

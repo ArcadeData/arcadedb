@@ -31,6 +31,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.ref.SoftReference;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
@@ -263,6 +264,73 @@ class Issue10471PointReadsOverAnOverlayTest extends TestHelper {
       spent += read;
     }
     assertThat(dense.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNotNull();
+  }
+
+  /**
+   * A view the memory pressure gave back (it is held softly) is earned again by the reads, not rebuilt by the first small read
+   * after it: what they spent on it went with it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void aViewGivenBackUnderMemoryPressureIsEarnedAgain(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    commitAFewEdges();
+    awaitView(view);
+    final GraphAnalyticalView.Pinned pinned = view.pinned();
+    final long cost = pinned.getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K");
+    final long read = DEGREE * DEGREE;
+
+    // small reads spend what the view costs, and the last of them builds it
+    long spent = 0;
+    while (spent + read < cost) {
+      assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNull();
+      spent += read;
+    }
+    assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).isNotNull();
+    assertThat(pinned.getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K")).isZero();
+
+    // the memory pressure clears the soft references of the snapshot
+    pinned.snapshot().mergedNeighborViews.values().forEach(SoftReference::clear);
+    assertThat(pinned.getNeighborViewBuildCost(Vertex.DIRECTION.OUT, "K")).as("the view is gone").isEqualTo(cost);
+
+    spent = 0;
+    while (spent + read < cost) {
+      assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).as("after " + spent + " of " + cost).isNull();
+      spent += read;
+    }
+    assertThat(pinned.getNeighborViewForVisits(read, Vertex.DIRECTION.OUT, "K")).as("earned again").isNotNull();
+  }
+
+  /** The chains that walk both directions, or track their relationships, take the per-node path of a hop with no view. */
+  @ParameterizedTest
+  @ValueSource(strings = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void chainsWalkingBothDirectionsOrTrackingTheirRelationshipsAnswerWhatTheRecordsAnswer(final String mode) {
+    final GraphAnalyticalView view = createView(mode);
+    commitAFewEdges();
+    awaitView(view);
+
+    for (final String chain : new String[] { "(a:P {pid: $p})-[:K]-(b:P)-[:K]-(c:P)", "(a:P {pid: $p})-[r1:K]->(b:P)-[r2:K]->(c:P)",
+        "(a:P {pid: $p})<-[:K]-(b:P)-[:K]->(c:P)" })
+      for (int i = 0; i < 10; i++) {
+        final int pid = random.nextInt(VERTICES);
+        final String query = "MATCH " + chain + " RETURN count(*) AS n";
+        assertThat(runCount(query, pid)).as(chain + " from " + pid).isEqualTo(runCountWithoutTheView(view, query, pid));
+      }
+  }
+
+  private long runCount(final String query, final int pid) {
+    try (final ResultSet rs = database.query("opencypher", query, Map.of("p", pid))) {
+      return rs.next().<Number>getProperty("n").longValue();
+    }
+  }
+
+  private long runCountWithoutTheView(final GraphAnalyticalView view, final String query, final int pid) {
+    GraphTraversalProviderRegistry.unregister(database, view);
+    try {
+      return runCount(query + " /* records */", pid);
+    } finally {
+      GraphTraversalProviderRegistry.register(database, view);
+    }
   }
 
   private void commitEdges() {
