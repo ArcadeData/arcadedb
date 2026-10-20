@@ -34,6 +34,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.List;
+import java.util.NoSuchElementException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -72,15 +73,20 @@ public class Issue10373RemoteNewEdgeVetoIT extends BaseGrpcClientServerTest {
   @Override
   public void endTest() {
     // HERE AND NOT IN A SEPARATE @AfterEach: THE ORDER OF TWO OF THEM IN ONE CLASS IS UNDEFINED, AND super.endTest() DROPS THE DATABASE
-    getServerDatabase(0, getDatabaseName()).getSchema().getType(EDGE).getEvents().unregisterListener(createVeto);
-    if (http != null)
-      http.close();
-    if (grpc != null)
-      grpc.close();
-    if (grpcServer != null)
-      grpcServer.close();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
+    // A SETUP THAT FAILED BEFORE THE EDGE TYPE OR THE LISTENER EXISTED MUST NOT KEEP THE SERVER UP AND THE PLUGIN SETTING SET
+    try {
+      if (createVeto != null && getServerDatabase(0, getDatabaseName()).getSchema().existsType(EDGE))
+        getServerDatabase(0, getDatabaseName()).getSchema().getType(EDGE).getEvents().unregisterListener(createVeto);
+      if (http != null)
+        http.close();
+      if (grpc != null)
+        grpc.close();
+      if (grpcServer != null)
+        grpcServer.close();
+    } finally {
+      GlobalConfiguration.SERVER_PLUGINS.setValue("");
+      super.endTest();
+    }
   }
 
   @BeforeEach
@@ -111,6 +117,22 @@ public class Issue10373RemoteNewEdgeVetoIT extends BaseGrpcClientServerTest {
 
     assertThat(db.countType(EDGE, false)).as("nothing was stored").isZero();
     assertThat(db.lookupByRID(fromRid, true).asVertex().countEdges(Vertex.DIRECTION.OUT, EDGE)).isZero();
+  }
+
+  /**
+   * An empty CREATE EDGE answer is read as a veto because every other refusal reaches the client as a server error: pinned here, so
+   * a statement that fails for another reason (an edge type that does not exist) is never reported as a listener's veto.
+   */
+  @ParameterizedTest
+  @EnumSource(Driver.class)
+  void aRefusalThatIsNotAVetoIsNotReadAsOne(final Driver driver) {
+    final RemoteDatabase db = db(driver);
+    final RID fromRid = newVertex(db);
+    final RID toRid = newVertex(db);
+    final Vertex from = db.lookupByRID(fromRid, true).asVertex();
+
+    assertThatThrownBy(() -> from.newEdge("NoSuchEdgeType10373", toRid)).isNotInstanceOf(RecordVetoedException.class)
+        .isNotInstanceOf(NoSuchElementException.class);
   }
 
   /** The remote message is the one the embedded engine builds, so a caller reads the same refusal on every path. */

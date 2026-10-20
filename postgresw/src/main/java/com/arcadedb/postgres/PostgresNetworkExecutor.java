@@ -4191,10 +4191,8 @@ public class PostgresNetworkExecutor extends Thread {
       return copy.sqlState;
     if (error instanceof PostgresSessionSettings.SettingException setting)
       return setting.sqlState;
-    if (error instanceof PostgresCatalog.WorkLimitExceeded)
-      return PostgresCatalog.WorkLimitExceeded.SQLSTATE; // program_limit_exceeded (issue #10228)
-    if (error instanceof PostgresCatalog.UnsupportedCatalogQuery)
-      return PostgresCatalog.UnsupportedCatalogQuery.SQLSTATE; // feature_not_supported (issue #10371)
+    if (error instanceof PostgresCatalog.Refusal refusal)
+      return refusal.sqlState; // program_limit_exceeded (issue #10228), feature_not_supported (issue #10371)
     return switch (ErrorCategory.of(error)) {
       // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
       // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)
@@ -4273,8 +4271,10 @@ public class PostgresNetworkExecutor extends Thread {
   /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */
   private String concealableMessage(final String message, final Throwable cause) {
     // A refused SET/DISCARD is text the protocol layer wrote, with no user data in it, and the explanation is what the
-    // client is owed; it is also a client mistake, never a server fault (issue #9327)
-    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException)
+    // client is owed; it is also a client mistake, never a server fault (issue #9327). A refused catalog query is the same: text
+    // this server wrote, with at most the relation the client named in it (issue #10371)
+    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException
+        || cause instanceof PostgresCatalog.Refusal)
       return message;
     // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
     // failure (syntax error, duplicated key, ...) is not an incident: the message alone, no stack trace. Anything the

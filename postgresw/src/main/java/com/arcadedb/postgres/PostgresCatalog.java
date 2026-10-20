@@ -150,11 +150,25 @@ public class PostgresCatalog {
    * that backtracks, sub-selects correlated deep enough to multiply. The client is told so, with PostgreSQL's
    * {@code program_limit_exceeded}, rather than handed an empty answer that would look like an empty catalog.
    */
-  public static final class WorkLimitExceeded extends RuntimeException {
+  public static final class WorkLimitExceeded extends Refusal {
     public static final String SQLSTATE = "54000";
 
     WorkLimitExceeded() {
-      super("The catalog query needs more work than one statement may spend: simplify it");
+      super("The catalog query needs more work than one statement may spend: simplify it", SQLSTATE);
+    }
+  }
+
+  /**
+   * A catalog query this server refuses, with the SQLSTATE the client acts on. The text is written by this class and holds no
+   * stored value (at most the name of a relation the client typed), and the cause is the client's query, never a fault of the
+   * server: so production mode keeps the message, as it does for a refused SET, and logs no SEVERE stack trace for it.
+   */
+  public abstract static class Refusal extends RuntimeException {
+    public final String sqlState;
+
+    Refusal(final String message, final String sqlState) {
+      super(message);
+      this.sqlState = sqlState;
     }
   }
 
@@ -171,11 +185,11 @@ public class PostgresCatalog {
    * with {@link WorkLimitExceeded} does not depend on why the statement was refused. PostgreSQL's own {@code undefined_table}
    * would claim the relation does not exist, which a real PostgreSQL has.
    */
-  public static final class UnsupportedCatalogQuery extends RuntimeException {
+  public static final class UnsupportedCatalogQuery extends Refusal {
     public static final String SQLSTATE = "0A000";
 
     UnsupportedCatalogQuery(final String message) {
-      super(message);
+      super(message, SQLSTATE);
     }
   }
 
@@ -1222,6 +1236,7 @@ public class PostgresCatalog {
     // relhasindex and hasindexes are FALSE because pg_index is not modelled (issue #10371): every query that would enumerate a
     // table's indexes names it and is refused, so a catalog that said "this relation has indexes" would send psql's \d, which
     // reads the flag first, straight into that refusal. The flag follows what this catalog can show, not what the type has.
+    // TODO #10473: model pg_index, then answer !type.getAllIndexes(false).isEmpty() again (here and in pg_tables.hasindexes)
     return singletonRow(context)//
         .with("pg_class", "oid", oid, "relname", type.getName(), "relnamespace", SCHEMA_OID, "relowner", OWNER_OID,//
             "relkind", "r", "relpersistence", "p", "relnatts", type.getPropertyNames().size(),//
