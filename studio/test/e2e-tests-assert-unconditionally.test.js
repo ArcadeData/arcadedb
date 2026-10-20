@@ -271,11 +271,15 @@ function scanTests(src) {
 
     const title = (/^\s*(['"`])((?:\\.|(?!\1).)*)\1/.exec(src.substring(openParen + 1)) || [])[2] || "(unnamed)";
     const line = lineOf(src, m.index);
+    // `test(` and `test.only(` only ever declare; test.fixme / test.fail / test.slow declare when they open with a title and
+    // otherwise annotate, even when their condition is a function of the fixtures: test.fixme(({ browserName }) => ..., "why")
+    if (/\.(?:fixme|fail|slow)\s*\($/.test(m[0]) && !DECLARATION_HEAD.test(masked.substring(openParen + 1, closeParen))) {
+      header.lastIndex = closeParen;
+      continue;
+    }
     const body = callbackBody(masked, openParen, closeParen);
     if (body === null) {
-      // `test(` and `test.only(` only ever declare; the other forms declare when they open with a title
-      const declares = !/\.(?:fixme|fail|slow)\s*\($/.test(m[0]) || DECLARATION_HEAD.test(masked.substring(openParen + 1, closeParen));
-      if (declares) tests.push({ title, line, assertions: 0, unanalysable: true });
+      tests.push({ title, line, assertions: 0, unanalysable: true });
       header.lastIndex = closeParen;
       continue;
     }
@@ -506,6 +510,8 @@ test("test.fixme, test.fail and test.slow annotations are not declarations", () 
       test.fixme(browserName === 'firefox', 'not on firefox');
       test.fail(ok, 'known to fail');
       test.slow();
+      test.fixme(({ browserName }) => browserName === 'webkit', 'not on webkit');
+      test.slow(({ browserName }) => browserName === 'firefox');
       test('real', async ({ page }) => { expect(1).toBe(1); });
     });
   `;
