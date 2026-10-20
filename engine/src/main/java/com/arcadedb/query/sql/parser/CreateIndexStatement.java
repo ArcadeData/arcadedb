@@ -457,7 +457,12 @@ public class CreateIndexStatement extends DDLStatement {
       // Build the HNSW graph immediately unless explicitly disabled - and only for an index this statement actually
       // created. When create() answered a guarded request with the index already on those properties (issue #5781),
       // rebuilding its graph is work nobody asked for on an index the statement was told to leave alone.
-      if (buildGraphNow && vectorBuilder.isBuilt())
+      //
+      // Nor for an index built inside the caller's transaction (issue #10438): its entries are still queued on that
+      // transaction, so the graph build would find none on the index pages, recover the bucket's records through its
+      // document-scan fallback under ids of its own, and the commit would then add every record a second time. The
+      // graph is built on first use after the commit instead, as for any other write.
+      if (buildGraphNow && vectorBuilder.isBuilt() && !vectorBuilder.isBuiltInCallerTransaction())
         for (final Index idx : typeIndex.getIndexesOnBuckets())
           if (idx instanceof LSMVectorIndex)
             ((LSMVectorIndex) idx).buildVectorGraphNow();
