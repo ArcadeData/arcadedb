@@ -1,15 +1,12 @@
 """Engine findings about openCypher count push-downs and BYTE aggregates that reach Python users
-(known-issues.md), now all fixed in ArcadeDB 26.10.2.
+(known-issues.md), all fixed in ArcadeDB 26.10.2.
 
-Each finding has a test of its documented workaround, which must keep passing, and a test of the
-engine behavior itself that asserts the answer the row pipeline gives. While an engine bug is open
-that test is a strict `xfail`, a tripwire as in `test_null_index_known_issues.py`: when the fix
-reaches the wheel it starts passing and the suite fails, and the test is then converted to a plain
-one.
-
-#9277, #9278 and #9281 (ArcadeData/arcadedb#9288) and #9290 (ArcadeData/arcadedb#9299) are fixed in
-26.10.2, which is the engine this tree builds against, so their tests are plain regression tests
-now. They fail on the 26.10.1 engine, the one in the released wheel; known-issues.md says so.
+Each finding has a test of its workaround, which must keep passing, and a plain regression test of
+the engine behavior itself that asserts the answer the row pipeline gives. #9277, #9278 and #9281
+(ArcadeData/arcadedb#9288) and #9290 (ArcadeData/arcadedb#9299) are fixed in 26.10.2, so the
+regression tests pass on the 26.10.2 wheel. While the bugs were open they were strict `xfail`
+tripwires, as in `test_null_index_known_issues.py`. The bugs are listed under "Fixed in 26.10.2" in
+known-issues.md.
 
 Where a query is still answered by the `COUNT ANTI-JOIN CHAIN` push-down (the LSQB Q9 shape, the
 only shape the engine verifies against the row pipeline since #9299) the test first checks the
@@ -111,7 +108,7 @@ def test_negated_pattern_in_a_chain_with_another_label_at_the_far_end_counts_the
     ],
 )
 def test_with_before_the_where_gives_the_row_pipeline_count(temp_db_path, where):
-    """known-issues.md (#9277): `WITH p1, p2, p3, t` before the WHERE keeps the query off the
+    """#9277 (fixed in 26.10.2): `WITH p1, p2, p3, t` before the WHERE keeps the query off the
     push-down and gives the right count on every engine."""
     with arcadedb.create_database(temp_db_path) as db:
         _cross_label_graph(db)
@@ -207,7 +204,7 @@ def test_negated_pattern_with_a_property_map_counts_the_path(temp_db_path, where
     ],
 )
 def test_with_before_the_where_honours_the_property_map(temp_db_path, where, expected):
-    """known-issues.md (#9278): after a `WITH` the negated pattern keeps its property map."""
+    """#9278 (fixed in 26.10.2): after a `WITH` the negated pattern keeps its property map."""
     with arcadedb.create_database(temp_db_path) as db:
         _edge_property_graph(db)
         row_pipeline = f"{EDGE_CHAIN}WITH x, y, z, t WHERE {where} RETURN count(*) AS n"  # nosec B608
@@ -253,7 +250,7 @@ def _byte_types(db):
 
 
 def _result_or_error(db, language, query, reported_error="Cannot increment value"):
-    """The value of `r`, or the text of the error the issue reports, so the tripwire's
+    """The value of `r`, or the text of the error the issue reports, so the regression test's
     comparison fails with it as with a wrong value; any other exception fails the suite.
     """
     try:
@@ -308,7 +305,7 @@ def test_sum_and_avg_over_a_short_property_are_not_affected(temp_db_path):
 def test_converting_a_byte_to_an_integer_before_the_aggregate_works(
     temp_db_path, language, query, expected
 ):
-    """known-issues.md (#9281): `b.asInteger()` in SQL and `toInteger(n.b)` in openCypher
+    """#9281 (fixed in 26.10.2): `b.asInteger()` in SQL and `toInteger(n.b)` in openCypher
     give the aggregate a value type it can add."""
     with arcadedb.create_database(temp_db_path) as db:
         _byte_types(db)
@@ -398,7 +395,7 @@ def test_the_push_down_counts_the_other_shapes_like_the_row_pipeline(
 def test_with_before_the_where_gives_the_row_pipeline_count_for_the_other_shapes(
     temp_db_path, match, variables, where, expected
 ):
-    """known-issues.md (#9290): `WITH <the chain's variables>` before the WHERE keeps the query
+    """#9290 (fixed in 26.10.2): `WITH <the chain's variables>` before the WHERE keeps the query
     off the push-down and gives the right count."""
     with arcadedb.create_database(temp_db_path) as db:
         _shapes_graph(db)
