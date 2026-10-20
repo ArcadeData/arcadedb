@@ -134,7 +134,11 @@ public enum GlobalConfiguration {
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
-        PageManager.INSTANCE.configure();
+        // THE STARTUP PASS IS NOT A LIVE CHANGE: THE FIRST ContextConfiguration OF AN EMBEDDED JVM IS CREATED BY
+        // PageManager.startup(), AFTER ITS REFERENCE COUNT WENT UP FOR THE DATABASE BEING OPENED, SO configure() WOULD
+        // WARN THAT THE PROFILE WAS "PARTIALLY applied" FOR A DATABASE THAT WAS OPENED AFTER IT (#10446)
+        if (!readingConfiguration)
+          PageManager.INSTANCE.configure();
 
       } else if ("low-cpu".equalsIgnoreCase(v)) {
         ASYNC_WORKER_THREADS.setValue(1);
@@ -3463,6 +3467,10 @@ public enum GlobalConfiguration {
   // class, which already carries the happens-before edge.
   private static boolean                        readingConfiguration;
   private static boolean                        dumpPending;
+  // Issue #10446: the settings written since the startup pass began, so the pass can tell a value an earlier setting's
+  // callback chose (the profile's) from the compiled-in default. Only non-null while readConfiguration() runs, and
+  // created there rather than here for the reason above.
+  private static Set<GlobalConfiguration>       assignedDuringPass;
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
@@ -3923,6 +3931,7 @@ public enum GlobalConfiguration {
     // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
     // semantics) and tests, but a future "reload configuration" entry point must not have to rediscover that.
     readingConfiguration = true;
+    assignedDuringPass = EnumSet.noneOf(GlobalConfiguration.class);
     try {
       for (final GlobalConfiguration config : values()) {
         String source = "system property";
@@ -3937,6 +3946,7 @@ public enum GlobalConfiguration {
       }
     } finally {
       readingConfiguration = false;
+      assignedDuringPass = null;
     }
 
     // Issue #7281: the dump describes the configuration this pass PRODUCED. Firing it from the callback, as the
@@ -4004,8 +4014,21 @@ public enum GlobalConfiguration {
    * @param source what to name as its origin when reporting a value that cannot be read
    */
   void applyConfigurationSource(final String prop, final String source) {
-    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null)
+    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null
+        && !assignedEarlierInPass())
       setValue(callbackIfNoSet.call(null));
+  }
+
+  /**
+   * Issue #10446: whether an earlier setting of the startup pass already chose this one's value. The profile does, for
+   * the settings it lists, and they come after {@code PROFILE} in the enum: without this the computed default of
+   * {@code arcadedb.maxPageRAM} (a quarter of the heap) overwrote the profile's 16 MB under {@code -Darcadedb.profile=low-ram}.
+   * The precedence is an explicit property or variable, then the profile, then the computed default. The first needs no
+   * test here, since a value that was read is applied after the profile and so replaces it.
+   */
+  private boolean assignedEarlierInPass() {
+    final Set<GlobalConfiguration> assigned = assignedDuringPass;
+    return readingConfiguration && assigned != null && assigned.contains(this);
   }
 
   /**
@@ -4469,6 +4492,10 @@ public enum GlobalConfiguration {
       value = invokeCallback(value);
 
       checkAllowed(value);
+
+      final Set<GlobalConfiguration> assigned = assignedDuringPass;
+      if (readingConfiguration && assigned != null)
+        assigned.add(this);
 
     } catch (final Exception e) {
       // RESTORE THE PREVIOUS VALUE - INCLUDING WHETHER THERE WAS ONE. A WRITE THAT WAS ROLLED BACK IS NOT A CHOICE
