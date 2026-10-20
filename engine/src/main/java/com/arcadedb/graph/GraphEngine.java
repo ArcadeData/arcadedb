@@ -770,7 +770,7 @@ public class GraphEngine {
 
   /** Receives a lightweight edge entry that belongs in a list being rebuilt, see {@link #forEachLightEdgeFarCopy}. */
   @FunctionalInterface
-  public interface LightEdgeFarCopyConsumer {
+  interface LightEdgeFarCopyConsumer {
     /**
      * @param vertex    the vertex whose list is being rebuilt
      * @param direction the list of {@code vertex} the entry belongs in
@@ -804,7 +804,7 @@ public class GraphEngine {
    * A unidirectional lightweight edge has no far copy, and none is invented: an entry of an edge type that is gone or is
    * not bidirectional is skipped.
    */
-  public void forEachLightEdgeFarCopy(final Set<RID> outVertices, final Set<RID> inVertices,
+  void forEachLightEdgeFarCopy(final Set<RID> outVertices, final Set<RID> inVertices,
       final LightEdgeFarCopyConsumer consumer) {
     if (outVertices.isEmpty() && inVertices.isEmpty())
       return;
@@ -822,12 +822,11 @@ public class GraphEngine {
     if (bidirectionalBuckets.isEmpty())
       return;
 
-    // LISTS WALKED, COPIES FOUND, VERTICES THAT COULD NOT BE READ, LISTS THAT COULD NOT BE READ IN FULL
-    final long[] walked = new long[4];
+    final long[] walked = new long[WALK_COUNTERS];
     final long beginTime = System.currentTimeMillis();
 
     // ONE WALK PER SIDE: AN OUT LIST BEING REBUILT IS READ FROM THE FAR IN LISTS, AN IN LIST FROM THE FAR OUT LISTS
-    for (final Vertex.DIRECTION targetDirection : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
+    for (final Vertex.DIRECTION targetDirection : OUT_AND_IN) {
       final Set<RID> targets = targetDirection == Vertex.DIRECTION.OUT ? outVertices : inVertices;
       if (targets.isEmpty())
         continue;
@@ -844,36 +843,45 @@ public class GraphEngine {
             far = (VertexInternal) record.asVertex(true);
           } catch (final Exception e) {
             // AN UNREADABLE VERTEX HOLDS NO COPY ANYBODY CAN READ: COUNTED, SO A PARTIAL RECOVERY IS VISIBLE
-            ++walked[2];
+            ++walked[WALK_UNREADABLE_VERTICES];
             return true;
           }
           final RID farRID = far.getIdentity();
-          ++walked[0];
+          ++walked[WALK_LISTS];
           final Exception unreadable = readEdgeListEntries(far, farDirection, (edgeRID, neighbour) -> {
             if (edgeRID != null && neighbour != null && edgeRID.getPosition() < 0 && bidirectionalBuckets.contains(
                 edgeRID.getBucketId()) && targets.contains(neighbour)) {
-              ++walked[1];
+              ++walked[WALK_COPIES];
               consumer.accept(neighbour, targetDirection, edgeRID, farRID);
             }
           });
           if (unreadable != null)
-            ++walked[3];
+            ++walked[WALK_UNREADABLE_LISTS];
           return true;
         }, (rid, exception) -> {
-          ++walked[2];
+          ++walked[WALK_UNREADABLE_VERTICES];
           return true;
         });
     }
 
     // A COPY IN AN UNREADABLE VERTEX OR LIST IS NOT FOUND: SAID AT WARNING, AS THE RECOVERY MAY BE PARTIAL. THE WALK'S COST AT FINE
-    if (walked[2] > 0 || walked[3] > 0)
+    if (walked[WALK_UNREADABLE_VERTICES] > 0 || walked[WALK_UNREADABLE_LISTS] > 0)
       LogManager.instance().log(this, Level.WARNING,
-          "Searching the lightweight edges of the edge lists being rebuilt: %d vertex record(s) and %d edge list(s) could not be read, a lightweight edge whose only copy was there is not recovered",
-          walked[2], walked[3]);
+          "Searching the lightweight edges of the edge lists being rebuilt: %d vertex record(s) and %d edge list(s) could not "
+              + "be read, a lightweight edge whose only copy was there is not recovered", walked[WALK_UNREADABLE_VERTICES],
+          walked[WALK_UNREADABLE_LISTS]);
     if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance().log(this, Level.FINE, "Found %d lightweight edge copies walking %d edge lists in %d ms", walked[1],
-          walked[0], System.currentTimeMillis() - beginTime);
+      LogManager.instance().log(this, Level.FINE, "Found %d lightweight edge copies walking %d edge lists in %d ms",
+          walked[WALK_COPIES], walked[WALK_LISTS], System.currentTimeMillis() - beginTime);
   }
+
+  private static final Vertex.DIRECTION[] OUT_AND_IN               = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
+  // THE COUNTERS OF forEachLightEdgeFarCopy, ONE long[] RATHER THAN FOUR CAPTURED HOLDERS
+  private static final int                WALK_LISTS               = 0;
+  private static final int                WALK_COPIES              = 1;
+  private static final int                WALK_UNREADABLE_VERTICES = 2;
+  private static final int                WALK_UNREADABLE_LISTS    = 3;
+  private static final int                WALK_COUNTERS            = 4;
 
   /**
    * The LIGHTWEIGHT edge types in which the rebuild of an OUT list may have lost an edge for good (#10407): a
@@ -895,7 +903,7 @@ public class GraphEngine {
    *
    * @return the first failure met, or null when the whole list was read
    */
-  public Exception readEdgeListEntries(final VertexInternal vertex, final Vertex.DIRECTION direction,
+  Exception readEdgeListEntries(final VertexInternal vertex, final Vertex.DIRECTION direction,
       final BiConsumer<RID, RID> consumer) {
     final RID head;
     try {
@@ -942,7 +950,7 @@ public class GraphEngine {
    * Re-adds one entry a repair recovered to the edge list of {@code vertex} (#10406, #10407), with the bookkeeping a
    * lightweight entry appended by a transaction needs (see {@link #lightEdgeEntryAppended}).
    */
-  public void relinkEdgeListEntry(final Vertex vertex, final Vertex.DIRECTION direction, final RID edgeRID, final RID other) {
+  void relinkEdgeListEntry(final Vertex vertex, final Vertex.DIRECTION direction, final RID edgeRID, final RID other) {
     getOrCreateEdgeList(vertex.modify(), direction).add(edgeRID, other);
     if (edgeRID.getPosition() < 0)
       lightEdgeEntryAppended(vertex.getIdentity(), direction, edgeRID.getBucketId(), other);

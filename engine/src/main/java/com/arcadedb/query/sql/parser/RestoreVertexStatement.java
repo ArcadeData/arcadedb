@@ -49,6 +49,15 @@ import java.util.Set;
  * lightweight self-loop: both its copies were in the vertex's own lists. No count can be given for either, since no
  * surviving structure records them.
  * <p>
+ * COST: finding those copies reads the edge lists of every vertex of the database, on top of the scan of every edge
+ * record the rebuild always did, whenever the schema holds a bidirectional edge type. It cannot be narrowed to the
+ * types declared LIGHTWEIGHT: the deprecated {@code newLightEdge()} stores lightweight entries under regular types too.
+ * Fine for an emergency repair, not for a routine operation.
+ * <p>
+ * The whole rebuild is written in the CALLER's transaction, deliberately, however many edges the vertex had: the restore
+ * is one atomic repair the caller can roll back, and committing part of it from inside the statement would break that
+ * (as #6220 established for {@code TRUNCATE}). A hub with millions of edges is therefore one large transaction.
+ * <p>
  * Restores graph STRUCTURE only: the vertex's original property values are not recoverable from its edges. SET or
  * CONTENT lets the caller supply them if known from another source (a backup, an application log, ...).
  * <p>
