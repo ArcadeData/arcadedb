@@ -171,6 +171,7 @@ function countOwnAssertions(masked, from, to) {
   let state = "start";
   let newline = false;
   let head = false; // an if/for/while/with was just read: its "(" opens a head
+  let member = false; // the last token was ".": the word that follows is a property name, never a keyword
   let k = from;
   while (k < to) {
     const c = masked[k];
@@ -182,17 +183,20 @@ function countOwnAssertions(masked, from, to) {
       let end = k + 1;
       while (end < to && /[\w$]/.test(masked[end])) end++;
       const word = masked.substring(k, end);
-      if (word === "expect" && nesting.length === 0 && EXPECT_CALL.test(masked.substring(k, Math.min(to, k + 14))) && (state === "start" || (state === "operand" && newline))) {
+      const startsStatement = nesting.length === 0 && (state === "start" || (state === "operand" && newline));
+      const isAssertion = !member && word === "expect" && EXPECT_CALL.test(masked.substring(k, Math.min(to, k + 14)));
+      if (isAssertion && startsStatement) {
         own++;
         state = "operand";
         newline = false;
-      } else if (TRANSPARENT_KEYWORDS.has(word)) {
+      } else if (!member && TRANSPARENT_KEYWORDS.has(word)) {
         // the position is unchanged, and so is the line break seen so far
       } else {
-        head = HEAD_KEYWORDS.has(word);
-        state = OPERATOR_KEYWORDS.has(word) || head ? "operator" : "operand";
+        head = !member && HEAD_KEYWORDS.has(word);
+        state = !member && (OPERATOR_KEYWORDS.has(word) || head) ? "operator" : "operand";
         newline = false;
       }
+      member = false;
       k = end;
     } else {
       if (c === "(" || c === "[" || c === "{") {
@@ -204,6 +208,7 @@ function countOwnAssertions(masked, from, to) {
         state = closed === "head" ? "head" : closed === "{" ? "start" : "operand";
       } else state = c === ";" && nesting.length === 0 ? "start" : c === "'" || c === '"' || c === "`" ? "operand" : "operator";
       head = false;
+      member = c === ".";
       newline = false;
       k++;
     }
@@ -281,9 +286,12 @@ function scanTests(src) {
 }
 
 // How many tests the source declares, counted by a different method than scanTests so that one can check the other: every
-// test(...) / test.only(...) / test.fixme(...) that opens a line with a literal title
+// test(...) / test.only(...) / test.fixme(...) that opens with a literal title, wherever it sits and across line breaks. It
+// does not step over a test body the way the scan does, so a declaration the scan jumps past (one nested in another test's
+// body) shows up here as a gap. It is still a one-way check: a declaration with a computed title (`test(name, ...)`) is not
+// counted, so the scan, not the census, is what catches that one (it reports it as unanalysable when it has no inline body)
 function countDeclarations(src) {
-  return (maskNonCode(src).match(/^[ \t]*test(?:\.(?:only|fixme|fail|slow))?[ \t]*\([ \t]*['"`]/gm) || []).length;
+  return (maskNonCode(src).match(/(?<![\w.])test(?:\.(?:only|fixme|fail|slow))?\s*\(\s*['"`]/g) || []).length;
 }
 
 // --- The scanner ---------------------------------------------------------------------------------------------------
@@ -409,6 +417,11 @@ const UNCONDITIONAL_SHAPES = [
   ["after a declaration, no semicolon", "const n = [1].length\nawait expect(n).toBe(1)"],
   ["after a typed declaration", "const errors: string[] = [];\nexpect(errors).toEqual([]);"],
   ["after a cast, no semicolon", "const s = (window as any).x\nexpect(s).toBe(1)"],
+  ["after a property named default", "const v = opts.default\nexpect(v).toBe(1)"],
+  ["after a property named of", "const w = x.of\nexpect(w).toBe(1)"],
+  ["after a property named in", "const w = x?.in\nexpect(w).toBe(1)"],
+  ["after a property named if", "const f = x.if\nexpect(f).toBe(1)"],
+  ["after a property named return", "const r = x.return\nexpect(r).toBe(1)"],
 ];
 
 const wrap = (body) => `test('t', async ({ page }) => {\n${body}\n});`;
@@ -514,6 +527,29 @@ test("the declaration census counts without going through the scan", () => {
   `;
   assert.equal(countDeclarations(src), 5);
   assert.equal(scanTests(src).length, 5);
+});
+
+test("the census counts a declaration the scan steps over, so the suite's cross-check can fail", () => {
+  // the scan resumes after the outer call, so the nested declaration is never visited; the census does not jump
+  const nested = `
+    test('outer', async () => {
+      expect(1).toBe(1);
+      test('inner', async () => { expect(1).toBe(1); });
+    });
+  `;
+  assert.equal(scanTests(nested).length, 1);
+  assert.equal(countDeclarations(nested), 2);
+
+  // a title on the line after the opening parenthesis, and a declaration that follows other code on its line
+  const spread = `
+    test(
+      'multi-line',
+      async () => { expect(1).toBe(1); },
+    );
+    const each = [1]; test('after code', async () => { expect(1).toBe(1); });
+  `;
+  assert.equal(countDeclarations(spread), 2);
+  assert.equal(scanTests(spread).length, 2);
 });
 
 // --- The suite -----------------------------------------------------------------------------------------------------
