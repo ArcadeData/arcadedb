@@ -1,12 +1,11 @@
 """Engine findings about openCypher counts over light edges and over Graph Analytical Views that
 reach Python users (known-issues.md), both fixed in ArcadeDB 26.10.2.
 
-Each finding has plain tests of its documented workarounds, which must keep passing, plain tests of
-the cases that are not affected, and plain regression tests of the engine behavior itself. They pass
-on the engine the suite builds against (upstream's 26.10.2 snapshot, which has the fix) and fail on
-the 26.10.1 wheel; known-issues.md says so. While the bugs were open the regression tests were strict
-`xfail` tripwires, as in `test_count_pushdown_known_issues.py`: they started passing when the fix
-reached the snapshot, and the suite failed until they were converted.
+Each finding has plain tests of its workarounds, which must keep passing, plain tests of the cases
+that are not affected, and plain regression tests of the engine behavior itself. The regression
+tests pass on the 26.10.2 wheel. While the bugs were open they were strict `xfail` tripwires, as in
+`test_count_pushdown_known_issues.py`. The bugs are listed under "Fixed in 26.10.2" in
+known-issues.md.
 
 Upstream: ArcadeData/arcadedb #9378 (a one-hop `count(*)` answered 0 over the edges that
 `GraphBatch.withLightEdges(true)` wrote into an edge type that is not declared `LIGHTWEIGHT`: the
@@ -123,7 +122,7 @@ def test_light_edges_for_an_undeclared_edge_type_are_refused(temp_db_path):
 def test_one_hop_count_where_the_edges_and_the_type_agree(
     temp_db_path, edge_ddl, batch_options
 ):
-    """known-issues.md (#9378): declaring the type `LIGHTWEIGHT` before the load, or not passing
+    """#9378 (fixed in 26.10.2): declaring the type `LIGHTWEIGHT` before the load, or not passing
     `light_edges=True`, gives the right one-hop count on every engine."""
     with arcadedb.create_database(temp_db_path) as db:
         _light_edge_graph(db, edge_ddl, **batch_options)
@@ -164,7 +163,7 @@ def test_light_edges_with_properties_in_an_undeclared_type_are_regular_edges(
     ],
 )
 def test_other_ways_to_count_light_edges_an_older_version_loaded(temp_db_path, query):
-    """known-issues.md (#9378): on a graph that an older version loaded with `light_edges=True` into
+    """#9378 (fixed in 26.10.2): on a graph that an older version loaded with `light_edges=True` into
     an undeclared type, a `WITH a, b` before the count, `count(b)`, or `count(r)` over a named
     relationship is not planned as `CONSTANT COUNT` and gives the right count, on every engine.
     """
@@ -178,9 +177,9 @@ def test_other_ways_to_count_light_edges_an_older_version_loaded(temp_db_path, q
 def test_one_hop_count_over_light_edges_an_older_version_loaded(temp_db_path):
     """The right count is 2, as the rows and `out('E')` show. Until ArcadeData/arcadedb#9409 (merge
     9b6aaedd40, closing #9389) the push-down planned this CONSTANT COUNT and answered 0 for light edges
-    an older version had written; this was a strict `xfail` tripwire then. The snapshot now counts
-    them through the CSR chain-count push-down, so it is a plain regression test. It fails on the
-    26.10.1 wheel."""
+    an older version had written; this was a strict `xfail` tripwire then. Since 26.10.2 the engine
+    counts them through the CSR chain-count push-down, so it is a plain regression test.
+    """
     with arcadedb.create_database(temp_db_path) as db:
         _graph_an_older_version_loaded(db)
         _require_the_edges_are_there(db)
@@ -271,7 +270,7 @@ def test_pattern_predicate_over_an_edge_type_the_view_does_not_list(
 def test_with_before_the_where_gives_the_row_pipeline_count_over_a_view(
     temp_db_path, where
 ):
-    """known-issues.md (#9377): `WITH a, b` before the WHERE keeps the query on the row pipeline,
+    """#9377 (fixed in 26.10.2): `WITH a, b` before the WHERE keeps the query on the row pipeline,
     which counts the right number with the view that does not list F, on every engine.
     """
     with arcadedb.create_database(temp_db_path) as db:
@@ -290,7 +289,7 @@ def test_with_before_the_where_gives_the_row_pipeline_count_over_a_view(
     ],
 )
 def test_a_view_that_lists_the_predicates_edge_type_counts_right(temp_db_path, where):
-    """known-issues.md (#9377): a view that lists F as well as E still serves the query, and the
+    """#9377 (fixed in 26.10.2): a view that lists F as well as E still serves the query, and the
     count is right, on every engine."""
     with arcadedb.create_database(temp_db_path) as db:
         _view_graph(db, "E, F")

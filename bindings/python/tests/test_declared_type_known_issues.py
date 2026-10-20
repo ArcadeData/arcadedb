@@ -1,10 +1,11 @@
 """Engine findings about declared properties that reach Python users (known-issues.md).
 
 Each finding has a test of its documented workaround, which must keep passing, and a test
-of the engine behavior itself. While the engine bug is open that test is a strict `xfail`, a
+of the engine behavior itself. While an engine bug is open that test is a strict `xfail`, a
 tripwire as `test_restore_sql.py` used for #6096: when the fix reaches the wheel it starts
 passing and the suite fails. Once the fix is in the engine the wheel packages, the `xfail`
-comes off and the test asserts the fixed behavior.
+comes off and the test asserts the fixed behavior. Every finding here is fixed, so all the tests
+are plain now.
 
 Upstream: ArcadeData/arcadedb #9014 and #9027 (a value that cannot be converted was stored
 as NULL, and '' as 0; fixed in 26.10.1 by PR #9121), #9017 (CREATE PROPERTY mandatory +

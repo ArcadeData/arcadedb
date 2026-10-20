@@ -1457,6 +1457,8 @@ indexes = [
     # equality would be UNIQUE_HASH (ArcadeData/arcadedb#9169), as Link.movieId is.
     ("Movie", "movieId", "UNIQUE"),
     ("Movie", "genres", "FULL_TEXT"),  # Full-text search for genre queries
+    # The NOTUNIQUE columns stay LSM_TREE: on 26.10.1 and earlier a NOTUNIQUE_HASH insert
+    # costs more with every row the key already has (ArcadeData/arcadedb#9228, fixed in 26.10.2).
     ("Rating", "userId", "NOTUNIQUE"),
     ("Rating", "movieId", "NOTUNIQUE"),
     ("Link", "movieId", "UNIQUE_HASH"),  # never read by range or order
