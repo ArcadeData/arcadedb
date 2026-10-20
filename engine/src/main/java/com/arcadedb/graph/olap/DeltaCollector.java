@@ -214,8 +214,10 @@ class DeltaCollector
     // A view whose first build is still scanning tracks changes too: the build reconciles them (issue #8378)
     if (!view.isTrackingChanges())
       return false;
+    // Both routed by the schema alone: whether the base CSR already HOLDS the type's records is a question for the query that
+    // wants the view served, and routing by it dropped the vertex of a type attached after the scan (issue #10491)
     if (record instanceof Vertex vertex)
-      return view.coversVertexType(vertex.getTypeName());
+      return view.routeWrittenVertexType(vertex.getTypeName());
     if (record instanceof Edge edge)
       return view.coversEdgeType(edge.getTypeName());
     return false;

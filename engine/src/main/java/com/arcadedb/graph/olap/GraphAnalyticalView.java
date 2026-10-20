@@ -1215,6 +1215,32 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return type != null && coversVertexTypeByFilter(type) && holdsJoinedVertexType(type);
   }
 
+  /**
+   * Whether a vertex of {@code typeName} that is being written is one the view is built over: the type is listed, or sits under
+   * a listed one (issue #10208). It is what the commit listeners route the vertex by, and it is decided by the schema alone,
+   * like {@link #coversEdgeType}.
+   * <p>
+   * Not by {@link #coversVertexType}, which also asks whether the base CSR HOLDS the type's vertices. A listener that routed by
+   * that lost the vertex of a type attached to a listed one after the scan (issue #10491): the type held committed vertices the
+   * scan never read, so the answer was no, the listener dropped the vertex, and the rebuild that answer dispatches - from inside
+   * the writing transaction - scanned before it committed and read the vertex from nowhere, while the delta that would have
+   * carried it had never been collected. Routed by the filter, the vertex reaches the overlay and the rebuild's watch like any
+   * other, and whether the view is SERVED for the type stays {@link #coversVertexType}'s call.
+   * <p>
+   * The question of whether the CSR holds the type is still asked here, for its effect: the first write to a type is the moment
+   * the view meets it, and the verdict taken then is what tells a type created after the scan (empty, every vertex heard) from
+   * one attached to the family with vertices the scan never read.
+   */
+  boolean routeWrittenVertexType(final String typeName) {
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return true;
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    if (type == null || !coversVertexTypeByFilter(type))
+      return false;
+    holdsJoinedVertexType(type);
+    return true;
+  }
+
   private boolean holdsAllJoinedVertexTypes(final DocumentType[] joinedTypes, final long version) {
     final Snapshot snap = snapshot;
     if (snap == null)

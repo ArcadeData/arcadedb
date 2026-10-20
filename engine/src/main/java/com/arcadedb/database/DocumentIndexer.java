@@ -103,6 +103,14 @@ public class DocumentIndexer {
   }
 
   /**
+   * Takes out of ONE index the entries {@link #addToIndex} puts for {@code record}: the keys it derives are the same, so what
+   * a build added for a record is exactly what this removes (issue #10490).
+   */
+  public void removeFromIndex(final Index entry, final RID rid, final Document record) {
+    forEachIndexKey(entry, record, keyValues -> entry.remove(keyValues, rid));
+  }
+
+  /**
    * Expands a document into the same logical keys used by normal index maintenance without mutating the index.
    */
   public void forEachIndexKey(final Index entry, final Document record, final Consumer<Object[]> keyConsumer) {

@@ -144,7 +144,11 @@ class Issue10450IndexBuildWithUnrelatedPendingWritesTest extends TestHelper {
     assertThat(neighbors("VecParent[behavior]")).hasSize(3);
   }
 
-  /** A pending update of a committed record in the indexed type still joins the transaction, and the rollback undoes it. */
+  /**
+   * A pending update of a committed record in the indexed type still joins the transaction: the entries of the pending
+   * versions are queued on it, and the rollback undoes them. The committed records are indexed on their own (issue #10490),
+   * so the index still describes them afterwards.
+   */
   @Test
   void updateInTheIndexedTypeStillJoinsTheTransaction() {
     createCommittedVectorRecords("VecUpd", 2);
@@ -155,7 +159,8 @@ class Issue10450IndexBuildWithUnrelatedPendingWritesTest extends TestHelper {
     database.rollback();
 
     assertThat(database.getSchema().getIndexByName("VecUpd[behavior]").countEntries())
-        .as("the build joined the transaction, so its entries went with the rollback").isZero();
+        .as("the committed records are indexed whatever the caller does").isEqualTo(2L);
+    assertThat(neighbors("VecUpd[behavior]")).hasSize(2);
   }
 
   /** Bucket-level builder: a write to ANOTHER bucket of the same type is unrelated to this bucket's index. */
