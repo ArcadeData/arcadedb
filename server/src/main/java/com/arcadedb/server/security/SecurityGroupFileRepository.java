@@ -300,8 +300,8 @@ public class SecurityGroupFileRepository {
    */
   private final class Policy extends ReloadableSecurityArtifact<JSONObject> {
     private Policy() {
-      super(SecurityGroupFileRepository.this, SecurityGroupFileRepository.this, SecurityGroupFileRepository.this.file, new File(securityConfPath, ERROR_FILE_NAME),
-          WATCHER_PREFIX, "Server groups configuration");
+      super(SecurityGroupFileRepository.this, SecurityGroupFileRepository.this, SecurityGroupFileRepository.this.file,
+          new File(securityConfPath, ERROR_FILE_NAME), WATCHER_PREFIX, "Server groups configuration");
     }
 
     @Override

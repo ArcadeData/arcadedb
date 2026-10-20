@@ -335,6 +335,33 @@ class Issue10404ReloadableSecurityArtifactTest {
     }
   }
 
+  /**
+   * A legacy plaintext token file edited in while the server runs is published hashed and saved once; the re-read the save
+   * causes publishes the same token set and saves nothing more.
+   */
+  @Test
+  void aLegacyTokenFileIsMigratedOnReloadAndTheReReadIsIdempotent() throws Exception {
+    final ApiTokenConfiguration tokens = new ApiTokenConfiguration(CONFIG_PATH);
+    tokens.load();
+    tokens.createToken("ci", "*", 0, new JSONObject());
+
+    final Path tokenFile = Path.of(CONFIG_PATH, ApiTokenConfiguration.FILE_NAME);
+    final String plaintext = "at-legacy-plaintext-token-0001";
+    Files.writeString(tokenFile, new JSONObject().put("version", 1).put("tokens", new JSONArray().put(
+        new JSONObject().put("token", plaintext).put("name", "legacy").put("database", "*").put("permissions", new JSONObject())))
+        .toString(), StandardCharsets.UTF_8);
+
+    assertThat(tokens.reload()).isTrue();
+    assertThat(tokens.getToken(plaintext)).isNotNull();
+    final String migrated = Files.readString(tokenFile, StandardCharsets.UTF_8);
+    assertThat(migrated).contains("tokenHash").doesNotContain(plaintext);
+
+    assertThat(tokens.reload()).isTrue();
+    assertThat(tokens.getToken(plaintext)).isNotNull();
+    assertThat(Files.readString(tokenFile, StandardCharsets.UTF_8)).as("nothing more to migrate, nothing rewritten").isEqualTo(migrated);
+    tokens.stop();
+  }
+
   /** A second loadUsers() - the reload path - does not schedule a second users watcher. */
   @Test
   void loadingUsersTwiceKeepsOneUsersWatcher() {

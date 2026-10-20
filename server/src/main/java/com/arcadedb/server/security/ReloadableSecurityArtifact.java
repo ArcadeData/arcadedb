@@ -39,7 +39,9 @@ import java.util.logging.Level;
  *       unparseable or of the wrong shape keeps what is in force (issues #10326, #10383);</li>
  *   <li>a file that could not be used is preserved as the error file before anything else happens, through
  *       {@link SecurityUserFileRepository#preserveInError} (issue #10321);</li>
- *   <li>neither path writes the live file, except through {@link #publish} of a first load's fallback.</li>
+ *   <li>neither path writes the live file, except through {@link #publish}: a first load's fallback (the groups default
+ *       is saved), and a valid file the store migrates to its current format (the groups version upgrade, the tokens'
+ *       legacy plaintext entries hashed). A file it cannot use is never written over.</li>
  * </ul>
  * {@code Issue10383SecurityArtifactReloadConformanceTest} drives every store through the four inputs a reload can meet.
  * <p>
@@ -66,7 +68,8 @@ abstract class ReloadableSecurityArtifact<T> {
   private volatile Timer  watcher;
 
   /**
-   * @param owner       the store this policy belongs to, the requester its log lines are attributed to
+   * @param owner       the store this policy belongs to, the requester its log lines are attributed to. Separate from
+   *                    {@code lock} because the users store locks on a private object, not on {@code ServerSecurity}
    * @param lock        the store's lock, held across every read and publish
    * @param file        the live file
    * @param errorFile   where a file that cannot be used is preserved
