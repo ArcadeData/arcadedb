@@ -150,6 +150,14 @@ spec:
               mkdir -p /mnt/data0/config && cd /home/arcadedb/config &&
               for f in * .[!.]*; do [ -e "$f" ] || continue; [ -e "/mnt/data0/config/$f" ] ||
               cp -R "$f" /mnt/data0/config/ || exit 1; done
+          # A handful of small files: sized so a namespace whose LimitRange or ResourceQuota requires requests and
+          # limits on every container still admits the pod.
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              memory: "64Mi"
           volumeMounts:
             - name: datadir
               mountPath: /mnt/data0

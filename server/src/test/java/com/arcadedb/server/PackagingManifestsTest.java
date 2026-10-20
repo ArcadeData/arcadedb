@@ -232,9 +232,12 @@ class PackagingManifestsTest {
     assertThat(seed).as("the seed does not read the image's config directory").contains("/home/arcadedb/config");
     assertThat(seed).as("the seed does not write the configured config directory").contains(configDir.group(1));
     assertThat(seed).as("the seed must test each target with `[ -e ]` and skip one that already exists: copying over it"
-        + " would reset the users, groups and API tokens the claim is there to keep").contains("[ -e ");
+        + " would reset the users, groups and API tokens the claim is there to keep")
+        .containsPattern("\\[ -e \"" + Pattern.quote(configDir.group(1)) + "/\\$f\" ]\\s*\\|\\|\\s*cp ");
     assertThat(seed).as("the seed must run the image the server runs, or it copies another version's defaults")
         .contains("image: " + imageOf(manifest.substring(main)));
+    assertThat(seed).as("the seed must declare resources, or a namespace whose LimitRange requires them rejects the pod")
+        .contains("resources:");
     assertThat(seed).as("the seed must mount the volume claim")
         .containsPattern("- name: datadir\\s+mountPath: " + Pattern.quote(claimMountPath(manifest)));
   }
