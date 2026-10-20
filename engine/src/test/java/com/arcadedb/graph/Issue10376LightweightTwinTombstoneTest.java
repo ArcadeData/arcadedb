@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -243,6 +244,80 @@ class Issue10376LightweightTwinTombstoneTest extends TestHelper {
     assertThat(read).isEqualTo(key);
     assertThat(key.hashCode()).isEqualTo(read.hashCode());
     assertThat(new LightEdgeRID(database, read.getBucketId(), w, v)).as("another pair").isNotEqualTo(key);
+  }
+
+  /**
+   * The numbering of the overlay is subtle (the run of scanned twins, where the deletes start in it, the created twins numbered
+   * after them), so random statements are checked against a plain model: a count per pair, moved by every create and delete of
+   * the statement. Each statement reads the incoming side first, so its writes are overlaid, creates and deletes interleave over
+   * four pairs, and the last read has to answer what the model holds, with each twin a relationship of its own.
+   */
+  @Test
+  void randomStatementsAgreeWithAPlainModelOfTheTwins() {
+    createSchema(true);
+    final int sources = 2;
+    final int targets = 2;
+    for (int seed = 0; seed < 60; seed++) {
+      final Random random = new Random(seed);
+      database.transaction(() -> database.command("sql", "DELETE FROM V").close());
+      final RID[] sourceRids = new RID[sources];
+      final RID[] targetRids = new RID[targets];
+      database.transaction(() -> {
+        for (int i = 0; i < sources; i++)
+          sourceRids[i] = database.newVertex("V").set("n", "s" + i).save().getIdentity();
+        for (int i = 0; i < targets; i++)
+          targetRids[i] = database.newVertex("V").set("n", "t" + i).save().getIdentity();
+      });
+
+      final int[][] model = new int[sources][targets];
+      database.transaction(() -> {
+        for (int s = 0; s < sources; s++)
+          for (int t = 0; t < targets; t++) {
+            model[s][t] = random.nextInt(4);
+            for (int i = 0; i < model[s][t]; i++)
+              sourceRids[s].asVertex().newEdge("T", targetRids[t].asVertex());
+          }
+      });
+
+      final StringBuilder statement = new StringBuilder("MATCH (t:V)<-[r:T]-(s:V) WITH count(r) AS seeded");
+      final int stages = 3 + random.nextInt(6);
+      for (int stage = 1; stage <= stages; stage++) {
+        final int s = random.nextInt(sources);
+        final int t = random.nextInt(targets);
+        final int amount = 1 + random.nextInt(3);
+        if (random.nextBoolean()) {
+          statement.append(" MATCH (s:V {n:'s").append(s).append("'}), (t:V {n:'t").append(t).append("'}) UNWIND range(1, ").append(amount)
+              .append(") AS i").append(stage).append(" CREATE (s)-[:T]->(t) WITH count(*) AS made").append(stage);
+          model[s][t] += amount;
+        } else {
+          statement.append(" MATCH (t:V {n:'t").append(t).append("'})<-[r").append(stage).append(":T]-(s) WHERE s.n = 's").append(s)
+              .append("' WITH collect(r").append(stage).append(") AS rs").append(stage).append(" UNWIND rs").append(stage).append("[0..")
+              .append(amount).append("] AS one").append(stage).append(" DELETE one").append(stage).append(" WITH count(one").append(stage)
+              .append(") AS gone").append(stage);
+          model[s][t] -= Math.min(amount, model[s][t]);
+        }
+      }
+      statement.append(" MATCH (t:V)<-[r:T]-(s:V) RETURN t.n AS t, s.n AS s, count(r) AS n, count(DISTINCT r) AS relationships");
+
+      final int[][] answered = new int[sources][targets];
+      try (final ResultSet rs = database.command("opencypher", statement.toString())) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          final int s = Integer.parseInt(row.<String>getProperty("s").substring(1));
+          final int t = Integer.parseInt(row.<String>getProperty("t").substring(1));
+          answered[s][t] = row.<Number>getProperty("n").intValue();
+          assertThat(row.<Number>getProperty("relationships").intValue()).as("seed %d: every twin is a relationship of its own", seed)
+              .isEqualTo(answered[s][t]);
+        }
+      }
+
+      for (int s = 0; s < sources; s++)
+        for (int t = 0; t < targets; t++) {
+          assertThat(answered[s][t]).as("seed %d, the statement's last read of s%d -> t%d: %s", seed, s, t, statement).isEqualTo(model[s][t]);
+          assertThat(sourceRids[s].asVertex().countEdges(Vertex.DIRECTION.OUT, "T")).isEqualTo(
+              model[s][0] + model[s][1]);
+        }
+    }
   }
 
   @Test

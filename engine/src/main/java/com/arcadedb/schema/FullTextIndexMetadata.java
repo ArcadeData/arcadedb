@@ -910,7 +910,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
   /**
    * What the sum of document lengths depends on besides the documents themselves: the analyzer that tokenizes them for the index
    * and the rule that counts the tokens ({@link #LENGTH_MEASURE_VERSION}). The query analyzer and the per-field analyzers do not
-   * take part, because only the index analyzer measures the length a document adds and removes.
+   * take part, because only the index analyzer measures the length a document adds and removes. The class names the analyzer
+   * completely: it is built with its no-argument constructor, so there is no configuration of an instance to differ, and an
+   * index with no analyzer of its own answers the default one, never null.
    */
   public String getLengthSignature() {
     return getIndexAnalyzerClass() + '#' + LENGTH_MEASURE_VERSION;
