@@ -21,6 +21,8 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
@@ -186,6 +188,33 @@ class Issue10438VectorIndexCreatedInWritingScriptTest extends TestHelper {
 
     database.transaction(() -> database.command("sql", "INSERT INTO Acc8 SET behavior=[0.9,0.1,0.0]"));
     assertThat(neighbors("Acc8[behavior]")).hasSize(1);
+  }
+
+  /** A type with several buckets: every bucket's sub-index covers the records the transaction wrote into it. */
+  @Test
+  void multiBucketTypeIndexCreatedAfterInsertsInSameTransactionCoversEveryBucket() {
+    final DocumentType type = database.getSchema().createDocumentType("MultiDoc", 3);
+    type.createProperty("behavior", Type.ARRAY_OF_FLOATS);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 9; i++)
+        database.newDocument("MultiDoc").set("behavior", new float[] { 0.9f, 0.1f, i / 10f }).save();
+      database.command("sql", "CREATE INDEX ON MultiDoc (behavior) LSM_VECTOR METADATA {dimensions: 3, similarity: 'COSINE'}");
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("MultiDoc[behavior]");
+    assertThat(typeIndex.getIndexesOnBuckets()).hasSize(3);
+    for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+      assertThat(bucketIndex.countEntries()).as("entries of %s", bucketIndex.getName())
+          .isEqualTo(database.countBucket(database.getSchema().getBucketById(bucketIndex.getAssociatedBucketId()).getName()));
+    assertEntries("MultiDoc[behavior]", 9);
+
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT expand(vectorNeighbors('MultiDoc[behavior]', [0.9,0.1,0.0], 9))")) {
+      while (rs.hasNext())
+        rows.add(rs.next());
+    }
+    assertThat(rows).hasSize(9);
   }
 
   /** Bucket-level builder: the second caller of the shared-transaction decision. */

@@ -76,6 +76,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private int            buildParallelism       = 1;
   // Whether the last create() built the index, as opposed to answering with one already on the properties
   private boolean        built;
+  // Whether that build ran inside the caller's transaction, so its entries are still queued on it (issue #10438)
   private boolean        builtInCallerTransaction;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
@@ -601,6 +602,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (builtConcurrently[0] == null && refusedOverConcurrent[0] == null) {
         created = type.getIndexByProperties(metadata.propertyNames);
         built = true;
+        // A sorted build writes its pages outside any transaction (see the sortedBuild branch above), so nothing of it
+        // is left queued on the caller's even when the caller had pending writes
         builtInCallerTransaction = sharesCallerTransaction && !sortedBuild;
       } else
         created = null;
