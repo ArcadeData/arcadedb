@@ -294,7 +294,8 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
   }
 
   @Test
-  void notUniqueIndexKeepsTheRecordAtATimeBuild() {
+  void notUniqueIndexBelowItsOwnThresholdKeepsTheRecordAtATimeBuild() {
+    // A NOTUNIQUE build has a threshold of its own (issue #10267), far above the 12,000 records here
     createPopulatedType("Work", 2, 12_000);
 
     database.command("sql", "CREATE INDEX ON Work (id) NOTUNIQUE").close();

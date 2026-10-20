@@ -156,6 +156,9 @@ class LSMTreeSortedBuildCrashTest {
   }
 
   private static void crash(final String mode, final String databasePath) {
+    if ("crash-after-sort".equals(mode))
+      // Runs are sized by what their entries retain (issue #10267): the cap leaves spilled runs behind the crash, as the 1 MB budget did
+      LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     LSMTreeIndexBulkLoader.setBuildTestHook((phase, index, completedBuckets) -> {
       if ((("crash".equals(mode) || "crash-unique".equals(mode))
           && phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_BUCKET_ATTACHMENT && completedBuckets == 1)

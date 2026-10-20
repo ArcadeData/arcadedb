@@ -23,10 +23,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,8 +44,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LSMTreeSortedUniqueBuildTest extends TestHelper {
+  @AfterEach
+  void clearEntriesPerRunLimit() {
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(0);
+  }
+
   @Test
   void buildsAcrossBucketsAndSpillRunsThenSupportsPlannerCompactionReopenAndMutation() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
     final Path spillParent = Path.of(getDatabasePath()).resolve("unique-success-spill");
     final DocumentType type = database.getSchema().buildDocumentType().withName("SortedUniqueSuccess")
@@ -156,6 +165,8 @@ class LSMTreeSortedUniqueBuildTest extends TestHelper {
 
   @Test
   void collapsesRepeatedListEntryForSameRidButRejectsAnotherRid() {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final DocumentType type = database.getSchema().createDocumentType("SortedUniqueList");
     type.createProperty("tags", Type.LIST);
     final List<String> repeatedTags = new ArrayList<>(Collections.nCopies(400, "alpha"));
@@ -352,6 +363,8 @@ class LSMTreeSortedUniqueBuildTest extends TestHelper {
   }
 
   private TypeIndex buildUnique(final String typeName, final Path spillParent, final int fanIn) {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final var builder = database.getSchema().buildTypeIndex(typeName, new String[] { "lookupKey" })
         .withType(Schema.INDEX_TYPE.LSM_TREE)
         .withBuildMode(IndexBuildMode.SORTED)
