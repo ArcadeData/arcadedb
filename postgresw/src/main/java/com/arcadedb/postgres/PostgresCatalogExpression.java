@@ -255,6 +255,7 @@ abstract class PostgresCatalogExpression {
 
     @Override
     void collectColumns(final Columns columns) {
+      // a literal reads no column
     }
 
     @Override

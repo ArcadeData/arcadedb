@@ -270,6 +270,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // not pay for building one while the view has an overlay, which every commit replaces (issue #10471)
     final long[] hopVisits = expectedVisits(totalSources);
     final NeighborView[] hopViews = new NeighborView[chainLength];
+    // From the last hop back: it expects the most entries, so it is the one that builds a view the hops before it share (two hops
+    // of one edge type read the same view), and they then find it built instead of each adding to the demand for it
     for (int i = chainLength - 1; i >= 0; i--)
       if (hopTracked == null || !hopTracked[i])
         hopViews[i] = provider.getNeighborViewForVisits(hopVisits[i], hopDirections[i], hopEdgeTypes[i]);

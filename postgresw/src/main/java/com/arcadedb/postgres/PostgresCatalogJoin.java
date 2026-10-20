@@ -43,6 +43,23 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PostgresCatalogJoin {
+  /**
+   * What keeping one binding costs the statement, in the units its budget counts: a binding holds its rows and flags until the
+   * statement is projected, so a join of large relations that nothing narrows (a cross join) runs out of budget long before it
+   * fills the heap.
+   */
+  private static final int BINDING_COST = 8;
+
+  private final Source[]                               sources;
+  private final List<List<PostgresCatalogExpression>>  conditionsAtLevel;
+  private final boolean                                tolerant;
+  private final Evaluator                              evaluator;
+  private final Budget                                 budget;
+  private final Map<String, Object>[]                  bound;
+  private final boolean[]                              nulled;
+  private final List<Binding>                          bindings = new ArrayList<>();
+  private final Map<Integer, Map<String, ColumnIndex>> indexes  = new HashMap<>();
+
   /** The statement cannot be answered honestly: a condition it depends on could not be evaluated. */
   static final class Declined extends RuntimeException {
     Declined() {
@@ -81,16 +98,6 @@ final class PostgresCatalogJoin {
   record Binding(Map<String, Object>[] rows, boolean[] nulled) {
   }
 
-  private final Source[]                                sources;
-  private final List<List<PostgresCatalogExpression>>   conditionsAtLevel;
-  private final boolean                                 tolerant;
-  private final Evaluator                               evaluator;
-  private final Budget                                  budget;
-  private final Map<String, Object>[]                   bound;
-  private final boolean[]                               nulled;
-  private final List<Binding>                           bindings = new ArrayList<>();
-  private final Map<Integer, Map<String, ColumnIndex>>  indexes  = new HashMap<>();
-
   private PostgresCatalogJoin(final Source[] sources, final List<List<PostgresCatalogExpression>> conditionsAtLevel,
       final boolean tolerant, final Evaluator evaluator, final Budget budget) {
     this.sources = sources;
@@ -126,6 +133,7 @@ final class PostgresCatalogJoin {
 
   private void bind(final int level) {
     if (level == sources.length) {
+      budget.charge(BINDING_COST);
       bindings.add(new Binding(bound.clone(), nulled.clone()));
       return;
     }

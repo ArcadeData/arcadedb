@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
+import java.util.logging.Level;
 
 /**
  * The indexes of the database as PostgreSQL's catalog describes them (issue #10473): one {@code pg_index} row, one
@@ -58,6 +60,33 @@ import java.util.function.ToIntFunction;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PostgresCatalogIndexes {
+  /**
+   * The words PostgreSQL's {@code quote_ident} double-quotes: every keyword that is not "unreserved" in its keyword list
+   * ({@code src/include/parser/kwlist.h} of PostgreSQL 17, the reserved ones, the ones that cannot name a column and the ones that
+   * cannot name a type or a function), in lower case. The list grows with the releases of PostgreSQL; a word it lacks is printed
+   * bare, which every release up to 17 reads the same.
+   */
+  private static final Set<String> QUOTED_KEYWORDS = Set.of(
+      // reserved
+      "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "both", "case", "cast", "check", "collate",
+      "column", "constraint", "create", "current_catalog", "current_date", "current_role", "current_time", "current_timestamp",
+      "current_user", "default", "deferrable", "desc", "distinct", "do", "else", "end", "except", "false", "fetch", "for",
+      "foreign", "from", "grant", "group", "having", "in", "initially", "intersect", "into", "lateral", "leading", "limit",
+      "localtime", "localtimestamp", "not", "null", "offset", "on", "only", "or", "order", "placing", "primary", "references",
+      "returning", "select", "session_user", "some", "symmetric", "system_user", "table", "then", "to", "trailing", "true",
+      "union", "unique", "user", "using", "variadic", "when", "where", "window", "with",
+      // as a column name only
+      "between", "bigint", "bit", "boolean", "char", "character", "coalesce", "dec", "decimal", "exists", "extract", "float",
+      "greatest", "grouping", "inout", "int", "integer", "interval", "json", "json_array", "json_arrayagg", "json_exists",
+      "json_object", "json_objectagg", "json_query", "json_scalar", "json_serialize", "json_table", "json_value", "least",
+      "merge_action", "national", "nchar", "none", "normalize", "nullif", "numeric", "out", "overlay", "position", "precision",
+      "real", "row", "setof", "smallint", "substring", "time", "timestamp", "treat", "trim", "values", "varchar", "xmlattributes",
+      "xmlconcat", "xmlelement", "xmlexists", "xmlforest", "xmlnamespaces", "xmlparse", "xmlpi", "xmlroot", "xmlserialize",
+      "xmltable",
+      // as a type or function name
+      "authorization", "binary", "collation", "concurrently", "cross", "current_schema", "freeze", "full", "ilike", "inner", "is",
+      "isnull", "join", "left", "like", "natural", "notnull", "outer", "overlaps", "right", "similar", "tablesample", "verbose");
+
   /** An index access method: a {@code pg_am} row. */
   record AccessMethod(int oid, String name, String handler) {
   }
@@ -120,36 +149,17 @@ final class PostgresCatalogIndexes {
     }
   }
 
-  private static final Set<String> NON_UNRESERVED_KEYWORDS = Set.of(
-      // reserved
-      "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "both", "case", "cast", "check", "collate",
-      "column", "constraint", "create", "current_catalog", "current_date", "current_role", "current_time", "current_timestamp",
-      "current_user", "default", "deferrable", "desc", "distinct", "do", "else", "end", "except", "false", "fetch", "for",
-      "foreign", "from", "grant", "group", "having", "in", "initially", "intersect", "into", "lateral", "leading", "limit",
-      "localtime", "localtimestamp", "not", "null", "offset", "on", "only", "or", "order", "placing", "primary", "references",
-      "returning", "select", "session_user", "some", "symmetric", "system_user", "table", "then", "to", "trailing", "true",
-      "union", "unique", "user", "using", "variadic", "when", "where", "window", "with",
-      // as a column name only
-      "between", "bigint", "bit", "boolean", "char", "character", "coalesce", "dec", "decimal", "exists", "extract", "float",
-      "greatest", "grouping", "inout", "int", "integer", "interval", "json", "json_array", "json_arrayagg", "json_exists",
-      "json_object", "json_objectagg", "json_query", "json_scalar", "json_serialize", "json_table", "json_value", "least",
-      "merge_action", "national", "nchar", "none", "normalize", "nullif", "numeric", "out", "overlay", "position", "precision",
-      "real", "row", "setof", "smallint", "substring", "time", "timestamp", "treat", "trim", "values", "varchar", "xmlattributes",
-      "xmlconcat", "xmlelement", "xmlexists", "xmlforest", "xmlnamespaces", "xmlparse", "xmlpi", "xmlroot", "xmlserialize",
-      "xmltable",
-      // as a type or function name
-      "authorization", "binary", "collation", "concurrently", "cross", "current_schema", "freeze", "full", "ilike", "inner", "is",
-      "isnull", "join", "left", "like", "natural", "notnull", "outer", "overlaps", "right", "similar", "tablesample", "verbose");
-
   private PostgresCatalogIndexes() {
   }
 
   /**
    * The indexes of {@code types} (already in name order), each type's own in name order, with their OIDs.
    * <p>
-   * An OID is derived from the name, as a type's is, so that the same index has the same OID for the life of the schema; one that
-   * lands on an OID already given - to a type, an index or a constraint - moves to the next free one, in this order, so that two
-   * relations are never told apart by nothing.
+   * An OID is derived from the name, as a type's is, so that an index keeps its OID from one statement to the next while the
+   * schema does not change; one that lands on an OID already given - to a type, an index or a constraint - moves to the next free
+   * one, in this order, so that two relations are never told apart by nothing. Creating or dropping a type whose name collides
+   * with an index's OID can therefore move that index to another: an OID is only as stable as the schema around it, which is as
+   * far as a client holding one across statements can rely on it.
    *
    * @param typeOids the OIDs the types already have, which an index must not take
    */
@@ -193,6 +203,8 @@ final class PostgresCatalogIndexes {
       method = accessMethodOf(index.getType());
       properties = index.getPropertyNames();
     } catch (final RuntimeException e) {
+      LogManager.instance().log(PostgresCatalogIndexes.class, Level.FINE, "Index of type '%s' left out of the catalog: %s", null,
+          type.getName(), e.getMessage());
       return null;
     }
 
@@ -276,7 +288,7 @@ final class PostgresCatalogIndexes {
       final char c = identifier.charAt(i);
       safe = c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '$' && i > 0;
     }
-    if (safe && !NON_UNRESERVED_KEYWORDS.contains(identifier.toLowerCase(Locale.ENGLISH)))
+    if (safe && !QUOTED_KEYWORDS.contains(identifier.toLowerCase(Locale.ENGLISH)))
       return identifier;
     return '"' + identifier.replace("\"", "\"\"") + '"';
   }

@@ -57,7 +57,10 @@ final class MongoTimeSeriesInserts {
   }
 
   /**
-   * Appends the samples of {@code documents}, one statement each.
+   * Appends the samples of {@code documents}, one statement each. SQL has no batch form that reports a refused sample by its index
+   * and carries its column rules (a bulk append through the ingestion gateway would read a number in the unit of the column
+   * instead of in milliseconds), and the engine commits the shard transaction of each sample on its own either way, so a batch
+   * costs what its samples cost.
    *
    * @param writeErrors receives one entry for every document that was refused, with its {@code index}
    *

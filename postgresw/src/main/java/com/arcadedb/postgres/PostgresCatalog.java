@@ -206,6 +206,19 @@ public class PostgresCatalog {
   }
 
   /**
+   * The relations a statement reads by joining their rows (issue #10473), because it reads one of them twice or because their
+   * rows are not the ones of a table or a column. A statement naming any of them is answered by {@link #resolveJoined}; a type
+   * the user called one of these names is theirs, as it is for every relation this catalog does not model.
+   */
+  private static final Set<String> JOINED_RELATIONS = Set.of("pg_index", "pg_indexes", "pg_constraint", "pg_inherits", "pg_policy",
+      "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace",
+      "information_schema.table_constraints", "information_schema.key_column_usage");
+
+  /** The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema. */
+  private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
+      "pg_publication_rel", "pg_publication_namespace");
+
+  /**
    * The emulated relations and the columns each one has. A column outside its relation's set makes the query
    * unanswerable; a column inside it that this catalog does not model answers NULL, which is what PostgreSQL
    * answers for most of them anyway.
@@ -350,19 +363,6 @@ public class PostgresCatalog {
     relation("pg_publication_rel", null, "oid", "prpubid", "prrelid", "prqual", "prattrs");
     relation("pg_publication_namespace", null, "oid", "pnpubid", "pnnspid");
   }
-
-  /**
-   * The relations a statement reads by joining their rows (issue #10473), because it reads one of them twice or because their
-   * rows are not the ones of a table or a column. A statement naming any of them is answered by {@link #resolveJoined}; a type
-   * the user called one of these names is theirs, as it is for every relation this catalog does not model.
-   */
-  private static final Set<String> JOINED_RELATIONS = Set.of("pg_index", "pg_indexes", "pg_constraint", "pg_inherits", "pg_policy",
-      "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace",
-      "information_schema.table_constraints", "information_schema.key_column_usage");
-
-  /** The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema. */
-  private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
-      "pg_publication_rel", "pg_publication_namespace");
 
   private PostgresCatalog() {
   }
@@ -1190,6 +1190,13 @@ public class PostgresCatalog {
     private int                          nesting;
     private long                         work;
 
+    private List<PostgresCatalogIndexes.Info>         indexes;
+    private Set<String>                               indexedTypes;
+    private Map<Integer, PostgresCatalogIndexes.Info> indexesByOid;
+    private Map<Integer, PostgresCatalogIndexes.Info> constraintsByOid;
+    /** The rows of each relation a join reads, built at most once per statement for the same reason {@link #rowsByFamily} is. */
+    private final Map<String, List<Map<String, Object>>> joinRows = new HashMap<>();
+
     Context(final Database database, final String userName) {
       this.database = database;
       this.userName = userName;
@@ -1203,13 +1210,6 @@ public class PostgresCatalog {
       }
       return rows;
     }
-
-    private List<PostgresCatalogIndexes.Info>         indexes;
-    private Set<String>                               indexedTypes;
-    private Map<Integer, PostgresCatalogIndexes.Info> indexesByOid;
-    private Map<Integer, PostgresCatalogIndexes.Info> constraintsByOid;
-    /** The rows of each relation a join reads, built at most once per statement for the same reason {@link #rowsByFamily} is. */
-    private final Map<String, List<Map<String, Object>>> joinRows = new HashMap<>();
 
     /** The indexes of the database (issue #10473), built once per statement: the rows of {@code pg_index} and what refers to them. */
     List<PostgresCatalogIndexes.Info> indexes() {

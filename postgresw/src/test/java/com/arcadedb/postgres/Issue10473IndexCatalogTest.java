@@ -25,12 +25,14 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10473: the catalog did not model {@code pg_index}, so {@code relhasindex} answered false for every type and the index
@@ -654,6 +656,26 @@ class Issue10473IndexCatalogTest {
         """.formatted(oidOf("Many123")));
 
     assertThat(column(answer, "relname")).containsExactly("Many123[k]", "Many123[m]");
+  }
+
+  /**
+   * A cross join of large relations that nothing narrows is refused with the statement's work limit instead of being built: each
+   * binding it keeps is charged to the budget, so it stops long before it holds a number of rows that could fill the heap.
+   */
+  @Test
+  @Timeout(120)
+  void aCrossJoinOfLargeRelationsRunsOutOfBudgetInsteadOfMemory() {
+    database.transaction(() -> {
+      for (int t = 0; t < 300; t++) {
+        final String name = "Cross" + t;
+        database.getSchema().createDocumentType(name).createProperty("k", Type.INTEGER);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, name, "k");
+      }
+    });
+
+    // 302 indexes: three entries make 27 million bindings
+    assertThatThrownBy(() -> PostgresCatalog.resolve("select count(*) from pg_index a, pg_index b, pg_index c", database, USER))
+        .isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
   }
 
   // ---------------------------------------------------------------- helpers
