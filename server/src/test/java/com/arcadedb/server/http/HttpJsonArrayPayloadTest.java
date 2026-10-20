@@ -49,7 +49,8 @@ class HttpJsonArrayPayloadTest extends BaseGraphServerTest {
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.SERVER_PLUGINS, ArrayPayloadTestPlugin.class.getName());
+    config.setValue(GlobalConfiguration.SERVER_PLUGINS,
+        ArrayPayloadTestPlugin.class.getName() + "," + LenientArrayPayloadTestPlugin.class.getName());
   }
 
   @Test

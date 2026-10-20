@@ -63,28 +63,6 @@ public class ArrayPayloadTestPlugin implements ServerPlugin {
     }
   }
 
-  /**
-   * The same route for a protocol that answers an unparseable body with an error of its own (the MCP endpoint answers JSON-RPC
-   * -32700): it opts out of the shared 400 (issue #10395) and finds the raw body, which it still has, in {@code RAW_PAYLOAD}.
-   */
-  public static class LenientHandler extends Handler {
-    public LenientHandler(final HttpServer httpServer) {
-      super(httpServer);
-    }
-
-    @Override
-    protected boolean refusesMalformedPayload() {
-      return false;
-    }
-
-    @Override
-    protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-        final JSONObject payload) {
-      final JSONObject answer = new JSONObject(super.execute(exchange, user, payload).getResponse());
-      return new ExecutionResponse(200, answer.put("raw", exchange.getAttachment(RAW_PAYLOAD)).toString());
-    }
-  }
-
   @Override
   public void startService() {
     // NO-OP
@@ -93,6 +71,5 @@ public class ArrayPayloadTestPlugin implements ServerPlugin {
   @Override
   public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
     routes.addExactPath("/api/v1/test/array", new Handler(httpServer));
-    routes.addExactPath("/api/v1/test/array-lenient", new LenientHandler(httpServer));
   }
 }
