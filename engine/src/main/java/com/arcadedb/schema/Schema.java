@@ -564,15 +564,25 @@ public interface Schema {
      * Whether a build of this index type may run INSIDE a transaction opened by whoever is writing, which is what
      * lets it index the records that transaction has written and not yet committed (issue #6324, item 1).
      * <p>
-     * True for every index whose build stages its entries on the transaction and whose reads go back through it -
-     * {@code LSM_TREE} and everything layered on it. False for the vector families: their build writes a graph, and
-     * for sparse its segments, as files of their own, and their SEARCH path reads those files through the page cache
-     * rather than through the transaction, so entries left uncommitted are written but not findable. Building them in
-     * a transaction of their own keeps that path whole, at the cost this issue is about - a vector index created in
-     * the same transaction as its inserts still needs those writes committed first - which is the lesser of the two.
+     * True for every index family. Each build stages its entries on the transaction it runs in, exactly as a live
+     * write does, and they are applied at commit through the same replay: the dense vector build queues one entry per
+     * record through {@code DocumentIndexer.addToIndex} and, on the freshly created index every schema path builds,
+     * finds no committed vector to build a graph over (the graph is built on first use after the commit, as for any
+     * write); the sparse one routes every record through {@code put}. The dense search also merges the transaction's
+     * own queued entries into its answer (issue #7378), so a dense index built inside the transaction answers inside
+     * it too.
+     * <p>
+     * The vector families used to be excluded, on the grounds that their search read only committed files. Built in a
+     * nested transaction of their own instead, they could not see the caller's uncommitted inserts, read the committed
+     * image of the records it had updated, and - since the caller's writes predate the index, none of them had queued
+     * an entry either - committed an empty index: a {@code CREATE INDEX ... LSM_VECTOR} in the same {@code sqlscript}
+     * as the writes it should cover answered every search with no rows (issue #10438).
+     * <p>
+     * Kept as a per-family predicate, rather than removed, so a future family whose build cannot run inside a caller's
+     * transaction has the one place to say so.
      */
     public boolean buildCanShareCallerTransaction() {
-      return this != LSM_VECTOR && this != LSM_SPARSE_VECTOR;
+      return true;
     }
 
     /**

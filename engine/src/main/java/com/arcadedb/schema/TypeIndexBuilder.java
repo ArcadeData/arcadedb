@@ -76,6 +76,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private int            buildParallelism       = 1;
   // Whether the last create() built the index, as opposed to answering with one already on the properties
   private boolean        built;
+  private boolean        builtInCallerTransaction;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
@@ -275,9 +276,22 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     return built;
   }
 
+  /**
+   * Whether the last {@link #create()} built the index INSIDE the transaction the caller already had open with pending
+   * writes, so its entries are staged on that transaction and reach the index only when the caller commits (issue
+   * #6324 item 1, extended to the vector families by issue #10438). Anything that would read the index's committed
+   * state to derive more state from it - building a vector graph eagerly is the case - has to wait for that commit.
+   * <p>
+   * Same contract as {@link #isBuilt()}: state of this builder instance, reset by every {@code create()}.
+   */
+  public boolean isBuiltInCallerTransaction() {
+    return builtInCallerTransaction;
+  }
+
   @Override
   public TypeIndex create() {
     built = false;
+    builtInCallerTransaction = false;
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // Checked before the existing-index lookup below, which needs the requested index type to decide whether an index
@@ -587,6 +601,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (builtConcurrently[0] == null && refusedOverConcurrent[0] == null) {
         created = type.getIndexByProperties(metadata.propertyNames);
         built = true;
+        builtInCallerTransaction = sharesCallerTransaction && !sortedBuild;
       } else
         created = null;
     } catch (final NeedRetryException e) {
