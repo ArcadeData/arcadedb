@@ -649,7 +649,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
         // the samples of a TIMESERIES type have no identity for the record path to select: they are deleted by the engine of the type,
         // by time range and tags, or the delete is refused naming the type (issue #10464)
-        if (database.getSchema().getType(collectionName) instanceof TimeSeriesType timeSeries)
+        if (database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries)
           n = deleteSamples(timeSeries, deletes, budget);
         else
           for (final Document del : deletes) {

@@ -28,7 +28,6 @@ import de.bwaldvogel.mongo.exception.MongoServerError;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -156,13 +155,14 @@ final class MongoTimeSeriesWrites {
       return ((Number) value).longValue();
     if (value instanceof Double d && isWhole(d) && d >= Long.MIN_VALUE && d < LONG_UPPER_BOUND)
       return d.longValue();
-    if (value instanceof Date || value instanceof Instant) {
+    // the BSON decoder hands a date over as an Instant
+    if (value instanceof Instant instant) {
       if (!type.isPrecisionHonoured())
         throw new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
             + "' with a date on '" + column + "': the type declares the precision " + type.getPrecision()
             + ", so its timestamps are not known to be in milliseconds. Compare '" + column + "' with a number in the unit of the "
             + "stored timestamps, or confirm the unit with ALTER TIMESERIES TYPE " + type.getName() + " PRECISION MILLISECOND");
-      return value instanceof Date date ? date.getTime() : ((Instant) value).toEpochMilli();
+      return instant.toEpochMilli();
     }
     throw unsupported(type, column);
   }
@@ -181,8 +181,8 @@ final class MongoTimeSeriesWrites {
       case INTEGER -> fitsIntegral(value, Integer.MIN_VALUE, Integer.MAX_VALUE);
       case LONG -> fitsIntegral(value, Long.MIN_VALUE, Long.MAX_VALUE);
       // a whole number is held exactly by a float up to 2^24, by a double up to 2^53
-      case FLOAT -> exactWhole(value, 1L << 24) || value instanceof Double d && Double.isFinite(d) && (double) (float) d.doubleValue() == d;
-      case DOUBLE -> exactWhole(value, 1L << 53) || value instanceof Double d && Double.isFinite(d);
+      case FLOAT -> exactWhole(value, 1L << 24) || (value instanceof Double d && Double.isFinite(d) && (double) (float) d.doubleValue() == d);
+      case DOUBLE -> exactWhole(value, 1L << 53) || (value instanceof Double d && Double.isFinite(d));
       default -> false;
     };
   }
@@ -211,7 +211,8 @@ final class MongoTimeSeriesWrites {
     return new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
         + "' with the condition on '" + key + "': a delete removes the samples in a time range of its field '"
         + type.getTimestampColumn() + "' ($eq, $gt, $gte, $lt, $lte with a number of milliseconds or a date) with the given values of"
-        + " its TAG fields (an equality with a value of the tag's type), joined by AND. A condition on a FIELD, $or, $ne, $in or any"
-        + " other operator is not supported: the samples to remove are named by their time and their series");
+        + " its TAG fields (an equality with a value of the tag's own kind: a string for a STRING tag, a boolean for a BOOLEAN tag, a"
+        + " number the numeric tag holds exactly; a tag of any other type cannot be named), joined by AND. A condition on a FIELD,"
+        + " $or, $ne, $in or any other operator is not supported: the samples to remove are named by their time and their series");
   }
 }

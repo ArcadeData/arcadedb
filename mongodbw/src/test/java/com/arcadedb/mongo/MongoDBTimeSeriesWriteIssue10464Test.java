@@ -129,6 +129,9 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
   void deleteManyWithAFilterMatchingNothingRemovesNothing() {
     assertThat(collection.deleteMany(Filters.eq("k", "z")).getDeletedCount()).isEqualTo(0);
     assertThat(collection.countDocuments()).isEqualTo(3);
+    // a collection that does not exist still answers n: 0, as MongoDB does
+    assertThat(client.getDatabase(getDatabaseName()).getCollection("Missing").deleteMany(Filters.eq("k", "a")).getDeletedCount())
+        .isEqualTo(0);
   }
 
   @Test
