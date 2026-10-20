@@ -1015,7 +1015,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (imported == null)
       throw RecordVetoedException.ofCreateEdge(edgeType, sourceVertex, newIn);
 
-    if (!lightweight && !unresolvedLinks.isEmpty())
+    // An edge created while one of its vertices waited for a link had the check of its own links suspended too: it is validated again
+    // by the reconciliation even when every one of its links resolved (an empty list), or a resolved link to the wrong type is stored
+    if (!lightweight && (!unresolvedLinks.isEmpty() || endpointWaitsForALink && properties.length() > 0))
       pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
 
     context.createdEdges.incrementAndGet();

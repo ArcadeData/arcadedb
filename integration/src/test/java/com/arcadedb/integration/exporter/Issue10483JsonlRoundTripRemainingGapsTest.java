@@ -262,6 +262,37 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
   }
 
   /**
+   * An edge is created with the check of its links' target types suspended when one of its vertices still waits for a link, so it has
+   * to be validated again like the vertex, or its own link to a record of the wrong type, resolved at once, would be stored.
+   */
+  @Test
+  void anEdgeLinkToTheWrongTypeStillFailsTheImportWhenAVertexWaitsForALink() throws Exception {
+    final File file = new File(SOURCE_PATH + "-edge-wrong.jsonl");
+    file.getParentFile().mkdirs();
+    Files.writeString(file.toPath(), ""
+        + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":2}}\n"
+        + "{\"t\":\"schema\",\"c\":{\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{"
+        + "\"Wanted\":{\"type\":\"d\",\"parents\":[],\"buckets\":[\"Wanted_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}},"
+        + "\"Other\":{\"type\":\"d\",\"parents\":[],\"buckets\":[\"Other_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}},"
+        + "\"E\":{\"type\":\"e\",\"parents\":[],\"buckets\":[\"E_0\"],\"properties\":{\"via\":{\"type\":\"LINK\",\"of\":\"Wanted\"}},\"indexes\":{},\"custom\":{}},"
+        + "\"Holder\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Holder_0\"],\"properties\":{\"p\":{\"type\":\"LINK\",\"of\":\"Wanted\"}},\"indexes\":{},\"custom\":{}}}}}\n"
+        // the vertex waits for the Wanted document the file reaches after it
+        + "{\"t\":\"v\",\"c\":{\"p\":{\"p\":\"#5:0\"},\"r\":\"#3:0\",\"t\":\"Holder\"}}\n"
+        + "{\"t\":\"v\",\"c\":{\"p\":{},\"r\":\"#3:1\",\"t\":\"Holder\"}}\n"
+        + "{\"t\":\"d\",\"c\":{\"p\":{},\"r\":\"#5:0\",\"t\":\"Wanted\"}}\n"
+        + "{\"t\":\"d\",\"c\":{\"p\":{},\"r\":\"#6:0\",\"t\":\"Other\"}}\n"
+        // its own link names the Other document, known by now: wrong type
+        + "{\"t\":\"e\",\"c\":{\"p\":{\"via\":\"#6:0\"},\"r\":\"#4:0\",\"t\":\"E\",\"o\":\"#3:0\",\"i\":\"#3:1\"}}\n");
+
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      assertThatThrownBy(() -> target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath())).hasStackTraceContaining(
+          "declared as LINK of 'Wanted'");
+    } finally {
+      file.delete();
+    }
+  }
+
+  /**
    * A record saved with its link unresolved is validated again by the reconciliation pass whatever happens to that link, so the
    * suspension of the check never lets a record through: a link whose target is not in the file is cleared (it is never remapped), and a
    * record that cannot hold the null fails the import.

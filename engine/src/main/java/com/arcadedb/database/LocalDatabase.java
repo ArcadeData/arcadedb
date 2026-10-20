@@ -1872,7 +1872,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * The same refusal answered by a listener that returns {@code false} instead of throwing: nothing is raised, so no statement fails
-   * and the guard above never looks. The refused values are on the queued instance all the same, so the commit is refused here.
+   * and the guard above never looks. The refused values are on the queued instance all the same, so the commit is refused here, directly,
+   * where a refusal that throws is only counted: counting leaves the decision to the guard, which does not refuse a script that handles
+   * its own failures ({@code COMMIT RETRY ... ELSE}).
    *
    * @return false, the answer of an update that was not made
    */
