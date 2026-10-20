@@ -173,10 +173,10 @@ class PackagingManifestsTest {
     // Issue #10462: an HA node authenticates its peers with a cluster token. Without an explicit one it is derived from
     // the root password, and a manifest that keeps that password off the command line must not leave the cluster's
     // authentication hanging on that fallback alone: it names the token's own secret, mounted from the same Secret.
+    // The manifest never passes the root password inline (statefulSetReadsTheRootPasswordFromTheMountedSecret), so this
+    // holds unconditionally.
     final String manifest = codeOf(read(STATEFULSET));
     assertThat(manifest).contains("-D" + GlobalConfiguration.HA_ENABLED.getKey() + "=true");
-    if (manifest.contains("-D" + GlobalConfiguration.SERVER_ROOT_PASSWORD.getKey() + "="))
-      return;
 
     assertThat(manifest).as("the cluster token must not be passed as a command-line argument")
         .doesNotContain("-D" + GlobalConfiguration.HA_CLUSTER_TOKEN.getKey() + "=");

@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -170,7 +171,7 @@ class ClusterTokenProvider {
    * <ol>
    *   <li>{@link GlobalConfiguration#SERVER_ROOT_PASSWORD}, from the server's configuration, then from the global one;</li>
    *   <li>otherwise the content of the file at {@link GlobalConfiguration#SERVER_ROOT_PASSWORD_PATH}, looked up the same
-   *   way, with one trailing line terminator dropped by {@link ServerSecurity#stripTrailingNewline(String)}.</li>
+   *   way, read by {@link ServerSecurity#readRootPasswordFile(String)}.</li>
    * </ol>
    * The file is read with the very same normalization as the root user's password, so a node configured with the
    * password inline and a node reading it from a file derive the same token (issue #10462).
@@ -188,18 +189,11 @@ class ClusterTokenProvider {
     if (passwordPath == null)
       return null;
 
-    final Path path = Path.of(passwordPath);
-    if (!Files.isReadable(path))
-      throw new ConfigurationException("Error reading root password file at path '" + passwordPath + "'");
-    final String password;
     try {
-      password = ServerSecurity.stripTrailingNewline(Files.readString(path));
-    } catch (final IOException e) {
-      throw new ConfigurationException("Error reading root password file at path '" + passwordPath + "'", e);
+      return ServerSecurity.readRootPasswordFile(passwordPath);
+    } catch (final ServerSecurityException e) {
+      throw new ConfigurationException("Cannot derive cluster token from the root password file: " + e.getMessage(), e);
     }
-    if (password.isEmpty())
-      throw new ConfigurationException("Root password file at path '" + passwordPath + "' is empty");
-    return password;
   }
 
   /**
