@@ -134,16 +134,17 @@ abstract class ReloadableSecurityArtifact<T> {
   }
 
   /**
-   * Whether a reload may read the file at all, checked after {@link #hasInForce()}. {@code false} keeps what is in force
-   * and stamps the baseline, so the refusal is logged once per change of the file, not once per tick; the store logs
-   * it. The tokens store refuses while the tokens in force have not reached the disk.
+   * Why a reload may not read the file at all, or {@code null} when it may; checked after {@link #hasInForce()}. A refusal
+   * keeps what is in force, is logged here at WARNING and stamps the baseline, so it is reported once per change of the
+   * file rather than once per tick. The tokens store refuses while the tokens in force have not reached the disk.
    */
-  protected boolean mayReload() {
-    return true;
+  protected String refusal() {
+    return null;
   }
 
   /** Called on the watcher thread after a reload published something; the groups store refreshes permissions here. */
   protected void onReloaded() {
+    // Nothing to do by default: only a store with derived state (the groups store's permission cache) needs a hook.
   }
 
   /**
@@ -163,8 +164,10 @@ abstract class ReloadableSecurityArtifact<T> {
   /**
    * The first load: publishes what the file holds, or {@link #fallback()} when there is no file or no document in it, or
    * whatever {@link #onFirstLoadFailure} answers when the file cannot be used.
+   *
+   * @return whether a value was published: {@code false} only when {@link #onFirstLoadFailure} answered {@code null}
    */
-  final void firstLoad() {
+  final boolean firstLoad() {
     synchronized (lock) {
       T value;
       boolean isFallback = false;
@@ -173,7 +176,7 @@ abstract class ReloadableSecurityArtifact<T> {
       } catch (final IOException | RuntimeException e) {
         value = onFirstLoadFailure(e);
         if (value == null)
-          return;
+          return false;
         isFallback = true;
       }
 
@@ -182,6 +185,7 @@ abstract class ReloadableSecurityArtifact<T> {
         isFallback = true;
       }
       publish(value, isFallback);
+      return true;
     }
   }
 
@@ -195,17 +199,17 @@ abstract class ReloadableSecurityArtifact<T> {
    * With nothing in force there is nothing to keep, and this is the first load.
    *
    * @return {@code true} when a value was published - the file's, or on a first load the fallback - and {@code false}
-   *         when what is in force was kept
+   *         when what is in force was kept (or a first load published nothing)
    */
   final boolean reload() {
     synchronized (lock) {
-      if (!hasInForce()) {
-        firstLoad();
-        return true;
-      }
+      if (!hasInForce())
+        return firstLoad();
 
-      if (!mayReload()) {
+      final String refusal = refusal();
+      if (refusal != null) {
         fileLastUpdated = file.lastModified();
+        LogManager.instance().log(owner, Level.WARNING, "File '%s' changed, but %s; %s", file.getName(), refusal, keeping());
         return false;
       }
 
@@ -266,6 +270,7 @@ abstract class ReloadableSecurityArtifact<T> {
         @Override
         public void run() {
           // A stopped instance's timer may still fire once; a replaced one must not act (this happens during tests).
+          // IDENTITY on purpose: the question is whether this is the very Timer instance in force, not an equal one.
           if (watcher != timer)
             return;
           try {

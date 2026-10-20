@@ -229,7 +229,11 @@ public class ApiTokenConfiguration {
       return new LoadedTokens(new ConcurrentHashMap<>(), false);
     }
 
-    /** One reference swap, so a concurrent authentication never sees a half-rebuilt store. */
+    /**
+     * One reference swap, so a concurrent authentication never sees a half-rebuilt store. A legacy file is saved hashed
+     * right after; that write does not advance the watcher's baseline (see {@link SecurityGroupFileRepository#save}), so
+     * the next tick re-reads the file once and publishes the same, now hashed, token set.
+     */
     @Override
     protected void publish(final LoadedTokens loaded, final boolean isFallback) {
       tokens = loaded.tokens();
@@ -273,14 +277,12 @@ public class ApiTokenConfiguration {
     }
 
     @Override
-    protected boolean mayReload() {
+    protected String refusal() {
       if (!diskBehind)
-        return true;
-      LogManager.instance().log(ApiTokenConfiguration.this, Level.WARNING,
-          "File '%s' changed, but the API tokens in force have not been written to it yet (the last write failed); %s. Make the "
-              + "configuration directory writable again: the next successful write lifts this, and it writes the tokens in force "
-              + "OVER this edit. To apply the edit instead, restart the server once the directory is writable", FILE_NAME, keeping());
-      return false;
+        return null;
+      return "the API tokens in force have not been written to it yet (the last write failed). Make the configuration "
+          + "directory writable again: the next successful write lifts this, and it writes the tokens in force OVER this edit. "
+          + "To apply the edit instead, restart the server once the directory is writable";
     }
   }
 

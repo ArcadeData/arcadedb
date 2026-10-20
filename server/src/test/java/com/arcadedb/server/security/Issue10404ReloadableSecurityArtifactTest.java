@@ -83,6 +83,7 @@ class Issue10404ReloadableSecurityArtifactTest {
   private final class NamesStore extends ReloadableSecurityArtifact<List<String>> {
     volatile List<String> inForce;
     volatile boolean      refuse;
+    volatile boolean      keepOnFirstLoadFailure;
     final AtomicInteger   reloaded = new AtomicInteger();
 
     NamesStore() {
@@ -127,8 +128,13 @@ class Issue10404ReloadableSecurityArtifactTest {
     }
 
     @Override
-    protected boolean mayReload() {
-      return !refuse;
+    protected String refusal() {
+      return refuse ? "the test refuses it" : null;
+    }
+
+    @Override
+    protected List<String> onFirstLoadFailure(final Exception failure) {
+      return keepOnFirstLoadFailure ? null : super.onFirstLoadFailure(failure);
     }
 
     @Override
@@ -227,6 +233,18 @@ class Issue10404ReloadableSecurityArtifactTest {
     assertThat(store.inForce).containsExactly("c");
   }
 
+  /** A first load that publishes nothing - the tokens store's answer to an I/O error - is not reported as a reload. */
+  @Test
+  void aReloadIntoAFirstLoadThatPublishesNothingReportsFalse() throws Exception {
+    write("{ not json");
+    final NamesStore store = new NamesStore();
+    store.keepOnFirstLoadFailure = true;
+
+    assertThat(store.reload()).isFalse();
+
+    assertThat(store.inForce).isNull();
+  }
+
   /** A refusal stamps the baseline, so the watcher logs it once per change of the file rather than once per tick. */
   @Test
   void aRefusedReloadKeepsWhatIsInForceAndStampsTheBaseline() throws Exception {
@@ -312,6 +330,25 @@ class Issue10404ReloadableSecurityArtifactTest {
 
       await().atMost(Duration.ofSeconds(30)).until(() -> !security.getUsers().contains("bob"));
       assertThat(security.getUsers()).contains("root");
+    } finally {
+      security.stopService();
+    }
+  }
+
+  /** A second loadUsers() - the reload path - does not schedule a second users watcher. */
+  @Test
+  void loadingUsersTwiceKeepsOneUsersWatcher() {
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), CONFIG_PATH);
+    try {
+      security.loadUsers();
+      security.loadUsers();
+
+      final String name = ServerSecurity.USERS_WATCHER_PREFIX + "[" + new File(dir, SecurityUserFileRepository.FILE_NAME).getPath() + "]";
+      long count = 0;
+      for (final Thread thread : Thread.getAllStackTraces().keySet())
+        if (thread.isAlive() && thread.getName().equals(name))
+          count++;
+      assertThat(count).isEqualTo(1);
     } finally {
       security.stopService();
     }
