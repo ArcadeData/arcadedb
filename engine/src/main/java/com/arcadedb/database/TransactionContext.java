@@ -2727,6 +2727,10 @@ public class TransactionContext implements Transaction {
    * writes files (the rollback reloads the records, the fence is logged), and an NIO channel that a thread with the flag
    * set uses is closed under it ({@code ClosedByInterruptException}), which would turn one cancelled commit into a closed
    * file for every thread of the database.
+   * <p>
+   * Only the DIRECT cause is looked at, on purpose: phase 2 raises an interrupt in exactly one shape, the
+   * {@link TransactionException} of {@code publishCommittedPagesInternal}. One found deeper in a chain was already handled
+   * by whoever wrapped it.
    */
   private static void restoreInterruptIfCause(final Throwable failure) {
     if (failure != null && failure.getCause() instanceof InterruptedException)

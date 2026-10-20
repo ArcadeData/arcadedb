@@ -207,6 +207,30 @@ class Issue10406CheckFixLightEdgeFarEndpointTest extends TestHelper {
     assertCleanAfterwards();
   }
 
+  /**
+   * A lightweight self-loop in the unreadable part of the OUT list: its other copy is in the vertex's own IN list, which is
+   * readable, so it comes back from there.
+   */
+  @Test
+  void aSelfLoopComesBackFromTheVertexsOwnOtherList() {
+    final RID a = newVertex();
+    final RID l = newVertex();
+    addRegularOut(a, 500);
+    database.transaction(() -> {
+      a.asVertex(true).newEdge(L, a);
+      a.asVertex(true).newEdge(L, l);
+    });
+
+    deleteAtLowLevel(headChunk(a, Vertex.DIRECTION.OUT));
+
+    final Map<String, Object> stats = checkVerticesFix();
+    assertThat(((Number) stats.get("recoveredLightEdges")).longValue()).isEqualTo(2L);
+
+    assertThat(neighbours(a, Vertex.DIRECTION.OUT, L)).containsExactlyInAnyOrder(a, l);
+    assertThat(neighbours(a, Vertex.DIRECTION.IN, L)).containsExactly(a);
+    assertCleanAfterwards();
+  }
+
   /** On a promoted super-node: a lost stripe chain that held lightweight entries. */
   @Test
   void aLostStripeLosesNoBidirectionalLightweightEdge() {

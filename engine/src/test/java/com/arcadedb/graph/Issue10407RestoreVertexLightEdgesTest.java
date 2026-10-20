@@ -114,6 +114,30 @@ class Issue10407RestoreVertexLightEdgesTest extends TestHelper {
     assertCleanAfterwards();
   }
 
+  /**
+   * A lightweight self-loop is stored in the vertex's own two lists only, and both were lost with the vertex: nothing holds
+   * a copy, so it is not rebuilt (and nothing is invented), while every other edge of the vertex is.
+   */
+  @Test
+  void aLightweightSelfLoopOfTheRestoredVertexHasNoCopyLeft() {
+    final RID[] hub = new RID[1];
+    final RID[] leaf = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex h = database.newVertex(V).save();
+      hub[0] = h.getIdentity();
+      leaf[0] = database.newVertex(V).save().getIdentity();
+      h.newEdge(L, h);
+      h.newEdge(L, leaf[0]);
+    });
+
+    deleteAtLowLevel(hub[0]);
+    database.transaction(() -> ((DatabaseInternal) database).getGraphEngine().restoreVertexAt(hub[0], V));
+
+    assertThat(neighbours(hub[0], Vertex.DIRECTION.OUT, L)).containsExactly(leaf[0]);
+    assertThat(neighbours(hub[0], Vertex.DIRECTION.IN, L)).isEmpty();
+    assertCleanAfterwards();
+  }
+
   // ------------------------------------------------------------------------------------------------------------------
 
   /**

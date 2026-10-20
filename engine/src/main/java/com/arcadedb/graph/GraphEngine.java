@@ -737,14 +737,15 @@ public class GraphEngine {
       }, (rid, exception) -> true);
     }
 
-    // COLLECTED BEFORE ANYTHING IS WRITTEN: THE WALK READS EVERY LIST, AND THE ONES BEING REBUILT MUST BE READ AS THEY WERE
-    final List<RID> lightEntries = new ArrayList<>();
-    final long[] light = new long[2];
+    // COLLECTED BEFORE ANYTHING IS WRITTEN: THE WALK READS EVERY LIST, AND THE ONES BEING REBUILT MUST BE READ AS THEY WERE.
+    // ONE FLAT LIST OF (vertex, edge, far vertex) TRIPLES PER DIRECTION
+    final List<RID> lightOut = new ArrayList<>();
+    final List<RID> lightIn = new ArrayList<>();
     forEachLightEdgeFarCopy(reconnectOutVertices, reconnectInVertices, (vertex, direction, edgeRID, farVertex) -> {
-      lightEntries.add(vertex);
-      lightEntries.add(edgeRID);
-      lightEntries.add(farVertex);
-      ++light[direction == Vertex.DIRECTION.OUT ? 0 : 1];
+      final List<RID> target = direction == Vertex.DIRECTION.OUT ? lightOut : lightIn;
+      target.add(vertex);
+      target.add(edgeRID);
+      target.add(farVertex);
     });
 
     for (final Edge e : outEdgesToReconnect) {
@@ -757,12 +758,18 @@ public class GraphEngine {
       getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
     }
 
-    // THE WALK HANDS THE OUT ENTRIES OVER FIRST, SO THE FIRST light[0] TRIPLES GO TO THE OUT LISTS
-    for (int i = 0, n = lightEntries.size() / 3; i < n; i++)
-      relinkEdgeListEntry(lightEntries.get(i * 3).asVertex(true), i < light[0] ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN,
-          lightEntries.get(i * 3 + 1), lightEntries.get(i * 3 + 2));
+    relinkTriples(lightOut, Vertex.DIRECTION.OUT);
+    relinkTriples(lightIn, Vertex.DIRECTION.IN);
 
-    return new long[] { outEdgesToReconnect.size() + light[0], inEdgesToReconnect.size() + light[1], light[0], light[1] };
+    final long lightOutCount = lightOut.size() / 3;
+    final long lightInCount = lightIn.size() / 3;
+    return new long[] { outEdgesToReconnect.size() + lightOutCount, inEdgesToReconnect.size() + lightInCount, lightOutCount,
+        lightInCount };
+  }
+
+  private void relinkTriples(final List<RID> triples, final Vertex.DIRECTION direction) {
+    for (int i = 0; i < triples.size(); i += 3)
+      relinkEdgeListEntry(triples.get(i).asVertex(true), direction, triples.get(i + 1), triples.get(i + 2));
   }
 
   /** Receives a lightweight edge entry that belongs in a list being rebuilt, see {@link #forEachLightEdgeFarCopy}. */
@@ -785,14 +792,18 @@ public class GraphEngine {
    * <li>{@code v -> x}, needed in {@code v}'s OUT list, is the entry {@code (edge, v)} of {@code x}'s IN list;</li>
    * <li>{@code y -> v}, needed in {@code v}'s IN list, is the entry {@code (edge, v)} of {@code y}'s OUT list.</li>
    * </ul>
-   * The OUT entries are handed to the consumer before the IN ones, each with the multiplicity the far lists hold: a
-   * lightweight type that is not unique can link the same pair more than once.
+   * Each entry is handed to the consumer with the multiplicity the far lists hold: a lightweight type that is not unique
+   * can link the same pair more than once.
    * <p>
    * A FULL WALK of the adjacency of every vertex, so meant for the repairs only, and only the side that can answer is
    * walked: the IN lists when an OUT list is rebuilt, the OUT lists when an IN list is. A far list that is itself being
-   * rebuilt is not read - whatever it still holds is the caller's to carry over - while the other list of a vertex being
-   * rebuilt is: a self-loop's other copy is there. A list is read chain by chain, best effort
+   * rebuilt is not read - whatever it still holds is the caller's to carry over. A list is read chain by chain, best effort
    * ({@link #readEdgeListEntries}), so an unreadable part of a far list costs only the copies it held.
+   * <p>
+   * A lightweight SELF-LOOP {@code v -> v} is stored in {@code v}'s own two lists, so the far copy of one is in the other.
+   * It is found when only one of them is being rebuilt (the usual shape for {@code CHECK DATABASE FIX}, where the other
+   * list is readable), and lost when both are: on {@code RESTORE VERTEX}, where the vertex and both its lists are gone,
+   * nothing holds a copy any more.
    * <p>
    * A unidirectional lightweight edge has no far copy, and none is invented: an entry of an edge type that is gone or is
    * not bidirectional is skipped.
@@ -808,8 +819,14 @@ public class GraphEngine {
         vertexTypes.add(type.getName());
 
     final Map<Integer, Boolean> bidirectionalByBucket = new HashMap<>();
+    final long[] walked = new long[2];
+    final long beginTime = System.currentTimeMillis();
+    // A FULL ADJACENCY WALK CAN TAKE A WHILE ON A LARGE GRAPH: THE OPERATOR RUNNING THE REPAIR SEES IT START AND END
+    LogManager.instance().log(this, Level.INFO,
+        "Searching the edge lists of every vertex for the lightweight edges of %d outgoing and %d incoming edge list(s) being rebuilt",
+        outVertices.size(), inVertices.size());
 
-    // ONE WALK PER SIDE, OUT LISTS BEING REBUILT FIRST: THAT KEEPS THE PROMISED ORDER WITHOUT BUFFERING EITHER SIDE
+    // ONE WALK PER SIDE: AN OUT LIST BEING REBUILT IS READ FROM THE FAR IN LISTS, AN IN LIST FROM THE FAR OUT LISTS
     for (final Vertex.DIRECTION targetDirection : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
       final Set<RID> targets = targetDirection == Vertex.DIRECTION.OUT ? outVertices : inVertices;
       if (targets.isEmpty())
@@ -830,14 +847,20 @@ public class GraphEngine {
             return true;
           }
           final RID farRID = far.getIdentity();
+          ++walked[0];
           readEdgeListEntries(far, farDirection, (edgeRID, neighbour) -> {
             if (edgeRID != null && neighbour != null && edgeRID.getPosition() < 0 && targets.contains(neighbour)
-                && bidirectionalByBucket.computeIfAbsent(edgeRID.getBucketId(), this::isBidirectionalEdgeBucket))
+                && bidirectionalByBucket.computeIfAbsent(edgeRID.getBucketId(), this::isBidirectionalEdgeBucket)) {
+              ++walked[1];
               consumer.accept(neighbour, targetDirection, edgeRID, farRID);
+            }
           });
           return true;
         }, (rid, exception) -> true);
     }
+
+    LogManager.instance().log(this, Level.INFO, "Found %d lightweight edge copies walking %d edge lists in %d ms", walked[1],
+        walked[0], System.currentTimeMillis() - beginTime);
   }
 
   private boolean isBidirectionalEdgeBucket(final int bucketId) {
