@@ -245,6 +245,26 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     assertThat(count("R")).isZero();
   }
 
+  /** The conservative paths together: a lightweight edge and a property on existing vertices stand beside a regular edge that is taken back. */
+  @Test
+  void aMixedStatementWhoseWritesPartlyStandStillRefusesTheCommit() {
+    database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
+
+    database.begin();
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 12}) WITH v MATCH (m:T {k: 1}), (n:T {k: 2}) SET m.note = 'x' CREATE (m)-[:L]->(n) CREATE (m)-[:R {w: 1}]->(v)")
+        .close(), ValidationException.class);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    database.rollback();
+
+    assertThat(count("V")).isZero();
+    assertThat(count("R")).isZero();
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE note = 'x'")) {
+      assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
+  }
+
   @Test
   void aPropertyWrittenOnAnExistingRecordBesideTheTakenBackEdgeStillRefusesTheCommit() {
     database.begin();

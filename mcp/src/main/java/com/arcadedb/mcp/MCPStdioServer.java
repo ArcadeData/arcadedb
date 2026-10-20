@@ -103,6 +103,9 @@ public class MCPStdioServer {
     if (rootPassword != null && !rootPassword.isEmpty())
       return rootPassword;
 
+    // An empty path is "not set" here, where the server takes any non-null path as authoritative and fails on an empty one: a launcher
+    // that always passes -Darcadedb.server.rootPasswordPath= (a container entrypoint, a client config) gets the same message as one
+    // that sets neither setting, which names both, instead of an error about a file called ''
     final String rootPasswordPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH);
     return rootPasswordPath != null && !rootPasswordPath.isEmpty() ? ServerSecurity.readRootPasswordFile(rootPasswordPath) : null;
   }
