@@ -79,6 +79,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
   /** Default BM25 document-length normalization parameter. */
   public static final float  DEFAULT_BM25_B  = 0.75f;
 
+  /**
+   * The version of the rule that turns the tokens of a document into the length the corpus counters add up (see
+   * {@code LSMTreeFullTextIndex.documentLength}). Bumped whenever that rule changes, so the counters measured under the old one
+   * are rescanned like the ones measured with another analyzer (issue #10397).
+   */
+  public static final int LENGTH_MEASURE_VERSION = 1;
+
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
 
@@ -145,6 +152,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
   private final AtomicBoolean rescanRequired = new AtomicBoolean(false);
   private volatile boolean countersValid = false;
+  // WHAT THE PERSISTED sumDocLength WAS MEASURED WITH (SEE getLengthSignature()). NULL = NOT KNOWN: THE COUNTERS WERE PERSISTED BEFORE
+  // THIS WAS RECORDED, AND NOTHING CAN BE SAID AGAINST THEM, SO THEY ARE TRUSTED AND THE NEXT SAVE RECORDS THE CURRENT ONE (ISSUE #10397)
+  private volatile String  countersMeasuredWith;
   // Not persisted (no toJSON/fromJSON): whether the persisted counters have already been checked for staleness against the live
   // data this session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the
   // first BM25 query validates them once (cheap live count) and rebuilds only if they disagree. AtomicBoolean (with CAS) so that
@@ -238,6 +248,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
     this.countersEpoch.set(metadata.getLong("ft_countersEpoch", 0L));
+    this.countersMeasuredWith = metadata.getString("ft_lengthSignature", null);
 
     // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost). Clear first so a fromJSON() on an
     // already-populated instance replaces the per-field config rather than merging stale entries into it (these maps are now
@@ -413,11 +424,21 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (countersValid) {
       // The pair and its epoch are read together with the writers that move them as a unit (a commit's delta, an adoption), so a
       // save never records a new epoch next to an old pair, nor half of a delta
+      final String measuredWith;
       synchronized (countersLock) {
         metadata.put("ft_totalDocs", totalDocs.get());
         metadata.put("ft_sumDocLength", sumDocLength.get());
         metadata.put("ft_countersEpoch", countersEpoch.get());
+        // What the pair was measured with, read with it: a scan that publishes a new pair publishes its signature under the same
+        // lock, so a save never records the signature of a scan next to the pair from before it
+        measuredWith = countersMeasuredWith;
       }
+      // What the pair was measured with, NOT what the index analyzes with now: a save between a change of the analyzer and the
+      // rescan it arms must not record the new one next to the old counters, or no later session would ever find them off.
+      // Counters persisted before the signature existed have none: they are recorded as measured with the current analyzer, so an
+      // analyzer changed between the upgrade and the first save goes unseen. There is nothing to compare them with, and rescanning
+      // every existing index at the upgrade would cost more than the drift it could find
+      metadata.put("ft_lengthSignature", measuredWith != null ? measuredWith : getLengthSignature());
       metadata.put("ft_countersValid", true);
     }
     return metadata;
@@ -714,8 +735,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param sumDocLength sum of document lengths
    */
   public void setCounters(final long totalDocs, final long sumDocLength) {
-    this.totalDocs.set(totalDocs);
-    this.sumDocLength.set(sumDocLength);
+    // THE PAIR AND WHAT IT WAS MEASURED WITH MOVE TOGETHER FOR A SAVE (writeToJSON) AND FOR getCountersPair()
+    synchronized (countersLock) {
+      this.totalDocs.set(totalDocs);
+      this.sumDocLength.set(sumDocLength);
+      this.countersMeasuredWith = getLengthSignature();
+    }
     // The volatile write to countersValid below comes AFTER the two counter writes in program order: by the JMM, a reader that
     // observes countersValid == true is guaranteed to also see these counter values (volatile-write / volatile-read edge).
     this.countersValid = true;
@@ -746,8 +771,16 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
     final long lenDelta = sumDocLength - lenAtStart;
     final long docsDelta = totalDocs - docsAtStart;
-    final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
-    final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+    final long newLen;
+    final long newDocs;
+    // ONE UNIT FOR A SAVE (writeToJSON), WHICH READS THE PAIR AND WHAT IT WAS MEASURED WITH UNDER THIS LOCK: IT NEVER RECORDS THE
+    // SIGNATURE OF THIS SCAN NEXT TO THE PAIR FROM BEFORE IT
+    synchronized (countersLock) {
+      newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
+      newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+      // THE SCAN ANALYZED THE CORPUS WITH THE CURRENT ANALYZER, WHATEVER THE COUNTERS WERE MEASURED WITH BEFORE
+      this.countersMeasuredWith = getLengthSignature();
+    }
     this.countersValid = true;
     scans.incrementAndGet();
     countersGeneration.incrementAndGet();
@@ -887,6 +920,35 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * What the sum of document lengths depends on besides the documents themselves: the analyzer that tokenizes them for the index
+   * and the rule that counts the tokens ({@link #LENGTH_MEASURE_VERSION}). The query analyzer and the per-field analyzers do not
+   * take part, because only the index analyzer measures the length a document adds and removes. The class names the analyzer
+   * completely: it is built with its no-argument constructor, so there is no configuration of an instance to differ, and an
+   * index with no analyzer of its own answers the default one, never null.
+   */
+  public String getLengthSignature() {
+    return getIndexAnalyzerClass() + '#' + LENGTH_MEASURE_VERSION;
+  }
+
+  /**
+   * What the persisted counters were measured with, or the current signature when that was not recorded.
+   */
+  public String getMeasuredWith() {
+    final String measuredWith = countersMeasuredWith;
+    return measuredWith != null ? measuredWith : getLengthSignature();
+  }
+
+  /**
+   * Whether the counters were measured with an analyzer (or a length rule) other than the current one, so the sum of lengths is
+   * wrong whatever the document count says: the half of the persisted pair the live record count cannot vouch for. Counters
+   * persisted before the signature was recorded are trusted: there is nothing to compare them with.
+   */
+  public boolean isMeasuredWithAnotherAnalyzer() {
+    final String measuredWith = countersMeasuredWith;
+    return measuredWith != null && !measuredWith.equals(getLengthSignature());
+  }
+
+  /**
    * Arms the drift check again: the next search compares the live count with the counters and rescans when they disagree, or
    * unconditionally. For a node that knows it missed a change to them.
    */
@@ -972,6 +1034,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
       sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
       totalDocs.set(definition.getLong("ft_totalDocs", 0L));
       countersEpoch.set(epoch);
+      // THE PAIR IS REPLACED WHOLE, SO WHAT IT WAS MEASURED WITH IS TOO: A PAIR WITHOUT A SIGNATURE IS NOT THE ONE THIS NODE FOUND OFF,
+      // AND KEEPING THE SIGNATURE OF THE OLD ONE WOULD RESCAN COUNTERS THE LEADER JUST RECOMPUTED
+      countersMeasuredWith = definition.getString("ft_lengthSignature", null);
     }
     // Counted as a mutation so a scan racing this adoption does not call its own result exact
     mutations.incrementAndGet();

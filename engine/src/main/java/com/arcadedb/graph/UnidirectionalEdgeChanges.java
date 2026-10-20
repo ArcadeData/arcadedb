@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.RID;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -61,7 +62,11 @@ public final class UnidirectionalEdgeChanges {
   private boolean                                 recording;
   // BY TYPE, THEN BY TARGET: A LOOKUP READS THE CHANGES OF ONE TYPE INTO ONE VERTEX
   private Map<String, Map<RID, List<Created>>> created;
+  // THE RECORD-BACKED EDGES DELETED: ONE EDGE, ONE ADDRESS, ONE ENTRY
   private Map<RID, Long>                        deleted;
+  // THE LIGHTWEIGHT EDGES DELETED, BY TRIPLE (TYPE, OUT, IN): THE TWINS OF A PAIR SHARE ONE IDENTITY, SO A DELETE CANNOT NAME ITS TWIN
+  // AND EVERY DELETE OF THE TRIPLE IS KEPT, TO TAKE ONE TWIN OUT OF A LOOKUP EACH (ISSUE #10376)
+  private Map<RID, Tombstones>                  deletedTwins;
   // THE SCANS THE DELETES OF THE TRANSACTION SHARE (ISSUE #8676): DROPPED WITH THE CHANGES WHEN THE TRANSACTION ENDS
   private IncomingEdgeLookup                    deleteLookup;
   // THE TYPES WERE TOO LARGE TO INDEX IN HEAP: THE NEXT DELETES OF THE TRANSACTION SCAN FOR THEIR VERTEX AT ONCE
@@ -105,9 +110,17 @@ public final class UnidirectionalEdgeChanges {
   public void edgeDeleted(final RID edgeIdentity) {
     if (!recording)
       return;
-    if (deleted == null)
-      deleted = new HashMap<>();
-    deleted.put(edgeIdentity, ++sequence);
+    if (edgeIdentity.getPosition() < 0) {
+      // A LIGHTWEIGHT EDGE: KEPT BY ITS TRIPLE ALONE, WITHOUT WHAT THE ITERATION THAT READ IT LEFT ON IT (ITS CENSUS OF THE WHOLE LIST)
+      if (deletedTwins == null)
+        deletedTwins = new HashMap<>();
+      deletedTwins.computeIfAbsent(edgeIdentity instanceof LightEdgeRID light ? light.withoutOrigin() : edgeIdentity,
+          k -> new Tombstones()).add(++sequence);
+    } else {
+      if (deleted == null)
+        deleted = new HashMap<>();
+      deleted.put(edgeIdentity, ++sequence);
+    }
     changeRecorded();
   }
 
@@ -119,6 +132,7 @@ public final class UnidirectionalEdgeChanges {
     if (++changes > MAX_CHANGES) {
       created = null;
       deleted = null;
+      deletedTwins = null;
       changes = 0;
       recording = false;
       ++overflows;
@@ -147,6 +161,7 @@ public final class UnidirectionalEdgeChanges {
     deleteLookupTooLarge = false;
     created = null;
     deleted = null;
+    deletedTwins = null;
     changes = 0;
     recording = false;
     ++transaction;
@@ -155,7 +170,7 @@ public final class UnidirectionalEdgeChanges {
   /** The changes kept, for tests. */
   int size() {
     return (created == null ? 0 : created.values().stream().mapToInt(m -> m.values().stream().mapToInt(List::size).sum()).sum())
-        + (deleted == null ? 0 : deleted.size());
+        + (deleted == null ? 0 : deleted.size()) + (deletedTwins == null ? 0 : deletedTwins.values().stream().mapToInt(t -> t.size).sum());
   }
 
   /** The edges of {@code typeName} into {@code target} the transaction created, in creation order. */
@@ -169,7 +184,10 @@ public final class UnidirectionalEdgeChanges {
     return list != null ? list : Collections.emptyList();
   }
 
-  /** Whether the edge was deleted after {@code afterSequence}. */
+  /**
+   * Whether the record-backed edge was deleted after {@code afterSequence}. A lightweight edge has no address of its own,
+   * so one delete cannot be told from another of its twins: ask {@link #twinsDeletedAfter} for those.
+   */
   boolean isDeletedAfter(final RID edgeIdentity, final long afterSequence) {
     if (deleted == null)
       return false;
@@ -177,7 +195,45 @@ public final class UnidirectionalEdgeChanges {
     return at != null && at > afterSequence;
   }
 
+  /** How many lightweight edges of the triple {@code twin} stands for were deleted after {@code afterSequence}. */
+  int twinsDeletedAfter(final RID twin, final long afterSequence) {
+    if (deletedTwins == null)
+      return 0;
+    final Tombstones tombstones = deletedTwins.get(twin);
+    return tombstones != null ? tombstones.after(afterSequence) : 0;
+  }
+
   boolean hasDeletions() {
     return deleted != null && !deleted.isEmpty();
+  }
+
+  boolean hasTwinDeletions() {
+    return deletedTwins != null && !deletedTwins.isEmpty();
+  }
+
+  /** The sequences of the deletes of one triple, ascending as they are recorded. */
+  private static final class Tombstones {
+    private long[] sequences = new long[2];
+    private int    size;
+
+    void add(final long sequence) {
+      if (size == sequences.length)
+        sequences = Arrays.copyOf(sequences, size << 1);
+      sequences[size++] = sequence;
+    }
+
+    /** How many of the sequences are above {@code afterSequence}: they ascend, so the first one that is is found by halving. */
+    int after(final long afterSequence) {
+      int low = 0;
+      int high = size;
+      while (low < high) {
+        final int mid = (low + high) >>> 1;
+        if (sequences[mid] > afterSequence)
+          high = mid;
+        else
+          low = mid + 1;
+      }
+      return size - low;
+    }
   }
 }

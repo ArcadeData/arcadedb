@@ -98,6 +98,14 @@ public class LightEdgeRID extends DatabaseRID {
   }
 
   /**
+   * The same triple, with nothing of the list entry this identity was read from: what a structure that outlives the
+   * iteration keeps, so it does not hold the chunk position and the census of the whole list.
+   */
+  LightEdgeRID withoutOrigin() {
+    return new LightEdgeRID(getBoundDatabase(), getBucketId(), out, in);
+  }
+
+  /**
    * Remembers the list entry this identity was read from, so that {@link #getOccurrence()} can tell it from a twin.
    * Called once, by the iterator that built it, before the edge is handed out.
    */
