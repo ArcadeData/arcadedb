@@ -843,6 +843,7 @@ public final class IncomingEdgeLookup {
           ++count;
       if (changes != null)
         for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
+          // isLive FIRST: IT TAKES A DELETE OUT OF THE CREATED TWINS, SO EVERY CREATED ENTRY MUST BE ASKED, SELF-LOOP OR NOT
           if (isLive(created, changes, twins) && (!skipSelfLoops || !target.equals(created.edge().getOut())))
             ++count;
       return count;
@@ -1028,9 +1029,9 @@ public final class IncomingEdgeLookup {
      * occurrence (a {@code DELETE} claiming each relationship once, {@code DISTINCT}) sees as many relationships as there
      * are twins: a created edge read back is a new object with no list to be read off, which would number it 0 as well.</li>
      * </ul>
-     * One lookup builds one of these, and asks it once per scanned entry in index order and once per created entry in
-     * creation order: {@link #dropsScanned} and {@link #dropsCreated} consume what they answer, so asking twice about one
-     * entry miscounts.
+     * One lookup builds one of these. {@link #dropsScanned} answers from the run of the entry alone, so it can be asked about
+     * any entry, in any order, as often as needed. {@link #dropsCreated} consumes what it answers: it is asked once per created
+     * entry, in creation order, and asking twice about one entry miscounts.
      * <p>
      * Example: the scan found 2 twins of a pair, the transaction created 1 more and then deleted 2 of them. The created twin
      * takes the first delete and the last scanned one the second, so one scanned twin is left, numbered 0 of 1.
@@ -1104,6 +1105,7 @@ public final class IncomingEdgeLookup {
       Edge numberCreated(final Edge edge) {
         if (!(edge.getIdentity() instanceof LightEdgeRID light))
           return edge;
+        // KEYED BY THE TRIPLE ALONE: RID.equals AND hashCode LEAVE OUT THE OCCURRENCE AND THE LIST ENTRY THE IDENTITY WAS READ FROM
         final TwinGroup group = groups.get(light);
         if (group == null)
           // CREATED AFTER THIS LOOKUP COUNTED THEM: NOT NUMBERED WITH THE ONES IT KNEW

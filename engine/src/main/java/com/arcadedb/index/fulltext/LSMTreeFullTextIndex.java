@@ -1329,7 +1329,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * The length a document counts for in the corpus counters: its analyzed tokens, without the null token {@link #analyzeText}
    * emits for a null value. The ONE definition every writer and the rescan use, so the length a remove subtracts is always the
-   * length the put added for the same values (issue #10131).
+   * length the put added for the same values (issue #10131). The counters persist the version of this rule
+   * ({@code FullTextIndexMetadata.LENGTH_MEASURE_VERSION}): change what a token or a null counts for, and bump it with the
+   * numbers {@code Issue10397Bm25AnalyzerDriftTest} pins, so the counters measured by the old rule are rescanned.
    */
   private static int documentLength(final List<String> tokens) {
     int length = 0;
