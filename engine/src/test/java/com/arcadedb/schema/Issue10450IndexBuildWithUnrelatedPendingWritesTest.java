@@ -163,7 +163,7 @@ class Issue10450IndexBuildWithUnrelatedPendingWritesTest extends TestHelper {
   void bucketIndexBuildDoesNotJoinATransactionThatWroteToAnotherBucket() {
     final DocumentType type = database.getSchema().createDocumentType("BucketVec", 2);
     type.createProperty("behavior", Type.ARRAY_OF_FLOATS);
-    final String indexed = type.getBuckets(false).get(0).getName();
+    final String indexed = type.getBuckets(false).getFirst().getName();
     final String other = type.getBuckets(false).get(1).getName();
     database.transaction(() -> {
       database.newDocument("BucketVec").set("behavior", new float[] { 0.9f, 0.1f, 0.0f }).save(indexed);

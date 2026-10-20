@@ -509,6 +509,8 @@ public abstract class IndexBuilder<T extends Index> {
     for (final Bucket bucket : buckets) {
       if (bucket == null)
         continue;
+      // A bucket's file id IS its bucket id, the value RID.getBucketId() carries, which is what lets one set answer for
+      // both the pages and the queued record updates hasChangesInFiles looks at
       final int bucketId = bucket.getFileId();
       fileIds.add(bucketId);
       if (schema.getTypeByBucketId(bucketId) instanceof LocalDocumentType owner) {
