@@ -375,6 +375,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     @Override
     protected boolean publish(final Map<String, ServerSecurityUser> newUsers, final boolean isFallback) {
       final Map<String, ServerSecurityUser> previous = inForceAtLoad;
+      // Not kept past this load: it would pin a replaced map in memory until the next one.
+      inForceAtLoad = null;
       // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the previous
       // complete map or this one, never an empty intermediate state.
       if (!USERS.compareAndSet(ServerSecurity.this, previous, newUsers)) {
@@ -683,6 +685,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * compare-and-set instead of publishing over it. A compare-and-set here too, retried, because the replicated install
    * on the Raft apply thread swaps the map without this class's monitor, and its list must not be overwritten by a copy
    * of the one it replaced. A copy per change is fine: user administration is rare, and the map is small.
+   * <p>
+   * Not closed here, and older than this method: the caller saved a snapshot of the map before calling it, so an install
+   * landing between that save and this swap writes its own list over the save and then swaps it in. Memory ends up with
+   * the install plus this change, and the file with the install alone, until the next successful local save writes both.
    */
   private void publishLocalChange(final String name, final ServerSecurityUser user) {
     while (true) {
