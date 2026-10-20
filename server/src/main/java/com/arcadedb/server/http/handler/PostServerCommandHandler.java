@@ -90,7 +90,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) throws IOException {
 
-    final String command = payload.has("command") ? payload.getString("command").trim() : null;
+    // No body at all: a body that was sent and could not be parsed never gets here, the shared pipeline refuses it (issue #10395)
+    final String command = payload != null && payload.has("command") ? payload.getString("command").trim() : null;
     if (command == null)
       return new ExecutionResponse(400, "{ \"error\" : \"Server command is null\"}");
 

@@ -49,7 +49,8 @@ class HttpJsonArrayPayloadTest extends BaseGraphServerTest {
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.SERVER_PLUGINS, ArrayPayloadTestPlugin.class.getName());
+    config.setValue(GlobalConfiguration.SERVER_PLUGINS,
+        ArrayPayloadTestPlugin.class.getName() + "," + LenientArrayPayloadTestPlugin.class.getName());
   }
 
   @Test
@@ -87,17 +88,30 @@ class HttpJsonArrayPayloadTest extends BaseGraphServerTest {
   }
 
   @Test
-  void aBodyThatStartsAsAnArrayButDoesNotParseReachesTheHandlerEmpty() throws Exception {
-    // The pipeline decides the body kind from the first character and then parses once. When that parse fails
-    // it logs and gives up: no 400 is synthesised, and the handler is called with a null payload AND a null
-    // array. Recovering from there is the handler's job - it still has the raw body - which is how the MCP
-    // endpoint turns this same shape into a JSON-RPC parse error instead of mistaking it for an empty request.
+  void aBodyThatStartsAsAnArrayButDoesNotParseIsRefusedWith400() throws Exception {
+    // The pipeline decides the body kind from the first character and then parses once. When that parse fails the body was sent
+    // and cannot be read: a handler called with a null payload and a null array could not tell it from no body at all, so the
+    // pipeline refuses it once, naming where the parser stopped (issue #10395)
     final Response response = post("/api/v1/test/array", "[{\"id\":5}");
+
+    assertThat(response.status()).isEqualTo(400);
+    final JSONObject json = new JSONObject(response.body());
+    assertThat(json.getString("error")).isEqualTo("Invalid JSON payload");
+    assertThat(json.getString("detail")).contains("line 1 column");
+  }
+
+  @Test
+  void aBodyThatStartsAsAnArrayButDoesNotParseReachesAHandlerThatOptsOutEmpty() throws Exception {
+    // A protocol with an error of its own for it opts out (refusesMalformedPayload): the handler is called with a null payload AND
+    // a null array and still has the raw body, which is how the MCP endpoint turns this same shape into a JSON-RPC parse error
+    // instead of mistaking it for an empty request.
+    final Response response = post("/api/v1/test/array-lenient", "[{\"id\":5}");
 
     assertThat(response.status()).isEqualTo(200);
     final JSONObject json = new JSONObject(response.body());
     assertThat(json.getString("shape")).isEqualTo("object");
     assertThat(json.getInt("id")).isEqualTo(-1);
+    assertThat(json.getString("raw")).isEqualTo("[{\"id\":5}");
   }
 
   @Test

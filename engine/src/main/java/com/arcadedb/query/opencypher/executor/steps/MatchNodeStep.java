@@ -1069,6 +1069,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * only narrows the candidates; anything it cannot answer exactly (an element that is a list or a map, a right side that
    * is not a list, a concurrent index drop) returns null and leaves the scan in charge. When several IN-lists could be
    * seeked, the one with the fewest distinct elements is.
+   * <p>
+   * The seek returns the records key by key in the order of the list (each key at its first place), where the scan returns them in
+   * storage order. A MATCH without an ORDER BY promises neither, so a seek that restored storage order would only cost what it
+   * is there to save - every record read before the first is returned, and the early stop of a LIMIT lost - for an order no other
+   * index access in the engine honours (issue #10392). Under an ORDER BY the two answer alike.
    */
   private Iterator<Identifiable> tryInListIndexSeek(final DocumentType type, final String label,
       final Result currentInputResult) {

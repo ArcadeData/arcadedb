@@ -53,12 +53,6 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
         return new ExecutionResponse(409, "{ \"error\" : \"Transaction already started\" }");
     }
 
-    // The shared parser leaves malformed JSON as null so MCP can emit JSON-RPC -32700; begin must not mistake it for no body.
-    final String rawPayload = exchange.getAttachment(RAW_PAYLOAD);
-    if (payload == null && rawPayload != null && !rawPayload.isBlank())
-      return new ExecutionResponse(400,
-          error2json("Invalid JSON payload", "The request body must be a valid JSON object", null, null, null));
-
     // Read before anything is created: the envelope already refused a label that cannot be one, and nothing below may fail
     // between publishing the session and handing its id to the client (issue #9775)
     final String tag = queryTag(exchange);

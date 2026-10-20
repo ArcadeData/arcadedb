@@ -397,6 +397,18 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
   }
 
   @Test
+  void malformedObjectBodyIsReportedAsAParseErrorNotAnHttpError() throws Exception {
+    // The shared request pipeline answers an unparseable body with HTTP 400 for every other route (issue #10395); JSON-RPC has
+    // an error of its own for it, so this endpoint opts out and keeps answering -32700 over HTTP 200.
+    for (final String body : new String[] { "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":", "not json", "123" }) {
+      final Response response = post(body, null);
+
+      assertThat(response.status).as(body).isEqualTo(200);
+      assertThat(new JSONObject(response.body).getJSONObject("error").getInt("code")).as(body).isEqualTo(-32700);
+    }
+  }
+
+  @Test
   void batchOfOnlyResponsesReturns202WithoutBody() throws Exception {
     final JSONArray batch = new JSONArray()
         .put(new JSONObject().put("jsonrpc", "2.0").put("id", 1).put("result", new JSONObject()))
