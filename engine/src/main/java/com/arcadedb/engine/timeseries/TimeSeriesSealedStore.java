@@ -2819,7 +2819,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           continue;
         }
 
-        // CRC-checked by the read: a block rebuilt below is written with a fresh CRC, which would launder a damaged one
+        // CRC-checked by the read, and the CRC is the block's: decompressTimestamps validates the metadata and every column before it
+        // decodes one, so a block rebuilt below was whole when it was read. It is written with a fresh CRC, which would launder a
+        // damaged one
         final long[] timestamps = decompressTimestamps(entry, tsColIdx);
         final BitSet doomed = rowsToDelete(entry, timestamps, tagMatch, tagFilter, filterColumns, fromTs, toTs, tsColIdx);
         final int doomedCount = doomed.cardinality();
