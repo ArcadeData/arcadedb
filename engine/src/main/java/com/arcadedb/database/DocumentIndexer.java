@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexKeyEquality;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 public class DocumentIndexer {
   private final LocalDatabase database;
@@ -585,6 +587,8 @@ public class DocumentIndexer {
         baseline = database.getOriginalDocument(pending);
       } catch (final IllegalStateException e) {
         // No buffer to read: the other indexes are given the pending values, the best state left to describe them
+        LogManager.instance().log(this, Level.FINE, "No original buffer for record %s: the indexes other than '%s' are described by "
+            + "its pending values in the snapshot of the next update", rid, built.getName());
         baseline = pending;
       }
 

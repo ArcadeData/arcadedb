@@ -132,6 +132,8 @@ final class IndexBuildCallerChanges {
     try {
       return database.lookupByRID(rid, true) instanceof Document document ? document : null;
     } catch (final RecordNotFoundException e) {
+      // Only the absence of the record is read as "none": a record the caller created has no committed version, and one it
+      // deleted has no pending one. Any other failure of the read is not caught and fails the build, which drops the index
       return null;
     }
   }

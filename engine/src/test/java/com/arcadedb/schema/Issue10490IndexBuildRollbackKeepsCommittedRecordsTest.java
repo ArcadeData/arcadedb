@@ -349,8 +349,15 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
     database.command("sql", "DELETE FROM " + type + " WHERE k = 8");
     database.command("sql", "UPDATE " + type + " SET k = 20 WHERE k = 2");
     database.command("sql", "DELETE FROM " + type + " WHERE k = 3");
+    // created, updated and deleted in the one transaction: nothing of it reaches the index
+    database.command("sql", "INSERT INTO " + type + " SET k = 6, s = 'w6', tags = ['a6']");
+    database.command("sql", "UPDATE " + type + " SET k = 60 WHERE k = 6");
+    database.command("sql", "DELETE FROM " + type + " WHERE k = 60");
     database.command("sql", "CREATE INDEX ON " + type + " (k) NOTUNIQUE");
     database.commit();
+
+    assertThat(find("SELECT FROM %s WHERE k = 6", type)).isZero();
+    assertThat(find("SELECT FROM %s WHERE k = 60", type)).isZero();
 
     assertThat(find("SELECT FROM %s WHERE k = 1", type)).isEqualTo(1);
     assertThat(find("SELECT FROM %s WHERE k = 2", type)).isZero();
@@ -382,6 +389,95 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
     assertThat(database.getSchema().getIndexByName("PParent[k]").countEntries()).isEqualTo(3L);
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO PChild SET k = 1").close()))
         .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  /** The propagation entry point with updates and deletes of the subtype's committed records, whichever way the transaction ends. */
+  @Test
+  void aSuperTypeIndexPropagatedAfterUpdatesAndDeletesFollowsTheOutcomeOfTheTransaction() {
+    for (final boolean commit : new boolean[] { true, false }) {
+      final String suffix = commit ? "Cm" : "Rb";
+      final String parent = "Par" + suffix;
+      final String child = "Chi" + suffix;
+      database.command("sql", "CREATE DOCUMENT TYPE " + parent);
+      database.command("sql", "CREATE PROPERTY " + parent + ".k INTEGER");
+      database.command("sql", "CREATE INDEX ON " + parent + " (k) UNIQUE");
+      database.command("sql", "CREATE DOCUMENT TYPE " + child);
+      database.command("sql", "CREATE PROPERTY " + child + ".k INTEGER");
+      database.transaction(() -> {
+        for (int i = 1; i <= 4; i++)
+          database.command("sql", "INSERT INTO " + child + " SET k = " + i).close();
+      });
+
+      database.begin();
+      database.command("sql", "UPDATE " + child + " SET k = 20 WHERE k = 2");
+      database.command("sql", "DELETE FROM " + child + " WHERE k = 3");
+      database.command("sql", "INSERT INTO " + child + " SET k = 5");
+      database.getSchema().getType(child).addSuperType(parent);
+      if (commit)
+        database.commit();
+      else
+        database.rollback();
+
+      final String index = parent + "[k]";
+      if (commit) {
+        assertThat(database.getSchema().getIndexByName(index).countEntries()).as("committed: 1, 20, 4, 5").isEqualTo(4L);
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 20")).isEqualTo(1);
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 2")).isZero();
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 3")).isZero();
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 5")).isEqualTo(1);
+      } else {
+        assertThat(database.getSchema().getIndexByName(index).countEntries()).as("rolled back: 1, 2, 3, 4").isEqualTo(4L);
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 2")).isEqualTo(1);
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 3")).isEqualTo(1);
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 20")).isZero();
+        assertThat(scan("SELECT FROM " + parent + " WHERE k = 5")).isZero();
+      }
+    }
+  }
+
+  /**
+   * The geospatial family counts one entry per covering cell, so its count is compared with an index built the plain way over
+   * the same final records instead of with a number written down.
+   */
+  @Test
+  void aGeospatialIndexBuiltInAWritingTransactionHoldsWhatTheOneBuiltAfterwardsHolds() {
+    for (final boolean commit : new boolean[] { true, false }) {
+      final String suffix = commit ? "Cm" : "Rb";
+      final String type = "Geo" + suffix;
+      final String twin = "GeoTwin" + suffix;
+      for (final String name : new String[] { type, twin }) {
+        database.command("sql", "CREATE DOCUMENT TYPE " + name);
+        database.command("sql", "CREATE PROPERTY " + name + ".loc STRING");
+        database.transaction(() -> {
+          database.command("sql", "INSERT INTO " + name + " SET loc = 'POINT (10.0 45.0)'").close();
+          database.command("sql", "INSERT INTO " + name + " SET loc = 'POINT (11.0 46.0)'").close();
+          database.command("sql", "INSERT INTO " + name + " SET loc = 'POINT (12.0 47.0)'").close();
+        });
+      }
+
+      database.begin();
+      database.command("sql", "INSERT INTO " + type + " SET loc = 'POINT (13.0 48.0)'");
+      database.command("sql", "UPDATE " + type + " SET loc = 'POINT (20.0 50.0)' WHERE loc = 'POINT (10.0 45.0)'");
+      database.command("sql", "DELETE FROM " + type + " WHERE loc = 'POINT (11.0 46.0)'");
+      database.command("sql", "CREATE INDEX ON " + type + " (loc) GEOSPATIAL");
+      if (commit)
+        database.commit();
+      else
+        database.rollback();
+
+      if (commit) {
+        // the twin gets the same final records, then the index
+        database.transaction(() -> {
+          database.command("sql", "INSERT INTO " + twin + " SET loc = 'POINT (13.0 48.0)'").close();
+          database.command("sql", "UPDATE " + twin + " SET loc = 'POINT (20.0 50.0)' WHERE loc = 'POINT (10.0 45.0)'").close();
+          database.command("sql", "DELETE FROM " + twin + " WHERE loc = 'POINT (11.0 46.0)'").close();
+        });
+      }
+      database.command("sql", "CREATE INDEX ON " + twin + " (loc) GEOSPATIAL");
+
+      assertThat(entries(type)).as("geospatial entries, " + (commit ? "committed" : "rolled back")).isEqualTo(entries(twin));
+      assertThat(entries(type)).isGreaterThan(0L);
+    }
   }
 
   @Test

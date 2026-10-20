@@ -26,10 +26,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -235,6 +239,30 @@ class Issue10488NestedNumericArrayParamTest extends TestHelper {
     assertThat(keys("SELECT k FROM Paths WHERE m.a.type() = 'LIST' ORDER BY k")).containsExactly("content", "fromMap", "merge", "set",
         "setMap");
     assertThat(keys("SELECT k FROM Paths WHERE m.a = [1, 2] ORDER BY k")).containsExactly("content", "fromMap", "merge", "set", "setMap");
+  }
+
+  /**
+   * What a container becomes when it holds a replacement is documented here: a sorted or linked input is copied to the plain
+   * family of its kind, and one that holds no array is returned as it came, whatever its type.
+   */
+  @Test
+  void aContainerKeepsItsTypeUnlessItHoldsAReplacement() {
+    final TreeMap<String, Object> sortedPlain = new TreeMap<>(Map.of("a", 1));
+    final LinkedList<Object> linkedPlain = new LinkedList<>(List.of(1, 2));
+    assertThat(Type.unwrapNestedPrimitiveArrays(sortedPlain)).isSameAs(sortedPlain);
+    assertThat(Type.unwrapNestedPrimitiveArrays(linkedPlain)).isSameAs(linkedPlain);
+
+    final TreeMap<String, Object> sortedWithArray = new TreeMap<>();
+    sortedWithArray.put("a", new long[] { 1L });
+    final Object unwrappedMap = Type.unwrapNestedPrimitiveArrays(sortedWithArray);
+    assertThat(unwrappedMap).isInstanceOf(LinkedHashMap.class).isEqualTo(Map.of("a", List.of(1)));
+
+    final LinkedList<Object> linkedWithArray = new LinkedList<>();
+    linkedWithArray.add(new double[] { 0.5 });
+    assertThat(Type.unwrapNestedPrimitiveArrays(linkedWithArray)).isInstanceOf(ArrayList.class).isEqualTo(List.of(List.of(0.5)));
+
+    final TreeSet<Object> sortedSet = new TreeSet<>(List.of("b", "a"));
+    assertThat(Type.unwrapNestedPrimitiveArrays(sortedSet)).isSameAs(sortedSet);
   }
 
   @Test

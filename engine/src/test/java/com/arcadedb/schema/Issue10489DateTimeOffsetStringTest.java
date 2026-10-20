@@ -88,6 +88,34 @@ class Issue10489DateTimeOffsetStringTest extends TestHelper {
     });
   }
 
+  /** A negative offset moves the wall clock forward, and a named zone applies the offset it has on that date (DST). */
+  @Test
+  void negativeOffsetsAndNamedZonesAcrossDstNameTheirInstant() {
+    final DocumentType type = database.getSchema().createDocumentType("Negative");
+    type.createProperty("t", Type.DATETIME);
+
+    database.transaction(() -> {
+      assertThat(database.newDocument("Negative").set("t", "2020-01-02T03:04:05-05:00").save().getLocalDateTime("t"))
+          .isEqualTo(LocalDateTime.of(2020, 1, 2, 8, 4, 5));
+      // Amsterdam is +01:00 in January and +02:00 in July
+      assertThat(database.newDocument("Negative").set("t", "2020-01-02T03:04:05+01:00[Europe/Amsterdam]").save()
+          .getLocalDateTime("t")).isEqualTo(LocalDateTime.of(2020, 1, 2, 2, 4, 5));
+      assertThat(database.newDocument("Negative").set("t", "2020-07-02T03:04:05+02:00[Europe/Amsterdam]").save()
+          .getLocalDateTime("t")).isEqualTo(LocalDateTime.of(2020, 7, 2, 1, 4, 5));
+      // New York is -05:00 in January and -04:00 in July
+      assertThat(database.newDocument("Negative").set("t", "2020-01-02T03:04:05-05:00[America/New_York]").save()
+          .getLocalDateTime("t")).isEqualTo(LocalDateTime.of(2020, 1, 2, 8, 4, 5));
+      assertThat(database.newDocument("Negative").set("t", "2020-07-02T03:04:05-04:00[America/New_York]").save()
+          .getLocalDateTime("t")).isEqualTo(LocalDateTime.of(2020, 7, 2, 7, 4, 5));
+    });
+
+    // and what the read side answers for the same strings is what the write side stored
+    assertThat(database.query("sql", "SELECT '2020-01-02T03:04:05-05:00'.asDatetime() AS d").next().<Object>getProperty("d"))
+        .isEqualTo(LocalDateTime.of(2020, 1, 2, 8, 4, 5));
+    assertThat(database.query("sql", "SELECT date('2020-07-02T03:04:05-04:00[America/New_York]') AS d").next().<Object>getProperty("d"))
+        .isEqualTo(LocalDateTime.of(2020, 7, 2, 7, 4, 5));
+  }
+
   @Test
   void anOffsetNamingUtcAndAnInputWithoutOffsetKeepTheirWallClock() {
     final DocumentType type = database.getSchema().createDocumentType("Wall");
