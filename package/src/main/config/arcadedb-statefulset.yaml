@@ -131,8 +131,39 @@ spec:
             items:
               - key: rootPassword
                 path: rootPassword
+      initContainers:
+        # Seeds the configuration directory on the PersistentVolume (see `configDirectory` below) with the image's
+        # default files. Unlike a Docker named volume, a PersistentVolumeClaim is not populated from the image, and an
+        # empty directory would lack the shipped server-groups.json (whose `readonly` group the server's built-in
+        # default does not have) and the Gremlin server files. A file already there is never overwritten: it is either
+        # an operator's edit or a runtime write by the server (server-users.jsonl, server-api-tokens.json, ...), and
+        # it is exactly what this volume exists to keep across restarts. The flip side: a newer image's changed or
+        # added defaults never reach a claim that already has the file, so merge those by hand after an upgrade.
+        # Keep the image in step with the server's.
+        - name: seed-config
+          image: arcadedata/arcadedb:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/bin/sh"
+            - "-c"
+            - >-
+              mkdir -p /mnt/data0/config && cd /home/arcadedb/config &&
+              for f in * .[!.]*; do [ -e "$f" ] || continue; [ -e "/mnt/data0/config/$f" ] ||
+              cp -R "$f" /mnt/data0/config/ || exit 1; done
+          # A handful of small files: sized so a namespace whose LimitRange or ResourceQuota requires requests and
+          # limits on every container still admits the pod.
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              memory: "64Mi"
+          volumeMounts:
+            - name: datadir
+              mountPath: /mnt/data0
       containers:
         - name: arcadedb
+          # Bump together with the `seed-config` init container's image, which copies this image's config defaults.
           image: arcadedata/arcadedb:latest
           imagePullPolicy: IfNotPresent
           env:
@@ -147,6 +178,15 @@ spec:
             - "-Darcadedb.server.name=$(POD_NAME)"
             - "-Darcadedb.server.rootPasswordPath=/etc/arcadedb/secrets/rootPassword"
             - "-Darcadedb.server.databaseDirectory=/mnt/data0/databases"
+            # The server writes the users, groups and API tokens created at runtime (server-users.jsonl,
+            # server-groups.json, server-api-tokens.json) into its configuration directory. Left on the image's
+            # /home/arcadedb/config it is the container's ephemeral layer, so a restarted pod would come back with the
+            # default security files, and restarting every pod at once would lose them for good (issue #10452). The
+            # logging configuration is not read from here: the JVM still loads it from the image.
+            - "-Darcadedb.server.configDirectory=/mnt/data0/config"
+            # Backups taken on the ephemeral layer would vanish with the pod they were meant to outlive. On the same
+            # volume as the databases they still share its fate: copy them off it, or point this at a separate claim.
+            - "-Darcadedb.server.backupDirectory=/mnt/data0/backups"
             - "-Darcadedb.server.defaultDatabases=Universe[albert:einstein]"
             # Report Ready only once the node has joined the Raft group and caught up, so a rolling
             # restart never drops the write quorum.

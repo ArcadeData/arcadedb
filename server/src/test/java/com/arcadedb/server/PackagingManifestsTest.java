@@ -181,6 +181,68 @@ class PackagingManifestsTest {
   }
 
   @Test
+  void statefulSetKeepsEveryDirectoryTheImageDeclaresOnThePersistentVolume() {
+    // Issue #10452: the StatefulSet moved the databases and the Raft log onto its PersistentVolume but left the config
+    // directory, where the server writes server-users.jsonl, server-groups.json and server-api-tokens.json, on the
+    // container layer, so a restarted pod lost every user, group and API token created at runtime. Each directory the
+    // image declares as a VOLUME must be redirected under a mount of the volume claim, or excluded here with a reason.
+    final Map<String, String> redirectedBy = Map.of(//
+        "/home/arcadedb/config", GlobalConfiguration.SERVER_CONFIG_DIRECTORY.getKey(),//
+        "/home/arcadedb/databases", GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getKey(),//
+        "/home/arcadedb/backups", GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getKey(),//
+        // The Raft log is the state the image's replication volume stands for.
+        "/home/arcadedb/replication", GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getKey());
+    // The log files are a copy of what the console handler already sends to `kubectl logs`.
+    final Set<String> notPersisted = Set.of("/home/arcadedb/log");
+
+    final String manifest = codeOf(read(STATEFULSET));
+    final String claimPath = claimMountPath(manifest);
+
+    for (final String volume : declaredVolumes(DOCKERFILE, read(DOCKERFILE))) {
+      if (notPersisted.contains(volume))
+        continue;
+      assertThat(redirectedBy).as("the image declares '%s' as a VOLUME: decide where the StatefulSet keeps it", volume)
+          .containsKey(volume);
+      final String setting = redirectedBy.get(volume);
+      final Matcher value = Pattern.compile("-D" + Pattern.quote(setting) + "=([^\"\\s]+)").matcher(manifest);
+      assertThat(value.find()).as("the StatefulSet does not set %s, so '%s' stays on the container's ephemeral layer",
+          setting, volume).isTrue();
+      assertThat(value.group(1)).as("%s points outside the PersistentVolume mounted at %s", setting, claimPath)
+          .startsWith(claimPath + "/");
+    }
+  }
+
+  @Test
+  void statefulSetSeedsThePersistentConfigDirectoryWithTheImageDefaults() {
+    // Issue #10452: unlike a Docker named volume, a PersistentVolumeClaim is not seeded from the image. A config
+    // directory on an empty claim lacks the shipped server-groups.json (whose 'readonly' group the built-in default does
+    // not have) and gremlin-server.yaml, so an init container copies the image's files there, never over a file that
+    // already exists: that file is the operator's edit or the server's own runtime write.
+    final String manifest = codeOf(read(STATEFULSET));
+    final Matcher configDir = Pattern.compile(
+        "-D" + Pattern.quote(GlobalConfiguration.SERVER_CONFIG_DIRECTORY.getKey()) + "=([^\"\\s]+)").matcher(manifest);
+    assertThat(configDir.find()).isTrue();
+
+    final int init = manifest.indexOf("initContainers:");
+    final int main = manifest.indexOf("containers:", init + "initContainers:".length());
+    assertThat(init).as("the StatefulSet has no init container seeding %s", configDir.group(1)).isNotNegative();
+    assertThat(main).isGreaterThan(init);
+    final String seed = manifest.substring(init, main);
+
+    assertThat(seed).as("the seed does not read the image's config directory").contains("/home/arcadedb/config");
+    assertThat(seed).as("the seed does not write the configured config directory").contains(configDir.group(1));
+    assertThat(seed).as("the seed must test each target with `[ -e ]` and skip one that already exists: copying over it"
+        + " would reset the users, groups and API tokens the claim is there to keep")
+        .containsPattern("\\[ -e \"" + Pattern.quote(configDir.group(1)) + "/\\$f\" ]\\s*\\|\\|\\s*cp ");
+    assertThat(seed).as("the seed must run the image the server runs, or it copies another version's defaults")
+        .contains("image: " + imageOf(manifest.substring(main)));
+    assertThat(seed).as("the seed must declare resources, or a namespace whose LimitRange requires them rejects the pod")
+        .contains("resources:");
+    assertThat(seed).as("the seed must mount the volume claim")
+        .containsPattern("- name: datadir\\s+mountPath: " + Pattern.quote(claimMountPath(manifest)));
+  }
+
+  @Test
   void dockerImagesSizeTheHeapAgainstTheContainerLimit() {
     jvmDockerfiles().forEach((name, dockerfile) -> {
       // A pinned heap larger than the cgroup limit kills the container before the listener binds.
@@ -616,6 +678,26 @@ class PackagingManifestsTest {
         .matcher(dockerfile);
     assertThat(m.find()).as("the Dockerfile does not define %s", name).isTrue();
     return m.group(1);
+  }
+
+  /**
+   * Where the StatefulSet's volume claim is mounted. Every container mounting it must use the same path, or a directory
+   * the init container seeds is not the one the server reads.
+   */
+  private static String claimMountPath(final String manifest) {
+    final Matcher claim = Pattern.compile("(?s)volumeClaimTemplates:\\s+- metadata:\\s+name: (\\S+)").matcher(manifest);
+    assertThat(claim.find()).as("the StatefulSet declares no volume claim").isTrue();
+    final List<String> paths = matches(
+        Pattern.compile("- name: " + Pattern.quote(claim.group(1)) + "\\s+mountPath: (\\S+)"), manifest);
+    assertThat(paths).as("no container mounts the volume claim '%s'", claim.group(1)).isNotEmpty();
+    assertThat(new LinkedHashSet<>(paths)).as("the volume claim is mounted at different paths").hasSize(1);
+    return paths.getFirst();
+  }
+
+  private static String imageOf(final String containerSpec) {
+    final Matcher image = Pattern.compile("^\\s*image: (\\S+)\\s*$", Pattern.MULTILINE).matcher(containerSpec);
+    assertThat(image.find()).isTrue();
+    return image.group(1);
   }
 
   /**
