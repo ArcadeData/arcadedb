@@ -263,7 +263,7 @@ public abstract class GraphTraverser {
       // when it reads the source, which fails on a ghost where the expansions catch it. What is not: the outgoing side of an undirected
       // hop over such a type is a stored list read by its entries, which follows a ghost as getVertices() does. A walk reaching here
       // is one over a unidirectional edge type, a case the engine-vertex path above does not serve; closing it means answering the
-      // entries of those lists with their edge RIDs, in IncomingEdgeLookup
+      // entries of those lists with their edge RIDs, in IncomingEdgeLookup (issue #10463)
       return resolved != null || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
     }
 

@@ -22,12 +22,19 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.parser.CreateVertexTypeStatement;
+import com.arcadedb.query.sql.parser.Identifier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.Proxy;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #10147: a {@code CREATE ... TYPE} statement is ONE schema publication, whatever it declares.
@@ -160,6 +167,45 @@ class Issue10147CreateTypeOneSchemaEntryTest extends TestHelper {
     assertThat(seen.sessions()).isZero();
     assertThat(schema().getVersion()).isEqualTo(versionBefore);
     assertThat(database.getSchema().existsType("Child")).isFalse();
+  }
+
+  /**
+   * The take-back of a refused link is a drop that can fail too: the statement still ends with the refusal that made it necessary, the
+   * failure of the drop is kept on it as suppressed, and the schema is still usable. The type the statement creates is one the schema
+   * never held, so that linking it is refused and dropping it fails.
+   */
+  @Test
+  void aFailingTakeBackSurfacesTheRefusalAndKeepsTheDropFailureAsSuppressed() {
+    final SchemaException refusal = new SchemaException("the link is refused");
+    final CreateVertexTypeStatement statement = new CreateVertexTypeStatement() {
+      @Override
+      protected DocumentType createType(final Schema schema, final String typeName) {
+        return (DocumentType) Proxy.newProxyInstance(DocumentType.class.getClassLoader(), new Class<?>[] { DocumentType.class },
+            (proxy, method, args) -> {
+              if (method.getName().equals("addSuperType"))
+                throw refusal;
+              if (method.getName().equals("getBuckets"))
+                return List.of();
+              return null;
+            });
+      }
+    };
+    statement.name = new Identifier("Ghosty");
+    statement.supertypes = List.of(new Identifier("A"));
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    final Throwable thrown = catchThrowable(() -> statement.executeDDL(context));
+
+    assertThat(thrown).isSameAs(refusal);
+    assertThat(thrown.getSuppressed()).as("the failure of the take-back").hasSize(1);
+    assertThat(database.getSchema().existsType("Ghosty")).isFalse();
+
+    // Nothing was left locked or half published: the next statement is one entry as usual
+    final long versionBefore = schema().getVersion();
+    assertThat(SchemaSessionCounter.count((LocalDatabase) database, () -> database.command("sql", "CREATE VERTEX TYPE Fine EXTENDS A").close()))
+        .isEqualTo(1);
+    assertThat(schema().getVersion() - versionBefore).isEqualTo(1);
   }
 
   private LocalSchema schema() {

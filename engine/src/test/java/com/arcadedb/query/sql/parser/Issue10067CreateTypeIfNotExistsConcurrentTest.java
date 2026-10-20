@@ -82,6 +82,43 @@ class Issue10067CreateTypeIfNotExistsConcurrentTest extends TestHelper {
     }
   }
 
+  /**
+   * The same race for a statement that links super types (the composite type of a node with two labels), which since issue #10147
+   * takes the async quiescence and then the write lock for the create and the links together: the losers still all answer, exactly
+   * one creates the type, and it ends up under both of its super types.
+   */
+  @Test
+  void statementsRacingOnTheSameTypeWithSuperTypesAllAnswerAndExactlyOneCreatesIt() throws Exception {
+    database.command("sql", "CREATE VERTEX TYPE RacingBaseA").close();
+    database.command("sql", "CREATE VERTEX TYPE RacingBaseB").close();
+    final ExecutorService pool = Executors.newFixedThreadPool(THREADS);
+    try {
+      for (int round = 0; round < 10; round++) {
+        final String name = "RacingChild" + round;
+        final CyclicBarrier together = new CyclicBarrier(THREADS);
+        final AtomicInteger created = new AtomicInteger();
+        final List<Future<?>> futures = new ArrayList<>();
+        for (int t = 0; t < THREADS; t++)
+          futures.add(pool.submit(() -> {
+            together.await(30, TimeUnit.SECONDS);
+            try (final ResultSet rs = database.command("sql", "CREATE VERTEX TYPE " + name + " IF NOT EXISTS EXTENDS RacingBaseA, RacingBaseB")) {
+              if (Boolean.TRUE.equals(rs.next().getProperty("created")))
+                created.incrementAndGet();
+            }
+            return null;
+          }));
+        for (final Future<?> future : futures)
+          future.get(60, TimeUnit.SECONDS);
+
+        assertThat(created.get()).as("%s: exactly one statement creates the type", name).isEqualTo(1);
+        assertThat(database.getSchema().getType(name).getSuperTypes()).extracting(type -> type.getName())
+            .containsExactlyInAnyOrder("RacingBaseA", "RacingBaseB");
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
   /** Without IF NOT EXISTS the loser of the race is still told the type is there: the guarantee is not widened. */
   @Test
   void withoutIfNotExistsTheTypeBeingThereIsStillAnError() {
