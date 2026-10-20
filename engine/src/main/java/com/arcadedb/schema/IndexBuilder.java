@@ -21,12 +21,15 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.IntHashSet;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -452,18 +455,27 @@ public abstract class IndexBuilder<T extends Index> {
    * <p>
    * Two conditions, and the second is the one that is easy to get wrong. The index family has to be able to use a
    * shared transaction at all ({@link Schema.INDEX_TYPE#buildCanShareCallerTransaction}); and the open transaction has
-   * to actually HOLD uncommitted work, because that is the entire reason for sharing it. An EMPTY transaction has
-   * nothing for the scan to see, so joining it buys nothing and costs the build its chunked commit - and empty is
-   * exactly what a transaction opened as scaffolding looks like. {@code DatabaseAsyncExecutorImpl.runCommand} opens
-   * one around every dispatched command because {@code requiresActiveTx()} defaults to true, so without this test a
-   * {@code CREATE INDEX} sent with {@code awaitResponse=false} - the case issue #6303 item 3 and #6324 item 5 exist
-   * to make work - would build the whole index in one uncommitted transaction, whatever batch size it was given.
+   * to have WRITTEN TO THE BUCKETS THE BUILD SCANS, because seeing those writes is the entire reason for sharing it.
+   * <p>
+   * An EMPTY transaction has nothing for the scan to see, so joining it buys nothing and costs the build its chunked
+   * commit - and empty is exactly what a transaction opened as scaffolding looks like. {@code
+   * DatabaseAsyncExecutorImpl.runCommand} opens one around every dispatched command because {@code requiresActiveTx()}
+   * defaults to true, so without this test a {@code CREATE INDEX} sent with {@code awaitResponse=false} - the case issue
+   * #6303 item 3 and #6324 item 5 exist to make work - would build the whole index in one uncommitted transaction,
+   * whatever batch size it was given.
+   * <p>
+   * A transaction that wrote only ELSEWHERE is the same case (issue #10450): the scan reads the indexed buckets only, so
+   * it finds nothing of that transaction there either. Joining it would queue one entry per scanned record until the
+   * caller commits - for a vector index over a large bucket, one heavy entry each - where a build of its own commits in
+   * chunks. A build in a transaction of its own is correct whenever the caller has not written to its buckets.
    * <p>
    * Asked BEFORE the build opens anything, because afterwards there is always a transaction and the answer is always
    * yes.
+   *
+   * @param buckets the buckets the build is about to scan
    */
-  protected boolean buildSharesCallerTransaction() {
-    return indexType != null && indexType.buildCanShareCallerTransaction() && callerTransactionHasChanges(database);
+  protected boolean buildSharesCallerTransaction(final Collection<? extends Bucket> buckets) {
+    return indexType != null && indexType.buildCanShareCallerTransaction() && callerTransactionHasChangesIn(database, buckets);
   }
 
   /**
@@ -474,14 +486,35 @@ public abstract class IndexBuilder<T extends Index> {
    * is that call site arriving back at the defect #6324 item 1 fixed, and the predicate lives here so a third spelling
    * of it cannot drift from the other two.
    * <p>
+   * Only the innermost transaction is asked, the one a shared build would join. A record's content can also live in
+   * the paired external-property bucket of its own bucket, so that one counts as written to as well.
+   * <p>
    * Timing is the whole trap: inside the component-creation transaction there is ALWAYS one open, it is EMPTY, and the
    * answer would always be no.
+   *
+   * @param buckets the buckets the build is about to scan
    */
-  static boolean callerTransactionHasChanges(final DatabaseInternal database) {
+  static boolean callerTransactionHasChangesIn(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
     if (!database.isTransactionActive())
       return false;
     final TransactionContext tx = database.getTransactionIfExists();
-    return tx != null && tx.hasChanges();
+    if (tx == null || !tx.hasChanges())
+      return false;
+
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final IntHashSet fileIds = new IntHashSet(buckets.size() * 2);
+    for (final Bucket bucket : buckets) {
+      if (bucket == null)
+        continue;
+      final int bucketId = bucket.getFileId();
+      fileIds.add(bucketId);
+      if (schema.getTypeByBucketId(bucketId) instanceof LocalDocumentType owner) {
+        final Integer externalBucketId = owner.getExternalBucketIdFor(bucketId);
+        if (externalBucketId != null)
+          fileIds.add(externalBucketId);
+      }
+    }
+    return tx.hasChangesInFiles(fileIds);
   }
 
   /**
