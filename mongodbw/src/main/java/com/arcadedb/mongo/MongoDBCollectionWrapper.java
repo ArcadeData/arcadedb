@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeIndexBuilder;
 import de.bwaldvogel.mongo.MongoCollection;
@@ -549,7 +550,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       // the documents are tested one by one: the skipped matches are not counted, the scan stops at the limit
       final int[] skipped = { 0 };
       final int[] matched = { 0 };
-      filter.scanMatches(database, collectionName, rid -> {
+      // every matching row, not only those with an identity: a sample of a TIMESERIES type has none (issue #10442)
+      filter.scanMatchingRows(database, collectionName, row -> {
         if (skipped[0] < skip) {
           skipped[0]++;
           return true;
@@ -595,7 +597,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     final MongoFilter filter = new MongoFilter(database, query);
     final boolean hasOrderBy = orderBy != null && !orderBy.isEmpty();
 
-    if (filter.isEmpty() && !hasOrderBy) {
+    // a TIMESERIES type keeps its samples in its own engine, not in its buckets: the scan would answer no document while the
+    // count answers the samples, so it is read with SQL, which serves them (issue #10442)
+    if (filter.isEmpty() && !hasOrderBy && !(database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType)) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
     } else {
