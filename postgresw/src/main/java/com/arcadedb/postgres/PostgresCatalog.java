@@ -135,6 +135,17 @@ public class PostgresCatalog {
   private static final String PG_CATALOG_SCHEMA = "pg_catalog";
 
   /**
+   * The relations a driver joins to {@code pg_type} to find out what a type is: where it lives, what it is an array or a
+   * composite of, what its values are. {@code pg_range} and {@code pg_enum} are among them though they are not modelled.
+   */
+  private static final Set<String> TYPE_RESOLUTION_RELATIONS = Set.of("pg_type", "pg_namespace", "pg_class", "pg_attribute",
+      "pg_range", "pg_enum");
+
+  /** The aggregates that make a type lookup a query whose one row an empty answer would lose (see isTypeResolutionProbe). */
+  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or", "string_agg",
+      "array_agg");
+
+  /**
    * A catalog query that would spend more work than this server gives one statement - a client regular expression
    * that backtracks, sub-selects correlated deep enough to multiply. The client is told so, with PostgreSQL's
    * {@code program_limit_exceeded}, rather than handed an empty answer that would look like an empty catalog.
@@ -827,16 +838,6 @@ public class PostgresCatalog {
   }
 
   /**
-   * The relations a driver joins to {@code pg_type} to find out what a type is: where it lives, what it is an array or a
-   * composite of, what its values are. {@code pg_range} and {@code pg_enum} are among them though they are not modelled.
-   */
-  private static final Set<String> TYPE_RESOLUTION_RELATIONS = Set.of("pg_type", "pg_namespace", "pg_class", "pg_attribute",
-      "pg_range", "pg_enum");
-
-  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or", "string_agg",
-      "array_agg");
-
-  /**
    * Whether the query is a <b>type-resolution probe</b>: it reads {@code pg_type}, nothing outside
    * {@link #TYPE_RESOLUTION_RELATIONS}, and no aggregate. This is the one place a declined catalog query keeps the empty answer
    * instead of being refused (issue #10371), a deliberate compatibility shim and not a default.
@@ -847,6 +848,10 @@ public class PostgresCatalog {
    * it can produce, which a driver already knows, so "no such type" is an answer the driver is built to handle - it falls back
    * to the text form - where an error would fail {@code DatabaseMetaData.getTypeInfo()} and every call that meets a new OID. A
    * count over the same relations is not a probe: an empty answer to it loses the one row PostgreSQL always sends.
+   * <p>
+   * The rule errs toward refusing, so a driver release that adds an aggregate or another relation to its type lookup would turn
+   * the call into an error rather than a wrong answer; {@code Issue10371UnmodelledRelationTest} pins the shapes of today's
+   * pgjdbc lookups and fails first.
    */
   public static boolean isTypeResolutionProbe(final String query) {
     final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
