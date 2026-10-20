@@ -97,7 +97,9 @@ public class DocumentValidator {
    * owes the check back: it writes the record again once the link is resolved, and that write validates the whole record, this check
    * included. Nothing else is relaxed - MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are checked as always. Scopes nest.
    * <p>
-   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources.
+   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources. It relaxes the check for
+   * every record that thread writes while it is open, a listener's or a trigger's included, so keep it as narrow as the one write that
+   * needs it. Closing it from another thread throws and leaves it open on the owner, whose writes stay relaxed until it closes it.
    */
   public static LinkTargetTypeDeferral deferLinkTargetTypeChecks() {
     if (LINK_TARGET_DEFERRAL_DEPTH.get()[0]++ == 0)

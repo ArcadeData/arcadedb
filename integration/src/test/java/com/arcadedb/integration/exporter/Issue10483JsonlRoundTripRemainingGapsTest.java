@@ -241,6 +241,43 @@ class Issue10483JsonlRoundTripRemainingGapsTest {
     }
   }
 
+  /**
+   * A record saved with its link unresolved is validated again by the reconciliation pass whatever happens to that link, so the
+   * suspension of the check never lets a record through: a link whose target is not in the file is cleared (it is never remapped), and a
+   * record that cannot hold the null fails the import.
+   */
+  @Test
+  void aForwardLinkToARecordThatIsNotInTheFileIsClearedAndTheRecordStillValidated() throws Exception {
+    final File file = new File(SOURCE_PATH + "-dangling.jsonl");
+    file.getParentFile().mkdirs();
+    Files.writeString(file.toPath(), danglingFile(""));
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath());
+      final Document holder = firstOf(target, "Holder");
+      assertThat(holder.get("p")).isNull();
+    } finally {
+      file.delete();
+    }
+
+    FileUtils.deleteRecursively(new File(TARGET_PATH));
+    Files.writeString(file.toPath(), danglingFile(",\"mandatory\":true,\"notNull\":true"));
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      assertThatThrownBy(() -> target.command("sql", "IMPORT DATABASE file://" + file.getAbsolutePath())).hasStackTraceContaining("Holder.p");
+    } finally {
+      file.delete();
+    }
+  }
+
+  private static String danglingFile(final String propertyConstraints) {
+    return ""
+        + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":2}}\n"
+        + "{\"t\":\"schema\",\"c\":{\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{"
+        + "\"Wanted\":{\"type\":\"d\",\"parents\":[],\"buckets\":[\"Wanted_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}},"
+        + "\"Holder\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Holder_0\"],\"properties\":{\"p\":{\"type\":\"LINK\",\"of\":\"Wanted\""
+        + propertyConstraints + "}},\"indexes\":{},\"custom\":{}}}}}\n"
+        + "{\"t\":\"v\",\"c\":{\"p\":{\"p\":\"#9:9\"},\"r\":\"#3:0\",\"t\":\"Holder\"}}\n";
+  }
+
   // ---- (2) a MAP OF LINK with the key "t" ----
 
   @ParameterizedTest(name = "{0} key {1}")
