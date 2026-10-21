@@ -76,6 +76,8 @@ class Issue10537TypeCreationOneSchemaEntryTest extends TestHelper {
     GROWS_AND_LINKS_AN_EXISTING_TYPE("buildVertexType().withTotalBuckets(3).withSuperType(A) on an existing type",
         db -> db.getSchema().buildVertexType().withName("OneBucketToo").withTotalBuckets(3).withSuperType("A").withIgnoreIfExists(true)
             .create()),
+    GROWS_AN_EXISTING_UNIQUE_EDGE("buildEdgeType().withTotalBuckets(3) on a unique edge type with one bucket",
+        db -> db.getSchema().buildEdgeType().withName("UniqueOneBucket").withTotalBuckets(3).withIgnoreIfExists(true).create()),
     GET_OR_CREATE_VERTEX("getOrCreateVertexType()", db -> db.getSchema().getOrCreateVertexType("GetOrCreateVertex")),
     GET_OR_CREATE_EDGE("getOrCreateEdgeType()", db -> db.getSchema().getOrCreateEdgeType("GetOrCreateEdge")),
     ENSURE_COMPOSITE_TWO("Labels.ensureCompositeType(2 labels)", db -> Labels.ensureCompositeType(db.getSchema(), List.of("L1", "L2"))),
@@ -112,6 +114,7 @@ class Issue10537TypeCreationOneSchemaEntryTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE OneBucket BUCKETS 1");
     database.command("sql", "CREATE VERTEX TYPE OneBucketToo BUCKETS 1");
     database.command("sql", "CREATE VERTEX TYPE Standalone");
+    database.command("sql", "CREATE EDGE TYPE UniqueOneBucket UNIQUE BUCKETS 1");
     database.command("sql", "CREATE EDGE TYPE Populated");
     database.transaction(() -> {
       final var from = database.newVertex("A").save();

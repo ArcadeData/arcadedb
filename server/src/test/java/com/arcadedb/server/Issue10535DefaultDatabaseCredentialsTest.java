@@ -130,13 +130,18 @@ class Issue10535DefaultDatabaseCredentialsTest extends StaticBaseServerTest {
     final String withoutGroup = DATABASE + "[" + USER + ":" + PASSWORD + "]";
     startWith(withoutGroup);
     assertThat(server.getSecurity().authenticate(USER, PASSWORD, DATABASE).getName()).isEqualTo(USER);
-    assertThat(Files.readString(usersFile, StandardCharsets.UTF_8)).contains(USER).contains(DATABASE);
+    final String firstStart = Files.readString(usersFile, StandardCharsets.UTF_8);
+    assertThat(firstStart).contains(USER).contains(DATABASE);
     stopServer();
 
+    // The grant is held, so the restart writes nothing: on a directory that cannot be written it still starts, and the file is as it was
+    configDirectory.setWritable(false);
+    assumeTrue(!configDirectory.canWrite(), "the directory is still writable (running as a superuser?)");
     startWith(withoutGroup);
 
     assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.ONLINE);
     assertThat(server.getSecurity().authenticate(USER, PASSWORD, DATABASE).getName()).isEqualTo(USER);
+    assertThat(Files.readString(usersFile, StandardCharsets.UTF_8)).as("a restart does not rewrite the file").isEqualTo(firstStart);
   }
 
   private static String credentials(final String password, final String group) {
