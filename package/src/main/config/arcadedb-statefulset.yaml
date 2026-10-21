@@ -12,7 +12,12 @@
 # Using ArcadeDB with k8s
 # - Create the namespace: kubectl create namespace arcadedb
 # - Create the secret   : kubectl create secret generic arcadedb-credentials \
-#                           --namespace arcadedb --from-literal=rootPassword='<choose-a-strong-password>'
+#                           --namespace arcadedb --from-literal=rootPassword='<choose-a-strong-password>' \
+#                           --from-literal=clusterToken="$(openssl rand -hex 32)"
+#   A Secret created before the `clusterToken` key was required lacks it, and the pods then stay in
+#   ContainerCreating ("couldn't find key clusterToken"). Add it to the existing Secret with:
+#                         kubectl patch secret arcadedb-credentials --namespace arcadedb \
+#                           -p "{\"stringData\":{\"clusterToken\":\"$(openssl rand -hex 32)\"}}"
 # - Create cluster      : kubectl apply -f arcadedb-statefulset.yaml
 # - List the pods       : kubectl get pods --namespace arcadedb
 # - Run console         : kubectl exec -it arcadedb-0 --namespace arcadedb -- bin/console.sh
@@ -27,6 +32,11 @@
 # the note on that line for why, and for the `fsGroup` + 0440 alternative). The resource requests are
 # sized for a real three-node cluster, and the Raft gRPC port is unauthenticated - restrict it to the
 # StatefulSet's own pods with a NetworkPolicy.
+#
+# The `clusterToken` key is the shared secret the nodes authenticate each other with (forwarded commands, Raft group
+# changes). Every pod mounts the same Secret, so they all read the same token. Without it the token would be derived
+# from the root password and the cluster name with a fixed public salt: a separate high-entropy value keeps a weak root
+# password from making the token guessable, and lets it be rotated without touching the root password.
 #
 # NOTE ON VARIABLE EXPANSION: Kubernetes expands only the `$(VAR)` form in `command`/`args`, and only
 # for variables declared in this container's `env`. The `${VAR}` form is NOT expanded, and since the
@@ -115,9 +125,10 @@ spec:
                         - arcadedb
                 topologyKey: kubernetes.io/hostname
       volumes:
-        # The root password is mounted as a file instead of being passed on the command line: an
-        # argument is world-readable through /proc inside the pod, a mounted secret is not. ArcadeDB
-        # reads it through `arcadedb.server.rootPasswordPath`.
+        # The root password and the HA cluster token are mounted as files instead of being passed on
+        # the command line: an argument is world-readable through /proc inside the pod, a mounted secret
+        # is not. ArcadeDB reads them through `arcadedb.server.rootPasswordPath` and
+        # `arcadedb.ha.clusterTokenPath`.
         - name: root-password
           secret:
             secretName: arcadedb-credentials
@@ -131,6 +142,8 @@ spec:
             items:
               - key: rootPassword
                 path: rootPassword
+              - key: clusterToken
+                path: clusterToken
       initContainers:
         # Seeds the configuration directory on the PersistentVolume (see `configDirectory` below) with the image's
         # default files. Unlike a Docker named volume, a PersistentVolumeClaim is not populated from the image, and an
@@ -192,6 +205,8 @@ spec:
             # restart never drops the write quorum.
             - "-Darcadedb.server.readinessRequiresHA=true"
             - "-Darcadedb.ha.enabled=true"
+            # The shared secret the nodes authenticate each other with, from the same mounted Secret (see the header).
+            - "-Darcadedb.ha.clusterTokenPath=/etc/arcadedb/secrets/clusterToken"
             # arcadedb-0 lists itself, and must: this list IS the initial Raft group membership, so a
             # node absent from it is not a member. Only the first pod is listed because the remaining
             # pods are not members at boot - they synthesize their own peer entry from the pod name
