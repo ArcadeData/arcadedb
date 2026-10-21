@@ -68,7 +68,9 @@ public class RouteRecordingRoutingHandler extends RoutingHandler {
   }
 
   private final Map<RouteDescriptor, HttpHandler> registeredRoutes = new LinkedHashMap<>();
-  // Every template with the methods it answers, the derived HEAD included, written while the routes are registered
+  // Every template with the methods it answers, the derived HEAD included. Routes are registered on the startup thread, under this
+  // object's monitor, before the router serves a request: request threads read only allowByTemplate (volatile, replaced whole) and
+  // the matcher, which Undertow's own router reads from them the same way
   private final Map<String, Set<String>>          methodsByTemplate = new HashMap<>();
   private final PathTemplateMatcher<String>       templates         = new PathTemplateMatcher<>();
   // Template -> the Allow header of its 405, republished whole after each registration so a request reads it without a lock

@@ -65,6 +65,12 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
   /**
    * A resolution of a database by name through the entry point that sees past the marks: {@code getDatabase(name)} with the name
    * alone, or {@code getOrCreateDatabase(name)}. The three-argument form is a plugin initialising the database it owns at start.
+   * <p>
+   * The limit of a census read from sources: the receiver is an identifier ending in {@code server} or {@code getServer()}, and a
+   * line that starts as a comment is skipped, so a listener that keeps the server in a field named otherwise ({@code srv},
+   * {@code owner}) would pass it. Flagging every one-argument {@code getDatabase(} call instead would also flag the listeners' own
+   * helpers of that name, and an allow-list of them is the kind of list nobody keeps; a new listener is reviewed against the rule
+   * stated on {@code ArcadeDBServer#getDatabase(String)}.
    */
   private static final Pattern INTERNAL_ENTRY_POINT = Pattern.compile(
       "(?:\\b\\w*[sS]erver|\\bgetServer\\(\\))\\s*\\.\\s*(?:getDatabase\\((?:[^,()]|\\([^()]*\\))*\\)|getOrCreateDatabase\\()");
