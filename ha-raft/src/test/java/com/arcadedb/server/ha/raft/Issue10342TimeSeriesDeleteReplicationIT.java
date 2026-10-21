@@ -24,7 +24,9 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -206,6 +208,63 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     waitForAllServers();
     assertThat(awaitCountOn(leaderIndex, 10L)).as("leader").isEqualTo(10L);
     assertThat(awaitCountOn(followerIndex, 10L)).as("follower").isEqualTo(10L);
+  }
+
+  /**
+   * Issue #10428: a delete records, on the continuous aggregates over the type, the range it removed samples from, and the record is
+   * part of the replication unit of the delete. A follower promoted to leader after the delete refreshes the aggregate with it, and
+   * recomputes the buckets the delete reached instead of keeping the samples for good. The leader's own refresh is held off here, so
+   * that the record is still pending when the follower is looked at.
+   */
+  @Test
+  void aDeleteShipsTheRangeItInvalidatedOnTheContinuousAggregatesWithIt() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final long hour = 3_600_000L;
+    final long base = BASE - (BASE % hour);
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE TIMESERIES TYPE sensor TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2").close();
+    leaderDb.command("sql",
+        "CREATE CONTINUOUS AGGREGATE hourly AS SELECT ts.timeBucket('1h', ts) AS hr, count(*) AS n FROM sensor GROUP BY hr").close();
+    waitForAllServers();
+    for (int h = 0; h < 3; h++)
+      leaderDb.command("sql", "INSERT INTO sensor SET ts = ?, host = 'h0', v = 1", base + h * hour).close();
+    leaderDb.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
+    waitForAllServers();
+    assertThat(awaitValue(3L, () -> aggregateRows(followerIndex))).as("the follower holds the three buckets").isEqualTo(3L);
+
+    final ContinuousAggregateImpl aggregate = (ContinuousAggregateImpl) leaderDb.getSchema().getContinuousAggregate("hourly");
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    try {
+      leaderDb.command("sql", "DELETE FROM sensor WHERE ts = " + base).close();
+      waitForAllServers();
+
+      assertThat(awaitValue(base, () -> invalidatedFromOn(followerIndex)))
+          .as("the follower holds the range the delete invalidated, shipped with the delete").isEqualTo(base);
+    } finally {
+      aggregate.endRefresh();
+    }
+
+    leaderDb.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
+    waitForAllServers();
+    assertThat(awaitValue(2L, () -> aggregateRows(leaderIndex))).as("leader").isEqualTo(2L);
+    assertThat(awaitValue(2L, () -> aggregateRows(followerIndex))).as("follower").isEqualTo(2L);
+  }
+
+  private long aggregateRows(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM hourly")) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  /** The start of the range the aggregate records as invalidated on that server, or {@code Long.MIN_VALUE} when it records none. */
+  private long invalidatedFromOn(final int serverIndex) {
+    final Database db = getServerDatabase(serverIndex, getDatabaseName());
+    final JSONObject definition = db.getSchema().getEmbedded().toJSON().getJSONObject("continuousAggregates").getJSONObject("hourly");
+    return definition.getLong("invalidatedFromTs", Long.MIN_VALUE);
   }
 
   private void insert(final Database db, final int from, final int to) {

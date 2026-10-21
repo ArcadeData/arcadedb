@@ -57,11 +57,14 @@ public class TextLevenshteinSimilarity extends AbstractTextFunction {
     if (str1.isEmpty() && str2.isEmpty())
       return 1.0;
 
-    final int maxLen = Math.max(str1.length(), str2.length());
+    // characters, not UTF-16 units: the distance and the length it is divided by must count the same thing
+    final int[] chars1 = codePointsOf(str1);
+    final int[] chars2 = codePointsOf(str2);
+    final int maxLen = Math.max(chars1.length, chars2.length);
     if (maxLen == 0)
       return 1.0;
 
-    final int distance = TextLevenshteinDistance.levenshteinDistance(str1, str2);
+    final int distance = TextLevenshteinDistance.levenshteinDistance(chars1, chars2);
     return 1.0 - ((double) distance / maxLen);
   }
 }

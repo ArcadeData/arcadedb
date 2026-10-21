@@ -47,6 +47,21 @@ public abstract class AbstractTextFunction implements StatelessFunction {
   }
 
   /**
+   * The characters of a string, one {@code int} each: a character outside the BMP is one element, not the two UTF-16 units of its
+   * surrogate pair. A lone surrogate is a character of its own.
+   */
+  protected static int[] codePointsOf(final String s) {
+    final int length = s.length();
+    final int[] codePoints = new int[s.codePointCount(0, length)];
+    for (int i = 0, n = 0; i < length; n++) {
+      final int codePoint = s.codePointAt(i);
+      codePoints[n] = codePoint;
+      i += Character.charCount(codePoint);
+    }
+    return codePoints;
+  }
+
+  /**
    * Safely converts an argument to int, with default value for null.
    */
   protected int asInt(final Object arg, final int defaultValue) {

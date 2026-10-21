@@ -37,6 +37,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PaginatedComponent;
@@ -93,6 +94,9 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -3050,77 +3054,19 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
-        // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
-        for (final LocalDocumentType parent : superTypes)
-          type.removeSuperType(parent);
+        // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
+        // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
+        // (and saved): the file of an index that cannot be deleted, the lock of a file another thread holds. The files are
+        // probed here, and the locks of the index files taken once, up front, so the drops below re-acquire what is held
+        final List<Integer> filesOfTheDrop = new ArrayList<>();
+        final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+        collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
+        requireFilesCanBeDeleted("drop the type '" + type.getName() + "'", filesOfTheDrop);
 
-        for (final LocalDocumentType sub : type.subTypes) {
-          sub.superTypes.remove(type);
-          for (final LocalDocumentType parent : superTypes)
-            sub.addSuperType(parent, false);
-        }
-        // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
-        // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
-        if (!type.subTypes.isEmpty())
-          typesChanged();
-
-        // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
-        // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
-        // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
-        // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
-        // PR #5946).
-        for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
-          dropIndexInternal(m.getName());
-
-        if (type instanceof LocalVertexType vertexType)
-          // DELETE IN/OUT EDGE FILES
-          database.getGraphEngine().dropVertexType(vertexType);
-
-        // DELETE ALL ASSOCIATED BUCKETS
-        final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
-        for (final Bucket b : buckets) {
-          type.removeBucket(b);
-          dropBucket(b.getName());
-        }
-
-        if (type instanceof LocalTimeSeriesType tsType)
-          tsType.drop();
-
-        // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
-        // second is the damaging one:
-        //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
-        //     type registered under its own name with its buckets and indexes already torn down.
-        //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
-        //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
-        //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
-        //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
-        //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
-        //     left the instance in getTypes(), which is what CHECK DATABASE walks.
-        // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
-        // form: a name that has since been taken over by another type must not be taken away from it.
-        // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
-        // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
-        // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
-        // leaves the type map, which is where the listener is unregistered from
-        for (final Trigger trigger : new ArrayList<>(triggers.values()))
-          if (canonicalTypeName.equals(trigger.getTypeName())) {
-            unregisterTriggerListener(trigger.getName());
-            triggers.remove(trigger.getName());
-          }
-
-        for (final String alias : type.getAliases())
-          typeMap().remove(alias, type);
-
-        if (!typeMap().remove(type.getName(), type))
-          throw new SchemaException("Type '" + typeName + "' not found");
-
-        // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
-        type.events.detachFromDatabase();
-        type.triggerEvents.detachFromDatabase();
-
-        // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
-        reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
+        database.executeLockingFiles(indexFilesOfTheDrop, () -> {
+          dropTypeInternal(type, typeName, canonicalTypeName);
+          return null;
+        });
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
@@ -3133,6 +3079,152 @@ public class LocalSchema implements Schema {
       }
       return null;
     });
+  }
+
+  /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
+  private void dropTypeInternal(final LocalDocumentType type, final String typeName, final String canonicalTypeName) {
+    // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
+    final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
+    for (final LocalDocumentType parent : superTypes)
+      type.removeSuperType(parent);
+
+    for (final LocalDocumentType sub : type.subTypes) {
+      sub.superTypes.remove(type);
+      for (final LocalDocumentType parent : superTypes)
+        sub.addSuperType(parent, false);
+    }
+    // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
+    // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
+    if (!type.subTypes.isEmpty())
+      typesChanged();
+
+    // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
+    // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
+    // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
+    // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
+    // PR #5946).
+    for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
+      dropIndexInternal(m.getName());
+
+    if (type instanceof LocalVertexType vertexType)
+      // DELETE IN/OUT EDGE FILES
+      database.getGraphEngine().dropVertexType(vertexType);
+
+    // DELETE ALL ASSOCIATED BUCKETS
+    final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
+    for (final Bucket b : buckets) {
+      type.removeBucket(b);
+      dropBucket(b.getName());
+    }
+
+    if (type instanceof LocalTimeSeriesType tsType)
+      tsType.drop();
+
+    // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
+    // second is the damaging one:
+    //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
+    //     type registered under its own name with its buckets and indexes already torn down.
+    //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
+    //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
+    //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
+    //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
+    //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
+    //     left the instance in getTypes(), which is what CHECK DATABASE walks.
+    // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
+    // form: a name that has since been taken over by another type must not be taken away from it.
+    // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
+    // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
+    // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
+    // leaves the type map, which is where the listener is unregistered from
+    for (final Trigger trigger : new ArrayList<>(triggers.values()))
+      if (canonicalTypeName.equals(trigger.getTypeName())) {
+        unregisterTriggerListener(trigger.getName());
+        triggers.remove(trigger.getName());
+      }
+
+    for (final String alias : type.getAliases())
+      typeMap().remove(alias, type);
+
+    if (!typeMap().remove(type.getName(), type))
+      throw new SchemaException("Type '" + typeName + "' not found");
+
+    // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
+    type.events.detachFromDatabase();
+    type.triggerEvents.detachFromDatabase();
+
+    // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
+    reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
+  }
+
+  /**
+   * The files {@link #dropType} is going to delete for {@code type} (issue #10421): the sub-indexes of the indexes it declares and
+   * the ones it inherits over its own buckets, its buckets, and the edge buckets of a vertex type. The index files are told apart
+   * because their locks are taken up front. An index naming a type that does not exist is refused here: the drop of it would
+   * fail on that name after the sub types were unlinked.
+   */
+  private void collectFilesOfTheDrop(final LocalDocumentType type, final List<Integer> files, final List<Integer> indexFiles) {
+    final Set<Integer> ownBucketIds = new HashSet<>(type.getBucketIds(false));
+    final Collection<TypeIndex> declared = type.getAllIndexes(false);
+    for (final TypeIndex index : type.getAllIndexes(true)) {
+      boolean declaredHere = false;
+      for (final TypeIndex candidate : declared)
+        // BY IDENTITY: TypeIndex.equals() is content-based and asks the wrapper for its property names
+        if (candidate == index) {
+          declaredHere = true;
+          break;
+        }
+      for (final IndexInternal subIndex : index.getIndexesOnBuckets())
+        if (declaredHere || ownBucketIds.contains(subIndex.getAssociatedBucketId())) {
+          if (subIndex.getTypeName() != null && !existsType(subIndex.getTypeName()))
+            throw new SchemaException("Cannot drop the type '" + type.getName() + "': its index '" + subIndex.getName()
+                + "' names the type '" + subIndex.getTypeName() + "', which does not exist. Nothing was changed");
+          indexFiles.addAll(subIndex.getFileIds());
+        }
+    }
+    files.addAll(indexFiles);
+
+    for (final Bucket bucket : type.getBuckets(false)) {
+      files.add(bucket.getFileId());
+      if (type instanceof LocalVertexType)
+        for (final String edgeBucketName : List.of(InternalBucketNaming.outEdgesBucketName(bucket.getName()),
+            InternalBucketNaming.inEdgesBucketName(bucket.getName())))
+          if (existsBucket(edgeBucketName))
+            files.add(getBucketByName(edgeBucketName).getFileId());
+    }
+  }
+
+  /**
+   * Refuses, before a statement changes anything, a file it is going to delete that cannot be (issue #10421): one that is not a
+   * regular file, or sits in a directory that cannot be written. The delete of such a file fails after the statement has changed
+   * the files and the schema graph in front of it, and what it leaves behind is neither the schema it found nor the one it meant to
+   * reach. A file that is already gone is not a refusal: the delete of it fails as it always did, and the statement is the one that
+   * finds it out.
+   * <p>
+   * A best-effort pre-check, not a guarantee: the state of a file can change between the check and the delete, and
+   * {@link Files#isWritable} on a directory says nothing reliable on some platforms or for a process that runs as root. What the
+   * check does not detect fails the delete as it always did.
+   *
+   * @param statement what the statement does, for the message: "drop the type 'T'"
+   */
+  void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
+    final FileManager fileManager = database.getFileManager();
+    for (final Integer fileId : fileIds) {
+      final ComponentFile file = fileManager.getFileIfExists(fileId);
+      if (file == null)
+        continue;
+
+      final Path path = Path.of(file.getFilePath());
+      final String reason;
+      if (Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+        reason = "it is not a regular file";
+      else if (path.getParent() != null && !Files.isWritable(path.getParent()))
+        reason = "its directory cannot be written";
+      else
+        continue;
+
+      throw new SchemaException("Cannot " + statement + ": the file '" + file.getFileName() + "' of '" + file.getComponentName()
+          + "' cannot be deleted, " + reason + ". Nothing was changed");
+    }
   }
 
   /**

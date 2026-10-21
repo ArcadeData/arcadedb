@@ -23,6 +23,8 @@ import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.ContinuousAggregate;
+import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.RetryBackoff;
 
@@ -1337,6 +1339,11 @@ public class TimeSeriesEngine implements AutoCloseable {
               break;
             }
           }
+          // Inside the session, so the schema it publishes carries the record: a follower that becomes the leader refreshes the
+          // aggregates with it. After the shards, so a delete that removed nothing leaves the aggregates alone; a shard that failed
+          // may have removed samples its count does not include
+          if (deleted[0] > 0L || failedShard[0] >= 0)
+            invalidateContinuousAggregates(fromTs, toTs);
           return true;
         });
       }
@@ -1365,6 +1372,22 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (runtimeFailure[0] != null)
       throw runtimeFailure[0];
     return deleted[0];
+  }
+
+  /**
+   * Tells the continuous aggregates over this type that samples in {@code [fromTs, toTs]} were removed, so their next refresh
+   * recomputes the buckets of that range (issue #10428), and saves the schema that holds the record. Without it the buckets behind
+   * the watermark of an aggregate kept the samples for good.
+   */
+  private void invalidateContinuousAggregates(final long fromTs, final long toTs) {
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    boolean invalidated = false;
+    for (final ContinuousAggregate aggregate : schema.getContinuousAggregates())
+      // a range inside the one already recorded changes nothing the schema holds: no write for it
+      if (aggregate instanceof ContinuousAggregateImpl impl && typeName.equals(impl.getSourceTypeName()) && impl.invalidate(fromTs, toTs))
+        invalidated = true;
+    if (invalidated)
+      schema.saveConfiguration();
   }
 
   /**
