@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.security.SecurityGroupFileRepository;
+import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -107,6 +108,8 @@ class Issue10554BundledConfigDefaultsTest extends StaticBaseServerTest {
       final JSONObject builtIn = repository.createDefault();
 
       assertThat(builtIn.toMap()).isEqualTo(shipped.toMap());
+      // The shipped file is current, so the built-in default never goes through the version migration
+      assertThat(builtIn.getInt("version")).isEqualTo(ServerSecurity.LATEST_VERSION);
       assertThat(builtIn.getJSONObject("databases").getJSONObject("*").getJSONObject("groups").has("readonly")).isTrue();
       // A fresh document each call: a caller editing it must not change the next default
       builtIn.getJSONObject("databases").remove("*");
