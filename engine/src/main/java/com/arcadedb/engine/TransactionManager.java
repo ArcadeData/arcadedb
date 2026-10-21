@@ -568,8 +568,9 @@ public class TransactionManager {
           injector.beforeSync(file);
         file.syncIfUnsynced();
       } catch (final IOException | RuntimeException e) {
-        // still owed: a later pass must not move walDurableSequence past these writes without flushing them
-        file.markUnsynced(false);
+        // still owed (syncIfUnsynced raised the file's flags again, metadata request included): a later pass must not move
+        // walDurableSequence past these writes without flushing them. The files after this one in the snapshot are still in
+        // the set, since a file leaves it only right before its own flush
         unsyncedWALFiles.add(file);
         throw e;
       }

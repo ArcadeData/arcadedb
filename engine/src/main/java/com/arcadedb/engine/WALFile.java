@@ -308,7 +308,13 @@ public class WALFile extends LockContext {
     final boolean metaData = syncMetaData;
     syncMetaData = false;
     if (open)
-      force(metaData);
+      try {
+        force(metaData);
+      } catch (final IOException | RuntimeException e) {
+        // still owed, with the metadata flush it asked for
+        markUnsynced(metaData);
+        throw e;
+      }
   }
 
   public synchronized void close() throws IOException {

@@ -231,7 +231,9 @@ public enum GlobalConfiguration {
       published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to the commits of a database \
       that is not replicated (embedded, or served by a single server) with the asynchronous page flush (the default): \
       the commits of an HA cluster go through the replication log and are not affected. The deferred appends go to two \
-      WAL files that alternate at each flush instead of the arcadedb.txWalFiles pool, so one flush covers them all""",
+      WAL files that alternate at each flush instead of the arcadedb.txWalFiles pool, so one flush covers them all and the \
+      next appends do not wait for it. With arcadedb.txWalFiles=1 there is one file only, and an append waits for a flush in \
+      progress on file systems that serialize them (APFS)""",
       Boolean.class, false),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
