@@ -471,11 +471,32 @@ public class LocalDocumentType implements DocumentType {
         // ALREADY REMOVED SUPER TYPE
         return null;
 
-      unlinkSuperType((LocalDocumentType) superType);
-      dropSubIndexesNoLongerCovered((LocalDocumentType) superType);
+      final LocalDocumentType former = (LocalDocumentType) superType;
+      final int position = superTypes.indexOf(former);
+      final int subPosition = former.subTypes.indexOf(this);
+      unlinkSuperType(former);
+      // ISSUE #10421: A REFUSAL BEFORE THE FIRST SUB-INDEX IS DROPPED PUTS THE LINK BACK, so the statement either completes or
+      // leaves the type as it found it. Nothing irreversible has happened until then: the link is the in-memory part
+      final boolean[] dropping = new boolean[1];
+      try {
+        dropSubIndexesNoLongerCovered(former, dropping);
+      } catch (final RuntimeException e) {
+        if (!dropping[0])
+          relinkSuperType(former, position, subPosition);
+        throw e;
+      }
       return null;
     });
     return this;
+  }
+
+  /** Puts back the link {@link #unlinkSuperType} severed, where it was (issue #10421). */
+  private void relinkSuperType(final LocalDocumentType superType, final int position, final int subPosition) {
+    superTypes.add(Math.min(position, superTypes.size()), superType);
+    superType.subTypes.add(Math.min(subPosition, superType.subTypes.size()), this);
+    superType.rebuildPolymorphicBucketsCache();
+    // THE INHERITED PROPERTIES CHANGED BACK
+    schema.typesChanged();
   }
 
   /**
@@ -499,7 +520,7 @@ public class LocalDocumentType implements DocumentType {
    * recomputed, never subtracted from the detached subtree. That is the same rule and the same reason as there: in a
    * diamond, a bucket the former super type still reaches through another surviving path must keep its sub-index.
    */
-  private void dropSubIndexesNoLongerCovered(final LocalDocumentType formerSuperType) {
+  private void dropSubIndexesNoLongerCovered(final LocalDocumentType formerSuperType, final boolean[] dropping) {
     if (schema.isTypeBeingDropped())
       // A dropType cascade severs this link only to re-parent the surviving sub types onto the same super type a
       // few lines later, re-linking them with createIndexes=false because their components are still attached. The
@@ -513,8 +534,22 @@ public class LocalDocumentType implements DocumentType {
     final Set<TypeIndex> affectedWrappers = Collections.newSetFromMap(new IdentityHashMap<>());
     collectSubIndexesNoLongerCovered(formerSuperType, new HashSet<>(), orphans, affectedWrappers);
 
-    for (final String indexName : orphans)
-      schema.dropIndex(indexName);
+    // ISSUE #10421: THE FILES OF THE SUB-INDEXES TO DROP ARE PROBED AND LOCKED BEFORE THE FIRST OF THEM IS DROPPED, so a refusal
+    // leaves every one of them in place (the caller puts the link back). `dropping` says the first drop has started
+    final List<Integer> fileIds = new ArrayList<>();
+    for (final String indexName : orphans) {
+      final IndexInternal orphan = schema.lookupIndex(indexName);
+      if (orphan != null)
+        fileIds.addAll(orphan.getFileIds());
+    }
+    schema.requireFilesCanBeDeleted("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds);
+
+    ((DatabaseInternal) schema.getDatabase()).executeLockingFiles(fileIds, () -> {
+      dropping[0] = true;
+      for (final String indexName : orphans)
+        schema.dropIndex(indexName);
+      return null;
+    });
 
     // A wrapper whose LAST sub-index was one of the orphans has to leave its owner's index list too, or the next
     // schema serialization asks an empty TypeIndex for its property names and fails. LocalSchema's own leaf-drop
@@ -2687,6 +2722,23 @@ public class LocalDocumentType implements DocumentType {
       throw new SchemaException("Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name
           + "', because the bucket is not associated to the type '" + getName() + "'");
 
+    // ISSUE #10421: THE SUB-INDEXES ON THE BUCKET ARE DROPPED AFTER IT IS DETACHED, and a refusal from one of them left the
+    // bucket detached with the sub-indexes before it gone and the ones after it pointing at a bucket the type no longer has.
+    // Their files are probed, and their locks taken once, BEFORE anything changes; the drops below re-acquire what is held
+    final List<Integer> subIndexFiles = new ArrayList<>();
+    for (final TypeIndex idx : getAllIndexes(true))
+      for (final IndexInternal subIndex : idx.getIndexesOnBuckets())
+        if (subIndex.getAssociatedBucketId() == bucket.getFileId())
+          subIndexFiles.addAll(subIndex.getFileIds());
+    schema.requireFilesCanBeDeleted("remove the bucket '" + bucket.getName() + "' from the type '" + name + "'", subIndexFiles);
+
+    ((DatabaseInternal) schema.getDatabase()).executeLockingFiles(subIndexFiles, () -> {
+      detachBucketAndDropItsSubIndexes(bucket);
+      return null;
+    });
+  }
+
+  private void detachBucketAndDropItsSubIndexes(final Bucket bucket) {
     // Symmetric to addBucketInternal: shrinking the bucket count under a partitioned strategy
     // also invalidates the modulus. Skip on an empty type so a no-op rebuild isn't requested
     // and a needless schema save isn't triggered. Use the typed setter so the

@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant {
   private final Database database;
@@ -60,6 +61,17 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * the schema is written with the flag this absence stood for.
    */
   private volatile boolean                needsCleanRebuild;
+  /**
+   * The time range samples of the source type were removed from since the buckets of the aggregate were last computed, or
+   * {@code null} when none were (issue #10428). The refresh only recomputes the bucket open at the watermark and the newer ones, so
+   * the buckets behind the watermark keep what they held when they were computed; this is what tells it which of them no longer
+   * match the source. One range, the hull of every delete since: recomputing a bucket the delete did not reach gives the rows it
+   * already had, so a wider range costs time and never correctness.
+   * <p>
+   * Part of the definition in the schema, unlike {@link #needsCleanRebuild}: a restart must not forget it, and under HA it has to
+   * reach the followers in the replication unit of the delete (a follower promoted to leader would otherwise refresh without it).
+   */
+  private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
@@ -245,6 +257,49 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     static final Watermark UNSET = new Watermark(0, false);
   }
 
+  /**
+   * Samples with a timestamp in {@code [fromTs, toTs]} were removed from the source type (issue #10428). The bounds are the ones of
+   * the delete, not bucket boundaries: the refresh finds the buckets they reach in the backing type, which holds every bucket start
+   * the grid of the aggregate produced, whatever origin or offset the {@code ts.timeBucket()} of its query gives it.
+   */
+  public record Invalidation(long fromTs, long toTs) {
+    Invalidation merge(final Invalidation other) {
+      return other == null ? this : new Invalidation(Math.min(fromTs, other.fromTs), Math.max(toTs, other.toTs));
+    }
+  }
+
+  /**
+   * Records that samples in {@code [fromTs, toTs]} of the source type were removed, so the next refresh recomputes the buckets they
+   * were in. The caller persists the schema (inside the replication unit of the delete, under HA).
+   */
+  public void invalidate(final long fromTs, final long toTs) {
+    final Invalidation added = new Invalidation(fromTs, toTs);
+    invalidation.updateAndGet(current -> added.merge(current));
+  }
+
+  /** The range recorded by {@link #invalidate}, or {@code null} when the buckets of the aggregate all match the source. */
+  public Invalidation getInvalidation() {
+    return invalidation.get();
+  }
+
+  /**
+   * Forgets {@code recomputed}, the range a refresh has just recomputed. A no-op when another delete widened the record meanwhile:
+   * that one is recomputed by the next refresh.
+   */
+  void clearInvalidation(final Invalidation recomputed) {
+    invalidation.compareAndSet(recomputed, null);
+  }
+
+  /** Puts back a range whose clearing could not be persisted, with whatever was recorded since. */
+  void restoreInvalidation(final Invalidation recomputed) {
+    invalidation.updateAndGet(current -> recomputed.merge(current));
+  }
+
+  /** The width of one bucket, for the refresh to bound the buckets a range reaches. */
+  long bucketIntervalMs() {
+    return bucketIntervalMs;
+  }
+
   public void setLastRefreshTime(final long lastRefreshTime) {
     this.lastRefreshTime = lastRefreshTime;
   }
@@ -336,6 +391,11 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     final Watermark currentWatermark = watermark;
     json.put("watermarkTs", currentWatermark.timestamp());
     json.put("watermarkSet", currentWatermark.set());
+    final Invalidation pending = invalidation.get();
+    if (pending != null) {
+      json.put("invalidatedFromTs", pending.fromTs());
+      json.put("invalidatedToTs", pending.toTs());
+    }
     json.put("lastRefreshTime", lastRefreshTime);
     json.put("status", status.name());
     return json;
@@ -366,6 +426,8 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     // the aggregate per refresh that has run. Resuming normally would add one more, so the next refresh rebuilds
     // from empty instead - which repairs the existing duplication rather than merely declining to add to it.
     ca.needsCleanRebuild = legacy && loadedWatermarkTs == 0;
+    if (json.has("invalidatedFromTs") && json.has("invalidatedToTs"))
+      ca.invalidation.set(new Invalidation(json.getLong("invalidatedFromTs"), json.getLong("invalidatedToTs")));
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return ca;

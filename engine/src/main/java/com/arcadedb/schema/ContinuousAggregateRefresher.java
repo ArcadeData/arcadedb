@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
@@ -26,7 +27,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 
@@ -61,6 +64,9 @@ public class ContinuousAggregateRefresher {
       // A pre-#8152 schema whose watermark is the ambiguous 0 brings its duplicate rows with it - see
       // ContinuousAggregateImpl.needsCleanRebuild. This one refresh starts from an empty backing type.
       final boolean cleanRebuild = ca.needsCleanRebuild();
+      // #10428: the range samples were removed from since the buckets behind the watermark were computed. Read once: a delete
+      // that widens it while this refresh runs makes the clearing below a no-op, and the next refresh recomputes the wider range
+      final ContinuousAggregateImpl.Invalidation invalidated = ca.getInvalidation();
 
       // Validate interpolated names to prevent backtick injection
       if (!SAFE_COLUMN_NAME.matcher(backingTypeName).matches())
@@ -82,6 +88,11 @@ public class ContinuousAggregateRefresher {
         // attempt because they are declared inside the lambda; this one has to be told.
         advancedWatermark[0] = null;
 
+        // #10428: the buckets behind the watermark that a delete reached. A refresh that rebuilds everything (no watermark yet,
+        // or a clean rebuild) recomputes them below anyway
+        if (invalidated != null && watermarkSet && !cleanRebuild)
+          recomputeInvalidatedBuckets(database, ca, invalidated, watermark);
+
         // Delete rows in the current (possibly incomplete) bucket and all newer buckets. #8152: the guard used to be
         // `watermark > 0`, which skipped the delete for an aggregate legitimately anchored at the epoch and let that
         // one bucket gain a duplicate on every refresh.
@@ -100,12 +111,7 @@ public class ContinuousAggregateRefresher {
         try (final ResultSet rs = database.query("sql", filteredQuery)) {
           while (rs.hasNext()) {
             final Result result = rs.next();
-            final MutableDocument doc = database.newDocument(backingTypeName);
-            for (final String prop : result.getPropertyNames()) {
-              if (!prop.startsWith("@"))
-                doc.set(prop, result.getProperty(prop));
-            }
-            doc.save();
+            saveRow(database, backingTypeName, result);
 
             // Track maximum bucket timestamp for advancing watermark
             final Object bucketVal = result.getProperty(bucketColumn);
@@ -128,6 +134,9 @@ public class ContinuousAggregateRefresher {
       // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
       if (advancedWatermark[0] != null)
         ca.setWatermarkTs(advancedWatermark[0]);
+      // ... and the buckets of the invalidated range are recomputed, so the record of it can go (see saveConfiguration below)
+      if (invalidated != null)
+        ca.clearInvalidation(invalidated);
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       ca.recordRefreshSuccess(durationMs);
       ca.updateLastRefreshTime();
@@ -138,7 +147,7 @@ public class ContinuousAggregateRefresher {
       // so the next refresh re-processes the same window (delete-first design makes it safe).
       // A clean rebuild must persist even if it found no rows to advance the watermark with, so the repair is not
       // repeated on every restart.
-      if (advancedWatermark[0] != null || cleanRebuild) {
+      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();
@@ -146,6 +155,9 @@ public class ContinuousAggregateRefresher {
           // #8152: restore the FLAG too. setWatermarkTs(watermark) would have left the aggregate claiming a
           // watermark of 0 it never had, which the next refresh would then honour by deleting nothing.
           ca.restoreWatermark(watermark, watermarkSet);
+          // #10428: and the range, which the next refresh recomputes again (the recompute deletes before it inserts)
+          if (invalidated != null)
+            ca.restoreInvalidation(invalidated);
           throw saveEx;
         }
       }
@@ -169,6 +181,101 @@ public class ContinuousAggregateRefresher {
   }
 
   /**
+   * Refreshes, once the current transaction commits, every continuous aggregate whose source is {@code sourceTypeName}: the
+   * statements that change the samples of a TimeSeries type outside the append of {@code INSERT} (issue #10428) are not part of the
+   * transaction they run in, so with none open the aggregates are refreshed at once. A failing refresh is logged, never raised: the
+   * statement that scheduled it did its own work.
+   */
+  public static void refreshAggregatesOver(final DatabaseInternal database, final String sourceTypeName) {
+    final ContinuousAggregate[] aggregates = database.getSchema().getContinuousAggregates();
+    if (aggregates.length == 0)
+      return;
+
+    final boolean inTransaction = database.isTransactionActive();
+    for (final ContinuousAggregate aggregate : aggregates) {
+      if (!sourceTypeName.equals(aggregate.getSourceTypeName()))
+        continue;
+      final ContinuousAggregateImpl impl = (ContinuousAggregateImpl) aggregate;
+      final Runnable refresh = () -> {
+        try {
+          incrementalRefresh(database, impl);
+        } catch (final Exception e) {
+          LogManager.instance().log(ContinuousAggregateRefresher.class, Level.WARNING,
+              "Error refreshing continuous aggregate '%s' after a change of its source type '%s': %s", e, impl.getName(),
+              sourceTypeName, e.getMessage());
+        }
+      };
+      if (inTransaction)
+        database.getTransaction().addAfterCommitCallbackIfAbsent("ca-refresh:" + impl.getName(), refresh);
+      else
+        refresh.run();
+    }
+  }
+
+  /**
+   * Recomputes the buckets samples were removed from (issue #10428): deletes their rows from the backing type and runs the defining
+   * query over the samples of exactly those buckets. Only the buckets behind the watermark are looked at, the ones at or after it
+   * are deleted and recomputed by the refresh anyway.
+   * <p>
+   * The buckets are found in the backing type rather than computed from the interval: it holds the start of every bucket the grid of
+   * the aggregate produced, whatever origin, offset or timezone its {@code ts.timeBucket()} gives it, and a bucket start worked out
+   * from the interval alone would be unaligned on any grid but the epoch's, and recompute its first bucket from a part of its
+   * samples. A bucket that has no row has nothing to correct: a delete cannot add samples to it. The buckets a range reaches are
+   * consecutive on the grid, so the rows between the first and the last are all of them.
+   */
+  private static void recomputeInvalidatedBuckets(final Database database, final ContinuousAggregateImpl ca,
+      final ContinuousAggregateImpl.Invalidation invalidated, final long watermark) {
+    final String backingTypeName = ca.getBackingTypeName();
+    final String bucketColumn = ca.getBucketColumn();
+    final long interval = ca.bucketIntervalMs();
+
+    // A bucket starting at b holds the samples in [b, b + interval): it reaches the range when b <= toTs and b + interval > fromTs
+    final StringBuilder where = new StringBuilder("`" + bucketColumn + "` < ?");
+    final List<Object> params = new ArrayList<>(3);
+    params.add(new Date(watermark));
+    if (invalidated.toTs() < watermark) {
+      where.append(" AND `").append(bucketColumn).append("` <= ?");
+      params.add(new Date(invalidated.toTs()));
+    }
+    if (interval > 0 && invalidated.fromTs() > Long.MIN_VALUE + interval) {
+      where.append(" AND `").append(bucketColumn).append("` > ?");
+      params.add(new Date(invalidated.fromTs() - interval));
+    }
+
+    final long first;
+    final long last;
+    try (final ResultSet rs = database.query("sql",
+        "SELECT min(`" + bucketColumn + "`) AS first, max(`" + bucketColumn + "`) AS last FROM `" + backingTypeName + "` WHERE " + where,
+        params.toArray())) {
+      final Result row = rs.next();
+      final Object firstValue = row.getProperty("first");
+      final Object lastValue = row.getProperty("last");
+      if (firstValue == null || lastValue == null)
+        return;
+      first = toEpochMs(firstValue, bucketColumn, ca.getName());
+      last = toEpochMs(lastValue, bucketColumn, ca.getName());
+    }
+
+    database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?",
+        new Date(first), new Date(last));
+
+    final long end = interval > 0 ? Math.min(last + interval, watermark) : watermark;
+    try (final ResultSet rs = database.query("sql", buildRangeQuery(ca, first, end))) {
+      while (rs.hasNext())
+        saveRow(database, backingTypeName, rs.next());
+    }
+  }
+
+  private static void saveRow(final Database database, final String backingTypeName, final Result result) {
+    final MutableDocument doc = database.newDocument(backingTypeName);
+    for (final String prop : result.getPropertyNames()) {
+      if (!prop.startsWith("@"))
+        doc.set(prop, result.getProperty(prop));
+    }
+    doc.save();
+  }
+
+  /**
    * The defining query with the incremental filter applied, or the query unchanged when no watermark has been set
    * yet. #8152: {@code watermarkSet} is a separate argument and NOT {@code watermark > 0}, because an aggregate
    * anchored at the epoch has a watermark of 0 that must still be filtered on.
@@ -176,13 +283,27 @@ public class ContinuousAggregateRefresher {
   static String buildFilteredQuery(final ContinuousAggregateImpl ca, final long watermark, final boolean watermarkSet) {
     if (!watermarkSet)
       return ca.getQuery();
+    return spliceTimeFilter(ca, watermark, null);
+  }
 
+  /**
+   * The defining query restricted to the samples with {@code fromTs <= ts < toTs} (issue #10428), which is the buckets of that range
+   * when both ends are bucket boundaries.
+   */
+  static String buildRangeQuery(final ContinuousAggregateImpl ca, final long fromTs, final long toTs) {
+    return spliceTimeFilter(ca, fromTs, toTs);
+  }
+
+  /** The query with {@code ts >= fromTs}, and {@code ts < toTs} when it is not {@code null}, spliced into its WHERE clause. */
+  private static String spliceTimeFilter(final ContinuousAggregateImpl ca, final long fromTs, final Long toTs) {
     final String query = ca.getQuery();
     final String tsColumn = ca.getTimestampColumn();
 
     // Validate column name to prevent backtick injection
     if (!SAFE_COLUMN_NAME.matcher(tsColumn).matches())
       throw new IllegalArgumentException("Unsafe timestamp column name: '" + tsColumn + "'");
+
+    final String filter = "`" + tsColumn + "` >= " + fromTs + (toTs != null ? " AND `" + tsColumn + "` < " + toTs : "");
 
     // Find WHERE clause position at the outermost level (case-insensitive).
     // Note: CTEs and subqueries with their own WHERE clauses are not supported
@@ -203,7 +324,7 @@ public class ContinuousAggregateRefresher {
       final String after = query.substring(whereEnd);
       // #8251: strip() drops the newline that ends a trailing line comment, which would then swallow the closing
       // bracket and every clause pasted back after it. Such a predicate gets its bracket on a line of its own.
-      return before + " `" + tsColumn + "` >= " + watermark + " AND (" + predicate + (endsInsideLineComment(predicate) ? "\n)" : ")")
+      return before + " " + filter + " AND (" + predicate + (endsInsideLineComment(predicate) ? "\n)" : ")")
           + (after.isEmpty() ? "" : " " + after.stripLeading());
     } else {
       // No WHERE clause — insert before the first clause that can follow one, or at the end
@@ -211,11 +332,11 @@ public class ContinuousAggregateRefresher {
       if (insertIdx < query.length()) {
         final String before = query.substring(0, insertIdx);
         final String after = query.substring(insertIdx);
-        return before + "WHERE `" + tsColumn + "` >= " + watermark + " " + after;
+        return before + "WHERE " + filter + " " + after;
       }
       // #8251: a query ending in a line comment would comment the filter out, and the refresh would silently
       // re-aggregate every bucket, older ones included, next to the rows it already holds
-      return query + (endsInsideLineComment(query) ? "\n" : " ") + "WHERE `" + tsColumn + "` >= " + watermark;
+      return query + (endsInsideLineComment(query) ? "\n" : " ") + "WHERE " + filter;
     }
   }
 
