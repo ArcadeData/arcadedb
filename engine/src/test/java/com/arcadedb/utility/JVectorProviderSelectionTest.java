@@ -35,9 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * jvector chooses its provider once per JVM, so each case runs in a fresh JVM that prints the provider class it got. The
  * native provider needs Java 22+ and a Linux x86_64 or aarch64 jar resource; elsewhere (macOS, Windows, older Java) jvector
- * logs a warning and uses the Java Vector API, so the cases that ask for native expect {@code Native} where the platform
- * has it and {@code Panama} where it has not. Both outcomes are asserted, none is skipped. A host whose temp directory is
- * mounted noexec also gets {@code Panama}, because jvector cannot load its library from there.
+ * logs a warning and uses the Java Vector API. The cases that ask for native therefore accept {@code Native}, or {@code Panama}
+ * with jvector's logged load failure; the default-off cases always expect {@code Panama}. None is skipped.
  */
 class JVectorProviderSelectionTest {
   private static final String PANAMA = "PanamaVectorizationProvider";
@@ -59,7 +58,7 @@ class JVectorProviderSelectionTest {
 
   @Test
   void theSettingTurnsTheNativeProviderOn() throws Exception {
-    assertThat(providerWith("-Darcadedb.vectorIndex.nativeVectorization=true")).isEqualTo(expectedWhenNativeIsAsked());
+    assertNativeOrLoggedFallback("-Darcadedb.vectorIndex.nativeVectorization=true");
   }
 
   @Test
@@ -69,20 +68,19 @@ class JVectorProviderSelectionTest {
 
   @Test
   void anExplicitJVectorPropertyTurnsTheNativeProviderOn() throws Exception {
-    assertThat(providerWith("-Djvector.enable_native_vectorization=true")).isEqualTo(expectedWhenNativeIsAsked());
+    assertNativeOrLoggedFallback("-Djvector.enable_native_vectorization=true");
   }
 
   @Test
   void theDeprecatedJVectorAliasTurnsTheNativeProviderOn() throws Exception {
-    assertThat(providerWith("-Djvector.experimental.enable_native_vectorization=true")).isEqualTo(expectedWhenNativeIsAsked());
+    assertNativeOrLoggedFallback("-Djvector.experimental.enable_native_vectorization=true");
   }
 
   @Test
   void anExplicitJVectorPropertyWinsOverTheSetting() throws Exception {
     assertThat(providerWith("-Darcadedb.vectorIndex.nativeVectorization=true", "-Djvector.enable_native_vectorization=false"))
         .isEqualTo(PANAMA);
-    assertThat(providerWith("-Darcadedb.vectorIndex.nativeVectorization=false", "-Djvector.enable_native_vectorization=true"))
-        .isEqualTo(expectedWhenNativeIsAsked());
+    assertNativeOrLoggedFallback("-Darcadedb.vectorIndex.nativeVectorization=false", "-Djvector.enable_native_vectorization=true");
   }
 
   @Test
@@ -91,8 +89,18 @@ class JVectorProviderSelectionTest {
         .isEqualTo(PANAMA);
   }
 
-  private static String expectedWhenNativeIsAsked() {
-    return nativeProviderSupportedHere() ? NATIVE : PANAMA;
+  /**
+   * The property asks for the native provider. It gets it when jvector can load its library; where it cannot (noexec temp
+   * directory, missing permission, unsupported CPU tier, a platform without the library) jvector logs "Native vector API was
+   * not enabled" and uses Panama. Either is correct; a Panama result on a platform that has the provider must come with
+   * that log line, so the property being ignored is still caught.
+   */
+  private static void assertNativeOrLoggedFallback(final String... jvmArgs) throws Exception {
+    final String[] result = run(jvmArgs);
+    assertThat(result[0]).isIn(NATIVE, PANAMA);
+    if (result[0].equals(PANAMA) && nativeProviderSupportedHere())
+      assertThat(result[1]).as("Panama although native was asked for, with no load failure logged").contains(
+          "Native vector API was not enabled");
   }
 
   /**
@@ -107,6 +115,13 @@ class JVectorProviderSelectionTest {
   }
 
   private static String providerWith(final String... jvmArgs) throws Exception {
+    return run(jvmArgs)[0];
+  }
+
+  /**
+   * Returns the provider class name and the child's whole output.
+   */
+  private static String[] run(final String... jvmArgs) throws Exception {
     final List<String> command = new ArrayList<>();
     command.add(System.getProperty("java.home") + File.separator + "bin" + File.separator + "java");
     command.add("--add-modules");
@@ -131,8 +146,8 @@ class JVectorProviderSelectionTest {
       }
       final String text = Files.readString(output.toPath(), StandardCharsets.UTF_8);
       assertThat(process.exitValue()).as(text).isZero();
-      return text.lines().filter(l -> l.startsWith("PROVIDER=")).map(l -> l.substring("PROVIDER=".length())).findFirst()
-          .orElseThrow(() -> new AssertionError("no provider printed: " + text));
+      return new String[] { text.lines().filter(l -> l.startsWith("PROVIDER=")).map(l -> l.substring("PROVIDER=".length()))
+          .findFirst().orElseThrow(() -> new AssertionError("no provider printed: " + text)), text };
     } finally {
       output.delete();
     }
