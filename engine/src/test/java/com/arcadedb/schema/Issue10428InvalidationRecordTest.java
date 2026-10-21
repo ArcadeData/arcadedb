@@ -75,6 +75,35 @@ class Issue10428InvalidationRecordTest extends TestHelper {
   }
 
   @Test
+  void aRefreshAskedForWhileAnotherRunsWithNothingToRecomputeIsSkippedAsItAlwaysWas() {
+    final ContinuousAggregateImpl aggregate = newAggregate();
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    try {
+      // an append: the refresh in progress or the next append picks its rows up, so the INSERT path asks for nothing more
+      ContinuousAggregateRefresher.incrementalRefresh(database, aggregate);
+
+      assertThat(aggregate.isRefreshRequested()).isFalse();
+    } finally {
+      aggregate.endRefresh();
+    }
+  }
+
+  @Test
+  void aRefreshAskedForWhileAnotherRunsWithARangeToRecomputeIsRemembered() {
+    final ContinuousAggregateImpl aggregate = newAggregate();
+    aggregate.invalidate(100, 200);
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    try {
+      // a delete: the refresh in progress may have read the aggregate before it, so it has to run again when it ends
+      ContinuousAggregateRefresher.incrementalRefresh(database, aggregate);
+
+      assertThat(aggregate.isRefreshRequested()).isTrue();
+    } finally {
+      aggregate.endRefresh();
+    }
+  }
+
+  @Test
   void onlyARangeThatWidensTheRecordedOneNeedsTheSchemaToBeWritten() {
     final ContinuousAggregateImpl aggregate = newAggregate();
 

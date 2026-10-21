@@ -51,29 +51,48 @@ public class ContinuousAggregateRefresher {
   /**
    * Refreshes the aggregate, or has the refresh in progress do it when it ends. #10428: a refresh asked for while another one runs
    * used to be dropped, and the one running may have read the aggregate before the change that asked (a delete recording the range
-   * of buckets to recompute): the change then waited for the next refresh, which nothing may ask for. The request is remembered, and
-   * the refresh in progress runs again when it ends. A request is made BEFORE the attempt to begin, so one that arrives as the
-   * refresh in progress ends is either seen by it (it looks again after releasing the aggregate) or finds the aggregate free.
+   * of buckets to recompute): the change then waited for the next refresh, which nothing may ask for. When a range is waiting to be
+   * recomputed, the request is remembered and the refresh in progress runs again when it ends. A request that finds no range keeps
+   * the cheap skip it always had: the rows an append adds are at or after the watermark, and the refresh in progress or the next
+   * append picks them up.
+   * <p>
+   * The request is made BEFORE the second attempt to begin, so one that arrives as the refresh in progress ends is either seen by
+   * it (it looks again after releasing the aggregate) or finds the aggregate free.
    */
   public static void incrementalRefresh(final Database database, final ContinuousAggregateImpl ca) {
-    ca.requestRefresh();
     // The first pass is this caller's own; the others are for the requests that arrived while it ran, bounded so that one thread
     // (the committer of an INSERT, say) is not kept refreshing for as long as others keep asking. What is left over stays requested,
     // and the next caller runs it. The same holds when a refresh fails: the request made during it stays, and the next refresh
     // applies it
-    for (int pass = 0; pass <= MAX_FOLLOW_UP_REFRESHES && ca.isRefreshRequested(); pass++) {
+    for (int pass = 0; pass <= MAX_FOLLOW_UP_REFRESHES; pass++) {
       if (!ca.tryBeginRefresh()) {
-        LogManager.instance().log(ContinuousAggregateRefresher.class, Level.FINE,
-            "Concurrent refresh for continuous aggregate '%s' — already in progress, it runs again when it ends", null, ca.getName());
-        return;
-      }
-      // cleared once the aggregate is held and before anything is read: a request that arrives from here on is for the next run
-      ca.clearRefreshRequest();
+        if (ca.getInvalidation() != null) {
+          ca.requestRefresh();
+          // the refresh in progress may have ended since the attempt, and would not look at the request any more
+          if (ca.tryBeginRefresh())
+            ca.clearRefreshRequest();
+          else {
+            LogManager.instance().log(ContinuousAggregateRefresher.class, Level.FINE,
+                "Concurrent refresh for continuous aggregate '%s' — already in progress, it runs again when it ends", null,
+                ca.getName());
+            return;
+          }
+        } else {
+          LogManager.instance().log(ContinuousAggregateRefresher.class, Level.FINE,
+              "Skipping concurrent refresh for continuous aggregate '%s' — already in progress", null, ca.getName());
+          return;
+        }
+      } else
+        // cleared once the aggregate is held and before anything is read: a request that arrives from here on is for the next run
+        ca.clearRefreshRequest();
+
       try {
         refreshOnce(database, ca);
       } finally {
         ca.endRefresh();
       }
+      if (!ca.isRefreshRequested())
+        return;
     }
   }
 
@@ -247,6 +266,9 @@ public class ContinuousAggregateRefresher {
    * from the interval alone would be unaligned on any grid but the epoch's, and recompute its first bucket from a part of its
    * samples. A bucket that has no row has nothing to correct: a delete cannot add samples to it. The buckets a range reaches are
    * consecutive on the grid, so the rows between the first and the last are all of them.
+   * <p>
+   * It runs in the transaction of the refresh, so the buckets of a very wide range (two deletes far apart in time are one range, the
+   * hull of both) are one transaction of the size of that range.
    */
   private static void recomputeInvalidatedBuckets(final Database database, final ContinuousAggregateImpl ca,
       final ContinuousAggregateImpl.Invalidation invalidated, final long watermark) {
