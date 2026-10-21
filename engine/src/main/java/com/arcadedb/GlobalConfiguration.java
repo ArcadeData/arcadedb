@@ -233,7 +233,8 @@ public enum GlobalConfiguration {
       the commits of an HA cluster go through the replication log and are not affected. The deferred appends go to two \
       WAL files that alternate at each flush instead of the arcadedb.txWalFiles pool, so one flush covers them all and the \
       next appends do not wait for it. With arcadedb.txWalFiles=1 there is one file only, and an append waits for a flush in \
-      progress on file systems that serialize them (APFS)""",
+      progress on file systems that serialize them (APFS). The background page flush may also wait for, or run, a WAL \
+      flush before it writes a page, so on a slow disk the page flush follows the WAL flush latency""",
       Boolean.class, false),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,

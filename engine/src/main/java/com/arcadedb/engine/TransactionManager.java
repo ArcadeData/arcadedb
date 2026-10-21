@@ -521,8 +521,10 @@ public class TransactionManager {
    * durable without it - recovery would find a page version with the one before it missing.
    * <p>
    * The flushes are serialized, and that is the group commit: the commits that arrive while a flush runs wait for it, and
-   * the first of them to find none running flushes once for all of them. There is no timeout: a flush that hangs holds every
-   * commit waiting for it, as an fsync that hangs holds a commit without group commit.
+   * the first of them to find none running flushes once for all of them. A write that takes its ticket while a pass runs is
+   * not covered by that pass (its target was read at the start) and waits for the next one: up to two flushes of latency,
+   * the price of sharing them. There is no timeout: a flush that hangs holds every commit waiting for it, as an fsync that
+   * hangs holds a commit without group commit.
    */
   public void awaitWALDurable(final long ticket) throws IOException {
     boolean interrupted = false;
