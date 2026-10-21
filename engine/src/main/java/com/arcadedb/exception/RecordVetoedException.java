@@ -18,6 +18,7 @@
  */
 package com.arcadedb.exception;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 
 /**
@@ -45,6 +46,17 @@ public class RecordVetoedException extends ValidationException {
   /** The refusal of an update of an existing record. */
   public static RecordVetoedException ofUpdate(final String typeName, final RID rid) {
     return new RecordVetoedException("Cannot update record " + rid + " of type '" + typeName + "': a listener vetoed it");
+  }
+
+  /**
+   * The refusal of a new edge, worded the same by the embedded engine ({@code GraphEngine.newEdge}) and by the remote drivers
+   * ({@code vertex.newEdge}), so a caller reads one message whichever way the edge was asked for (issue #10373).
+   */
+  public static RecordVetoedException ofCreateEdge(final String edgeTypeName, final Identifiable fromVertex,
+      final Identifiable toVertex) {
+    return new RecordVetoedException("Cannot create edge of type '" + edgeTypeName + "' from "
+        + (fromVertex != null ? fromVertex.getIdentity() : null) + " to " + (toVertex != null ? toVertex.getIdentity() : null)
+        + ": a beforeCreate listener vetoed it");
   }
 
   /** The refusal of a delete of an existing record, raised by the remote drivers (issue #10230). */

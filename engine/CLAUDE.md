@@ -55,6 +55,14 @@ What is left for the placeholder is a page with **no free tail at all**. No inse
 
 The readers stay: existing databases are full of placeholders, and roughly ten branches across scan, check, delete, update, compaction and space accounting resolve them. Only the writer stopped producing new ones - and an existing placeholder converts to a chunk chain by itself the first time its content record can no longer absorb an update, because that rebuild goes through the very same spill branch.
 
+## A walk that follows adjacency entries without reading the edge must still ask whether the edge is there
+
+An adjacency entry is the pair (edge RID, far vertex RID), both inline in the segment, so a walk can follow it without loading a record, and so cannot notice a ghost: an entry whose edge record is gone. The engine's invariant (`GhostEdgeReporter`) is that a ghost is skipped and reported, which the walks that load the edge get for free through the `RecordNotFoundException` they catch. Every walk that does not load it has to ask, or the answer of a query depends on its projection (`RETURN DISTINCT b.name` against `RETURN DISTINCT b.name, size(r)`, #10149) and the anomaly is reported by one spelling only.
+
+The probe is `GhostEdgeReporter.isLiveEntry(database, edgeRid)`: the bucket answers from the slot table, no record is read, no READ_RECORD grant is asked (the edge is never handed out). **Pay it once per vertex reached, not once per entry**: test for a vertex met already first, which turns away most entries. `GraphTraverser.Neighbours` is that shape for the variable-length walks (`getEdges` with `edgesUnread` probes every entry, because each entry is a path there), and `path.subgraphNodes` does the same (#10148). A ghost must not spend the vertex it names: another, live, entry may reach it later.
+
+Not covered, on purpose: the fixed-length hop of an anonymous relationship, `getVertices()` and SQL `out()`, which follow the entry by contract (`PatternPredicateGhostEdgeTest` pins it, #8537).
+
 ## LSM index reads must walk newest to oldest at every level
 
 `LSMTreeIndexAbstract.lookupInPageAndAddInResultset` resolves deletions with a **forward-poisoning** `deletedRIDs` set: a tombstone adds its RID, and a live entry is skipped only if its RID is *already* in the set. A tombstone therefore suppresses only what is encountered **after** it in the walk.

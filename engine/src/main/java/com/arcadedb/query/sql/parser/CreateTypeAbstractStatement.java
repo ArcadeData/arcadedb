@@ -22,6 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
@@ -36,8 +38,6 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 
-import com.arcadedb.database.Identifiable;
-
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -49,6 +49,10 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public abstract class CreateTypeAbstractStatement extends DDLStatement {
+  /** What a statement that does not link a super type or build an index holds in place of a quiescence: nothing to release. */
+  private static final AsyncQuiesce NOTHING_TO_QUIESCE = () -> {
+  };
+
   /**
    * Class name
    */
@@ -91,6 +95,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   /**
    * Creates the type under {@code typeName}, the name this execution resolved - never read {@code name} for it, which still
    * holds a {@code $variable} as written.
+   * <p>
+   * Runs inside the one schema frame of the statement (issue #10147). A subclass whose creation builds an index must also override
+   * {@link #createsAnIndex()}: the index waits for the async workers to drain, which has to be asked before the frame is opened, or
+   * it stalls under the write lock until its timeout.
    */
   protected abstract DocumentType createType(Schema schema, String typeName);
 
@@ -107,6 +115,16 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    * every execution of its text, concurrent ones included. The resolution used to be written into the field and put back
    * on the success paths only, so a refused execution left the statement naming the type it had resolved, and an
    * overlapping execution could create the type another one resolved (issue #9741).
+   * <p>
+   * ONE SCHEMA PUBLICATION FOR THE WHOLE STATEMENT (issue #10147). Under Raft every outermost schema frame ships its own
+   * {@code SCHEMA_ENTRY}, and the create, each super type link, the index of a UNIQUE edge type and each CUSTOM value used to be a
+   * frame of their own: a composite openCypher label ({@code CREATE (n:A:B)}) was three entries, which a follower asking the leader
+   * for the type in a transaction that had already written read as somebody else's schema change, and a follower applying them saw the
+   * type appear without its super types and then gain them. The frame is the database write lock, taken once and held across them all.
+   * <p>
+   * The async quiescence is taken OUTSIDE it: it waits for the workers to drain, and the write lock is what a worker needs to commit
+   * its batch, so asked from inside the frame it would stall until its timeout. It is reentrant, so what {@code addSuperType} and the
+   * index builder ask for inside rides on this one. It is taken only when the statement does what needs it.
    */
   @Override
   public ResultSet executeDDL(final CommandContext context) {
@@ -120,6 +138,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       typeName = name.getStringValue();
 
     final Schema schema = context.getDatabase().getSchema();
+    // A fast path only: whether the type is there is decided again under the write lock, with the create
     if (schema.existsType(typeName)) {
       if (ifNotExists)
         return alreadyThere(context, typeName);
@@ -138,32 +157,75 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // Refused here, before anything is created, whenever the statement can already tell (#9846)
     checkSuperTypesBeforeCreate(typeName, superclasses);
 
-    // Taken before the create, and only for a statement that links super types, the one step that can refuse once the type exists
-    final Set<String> bucketsOfOthers = superclasses.length > 0 ? bucketsThatExistBeforeTheCreate(context, typeName) : Set.of();
-
-    final DocumentType type;
+    // Computed BEFORE the write lock, which must not wait on a user expression (a slow function or a subquery would hold every writer
+    // of the database). A value that cannot be computed is kept, not thrown yet: it refuses the statement only if the type is still to be
+    // created once the lock is taken, so a statement that lost the race for an IF NOT EXISTS type answers that it is there
+    Map<String, Object> computed = Map.of();
+    RuntimeException customRefusal = null;
     try {
-      type = createType(schema, typeName);
-    } catch (final TypeAlreadyExistsException e) {
-      // The check above and the create are two steps: another statement created the type in between, which is the only way
-      // they can disagree. IF NOT EXISTS has to hold against that too (issue #10067: two replicas asking the leader for the
-      // same new label at the same time), and the type that statement made is the answer
-      if (ifNotExists)
-        return alreadyThere(context, typeName);
-      throw e;
+      computed = evaluateCustomProperties(context);
+    } catch (final RuntimeException e) {
+      customRefusal = e;
     }
+    final Map<String, Object> custom = computed;
+    final RuntimeException refusedCustom = customRefusal;
+
+    // One schema publication for the whole statement, see above. The quiescence is outside the frame, the write lock is the frame
+    final DatabaseInternal database = context.getDatabase();
+    final boolean existed;
+    try (final AsyncQuiesce asyncPaused = superclasses.length > 0 || createsAnIndex() ? database.quiesceAsync() : NOTHING_TO_QUIESCE) {
+      existed = database.executeInWriteLock(() -> {
+        // The check at the top and the create are two steps, and another statement can create the type in between: asked again under
+        // the lock, so that nothing separates it from the create (issue #10067). The type that statement made is the answer, and a
+        // statement that has nothing to do opens no frame and publishes nothing
+        if (schema.existsType(typeName)) {
+          if (!ifNotExists)
+            throw new TypeAlreadyExistsException(typeName);
+          return true;
+        }
+        // A value that could not be computed refuses the statement here, for a type that is still to be created and before anything is
+        // created, so it leaves nothing behind
+        if (refusedCustom != null)
+          throw refusedCustom;
+        // Read under the same lock, only for a statement that links super types, the one step that can refuse once the type exists:
+        // a bucket a concurrent statement made between a snapshot taken before the lock and the create would be taken for the type's
+        // own by the take-back, which would drop its records
+        final Set<String> bucketsOfOthers = superclasses.length > 0 ? bucketsThatExistBeforeTheCreate(context, typeName) : Set.of();
+        schema.bulkChange(() -> createAndLink(schema, typeName, superclasses, bucketsOfOthers, custom));
+        return false;
+      });
+    }
+    if (existed)
+      return alreadyThere(context, typeName);
+
+    if (!custom.isEmpty())
+      result.setProperty("custom", custom);
+
+    return new InternalResultSet(result);
+  }
+
+  /**
+   * Creates the type, links its super types and applies its {@code CUSTOM} values, inside the one frame the caller opened.
+   * <p>
+   * A refusal only {@code addSuperType} (a partition the subtype cannot take, an index that cannot be propagated) or
+   * {@code setCustomValue} can know about comes once the type is registered, and a refused CREATE must leave nothing behind: the type
+   * is taken back, in the same frame, so the one publication carries the schema as it was. The buckets the type found or was given
+   * were somebody's or nobody's before the statement: they are detached first, so the drop does not take their records (issue
+   * #10394). The refusals that can be known beforehand are checked before the create ({@link #checkSuperTypesBeforeCreate}), which
+   * leaves no window at all.
+   */
+  private void createAndLink(final Schema schema, final String typeName, final DocumentType[] superclasses,
+      final Set<String> bucketsOfOthers, final Map<String, Object> custom) {
+    final DocumentType type = createType(schema, typeName);
 
     try {
       for (final DocumentType c : superclasses)
         type.addSuperType(c);
+
+      // Inside the same take-back: setting a value is a schema change of its own, and one that is refused leaves the type behind too
+      for (final Map.Entry<String, Object> entry : custom.entrySet())
+        type.setCustomValue(entry.getKey(), entry.getValue());
     } catch (final RuntimeException e) {
-      // The safety net for the refusals only addSuperType can know about (a partition the subtype cannot take, an index that
-      // cannot be propagated): the type is already registered by then, and a refused CREATE must leave nothing behind. This is a
-      // compensating drop, a second schema session, not an atomic undo: one frame around create plus link is not possible,
-      // because addSuperType waits for async quiescence OUTSIDE its frame (the write lock is what an async worker needs to
-      // commit), so holding the lock across it would stall. The refusals that can be known beforehand are checked before
-      // the create (checkSuperTypesBeforeCreate), which leaves no window at all. The buckets the type found or was given were
-      // somebody's or nobody's before the statement: they are detached first, so the drop does not take their records (issue #10394)
       try {
         for (final Bucket bucket : new ArrayList<>(type.getBuckets(false)))
           if (bucketsOfOthers.contains(bucket.getName()))
@@ -176,19 +238,24 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       }
       throw e;
     }
+  }
 
-    if (!customProperties.isEmpty()) {
-      final Map<String, Object> applied = new LinkedHashMap<>();
-      for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet()) {
-        final String key = entry.getKey().getStringValue();
-        final Object value = entry.getValue().execute((Identifiable) null, context);
-        type.setCustomValue(key, value);
-        applied.put(key, value);
-      }
-      result.setProperty("custom", applied);
-    }
+  /** The {@code CUSTOM} values of the statement, computed, in the order they were declared. */
+  private Map<String, Object> evaluateCustomProperties(final CommandContext context) {
+    if (customProperties.isEmpty())
+      return Map.of();
+    final Map<String, Object> evaluated = new LinkedHashMap<>();
+    for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet())
+      evaluated.put(entry.getKey().getStringValue(), entry.getValue().execute((Identifiable) null, context));
+    return evaluated;
+  }
 
-    return new InternalResultSet(result);
+  /**
+   * True when creating the type builds an index of its own (the unique constraint of a {@code UNIQUE} edge type), which, like linking
+   * a super type, waits for the async workers to drain and so has to be asked outside the schema frame.
+   */
+  protected boolean createsAnIndex() {
+    return false;
   }
 
   /**

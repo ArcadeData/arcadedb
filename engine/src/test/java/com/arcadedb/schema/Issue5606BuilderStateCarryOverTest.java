@@ -93,9 +93,8 @@ class Issue5606BuilderStateCarryOverTest extends TestHelper {
   /**
    * Additionally not settable, so {@link #everySettingIsActuallyConfiguredByThisTest} cannot expect them to differ
    * from a pristine builder's: the first two are structural and final, handed to the specialised builder from the source,
-   * and {@code built} (issue #9741) and {@code builtInCallerTransaction} (issue #10438) are not settings but the outcome
-   * of the builder's own {@code create()}, reset by every call - so a swapped builder starts with neither, exactly like a
-   * pristine one (issue #10465).
+   * and {@code built} and {@code builtInCallerTransaction} are not settings but the outcome of the builder's own
+   * {@code create()}, reset by every call (issues #9741, #10450).
    */
   private static final Set<String> NOT_CONFIGURABLE = Set.of("database", "indexImplementation", "built",
       "builtInCallerTransaction");

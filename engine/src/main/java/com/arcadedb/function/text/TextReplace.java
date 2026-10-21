@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -58,6 +59,6 @@ public class TextReplace extends AbstractTextFunction {
     if (search == null)
       return str;
 
-    return str.replace(search, replacement == null ? "" : replacement);
+    return CypherFunctionHelper.replaceLiteral(str, search, replacement == null ? "" : replacement);
   }
 }

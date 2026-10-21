@@ -49,7 +49,8 @@ import java.util.Set;
  * {@code appendBatch(long[], Object[][])} with a grid of its own. The JSONL importer was the third caller and the only one that
  * handed the engine the raw values of its source, so text for a typed column aborted the whole import; a fourth path would have
  * been in the same position, which {@code Issue10107AppendBatchCallersConvertTest} now rules out. The embedded async API was the
- * fourth (issue #10381): {@link #requireStorable} and {@link #requireConstraints} are its two doors, and the census now looks for
+ * fourth (issue #10381): the two {@code requireStorable} overloads, for a boxed grid and for a primitive source, are its two doors (the
+ * second held it only to the declared constraints until issue #10487), and the census now looks for
  * every entry point into the engine's storage, not for one method name.
  * <p>
  * <b>Shared tags.</b> A caller whose TAG values are the same on every row of the batch - Prometheus, where the labels belong to the
@@ -246,44 +247,71 @@ public final class TimeSeriesStorableRows {
   }
 
   /**
-   * Holds a primitive source - {@code DatabaseAsyncExecutor.appendSamples(String, TimeSeriesRowSource)} - to the constraints the
-   * type declares (issue #10381). The source carries values its columns can store by construction, so there is nothing to convert,
-   * and a type that declares no constraint, which is nearly every type, pays one null check and no read of the source. A type that
-   * does declare some reads every cell of the source once (a value boxed per cell) on the calling thread: the price of refusing a
-   * sample where the caller can see it.
+   * Holds a primitive source - {@code DatabaseAsyncExecutor.appendSamples(String, TimeSeriesRowSource)} - to what the type's columns
+   * can store and to the constraints the type declares (issues #10381, #10487). A source does NOT carry values its columns can
+   * store by construction: a text column takes whatever {@link TimeSeriesBatch#setString} was given, and a TAG or STRING text over
+   * {@link TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes failed inside the worker, with the whole batch, conforming rows
+   * included, and nobody to tell. The numeric and boolean cells are the ones the typed setters wrote, so they need no conversion;
+   * the text cells are read once each on the calling thread and held to the limit with the code every other surface uses
+   * ({@link ColumnDefinition#storableValue}).
+   * <p>
+   * A type with no text column and no declared constraint pays one pass over its columns and no read of the source. A type with a
+   * text column (nearly every type: a TAG is one) reads its text cells and nothing else, a length multiplication per cell for a
+   * short text; a type that declares constraints reads every cell of the source once (a value boxed per cell): the price of
+   * refusing a sample where the caller can see it.
+   * <p>
+   * All or nothing, as {@link #requireStorable(Database, LocalTimeSeriesType, TimeSeriesEngine, long[], Object[][])} is: a batch
+   * with one refused row is not appended at all.
    *
    * @throws ValidationException when a row is refused, naming every reason (at most
    *                             {@link TimeSeriesGateway#MAX_REPORTED_UNREADABLE_VALUES}); nothing is appended
    */
-  public static void requireConstraints(final Database database, final LocalTimeSeriesType type, final TimeSeriesRowSource source) {
+  public static void requireStorable(final Database database, final LocalTimeSeriesType type, final TimeSeriesRowSource source) {
     final TimeSeriesColumnConstraints constraints = TimeSeriesColumnConstraints.of(database, type);
-    if (constraints == null)
-      return;
 
     final List<ColumnDefinition> columns = type.getTsColumns();
     final ColumnDefinition[] valueColumns = new ColumnDefinition[columns.size() - 1];
     final byte[] kinds = new byte[valueColumns.length];
     ColumnDefinition timestampColumn = null;
+    boolean hasText = false;
     int next = 0;
     for (final ColumnDefinition column : columns)
       if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         timestampColumn = column;
       else {
-        kinds[next] = TimeSeriesBatch.kindOf(column.getDataType());
+        final byte kind = TimeSeriesBatch.kindOf(column.getDataType());
+        kinds[next] = kind;
+        hasText |= kind == TimeSeriesBatch.KIND_STRING || kind == TimeSeriesBatch.KIND_TEXT;
         valueColumns[next++] = column;
       }
+    if (constraints == null && !hasText)
+      return;
 
     final Set<String> unreadable = new LinkedHashSet<>();
     final int rows = source.size();
     int refused = 0;
     for (int row = 0; row < rows; row++) {
-      final long deadline = constraints.sampleDeadline();
-      String reason = constraints.checkTimestamp(source.getTimestamp(row), deadline);
+      final long deadline = constraints != null ? constraints.sampleDeadline() : 0L;
+      String reason = constraints != null ? constraints.checkTimestamp(source.getTimestamp(row), deadline) : null;
       if (reason != null)
         addReason(unreadable, type.getName(), timestampColumn, reason);
       else
         for (int c = 0; c < valueColumns.length && reason == null; c++) {
-          reason = constraints.check(c, storedValue(source, row, c, kinds[c]), deadline);
+          final boolean text = kinds[c] == TimeSeriesBatch.KIND_STRING || kinds[c] == TimeSeriesBatch.KIND_TEXT;
+          if (constraints == null && !text)
+            continue;
+          final Object value = storedValue(source, row, c, kinds[c]);
+          // The result of storableValue is dropped on purpose: the source keeps the text it holds, which is what the shard stores. That
+          // holds while storableValue only checks a STRING/TEXT value and never rewrites it (trims it, normalizes it); a rewrite would
+          // have to be applied to the source here, or what is validated would not be what is stored
+          if (text)
+            try {
+              valueColumns[c].storableValue(database, value);
+            } catch (final IllegalArgumentException e) {
+              reason = e.getMessage();
+            }
+          if (reason == null && constraints != null)
+            reason = constraints.check(c, value, deadline);
           if (reason != null)
             addReason(unreadable, type.getName(), valueColumns[c], reason);
         }

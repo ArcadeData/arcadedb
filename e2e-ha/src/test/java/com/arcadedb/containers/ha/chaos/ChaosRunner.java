@@ -132,8 +132,10 @@ public final class ChaosRunner {
     final int leaderBefore = control.findLeader();
     LOGGER.info("CHAOS step {} fault={} leader={} state={}", step, fault.name(), leaderBefore, state);
 
-    // Snapshot before inject: a reformat during the hold or the catch-up counts against the step
-    final NodeControl.InPlaceRestarts[] restartsBefore = fault.forbidsReformat() ? inPlaceRestarts() : null;
+    // Snapshot before inject: a reformat during the hold or the catch-up counts against the step. Taken for every fault, so a
+    // reformat is visible in the report even where the fault may cause one (issue #10159); only a fault that forbids it needs the
+    // counts to be readable
+    final NodeControl.InPlaceRestarts[] restartsBefore = inPlaceRestarts(fault.forbidsReformat());
     String targets = "(inject failed)";
     try {
       try {
@@ -202,67 +204,126 @@ public final class ChaosRunner {
       load.resume();
     }
 
+    // Read whatever the checkpoint found: a node that reformatted and then failed to converge is the case where the reformat is the
+    // most useful diagnostic. Before the step is written, so that its line carries the count
+    ReformatCensus census = ReformatCensus.NONE;
+    ChaosFailure countsFailure = null;
+    try {
+      census = reformatCensus(step, fault, restartsBefore);
+    } catch (final ChaosFailure e) {
+      countsFailure = e;
+      census = ReformatCensus.UNKNOWN;
+    }
     report.step(new StepRecord(step, fault.name(), targets, leaderBefore, leaderAfter, timeToLeaderMs,
         result.convergenceMillis(), ackedDuringHold, ledger.count(Ledger.ACKED) + ledger.count(Ledger.ACKED_LATE),
-        ledger.count(Ledger.UNKNOWN), ledger.count(Ledger.FAILED)));
+        ledger.count(Ledger.UNKNOWN), ledger.count(Ledger.FAILED), census.reformats()));
     if (trends != null)
       report.trend(trends.sample(step, acksPerSecond(), result.durationMillis()));
-    // Checked whatever the checkpoint found: a node that reformatted and then failed to converge is the case where the
-    // reformat is the most useful diagnostic
-    final Violation reformat;
-    try {
-      reformat = restartsBefore != null ? reformatViolation(step, fault, targets, restartsBefore) : null;
-    } catch (final ChaosFailure e) {
+    if (countsFailure != null) {
       // The counts come from each node's HTTP status since issue #9429, so a node the checkpoint already found broken
       // may not answer: its violations are the finding, and must not be replaced by a harness error about the counts
       if (result.violations().isEmpty())
-        throw e;
+        throw countsFailure;
       LOGGER.warn("CHAOS step {}: in-place restart counts unavailable, reporting the checkpoint violations: {}", step,
-          e.getMessage());
+          countsFailure.getMessage());
       return fromViolations(result.violations(), step);
     }
-    if (reformat == null)
+    // A reformat is a violation only where the fault gives no node a reason for one; elsewhere it is reported and the run goes on
+    if (census.reformats() <= 0 || !fault.forbidsReformat())
       return result.violations().isEmpty() ? null : fromViolations(result.violations(), step);
     final List<Violation> violations = new ArrayList<>(result.violations());
-    violations.add(reformat);
+    violations.add(new Violation(ResultKind.SAFETY, "REFORMAT",
+        "Raft storage reformatted during fault '" + fault.name() + "' " + targets + " (step " + step + "): " + census.nodes()
+            + "; the node should have caught up, or been recovered in place keeping its log", new long[0]));
     return fromViolations(violations, step);
   }
 
-  private NodeControl.InPlaceRestarts[] inPlaceRestarts() {
+  /**
+   * What the nodes did to their Raft storage during a step: {@code reformats} in all, {@code nodes} names them. UNKNOWN is a step whose
+   * counts could not be read, which is not the same as none: its line says so.
+   */
+  private record ReformatCensus(int reformats, String nodes) {
+    static final ReformatCensus NONE    = new ReformatCensus(0, "");
+    static final ReformatCensus UNKNOWN = new ReformatCensus(StepRecord.REFORMATS_UNKNOWN, "");
+  }
+
+  /**
+   * The in-place restart counts of every node, or null when they cannot be read and the caller can do without: a fault that may
+   * reformat is observed, not judged, so counts that do not come must not fail its step. A fault that forbids a reformat needs
+   * them, and a count that cannot be read never passes for zero (issue #9429).
+   */
+  private NodeControl.InPlaceRestarts[] inPlaceRestarts(final boolean required) {
     final NodeControl.InPlaceRestarts[] restarts = new NodeControl.InPlaceRestarts[state.size()];
-    for (int i = 0; i < restarts.length; i++)
-      restarts[i] = control.inPlaceRestarts(i);
+    try {
+      for (int i = 0; i < restarts.length; i++)
+        restarts[i] = control.inPlaceRestarts(i);
+    } catch (final ChaosFailure e) {
+      if (required)
+        throw e;
+      LOGGER.warn("CHAOS: in-place restart counts unavailable, a reformat in this step will not be reported: {}", e.getMessage());
+      return null;
+    }
     return restarts;
   }
 
   /**
-   * Logs which recovery path each node took during the step and returns a SAFETY violation when any node reformatted
-   * its Raft storage, which the fault gave it no reason to do (issue #8954). Every node is checked, not only the
-   * fault's targets, on purpose: with the rest of the cluster healthy no node has a legitimate reason to discard its log,
-   * so a leader or a bystander that reformats is as much a finding as the frozen follower.
+   * Logs which recovery path each node took during the step and counts the reformats of the Raft storage, which a fault that
+   * {@link Fault#forbidsReformat() forbids them} gave no node a reason for (issue #8954). Every node is checked, not only the
+   * fault's targets, on purpose: with the rest of the cluster healthy no node has a legitimate reason to discard its log, so a
+   * leader or a bystander that reformats is as much a finding as the frozen follower.
+   * <p>
+   * The counts are kept by the server process. A node the fault restarted counts from zero again, so for it the count after the
+   * step is the whole of what the step did; for any other node a count that went down is a restart nobody explains, and a reformat
+   * cannot be ruled out (a harness failure where the fault forbids one, and where it does not the step is reported as unknown, since
+   * what the node counts since its restart may hold the reformats of earlier steps).
    */
-  private Violation reformatViolation(final int step, final Fault fault, final String targets,
-      final NodeControl.InPlaceRestarts[] before) {
-    final NodeControl.InPlaceRestarts[] after = inPlaceRestarts();
+  private ReformatCensus reformatCensus(final int step, final Fault fault, final NodeControl.InPlaceRestarts[] before) {
+    if (before == null)
+      return ReformatCensus.UNKNOWN;
+    final boolean forbidden = fault.forbidsReformat();
+    final NodeControl.InPlaceRestarts[] after = inPlaceRestarts(forbidden);
+    if (after == null)
+      return ReformatCensus.UNKNOWN;
+
+    final boolean[] restarted = new boolean[after.length];
+    for (final int node : fault.restartedNodes(state))
+      if (node >= 0 && node < restarted.length)
+        restarted[node] = true;
+
+    int total = 0;
+    boolean unexplained = false;
     final StringBuilder reformatted = new StringBuilder();
     for (int i = 0; i < after.length; i++) {
-      final int recovered = after[i].recovered() - before[i].recovered();
-      final int reformats = after[i].reformatted() - before[i].reformatted();
-      if (recovered < 0 || reformats < 0)
-        throw new ChaosFailure(ResultKind.HARNESS,
-            "In-place restart count of node " + i + " went down during step " + step + " (" + before[i] + " -> " + after[i]
-                + "): the counts restart with the server process, so it restarted and a reformat cannot be ruled out");
+      int recovered = after[i].recovered();
+      int reformats = after[i].reformatted();
+      if (!restarted[i]) {
+        recovered -= before[i].recovered();
+        reformats -= before[i].reformatted();
+        if (recovered < 0 || reformats < 0) {
+          final String went = "In-place restart count of node " + i + " went down during step " + step + " (" + before[i] + " -> "
+              + after[i] + "): the counts restart with the server process, so it restarted and a reformat cannot be ruled out";
+          if (forbidden)
+            throw new ChaosFailure(ResultKind.HARNESS, went);
+          LOGGER.warn("CHAOS step {} fault={}: {}", step, fault.name(), went);
+          // The count since that restart may hold reformats of earlier steps, so it is not this step's: the step is not counted at all
+          unexplained = true;
+          continue;
+        }
+      }
       if (recovered > 0 || reformats > 0)
         LOGGER.info("CHAOS step {} fault={}: node {} restarted Ratis in place {} time(s) keeping its storage, {} time(s) reformatting it",
             step, fault.name(), i, recovered, reformats);
-      if (reformats > 0)
+      if (reformats > 0) {
+        total += reformats;
         reformatted.append(reformatted.isEmpty() ? "" : ", ").append("node ").append(i).append(" x").append(reformats);
+      }
     }
-    if (reformatted.isEmpty())
-      return null;
-    return new Violation(ResultKind.SAFETY, "REFORMAT",
-        "Raft storage reformatted during fault '" + fault.name() + "' " + targets + " (step " + step + "): " + reformatted
-            + "; the node should have caught up, or been recovered in place keeping its log", new long[0]);
+    if (unexplained)
+      return ReformatCensus.UNKNOWN;
+    if (total > 0 && !forbidden)
+      LOGGER.warn("CHAOS step {} fault={}: {} reformat(s) of the Raft storage ({}), which this fault may cause, so the step stands", step,
+          fault.name(), total, reformatted);
+    return total == 0 ? ReformatCensus.NONE : new ReformatCensus(total, reformatted.toString());
   }
 
   /**

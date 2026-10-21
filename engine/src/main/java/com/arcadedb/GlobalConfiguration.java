@@ -134,7 +134,11 @@ public enum GlobalConfiguration {
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
-        PageManager.INSTANCE.configure();
+        // THE STARTUP PASS IS NOT A LIVE CHANGE: THE FIRST ContextConfiguration OF AN EMBEDDED JVM IS CREATED BY
+        // PageManager.startup(), AFTER ITS REFERENCE COUNT WENT UP FOR THE DATABASE BEING OPENED, SO configure() WOULD
+        // WARN THAT THE PROFILE WAS "PARTIALLY applied" FOR A DATABASE THAT WAS OPENED AFTER IT (#10446)
+        if (!readingConfiguration)
+          PageManager.INSTANCE.configure();
 
       } else if ("low-cpu".equalsIgnoreCase(v)) {
         ASYNC_WORKER_THREADS.setValue(1);
@@ -221,6 +225,21 @@ public enum GlobalConfiguration {
   TX_WAL_FLUSH("arcadedb.txWalFlush", SCOPE.DATABASE,
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
+
+  TX_WAL_GROUP_COMMIT("arcadedb.txWalGroupCommit", SCOPE.DATABASE, """
+      With arcadedb.txWalFlush 1 or 2, moves the flush of the WAL out of the commit's file locks and shares it between the \
+      transactions committing at the same time: a commit still returns only once its WAL is on disk, but one flush covers \
+      every commit that was waiting for one, where each used to flush on its own while holding the locks of the files it \
+      wrote, which serialized every commit on the same type behind the disk's flush time. A page never reaches its data \
+      file before the WAL that describes it. The transaction is visible to other transactions from the moment it is \
+      published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to the commits of a database \
+      that is not replicated (embedded, or served by a single server) with the asynchronous page flush (the default): \
+      the commits of an HA cluster go through the replication log and are not affected. The deferred appends go to two \
+      WAL files that alternate at each flush instead of the arcadedb.txWalFiles pool, so one flush covers them all and the \
+      next appends do not wait for it. With arcadedb.txWalFiles=1 there is one file only, and an append waits for a flush in \
+      progress on file systems that serialize them (APFS). The background page flush may also wait for, or run, a WAL \
+      flush before it writes a page, so on a slow disk the page flush follows the WAL flush latency""",
+      Boolean.class, false),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
@@ -1682,7 +1701,8 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
-      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
+      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user. "
+          + "With HA enabled and no arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath, the cluster token is derived from this password",
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
@@ -3463,6 +3483,10 @@ public enum GlobalConfiguration {
   // class, which already carries the happens-before edge.
   private static boolean                        readingConfiguration;
   private static boolean                        dumpPending;
+  // Issue #10446: the settings written since the startup pass began, so the pass can tell a value an earlier setting's
+  // callback chose (the profile's) from the compiled-in default. Only non-null while readConfiguration() runs, and
+  // created there rather than here for the reason above.
+  private static Set<GlobalConfiguration>       assignedDuringPass;
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
@@ -3923,6 +3947,7 @@ public enum GlobalConfiguration {
     // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
     // semantics) and tests, but a future "reload configuration" entry point must not have to rediscover that.
     readingConfiguration = true;
+    assignedDuringPass = EnumSet.noneOf(GlobalConfiguration.class);
     try {
       for (final GlobalConfiguration config : values()) {
         String source = "system property";
@@ -3937,6 +3962,7 @@ public enum GlobalConfiguration {
       }
     } finally {
       readingConfiguration = false;
+      assignedDuringPass = null;
     }
 
     // Issue #7281: the dump describes the configuration this pass PRODUCED. Firing it from the callback, as the
@@ -4004,8 +4030,21 @@ public enum GlobalConfiguration {
    * @param source what to name as its origin when reporting a value that cannot be read
    */
   void applyConfigurationSource(final String prop, final String source) {
-    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null)
+    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null
+        && !assignedEarlierInPass())
       setValue(callbackIfNoSet.call(null));
+  }
+
+  /**
+   * Issue #10446: whether an earlier setting of the startup pass already chose this one's value. The profile does, for
+   * the settings it lists, and they come after {@code PROFILE} in the enum: without this the computed default of
+   * {@code arcadedb.maxPageRAM} (a quarter of the heap) overwrote the profile's 16 MB under {@code -Darcadedb.profile=low-ram}.
+   * The precedence is an explicit property or variable, then the profile, then the computed default. The first needs no
+   * test here, since a value that was read is applied after the profile and so replaces it.
+   */
+  private boolean assignedEarlierInPass() {
+    final Set<GlobalConfiguration> assigned = assignedDuringPass;
+    return readingConfiguration && assigned != null && assigned.contains(this);
   }
 
   /**
@@ -4469,6 +4508,10 @@ public enum GlobalConfiguration {
       value = invokeCallback(value);
 
       checkAllowed(value);
+
+      final Set<GlobalConfiguration> assigned = assignedDuringPass;
+      if (readingConfiguration && assigned != null)
+        assigned.add(this);
 
     } catch (final Exception e) {
       // RESTORE THE PREVIOUS VALUE - INCLUDING WHETHER THERE WAS ONE. A WRITE THAT WAS ROLLED BACK IS NOT A CHOICE

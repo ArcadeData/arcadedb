@@ -3305,7 +3305,7 @@ public class LocalDocumentType implements DocumentType {
         // records they describe.
         database.transaction(() -> {
           for (final Index subIndex : toBuild)
-            IndexBuilder.buildCreatedIndex(subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
+            IndexBuilder.buildCreatedIndex(database, subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
         }, true);
     } catch (final RuntimeException e) {
       // The indexes and the LINK are both handed back by the caller's guard around the whole post-linkage region, not

@@ -46,7 +46,10 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.File;
 import java.io.IOException;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -81,7 +84,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   // Volatile reference to an immutable-by-convention snapshot: readers (authenticate on Undertow worker
   // threads) grab the current map lock-free, while loadUsers/applyReplicatedUsers build a fresh map and
   // publish it in one atomic reference swap so a read never observes a clear()->repopulate empty window.
+  // Every writer REPLACES the map, never edits it in place (issue #10460): the users watcher publishes a file it read
+  // with a compare-and-set against the map it saw before reading (USERS), so a change installed after its read -
+  // replicated on the lock-free Raft apply thread, or local - makes that publish fail rather than be reverted by it.
   private volatile     Map<String, ServerSecurityUser> users                = new ConcurrentHashMap<>();
+  private static final VarHandle                       USERS;
+
+  static {
+    try {
+      USERS = MethodHandles.lookup().findVarHandle(ServerSecurity.class, "users", Map.class);
+    } catch (final ReflectiveOperationException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
 
   // The fingerprint of the last REPLICATED document this node installed, per document kind (issue #7693). Read
   // by isSuperseded to decide whether this node's own document is one the cluster installed and therefore
@@ -318,6 +333,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Raft round trip: a watcher tick must not queue behind one.
    */
   private final class UsersPolicy extends ReloadableSecurityArtifact<Map<String, ServerSecurityUser>> {
+    // What was in force when the current load began, for publish()'s compare-and-set. Guarded by the policy's lock, and
+    // always set before publish() reads it: the base class calls publish() only from firstLoad() and reload(), both of
+    // which call beginLoad() first under that lock.
+    private Map<String, ServerSecurityUser> inForceAtLoad;
+
     private UsersPolicy(final String configPath) {
       this(new File(FileUtils.appendSeparatorIfMissing(configPath)));
     }
@@ -340,11 +360,35 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
 
     @Override
-    protected void publish(final Map<String, ServerSecurityUser> newUsers, final boolean isFallback) {
-      final Map<String, ServerSecurityUser> previous = users;
+    protected void beginLoad() {
+      inForceAtLoad = users;
+    }
+
+    /**
+     * A compare-and-set against the map in force when the load began (issue #10460), not a plain swap. The policy's lock
+     * does not serialize this with every writer: {@link #applyReplicatedUsers(String)} runs on the Raft apply thread and
+     * must stay lock-free, and the local user changes run under {@code ServerSecurity}'s monitor. So a change can land
+     * between this load's read and this publish - a replicated drop, a rotated password - and publishing the read would
+     * revert it on this node. Every writer replaces the map, so such a change makes the compare fail and the read is
+     * dropped: it predates the change. Nothing is lost by dropping it: a successful write of the change stamps the file
+     * the change wrote, and a failed one is the #10451 refusal, which a hand edit cannot win either.
+     */
+    @Override
+    protected boolean publish(final Map<String, ServerSecurityUser> newUsers, final boolean isFallback) {
+      final Map<String, ServerSecurityUser> previous = inForceAtLoad;
+      // Not kept past this load: it would pin a replaced map in memory until the next one.
+      inForceAtLoad = null;
       // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the previous
       // complete map or this one, never an empty intermediate state.
-      users = newUsers;
+      if (!USERS.compareAndSet(ServerSecurity.this, previous, newUsers)) {
+        LogManager.instance().log(ServerSecurity.this, Level.WARNING,
+            "File '%s' was read while the users in force changed (a replicated user list or a user change was installed): "
+                + "what was read is older than that change and is not applied, keeping the %d users in force. A hand edit "
+                + "made before that change is not applied either: the change's write replaced it, or, if that write failed, "
+                + "the file is not read until the users in force reach it. Make the edit again, through the server",
+            file.getName(), users.size());
+        return false;
+      }
 
       // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password rotated - an
       // operator editing the file directly, or a peer's file being re-read - and the bearer path only requires the name
@@ -357,6 +401,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         } catch (final IOException e) {
           throw new ServerException("Error on starting Security service", e);
         }
+      return true;
     }
 
     /**
@@ -593,7 +638,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // first would leave the new user live in memory while nothing reached the disk - authoritative until the
     // next restart silently took it away again.
     saveUsers(snapshotWith(name, userConfiguration));
-    users.put(name, user);
+    publishLocalChange(name, user);
     return user;
   }
 
@@ -613,7 +658,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // force rather than activate a new one that no longer exists after a restart - and the throw would
       // also skip the session invalidation below, so the rotation would be half-applied.
       saveUsers(snapshotWith(name, userConfiguration));
-      users.put(name, user);
+      publishLocalChange(name, user);
     }
 
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
@@ -633,6 +678,38 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       invalidateHttpSessions(name);
 
     return user;
+  }
+
+  /**
+   * Publishes a local change of one user - {@code user}, or its removal when {@code null} - as a NEW map rather than an
+   * edit of the one in force (issue #10460), so a users-file reload that read the file before the change fails its
+   * compare-and-set instead of publishing over it. A compare-and-set here too, retried, because the replicated install
+   * on the Raft apply thread swaps the map without this class's monitor, and its list must not be overwritten by a copy
+   * of the one it replaced. A copy per change is fine: user administration is rare, and the map is small.
+   * <p>
+   * Not closed here, and older than this method: the caller saved a snapshot of the map before calling it, so an install
+   * landing between that save and this swap writes its own list over the save and then swaps it in. Memory ends up with
+   * the install plus this change, and the file with the install alone, until the next successful local save writes both.
+   */
+  private void publishLocalChange(final String name, final ServerSecurityUser user) {
+    while (true) {
+      final Map<String, ServerSecurityUser> current = users;
+      final Map<String, ServerSecurityUser> next = new ConcurrentHashMap<>(current);
+      if (user == null)
+        next.remove(name);
+      else
+        next.put(name, user);
+      if (USERS.compareAndSet(this, current, next))
+        return;
+    }
+  }
+
+  /**
+   * Test seam (issue #10460): runs {@code hook} in every users-file load after the file was read and before what was read
+   * is published, the window a concurrent install has to land in. {@code null} removes it.
+   */
+  void afterUsersFileRead(final Runnable hook) {
+    usersPolicy.afterRead = hook;
   }
 
   /**
@@ -659,7 +736,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // Persist before publishing, as in createUser()/updateUser(): a failed save must not leave a user
       // removed in memory and still present on disk, which a restart would resurrect.
       saveUsers(snapshotWith(userName, null));
-      users.remove(userName);
+      publishLocalChange(userName, null);
     }
     // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
     // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
@@ -2335,6 +2412,25 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return password;
   }
 
+  /**
+   * Reads the root password from the file at {@code rootPasswordPath} ({@code arcadedb.server.rootPasswordPath}),
+   * dropping one trailing line terminator (see {@link #stripTrailingNewline(String)}). Shared by the creation of the
+   * root user and by the HA cluster-token derivation, so both read the very same password out of the same file.
+   *
+   * @throws ServerSecurityException if the file cannot be read, or holds an empty password
+   */
+  public static String readRootPasswordFile(final String rootPasswordPath) {
+    final String rootPassword;
+    try {
+      rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
+    } catch (final IOException | InvalidPathException e) {
+      throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'", e);
+    }
+    if (rootPassword.isEmpty())
+      throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
+    return rootPassword;
+  }
+
   protected void askForRootPassword() throws IOException {
     String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
@@ -2345,15 +2441,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
           GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
 
-      if (rootPasswordPath != null) {
-        if (Files.isReadable(Path.of(rootPasswordPath)))
-          rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
-        else
-          throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'");
-
-        if (rootPassword.isEmpty())
-          throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
-      }
+      if (rootPasswordPath != null)
+        rootPassword = readRootPasswordFile(rootPasswordPath);
     }
 
     if (rootPassword == null) {

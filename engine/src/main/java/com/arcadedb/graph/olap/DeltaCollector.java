@@ -96,7 +96,7 @@ class DeltaCollector
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
       else if (record instanceof Edge edge) {
         watchEdgeSource(edge.getOut());
-        delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
+        delta.addEdge(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
             extractMaterialisedEdgeProperties(edge)));
       }
       scheduleSyncCallback(delta);
@@ -143,7 +143,10 @@ class DeltaCollector
         delta.deletedVertices.add(vertex.getIdentity());
       else if (record instanceof Edge edge) {
         watchEdgeSource(edge.getOut());
-        delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
+        // An edge this transaction created is no change to the committed state once it deletes it (issue #10305). A lightweight
+        // edge has no RID of its own to take back, its changes being matched by the pair of vertices they join
+        if (edge instanceof LightEdge || !delta.cancelAddedEdge(edge.getIdentity()))
+          delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
       }
       scheduleSyncCallback(delta);
     } else {
@@ -166,7 +169,7 @@ class DeltaCollector
       final TxDelta delta = getOrCreateDelta();
       watchEdgeSource(edge.getOut());
       // No properties to materialise: a lightweight edge has none
-      delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
+      delta.addEdge(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
       scheduleSyncCallback(delta);
     } else
       scheduleAsyncCallback();
@@ -211,8 +214,12 @@ class DeltaCollector
     // A view whose first build is still scanning tracks changes too: the build reconciles them (issue #8378)
     if (!view.isTrackingChanges())
       return false;
-    if (record instanceof Vertex vertex)
-      return view.coversVertexType(vertex.getTypeName());
+    // Both routed by the schema alone: whether the base CSR already HOLDS the type's records is a question for the query that
+    // wants the view served, and routing by it dropped the vertex of a type attached after the scan (issue #10491)
+    if (record instanceof Vertex vertex) {
+      view.meetWrittenVertexType(vertex.getTypeName());
+      return view.routesVertexType(vertex.getTypeName());
+    }
     if (record instanceof Edge edge)
       return view.coversEdgeType(edge.getTypeName());
     return false;
@@ -253,7 +260,7 @@ class DeltaCollector
       final TxDelta frozen = new TxDelta();
       frozen.addedVertices.addAll(delta.addedVertices);
       frozen.deletedVertices.addAll(delta.deletedVertices);
-      frozen.addedEdges.addAll(delta.addedEdges);
+      delta.copyAddedEdgesTo(frozen.addedEdges);
       frozen.deletedEdges.addAll(delta.deletedEdges);
       frozen.updatedProperties.putAll(delta.updatedProperties);
       frozen.updatedEdges.putAll(delta.updatedEdges);
