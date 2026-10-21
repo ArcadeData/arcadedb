@@ -263,6 +263,32 @@ class Issue10514RerankIndexDefaultTest extends TestHelper {
   }
 
   @Test
+  void theAllowListThresholdDependsOnWhetherTheSearchReRanks() {
+    final float[][] base = clustered(new Random(9L), VECTORS);
+    load(base, "PRODUCT", "");
+    final LSMVectorIndex index = indexOf();
+    index.buildVectorGraphNow();
+
+    // 10% of the index: above the 5% threshold of the PQ-scores plan, below the 20% one of the exact plan
+    final Set<RID> allowed = new HashSet<>();
+    database.iterateType("Doc", false).forEachRemaining(r -> {
+      if (r.asDocument().getInteger("vid") < VECTORS / 10)
+        allowed.add(r.getIdentity());
+    });
+    final float[] query = base[7];
+
+    final long start = index.getStats().get("preFilterSearches");
+    index.findNeighborsFromVectorApproximate(query, K, -1, 0, allowed, WorkGuard.forCommandDeadline(null));
+    assertThat((long) index.getStats().get("preFilterSearches")).as("PQ scores alone walk the graph at 10% selectivity")
+        .isEqualTo(start);
+
+    index.findNeighborsFromVectorApproximate(query, K, -1, LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE, allowed,
+        WorkGuard.forCommandDeadline(null));
+    assertThat((long) index.getStats().get("preFilterSearches")).as("a re-ranked search scores the allow-list exactly at 10%")
+        .isEqualTo(start + 1);
+  }
+
+  @Test
   void aNegativePersistedRerankOversampleFailsWhenTheSchemaLoads() {
     final LSMVectorIndexMetadata metadata = new LSMVectorIndexMetadata("Doc", new String[] { "embedding" }, 0);
     final JSONObject persisted = new JSONObject().put("typeName", "Doc").put("properties", new JSONArray().put("embedding"))
@@ -284,6 +310,9 @@ class Issue10514RerankIndexDefaultTest extends TestHelper {
     final List<Pair<RID, Float>> exact = index.findNeighborsFromVector(query, K, -1, null);
     assertThat(exact).hasSize(K);
     assertThat(index.findNeighbors(query, K, -1, -1, null, WorkGuard.forCommandDeadline(null))).isEqualTo(exact);
+    // the fallback keeps the beam the caller asked for
+    assertThat(index.findNeighborsFromVectorApproximate(query, K, 50, 10, null, WorkGuard.forCommandDeadline(null)))
+        .isEqualTo(index.findNeighborsFromVector(query, K, 50, null));
     assertSameRowsAs(exact, sql(query), "distance");
     assertThat(cypher(query)).extracting(r -> (int) r.getProperty("vid")).containsExactlyElementsOf(
         exact.stream().map(p -> vid(p.getFirst())).toList());

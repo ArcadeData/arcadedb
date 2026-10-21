@@ -288,8 +288,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    */
   private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
       final int fetchK, final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy,
-      final int fetchGroupSize,
-      final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
+      final int fetchGroupSize, final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
       final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
 
     final BasicDatabase db = context.getDatabase();
