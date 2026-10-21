@@ -120,6 +120,7 @@ public class TransactionManager {
   volatile WALSyncFaultInjector              walSyncFaultInjector;
   private final AtomicLong                   statsGroupCommits   = new AtomicLong();
   private final AtomicLong                   statsGroupSyncs     = new AtomicLong();
+  private final AtomicLong                   statsGroupCommitPageWaits = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
   /**
    * Serializes the housekeeping pass (rotation and retirement of WAL files) against the code that replaces or
@@ -484,6 +485,11 @@ public class TransactionManager {
   /**
    * The ticket of the last group-commit WAL write when it is not durable yet, 0 when every one is: what a page published
    * now must wait for before reaching its data file, since its transaction may have read any of those writes.
+   * <p>
+   * The two reads are not atomic, and do not need to be because of one ordering this depends on: a group commit takes its ticket
+   * right after its WAL append and BEFORE it publishes its pages or releases its file locks
+   * ({@link #writeTransactionToWALDeferringSync}). A transaction can depend on it only by reading those pages or taking those
+   * locks, so it reads a sequence that already covers it. A change that publishes before taking the ticket breaks this.
    */
   public long getPendingWALSyncTicket() {
     final long written = walWriteSequence.get();
@@ -514,7 +520,8 @@ public class TransactionManager {
    * durable without it - recovery would find a page version with the one before it missing.
    * <p>
    * The flushes are serialized, and that is the group commit: the commits that arrive while a flush runs wait for it, and
-   * the first of them to find none running flushes once for all of them.
+   * the first of them to find none running flushes once for all of them. There is no timeout: a flush that hangs holds every
+   * commit waiting for it, as an fsync that hangs holds a commit without group commit.
    */
   public void awaitWALDurable(final long ticket) throws IOException {
     boolean interrupted = false;
@@ -548,6 +555,17 @@ public class TransactionManager {
       if (interrupted)
         Thread.currentThread().interrupt();
     }
+  }
+
+  /**
+   * The WAL rule of a page write under group commit: returns once the WAL writes up to {@code ticket} are durable, counting
+   * the page writes that had to wait for them.
+   */
+  public void awaitWALDurableForPageWrite(final long ticket) throws IOException {
+    if (ticket <= walDurableSequence)
+      return;
+    statsGroupCommitPageWaits.incrementAndGet();
+    awaitWALDurable(ticket);
   }
 
   /** One pass of the group commit's flush. Only one runs at a time: see {@link #awaitWALDurable(long)}. */
@@ -1085,6 +1103,8 @@ public class TransactionManager {
     // group commit: how many commits deferred their WAL flush, and how many flushes served them
     map.put("groupCommits", statsGroupCommits.get());
     map.put("groupCommitSyncs", statsGroupSyncs.get());
+    // page writes that found their WAL not durable yet and had to wait for, or run, a flush first
+    map.put("groupCommitPageWaits", statsGroupCommitPageWaits.get());
     return map;
   }
 

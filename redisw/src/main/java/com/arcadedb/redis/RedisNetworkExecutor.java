@@ -68,7 +68,9 @@ public class RedisNetworkExecutor extends Thread {
   /**
    * Commands that skip the query admission gate and the list of running statements: the ones that touch no data, and the
    * ones on keys held in memory (database global variables or the connection's own map), which never reach a record, an
-   * index or the query engine. A command that may read or write records (the H* family) is not here.
+   * index or the query engine. A command that may read or write records (the H* family) is not here. The criterion for adding
+   * one: it finishes in a bounded, small amount of work without the engine, so it can neither be worth listing nor need a
+   * terminate. Anything that can touch a record, an index, a query or a lock must stay gated.
    */
   private static final Set<String> UNGATED_COMMANDS = Set.of("PING", "SELECT", "GET", "SET", "GETDEL", "EXISTS", "INCR",
       "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY");

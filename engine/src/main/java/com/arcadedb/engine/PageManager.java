@@ -2270,7 +2270,7 @@ public class PageManager extends LockContext {
       final long walSyncTicket = page.getWALSyncTicket();
       if (walSyncTicket > 0)
         try {
-          database.getTransactionManager().awaitWALDurable(walSyncTicket);
+          database.getTransactionManager().awaitWALDurableForPageWrite(walSyncTicket);
         } catch (final IOException e) {
           // the same verdict as a committer whose wait fails: published pages whose WAL may not be durable
           if (database.getEmbedded() instanceof LocalDatabase localDatabase)
