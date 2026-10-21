@@ -52,6 +52,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
@@ -572,6 +573,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) {
     checkIsValid();
+    // A bound of a kind the key type cannot hold bounds no entry (issue #10541): it used to be read as "no bound" and answer every one
+    if (!canReadAsKeys(fromKeys))
+      return EMPTY_CURSOR;
     return lock.executeInReadLock(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
   }
 
@@ -579,8 +583,37 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive,
                            final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
+    if (!canReadAsKeys(beginKeys) || !canReadAsKeys(endKeys))
+      return EMPTY_CURSOR;
     return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys,
         endKeysInclusive));
+  }
+
+  /**
+   * Whether every component of a lookup key or a range bound can be read as a key of the index (issue #10541). A {@code null} key or
+   * component is the lookup of the null key, which is not asked about.
+   */
+  private boolean canReadAsKeys(final Object[] keys) {
+    if (keys == null)
+      return true;
+
+    final byte[] keyTypes = mutable.binaryKeyTypes;
+    for (int i = 0; i < keys.length && i < keyTypes.length; ++i)
+      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+        return false;
+    return true;
+  }
+
+  /** The same question for a key that was converted already, so that a lookup does not convert it twice. */
+  private boolean areReadAsKeys(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return true;
+
+    final byte[] keyTypes = mutable.binaryKeyTypes;
+    for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+        return false;
+    return true;
   }
 
   @Override
@@ -616,6 +649,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // still fails in put(), which is the build/insert contract convertIndexKeyOrNull documents.
       return EMPTY_CURSOR;
     }
+
+    // A key of a kind the declared type cannot hold is no key either (issue #10541): the conversion left it as it was, and the key
+    // comparison would cast it, or answered null, which is no lookup at all. It equals no indexed key
+    if (!areReadAsKeys(keys, convertedKeys))
+      return EMPTY_CURSOR;
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;

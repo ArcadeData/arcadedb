@@ -1506,15 +1506,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // Bounded by the shorter array rather than requiring equal lengths: convertKeys() itself assumes
     // values.length <= keyTypes.length (it indexes keyTypes[i] unguarded for every key), so a partial-key
     // lookup is expected to supply no more values than the index has key types for.
-    for (int i = 0; i < values.length && i < keyTypes.length; i++) {
-      if (values[i] == null)
-        continue;
-      try {
-        Type.convert(database, values[i], BinaryTypes.getClassFromType(keyTypes[i]));
-      } catch (final IllegalArgumentException e) {
+    for (int i = 0; i < values.length && i < keyTypes.length; i++)
+      // Also a value the conversion leaves as it was or answers null for (a LocalDate for a BOOLEAN key, a List for an INTEGER one):
+      // no key either, and a range reads a null bound as "no bound" (issue #10541)
+      if (!Type.canBeIndexLookupKey(database, values[i], BinaryTypes.getClassFromType(keyTypes[i])))
         return false;
-      }
-    }
     return true;
   }
 

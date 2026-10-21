@@ -190,6 +190,10 @@ public class HashIndex implements IndexInternal {
       return EMPTY_CURSOR;
     }
 
+    // A key of a kind the declared type cannot hold is no key either, and equals no indexed key (issue #10541)
+    if (!areReadAsKeys(keys, convertedKeys))
+      return EMPTY_CURSOR;
+
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
@@ -773,6 +777,21 @@ public class HashIndex implements IndexInternal {
   @Override
   public Object[] convertLookupKeys(final Object[] keys) {
     return convertKeys(keys);
+  }
+
+  /**
+   * Whether every component of a lookup key, converted already by {@link #convertKeys}, was read as a key of the index (issue #10541);
+   * a null component is not asked about.
+   */
+  private boolean areReadAsKeys(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return true;
+
+    final byte[] keyTypes = bucket.declaredKeyTypes;
+    for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+        return false;
+    return true;
   }
 
   private void checkIsValid() {

@@ -26,7 +26,6 @@ import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -38,13 +37,13 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -213,15 +212,16 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           seen = newSeen();
           for (final Expression element : inList.getValues()) {
             final Object resolved = resolveValue(element);
-            if (inList.isScalar(element))
+            if (inList.isScalar(element) || resolved == null)
               addSeekKey(resolved, trailing);
-            else if (resolved instanceof Collection<?> coll) {
-              for (final Object v : coll)
+            else if (inList.isWholeList(element))
+              // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
+              // to be taken for one key, which answered no rows where the scan refuses
+              for (final Object v : InExpression.listOperand(resolved))
                 addSeekKey(v, trailing);
-            } else if (resolved != null && resolved.getClass().isArray()) {
-              for (final Object v : MultiValue.getMultiValueAsList(resolved))
-                addSeekKey(v, trailing);
-            } else
+            else
+              // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no
+              // property holds, and the index answers it with no row, as the comparison of the scan does
               addSeekKey(resolved, trailing);
           }
         } else {
