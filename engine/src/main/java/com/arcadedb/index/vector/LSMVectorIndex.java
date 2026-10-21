@@ -9442,6 +9442,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The search every caller that does not choose a path asks for (issue #10514): SQL {@code vector.neighbors}, the openCypher
+   * procedure {@code db.index.vector.queryNodes} and the fluent select share it, so one index answers the same way whichever
+   * door a query comes in by.
+   * <p>
+   * A PRODUCT index walks its graph on the PQ codes and scores the best {@code k * rerankOversample} candidates on the stored
+   * vectors, as BINARY does ({@link #findNeighborsFromVectorApproximate(float[], int, int, int, Set, WorkGuard)}); every other
+   * quantization takes the exact walk of {@link #findNeighborsFromVector(float[], int, int, Set, WorkGuard)}.
+   *
+   * @param rerankOversample candidates per requested neighbour to re-rank on the stored vectors; {@code 0} for the PQ scores
+   *                         alone; negative for the index's own {@link LSMVectorIndexMetadata#rerankOversample}. Ignored when the
+   *                         index is not PRODUCT
+   */
+  public List<Pair<RID, Float>> findNeighbors(final float[] queryVector, final int k, final int efSearch,
+      final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+    if (metadata.quantizationType != VectorQuantizationType.PRODUCT)
+      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
+    return findNeighborsFromVectorApproximate(queryVector, k, efSearch,
+        rerankOversample >= 0 ? rerankOversample : metadata.rerankOversample, allowedRIDs, guard);
+  }
+
+  /**
    * The PQ search with a real beam and, optionally, a re-rank on the stored vectors (issue #10514).
    * <p>
    * Without a re-rank the answer is what the in-memory PQ codes say, and PQ cannot tell apart neighbours that share most
@@ -11040,6 +11061,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("pqCenterGlobally", metadata.pqCenterGlobally);
     json.put("pqTrainingLimit", metadata.pqTrainingLimit);
     json.put("fusedPQ", metadata.fusedPQ);
+    json.put("rerankOversample", metadata.rerankOversample);
 
     return json;
   }

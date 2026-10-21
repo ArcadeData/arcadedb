@@ -307,15 +307,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         groupBy != null && vectorIndexes.size() > 1 ? new GroupedTopUpPlanner(fetchK, fetchGroupSize) : null;
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
-      if (groupBy == null) {
+      if (groupBy == null)
         // A PRODUCT index walks its graph on the PQ codes and scores only the best candidates on the stored vectors, as BINARY
-        // does (issue #10514). The exact walk it used to take read a stored vector for every node it visited.
-        if (lsmIndex.getMetadata().quantizationType == VectorQuantizationType.PRODUCT)
-          neighbors = lsmIndex.findNeighborsFromVectorApproximate(queryVector, fetchK, efSearch,
-              rerank >= 0 ? rerank : LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE, allowedRIDs, guard);
-        else
-          neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs, guard);
-      } else
+        // does (issue #10514); `rerank` absent is the rerankOversample of the index
+        neighbors = lsmIndex.findNeighbors(queryVector, fetchK, efSearch, rerank, allowedRIDs, guard);
+      else
         neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, fetchK, fetchGroupSize, efSearch, allowedRIDs,
             groupKeyResolver, guard);
       allNeighbors.addAll(neighbors);

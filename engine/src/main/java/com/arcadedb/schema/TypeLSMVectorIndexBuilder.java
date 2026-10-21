@@ -345,6 +345,16 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
+  /**
+   * Sets the candidates per requested neighbour that a search of a PRODUCT index re-ranks on the stored vectors when the
+   * query does not say (issue #10514). The default is {@code LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE};
+   * 0 returns the PQ scores alone, without reading a stored vector.
+   */
+  public TypeLSMVectorIndexBuilder withRerankOversample(final int rerankOversample) {
+    vectorMetadata().setRerankOversample(rerankOversample);
+    return this;
+  }
+
   @Override
   public TypeIndex create() {
     final LSMVectorIndexMetadata vectorMetadata = vectorMetadata();

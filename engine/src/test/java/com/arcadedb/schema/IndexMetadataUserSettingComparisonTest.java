@@ -67,6 +67,7 @@ class IndexMetadataUserSettingComparisonTest {
     samples.put("pqCenterGlobally", new Object[] { true, false });
     samples.put("pqTrainingLimit", new Object[] { 10_000, 20_000 });
     samples.put("fusedPQ", new Object[] { true, false });
+    samples.put("rerankOversample", new Object[] { 0, 10 });
     // "locationCacheSize" has exactly one legal value: the setter refuses anything above 0 (issues #5559, #5568), so
     // there is no pair of distinct values to compare and no request that can differ from an existing index.
     samples.put("locationCacheSize", null);
