@@ -4719,21 +4719,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return ProductQuantization.compute(training, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
   }
 
-  /** @return {@code sample} distinct ordinals out of {@code [0, total)}, ascending, the same ones for the same arguments */
-  private static int[] sampleOrdinals(final int total, final int sample) {
-    final int[] ordinals = new int[total];
-    for (int i = 0; i < total; i++)
-      ordinals[i] = i;
+  /**
+   * @return {@code sample} distinct ordinals out of {@code [0, total)}, ascending, the same ones for the same arguments. Floyd's
+   *         algorithm: O(sample) memory however large {@code total} is, where shuffling an array of all ordinals costs 4
+   *         bytes per vector of the index to train on a few thousand of them
+   */
+  static int[] sampleOrdinals(final int total, final int sample) {
     final java.util.Random random = new java.util.Random(PQ_TRAINING_SAMPLE_SEED);
-    for (int i = 0; i < sample; i++) {
-      final int j = i + random.nextInt(total - i);
-      final int t = ordinals[i];
-      ordinals[i] = ordinals[j];
-      ordinals[j] = t;
+    final java.util.Set<Integer> picked = new java.util.HashSet<>(sample * 2);
+    for (int j = total - sample; j < total; j++) {
+      final int t = random.nextInt(j + 1);
+      picked.add(picked.contains(t) ? j : t);
     }
-    final int[] picked = Arrays.copyOf(ordinals, sample);
-    Arrays.sort(picked);
-    return picked;
+    final int[] ordinals = new int[sample];
+    int i = 0;
+    for (final int ordinal : picked)
+      ordinals[i++] = ordinal;
+    Arrays.sort(ordinals);
+    return ordinals;
   }
 
   /** The vectors at the given ordinals of another source, numbered from 0. */

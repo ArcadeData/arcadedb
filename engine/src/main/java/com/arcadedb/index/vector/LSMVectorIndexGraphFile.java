@@ -291,6 +291,9 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       if (hasFusedPQ) {
         LogManager.instance().log(this, Level.INFO,
             "Writing graph WITH FusedPQ: PQ codes stored inline with graph nodes for cache-friendly search");
+      } else if (pq != null && pqVectors != null && !writeFusedPQ) {
+        LogManager.instance().log(this, Level.FINE,
+            "Not writing FusedPQ inline storage: nothing reads it (issue #10514); the PQ codes are in the PQ file");
       } else if (pq != null && pqVectors != null) {
         LogManager.instance().log(this, Level.INFO,
             "Skipping FusedPQ inline storage: PQ has %d clusters (FusedPQ requires 256); graph persistence will store topology + inline vectors only",

@@ -140,6 +140,18 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     assertThat(index.getLastPqTrainingSampleSize()).isEqualTo(VECTORS);
   }
 
+  @Test
+  void theTrainingSampleIsSortedDistinctInRangeAndTheSameEveryTime() {
+    for (final int[] shape : new int[][] { { 3000, 500 }, { 10, 10 }, { 1_000_000, 37 }, { 5, 1 } }) {
+      final int[] sample = LSMVectorIndex.sampleOrdinals(shape[0], shape[1]);
+      assertThat(sample).hasSize(shape[1]);
+      assertThat(sample).isSorted().doesNotHaveDuplicates();
+      assertThat(sample[0]).isGreaterThanOrEqualTo(0);
+      assertThat(sample[sample.length - 1]).isLessThan(shape[0]);
+      assertThat(LSMVectorIndex.sampleOrdinals(shape[0], shape[1])).isEqualTo(sample);
+    }
+  }
+
   private void createIndex(final String type, final String extraMetadata) {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE " + type);
