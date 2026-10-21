@@ -142,6 +142,9 @@ public class PostgresNetworkExecutor extends Thread {
 
   public static final String PG_SERVER_VERSION = "12.0";
 
+  /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
+  static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
+
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
   /**
    * The cap PostgreSQL itself puts on a startup packet ({@code PQ_STARTUP_MSG_LIMIT} in {@code pqcomm.c}).
@@ -4019,9 +4022,6 @@ public class PostgresNetworkExecutor extends Thread {
 
     return true;
   }
-
-  /** cannot_connect_now: the server is up but the database cannot take the connection at the moment. */
-  static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
 
   /** Whether {@code e} refuses a database that exists: {@link DatabaseNotAvailableException} without its narrower not-found subtype. */
   static boolean isHeldDatabase(final DatabaseOperationException e) {
