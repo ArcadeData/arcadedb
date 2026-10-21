@@ -1180,6 +1180,15 @@ public class TransactionContext implements Transaction {
     return true;
   }
 
+  /**
+   * Whether {@code record} is the very instance {@link #addUpdatedRecord(Record)} queued for the commit: what is set on it is what the
+   * commit writes, which is not the case for a copy of the same record.
+   */
+  public boolean isQueuedInstance(final Record record) {
+    final RID rid = record.getIdentity();
+    return rid != null && updatedRecords != null && updatedRecords.get(rid) == record;
+  }
+
   /** Whether {@link #addUpdatedRecord(Record)} has already queued a deferred write for this RID in this transaction. */
   public boolean isUpdateQueued(final RID rid) {
     return updatedRecords != null && updatedRecords.containsKey(rid);

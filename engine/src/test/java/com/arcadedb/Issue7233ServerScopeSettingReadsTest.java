@@ -94,8 +94,6 @@ public class Issue7233ServerScopeSettingReadsTest {
         "CLI entry point: main() reads the root path to default it before anything builds a server");
     ALLOWED.put("Restore.java#SERVER_ROOT_PATH",
         "CLI entry point: same defaulting as Console.main, with no server in the process at all");
-    ALLOWED.put("MCPStdioServer.java#SERVER_ROOT_PASSWORD",
-        "Checked in main() to refuse stdio mode early; the ArcadeDBServer it guards is constructed after it");
     ALLOWED.put("ImportSecurityValidator.java#SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS",
         "Static validator shared by the CLI importer; the server path resolves the policy itself and passes it "
             + "through the openRemoteConnection(url, blockLocalNetworks) overload (issue #6474)");
