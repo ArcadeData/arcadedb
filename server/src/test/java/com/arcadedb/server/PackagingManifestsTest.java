@@ -43,16 +43,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Keeps the shipped deployment examples honest against the code they launch. They are the first
  * thing an evaluator runs, they are never exercised by any other test, and every defect they grew
  * (issues #6840, #6841, #6842) was a silent divergence from a setting, a port or a variable that had
- * moved on: a {@code ${VAR}} Kubernetes never expands, a Raft port the server stopped binding, a
- * setting that no longer exists, a heap pinned above the container limit, a garbage collector
- * discarded by the quickstart that overwrites the variable holding it, and a named volume declared
- * but never mounted.
+ * moved on: a Raft port the image stopped exposing, a heap pinned above the container limit, a garbage
+ * collector discarded by the quickstart that overwrites the variable holding it, and a named volume
+ * declared but never mounted. The Kubernetes deployment lives in the Helm chart repository
+ * (ArcadeData/arcadedb-helm), whose own tests guard it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class PackagingManifestsTest {
 
-  private static final String STATEFULSET = "package/src/main/config/arcadedb-statefulset.yaml";
   private static final String DOCKERFILE  = "package/src/main/docker/Dockerfile";
   private static final String BUILDER     = "package/arcadedb-builder.sh";
   private static final String NATIVE_SCRATCH    = "native/src/main/docker/Dockerfile.native.scratch";
@@ -75,10 +74,6 @@ class PackagingManifestsTest {
   private static final Pattern BASE_IMAGE  = Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
   private static final Pattern ARG_DEFAULT = Pattern.compile("^ARG ([A-Za-z_][A-Za-z0-9_]*)=(\\S+)\\s*$", Pattern.MULTILINE);
 
-  private static final Pattern SETTING     = Pattern.compile("-D(arcadedb\\.[A-Za-z0-9.]+)=");
-  private static final Pattern EXPANSION   = Pattern.compile("\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)");
-  private static final Pattern ENTRY_NAME  = Pattern.compile("^\\s*- name: (\\S+)\\s*$");
-  private static final Pattern MOUNT_PATH  = Pattern.compile("^\\s*mountPath: (\\S+)\\s*$", Pattern.MULTILINE);
   private static final Pattern VOLUME      = Pattern.compile("^VOLUME\\s*\\[(.*)]\\s*$", Pattern.MULTILINE);
   private static final Pattern QUOTED      = Pattern.compile("\"([^\"]+)\"");
   /**
@@ -87,189 +82,6 @@ class PackagingManifestsTest {
    * match: switching the quickstart to long syntax needs this pattern extended, or every mount reads as missing.
    */
   private static final Pattern COMPOSE_MOUNT = Pattern.compile("(?m)^\\s*- ([A-Za-z0-9][A-Za-z0-9_.-]*):(/[^:\\s]+)(?::\\w+)?\\s*$");
-
-  @Test
-  void statefulSetUsesOnlyTheVariableFormKubernetesExpands() {
-    final String manifest = read(STATEFULSET);
-
-    // ${VAR} is expanded neither by Kubernetes (which knows only $(VAR)) nor by a shell (the
-    // arguments are exec'd directly), so it would reach the JVM as a literal.
-    assertThat(codeOf(manifest)).as("`${VAR}` in the StatefulSet reaches the JVM verbatim").doesNotContain("${");
-
-    // $(VAR) is resolved only against the variables this container declares: anything else is left
-    // as a literal too. HOSTNAME comes from the container runtime, not from the pod spec.
-    final Set<String> declared = blockEntryNames(manifest, "env:");
-    for (final String referenced : matches(EXPANSION, codeOf(manifest)))
-      assertThat(declared).as("$(%s) is not declared in the container env", referenced).contains(referenced);
-  }
-
-  @Test
-  void statefulSetOnlyPassesSettingsThatStillExist() {
-    for (final String key : matches(SETTING, codeOf(read(STATEFULSET))))
-      assertThat(GlobalConfiguration.findByKey(key)).as("setting '%s' no longer exists: the argument is a no-op", key)
-          .isNotNull();
-  }
-
-  @Test
-  void statefulSetWiresTheRaftPortTheServerBinds() {
-    final String manifest = read(STATEFULSET);
-    final String raftPort = String.valueOf(GlobalConfiguration.HA_RAFT_PORT.getDefValue());
-
-    // Peer list entries are host:raftPort:httpPort; the HTTP port is what replicas forward commands to.
-    final Matcher serverList = Pattern.compile("-Darcadedb\\.ha\\.serverList=([^\"\\s]+)").matcher(manifest);
-    assertThat(serverList.find()).as("the StatefulSet no longer configures a peer list").isTrue();
-    final String[] entry = serverList.group(1).split(":");
-    assertThat(entry).as("peer list entry must carry both the Raft and the HTTP port").hasSize(3);
-    assertThat(entry[1]).as("peer list points at a port the server does not bind").isEqualTo(raftPort);
-    // The HTTP listener default is a range (first free port wins), and the peer list has to name the
-    // one the pod actually gets: with a single server per pod that is always the first of the range.
-    final String httpPortRange = String.valueOf(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT.getDefValue());
-    assertThat(entry[2]).isEqualTo(httpPortRange.split("-")[0]);
-
-    // The Service and the container ports have to agree with it, or nothing reaches the listener.
-    final Map<String, String> containerPorts = namedPorts(manifest, "containerPort", "name");
-    assertThat(containerPorts).containsEntry("raft", raftPort).containsEntry("http", entry[2]);
-    assertThat(namedPorts(manifest, "name", "port")).containsEntry("raft", raftPort);
-
-    // ...including where the Service forwards to. A targetPort drifting away from its port would send
-    // traffic at a container port nothing listens on while every check above stayed green.
-    assertThat(serviceForwards(manifest)).containsEntry("raft", raftPort + " -> " + raftPort)
-        .containsEntry("http", entry[2] + " -> " + entry[2]);
-  }
-
-  @Test
-  void statefulSetKubernetesDnsSuffixMatchesItsOwnServiceAndNamespace() {
-    final String manifest = read(STATEFULSET);
-
-    final Set<String> namespaces = new LinkedHashSet<>(
-        matches(Pattern.compile("^\\s*namespace: (\\S+)\\s*$", Pattern.MULTILINE), manifest));
-    assertThat(namespaces).as("every resource must live in the same namespace").hasSize(1);
-
-    final Matcher serviceName = Pattern.compile("^\\s*serviceName: (\\S+)\\s*$", Pattern.MULTILINE).matcher(manifest);
-    assertThat(serviceName.find()).isTrue();
-
-    // A pod of a StatefulSet is reachable as <pod>.<headless service>.<namespace>.svc.cluster.local:
-    // the suffix appended to short peer names has to spell exactly that, or DNS never resolves.
-    assertThat(manifest).contains(
-        "-Darcadedb.ha.k8sSuffix=." + serviceName.group(1) + "." + namespaces.iterator().next() + ".svc.cluster.local");
-  }
-
-  @Test
-  void statefulSetReadsTheRootPasswordFromTheMountedSecret() {
-    final String manifest = read(STATEFULSET);
-
-    final Matcher path = Pattern.compile("-Darcadedb\\.server\\.rootPasswordPath=(\\S+?)\"").matcher(manifest);
-    assertThat(path.find()).as("the root password must not be passed as a command-line argument").isTrue();
-    assertThat(manifest).as("the root password must not be passed as a command-line argument")
-        .doesNotContain("-Darcadedb.server.rootPassword=");
-
-    final String directory = path.group(1).substring(0, path.group(1).lastIndexOf('/'));
-    assertThat(matches(MOUNT_PATH, manifest)).as("no volume is mounted at the configured password directory")
-        .contains(directory);
-  }
-
-  @Test
-  void statefulSetNamesAnHaClusterTokenSource() {
-    // Issue #10462: an HA node authenticates its peers with a cluster token. Without an explicit one it is derived from
-    // the root password, and a manifest that keeps that password off the command line must not leave the cluster's
-    // authentication hanging on that fallback alone: it names the token's own secret, mounted from the same Secret.
-    // The manifest never passes the root password inline (statefulSetReadsTheRootPasswordFromTheMountedSecret), so this
-    // holds unconditionally.
-    final String manifest = codeOf(read(STATEFULSET));
-    assertThat(manifest).contains("-D" + GlobalConfiguration.HA_ENABLED.getKey() + "=true");
-
-    assertThat(manifest).as("the cluster token must not be passed as a command-line argument")
-        .doesNotContain("-D" + GlobalConfiguration.HA_CLUSTER_TOKEN.getKey() + "=");
-    final Matcher path = Pattern.compile("-D" + Pattern.quote(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH.getKey()) + "=([^\"\\s]+)")
-        .matcher(manifest);
-    assertThat(path.find()).as("an HA StatefulSet with no inline root password must set %s",
-        GlobalConfiguration.HA_CLUSTER_TOKEN_PATH.getKey()).isTrue();
-
-    final String tokenPath = path.group(1);
-    final String directory = tokenPath.substring(0, tokenPath.lastIndexOf('/'));
-    final String file = tokenPath.substring(tokenPath.lastIndexOf('/') + 1);
-    assertThat(matches(MOUNT_PATH, manifest)).as("no volume is mounted at the configured cluster token directory")
-        .contains(directory);
-    assertThat(manifest).as("the mounted Secret projects no '%s' item, so the token file never exists", file)
-        .containsPattern("(?m)^\\s*- key: " + Pattern.quote(file) + "\\s*\\n\\s*path: " + Pattern.quote(file) + "\\s*$");
-    // The instructions at the top of the manifest create that Secret: they have to fill the key the pods mount.
-    assertThat(read(STATEFULSET)).as("the documented `kubectl create secret` does not set the '%s' key", file)
-        .contains("--from-literal=" + file + "=");
-  }
-
-  @Test
-  void statefulSetProbesTheEndpointTheServerRegisters() {
-    final String manifest = read(STATEFULSET);
-    // Registered unauthenticated in HttpServer as /api/v1 + /ready.
-    assertThat(manifest).contains("path: /api/v1/ready");
-    // Readiness gated on Raft membership means a starting pod is not Ready, and a headless service
-    // hides the DNS record of a not-Ready pod unless told otherwise: without this the node can never
-    // be dialled by its peers, so it can never become Ready.
-    assertThat(manifest).contains("publishNotReadyAddresses: true");
-    assertThat(manifest).contains("-Darcadedb.server.readinessRequiresHA=true");
-  }
-
-  @Test
-  void statefulSetKeepsEveryDirectoryTheImageDeclaresOnThePersistentVolume() {
-    // Issue #10452: the StatefulSet moved the databases and the Raft log onto its PersistentVolume but left the config
-    // directory, where the server writes server-users.jsonl, server-groups.json and server-api-tokens.json, on the
-    // container layer, so a restarted pod lost every user, group and API token created at runtime. Each directory the
-    // image declares as a VOLUME must be redirected under a mount of the volume claim, or excluded here with a reason.
-    final Map<String, String> redirectedBy = Map.of(//
-        "/home/arcadedb/config", GlobalConfiguration.SERVER_CONFIG_DIRECTORY.getKey(),//
-        "/home/arcadedb/databases", GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getKey(),//
-        "/home/arcadedb/backups", GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getKey(),//
-        // The Raft log is the state the image's replication volume stands for.
-        "/home/arcadedb/replication", GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getKey());
-    // The log files are a copy of what the console handler already sends to `kubectl logs`.
-    final Set<String> notPersisted = Set.of("/home/arcadedb/log");
-
-    final String manifest = codeOf(read(STATEFULSET));
-    final String claimPath = claimMountPath(manifest);
-
-    for (final String volume : declaredVolumes(DOCKERFILE, read(DOCKERFILE))) {
-      if (notPersisted.contains(volume))
-        continue;
-      assertThat(redirectedBy).as("the image declares '%s' as a VOLUME: decide where the StatefulSet keeps it", volume)
-          .containsKey(volume);
-      final String setting = redirectedBy.get(volume);
-      final Matcher value = Pattern.compile("-D" + Pattern.quote(setting) + "=([^\"\\s]+)").matcher(manifest);
-      assertThat(value.find()).as("the StatefulSet does not set %s, so '%s' stays on the container's ephemeral layer",
-          setting, volume).isTrue();
-      assertThat(value.group(1)).as("%s points outside the PersistentVolume mounted at %s", setting, claimPath)
-          .startsWith(claimPath + "/");
-    }
-  }
-
-  @Test
-  void statefulSetSeedsThePersistentConfigDirectoryWithTheImageDefaults() {
-    // Issue #10452: unlike a Docker named volume, a PersistentVolumeClaim is not seeded from the image. A config
-    // directory on an empty claim lacks the shipped server-groups.json (whose 'readonly' group the built-in default does
-    // not have) and gremlin-server.yaml, so an init container copies the image's files there, never over a file that
-    // already exists: that file is the operator's edit or the server's own runtime write.
-    final String manifest = codeOf(read(STATEFULSET));
-    final Matcher configDir = Pattern.compile(
-        "-D" + Pattern.quote(GlobalConfiguration.SERVER_CONFIG_DIRECTORY.getKey()) + "=([^\"\\s]+)").matcher(manifest);
-    assertThat(configDir.find()).isTrue();
-
-    final int init = manifest.indexOf("initContainers:");
-    final int main = manifest.indexOf("containers:", init + "initContainers:".length());
-    assertThat(init).as("the StatefulSet has no init container seeding %s", configDir.group(1)).isNotNegative();
-    assertThat(main).isGreaterThan(init);
-    final String seed = manifest.substring(init, main);
-
-    assertThat(seed).as("the seed does not read the image's config directory").contains("/home/arcadedb/config");
-    assertThat(seed).as("the seed does not write the configured config directory").contains(configDir.group(1));
-    assertThat(seed).as("the seed must test each target with `[ -e ]` and skip one that already exists: copying over it"
-        + " would reset the users, groups and API tokens the claim is there to keep")
-        .containsPattern("\\[ -e \"" + Pattern.quote(configDir.group(1)) + "/\\$f\" ]\\s*\\|\\|\\s*cp ");
-    assertThat(seed).as("the seed must run the image the server runs, or it copies another version's defaults")
-        .contains("image: " + imageOf(manifest.substring(main)));
-    assertThat(seed).as("the seed must declare resources, or a namespace whose LimitRange requires them rejects the pod")
-        .contains("resources:");
-    assertThat(seed).as("the seed must mount the volume claim")
-        .containsPattern("- name: datadir\\s+mountPath: " + Pattern.quote(claimMountPath(manifest)));
-  }
 
   @Test
   void dockerImagesSizeTheHeapAgainstTheContainerLimit() {
@@ -607,38 +419,6 @@ class PackagingManifestsTest {
   }
 
   /**
-   * Pairs of adjacent YAML lines - a name and a port, in either order - as name to port. No whitespace
-   * anywhere in the pattern is pinned, so a cosmetic re-indent of the manifest cannot redden a check
-   * whose whole purpose is to catch a port drifting away from the code.
-   */
-  private static Map<String, String> namedPorts(final String yaml, final String firstKey, final String secondKey) {
-    final Map<String, String> found = new LinkedHashMap<>();
-    final Matcher m = Pattern.compile(
-        "^\\s*-\\s*" + firstKey + ":\\s*(\\S+)\\s*\\n\\s*" + secondKey + ":\\s*(\\S+)\\s*$", Pattern.MULTILINE).matcher(yaml);
-    while (m.find()) {
-      final boolean nameFirst = "name".equals(firstKey);
-      found.put(nameFirst ? m.group(1) : m.group(2), nameFirst ? m.group(2) : m.group(1));
-    }
-    return found;
-  }
-
-  /**
-   * Service port name to its {@code port -> targetPort} pair, for the entries that spell a targetPort
-   * out. Kubernetes defaults targetPort to port when it is omitted, so only the declared ones are
-   * checked - but the manifest declares them, and a check that silently empties itself when a line is
-   * deleted is worse than no check.
-   */
-  private static Map<String, String> serviceForwards(final String yaml) {
-    final Map<String, String> found = new LinkedHashMap<>();
-    final Matcher m = Pattern.compile(
-        "^\\s*-\\s*name:\\s*(\\S+)\\s*\\n\\s*port:\\s*(\\S+)\\s*\\n\\s*targetPort:\\s*(\\S+)\\s*$",
-        Pattern.MULTILINE).matcher(yaml);
-    while (m.find())
-      found.put(m.group(1), m.group(2) + " -> " + m.group(3));
-    return found;
-  }
-
-  /**
    * Every Dockerfile that ships a JVM ArcadeDB image, keyed by where it lives. The custom-distribution
    * one is generated by a heredoc inside the builder script rather than committed as a file, which is
    * exactly why it drifted out of step with the one next to it.
@@ -707,34 +487,6 @@ class PackagingManifestsTest {
         .matcher(dockerfile);
     assertThat(m.find()).as("the Dockerfile does not define %s", name).isTrue();
     return m.group(1);
-  }
-
-  /**
-   * Where the StatefulSet's volume claim is mounted. Every container mounting it must use the same path, or a directory
-   * the init container seeds is not the one the server reads.
-   */
-  private static String claimMountPath(final String manifest) {
-    final Matcher claim = Pattern.compile("(?s)volumeClaimTemplates:\\s+- metadata:\\s+name: (\\S+)").matcher(manifest);
-    assertThat(claim.find()).as("the StatefulSet declares no volume claim").isTrue();
-    final List<String> paths = matches(
-        Pattern.compile("- name: " + Pattern.quote(claim.group(1)) + "\\s+mountPath: (\\S+)"), manifest);
-    assertThat(paths).as("no container mounts the volume claim '%s'", claim.group(1)).isNotEmpty();
-    assertThat(new LinkedHashSet<>(paths)).as("the volume claim is mounted at different paths").hasSize(1);
-    return paths.getFirst();
-  }
-
-  private static String imageOf(final String containerSpec) {
-    final Matcher image = Pattern.compile("^\\s*image: (\\S+)\\s*$", Pattern.MULTILINE).matcher(containerSpec);
-    assertThat(image.find()).isTrue();
-    return image.group(1);
-  }
-
-  /**
-   * Names of the {@code - name: X} entries of the block introduced by the given key, scoped by
-   * indentation so a same-named entry in a sibling block cannot satisfy the lookup.
-   */
-  private static Set<String> blockEntryNames(final String yaml, final String blockKey) {
-    return collectBlock(yaml, blockKey, ENTRY_NAME);
   }
 
   /**
@@ -818,7 +570,7 @@ class PackagingManifestsTest {
   private static Path repositoryRoot() {
     Path candidate = new File("").getAbsoluteFile().toPath();
     while (candidate != null) {
-      if (Files.isRegularFile(candidate.resolve(STATEFULSET)) && Files.isRegularFile(candidate.resolve(COMPOSE)))
+      if (Files.isRegularFile(candidate.resolve(DOCKERFILE)) && Files.isRegularFile(candidate.resolve(COMPOSE)))
         return candidate;
       candidate = candidate.getParent();
     }

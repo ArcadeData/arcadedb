@@ -6,11 +6,6 @@ SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcade
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = ["k8s/helm/**/*"]
-SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
-SPDX-License-Identifier = "Apache-2.0"
-
-[[annotations]]
 path = ["e2e-js/*.json"]
 SPDX-FileCopyrightText = "Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)"
 SPDX-License-Identifier = "Apache-2.0"
