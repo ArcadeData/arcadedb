@@ -278,6 +278,64 @@ class Issue10428ContinuousAggregateDeleteTest extends TestHelper {
         new Bucket(day0 + 48 * HOUR, "a", 16));
   }
 
+  // ---- failures
+
+  @Test
+  void aDeleteInATransactionThatRollsBackStillRecordsTheRangeForTheNextRefresh() {
+    createSourceAndAggregate();
+    insert(H0, "a", 10);
+    insert(H0 + 2 * HOUR, "a", 20);
+    refresh();
+
+    // the samples are not part of the transaction, so the rollback does not bring them back; it does drop the refresh that was to
+    // follow the commit
+    database.begin();
+    delete("ts = " + H0);
+    database.rollback();
+
+    assertThat(buckets()).as("not refreshed yet").containsExactly(new Bucket(H0, "a", 10), new Bucket(H0 + 2 * HOUR, "a", 20));
+    assertThat(pendingFrom()).isEqualTo(H0);
+
+    refresh();
+
+    assertThat(buckets()).containsExactly(new Bucket(H0 + 2 * HOUR, "a", 20));
+    assertThat(pendingFrom()).isEqualTo(Long.MIN_VALUE);
+  }
+
+  @Test
+  void aRefreshThatFailsWhileRecomputingTheRangeLeavesTheBucketsAndTheRecordAsTheyWere() {
+    createSourceAndAggregate();
+    insert(H0 + 1_000, "a", 10);
+    insert(H0 + 2_000, "a", 8);
+    insert(H0 + 2 * HOUR, "a", 20);
+    refresh();
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 18), new Bucket(H0 + 2 * HOUR, "a", 20));
+    // the backing type refuses a total under 15
+    database.command("sql", "CREATE PROPERTY A.total DOUBLE").close();
+    database.command("sql", "ALTER PROPERTY A.total MIN 15").close();
+
+    // the delete leaves the first bucket with 8: the refresh it schedules deletes the old row of the bucket and then fails to insert
+    // the new one, so it must roll back as a whole
+    delete("ts = " + (H0 + 1_000));
+
+    assertThat(buckets()).as("the old row of the bucket is still there").containsExactly(new Bucket(H0, "a", 18),
+        new Bucket(H0 + 2 * HOUR, "a", 20));
+    assertThat(pendingFrom()).as("and the range is still recorded").isEqualTo(H0 + 1_000);
+
+    // once the backing type accepts the row, the next refresh finishes the job
+    database.command("sql", "ALTER PROPERTY A.total MIN 1").close();
+    refresh();
+
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 8), new Bucket(H0 + 2 * HOUR, "a", 20));
+    assertThat(pendingFrom()).isEqualTo(Long.MIN_VALUE);
+  }
+
+  /** The start of the range the aggregate records as invalidated, or {@code Long.MIN_VALUE} when it records none. */
+  private long pendingFrom() {
+    final JSONObject definition = ((LocalSchema) database.getSchema()).toJSON().getJSONObject("continuousAggregates").getJSONObject("A");
+    return definition.getLong("invalidatedFromTs", Long.MIN_VALUE);
+  }
+
   // ---- the record lives in the schema
 
   @Test

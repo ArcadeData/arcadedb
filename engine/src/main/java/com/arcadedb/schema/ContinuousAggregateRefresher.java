@@ -258,7 +258,7 @@ public class ContinuousAggregateRefresher {
     database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?",
         new Date(first), new Date(last));
 
-    final long end = interval > 0 ? Math.min(last + interval, watermark) : watermark;
+    final long end = interval > 0 && last <= Long.MAX_VALUE - interval ? Math.min(last + interval, watermark) : watermark;
     try (final ResultSet rs = database.query("sql", buildRangeQuery(ca, first, end))) {
       while (rs.hasNext())
         saveRow(database, backingTypeName, rs.next());
