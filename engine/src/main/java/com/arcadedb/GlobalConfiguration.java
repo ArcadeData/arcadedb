@@ -1527,6 +1527,21 @@ public enum GlobalConfiguration {
       Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
       Integer.class, 1),
 
+  VECTOR_INDEX_NATIVE_VECTORIZATION("arcadedb.vectorIndex.nativeVectorization", SCOPE.JVM,
+      """
+      Lets jvector (4.0.2 and later) run its distance math in its native Highway library, called through the Java \
+      foreign function API, instead of the Java Vector API. Off by default: on some CPUs the per-call cost of the \
+      native calls made building an index of short vectors was higher than the Vector API's. Turn it on to try it \
+      on your hardware. It needs Java 22 or later, Linux on x86_64 or aarch64, \
+      '--add-modules jdk.incubator.vector' and '--enable-native-access=ALL-UNNAMED' (without the last, Java prints a \
+      warning and still loads it). jvector copies the library from its jar to the directory 'java.io.tmpdir' and loads \
+      it from there; if that fails (for example a read-only or noexec directory) it logs a warning and uses the Java \
+      Vector API. jvector chooses once per JVM, when the first database is opened, so set this before that. An explicit \
+      '-Djvector.enable_native_vectorization=true|false' (or its deprecated alias \
+      'jvector.experimental.enable_native_vectorization') wins over this setting, and so does \
+      '-Djvector.vectorization_provider'. A GraalVM native image never uses the native library.""",
+      Boolean.class, false),
+
   VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT("arcadedb.vectorIndex.rebuildMaxHeapPercent", SCOPE.DATABASE,
       """
       Share of the currently AVAILABLE heap (percentage) that an online vector graph rebuild's estimated peak \

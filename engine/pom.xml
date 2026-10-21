@@ -66,6 +66,9 @@
         -->
         <graalvm.version>25.4.4.1.1</graalvm.version>
         <!--
+            4.0.2 bundles a native (Highway, FFM) provider that it switches on by default on Linux x86_64 and aarch64.
+            VectorApiSupport.configureJVectorProvider() sets jvector.enable_native_vectorization from
+            arcadedb.vectorIndex.nativeVectorization (off by default) unless the user set the jvector property.
             Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:
             - GraphIndexBuilder.build() is unrolled by hand in buildGraphFromScratchExclusively() (see the
@@ -81,7 +84,7 @@
               View.close() is a documented no-op as of 4.0.0-rc.9 - re-verify that close() still touches no
               live state before relying on it after a version bump.
         -->
-        <jvector.version>4.0.1</jvector.version>
+        <jvector.version>4.0.2</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
         <buildnumber-maven-plugin.version>3.3.1</buildnumber-maven-plugin.version>
