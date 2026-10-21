@@ -20,9 +20,13 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+
+import java.util.logging.Level;
 
 /**
  * Builder class for lsm vector indexes.
@@ -339,6 +343,17 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   public TypeLSMVectorIndexBuilder withFusedPQ(final boolean fusedPQ) {
     vectorMetadata().fusedPQ = fusedPQ;
     return this;
+  }
+
+  @Override
+  public TypeIndex create() {
+    final LSMVectorIndexMetadata vectorMetadata = vectorMetadata();
+    // Said once, here, not once per bucket index; the statement is not refused, since existing DDL may already carry both settings (issue #10514)
+    if (vectorMetadata.fusedPQ && vectorMetadata.pqClusters != 256)
+      LogManager.instance().log(this, Level.WARNING,
+          "Index on '%s': fusedPQ is ignored because pqClusters is %d; FusedPQ needs 256 clusters, so the graph file is written without it",
+          vectorMetadata.typeName, vectorMetadata.pqClusters);
+    return super.create();
   }
 
   @Override

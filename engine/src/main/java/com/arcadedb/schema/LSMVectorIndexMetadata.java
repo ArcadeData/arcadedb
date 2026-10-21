@@ -100,8 +100,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      pqSubspaces              = -1;    // Number of subspaces (M), -1 = auto (dimensions/4, capped at 512)
   public int                      pqClusters               = 256;   // Clusters per subspace (K), typically 256 for byte-sized codes
   public boolean                  pqCenterGlobally         = true;  // Whether to globally center vectors before PQ encoding
-  public boolean                  fusedPQ                  = false; // Whether the graph file stores the PQ codes of the neighbours inline in every node (jvector FusedPQ); PRODUCT only
-  public int                      pqTrainingLimit          = 128000; // Max vectors the PQ codebook is trained on, a random sample of the indexed vectors (JVector caps it at 128K)
+  // Whether the graph file stores the PQ codes of the neighbours inline in every node (jvector FusedPQ); PRODUCT only
+  public boolean                  fusedPQ                  = false;
+  public int                      pqTrainingLimit          = 128000; // Max vectors the PQ codebook is trained on, a sample (JVector caps it at 128K)
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);

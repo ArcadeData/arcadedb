@@ -117,6 +117,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.PrimitiveIterator;
 import java.util.PriorityQueue;
+import java.util.Random;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -4722,21 +4723,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * @return {@code sample} distinct ordinals out of {@code [0, total)}, ascending, the same ones for the same arguments. Floyd's
-   *         algorithm: O(sample) memory however large {@code total} is, where shuffling an array of all ordinals costs 4
-   *         bytes per vector of the index to train on a few thousand of them
+   * @return {@code sample} distinct ordinals out of {@code [0, total)}, ascending, the same ones for the same arguments. Floyd's algorithm: O(sample)
+   *         memory however large {@code total} is, where shuffling an array of all ordinals costs 4 bytes per vector of the index to train on a few
+   *         thousand of them. Membership is tested in a primitive open-addressing table, so no {@code Integer} is allocated per ordinal.
    */
   static int[] sampleOrdinals(final int total, final int sample) {
-    final java.util.Random random = new java.util.Random(PQ_TRAINING_SAMPLE_SEED);
-    final java.util.Set<Integer> picked = new java.util.HashSet<>(sample * 2);
+    final Random random = new Random(PQ_TRAINING_SAMPLE_SEED);
+    // A power of two of at least twice the sample, so the load factor stays at or below one half; ordinals are never negative, so -1 marks a free slot
+    final int capacity = Integer.highestOneBit(Math.max(sample, 1) * 2 - 1) << 1;
+    final int mask = capacity - 1;
+    final int[] table = new int[capacity];
+    Arrays.fill(table, -1);
     for (int j = total - sample; j < total; j++) {
-      final int t = random.nextInt(j + 1);
-      picked.add(picked.contains(t) ? j : t);
+      int candidate = random.nextInt(j + 1);
+      int slot = candidate & mask;
+      boolean seen = false;
+      while (table[slot] != -1) {
+        if (table[slot] == candidate) {
+          seen = true;
+          break;
+        }
+        slot = (slot + 1) & mask;
+      }
+      if (seen) {
+        // Floyd: the ordinal drawn was taken already, so j itself, which no earlier round could have drawn, takes its place
+        candidate = j;
+        slot = candidate & mask;
+        while (table[slot] != -1)
+          slot = (slot + 1) & mask;
+      }
+      table[slot] = candidate;
     }
     final int[] ordinals = new int[sample];
     int i = 0;
-    for (final int ordinal : picked)
-      ordinals[i++] = ordinal;
+    for (final int ordinal : table)
+      if (ordinal != -1)
+        ordinals[i++] = ordinal;
     Arrays.sort(ordinals);
     return ordinals;
   }
@@ -8145,15 +8167,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph
-   * that has them score the walk and {@code exact} re-ranks what it finds; every other graph scores both on {@code exact}.
+   * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph that has them score the walk
+   * and {@code exact} re-ranks what it finds; every other graph scores both on {@code exact}.
    * <p>
-   * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour
-   * list, in <b>that view</b>, while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the
-   * view of the searcher, as jvector's {@code FusedPQ.approximateScoreFunctionFor} documents. Any graph file that has the feature is read through it, whatever the {@code fusedPQ} option says, so files written
-   * by releases that wrote it keep working. The reader that was switched
-   * off for returning one result passed {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no
-   * neighbours of the entry node and stopped there (issue #10514).
+   * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour list, in <b>that view</b>,
+   * while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the view of the searcher, as jvector's
+   * {@code FusedPQ.approximateScoreFunctionFor} documents. Any graph file that has the feature is read through it, whatever the {@code fusedPQ} option
+   * says, so files written by releases that wrote it keep working. The reader that was switched off for returning one result passed
+   * {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no neighbours of the entry node and stopped there (issue #10514).
    */
   private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
       final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
@@ -11881,6 +11902,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Single read, not a check-then-use, and this runs on the thread that owns the initial build while the
       // index is UNAVAILABLE (no concurrent COMPACT INDEX possible) - intentionally left out of #6536's
       // local-capture sweep.
+      // This 4-argument overload passes no PQ, so it never writes FusedPQ. CREATE INDEX and REBUILD INDEX do not reach this method today (issue #10514)
       graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
       // Final commit for graph

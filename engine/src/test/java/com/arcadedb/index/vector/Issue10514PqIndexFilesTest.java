@@ -20,6 +20,8 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.ListRandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
@@ -31,8 +33,10 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -232,6 +236,51 @@ class Issue10514PqIndexFilesTest extends TestHelper {
       assertThat(sample[0]).isGreaterThanOrEqualTo(0);
       assertThat(sample[sample.length - 1]).isLessThan(shape[0]);
       assertThat(LSMVectorIndex.sampleOrdinals(shape[0], shape[1])).isEqualTo(sample);
+    }
+  }
+
+  @Test
+  void fusedPqWithAnotherClusterCountWarnsOnceAtCreateIndexAndDoesNotFailTheStatement() {
+    final List<String> warnings = new ArrayList<>();
+    final Logger previous = LogManager.instance().getLogger();
+    try {
+      LogManager.instance().setLogger(new WarningCollector(warnings));
+      createIndex("DocWarn", "\"quantization\": \"PRODUCT\", \"pqClusters\": 32, \"fusedPQ\": true, ");
+      createIndex("DocQuiet", "\"quantization\": \"PRODUCT\", \"fusedPQ\": true, ");
+    } finally {
+      LogManager.instance().setLogger(previous);
+    }
+
+    assertThat(warnings).hasSize(1);
+    assertThat(warnings.getFirst()).contains("DocWarn").contains("fusedPQ").contains("pqClusters is 32");
+    assertThat(indexOf("DocWarn").getMetadata().fusedPQ).isTrue();
+  }
+
+  private record WarningCollector(List<String> warnings) implements Logger {
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7,
+        final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12, final Object arg13,
+        final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+      log(requester, level, message, exception, context, new Object[] { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
+          arg12, arg13, arg14, arg15, arg16, arg17 });
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        final Object... args) {
+      if (level != Level.WARNING || message == null || !message.contains("fusedPQ"))
+        return;
+      final List<Object> bound = new ArrayList<>();
+      if (args != null)
+        for (final Object arg : args)
+          if (arg != null)
+            bound.add(arg);
+      warnings.add(bound.isEmpty() ? message : String.format(message, bound.toArray()));
+    }
+
+    @Override
+    public void flush() {
     }
   }
 

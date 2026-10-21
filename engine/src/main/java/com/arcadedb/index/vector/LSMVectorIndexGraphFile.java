@@ -206,12 +206,13 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
    */
   public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
                          final long chunkSizeMB, final ChunkCommitCallback chunkCallback) {
+    // No PQ is passed, so this route never writes FusedPQ; CREATE INDEX and REBUILD INDEX use the PQ-aware overload below (issue #10514)
     writeGraph(graph, vectors, chunkSizeMB, chunkCallback, null, null);
   }
 
   /**
-   * Write a graph to pages. When PQ data is provided and the index has the {@code fusedPQ} option (off by default, issue #10514), PQ codes are stored
-   * inline with graph nodes so that during search traversal, approximate distances are computed without separate I/O.
+   * Write a graph to pages. When PQ data is provided and the index has the {@code fusedPQ} option (off by default, issue #10514), PQ codes are stored inline
+   * with graph nodes so that during search traversal, approximate distances are computed without separate I/O.
    */
   public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
                          final long chunkSizeMB, final ChunkCommitCallback chunkCallback,
@@ -272,11 +273,10 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
                 "Writing graph WITHOUT inline vectors - topology only (vectors fetched from documents on-demand)");
       }
 
-      // FusedPQ stores PQ codes inline with graph nodes for cache-friendly approximate scoring during search
-      // traversal. Only written when the index asks for it (the fusedPQ option, off by default: the graph file gets several times larger, issue #10514). It is read whenever a graph file has it.
-      // FusedPQ requires a 256-cluster PQ; with a custom pqClusters configuration (issue #3160)
-      // we skip the FusedPQ optimization and persist topology + inline vectors only, otherwise
-      // the JVector constructor throws and prevents the graph from being persisted.
+      // FusedPQ stores PQ codes inline with graph nodes for cache-friendly approximate scoring during search traversal. Only written when the index asks for it
+      // (the fusedPQ option, off by default: the graph file gets several times larger, issue #10514). It is read whenever a graph file has it.
+      // FusedPQ requires a 256-cluster PQ; with a custom pqClusters configuration (issue #3160) we skip the FusedPQ optimization and persist topology + inline
+      // vectors only, otherwise the JVector constructor throws and prevents the graph from being persisted.
       final boolean hasFusedPQ = writeFusedPQ && pq != null && pqVectors != null && pq.getClusterCount() == 256;
       if (hasFusedPQ) {
         LogManager.instance().log(this, Level.INFO,
