@@ -57,6 +57,7 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
@@ -1196,11 +1197,26 @@ public class CypherOptimizer {
         relationship.getVariable(), targetVariable, relationship.getPathVariable());
     final VarLengthExpand.TraversalSpec traversal = new VarLengthExpand.TraversalSpec(relationship.getPattern(),
         direction, reverseResultPath, relationship.getPathMode());
+    // The hop's ends as written, whichever of them the plan starts from: the rule is the same in both directions
+    final boolean distinctEndpoints = VariableLengthDistinctEndpoints.applies(statement, null, relationship.getPattern(),
+        relationship.getSourceVariable(), relationship.getTargetVariable(), relationship.getPathVariable());
+
+    // A reachability search the view can answer alone walks its adjacency instead of the edge lists (issue #10548)
+    if (distinctEndpoints && GAVVarLengthExpand.isAnswerableByView(relationship.getPattern())) {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database,
+          relationship.getTypes().toArray(new String[0]));
+      if (provider != null) {
+        final double gavCost = CostModel.saturatingAdd(input.getEstimatedCost(), expansionCost * 0.1);
+        final GAVVarLengthExpand expand = new GAVVarLengthExpand(input, provider, variables, traversal, gavCost,
+            outputCardinality);
+        expand.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+        return expand;
+      }
+    }
+
     final VarLengthExpand expand = new VarLengthExpand(input, variables, traversal, totalCost, outputCardinality);
     expand.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
-    // The hop's ends as written, whichever of them the plan starts from: the rule is the same in both directions
-    expand.setDistinctEndpoints(VariableLengthDistinctEndpoints.applies(statement, null, relationship.getPattern(),
-        relationship.getSourceVariable(), relationship.getTargetVariable(), relationship.getPathVariable()));
+    expand.setDistinctEndpoints(distinctEndpoints);
     return expand;
   }
 

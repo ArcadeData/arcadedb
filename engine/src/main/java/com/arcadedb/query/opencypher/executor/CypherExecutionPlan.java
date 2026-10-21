@@ -105,14 +105,17 @@ import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
+import com.arcadedb.query.opencypher.executor.steps.DistinctEndpointCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
@@ -1576,8 +1579,14 @@ public class CypherExecutionPlan {
       if (countOpt != null) {
         currentStep = countOpt;
       } else if (statement.getReturnClause().hasAggregations()) {
+        // A reachability search counts its end vertices itself: no row is built per end vertex (issue #10548)
+        final AbstractExecutionStep endpointCount = tryCountDistinctEndpoints(statement.getReturnClause().getReturnItems(),
+            currentStep, context);
+        if (endpointCount != null)
+          currentStep = endpointCount;
         // The fused chain counts its paths itself and answers the aggregated rows: no step aggregates them (issue #9738)
-        final boolean fusedIntoChain = tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep);
+        final boolean fusedIntoChain =
+            endpointCount != null || tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep);
         if (!fusedIntoChain) {
           // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
           final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
@@ -4878,6 +4887,56 @@ public class CypherExecutionPlan {
         groupOutputNames.toArray(new String[0]),
         countOutput);
     return true;
+  }
+
+  /**
+   * Replaces the rows of {@code MATCH (a)-[:T*0|1..k]->(b) [WHERE b <> a] RETURN count(DISTINCT b)}, walked through a Graph
+   * Analytical View, with a {@link DistinctEndpointCountStep} that counts the end vertices while the walks run (issue #10548):
+   * the expansion would otherwise build one row per end vertex, the filter test each, and the aggregation hash them.
+   * <p>
+   * Only where nothing but that count reads the rows: the statement is the MATCH and the RETURN, the RETURN is one
+   * {@code count(DISTINCT)} of one end of the expansion, and the physical plan is the {@link GAVVarLengthExpand} itself or a
+   * filter over it testing nothing but {@code b <> a} between its two ends. The expansion is then in distinct-endpoint mode,
+   * the only one a {@link GAVVarLengthExpand} has, so each row it would produce is a distinct (start, end) pair.
+   *
+   * @return the counting step, or null to keep the rows and aggregate them
+   */
+  private AbstractExecutionStep tryCountDistinctEndpoints(final List<ReturnClause.ReturnItem> items,
+      final AbstractExecutionStep currentStep, final CommandContext context) {
+    if (physicalPlan == null || !(currentStep instanceof OptimizedMatchStep) || items.size() != 1
+        || statement.getWhereClause() != null || statement.getClausesInOrder() == null
+        || statement.getClausesInOrder().size() != 2)
+      return null;
+    final Expression expression = items.getFirst().getExpression();
+    if (!(expression instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
+        || !count.isDistinct() || count.getArguments().size() != 1
+        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+      return null;
+
+    PhysicalOperator root = physicalPlan.getRootOperator();
+    boolean excludeSource = false;
+    if (root instanceof FilterOperator filter && filter.getChild() instanceof GAVVarLengthExpand expand) {
+      if (!(filter.getPredicate() instanceof ComparisonExpression comparison)
+          || comparison.getOperator() != ComparisonExpression.Operator.NOT_EQUALS
+          || !(comparison.getLeft() instanceof VariableExpression left) || !(comparison.getRight() instanceof VariableExpression right)
+          || !isPairOfEnds(expand, left.getVariableName(), right.getVariableName()))
+        return null;
+      excludeSource = true;
+      root = expand;
+    }
+    if (!(root instanceof GAVVarLengthExpand expand) || expand.getSourceVariable().equals(expand.getTargetVariable()))
+      return null;
+    // The counted end is the one the walk reaches, or the one the plan starts it from when it anchored on the other end
+    final boolean countSources = expand.getSourceVariable().equals(counted.getVariableName());
+    if (!countSources && !expand.getTargetVariable().equals(counted.getVariableName()))
+      return null;
+    return new DistinctEndpointCountStep(expand, excludeSource, countSources, items.getFirst().getOutputName(), context);
+  }
+
+  private static boolean isPairOfEnds(final VarLengthExpand expand, final String left, final String right) {
+    final String source = expand.getSourceVariable();
+    final String target = expand.getTargetVariable();
+    return (left.equals(source) && right.equals(target)) || (left.equals(target) && right.equals(source));
   }
 
   /**

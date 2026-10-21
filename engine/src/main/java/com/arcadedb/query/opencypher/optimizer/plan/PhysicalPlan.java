@@ -23,6 +23,7 @@ import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.NodeHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
@@ -137,6 +138,8 @@ public class PhysicalPlan {
       provider = expand.getProvider();
     else if (operator instanceof GAVFusedChainOperator chain)
       provider = chain.getProvider();
+    else if (operator instanceof GAVVarLengthExpand expand)
+      provider = expand.getProvider();
     else
       provider = null;
     if (provider != null && !provider.isReady())

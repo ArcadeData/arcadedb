@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
@@ -29,6 +31,8 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
+import com.arcadedb.query.opencypher.traversal.GAVDistinctEndpointTraverser;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.ast.PathMode;
@@ -87,6 +91,8 @@ public class ExpandPathStep extends AbstractExecutionStep {
    * once per start vertex, found with a visited set, instead of one row per path.
    */
   private boolean distinctEndpoints;
+  // The view the last execution walked, for the profile: null when it walked the records
+  private volatile String viewName;
   /**
    * Created only when the target node pattern carries Cypher 25 dynamic {@code $(expression)}
    * labels: every other pattern shape resolves its labels statically and must not pay for it.
@@ -142,6 +148,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    final GAVDistinctEndpointTraverser viewTraverser = distinctEndpoints ? createViewTraverser(context) : null;
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -273,7 +280,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
               final VariableLengthPathTraverser traverser = createTraverser(lastResult);
               if (distinctEndpoints && !GraphTraverser.isBoundRelationshipList(lastResult, relationshipVariable)) {
                 currentPaths = null;
-                currentEndpoints = traverser.traverseDistinctEndpoints(sourceVertex);
+                // A start vertex the view does not map (created after its last build) walks the records
+                final Iterator<Vertex> fromView = viewTraverser != null ? viewTraverser.traverse(sourceVertex) : null;
+                currentEndpoints = fromView != null ? fromView : traverser.traverseDistinctEndpoints(sourceVertex);
               } else if (GraphTraverser.isBoundRelationshipList(lastResult, relationshipVariable)) {
                 final TraversalPath bound = traverser.matchBoundPath(sourceVertex,
                     lastResult.getProperty(relationshipVariable), reverseResultPath, relationshipVariable);
@@ -314,6 +323,25 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
     // If the target variable is already bound from a previous step, only accept paths that end at the bound vertex
     return boundTarget == null || targetVertex.getIdentity().equals(boundTarget.getIdentity());
+  }
+
+  /**
+   * The walk of the distinct end vertices through a ready Graph Analytical View that covers the pattern's types and every vertex
+   * type, or null to walk the records (issue #10548). Asked at execution, where the plan of this step is built: a view the
+   * statement's own uncommitted writes are missing from is never returned. A relationship with an inline property map or
+   * {@code WHERE} tests what no view stores, and walks the records.
+   */
+  private GAVDistinctEndpointTraverser createViewTraverser(final CommandContext context) {
+    if (!GraphTraversalProviderRegistry.hasAnyProviders() || !GAVVarLengthExpand.isAnswerableByView(pattern))
+      return null;
+    final String[] types = pattern.hasTypes() ? pattern.getTypes().toArray(new String[0]) : new String[0];
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, types);
+    if (provider == null)
+      return null;
+    viewName = provider.getName();
+    final Direction direction = directionOverride != null ? directionOverride : pattern.getDirection();
+    return new GAVDistinctEndpointTraverser(provider, direction, types, pattern.getEffectiveMinHops(),
+        pattern.getEffectiveMaxHops(), pathMode, context);
   }
 
   /**
@@ -432,7 +460,10 @@ public class ExpandPathStep extends AbstractExecutionStep {
     builder.append("(").append(sourceVariable).append(")");
     builder.append(pattern);
     builder.append("(").append(targetVariable).append(")");
-    builder.append(" [").append(distinctEndpoints ? "DISTINCT ENDPOINTS" : useBFS ? "BFS" : "DFS").append("]");
+    builder.append(" [").append(distinctEndpoints ? "DISTINCT ENDPOINTS" : useBFS ? "BFS" : "DFS");
+    if (viewName != null)
+      builder.append(", provider=").append(viewName);
+    builder.append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
