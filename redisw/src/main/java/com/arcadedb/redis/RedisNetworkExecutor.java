@@ -1130,7 +1130,8 @@ public class RedisNetworkExecutor extends Thread {
    * Resolves a database by name, enforcing that the authenticated user is allowed to access it and
    * binding the user into {@link DatabaseContext} so the engine's per-user permission gates enforce for
    * the subsequent record/index operations. Every command that touches a database MUST resolve it
-   * through this method rather than calling {@code server.getDatabase(...)} directly.
+   * through this method rather than calling {@code server.getDatabase(...)} directly, which sees past the marks an operator puts
+   * on a name (a restore in progress, a {@code close database}): this method resolves through {@code getDatabaseForClient}.
    */
   private DatabaseInternal getAuthorizedDatabase(final String databaseName) {
     if (authenticatedUser == null)
@@ -1139,7 +1140,7 @@ public class RedisNetworkExecutor extends Thread {
     if (!authenticatedUser.canAccessToDatabase(databaseName))
       throw RedisException.withKind("NOPERM", "this user has no permissions to access the database '" + databaseName + "'");
 
-    final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+    final DatabaseInternal database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
     final SecurityDatabaseUser user = authenticatedUser.getDatabaseUser(database);
 
     if (Thread.currentThread() != this) {
