@@ -590,6 +590,10 @@ public class ArcadeDBServer {
     // file never reaches the process-wide enum. Withdrawn in stopInternal() and on a failed start.
     Profiler.publishDiskSpaceConfiguration(configuration);
 
+    // Issue #10536: before anything reads the configuration directory, a directory moved off <root>/config (an empty
+    // volume claim) gets the shipped defaults it is missing, from this very image and without a shell.
+    ConfigDirectorySeeder.seedFromRoot(serverRootPath, serverConfigPath);
+
     // Armed before any database is opened: the HA plugin that wraps them starts only after the network listeners.
     awaitingHAWrapper = isHARequested();
 
