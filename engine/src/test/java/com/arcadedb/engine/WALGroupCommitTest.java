@@ -89,6 +89,47 @@ class WALGroupCommitTest extends TestHelper {
     });
   }
 
+  /**
+   * Group commits mixed with commits that do not defer their flush on the same type, so each reads pages the others published:
+   * a synchronous page flush (its WAL flush is its own, after the pending group commits are flushed) and txWalFlush 0 (its
+   * pages wait for the group commits they may carry). All of them must survive a crash and recover without a version gap.
+   */
+  @Test
+  void groupCommitsMixedWithCommitsThatDoNotDeferSurviveACrash() throws Exception {
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final List<Thread> workers = new ArrayList<>();
+    for (int t = 0; t < 6; t++) {
+      final int thread = t;
+      final Thread worker = new Thread(() -> {
+        try {
+          database.begin();
+          if (thread == 4)
+            ((DatabaseInternal) database).getTransaction().setAsyncFlush(false);
+          else if (thread == 5)
+            ((DatabaseInternal) database).getTransaction().setWALFlush(WALFile.FlushType.NO);
+          database.rollback();
+          for (int i = 0; i < 50; i++) {
+            final int item = i;
+            database.transaction(() -> database.newDocument(TYPE).set("id", "mixed-" + thread + "-" + item).save());
+          }
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      });
+      workers.add(worker);
+      worker.start();
+    }
+    for (final Thread worker : workers)
+      worker.join();
+    assertThat(failure.get()).isNull();
+
+    ((DatabaseInternal) database).kill();
+    database.close();
+    database = factory.open();
+
+    assertThat(database.countType(TYPE, false)).isEqualTo(300);
+  }
+
   @Test
   void withoutTheSettingNothingIsDeferred() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_GROUP_COMMIT, false);

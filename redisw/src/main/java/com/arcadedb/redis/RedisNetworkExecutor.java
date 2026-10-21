@@ -82,8 +82,10 @@ public class RedisNetworkExecutor extends Thread {
   private          int                 bytesRead        = 0;
   /** Replies written to the channel's buffer and not flushed yet, see {@link #queueReply}. */
   private          boolean             repliesPending   = false;
-  private          byte[]              pendingReplies   = new byte[16 * 1024];
+  private          byte[]              pendingReplies   = new byte[INITIAL_PENDING_REPLY_BYTES];
   private          int                 pendingReplyLength = 0;
+  // bytes the batch being built has queued, to give a grown buffer back once batches stop needing it (see flushReplies)
+  private          int                 batchReplyBytes  = 0;
   private final    byte[]              tokenBytes       = new byte[MAX_TOKEN_LENGTH];
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
@@ -115,6 +117,7 @@ public class RedisNetworkExecutor extends Thread {
    * its own array, and the buffer is written out when it would overflow, so one large value does not stay pinned.
    */
   private static final int MAX_PENDING_REPLY_BYTES = 256 * 1024;
+  private static final int INITIAL_PENDING_REPLY_BYTES = 16 * 1024;
 
   /**
    * Holds the resolved key and database from key resolution.
@@ -274,6 +277,7 @@ public class RedisNetworkExecutor extends Thread {
     } else
       writeReplyBytes(RedisBinaryCodec.encode(response));
 
+    batchReplyBytes += chars;
     repliesPending = true;
     response.setLength(0);
   }
@@ -296,6 +300,11 @@ public class RedisNetworkExecutor extends Thread {
       repliesPending = false;
       writePendingReplies();
       channel.flush();
+      // A buffer one large batch grew is given back when a batch uses less than a quarter of it, so an idle connection does
+      // not keep up to MAX_PENDING_REPLY_BYTES; a connection that keeps sending large batches keeps it, without reallocating
+      if (pendingReplies.length > INITIAL_PENDING_REPLY_BYTES && batchReplyBytes < pendingReplies.length / 4)
+        pendingReplies = new byte[INITIAL_PENDING_REPLY_BYTES];
+      batchReplyBytes = 0;
     }
   }
 

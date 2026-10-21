@@ -462,7 +462,29 @@ public class TransactionManager {
 
   public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
       final Binary bufferChanges) {
+    // A commit that flushes its own WAL must not become durable on top of a group commit's write that is not: it may have
+    // read that transaction's published pages, and recovery would find its page versions with the previous one missing. So
+    // the deferred writes appended so far are flushed first - BEFORE this append, so a failure here leaves no WAL record of
+    // this transaction behind
+    if (sync != WALFile.FlushType.NO) {
+      final long pending = getPendingWALSyncTicket();
+      if (pending > 0)
+        try {
+          awaitWALDurable(pending);
+        } catch (final IOException e) {
+          throw new TransactionException("Cannot flush the WAL of the group commits before writing transaction " + txId, e);
+        }
+    }
     writeTransactionToWAL(pages, sync, txId, bufferChanges, false);
+  }
+
+  /**
+   * The ticket of the last group-commit WAL write when it is not durable yet, 0 when every one is: what a page published
+   * now must wait for before reaching its data file, since its transaction may have read any of those writes.
+   */
+  public long getPendingWALSyncTicket() {
+    final long written = walWriteSequence.get();
+    return written > walDurableSequence ? written : 0;
   }
 
   /**

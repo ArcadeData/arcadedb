@@ -228,8 +228,9 @@ public enum GlobalConfiguration {
       every commit that was waiting for one, where each used to flush on its own while holding the locks of the files it \
       wrote, which serialized every commit on the same type behind the disk's flush time. A page never reaches its data \
       file before the WAL that describes it. The transaction is visible to other transactions from the moment it is \
-      published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to embedded and leader \
-      commits with the asynchronous page flush (the default)""",
+      published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to the commits of a database \
+      that is not replicated (embedded, or served by a single server) with the asynchronous page flush (the default): \
+      the commits of an HA cluster go through the replication log and are not affected""",
       Boolean.class, false),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,

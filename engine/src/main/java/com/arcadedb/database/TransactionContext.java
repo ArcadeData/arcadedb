@@ -1008,12 +1008,14 @@ public class TransactionContext implements Transaction {
     afterCommitCallbacks = null;
     final boolean commitPointWasReached = commitPointReached;
     final long walSyncTicket = deferredWALSyncTicket;
+    // reset() clears the id, which the failure of the flush has to name
+    final long committedTxId = txId;
     reset();
     if (walSyncTicket > 0)
       // Group commit: the locks are released, so the commits arriving now can append while this one waits, and share its
       // flush. Before the callbacks, which are told the transaction is committed
       try {
-        awaitDeferredWALSync(walSyncTicket);
+        awaitDeferredWALSync(walSyncTicket, committedTxId);
       } catch (final RuntimeException e) {
         if (callbacks != null && commitPointWasReached)
           abandonOrderedCallbacks(callbacks, 0);
@@ -1062,13 +1064,13 @@ public class TransactionContext implements Transaction {
    * transactions may already read but that is not durable, so the database is fenced: it must be closed and reopened, and
    * recovery replays what reached the disk.
    */
-  private void awaitDeferredWALSync(final long walSyncTicket) {
+  private void awaitDeferredWALSync(final long walSyncTicket, final long committedTxId) {
     try {
       database.getTransactionManager().awaitWALDurable(walSyncTicket);
     } catch (final IOException e) {
       if (database.getEmbedded() instanceof LocalDatabase localDatabase)
-        localDatabase.fenceForRecovery("the WAL flush of tx " + txId + " failed after its pages were published", e);
-      throw new TransactionException("Transaction " + txId + " was applied but its WAL could not be flushed to disk", e);
+        localDatabase.fenceForRecovery("the WAL flush of tx " + committedTxId + " failed after its pages were published", e);
+      throw new TransactionException("Transaction " + committedTxId + " was applied but its WAL could not be flushed to disk", e);
     }
   }
 
@@ -2895,11 +2897,14 @@ public class TransactionContext implements Transaction {
       // never by aborting.
       // #8492: nothing writes these images again - the transaction drops them at reset() - so the read cache can
       // share their arrays instead of copying every page
+      // The WAL rule under group commit: no page reaches its data file before the WAL writes it may carry are durable. Its own
+      // write when it deferred the flush, and in any case every deferred write appended before now: a transaction that did not
+      // defer (txWalFlush 0, a synchronous page flush) may still have read, and so carries, another's unflushed changes
+      final long pageWALSyncTicket = Math.max(deferredWALSyncTicket, database.getTransactionManager().getPendingWALSyncTicket());
       for (final MutablePage page : pagesToPublish) {
         page.markPublished();
-        // the WAL rule under group commit: no page reaches its data file before the WAL write describing it is durable
-        if (deferredWALSyncTicket > 0)
-          page.setWALSyncTicket(deferredWALSyncTicket);
+        if (pageWALSyncTicket > 0)
+          page.setWALSyncTicket(pageWALSyncTicket);
       }
       database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
 
