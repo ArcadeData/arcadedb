@@ -3054,7 +3054,7 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
-        // ISSUE #10421: EVERYTHING THAT CAN REFUSE IS ASKED BEFORE THE FIRST CHANGE. The sub types are unlinked, the indexes
+        // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
         // (and saved): the file of an index that cannot be deleted, the lock of a file another thread holds. The files are
         // probed here, and the locks of the index files taken once, up front, so the drops below re-acquire what is held

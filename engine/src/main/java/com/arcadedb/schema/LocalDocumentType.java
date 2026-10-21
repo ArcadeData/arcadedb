@@ -475,7 +475,7 @@ public class LocalDocumentType implements DocumentType {
       final int position = superTypes.indexOf(former);
       final int subPosition = former.subTypes.indexOf(this);
       unlinkSuperType(former);
-      // ISSUE #10421: A REFUSAL BEFORE THE FIRST SUB-INDEX IS DROPPED PUTS THE LINK BACK, so the statement either completes or
+      // issue #10421: a refusal before the first sub-index is dropped puts the link back, so the statement either completes or
       // leaves the type as it found it. Nothing irreversible has happened until then: the link is the in-memory part
       final boolean[] dropping = new boolean[1];
       try {
@@ -495,7 +495,7 @@ public class LocalDocumentType implements DocumentType {
     superTypes.add(Math.min(position, superTypes.size()), superType);
     superType.subTypes.add(Math.min(subPosition, superType.subTypes.size()), this);
     superType.rebuildPolymorphicBucketsCache();
-    // THE INHERITED PROPERTIES CHANGED BACK
+    // the inherited properties changed back
     schema.typesChanged();
   }
 
@@ -534,7 +534,7 @@ public class LocalDocumentType implements DocumentType {
     final Set<TypeIndex> affectedWrappers = Collections.newSetFromMap(new IdentityHashMap<>());
     collectSubIndexesNoLongerCovered(formerSuperType, new HashSet<>(), orphans, affectedWrappers);
 
-    // ISSUE #10421: THE FILES OF THE SUB-INDEXES TO DROP ARE PROBED AND LOCKED BEFORE THE FIRST OF THEM IS DROPPED, so a refusal
+    // issue #10421: the files of the sub-indexes to drop are probed and locked before the first of them is dropped, so a refusal
     // leaves every one of them in place (the caller puts the link back). `dropping` says the first drop has started
     final List<Integer> fileIds = new ArrayList<>();
     for (final String indexName : orphans) {
@@ -2722,9 +2722,9 @@ public class LocalDocumentType implements DocumentType {
       throw new SchemaException("Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name
           + "', because the bucket is not associated to the type '" + getName() + "'");
 
-    // ISSUE #10421: THE SUB-INDEXES ON THE BUCKET ARE DROPPED AFTER IT IS DETACHED, and a refusal from one of them left the
+    // issue #10421: the sub-indexes on the bucket are dropped after it is detached, and a refusal from one of them left the
     // bucket detached with the sub-indexes before it gone and the ones after it pointing at a bucket the type no longer has.
-    // Their files are probed, and their locks taken once, BEFORE anything changes; the drops below re-acquire what is held
+    // Their files are probed, and their locks taken once, before anything changes; the drops below re-acquire what is held
     final List<Integer> subIndexFiles = new ArrayList<>();
     for (final TypeIndex idx : getAllIndexes(true))
       for (final IndexInternal subIndex : idx.getIndexesOnBuckets())

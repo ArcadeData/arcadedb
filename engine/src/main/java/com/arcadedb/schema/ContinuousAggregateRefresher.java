@@ -193,9 +193,8 @@ public class ContinuousAggregateRefresher {
 
     final boolean inTransaction = database.isTransactionActive();
     for (final ContinuousAggregate aggregate : aggregates) {
-      if (!sourceTypeName.equals(aggregate.getSourceTypeName()))
+      if (!(aggregate instanceof ContinuousAggregateImpl impl) || !sourceTypeName.equals(impl.getSourceTypeName()))
         continue;
-      final ContinuousAggregateImpl impl = (ContinuousAggregateImpl) aggregate;
       final Runnable refresh = () -> {
         try {
           incrementalRefresh(database, impl);

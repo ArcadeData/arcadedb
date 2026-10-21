@@ -256,6 +256,28 @@ class Issue10428ContinuousAggregateDeleteTest extends TestHelper {
         new Bucket(day0 + 48 * HOUR, "a", 16));
   }
 
+  @Test
+  void aBucketOfATimezoneGridIsRebuiltWholeNotFromAPartOfItsSamples() {
+    database.command("sql", "CREATE TIMESERIES TYPE S TIMESTAMP ts TAGS (h STRING) FIELDS (v DOUBLE)");
+    // days that start at local midnight in UTC+08:00, which is 16:00 UTC
+    database.command("sql", "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1d', ts, {'timezone': '+08:00'}) AS hr, h, "
+        + "sum(v) AS total FROM S GROUP BY hr, h");
+    final long day0 = H0 - (H0 % (24 * HOUR)) + 16 * HOUR; // a bucket start of that grid
+    insert(day0 + 1 * HOUR, "a", 1);
+    insert(day0 + 5 * HOUR, "a", 2);
+    insert(day0 + 20 * HOUR, "a", 4);
+    insert(day0 + 24 * HOUR + HOUR, "a", 8);
+    insert(day0 + 48 * HOUR + HOUR, "a", 16);
+    refresh();
+    assertThat(buckets().stream().map(Bucket::total)).containsExactly(7.0, 8.0, 16.0);
+
+    // a delete that starts in the middle of the first bucket of the grid
+    delete("ts = " + (day0 + 5 * HOUR));
+
+    assertThat(buckets()).containsExactly(new Bucket(day0, "a", 5), new Bucket(day0 + 24 * HOUR, "a", 8),
+        new Bucket(day0 + 48 * HOUR, "a", 16));
+  }
+
   // ---- the record lives in the schema
 
   @Test
