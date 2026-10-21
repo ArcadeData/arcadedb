@@ -52,7 +52,7 @@ class Issue10514PqIndexFilesTest extends TestHelper {
   private static final int VECTORS    = 3000;
 
   @Test
-  void aProductGraphFileIsAboutAsLargeAsTheGraphFileWithoutQuantization() {
+  void aProductGraphIsWrittenWithTheFusedPqFeatureAndTheFileIsLargerForIt() throws Exception {
     createIndex("DocNone", "");
     createIndex("DocPq", "\"quantization\": \"PRODUCT\", ");
     insert("DocNone", VECTORS);
@@ -64,26 +64,36 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     pq.buildVectorGraphNow();
     assertThat(pq.isPQSearchAvailable()).as("the scenario needs a trained codebook").isTrue();
 
-    final long noneBytes = none.getGraphFile().getLastWrittenGraphBytes();
-    final long pqBytes = pq.getGraphFile().getLastWrittenGraphBytes();
-    assertThat(noneBytes).isGreaterThan(0L);
-    assertThat(pqBytes)
-        .as("the PQ codes live in the .vecpq file; the graph file must not repeat them (none=%d, product=%d bytes)",
-            noneBytes, pqBytes)
-        .isLessThan((long) (noneBytes * 1.3));
+    try (final OnDiskGraphIndex graph = pq.getGraphFile().loadGraph()) {
+      assertThat(graph.getFeatureSet()).contains(FeatureId.FUSED_PQ);
+    }
+    assertThat(pq.getGraphFile().getLastWrittenGraphBytes())
+        .as("the codes of every neighbour are stored in every node (none=%d, product=%d bytes)",
+            none.getGraphFile().getLastWrittenGraphBytes(), pq.getGraphFile().getLastWrittenGraphBytes())
+        .isGreaterThan(none.getGraphFile().getLastWrittenGraphBytes() * 2);
   }
 
   @Test
-  void aProductGraphIsWrittenWithoutTheFusedPqFeature() throws Exception {
-    createIndex("DocPq", "\"quantization\": \"PRODUCT\", ");
+  void aGraphFileWrittenWithoutTheFusedPqFeatureStillOpensAndAnswers() throws Exception {
+    // FusedPQ needs 256 clusters, so this index has a trained codebook and a graph file without the feature, as every
+    // PRODUCT index written between the March 2026 release that switched the reader off and this one
+    createIndex("DocPq", "\"quantization\": \"PRODUCT\", \"pqClusters\": 32, ");
     insert("DocPq", VECTORS);
-    final LSMVectorIndex index = indexOf("DocPq");
-    index.buildVectorGraphNow();
-    assertThat(index.isPQSearchAvailable()).isTrue();
-
-    try (final OnDiskGraphIndex graph = index.getGraphFile().loadGraph()) {
-      assertThat(graph.getFeatureSet()).doesNotContain(FeatureId.FUSED_PQ);
+    createIndex("DocNone", "");
+    insert("DocNone", VECTORS);
+    for (final String type : new String[] { "DocPq", "DocNone" }) {
+      indexOf(type).buildVectorGraphNow();
+      try (final OnDiskGraphIndex graph = indexOf(type).getGraphFile().loadGraph()) {
+        assertThat(graph.getFeatureSet()).doesNotContain(FeatureId.FUSED_PQ);
+        assertThat(graph.getIdUpperBound()).isEqualTo(VECTORS);
+      }
     }
+    assertThat(indexOf("DocPq").isPQSearchAvailable()).isTrue();
+
+    database.close();
+    database = factory.open();
+    assertThat(indexOf("DocPq").findNeighborsFromVector(embedding(7), 10)).hasSize(10);
+    assertThat(indexOf("DocNone").findNeighborsFromVector(embedding(7), 10)).hasSize(10);
   }
 
   @Test
@@ -100,7 +110,7 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     assertThat(pqVectors).isNotNull();
     assertThat(graph).isNotNull();
 
-    // Rewrite the graph file the way releases before this fix wrote it: with the FusedPQ feature.
+    // Rewrite the graph file with the FusedPQ feature, as every release did before #10514 and this one does again.
     final LSMVectorIndexGraphFile graphFile = index.getGraphFile();
     database.transaction(() -> graphFile.writeGraph(graph, new ListRandomAccessVectorValues(List.<VectorFloat<?>>of(), DIMENSIONS),
         0, null, pq, pqVectors, true));

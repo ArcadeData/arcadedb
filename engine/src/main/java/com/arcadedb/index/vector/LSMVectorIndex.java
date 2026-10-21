@@ -80,6 +80,8 @@ import io.github.jbellis.jvector.graph.OnHeapGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
+import io.github.jbellis.jvector.graph.disk.feature.FeatureId;
+import io.github.jbellis.jvector.graph.disk.feature.FusedPQ;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
@@ -8142,6 +8144,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return reranked.size() > k ? new ArrayList<>(reranked.subList(0, k)) : reranked;
   }
 
+  /**
+   * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph
+   * that has them score the walk and {@code exact} re-ranks what it finds; every other graph scores both on {@code exact}.
+   * <p>
+   * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour
+   * list, in <b>that view</b>, while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the
+   * view of the searcher, as jvector's {@code FusedPQ.approximateScoreFunctionFor} documents. The reader that was switched
+   * off for returning one result passed {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no
+   * neighbours of the entry node and stopped there (issue #10514).
+   */
+  private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
+      final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
+    if (LSMVectorIndexGraphFile.FUSED_PQ_READER_ENABLED && graph instanceof OnDiskGraphIndex diskGraph
+        && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
+      final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
+      return new DefaultSearchScoreProvider(
+          fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, exact), exact);
+    }
+    return new DefaultSearchScoreProvider(exact, exact);
+  }
+
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
     // Track search metrics
@@ -8268,15 +8291,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
 
-          // Use exact scoring for graph traversal.
-          // FusedPQ approximate scoring is currently disabled due to a bug where PQ codes
-          // written through ArcadeDB's page-based storage produce incorrect approximate scores,
-          // causing beam search to return too few results. The exact scoring path reads vectors
-          // from the graph file (if storeVectorsInGraph=true), quantized pages (if INT8/BINARY),
-          // or documents (if NONE), and provides correct results.
-          // TODO: Re-enable FusedPQ once page-based PQ code persistence is verified correct
-          final DefaultSearchScoreProvider ssp =
-              new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
+          // A graph that carries the FusedPQ feature is walked on the PQ codes stored beside its nodes, and the best candidates
+          // are scored again on the stored vectors; any other graph is walked on the stored vectors (issue #10514)
+          final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, exactScoreFunction);
 
           if (efSearch > 0) {
             // Explicit efSearch: use fixed beam width (per-query or index default override)

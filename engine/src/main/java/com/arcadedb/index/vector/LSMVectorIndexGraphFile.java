@@ -74,14 +74,14 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   private volatile long lastWrittenGraphBytes = -1L;
 
   /**
-   * Whether anything reads the FusedPQ codes of a persisted graph. Nothing does today: the search scores through
-   * {@code liveOnlyScoreFunction}, see the TODO in {@code LSMVectorIndex.findNeighborsFromVector}. The feature stores the
-   * PQ codes of all {@code maxConnections} neighbours inline in every node, {@code maxConnections * pqSubspaces} bytes per
-   * node, which made the graph file of a PRODUCT index several times the size of the file of the same data without
-   * quantization (issue #10514). It is therefore not written until the reader is back. Graph files written earlier carry the
-   * feature and are loaded as they are: the format describes its own features. Set this together with the reader.
+   * Whether the FusedPQ codes of a persisted graph are written and read. The feature stores the PQ codes of all
+   * {@code maxConnections} neighbours inline in every node, {@code maxConnections * pqSubspaces} bytes per node, and the
+   * search walks the graph on them instead of on the stored vectors (see {@code LSMVectorIndex.scoreProviderFor}). It was
+   * switched off from March 2026 to issue #10514 because the reader returned one result: it handed jvector a view other than
+   * the searcher's. Graph files written without the feature are loaded and searched as they were, and so are the ones
+   * written with it by the releases in between: the format describes its own features.
    */
-  static final boolean FUSED_PQ_READER_ENABLED = false;
+  static final boolean FUSED_PQ_READER_ENABLED = true;
 
   /**
    * Says which records the graph on these pages was built over. The graph itself is addressed by ordinal and carries
