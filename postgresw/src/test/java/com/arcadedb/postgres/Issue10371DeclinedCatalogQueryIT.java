@@ -52,7 +52,7 @@ class Issue10371DeclinedCatalogQueryIT extends PostgresWireProtocolTestBase {
     for (final String mode : List.of("extended", "simple")) {
       try (final Connection connection = openJdbcConnection(mode)) {
         assertRefused(mode, connection, "select count(*) from pg_catalog.pg_proc where proname = 'gen_random_uuid'", "pg_proc");
-        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_index", "pg_index");
+        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_trigger", "pg_trigger");
         assertRefused(mode, connection, "select count(*) from pg_catalog.pg_extension", "pg_extension");
 
         // the connection is still usable, and a modelled relation answers PostgreSQL's one row holding 0
@@ -66,13 +66,36 @@ class Issue10371DeclinedCatalogQueryIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /** The index listings were refused while pg_index was not modelled; they are answered now (issue #10473). */
   @Test
-  void theIndexListingsPsqlAndOdbcSendAreRefusedNotEmpty() throws Exception {
+  void theIndexListingsPsqlAndOdbcSendAreAnswered() throws Exception {
     for (final String mode : List.of("extended", "simple")) {
       try (final Connection connection = openJdbcConnection(mode)) {
-        assertRefused(mode, connection, INDEX_LISTING, "pg_index");
-        assertRefused(mode, connection, "select * from information_schema.table_constraints", "table_constraints");
-        assertRefused(mode, connection, "select * from information_schema.key_column_usage", "key_column_usage");
+        try (final Statement statement = connection.createStatement()) {
+          statement.execute("CREATE DOCUMENT TYPE Listed10473 IF NOT EXISTS");
+          statement.execute("CREATE PROPERTY Listed10473.name IF NOT EXISTS STRING");
+          statement.execute("CREATE INDEX IF NOT EXISTS ON Listed10473 (name) UNIQUE");
+        }
+
+        try (final Statement statement = connection.createStatement(); final ResultSet resultSet = statement.executeQuery(
+            INDEX_LISTING + " and c.relname like 'Listed10473%'")) {
+          assertThat(resultSet.next()).as(mode).isTrue();
+          assertThat(resultSet.getString("relname")).as(mode).isEqualTo("Listed10473[name]");
+          assertThat(resultSet.getBoolean("indisunique")).as(mode).isTrue();
+          assertThat(resultSet.next()).as(mode).isFalse();
+        }
+        try (final Statement statement = connection.createStatement(); final ResultSet resultSet = statement.executeQuery(
+            "select constraint_type, table_name from information_schema.table_constraints where table_name = 'Listed10473'")) {
+          assertThat(resultSet.next()).as(mode).isTrue();
+          assertThat(resultSet.getString("constraint_type")).as(mode).isEqualTo("UNIQUE");
+          assertThat(resultSet.next()).as(mode).isFalse();
+        }
+        try (final Statement statement = connection.createStatement(); final ResultSet resultSet = statement.executeQuery(
+            "select column_name from information_schema.key_column_usage where table_name = 'Listed10473'")) {
+          assertThat(resultSet.next()).as(mode).isTrue();
+          assertThat(resultSet.getString("column_name")).as(mode).isEqualTo("name");
+          assertThat(resultSet.next()).as(mode).isFalse();
+        }
       }
     }
   }
@@ -94,9 +117,9 @@ class Issue10371DeclinedCatalogQueryIT extends PostgresWireProtocolTestBase {
     }
   }
 
-  /** {@code \d}'s header step reads relhasindex: it must not send the client to a listing that is refused. */
+  /** {@code \d}'s header step reads relhasindex, which follows the indexes the catalog lists (issue #10473). */
   @Test
-  void aTableWithAnIndexDoesNotClaimOneThatTheCatalogCannotShow() throws Exception {
+  void aTableWithAnIndexClaimsOneAndTheCatalogShowsIt() throws Exception {
     try (final Connection connection = openJdbcConnection("extended")) {
       try (final Statement statement = connection.createStatement()) {
         statement.execute("CREATE DOCUMENT TYPE Person10371 IF NOT EXISTS");
@@ -107,7 +130,7 @@ class Issue10371DeclinedCatalogQueryIT extends PostgresWireProtocolTestBase {
       try (final Statement statement = connection.createStatement(); final ResultSet resultSet = statement.executeQuery(
           "select relname, relhasindex from pg_catalog.pg_class where relname = 'Person10371'")) {
         assertThat(resultSet.next()).isTrue();
-        assertThat(resultSet.getBoolean("relhasindex")).isFalse();
+        assertThat(resultSet.getBoolean("relhasindex")).isTrue();
       }
     }
   }

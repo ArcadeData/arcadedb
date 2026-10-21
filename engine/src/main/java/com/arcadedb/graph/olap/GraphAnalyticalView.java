@@ -65,6 +65,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.function.Supplier;
@@ -255,6 +256,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
     final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
+    // The entries the reads that did not take a neighbour view of this snapshot visited per node instead, by the key of the view
+    // (issue #10471): the view that was never built is built once they add up to what it costs, see neighborViewForVisits(). Like
+    // the views, it lives and dies with the snapshot: a commit replaces the snapshot and the reads start from nothing
+    final Map<String, LongAdder> neighborViewDemand = new ConcurrentHashMap<>();
+    // Every edge type this snapshot answers for, as the array the views are asked with (see slicesOf): built on first use. Two
+    // threads may both build it; either array is right
+    volatile String[] allEdgeTypeSlices;
     // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
     // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
     volatile SoftReference<GraphTraversalProvider> denseIds;
@@ -1710,14 +1718,39 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return getNeighborView(checkBuilt(), direction, requestedEdgeTypes);
   }
 
+  @Override
+  public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    return neighborViewBuildCost(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return neighborViewOfSliceBuildCost(checkBuilt(), direction, edgeType);
+  }
+
+  @Override
+  public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
+    return neighborViewForVisits(checkBuilt(), expectedVisits, direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return neighborViewOfSliceForVisits(checkBuilt(), expectedVisits, direction, edgeType);
+  }
+
+  @Override
+  public double getMeanDegree(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    return meanDegree(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
   private NeighborView getNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     // The overlay changes the topology: the view is the base with the overlay applied, built once per snapshot (issue #10411)
     if (hasActiveOverlay(snap))
-      return overlayNeighborView(snap, direction,
-          edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : allEdgeTypes(snap).toArray(new String[0]),
-          neighborViewKey(direction, edgeTypes));
+      return overlayNeighborView(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
 
     final int n = snap.nodeMapping.size();
 
@@ -1811,14 +1844,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final String key) {
     final DeltaOverlay ov = snap.overlay;
     final int n = ov.getNodeIdUpperBound();
-    final int baseNodes = snap.nodeMapping.size();
-    if (slices.length == 1 && direction != Vertex.DIRECTION.BOTH && n == baseNodes) {
-      final CSRAdjacencyIndex csr = snap.csrPerType.get(slices[0]);
-      final BitSet changed = new BitSet();
-      ov.markChangedNodes(slices[0], direction == Vertex.DIRECTION.OUT, changed);
-      if (csr != null && changed.isEmpty())
-        return buildNeighborViewFromCSR(csr, n, direction);
-    }
+    final CSRAdjacencyIndex unchanged = unchangedBaseCsr(snap, direction, slices);
+    if (unchanged != null)
+      return buildNeighborViewFromCSR(unchanged, n, direction);
     return cachedNeighborView(snap, key, () -> {
       final List<NeighborView> parts = new ArrayList<>(slices.length * 2);
       for (final String slice : slices) {
@@ -1831,6 +1859,137 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return new NeighborView(n, new int[n + 1], EMPTY_INT);
       return parts.size() == 1 ? parts.getFirst() : mergeNeighborViews(parts, n);
     });
+  }
+
+  /**
+   * The base CSR of the one slice a view of {@code direction} reads when the overlay changes none of it and adds no vertex: the
+   * view is then the CSR's own arrays, built from nothing. Null in every other case.
+   */
+  private static CSRAdjacencyIndex unchangedBaseCsr(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices) {
+    final DeltaOverlay ov = snap.overlay;
+    if (slices.length != 1 || direction == Vertex.DIRECTION.BOTH || ov.getNodeIdUpperBound() != snap.nodeMapping.size())
+      return null;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slices[0]);
+    if (csr == null)
+      return null;
+    return ov.changesNodes(slices[0], direction == Vertex.DIRECTION.OUT) ? null : csr;
+  }
+
+  /**
+   * What {@link #getNeighborView(Snapshot, Vertex.DIRECTION, String...)} would have to write for this snapshot (issue #10471):
+   * nothing when the view is the base CSR's own arrays or was built before, and otherwise one offset per node plus every entry of
+   * the adjacency it packs, which is what a build copies whatever the read that asked for it. Without an overlay the views are
+   * the CSR's arrays, or a merge kept for the life of the base, which no commit invalidates.
+   */
+  private long neighborViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    if (!hasActiveOverlay(snap))
+      return 0L;
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+    return overlayViewBuildCost(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
+  }
+
+  /** {@link #neighborViewBuildCost} of the slice of {@code edgeType} alone, see {@link #getNeighborViewOfSlice}. */
+  private static long neighborViewOfSliceBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String edgeType) {
+    if (!hasActiveOverlay(snap))
+      return 0L;
+    final String[] slice = { edgeType };
+    return overlayViewBuildCost(snap, direction, slice, neighborViewKey(direction, slice));
+  }
+
+  /**
+   * The edge types a view reads: the resolved ones, every type of the snapshot when none were asked for. The array of every type
+   * is made once per snapshot, which never changes: a read with no edge type is a hot path and must not allocate one per call.
+   * The caller reads it and does not change it.
+   */
+  private static String[] slicesOf(final Snapshot snap, final String[] edgeTypes) {
+    if (edgeTypes != null && edgeTypes.length > 0)
+      return edgeTypes;
+    String[] all = snap.allEdgeTypeSlices;
+    if (all == null) {
+      all = allEdgeTypes(snap).toArray(new String[0]);
+      snap.allEdgeTypeSlices = all;
+    }
+    return all;
+  }
+
+  private static long overlayViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices,
+      final String key) {
+    if (unchangedBaseCsr(snap, direction, slices) != null)
+      return 0L;
+    final SoftReference<NeighborView> cached = snap.mergedNeighborViews.get(key);
+    if (cached != null && cached.get() != null)
+      return 0L;
+    return (long) snap.overlay.getNodeIdUpperBound() + adjacencyEntries(snap, direction, slices);
+  }
+
+  /**
+   * Whether a read that visits {@code expectedVisits} entries of this snapshot per node, if it gets no view, should have one built
+   * (issue #10471). A view packs the adjacency of the whole graph, and the snapshot of a view with an overlay is replaced by every
+   * commit, so it is a cost of the snapshot, not of one read. Renting or buying: the reads that went without a view are added up
+   * for the snapshot, and the view is built by the read that brings the sum to what the build costs. A single read that visits as
+   * much as the build writes (a whole-graph count) builds it at once; point reads, thousands of them between two commits, build it
+   * when they have spent as much as it costs and never when the next commit comes first. Whatever the reads, the work wasted on
+   * per-node reads or on a view nobody read again is bounded by the cost of the view.
+   */
+  private static boolean neighborViewPaysFor(final Snapshot snap, final long requestedVisits, final Vertex.DIRECTION direction,
+      final String[] slices, final String key) {
+    // an estimate is not negative: a caller that overflowed one must not take away what the other reads spent
+    final long expectedVisits = Math.max(0L, requestedVisits);
+    final long cost = overlayViewBuildCost(snap, direction, slices, key);
+    if (cost == 0L || expectedVisits >= cost)
+      return true;
+
+    // A view that costs something although one was built for this key was given back under memory pressure (it is held softly):
+    // what the reads spent on it is gone with it, and they earn it again, instead of the first small read after the eviction
+    // finding the demand already spent and rebuilding the whole view for itself, which is what this accounting exists to prevent
+    // (the cost is not zero here, so an entry for the key is a reference that was cleared: a held view would have made it zero)
+    final SoftReference<NeighborView> evicted = snap.mergedNeighborViews.get(key);
+    final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
+    if (evicted != null && snap.mergedNeighborViews.remove(key, evicted))
+      demand.reset();
+
+    // The add and the sum are not one atomic step, on purpose: readers racing at the threshold may overshoot it by a read or ask for
+    // the view together, and the build is one per snapshot and key whoever asks (cachedNeighborView), so the race costs at most the
+    // few reads that could have been served by it. The sum stays below twice the cost: the read that reaches the cost builds the
+    // view, and a read that finds it built returns above without adding
+    demand.add(expectedVisits);
+    return demand.sum() >= cost;
+  }
+
+  private NeighborView neighborViewForVisits(final Snapshot snap, final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
+    if (hasActiveOverlay(snap)) {
+      final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+      if (!neighborViewPaysFor(snap, expectedVisits, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes)))
+        return null;
+    }
+    return getNeighborView(snap, direction, requestedEdgeTypes);
+  }
+
+  private static NeighborView neighborViewOfSliceForVisits(final Snapshot snap, final long expectedVisits,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    if (hasActiveOverlay(snap)) {
+      final String[] slice = { edgeType };
+      if (!neighborViewPaysFor(snap, expectedVisits, direction, slice, neighborViewKey(direction, slice)))
+        return null;
+    }
+    return getNeighborViewOfSlice(snap, direction, edgeType);
+  }
+
+  /** The entries of the base adjacency of {@code slices} in {@code direction}: both lists of an edge for {@code BOTH}. */
+  private static long adjacencyEntries(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices) {
+    long entries = 0L;
+    for (final String slice : slices) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+      if (csr != null)
+        entries += csr.getEdgeCount();
+    }
+    return direction == Vertex.DIRECTION.BOTH ? entries * 2 : entries;
+  }
+
+  private double meanDegree(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    final String[] slices = slicesOf(snap, resolveEdgeTypes(requestedEdgeTypes));
+    return (double) adjacencyEntries(snap, direction, slices) / Math.max(1, nodeCountOf(snap));
   }
 
   /**
@@ -2693,6 +2852,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     @Override
     public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
       return view.getNeighborView(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.neighborViewBuildCost(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+      return GraphAnalyticalView.neighborViewOfSliceBuildCost(snap, direction, edgeType);
+    }
+
+    @Override
+    public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.neighborViewForVisits(snap, expectedVisits, direction, edgeTypes);
+    }
+
+    @Override
+    public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+        final String edgeType) {
+      return GraphAnalyticalView.neighborViewOfSliceForVisits(snap, expectedVisits, direction, edgeType);
+    }
+
+    @Override
+    public double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.meanDegree(snap, direction, edgeTypes);
     }
 
     @Override

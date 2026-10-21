@@ -246,7 +246,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
 
   @Override
   public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
-    return cachedView("slice|" + direction + "|" + edgeType, () -> translate(delegate.getNeighborViewOfSlice(direction, edgeType)));
+    return cachedView(sliceKey(direction, edgeType), () -> translate(delegate.getNeighborViewOfSlice(direction, edgeType)));
   }
 
   @Override
@@ -361,8 +361,22 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    final String key = direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
-    return cachedView(key, () -> translate(delegate.getNeighborView(direction, edgeTypes)));
+    return cachedView(viewKey(direction, edgeTypes), () -> translate(delegate.getNeighborView(direction, edgeTypes)));
+  }
+
+  private static String viewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
+    return direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
+  }
+
+  /** The key of a slice view: the one place it is spelled, so the lookup of a held view cannot drift from the one that stores it. */
+  private static String sliceKey(final Vertex.DIRECTION direction, final String edgeType) {
+    return "slice|" + direction + "|" + edgeType;
+  }
+
+  /** The translated view of {@code key} if one is held, without building it. */
+  private NeighborView heldView(final String key) {
+    final SoftReference<NeighborView> held = views.get(key);
+    return held != null ? held.get() : null;
   }
 
   /**
@@ -379,6 +393,49 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
         views.put(key, new SoftReference<>(view));
     }
     return view;
+  }
+
+  /** The delegate's: renumbering its view is one pass over it, kept with the snapshot, so what costs is the view being renumbered. */
+  @Override
+  public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return delegate.getNeighborViewBuildCost(direction, edgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return delegate.getNeighborViewOfSliceBuildCost(direction, edgeType);
+  }
+
+  @Override
+  public double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return delegate.getMeanDegree(direction, edgeTypes);
+  }
+
+  /**
+   * A renumbered view that is held is returned as it is, whatever became of the delegate's (it may have been given back under
+   * memory pressure): it costs nothing to use. Otherwise the delegate decides whether its view is worth building, and the
+   * renumbered one is only asked for when it is.
+   */
+  @Override
+  public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final NeighborView held = heldView(viewKey(direction, edgeTypes));
+    if (held != null)
+      return held;
+    if (delegate.getNeighborViewForVisits(expectedVisits, direction, edgeTypes) == null)
+      return null;
+    return getNeighborView(direction, edgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    final NeighborView held = heldView(sliceKey(direction, edgeType));
+    if (held != null)
+      return held;
+    if (delegate.getNeighborViewOfSliceForVisits(expectedVisits, direction, edgeType) == null)
+      return null;
+    return getNeighborViewOfSlice(direction, edgeType);
   }
 
   private NeighborView translate(final NeighborView view) {
