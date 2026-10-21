@@ -103,19 +103,23 @@ public class TransactionManager {
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   /**
-   * Group commit (arcadedb.txWalGroupCommit). A WAL write that defers its flush takes a ticket from walWriteSequence once
-   * it is appended, and its file joins unsyncedWALFiles before that; walDurableSequence is the highest ticket every
-   * flush so far covers. walSyncInProgress lets one flush run at a time, which is what makes them shared: while one thread
-   * flushes, the commits that arrive wait for it, and the first of them to find no flush running flushes once for all.
+   * Group commit (arcadedb.txWalGroupCommit). A commit queues its WAL record in deferredWALWrites under its file locks and
+   * takes a ticket from walWriteSequence in the same step; the record is written to its file by the next flush pass, after
+   * the locks are released (#10509: a write under the locks waited for the running flush on some systems, and the commits
+   * queued on the locks behind it). A written record's file joins unsyncedWALFiles. walDurableSequence is the highest
+   * ticket every pass so far wrote and flushed. walSyncInProgress lets one pass run at a time, which is what makes the
+   * flushes shared: while one thread writes and flushes, the commits that arrive wait for it, and the first of them to find
+   * no pass running runs the next one for all.
    */
   private final AtomicLong                   walWriteSequence    = new AtomicLong();
   private volatile long                      walDurableSequence  = 0;
   private final AtomicReference<CountDownLatch> walSyncInProgress = new AtomicReference<>();
   private final Set<WALFile>                 unsyncedWALFiles    = ConcurrentHashMap.newKeySet();
-  // The pool slot the group commit appends to, alternating between 0 and 1 at each shared flush: an append to a file that
-  // is being flushed waits for the flush on some systems (APFS), and the append runs under the commit's file locks, which
-  // serialized the commits behind the flush again. With two files the next wave appends while the previous one flushes
-  private volatile int                       groupCommitSlot     = 0;
+  // Guarded by its own monitor, which also covers the ticket a record takes: the records are in ticket order, and the order
+  // of the tickets is the order the commits held their file locks in, so a transaction is never written before one it read
+  private final ArrayDeque<DeferredWALWrite> deferredWALWrites = new ArrayDeque<>();
+  // Writes the queued records one batch at a time, so two batches never interleave in the files
+  private final ReentrantLock                deferredWALWriteLock = new ReentrantLock();
   // Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. Per instance, so tests
   // running concurrently in one JVM do not see each other's
   volatile WALSyncFaultInjector              walSyncFaultInjector;
@@ -371,6 +375,18 @@ public class TransactionManager {
    *     the next open replays them).
    */
   public boolean close(final boolean drop, final boolean preserveWalFiles) {
+    // A group commit's record still queued (its pages never reached a flush that would have written it first) is written and
+    // flushed before the files close. When that fails the WAL is kept, as for unacked pages
+    boolean deferredWALWritesLost = false;
+    if (!drop && getPendingWALSyncTicket() > 0)
+      try {
+        awaitWALDurable(walWriteSequence.get());
+      } catch (final IOException | RuntimeException e) {
+        deferredWALWritesLost = true;
+        LogManager.instance().log(this, Level.SEVERE, "Cannot write the group commits of database '%s' to the WAL on close", e,
+            database.getName());
+      }
+
     stopHousekeeping();
 
     fileIdsLockManager.close();
@@ -397,7 +413,7 @@ public class TransactionManager {
           pendingAcks = true;
           break;
         }
-    final boolean preserve = preserveWalFiles || (!drop && (pendingAcks || recoveryInputUnreplayed));
+    final boolean preserve = preserveWalFiles || (!drop && (pendingAcks || recoveryInputUnreplayed || deferredWALWritesLost));
 
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
@@ -467,30 +483,31 @@ public class TransactionManager {
 
   public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
       final Binary bufferChanges) {
-    // A commit that flushes its own WAL must not become durable on top of a group commit's write that is not: it may have
-    // read that transaction's published pages, and recovery would find its page versions with the previous one missing. So
-    // the deferred writes appended so far are flushed first - BEFORE this append, so a failure here leaves no WAL record of
-    // this transaction behind
-    if (sync != WALFile.FlushType.NO) {
-      final long pending = getPendingWALSyncTicket();
-      if (pending > 0)
-        try {
+    // A transaction that does not queue its WAL record must not reach the WAL before a group commit's record it may have read:
+    // recovery would find its page versions with the previous one missing, and stop there. A commit that flushes its own WAL
+    // waits for the queued records to be written and flushed, one that does not flush them at least writes them first - in
+    // both cases BEFORE this append, so a failure here leaves no WAL record of this transaction behind
+    final long pending = getPendingWALSyncTicket();
+    if (pending > 0)
+      try {
+        if (sync != WALFile.FlushType.NO)
           awaitWALDurable(pending);
-        } catch (final IOException e) {
-          throw new TransactionException("Cannot flush the WAL of the group commits before writing transaction " + txId, e);
-        }
-    }
+        else
+          writeDeferredWALWrites();
+      } catch (final IOException e) {
+        throw new TransactionException("Cannot write the WAL of the group commits before writing transaction " + txId, e);
+      }
     writeTransactionToWAL(pages, sync, txId, bufferChanges, false);
   }
 
   /**
-   * The ticket of the last group-commit WAL write when it is not durable yet, 0 when every one is: what a page published
-   * now must wait for before reaching its data file, since its transaction may have read any of those writes.
+   * The ticket of the last group-commit WAL record when it is not durable yet, 0 when every one is: what a page published
+   * now must wait for before reaching its data file, since its transaction may have read any of those records.
    * <p>
    * The two reads are not atomic, and do not need to be because of one ordering this depends on: a group commit takes its ticket
-   * right after its WAL append and BEFORE it publishes its pages or releases its file locks
-   * ({@link #writeTransactionToWALDeferringSync}). A transaction can depend on it only by reading those pages or taking those
-   * locks, so it reads a sequence that already covers it. A change that publishes before taking the ticket breaks this.
+   * when it queues its WAL record, BEFORE it publishes its pages or releases its file locks ({@link #queueTransactionToWAL}).
+   * A transaction can depend on it only by reading those pages or taking those locks, so it reads a sequence that already
+   * covers it. A change that publishes before taking the ticket breaks this.
    */
   public long getPendingWALSyncTicket() {
     final long written = walWriteSequence.get();
@@ -498,20 +515,64 @@ public class TransactionManager {
   }
 
   /**
-   * Appends the transaction to the WAL WITHOUT the flush {@code sync} asks for, which the caller owes it: it must call
-   * {@link #awaitWALDurable(long)} with the ticket returned before it tells anybody the transaction is committed, and
-   * outside its file locks, which is the point (arcadedb.txWalGroupCommit). The pages it publishes must carry the ticket
-   * ({@link MutablePage#setWALSyncTicket(long)}), so none of them reaches its data file before this WAL write is durable.
+   * Queues the transaction's WAL record, which the next flush pass writes and flushes, after the caller released its file locks
+   * (arcadedb.txWalGroupCommit). The caller must call {@link #awaitWALDurable(long)} with the ticket returned before it tells
+   * anybody the transaction is committed, and outside its file locks, which is the point. The pages it publishes must carry
+   * the ticket ({@link MutablePage#setWALSyncTicket(long)}), so none of them reaches its data file before its WAL record is
+   * durable.
    *
-   * @return the ticket of this write, always greater than 0
+   * @return the ticket of this record, always greater than 0
    */
-  public long writeTransactionToWALDeferringSync(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
+  public long queueTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
       final Binary bufferChanges) {
-    writeTransactionToWAL(pages, sync, txId, bufferChanges, true);
-    // AFTER the append and after its file joined unsyncedWALFiles: a flush that reads a sequence covering this ticket is
-    // bound to find the file, see awaitWALDurable
-    statsGroupCommits.incrementAndGet();
-    return walWriteSequence.incrementAndGet();
+    final DeferredWALWrite write = new DeferredWALWrite(pages, sync, txId, bufferChanges);
+    synchronized (deferredWALWrites) {
+      deferredWALWrites.add(write);
+      statsGroupCommits.incrementAndGet();
+      return walWriteSequence.incrementAndGet();
+    }
+  }
+
+  /**
+   * Writes the queued WAL records, in the order they were queued, without flushing them. Their files join unsyncedWALFiles.
+   * On a failure the record that failed and the ones after it go back to the head of the queue for the next pass: a record
+   * is never skipped, at worst written twice, and recovery replays the second copy as already applied.
+   *
+   * @return the highest ticket written or flushed so far: every record up to it is written, its file in unsyncedWALFiles or
+   *     flushed by an earlier pass
+   */
+  private long writeDeferredWALWrites() throws IOException {
+    deferredWALWriteLock.lock();
+    try {
+      final long target;
+      final DeferredWALWrite[] writes;
+      synchronized (deferredWALWrites) {
+        target = walWriteSequence.get();
+        if (deferredWALWrites.isEmpty())
+          return target;
+        writes = deferredWALWrites.toArray(new DeferredWALWrite[0]);
+        deferredWALWrites.clear();
+      }
+
+      for (int i = 0; i < writes.length; i++) {
+        final DeferredWALWrite write = writes[i];
+        try {
+          final WALSyncFaultInjector injector = walSyncFaultInjector;
+          if (injector != null)
+            injector.beforeWrite(write.txId);
+          writeTransactionToWAL(write.pages, write.sync, write.txId, write.buffer, true);
+        } catch (final IOException | RuntimeException e) {
+          synchronized (deferredWALWrites) {
+            for (int j = writes.length - 1; j >= i; j--)
+              deferredWALWrites.addFirst(writes[j]);
+          }
+          throw e instanceof IOException io ? io : new IOException("Cannot write transaction " + write.txId + " to the WAL", e);
+        }
+      }
+      return target;
+    } finally {
+      deferredWALWriteLock.unlock();
+    }
   }
 
   /**
@@ -573,16 +634,11 @@ public class TransactionManager {
 
   /** One pass of the group commit's flush. Only one runs at a time: see {@link #awaitWALDurable(long)}. */
   private void syncUnsyncedWALFiles() throws IOException {
-    // READ BEFORE THE FILES ARE TAKEN: a write with a ticket up to here joined unsyncedWALFiles before taking it, so it is
-    // in the snapshot below or was taken, and flushed, by an earlier pass. A file is removed BEFORE its flush, so a write
-    // landing meanwhile puts it back for the next pass
-    final long target = walWriteSequence.get();
-    // the writes arriving from now on go to the other file, out of the way of this flush
-    final WALFile[] pool = activeWALFilePool;
-    // a read-modify-write of a volatile, safe because only one pass runs at a time (walSyncInProgress)
-    if (pool != null && pool.length > 1)
-      groupCommitSlot = 1 - groupCommitSlot;
     final long start = System.nanoTime();
+    // TAKEN BEFORE THE FILES ARE: every record with a ticket up to here is written, its file in unsyncedWALFiles, or was
+    // flushed by an earlier pass. A file is removed BEFORE its flush, so a write landing meanwhile puts it back for the next
+    // pass
+    final long target = writeDeferredWALWrites();
     for (final WALFile file : new ArrayList<>(unsyncedWALFiles)) {
       unsyncedWALFiles.remove(file);
       try {
@@ -616,12 +672,10 @@ public class TransactionManager {
 
     while (true) {
       final WALFile[] pool = activeWALFilePool;
-      // A write whose flush is shared goes to the group-commit file, not to its thread's: a shared flush has to flush every
-      // file holding a pending write, and spreading the writes over the pool made each one flush up to a file per core (on
-      // macOS each a full flush of the drive's cache, ~3.5ms). The appends are short, the file's monitor serializes them
-      final int slot = deferSync ?
-          Math.min(groupCommitSlot, pool.length - 1) :
-          (int) (Thread.currentThread().threadId() % pool.length);
+      // A record whose flush is shared goes to the first file, not to its thread's: a shared flush has to flush every file
+      // holding a pending write, and spreading the writes over the pool made each one flush up to a file per core (on macOS
+      // each a full flush of the drive's cache, ~3.5ms). One pass writes them all, so nothing contends for the file
+      final int slot = deferSync ? 0 : (int) (Thread.currentThread().threadId() % pool.length);
 
       // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE. READ WITHOUT
       // walSlotLock: A FILE SEEN HERE IS SAFELY PUBLISHED, ITS PATH BEING FINAL AND ITS CHANNEL, LOCK AND STATE VOLATILE, AND
@@ -1118,6 +1172,12 @@ public class TransactionManager {
     map.put("groupCommitSyncs", statsGroupSyncs.get());
     // page writes that found their WAL not durable yet and had to wait for, or run, a flush first
     map.put("groupCommitPageWaits", statsGroupCommitPageWaits.get());
+    // the commit file locks (#10509): releases and the time they were held, hand-offs to a waiting commit and the time from
+    // the release to that commit running. Their averages are what a queue of commits on one type grows on
+    map.put("commitLockHolds", fileIdsLockManager.getHolds());
+    map.put("commitLockHoldNanos", fileIdsLockManager.getHoldNanos());
+    map.put("commitLockHandOffs", fileIdsLockManager.getHandOffs());
+    map.put("commitLockHandOffNanos", fileIdsLockManager.getHandOffNanos());
     return map;
   }
 
@@ -2250,8 +2310,16 @@ public class TransactionManager {
     return "TransactionManager for database '" + database.getName() + "':" + fileIdsLockManager;
   }
 
+  /** A group commit's WAL record, queued until a flush pass writes it (see {@link #queueTransactionToWAL}). */
+  private record DeferredWALWrite(List<MutablePage> pages, WALFile.FlushType sync, long txId, Binary buffer) {
+  }
+
   /** See {@link #walSyncFaultInjector}. */
   interface WALSyncFaultInjector {
     void beforeSync(WALFile file) throws IOException;
+
+    /** Runs before each queued WAL record a group-commit pass writes. */
+    default void beforeWrite(final long txId) throws IOException {
+    }
   }
 }

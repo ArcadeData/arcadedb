@@ -461,7 +461,7 @@ public class TransactionContext implements Transaction {
     // method calls next and which every other commit path reaches directly.
     final TransactionPhase1 phase1 = commit1stPhase(true);
     if (phase1 != null) {
-      // Group commit: the WAL flush moves out of the file locks, to resetAndFireCallbacks(). Only on this path, which is the
+      // Group commit: the WAL write and flush move out of the file locks, to resetAndFireCallbacks(). Only on this path, which is the
       // one that waits for it, and only with the asynchronous page flush: a synchronous one writes the pages to their data
       // files inside the 2nd phase, before any flush could have run
       deferWALSync = configuredGroupCommit && embedded != null && isAsyncFlush();
@@ -2910,9 +2910,10 @@ public class TransactionContext implements Transaction {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = getWALFlush();
         if (deferWALSync && walFlush != WALFile.FlushType.NO)
-          // the flush is owed, and paid outside the file locks before the commit returns (see resetAndFireCallbacks)
+          // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
+          // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
-              .writeTransactionToWALDeferringSync(changes.modifiedPages, walFlush, txId, changes.result);
+              .queueTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
         else
           database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
         // Only a REAL append crosses the point of no return (#5053/#4940): with useWAL=false (bulk loads)

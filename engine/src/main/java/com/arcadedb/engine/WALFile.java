@@ -781,10 +781,11 @@ public class WALFile extends LockContext {
 
     // WRITE ALL PAGES SEGMENTS
     for (final MutablePage newPage : pages) {
-      // SET THE WAL FILE TO NOTIFY LATER WHEN THE PAGE HAS BEEN FLUSHED
-      newPage.setWALFile(file);
-
-      pagesToFlush.incrementAndGet();
+      // SET THE WAL FILE TO NOTIFY LATER WHEN THE PAGE HAS BEEN FLUSHED. NOT WHEN THE PAGE ALREADY HAS ONE (A GROUP COMMIT'S
+      // RECORD WRITTEN AGAIN AFTER A FAILURE) OR WAS ALREADY RELEASED (A GROUP COMMIT WRITES ITS RECORD AFTER PUBLISHING THE
+      // PAGE, #10509): NOTHING WOULD ACKNOWLEDGE IT
+      if (newPage.attachWALFile(file))
+        pagesToFlush.incrementAndGet();
       statsPagesWritten++;
     }
 

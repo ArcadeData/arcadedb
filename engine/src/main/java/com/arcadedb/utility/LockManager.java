@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 
@@ -51,30 +52,45 @@ import java.util.logging.Level;
 public class LockManager<RESOURCE, REQUESTER> {
   public enum LOCK_STATUS {NO, YES, ALREADY_ACQUIRED}
 
+  // Weight of the newest sample in the moving average of a resource's hold time, as a right shift: 1/8
+  private static final int HOLD_AVERAGE_SHIFT = 3;
+
   private final ConcurrentHashMap<RESOURCE, ResourceLock<REQUESTER>> lockManager = new ConcurrentHashMap<>(256);
+  // Issue #10509: releases and the total time the resources were held, measured from the moment the owner runs; hand-offs to a
+  // waiting requester and the total time from the release to the new owner running
+  private final LongAdder                                            holds        = new LongAdder();
+  private final LongAdder                                            holdNanos    = new LongAdder();
+  private final LongAdder                                            handOffs     = new LongAdder();
+  private final LongAdder                                            handOffNanos = new LongAdder();
 
   /**
    * State of one resource: its current owner and the FIFO queue of waiting requesters. All fields are
    * guarded by the monitor of the instance. {@code removed} marks the instance as detached from the
    * map (freed with no waiters, or closed) so a thread that captured it just before removal retries
-   * instead of operating on a stale node.
+   * instead of operating on a stale node. {@code runningSinceNanos} is when the owner started running with it, and
+   * {@code averageHoldNanos} the moving average of the holds, seeded by the first one ({@code holdSampled}): a node lives
+   * only while its resource is held, so the average covers the stretch the resource stays contended.
    */
   private static final class ResourceLock<R> {
     R                         owner;
     long                      when;
     final ArrayDeque<Waiter<R>> queue = new ArrayDeque<>();
     boolean                   removed;
+    long                      runningSinceNanos;
+    long                      averageHoldNanos;
+    boolean                   holdSampled;
   }
 
   /**
    * One waiting requester. {@code granted} is set by the releasing thread when ownership is handed to
-   * this waiter. A waiter that gives up removes itself from the queue under the monitor, so the queue
-   * only ever holds live waiters.
+   * this waiter, at {@code grantedAtNanos}. A waiter that gives up removes itself from the queue under the monitor, so the
+   * queue only ever holds live waiters.
    */
   private static final class Waiter<R> {
     final R      requester;
     final Thread thread;
     boolean      granted;
+    long         grantedAtNanos;
 
     Waiter(final R requester, final Thread thread) {
       this.requester = requester;
@@ -112,6 +128,7 @@ public class LockManager<RESOURCE, REQUESTER> {
           // Free: acquire immediately.
           candidate.owner = requester;
           candidate.when = System.currentTimeMillis();
+          candidate.runningSinceNanos = System.nanoTime();
           return LOCK_STATUS.YES;
         }
 
@@ -139,9 +156,15 @@ public class LockManager<RESOURCE, REQUESTER> {
           // released anyway. (close() has already emptied the queue.)
           if (rl.removed)
             return LOCK_STATUS.NO;
-          if (waiter.granted)
-            // Handed ownership by a releasing thread: we own it now and must unlock later.
+          if (waiter.granted) {
+            // Handed ownership by a releasing thread: we own it now and must unlock later. The hold starts now that this
+            // thread runs: the time it took to wake up is the hand-off's
+            final long now = System.nanoTime();
+            rl.runningSinceNanos = now;
+            handOffs.increment();
+            handOffNanos.add(now - waiter.grantedAtNanos);
             return LOCK_STATUS.YES;
+          }
           if (interrupted || (timeout > 0 && deadlineNanos - System.nanoTime() <= 0)) {
             // Give up: leave the queue immediately so abandoned waiters never accumulate between
             // unlocks. ArrayDeque.remove is O(n), but the queue is bounded by concurrent waiters and
@@ -189,12 +212,25 @@ public class LockManager<RESOURCE, REQUESTER> {
         throw new LockException(
             "Cannot unlock resource '" + resource + "' because owner '" + rl.owner + "' <> requester '" + requester + "'");
 
+      // The clamp only matters when a caller releases on behalf of a requester whose tryLock has not returned yet
+      final long now = System.nanoTime();
+      final long held = Math.max(0L, now - rl.runningSinceNanos);
+      holds.increment();
+      holdNanos.add(held);
+      if (rl.holdSampled)
+        rl.averageHoldNanos += (held - rl.averageHoldNanos) >> HOLD_AVERAGE_SHIFT;
+      else {
+        rl.averageHoldNanos = held;
+        rl.holdSampled = true;
+      }
+
       // Hand off to the oldest waiter. The queue holds only live waiters (a waiter that gives up removes
       // itself under this same monitor), so the head is always a valid grantee.
       final Waiter<REQUESTER> head = rl.queue.pollFirst();
       if (head != null) {
         rl.owner = head.requester;
         rl.when = System.currentTimeMillis();
+        head.grantedAtNanos = now;
         head.granted = true;
         next = head;
       } else {
@@ -255,8 +291,33 @@ public class LockManager<RESOURCE, REQUESTER> {
    * @param sinceMillis wall-clock time the lock was acquired
    * @param heldForMs   how long it has been held at snapshot time
    * @param waiters     number of requesters queued behind it
+   * @param averageHoldMicros moving average of how long its owners held it while it stayed contended, 0 before the first
+   *                          release
    */
-  public record LockStats(String resource, String owner, long sinceMillis, long heldForMs, int waiters) {
+  public record LockStats(String resource, String owner, long sinceMillis, long heldForMs, int waiters, long averageHoldMicros) {
+  }
+
+  /** Releases so far: each one is a hold counted in {@link #getHoldNanos()}. */
+  public long getHolds() {
+    return holds.sum();
+  }
+
+  /** Total time the resources were held, from the moment each owner ran with it to its release, in nanoseconds. */
+  public long getHoldNanos() {
+    return holdNanos.sum();
+  }
+
+  /** Releases that handed the resource to a waiting requester. */
+  public long getHandOffs() {
+    return handOffs.sum();
+  }
+
+  /**
+   * Total time of the hand-offs, from the release to the new owner running, in nanoseconds: the time a contended resource
+   * stays idle between two owners.
+   */
+  public long getHandOffNanos() {
+    return handOffNanos.sum();
   }
 
   /**
@@ -274,7 +335,7 @@ public class LockManager<RESOURCE, REQUESTER> {
         if (rl.removed || rl.owner == null)
           continue;
         result.add(new LockStats(String.valueOf(entry.getKey()), String.valueOf(rl.owner), rl.when, now - rl.when,
-            rl.queue.size()));
+            rl.queue.size(), TimeUnit.NANOSECONDS.toMicros(rl.averageHoldNanos)));
       }
     }
     return result;
