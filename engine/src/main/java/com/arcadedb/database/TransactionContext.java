@@ -2199,6 +2199,33 @@ public class TransactionContext implements Transaction {
     return false;
   }
 
+  /**
+   * The identities, in the given buckets, of the records this transaction created, updated or deleted and has not yet
+   * committed (issue #10490): the set a build that joins this transaction has to reconcile with the committed state it indexed
+   * on its own, because the committed scan cannot see a pending create, update or delete. A record is listed once however
+   * many of those happened to it, and whether it still exists is for the caller to read: a record created and then deleted
+   * is listed too.
+   * <p>
+   * Costs one pass over the queued writes, so it is meant for DDL-time decisions, not for a hot path.
+   */
+  public List<RID> getWrittenRecordIdsIn(final IntHashSet bucketIds) {
+    final Set<RID> result = new LinkedHashSet<>();
+    for (int i = 0; i < newRecords.size(); i++) {
+      final RID rid = newRecords.get(i).getIdentity();
+      if (rid != null && bucketIds.contains(rid.getBucketId()))
+        result.add(rid);
+    }
+    if (updatedRecords != null)
+      for (final RID rid : updatedRecords.keySet())
+        if (bucketIds.contains(rid.getBucketId()))
+          result.add(rid);
+    deletedRecordsInTx.forEach((bucketId, offset) -> {
+      if (bucketIds.contains(bucketId))
+        result.add(new RID(bucketId, offset));
+    });
+    return new ArrayList<>(result);
+  }
+
   public int getModifiedPages() {
     int result = 0;
     if (modifiedPages != null)

@@ -174,7 +174,32 @@ deprecated `registerAPI(HttpServer, PathHandler)` is held to the same rule.
 **Who sees a different answer.** A third-party plugin that relied on replacing a route. The plugins shipped with ArcadeDB are
 unaffected.
 
+### SQL, HTTP: a `DATETIME` string with an offset is stored as the UTC wall clock of the instant it names (#10489)
+
+`2020-01-02T03:04:05+02:00` written to a `DATETIME` property as a string (an HTTP JSON value, a SQL literal or parameter,
+`Document.set(String)`) is stored as `2020-01-02T01:04:05`, exactly as the same instant is when a client sends it typed (a Java
+`OffsetDateTime` or `ZonedDateTime`, a Bolt `DateTime` with an offset or a zone id). It was stored as `03:04:05`, the offset
+dropped, so an HTTP client and a Bolt client in UTC+2 wrote values two hours apart. A string with no offset, and one in UTC (`Z`,
+`+00:00`: what Cypher's `datetime()` renders), keeps its wall clock. A `DATE` still keeps the day written. `date()` and
+`.asDatetime()` read a string the same way.
+
+**Who sees a different answer.** A client that sends offset-bearing strings with a non-zero offset to a `DATETIME` property. Values
+already stored are not rewritten: those that came from a client in another time zone hold the wall clock of that zone, and need to
+be rewritten if they are to be read as UTC. The bulk path (`GraphBatch`) still rebases onto the database's zone, the same value as
+the rule above for a UTC database (#10498).
+
 ## Fixes
+
+- **#10488** A list nested in a list or in a map HTTP parameter is stored as a list, like the same value written as a literal or
+  from Java, whether the property is declared or not. It was stored as the primitive `long[]` or `double[]` the request parser
+  leaves at any depth, so `=`, `.type()` and `GROUP BY` saw a different value for the same data.
+- **#10490** A `CREATE INDEX` (or a super-type index propagated to a type) inside a transaction that had written to the indexed
+  type no longer loses every committed record when that transaction rolls back. The committed records are indexed in a transaction
+  of their own and only what the caller created, updated or deleted is queued on the caller's transaction. A lookup found nothing
+  and a `UNIQUE` index accepted a duplicate of a committed key.
+- **#10491** A vertex written right after `ALTER TYPE U SUPERTYPE +Base`, `Base` being a vertex type a Graph Analytical View lists
+  and `U` an existing type holding vertices, is no longer missing from the view and from `algo.wcc`. The same loss applied to an
+  update or a delete of such a vertex.
 
 - **#10384** A route a plugin declares `GET` answers `HEAD` too, with the same handler, and its `405` names `GET, HEAD` in `Allow`.
   `HEAD /prometheus` was a `405` since #10157, so the `wget --spider` style healthcheck the core routes were fixed to pass (#8133)
