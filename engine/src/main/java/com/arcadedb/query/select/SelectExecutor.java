@@ -359,7 +359,8 @@ public class SelectExecutor {
       final List<Pair<RID, Float>> neighbors;
       try {
         if (select.vectorApproximate)
-          neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK, null, guard);
+          neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK, -1, select.vectorRerankOversample, null,
+              guard);
         else
           neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, fetchK, -1, null, guard);
       } catch (final TimeoutException e) {

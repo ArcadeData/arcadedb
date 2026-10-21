@@ -7116,6 +7116,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** How many candidates a BINARY search fetches per requested neighbour before reranking them on the stored vectors. */
   private static final int   BINARY_RERANK_OVERSAMPLE = 4;
 
+  /**
+   * The candidates per requested neighbour that an approximate (PQ) search re-ranks on the stored vectors when it is asked to
+   * re-rank without saying how many (issue #10514). On SIFT-1M with 32 subspaces, recall@10 of the PQ scores alone is 0.72
+   * at any beam, and 0.99 once 100 candidates are re-ranked.
+   */
+  public static final int DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE = 10;
+
   /** How many times a BINARY search whose rerank came up short of k widens its candidate budget and asks again. */
   private static final int   BINARY_RERANK_MAX_ATTEMPTS = 6;
 
@@ -9395,7 +9402,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * This method uses pre-computed PQ vectors in memory for both HNSW navigation AND scoring,
    * completely bypassing disk I/O for the vector data. This enables microsecond-level latency
-   * at the cost of slightly lower recall compared to exact search.
+   * at the cost of lower recall compared to exact search: the PQ scores are not re-ranked, so the recall stops improving
+   * at any beam. See {@link #findNeighborsFromVectorApproximate(float[], int, int, int, Set, WorkGuard)} to re-rank the
+   * candidates on the stored vectors (issue #10514).
    *
    * @param queryVector The query vector to search for
    * @param k           The number of neighbors to return
@@ -9413,12 +9422,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * {@link #findNeighborsFromVectorApproximate(float[], int, int, int, Set, WorkGuard)} without an allow-list, bounded only
+   * by the deadline of the statement running on the calling thread, if any.
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k, final int efSearch,
+      final int rerankOversample) {
+    return findNeighborsFromVectorApproximate(queryVector, k, efSearch, rerankOversample, null,
+        WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
    * {@link #findNeighborsFromVectorApproximate(float[], int, Set)} bounded by {@code guard} (issue #9896). The PQ walk
    * itself is microseconds and is left alone; what the guard bounds is the wait for a graph build in front of it and the
    * exact search it falls back to.
    */
-  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k,
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int k,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
+    return findNeighborsFromVectorApproximate(queryVector, k, -1, 0, allowedRIDs, guard);
+  }
+
+  /**
+   * The PQ search with a real beam and, optionally, a re-rank on the stored vectors (issue #10514).
+   * <p>
+   * Without a re-rank the answer is what the in-memory PQ codes say, and PQ cannot tell apart neighbours that share most
+   * of their codes: recall@10 stops improving at any beam (0.72 on SIFT-1M with 32 subspaces). With
+   * {@code rerankOversample > 0} the walk keeps {@code max(k * rerankOversample, efSearch)} candidates scored by the PQ
+   * codes, then scores exactly those on the stored vectors, as the BINARY quantization does, and returns the nearest
+   * {@code k} with their <b>exact</b> distances. The cost is one stored-vector read per candidate. The delta buffer and the
+   * allow-list pre-filter plan are then answered exactly too, so every row of the answer is on one scale.
+   *
+   * @param efSearch        the beam, in candidates, when it is larger than {@code k * rerankOversample}; zero or negative
+   *                        for none
+   * @param rerankOversample candidates per requested neighbour to re-rank exactly; {@code 0} for the PQ scores alone, which
+   *                        needs no record read. {@link #DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} is a good start
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k, final int efSearch,
+      final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+    if (rerankOversample < 0)
+      throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
+    final boolean rerank = rerankOversample > 0;
     // Check if PQ is available. Through isPQSearchAvailable(), not the two fields directly: the codebooks are
     // loaded with the locations and both are deferred to first use (issue #6722), so reading the fields here -
     // ahead of the ensureGraphAvailable() below that would have materialised them - would see null on the first
@@ -9427,7 +9469,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Fall back to exact search
       LogManager.instance().log(this, Level.FINE,
           "PQ not available for index %s, falling back to exact search", indexName);
-      return findNeighborsFromVector(queryVector, k, -1, allowedRIDs, guard);
+      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
     }
 
     // Track search metrics. Both halves are recorded together in the finally below rather than the count here and
@@ -9539,20 +9581,38 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ScoreFunction.ApproximateScoreFunction scoreFunction =
               pinnedPq.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
 
-          // Create a ReRanker that does NOT pull from disk - just returns PQ similarity
-          // This is the critical optimization: we bypass RandomAccessVectorValues entirely
-          final ScoreFunction.ExactScoreFunction approxReranker = ordinal -> scoreFunction.similarityTo(ordinal);
+          // Without a re-rank, a ReRanker that does NOT pull from disk - just returns PQ similarity. With one (issue
+          // #10514) the walk is still steered by the PQ codes, and JVector scores the best rerankK of them with the
+          // stored vectors, the way the exact path does, and keeps the nearest k of those.
+          final RandomAccessVectorValues exactVectors = rerank ? searchVectorValues(pinnedOrdinalMap) : null;
+          final ScoreFunction.ExactScoreFunction reranker = rerank ?
+              liveOnlyScoreFunction(queryVectorFloat, exactVectors) :
+              ordinal -> scoreFunction.similarityTo(ordinal);
 
           // Wrap in a DefaultSearchScoreProvider (concrete implementation)
-          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
+          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, reranker);
+
+          // The beam: JVector keeps rerankK candidates and returns the best k of them after the reranker has scored them
+          final long wanted = Math.max((long) k * rerankOversample, (long) efSearch);
+          final int rerankK = (int) Math.min(Math.max(wanted, k), Math.max(k, pinnedGraph.size()));
+
+          // Re-ranked: the exact path's pre-filter plan, since the PQ-scaled one returns PQ distances (issue #6502)
+          if (rerank && allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs,
+              pinnedOrdinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
+            metrics.incrementPreFilterSearches();
+            final List<Pair<RID, Float>> results = new ArrayList<>(k);
+            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
+            bruteForceScan(queryVectorFloat, k, allowedRIDs, results, exactVectors, pinnedOrdinalMap, overlay, guard);
+            return results;
+          }
 
           // Issue #6514 pre-filter plan: the PQ-scored counterpart of the issue #6502 plan in findNeighborsFromVector -
           // see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by its own
           // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
           // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
           // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
-          if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs, pinnedOrdinalMap,
-              GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
+          if (!rerank && allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs,
+              pinnedOrdinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
             metrics.incrementPreFilterSearches();
             final List<Pair<RID, Float>> results = new ArrayList<>(k);
             // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
@@ -9578,7 +9638,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ImmutableGraphIndex pooledGraph = pinnedGraph;
           final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
           try {
-            searchResult = searcher.search(ssp, k, bitsFilter);
+            searchResult = rerank || efSearch > k ?
+                searcher.search(ssp, k, rerankK, 0.0f, 0.0f, bitsFilter) :
+                searcher.search(ssp, k, bitsFilter);
           } finally {
             pool.release(searcher, pooledGraph, poolEpoch);
           }
@@ -9614,7 +9676,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Merge with delta vectors inserted since last graph rebuild, scored on the same PQ scale as the graph rows
           // above rather than exactly (issue #6559 item 2) - see mergeWithDeltaScanApproximate for why ranking the two
           // against each other on different scales let quantization error, not the data, decide which row won.
-          mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay);
+          if (rerank)
+            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
+          else
+            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay);
 
           // Log performance metrics. FINE, not INFO (issue #6559 item 3): this path's entire reason to exist is
           // microsecond latency, so an unconditional per-query INFO line - on the query rate this path is built for -
@@ -9632,6 +9697,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // own: the exact search below is the search, and it keeps its own books.
         handedOffToExactSearch = true;
 
+      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
+        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
+        throw e;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
         throw new IndexException("Error performing PQ approximate search", e);
@@ -9641,7 +9709,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Reached only when the guard above refused the graph/PQ pair - every other path returns from inside the
       // block. Outside the read lock on purpose: this can rebuild, which takes the write lock.
-      return findNeighborsFromVector(queryVector, k, -1, allowedRIDs, guard);
+      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
     } finally {
       if (!handedOffToExactSearch) {
         // Track search latency (convert nanos to ms for consistency)

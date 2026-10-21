@@ -67,6 +67,7 @@ public class Select {
   float[]                          vectorQuery;
   int                              vectorK;
   boolean                          vectorApproximate;
+  int                              vectorRerankOversample;
 
   STATE state = STATE.DEFAULT;
   private SelectTreeNode lastTreeElement;
