@@ -36,11 +36,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class TraversalPathWithRecordTest extends TestHelper {
 
-  private Vertex   a;
-  private Vertex   b;
-  private Vertex   c;
-  private Edge     ab;
-  private Edge     bc;
+  private Vertex a;
+  private Vertex b;
+  private Vertex c;
+  private Edge   ab;
+  private Edge   bc;
 
   private TraversalPath path() {
     database.getSchema().createVertexType("V");

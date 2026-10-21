@@ -142,6 +142,32 @@ class Issue10512IdentityOptionalMatchBatchBoundaryTest extends TestHelper {
     assertThat(explain("MATCH p=(n:N)-[*1..3]->() CALL (n) { CREATE (:X) RETURN 1 AS x } RETURN count(*) AS c")).doesNotContain("EAGER");
   }
 
+  @Test
+  void aDeleteBuriedInTheBodyIsFoundAtAnyDepth() {
+    final String walk = "MATCH p=(n:N)-[*1..3]->() ";
+    final String tail = " RETURN count(*) AS c";
+
+    // in a FOREACH of the body
+    assertThat(explain(walk + "CALL (n) { FOREACH (m IN [n] | DETACH DELETE m) RETURN 1 AS x }" + tail)).contains("EAGER");
+    // in a subquery of the body
+    assertThat(explain(walk + "CALL (n) { CALL (n) { DETACH DELETE n RETURN 1 AS y } RETURN 1 AS x }" + tail)).contains("EAGER");
+    // in one branch of a UNION body
+    assertThat(explain(walk + "CALL (n) { DETACH DELETE n RETURN 1 AS x UNION RETURN 2 AS x }" + tail)).contains("EAGER");
+    // and none of them asks for it behind a plain scan
+    assertThat(explain("MATCH (n:N) CALL (n) { CALL (n) { DETACH DELETE n RETURN 1 AS y } RETURN 1 AS x }" + tail)).doesNotContain("EAGER");
+  }
+
+  @Test
+  void correlatedDeleteInANestedSubqueryOverVariableLengthPathsSeesEveryPath() {
+    run(TETRAHEDRON);
+    final long paths = count("MATCH p=(n0:N)-[*1..5]->() RETURN count(*) AS c");
+
+    final long rows = count("MATCH p=(n0:N)-[*1..5]->() CALL (n0) { CALL (n0) { DETACH DELETE n0 RETURN 1 AS y } RETURN 1 AS x } RETURN count(*) AS c");
+
+    assertThat(rows).isEqualTo(paths);
+    assertThat(count("MATCH (n:N) RETURN count(n) AS c")).isZero();
+  }
+
   // ---- #10513 ----
 
   private static String removeThenCompare(final String identity) {
