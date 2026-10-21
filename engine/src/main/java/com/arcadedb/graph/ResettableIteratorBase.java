@@ -77,6 +77,11 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    * <p>
    * Nothing walked a list while writing to it as long as the Gremlin neighbor expansion read the whole list up front; now the walk
    * is lazy and a traversal can drop what it walks.
+   * <p>
+   * The identity test relies on {@code lookupByRID} answering the transaction's cached instance for a record it has written, which
+   * is what {@code getWrittenRecord} holds. The price is one copy of the segment, bounded by its size, per walk that reaches a
+   * segment the transaction wrote. And the walk no longer sees an edge the transaction adds to that segment after it reached it: it
+   * reads the list as it stood when it got there.
    */
   private static EdgeSegment walkable(final EdgeSegment segment) {
     final RID rid = segment != null ? segment.getIdentity() : null;

@@ -1216,7 +1216,8 @@ public enum GlobalConfiguration {
       and refuses a duplicate key in the stream. Builds inside a transaction with pending changes and on replicated \
       databases keep the record-at-a-time build whatever the record count, but from this many records on it no longer \
       checks every key against the index it is filling (issue #10349): it checks the keys once, over the finished index, \
-      and refuses the first duplicate then. An empty transaction (such as the auto-commit one of an HTTP command) does \
+      and refuses the first duplicate then, so a duplicate costs the whole build before it is reported, where the check of \
+      every batch refused it at the first batch that held one. An empty transaction (such as the auto-commit one of an HTTP command) does \
       not stop the switch. 0 disables the switch and that deferred check with it.""",
       Long.class, 10_000L),
 

@@ -123,6 +123,10 @@ public class LocalDocumentType implements DocumentType {
    * #10349): a commit of that build does not look each key up in the index it is filling, which is what made the build quadratic.
    * Holds only for the span of {@link TypeIndexBuilder}'s build, which owns the database write lock - nobody else commits to the
    * index meanwhile - and is a set and not a count because two builds of the same properties cannot overlap under that lock.
+   * <p>
+   * Keyed by the property list of THIS type, which names exactly one index: there is one index per property set on a type, the
+   * bucket indexes of a type (its sub-types' buckets included) all carry that type's name, and an index of a super type on the same
+   * properties belongs to the super type's own registry, which is never asked for these buckets.
    */
   private final Set<List<String>>                   indexesWithDeferredUniqueCheck = ConcurrentHashMap.newKeySet();
   // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the

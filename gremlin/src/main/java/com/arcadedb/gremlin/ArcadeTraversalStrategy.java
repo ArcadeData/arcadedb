@@ -92,10 +92,12 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   private static final String LABEL_KEY = "~label";
 
-  // THE STEPS OF TINKERPOP AND OF THIS MODULE DO NOTHING BUT READ UNLESS THEY ARE MARKED OTHERWISE (SEE hasNoEffect()): A STEP OF ANY
-  // OTHER PACKAGE IS UNKNOWN, AND AN UNKNOWN STEP IS ASSUMED TO HAVE AN EFFECT
-  private static final String TINKERPOP_STEP_PACKAGE = "org.apache.tinkerpop.gremlin.process.traversal.step.";
-  private static final String ARCADE_STEP_PREFIX     = "com.arcadedb.gremlin.Arcade";
+  // THE STEPS OF TINKERPOP DO NOTHING BUT READ UNLESS THEY ARE MARKED OTHERWISE (SEE hasNoEffect()), AND SO DO THESE OF THIS MODULE,
+  // NAMED ONE BY ONE: A STEP NOT LISTED, A FUTURE ONE OF THIS MODULE INCLUDED, IS UNKNOWN, AND AN UNKNOWN STEP IS ASSUMED TO HAVE AN
+  // EFFECT
+  private static final String           TINKERPOP_STEP_PACKAGE = "org.apache.tinkerpop.gremlin.process.traversal.step.";
+  private static final Set<Class<?>>    ARCADE_READ_ONLY_STEPS = Set.of(ArcadeCountGlobalStep.class, ArcadeEdgeCountFilterStep.class,
+      ArcadeFilterByIndexStep.class, ArcadeFilterByTypeStep.class, ArcadeGAVFusedStep.class, ArcadeGAVVertexStep.class);
 
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
@@ -299,8 +301,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
           || step instanceof CallStep)
         return false;
 
-      final String className = step.getClass().getName();
-      if (!className.startsWith(TINKERPOP_STEP_PACKAGE) && !className.startsWith(ARCADE_STEP_PREFIX))
+      if (!step.getClass().getName().startsWith(TINKERPOP_STEP_PACKAGE) && !ARCADE_READ_ONLY_STEPS.contains(step.getClass()))
         return false;
 
       if (step instanceof TraversalParent parent) {

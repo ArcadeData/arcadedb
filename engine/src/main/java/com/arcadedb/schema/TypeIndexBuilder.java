@@ -991,6 +991,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           RID previousRid = null;
           while (cursor.hasNext()) {
             final RID rid = cursor.next().getIdentity();
+            // EVERY ENTRY DESERIALIZES ITS OWN KEY ARRAY (PageIterator.getKeys()), AND THE MERGE ONLY PASSES IT ON: HOLDING THE PREVIOUS ONE
+            // ACROSS next() IS SAFE
             final Object[] keys = cursor.getKeys();
             if (previousKeys != null && !rid.equals(previousRid) && !LSMTreeIndexAbstract.isKeyNull(keys)
                 && LSMTreeIndexAbstract.compareKeys(cursor.getComparator(), cursor.getBinaryKeyTypes(), previousKeys, keys) == 0)
