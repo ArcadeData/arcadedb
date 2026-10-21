@@ -128,6 +128,11 @@ class LSMVectorIndexMetrics {
   private final AtomicLong vectorFetchFromDocuments = new AtomicLong(0);
   private final AtomicLong vectorFetchFromGraph = new AtomicLong(0);
 
+  // How many vectors the LAST graph build kept as quantized rows in memory instead of re-reading them from the index
+  // pages (issue #10543). 0 when the build held float vectors in its cache, or read everything from the pages. A gauge,
+  // not a counter: it describes one build, and the next one replaces it.
+  private volatile long graphBuildQuantizedResident = 0L;
+
   // Latency tracking (cumulative)
   private final AtomicLong searchLatencyMs = new AtomicLong(0);
   private final AtomicLong insertLatencyMs = new AtomicLong(0);
@@ -224,6 +229,10 @@ class LSMVectorIndexMetrics {
     vectorFetchFromGraph.incrementAndGet();
   }
 
+  void setGraphBuildQuantizedResident(final long vectors) {
+    graphBuildQuantizedResident = vectors;
+  }
+
   // Latency tracking methods
 
   void addSearchLatency(final long latencyMs) {
@@ -284,6 +293,10 @@ class LSMVectorIndexMetrics {
     return vectorFetchFromGraph.get();
   }
 
+  long getGraphBuildQuantizedResident() {
+    return graphBuildQuantizedResident;
+  }
+
   long getSearchLatencyMs() {
     return searchLatencyMs.get();
   }
@@ -334,6 +347,7 @@ class LSMVectorIndexMetrics {
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
     stats.put("vectorFetchFromDocuments", vectorFetchFromDocuments.get());
     stats.put("vectorFetchFromGraph", vectorFetchFromGraph.get());
+    stats.put("graphBuildQuantizedResident", graphBuildQuantizedResident);
 
     stats.put("avgSearchLatencyMs", getAvgSearchLatencyMs());
     stats.put("avgInsertLatencyMs", getAvgInsertLatencyMs());
@@ -364,6 +378,7 @@ class LSMVectorIndexMetrics {
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);
     vectorFetchFromGraph.set(0);
+    graphBuildQuantizedResident = 0L;
     searchLatencyMs.set(0);
     insertLatencyMs.set(0);
   }

@@ -3593,6 +3593,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     final RandomAccessVectorValues vectors;
+    // What jvector's builder reads through. The same reader as `vectors` unless the build keeps quantized rows
+    // (issue #10543), whose vectors are shared scratch that the persistence below must not be handed.
+    final RandomAccessVectorValues buildVectors;
+    QuantizedBuildVectors quantizedBuildStore = null;
     final int[] finalActiveVectorIds;
     {
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
@@ -3623,6 +3627,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int graphBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
       // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
       final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
+
+      // Issue #10543: an INT8/BINARY corpus that this budget cannot hold as float vectors is kept as the quantized rows
+      // the pages store, which are a quarter (INT8) to a thirty-second (BINARY) of the size, and the build reads the
+      // rest from the pages into a scratch vector. Floats are the worse use of the same budget for a corpus that does
+      // not fit: a miss dequantized into a new array that was published into the cache, evicting another, and at
+      // 13.8M x 768 that churn pinned the heap at 17-24 GB and slowed the build to one vector every five seconds.
+      // A corpus the float cache does hold is left alone: its vectors are read with no dequantization at all.
+      final int quantizedCapacity = inlineQuantization && graphBuildCacheSize < expectedSize
+          ? quantizedBuildCapacity(graphBuildCacheSize, expectedSize) : 0;
+      if (quantizedCapacity > 0)
+        quantizedBuildStore = QuantizedBuildVectors.create(metadata.quantizationType, metadata.dimensions, quantizedCapacity);
+      // Reused by every candidate that does not end up in the store, and for the reconstruction that checks one
+      final byte[] validationRow = quantizedBuildStore != null ?
+          new byte[QuantizedBuildVectors.rowBytes(metadata.quantizationType, metadata.dimensions)] : null;
+      final float[] validationFloats = quantizedBuildStore != null ? new float[metadata.dimensions] : null;
+      final float[] rowScales = new float[2];
+
       // Warm the build cache in place rather than through an intermediate map. The validation loop below reads
       // every vector anyway; collecting them into a HashMap first and copying that into the cache afterwards held
       // both at once at the peak of the build, for a boxed key, a map node and a table slot per vector that
@@ -3630,11 +3651,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // (issue #7146) makes that intermediate copy scale with the corpus, so it is the wrong moment to be paying
       // ~50 extra bytes a vector immediately before the graph itself is allocated.
       // Same fallback forGraphBuild() applied when it allocated the cache itself, so a non-positive capacity still
-      // yields the flat default rather than a one-slot cache.
-      final VectorCache buildCache = new VectorCache(
+      // yields the flat default rather than a one-slot cache. A build that keeps quantized rows has no use for the
+      // float cache beyond the few vectors the persistence reads by name.
+      final VectorCache buildCache = new VectorCache(quantizedBuildStore != null ?
+          SMALL_BUILD_CACHE_SIZE :
           graphBuildCacheSize <= 0 ? ArcadePageVectorValues.DEFAULT_CACHE_SIZE : graphBuildCacheSize);
       int preloadedVectorCount = 0;
-      final List<Integer> validVectorIds = new ArrayList<>(expectedSize);
+      // Ids of the vectors the build keeps, in the order of vectorIds, which is ascending. A primitive array: this used
+      // to be a List<Integer> that was then sorted into a second boxed copy, about a gigabyte of garbage at the 13.8M
+      // vectors of issue #10543, allocated at the moment the build is about to claim the heap for its graph.
+      final int[] validVectorIds = new int[expectedSize];
+      int validVectorCount = 0;
       int skippedDeletedDocs = 0;
 
       // Index the delta buffer by vector id so the document-based validation below can reuse the vectors it
@@ -3699,7 +3726,39 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // NOTE: PRODUCT quantization does NOT store vectors in pages - it uses a separate PQ file built AFTER
           // graph construction
           // So for PRODUCT, we must read from documents just like NONE
-          if (inlineQuantization) {
+          if (quantizedBuildStore != null) {
+            // The row is copied from the page straight into the store (or, once the store is full, into a row that
+            // only serves to validate it), so a vector costs no allocation however many the corpus holds.
+            try {
+              final boolean keep = quantizedBuildStore.hasRoom();
+              final byte[] target = keep ? quantizedBuildStore.writableChunk() : validationRow;
+              final int targetOffset = keep ? quantizedBuildStore.writableOffset() : 0;
+              final int status = readQuantizedRowFromOffset(locationOffset, locationIsCompacted, target, targetOffset,
+                  rowScales);
+              if (status != ROW_OK) {
+                if (status == ROW_WRONG_DIMENSIONS)
+                  validationWrongDimensions++;
+                else
+                  validationNullVectors++;
+                skippedDeletedDocs++;
+              } else if (isUnscorableRow(target, targetOffset, rowScales, validationFloats)) {
+                validationAllZeros++;
+                skippedDeletedDocs++;
+              } else {
+                vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
+                validVectorIds[validVectorCount++] = vectorId;
+                // Committed in the order of the ids, which is the order of the ordinals the graph is built over
+                if (keep)
+                  quantizedBuildStore.commit(rowScales[0], rowScales[1]);
+                validationSuccesses++;
+              }
+            } catch (final Exception e) {
+              // Error reading quantized vector - skip. The reader logs its own failures; this keeps whatever else got here
+              LogManager.instance().log(this, Level.FINE, "Skipping vector %d of index %s during the graph build: %s", vectorId,
+                  indexName, e.getMessage());
+              skippedDeletedDocs++;
+            }
+          } else if (inlineQuantization) {
             // With INT8/BINARY quantization: vectors are in index pages, document validation not needed
             // Just validate that we can read the quantized vector
             try {
@@ -3707,7 +3766,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               if (vector != null && vector.length == metadata.dimensions) {
                 if (!isUnscorable(vector)) {
                   vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
-                  validVectorIds.add(vectorId);
+                  validVectorIds[validVectorCount++] = vectorId;
                   // Only warm the cache up to the budget; the rest are re-read from index pages
                   // lazily during the build (issue #3144).
                   if (preloadedVectorCount < preloadBudget) {
@@ -3743,7 +3802,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             if (fromDelta != null) {
               if (fromDelta.length() == metadata.dimensions && !isUnscorable(fromDelta)) {
                 vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
-                validVectorIds.add(vectorId);
+                validVectorIds[validVectorCount++] = vectorId;
                 if (preloadedVectorCount < preloadBudget) {
                   buildCache.put(vectorId, fromDelta);
                   preloadedVectorCount++;
@@ -3762,7 +3821,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
                   if (vector.length == metadata.dimensions && !isUnscorable(vector)) {
                     vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
-                    validVectorIds.add(vectorId);
+                    validVectorIds[validVectorCount++] = vectorId;
                     if (preloadedVectorCount < preloadBudget) {
                       buildCache.put(vectorId, vts.createFloatVector(vector));
                       preloadedVectorCount++;
@@ -3800,8 +3859,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // Use validated vector IDs instead of unfiltered ones
-      // IMPORTANT: Must be sorted to match the ordinal order used when loading from disk
-      final int[] filteredVectorIds = validVectorIds.stream().sorted().mapToInt(Integer::intValue).toArray();
+      // IMPORTANT: Must be sorted to match the ordinal order used when loading from disk. They are already: vectorIds is
+      // ascending and the loop above keeps its order. The quantized rows were committed in that order, so for them a
+      // different one would be a different graph, and sorting the ids afterwards would not move the rows with them.
+      final int[] filteredVectorIds =
+          validVectorCount == validVectorIds.length ? validVectorIds : Arrays.copyOf(validVectorIds, validVectorCount);
+      for (int i = 1; i < filteredVectorIds.length; i++)
+        if (filteredVectorIds[i - 1] > filteredVectorIds[i]) {
+          if (quantizedBuildStore != null)
+            throw new IllegalStateException("The vector ids of index " + indexName + " are not ascending at ordinal " + i);
+          Arrays.sort(filteredVectorIds);
+          break;
+        }
       finalActiveVectorIds = filteredVectorIds;
 
       if (filteredVectorIds.length == 0) {
@@ -3829,9 +3898,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return;
       }
 
-      LogManager.instance().log(this, Level.INFO,
-          "Building graph with %d vectors using property '%s' (cache enabled: size=%d of %d)",
-          filteredVectorIds.length, vectorProp, graphBuildCacheSize, filteredVectorIds.length);
+      if (quantizedBuildStore != null)
+        logQuantizedBuildStore(quantizedBuildStore, filteredVectorIds.length, vectorProp);
+      else
+        LogManager.instance().log(this, Level.INFO,
+            "Building graph with %d vectors using property '%s' (cache enabled: size=%d of %d)",
+            filteredVectorIds.length, vectorProp, graphBuildCacheSize, filteredVectorIds.length);
 
       // Create lazy-loading vector values that reads vectors from documents or index pages (if quantized), over
       // the cache the validation phase above already warmed in place. That is what lets JVector's parallel
@@ -3844,6 +3916,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       );
 
       vectors = pageVectors;
+      if (quantizedBuildStore != null) {
+        buildVectors = QuantizedBuildVectorValues.create(quantizedBuildStore, metadata.quantizationType,
+            finalActiveVectorIds.length, metadata.dimensions, nonResidentRows(vectorLocationSnapshot, finalActiveVectorIds));
+        metrics.setGraphBuildQuantizedResident(quantizedBuildStore.size());
+      } else {
+        buildVectors = pageVectors;
+        metrics.setGraphBuildQuantizedResident(0L);
+      }
 
       reportNonUnitVectorsOnDotProduct(pageVectors, finalActiveVectorIds.length);
 
@@ -3909,7 +3989,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   + "without PQ. A later rebuild will enable PQ once the index is large enough (issue #5417)",
               indexName, vectors.size(), metadata.pqClusters);
 
-        scoreProvider = BuildScoreProvider.randomAccessScoreProvider(vectors, metadata.similarityFunction);
+        scoreProvider = BuildScoreProvider.randomAccessScoreProvider(buildVectors, metadata.similarityFunction);
       }
 
       // Build the graph index (parallel operation - no lock held)
@@ -4012,7 +4092,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Nothing here detects it if a future jvector.version adds a step around those two, so re-read build()
           // when bumping the dependency. The alternative - calling build() and keeping the broken meter - is worse:
           // it is what hid a phase worth half the wall clock of a large build.
-          final Supplier<RandomAccessVectorValues> vectorSupplier = vectors.threadLocalSupplier();
+          final Supplier<RandomAccessVectorValues> vectorSupplier = buildVectors.threadLocalSupplier();
 
           // One shared atomic per node is affordable here in a way the vector cache counters were not: a node costs
           // a whole beam search over the graph built so far, thousands of distance evaluations, so the increment is
@@ -4105,6 +4185,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw t;
       }
       closeGraphBuilderQuietly(builder);
+
+      // Nothing reads the quantized rows again - the unreachable-node scan and the persistence below go through the
+      // page reader - and they can be most of the heap, so they go back before the graph is written, not with this
+      // method's frame. Only on this path: a cancelled build leaves them to the collector, since a worker that has
+      // not noticed yet may still be reading. Here the insertion and the cleanup have both returned and the builder is
+      // closed, so no reader can still be live.
+      if (quantizedBuildStore != null)
+        quantizedBuildStore.release();
 
       // The build occasionally leaves a node with a full out-degree and no in-edges, which no beam search can reach
       // at any efSearch (issue #5615). Collect those vectors here, before the write lock, so neither the O(V+E)
@@ -6602,23 +6690,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private float[] dequantizeFromInt8(final byte[] quantized,
       final VectorQuantizationMetadata.Int8QuantizationMetadata qmeta) {
     final float[] result = new float[quantized.length];
-    final float range = qmeta.max - qmeta.min;
-
-    if (range == 0.0f) {
-      // All values were the same, return min value for all
-      for (int i = 0; i < quantized.length; i++) {
-        result[i] = qmeta.min;
-      }
-    } else {
-      for (int i = 0; i < quantized.length; i++) {
-        // Reverse quantization: value = (((quantized + 128) / 255) * range) + min
-        // Convert signed byte [-128, 127] back to [0, 255] range by adding 128
-        final int scaled = (int) quantized[i] + 128; // Convert to [0, 255]
-        final float normalized = scaled / 255.0f; // [0, 1]
-        result[i] = normalized * range + qmeta.min;
-      }
-    }
-
+    // The one definition of the reconstruction, shared with the graph build's quantized rows (issue #10543)
+    QuantizedBuildVectors.dequantizeInt8(quantized, 0, quantized.length, qmeta.min, qmeta.max, result);
     return result;
   }
 
@@ -6633,31 +6706,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private float[] dequantizeFromBinary(final byte[] packed,
       final VectorQuantizationMetadata.BinaryQuantizationMetadata qmeta) {
-    final int length = qmeta.originalLength;
-    final float[] result = new float[length];
-
+    final float[] result = new float[qmeta.originalLength];
     // One bit per dimension says "at or above the vector's own median" or "below it", i.e. the SIGN of the component
     // once the vector is centred on its median. The reconstruction is that sign at unit norm, so scoring it with
     // COSINE is a Hamming distance over the bits (cos = 1 - 2 * hamming / dimensions) and with EUCLIDEAN or DOT_PRODUCT
     // it ranks the same way. Reconstructing as `bit ? median : 0` instead lost the sign of any data centred on zero
-    // and placed a record on the far side of the sphere from its own vector (issue #8960).
-    final float magnitude = (float) (1.0 / Math.sqrt(length));
-
-    int ones = 0;
-    for (int i = 0; i < length; i++)
-      if ((packed[i / 8] & (1 << (i % 8))) != 0)
-        ones++;
-
-    if (ones == length) {
-      // Every component is at or above the median: the vector was constant, so there is nothing to centre. Keep what
-      // is known, the sign of the constant, which also gives the all-zero vector back as the origin.
-      Arrays.fill(result, Math.signum(qmeta.median) * magnitude);
-      return result;
-    }
-
-    for (int i = 0; i < length; i++)
-      result[i] = (packed[i / 8] & (1 << (i % 8))) != 0 ? magnitude : -magnitude;
-
+    // and placed a record on the far side of the sphere from its own vector (issue #8960). The one definition of it is
+    // shared with the graph build's quantized rows (issue #10543).
+    QuantizedBuildVectors.dequantizeBinary(packed, 0, qmeta.originalLength, qmeta.median, result);
     return result;
   }
 
@@ -7053,6 +7109,162 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /** {@link #readQuantizedRowFromOffset}: the row was copied. */
+  static final int ROW_OK               = 0;
+  /** {@link #readQuantizedRowFromOffset}: the page, the entry or its quantization could not be read. */
+  static final int ROW_UNREADABLE       = 1;
+  /** {@link #readQuantizedRowFromOffset}: the entry holds a vector of another width than the index's. */
+  static final int ROW_WRONG_DIMENSIONS = 2;
+
+  /**
+   * Copies the quantized row stored at {@code fileOffset} as it is, into {@code destination}, with no dequantization
+   * and no allocation besides the page view (issue #10543). {@link #readVectorFromOffset} returns the same entry as
+   * a new {@code float[]}: three kilobytes of garbage for a 768-dimension vector, which the graph build used to pay
+   * and then publish into its cache, once for every distance it evaluated against a vector the cache had dropped.
+   *
+   * @param fileOffset  where the entry starts, as the location index records it
+   * @param isCompacted whether that offset is in the compacted file
+   * @param destination receives {@link QuantizedBuildVectors#rowBytes} bytes at {@code destinationOffset}
+   * @param scales      receives the floats that scale the row: [minimum, maximum] for INT8, [median] for BINARY
+   *
+   * @return {@link #ROW_OK}, {@link #ROW_UNREADABLE} or {@link #ROW_WRONG_DIMENSIONS}
+   */
+  int readQuantizedRowFromOffset(final long fileOffset, final boolean isCompacted, final byte[] destination,
+      final int destinationOffset, final float[] scales) {
+    final VectorQuantizationType expected = metadata.quantizationType;
+    if (expected != VectorQuantizationType.INT8 && expected != VectorQuantizationType.BINARY)
+      return ROW_UNREADABLE;
+
+    try {
+      final int pageSize = getPageSize();
+      final int pageNum = (int) (fileOffset / pageSize);
+      // Page reads add the page header themselves, so positions here are relative to the page content
+      int pos = (int) (fileOffset % pageSize) - BasePage.PAGE_HEADER_SIZE;
+
+      final int fileId = isCompacted ? compactedSubIndex.getFileId() : getFileId();
+      final BasePage page = getDatabase().getPageManager()
+          .getImmutablePage(new PageId(getDatabase(), fileId, pageNum), pageSize, false, false);
+
+      // Step over the entry header - vector id, bucket id, position (variable length) and the deleted flag - without
+      // decoding it: readNumberAndSize() would allocate an array for each of the three
+      pos = skipVariableLengthNumber(page, pos);
+      pos = skipVariableLengthNumber(page, pos);
+      pos = skipVariableLengthNumber(page, pos);
+      pos += 1;
+
+      if (page.readByte(pos) != expected.ordinal())
+        return ROW_UNREADABLE;
+      pos += 1;
+
+      // INT8 stores the number of bytes, BINARY the number of bits, ahead of the row
+      final int length = page.readInt(pos);
+      pos += 4;
+      if (length != metadata.dimensions)
+        return ROW_WRONG_DIMENSIONS;
+
+      if (expected == VectorQuantizationType.INT8) {
+        page.readByteArray(pos, destination, destinationOffset, length);
+        pos += length;
+        scales[0] = Float.intBitsToFloat(page.readInt(pos));
+        scales[1] = Float.intBitsToFloat(page.readInt(pos + 4));
+      } else {
+        final int byteCount = (length + 7) / 8;
+        page.readByteArray(pos, destination, destinationOffset, byteCount);
+        pos += byteCount;
+        scales[0] = Float.intBitsToFloat(page.readInt(pos));
+      }
+      return ROW_OK;
+
+    } catch (final Exception e) {
+      // An interrupted thread has been told to stop, not handed a bad vector (issue #7432)
+      ArcadePageVectorValues.abortIfInterrupted(e, -1);
+      LogManager.instance().log(this, Level.WARNING, "Error reading vector from offset %d: %s", fileOffset, e.getMessage());
+      return ROW_UNREADABLE;
+    }
+  }
+
+  /** @return the position just after the variable-length number that starts at {@code pos}. */
+  private static int skipVariableLengthNumber(final BasePage page, final int pos) {
+    // A number longer than 10 bytes cannot be valid: bounded so a corrupt page cannot run away
+    for (int i = 0; i < 10; i++)
+      if ((page.readByte(pos + i) & 0x80) == 0)
+        return pos + i + 1;
+    throw new IllegalStateException("Variable length quantity is too long at position " + pos);
+  }
+
+  /**
+   * How many vectors a graph build can keep as quantized rows for the same heap it would have spent on its float cache
+   * (issue #10543): an INT8 row is a quarter of the float vector it stands for, a BINARY one a thirty-second.
+   *
+   * @param floatCacheCapacity the float vectors the build's budget pays for, see {@link #computeGraphBuildCacheCapacity}
+   * @param expectedSize       the vectors the build will walk
+   *
+   * @return the capacity of the quantized store, never more than the corpus
+   */
+  int quantizedBuildCapacity(final int floatCacheCapacity, final int expectedSize) {
+    final long budget = (long) Math.max(0, floatCacheCapacity) * VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
+    final long affordable = budget / QuantizedBuildVectors.bytesPerVector(metadata.quantizationType, metadata.dimensions);
+    return (int) Math.min(Math.min(affordable, Math.max(0, expectedSize)), Integer.MAX_VALUE / 2);
+  }
+
+  /**
+   * Whether a quantized row reconstructs to a vector this index cannot score against, which is what
+   * {@link #isUnscorable(float[])} asks of the float vector the old build produced for it.
+   *
+   * @param scratch a float array of the index's width to reconstruct into
+   */
+  private boolean isUnscorableRow(final byte[] row, final int offset, final float[] scales, final float[] scratch) {
+    if (metadata.similarityFunction == VectorSimilarityFunction.EUCLIDEAN)
+      return false; // the origin is a regular point there
+    if (metadata.quantizationType == VectorQuantizationType.INT8)
+      QuantizedBuildVectors.dequantizeInt8(row, offset, metadata.dimensions, scales[0], scales[1], scratch);
+    else
+      QuantizedBuildVectors.dequantizeBinary(row, offset, metadata.dimensions, scales[0], scratch);
+    return VectorUtils.isZeroVector(scratch);
+  }
+
+  /**
+   * Says what a build over quantized rows holds in memory, and, when that is not the whole corpus, what holding all of
+   * it would take: the rest is read from the pages, which is slower and is the one thing an operator can change.
+   */
+  private void logQuantizedBuildStore(final QuantizedBuildVectors store, final int vectors, final String vectorProp) {
+    final long bytesPerVector = QuantizedBuildVectors.bytesPerVector(metadata.quantizationType, metadata.dimensions);
+    final long residentMB = store.ramBytes() / (1024 * 1024);
+
+    if (store.size() >= vectors) {
+      LogManager.instance().log(this, Level.INFO,
+          "Building graph with %d vectors using property '%s' (all kept as %s rows in memory: %d MB, read from the heap "
+              + "and not from the index pages)", vectors, vectorProp, metadata.quantizationType, residentMB);
+      return;
+    }
+
+    final long neededMB = vectors * bytesPerVector / (1024 * 1024);
+    final long maxHeap = Math.max(1L, VectorHeapBudget.maxHeapBytes());
+    final long percentNeeded = Math.min(90L, (vectors * bytesPerVector * 100 + maxHeap - 1) / maxHeap);
+    final String knob = getGraphBuildCacheSize() > 0 ? GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.getKey()
+        : GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getKey();
+    LogManager.instance().log(this, Level.INFO,
+        "Building graph with %d vectors using property '%s' (%d of them kept as %s rows in memory: %d MB; the other %d are "
+            + "read from the index pages, which is slower). Keeping all of them needs about %d MB: raise %s%s",
+        vectors, vectorProp, store.size(), metadata.quantizationType, residentMB, vectors - store.size(), neededMB, knob,
+        getGraphBuildCacheSize() > 0 ? "" : " to at least " + percentNeeded + " (percent of the heap ceiling)");
+  }
+
+  /** Reads, for a graph build, the ordinals its {@link QuantizedBuildVectors} did not have the room for. */
+  private QuantizedBuildVectorValues.NonResidentRows nonResidentRows(final VectorLocationIndex snapshot,
+      final int[] ordinalToVectorId) {
+    return (ordinal, row, scales) -> {
+      final long offsetAndFlag = snapshot.getOffsetAndFlag(ordinalToVectorId[ordinal]);
+      if (offsetAndFlag == VectorLocationIndex.ABSENT)
+        return false;
+      if (readQuantizedRowFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag), VectorLocationIndex.isCompactedOf(offsetAndFlag),
+          row, 0, scales) != ROW_OK)
+        return false;
+      metrics.incrementVectorFetchFromQuantized();
+      return true;
+    };
+  }
+
   // ========== END QUANTIZATION HELPER METHODS ==========
 
   /**
@@ -7115,6 +7327,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /** How many candidates a BINARY search fetches per requested neighbour before reranking them on the stored vectors. */
   private static final int   BINARY_RERANK_OVERSAMPLE = 4;
+
+  /**
+   * Capacity of the float cache a graph build keeps beside its quantized rows (issue #10543). Only the few vectors read
+   * by name rather than by the graph walk - the unreachable-node scan, the DOT_PRODUCT sample - go through it.
+   */
+  private static final int   SMALL_BUILD_CACHE_SIZE = 64;
 
   /**
    * The candidates per requested neighbour that an approximate (PQ) search re-ranks on the stored vectors when it is asked to
