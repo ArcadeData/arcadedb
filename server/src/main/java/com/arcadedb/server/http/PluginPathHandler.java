@@ -25,8 +25,10 @@ import io.undertow.server.handlers.PathHandler;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -68,20 +70,35 @@ final class PluginPathHandler extends PathHandler {
   private record ServerRoute(String[] segments, int mountLength, String description) {
   }
 
-  /** The holders of one path: who registered it as an exact path, and who as a prefix, {@code null} for none. */
+  /**
+   * The holders of one path: who registered it as an exact path, and who as a prefix. A kind has several owners when plugins
+   * declared different methods on it, which {@link PluginRoutes} merges into one entry without asking the {@link PathHandler}
+   * again ({@link #joinClaim}): every owner keeps a root the opposite kind would take away.
+   */
   private static final class PathClaims {
-    private String exact;
-    private String prefix;
+    private final Set<String> exact  = new LinkedHashSet<>();
+    private final Set<String> prefix = new LinkedHashSet<>();
 
-    String heldAs(final boolean isPrefix) {
+    private Set<String> ownersOf(final boolean isPrefix) {
       return isPrefix ? prefix : exact;
     }
 
+    /** The first owner of the kind, {@code null} for none. */
+    String heldAs(final boolean isPrefix) {
+      final Set<String> owners = ownersOf(isPrefix);
+      return owners.isEmpty() ? null : owners.iterator().next();
+    }
+
+    /** The first owner of the kind other than {@code claimant}, {@code null} when the claimant holds it alone or nobody does. */
+    String heldAsByAnotherThan(final boolean isPrefix, final String claimant) {
+      for (final String owner : ownersOf(isPrefix))
+        if (!owner.equals(claimant))
+          return owner;
+      return null;
+    }
+
     void hold(final boolean isPrefix, final String owner) {
-      if (isPrefix)
-        prefix = owner;
-      else
-        exact = owner;
+      ownersOf(isPrefix).add(owner);
     }
   }
 
@@ -93,6 +110,16 @@ final class PluginPathHandler extends PathHandler {
   /** The plugin whose routes are being registered, or {@code null} when it is the server's own. */
   synchronized String getRegisteringPlugin() {
     return registeringPlugin;
+  }
+
+  /**
+   * Adds the plugin being registered to the owners of a path it declares another method on: {@link PluginRoutes} merges that
+   * into the entry another plugin created instead of registering it again, so the claim would otherwise name the first plugin
+   * alone (issue #10532).
+   */
+  synchronized void joinClaim(final String path, final boolean isPrefix) {
+    if (registeringPlugin != null)
+      claims.computeIfAbsent(normalize(path), key -> new PathClaims()).hold(isPrefix, "plugin '" + registeringPlugin + "'");
   }
 
   /** The method-keyed table every {@link PluginRoutes} built on this handler shares (issue #10385). */
@@ -204,8 +231,8 @@ final class PluginPathHandler extends PathHandler {
       // takes that party's root away while its subtree keeps working: an exact path answers the root of a prefix instead of it
       // (the server's mount included), and a prefix on an exact path never answers its own root (issue #10532). The same party
       // declaring both is the deliberate "the root here, everything below there" pair
-      final String other = taken.heldAs(!isPrefix);
-      if (other != null && !other.equals(claimant))
+      final String other = taken.heldAsByAnotherThan(!isPrefix, claimant);
+      if (other != null)
         throw new IllegalStateException(isPrefix ?
             claimant + " cannot register the HTTP route " + path + " as a prefix: " + other + " registered that exact path, which is "
                 + "matched before any prefix, so the prefix would never answer its own root" :

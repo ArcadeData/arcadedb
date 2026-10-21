@@ -35,6 +35,8 @@ import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.graph.Edge;
@@ -4006,11 +4008,24 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (final DatabaseOperationException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+      // A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
+      // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other
+      if (isHeldDatabase(e))
+        writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+      else
+        writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
       return false;
     }
 
     return true;
+  }
+
+  /** cannot_connect_now: the server is up but the database cannot take the connection at the moment. */
+  static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
+
+  /** Whether {@code e} refuses a database that exists: {@link DatabaseNotAvailableException} without its narrower not-found subtype. */
+  static boolean isHeldDatabase(final DatabaseOperationException e) {
+    return e instanceof DatabaseNotAvailableException && !(e instanceof DatabaseNotFoundException);
   }
 
   /**

@@ -67,7 +67,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
    * alone, or {@code getOrCreateDatabase(name)}. The three-argument form is a plugin initialising the database it owns at start.
    */
   private static final Pattern INTERNAL_ENTRY_POINT = Pattern.compile(
-      "(?:\\b[sS]erver|\\bgetServer\\(\\))\\s*\\.\\s*(?:getDatabase\\((?:[^,()]|\\([^()]*\\))*\\)|getOrCreateDatabase\\()");
+      "(?:\\b\\w*[sS]erver|\\bgetServer\\(\\))\\s*\\.\\s*(?:getDatabase\\((?:[^,()]|\\([^()]*\\))*\\)|getOrCreateDatabase\\()");
 
   /**
    * Modules that plug into the server and resolve no database on behalf of a client, with the reason. Everything else that plugs
@@ -175,6 +175,21 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
         + "which refuses a name an operator has taken away (a restore in progress, a 'close database'). getDatabase(String) is "
         + "the operator's own entry point and sees past those marks. If the module serves no client, add it to "
         + "NOT_A_CLIENT_SURFACE with the reason").isEmpty();
+  }
+
+  /** The census is only as good as its pattern: the gRPC service names its server field {@code arcadeServer}, not {@code server}. */
+  @Test
+  void theCensusPatternRecognisesEveryNameAServerFieldGoes() {
+    for (final String call : new String[] { "server.getDatabase(name)", "arcadeServer.getDatabase(databaseName)",
+        "httpServer.getServer().getDatabase(name)", "getServer().getDatabase(name)", "this.server.getDatabase(name)",
+        "server.getOrCreateDatabase(name)", "arcadeServer.getOrCreateDatabase(name)",
+        "(DatabaseInternal) arcadeServer.getDatabase(databaseName)", "server.getDatabase(names.get(0))" })
+      assertThat(INTERNAL_ENTRY_POINT.matcher(call).find()).as(call).isTrue();
+
+    for (final String call : new String[] { "server.getDatabaseForClient(name)", "arcadeServer.getDatabaseForClient(databaseName)",
+        "server.getDatabase(name, true, true)", "arcadeServer.getDatabase(name, false, false)", "getDatabase(name, credentials)",
+        "database.getDatabase(name)" })
+      assertThat(INTERNAL_ENTRY_POINT.matcher(call).find()).as(call).isFalse();
   }
 
   private static void collectOffenders(final Path sources, final List<String> offenders) throws IOException {

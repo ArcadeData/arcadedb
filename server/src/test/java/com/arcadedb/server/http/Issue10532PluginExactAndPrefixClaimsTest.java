@@ -143,6 +143,49 @@ class Issue10532PluginExactAndPrefixClaimsTest {
         .hasMessageContaining("/p");
   }
 
+  /**
+   * A second plugin declaring another method on a prefix joins the entry the first one created (#10385): the entry has two owners,
+   * and an exact path of the first plugin would answer the root of the second one's method. The claim keeps every owner.
+   */
+  @Test
+  void aPrefixTwoPluginsShareCannotBeGivenAnExactPathByEitherOfThem() {
+    plugin("PluginA", routes -> routes.prefix(Methods.GET, "/p", say("A prefix")));
+    plugin("PluginB", routes -> routes.prefix(Methods.POST, "/p", say("B prefix")));
+
+    assertThatThrownBy(() -> plugin("PluginA", routes -> routes.put("/p", say("A exact"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("PluginA")
+        .hasMessageContaining("PluginB");
+    assertThatThrownBy(() -> plugin("PluginB", routes -> routes.put("/p", say("B exact"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("PluginA");
+  }
+
+  @Test
+  void anExactPathTwoPluginsShareCannotBeGivenAPrefixByEitherOfThem() {
+    plugin("PluginA", routes -> routes.get("/p", say("A exact")));
+    plugin("PluginB", routes -> routes.post("/p", say("B exact")));
+
+    assertThatThrownBy(() -> plugin("PluginA", routes -> routes.prefix(Methods.PUT, "/p", say("A prefix"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("PluginB");
+    assertThatThrownBy(() -> plugin("PluginB", routes -> routes.prefix(Methods.PUT, "/p", say("B prefix"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("PluginA");
+  }
+
+  @Test
+  void aPluginThatOwnsBothKindsAloneKeepsThemAfterAnotherJoinsNeither() throws Exception {
+    plugin("PluginA", routes -> routes.get("/p", say("root")).prefix(Methods.GET, "/p", say("below")));
+    // a different path of another plugin changes nothing for /p
+    plugin("PluginB", routes -> routes.get("/q", say("other")));
+    plugin("PluginA", routes -> routes.post("/p", say("root post")).prefix(Methods.POST, "/p", say("below post")));
+    startListener();
+
+    assertThat(send("POST", "/p").body()).isEqualTo("root post");
+    assertThat(send("POST", "/p/x").body()).isEqualTo("below post");
+  }
+
   @Test
   void aRawRegistrationIsJudgedAgainstTheOtherKindToo() {
     paths.setRegisteringPlugin("LegacyPlugin");
