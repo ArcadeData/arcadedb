@@ -121,6 +121,24 @@ class Issue10535DefaultDatabaseCredentialsTest extends StaticBaseServerTest {
     assertThat(groupsOfUser()).containsExactly("admin");
   }
 
+  /**
+   * An entry written without a group, {@code Db[user:password]}: the user is created, the grant reaches the file, and a restart reads the
+   * file back and finds the same user able to authenticate against the database.
+   */
+  @Test
+  void anEntryWithoutAGroupRoundTripsThroughTheUsersFile() throws Exception {
+    final String withoutGroup = DATABASE + "[" + USER + ":" + PASSWORD + "]";
+    startWith(withoutGroup);
+    assertThat(server.getSecurity().authenticate(USER, PASSWORD, DATABASE).getName()).isEqualTo(USER);
+    assertThat(Files.readString(usersFile, StandardCharsets.UTF_8)).contains(USER).contains(DATABASE);
+    stopServer();
+
+    startWith(withoutGroup);
+
+    assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.ONLINE);
+    assertThat(server.getSecurity().authenticate(USER, PASSWORD, DATABASE).getName()).isEqualTo(USER);
+  }
+
   private static String credentials(final String password, final String group) {
     return DATABASE + "[" + USER + ":" + password + ":" + group + "]";
   }

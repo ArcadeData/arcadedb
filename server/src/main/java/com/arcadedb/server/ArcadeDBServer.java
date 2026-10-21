@@ -2774,11 +2774,12 @@ public class ArcadeDBServer {
           // UPDATE DB LIST + GROUP: persisted before it is published, and outside the try above, so a users file that cannot be
           // written is not reported as a password mismatch (issue #10535)
           security.addDatabaseToUser(userName, dbName, groups);
-        } else
+        } else {
           // CREATE A NEW USER, with its database and group in the one write
           security.createUser(new JSONObject().put("name", userName)//
               .put("password", security.encodePassword(userPassword))//
               .put("databases", new JSONObject().put(dbName, new JSONArray(groups))));
+        }
       }
     }
   }

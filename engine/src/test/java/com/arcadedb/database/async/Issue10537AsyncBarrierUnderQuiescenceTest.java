@@ -40,6 +40,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue10537AsyncBarrierUnderQuiescenceTest extends TestHelper {
 
+  /** A database that never touched the async API has no executor: the quiescence and the barrier are free, and create none. */
+  @Test
+  void withoutAnExecutorTheQuiescenceAndTheBarrierAreFreeAndCreateNone() {
+    assertThat(((LocalDatabase) database).getAsyncIfExists()).isNull();
+
+    try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) database).quiesceAsync()) {
+      ((DatabaseInternal) database).waitForAsyncCompletion();
+    }
+
+    assertThat(((LocalDatabase) database).getAsyncIfExists()).as("no worker pool was started to be parked").isNull();
+  }
+
   @Test
   @Timeout(value = 30, unit = TimeUnit.SECONDS)
   void onlyTheThreadThatHoldsTheQuiescenceIsExemptedFromTheBarrier() throws Exception {

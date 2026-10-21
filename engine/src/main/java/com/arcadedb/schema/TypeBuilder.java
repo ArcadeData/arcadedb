@@ -126,6 +126,9 @@ public class TypeBuilder<T> {
     // indexes, building the index of the constraint): the workers need that lock to commit their batch, so asked from inside it the
     // quiescence stalls until its timeout. It is reentrant, so a builder reached from inside a frame of the caller (the statement,
     // Labels.ensureCompositeType) rides on the one that caller took.
+    //
+    // Asked whenever a super type is linked or a unique edge is made, even when no super type has an index to propagate: deciding that
+    // would be a read of every index of the hierarchy to save a park of the workers that is free without an executor and brief with one
     final T created;
     try (final AsyncQuiesce asyncPaused = (superTypes != null && !superTypes.isEmpty()) || (edgeUnique && !edgeLightweight) ?
         database.quiesceAsync() : NOTHING_TO_QUIESCE) {
