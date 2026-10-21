@@ -62,6 +62,9 @@ class Issue10528TimeSeriesBoundOverflowTest extends TestHelper {
       "ts > 9223372036854775807 OR ts > 9223372036854775807",
       // a union of blocks: the empty one adds nothing
       "ts > 9223372036854775807 OR ts < 0",
+      // both ends of the union form: the lower one is declined by the push-down, so the WHERE stays and judges the rows
+      "ts > 9223372036854775807 OR ts < -9223372036854775808",
+      "-9223372036854775808 > ts OR 9223372036854775807 < ts",
       "ts >= 9223372036854775807",
       "ts = 9223372036854775807",
       "ts < -9223372036854775808",
@@ -117,6 +120,9 @@ class Issue10528TimeSeriesBoundOverflowTest extends TestHelper {
     assertThat(count("SELECT FROM D1 WHERE ts > 2000")).isEqualTo(1L);
     assertThat(count("SELECT FROM D1 WHERE 2000 < ts")).isEqualTo(1L);
     assertThat(count("SELECT FROM D1 WHERE 2000 >= ts")).isEqualTo(2L);
+    // the empty block of a union adds no sample and takes none away
+    assertThat(count("SELECT FROM D1 WHERE ts > 9223372036854775807 OR ts >= 2000")).isEqualTo(2L);
+    assertThat(count("SELECT FROM D1 WHERE ts >= 2000 OR 9223372036854775807 < ts")).isEqualTo(2L);
   }
 
   @Test

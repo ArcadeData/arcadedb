@@ -100,6 +100,22 @@ class CypherDistinctTemporalKeyIssue10526Test extends TestHelper {
         .isEqualTo(1L);
   }
 
+  @Test
+  void twoSetsOfTheSameElementsInAnotherOrderAreTreatedAsEqualsTreatsThem() {
+    // a Set has no order, but = reads it as a sequence, so the order it iterates in is part of the value: whichever way = answers, the
+    // duplicate elimination has to answer the same, or two sets that = calls equal would be two groups (or the reverse)
+    final Map<String, Object> parameters = Map.of("a", new LinkedHashSet<>(List.of(1, 2, 3)), "b", new LinkedHashSet<>(List.of(3, 2, 1)));
+    final boolean equal = Boolean.TRUE.equals(scalar("RETURN $a = $b AS v", parameters));
+
+    assertThat(scalar("UNWIND [$a, $b] AS x RETURN count(DISTINCT x) AS v", parameters)).isEqualTo(equal ? 1L : 2L);
+    assertThat(scalar("UNWIND [$a, $b] AS x WITH x AS g, count(*) AS c RETURN count(*) AS v", parameters)).isEqualTo(equal ? 1L : 2L);
+
+    // the same set, iterated in the same order, is one value
+    final Map<String, Object> same = Map.of("a", new LinkedHashSet<>(List.of(1, 2, 3)), "b", new LinkedHashSet<>(List.of(1, 2, 3)));
+    assertThat(scalar("RETURN $a = $b AS v", same)).isEqualTo(true);
+    assertThat(scalar("UNWIND [$a, $b] AS x RETURN count(DISTINCT x) AS v", same)).isEqualTo(1L);
+  }
+
   // ------------------------------------------------------------------------------------- every representation of one instant
 
   /** One instant, as every temporal class an openCypher query can meet. */

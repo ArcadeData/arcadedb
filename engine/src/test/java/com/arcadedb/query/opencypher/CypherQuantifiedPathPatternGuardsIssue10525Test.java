@@ -119,6 +119,19 @@ class CypherQuantifiedPathPatternGuardsIssue10525Test {
         .hasMessageContaining(MESSAGE);
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "CREATE ((a:P)-[:Ev]->(b:P)){1,2}",
+      "MERGE ((a:P)-[:Ev]->(b:P)){1,2}"
+  })
+  void aGroupInAWriteClauseNeverReachesTheTimeSeriesTypeSilently(final String query) {
+    // Neither clause takes a quantified path pattern; whatever refuses it, the series is not written to or answered as empty, and the
+    // vertices are untouched
+    assertThatThrownBy(() -> drain(database.command("cypher", query))).isInstanceOf(RuntimeException.class);
+
+    assertThat(count("MATCH (p:P) RETURN count(p) AS n")).isEqualTo(3L);
+  }
+
   @Test
   void aRelationshipVariableRepeatedInsideAGroupIsRefused() {
     assertThatThrownBy(() -> drain(database.query("cypher", "MATCH ((a)-[r:R]->(b)-[r:R]->(c)){1,2} RETURN count(*) AS n")))
