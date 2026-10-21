@@ -71,6 +71,19 @@ class WALGroupCommitTest extends TestHelper {
     assertThat(database.countType(TYPE, false)).isEqualTo(50);
   }
 
+  /** The full flush (txWalFlush 2) goes through the same shared flush, with the file's metadata. */
+  @Test
+  void fullFlushCommitsAreGroupCommittedToo() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
+    final long commitsBefore = stat("groupCommits");
+
+    runInThreads(4, 10);
+
+    assertThat(stat("groupCommits") - commitsBefore).isEqualTo(40);
+    reopenDatabase();
+    assertThat(database.countType(TYPE, false)).isEqualTo(40);
+  }
+
   @Test
   void concurrentCommitsSurviveACrash() throws Exception {
     final long commitsBefore = stat("groupCommits");

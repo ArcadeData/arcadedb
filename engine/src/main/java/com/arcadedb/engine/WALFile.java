@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -71,7 +72,9 @@ public class WALFile extends LockContext {
   private volatile boolean          open;
   // Writes appended without the flush their commit asked for, owed by a group commit (see markUnsynced)
   private volatile boolean          unsynced;
-  private volatile boolean          syncMetaData;
+  // AtomicBoolean: a pass takes the request with ONE getAndSet, so a request raised meanwhile belongs either to this pass or
+  // to the next, never lost between a read and a separate clear
+  private final    AtomicBoolean    syncMetaData      = new AtomicBoolean();
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
@@ -291,7 +294,7 @@ public class WALFile extends LockContext {
   void markUnsynced(final boolean metaData) {
     // the metadata request is raised BEFORE the pending flag: see syncIfUnsynced for why that order makes lowering it safe
     if (metaData)
-      syncMetaData = true;
+      syncMetaData.set(true);
     unsynced = true;
   }
 
@@ -305,8 +308,7 @@ public class WALFile extends LockContext {
     if (!unsynced)
       return;
     unsynced = false;
-    final boolean metaData = syncMetaData;
-    syncMetaData = false;
+    final boolean metaData = syncMetaData.getAndSet(false);
     if (open)
       try {
         force(metaData);
@@ -327,9 +329,9 @@ public class WALFile extends LockContext {
     IOException syncFailure = null;
     if (unsynced && open && channel != null && channel.isOpen())
       try {
-        force(syncMetaData);
+        force(syncMetaData.get());
         unsynced = false;
-        syncMetaData = false;
+        syncMetaData.set(false);
       } catch (final IOException e) {
         syncFailure = e;
       }

@@ -75,6 +75,7 @@ public class TransactionManager {
    */
   public static final String LAST_TX_ID_FILE_NAME = "last-tx-id.bin";
   private static final long HOUSEKEEPING_PERIOD_MS = 1000;
+  private static final long SLOW_GROUP_COMMIT_FLUSH_MS = 1000;
 
   private final DatabaseInternal             database;
   /**
@@ -576,8 +577,10 @@ public class TransactionManager {
     final long target = walWriteSequence.get();
     // the writes arriving from now on go to the other file, out of the way of this flush
     final WALFile[] pool = activeWALFilePool;
+    // a read-modify-write of a volatile, safe because only one pass runs at a time (walSyncInProgress)
     if (pool != null && pool.length > 1)
       groupCommitSlot = 1 - groupCommitSlot;
+    final long start = System.nanoTime();
     for (final WALFile file : new ArrayList<>(unsyncedWALFiles)) {
       unsyncedWALFiles.remove(file);
       try {
@@ -595,6 +598,12 @@ public class TransactionManager {
     }
     walDurableSequence = target;
     statsGroupSyncs.incrementAndGet();
+
+    // every commit waiting for this pass waited this long too: say so when the disk is that slow
+    final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+    if (elapsedMs >= SLOW_GROUP_COMMIT_FLUSH_MS)
+      LogManager.instance().log(this, Level.WARNING, "Group commit: a WAL flush of database '%s' took %dms, every commit waiting for it"
+          + " waited as long", null, database.getName(), elapsedMs);
   }
 
   private void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,

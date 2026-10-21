@@ -103,8 +103,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   // pending ack - letting the close-time ack gate delete a WAL that still holds unflushed committed data.
   private final        java.util.concurrent.atomic.AtomicReference<WALFile> walFile = new java.util.concurrent.atomic.AtomicReference<>();
   // The group-commit ticket of the WAL write that describes this page, 0 when that write was flushed before the page was
-  // published (arcadedb.txWalGroupCommit): the page is not written to its data file before the WAL is durable up to it
-  private volatile     long    walSyncTicket              = 0;
+  // published (arcadedb.txWalGroupCommit): the page is not written to its data file before the WAL is durable up to it. Set
+  // before the page is published, and the publication hands it to the flush thread through the flush queue, which is
+  // the happens-before edge the flush thread's read relies on
+  private              long    walSyncTicket              = 0;
 
   static {
     ZERO_BYTES_ARRAY = new byte[GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger()];

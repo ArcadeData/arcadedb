@@ -1011,7 +1011,7 @@ public class TransactionContext implements Transaction {
     // reset() clears the id, which the failure of the flush has to name
     final long committedTxId = txId;
     reset();
-    if (walSyncTicket > 0)
+    if (walSyncTicket > 0) {
       // Group commit: the locks are released, so the commits arriving now can append while this one waits, and share its
       // flush. Before the callbacks, which are told the transaction is committed
       try {
@@ -1021,6 +1021,7 @@ public class TransactionContext implements Transaction {
           abandonOrderedCallbacks(callbacks, 0);
         throw e;
       }
+    }
     if (callbacks != null) {
       int next = 0;
       try {
