@@ -188,7 +188,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * @param capacity expected number of samples; the batch grows on demand if exceeded
    */
   public TimeSeriesBatch newBatch(final int capacity) {
-    return new TimeSeriesBatch(columns, capacity);
+    return new TimeSeriesBatch(columns, capacity, database);
   }
 
   /**
