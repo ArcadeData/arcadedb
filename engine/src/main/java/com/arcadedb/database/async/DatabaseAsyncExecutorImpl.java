@@ -2873,6 +2873,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   /**
+   * True while the calling thread holds a {@link #quiesceWorkers() quiescence}: every worker is parked with its transaction batch
+   * committed, and stays so until the quiescence is released. Not the case for a quiescence of an executor with no workers, which takes
+   * no lock because there is nothing to park.
+   */
+  public boolean isQuiescedByCurrentThread() {
+    return quiesceLock.isHeldByCurrentThread();
+  }
+
+  /**
    * Parks every worker of this executor with its transaction batch committed, and does not return until each one has
    * CONFIRMED it (issue #6303, item 2).
    * <p>
