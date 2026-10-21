@@ -323,15 +323,28 @@ class PackagingManifestsTest {
   }
 
   @Test
-  void nativeRunHintsKeepTheConfigVolumeAcrossRm() {
+  void everyDockerRunHintKeepsTheConfigVolumeAcrossRm() {
     // Issue #10402: `docker run --rm` deletes the anonymous volumes of the container it removes, so a hint that mounts
     // only databases loses every user, group and API token the server wrote to config. A named volume survives `--rm`
     // and, unlike a bind mount of an empty directory, is seeded with the image's default config files. The name may not
     // contain a '/', so a bind mount such as `-v ./config:/home/arcadedb/config` is rejected on purpose.
-    for (final String hint : List.of(NATIVE_DOCKER_SH, NATIVE_DOC))
+    // Issue #10534: the list is what decides which hints get fixed, so it names every file that tells the reader to
+    // `docker run` the image - the front page's quickstart was the one left out of it.
+    for (final String hint : List.of(NATIVE_DOCKER_SH, NATIVE_DOC, README))
       assertThat(read(hint)).as("%s tells the reader to run the image without a named volume on config", hint)
           .containsPattern("-v \"?[A-Za-z0-9_.-]+:/home/arcadedb/config\"?");
   }
+
+  @Test
+  void theQuickstartThatImportsADatabaseKeepsItAcrossRm() {
+    // Issue #10534: the README hint downloads OpenBeer into the databases volume as its first action, so with that volume
+    // anonymous the import is deleted when the container exits. A named volume survives `--rm`.
+    final String readme = read(README);
+    assertThat(readme).as("%s imports a sample database in its docker run quickstart", README).contains("defaultDatabases=Imported");
+    assertThat(readme).as("%s imports a database into a volume that `--rm` deletes with the container", README)
+        .containsPattern("-v \"?[A-Za-z0-9_.-]+:/home/arcadedb/databases\"?");
+  }
+
 
   @Test
   void everyConfigTemplateIsShippedByTheJvmDistribution() {

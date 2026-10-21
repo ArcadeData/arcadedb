@@ -1413,8 +1413,30 @@ public class ArcadeDBServer {
     return Collections.unmodifiableCollection(pluginManager.getPlugins());
   }
 
+  /**
+   * The database {@code databaseName}, opened from disk when it is not open: the operator's own entry point. It sees past the
+   * marks that keep a client out of a name an operator has taken away (a {@code close database}, a restore in progress), because
+   * the steps that set those marks resolve the name through here too - {@code open database}, the restore replacing its target,
+   * the snapshot installer. <b>A listener serving a client must call {@link #getDatabaseForClient(String)} instead</b> (issue
+   * #10533): a client that reached the database through this method could open the copy an {@code overwrite} restore is about
+   * to destroy and have its writes acknowledged and then discarded.
+   */
   public ServerDatabase getDatabase(final String databaseName) {
     return getDatabase(databaseName, false, true);
+  }
+
+  /**
+   * The database a client of a wire protocol (Postgres, Bolt, gRPC, Redis, MongoDB, MCP, Gremlin) names, opened from disk when it
+   * is not open (issue #10533). Same as {@link #getDatabase(String)} except that a name an operator has taken away is refused
+   * with {@link DatabaseNotAvailableException}, as {@link #getDatabaseForRequest} does for HTTP: a database a {@code close
+   * database} command closed stays closed until {@code open database}, and one a restore holds is not opened for a client, whose
+   * writes the swap of the restore would discard. A name being dropped is refused to every caller.
+   * <p>
+   * A database that is already open is served as before, with no lock. Unlike {@link #getDatabaseForRequest} this does not look
+   * at the disk first: a name that is neither open nor on disk fails in the open, as it always did for these protocols.
+   */
+  public ServerDatabase getDatabaseForClient(final String databaseName) {
+    return getDatabase(databaseName, false, true, false, true);
   }
 
   public ServerDatabase getOrCreateDatabase(final String databaseName) {
@@ -1434,8 +1456,8 @@ public class ArcadeDBServer {
    * <p>
    * A database a {@code close database} command closed is not reopened by a request: it was closed on purpose - a restore
    * of its files, a cold backup - and stays closed until {@code open database} (see {@link #markClosedByCommand}). The
-   * binary protocols (Postgres, Bolt, gRPC) open databases through {@link #getDatabase(String)} and keep the behaviour
-   * they always had: they reopen it.
+   * binary protocols (Postgres, Bolt, gRPC, Redis, MongoDB) get the same refusal through {@link #getDatabaseForClient} (issue
+   * #10533).
    */
   public ServerDatabase getDatabaseForRequest(final String databaseName) {
     // A NULL OR BLANK NAME GETS THE ANSWER IT ALWAYS DID (IllegalArgumentException), NOT A NullPointerException OUT OF THE MAP
@@ -2222,8 +2244,9 @@ public class ArcadeDBServer {
 
         // Whoever takes a database away has to be seen here, under the lock the load takes, or the load and the operation
         // interleave (issues #10234, #10388). A drop is refused to every caller: its files are being deleted, and nobody
-        // has a use for the directory. A close and a restore are refused to a client request only - 'open database' and the
-        // restore itself resolve the name through here too.
+        // has a use for the directory. A close and a restore are refused to a client only (HTTP, and every wire protocol
+        // through getDatabaseForClient, issue #10533) - 'open database' and the restore itself resolve the name through the
+        // unflagged getDatabase(String).
         if (beingDropped.contains(databaseName))
           throw new DatabaseNotAvailableException(
               "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted");

@@ -1471,7 +1471,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * Open database for read ops.
    */
   private Database openDatabase(final String name) {
-    return server.getDatabase(name);
+    return server.getDatabaseForClient(name);
   }
 
   /**

@@ -162,9 +162,15 @@ Start ArcadeDB Server with Docker:
 
 ```
 docker run --rm -p 2480:2480 \
+           -v arcadedb-config:/home/arcadedb/config \
+           -v arcadedb-databases:/home/arcadedb/databases \
            -e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" \
            arcadedata/arcadedb:latest
 ```
+
+`--rm` deletes the container's anonymous volumes with it, so the two named volumes keep the imported `OpenBeer` database
+(`databases`) and the users, groups and API tokens the server writes at runtime (`config`) across runs. For a fresh start, remove
+them with `docker volume rm arcadedb-config arcadedb-databases`.
 
 Pass database settings in `ARCADEDB_SETTINGS` and any extra JVM flags in `JAVA_OPTS`: Docker replaces
 an environment variable rather than appending to it, so keeping the two apart leaves the image's own

@@ -235,6 +235,12 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
     return (ServerDatabase) call("getDatabase", () -> databases.get(databaseName), databaseName);
   }
 
+  /** A client resolves the database the way the operator does here: there is no mark on a name of a server that never started. */
+  @Override
+  public ServerDatabase getDatabaseForClient(final String databaseName) {
+    return getDatabase(databaseName);
+  }
+
   /** Recorded, and forgets a database served here; the real registry of an unstarted server holds nothing. */
   @Override
   public void removeDatabase(final String databaseName) {

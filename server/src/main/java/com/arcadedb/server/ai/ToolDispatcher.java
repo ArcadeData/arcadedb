@@ -148,7 +148,7 @@ public class ToolDispatcher {
     if (!user.canAccessToDatabase(databaseName))
       return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
-    final DatabaseInternal database = server.getDatabase(databaseName);
+    final DatabaseInternal database = server.getDatabaseForClient(databaseName);
 
     // Bind the authenticated principal for the duration of the read so the engine's per-type/bucket ACL
     // layer enforces (LocalDatabase.checkPermissionsOnFile is a no-op when no principal is bound) - mirrors
@@ -207,7 +207,7 @@ public class ToolDispatcher {
       return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
     // The principal is bound while the type is read, so a type the user may not read is refused like an unknown one
-    final DatabaseInternal database = server.getDatabase(databaseName);
+    final DatabaseInternal database = server.getDatabaseForClient(databaseName);
     return DatabaseUserContext.runAs(database, user, () -> AiSchemaDigest.typeDetail(database, name).toString());
   }
 

@@ -21,7 +21,10 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -199,6 +202,34 @@ class GrpcErrorMapperTest {
         null);
 
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+  }
+
+  @Test
+  @DisplayName("A database the server holds (restore, close database) maps to UNAVAILABLE, not INTERNAL (issue #10533)")
+  void databaseHeld_mapsToUnavailable() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new DatabaseNotAvailableException("Database 'mydb' is not available: a restore of it is in progress"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DatabaseNotAvailableException.class.getName());
+  }
+
+  @Test
+  @DisplayName("A held database is UNAVAILABLE through a wrapper too")
+  void databaseHeld_mapsToUnavailableThroughAWrapper() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new CommandExecutionException("Error on executing the command", new DatabaseNotAvailableException("held")), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+  }
+
+  @Test
+  @DisplayName("A database that does not exist keeps its mapping, it is not UNAVAILABLE")
+  void databaseNotFound_keepsItsMapping() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new DatabaseNotFoundException("Database 'nope' does not exist"), null);
+
+    assertThat(sre.getStatus().getCode()).isNotEqualTo(Status.Code.UNAVAILABLE);
   }
 
   @Test

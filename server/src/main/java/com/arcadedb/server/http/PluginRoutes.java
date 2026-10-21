@@ -159,6 +159,9 @@ public final class PluginRoutes {
       final MethodRestrictedHandler existing = registered.get(key);
       if (existing != null) {
         existing.allow(method, handler, owner);
+        // The entry has one more owner now: the path handler is not asked again, so it is told
+        if (serverPaths != null)
+          serverPaths.joinClaim(path, isPrefix);
         return;
       }
 

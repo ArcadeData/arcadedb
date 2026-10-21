@@ -77,7 +77,7 @@ public class MCPResources {
         || !MCPToolUtils.canReadDatabase(user, config, databaseName))
       throw new MCPResourceNotFoundException("Resource not found: " + uri);
 
-    final ServerDatabase database = server.getDatabase(databaseName);
+    final ServerDatabase database = server.getDatabaseForClient(databaseName);
     // Bind the principal so engine permission gates enforce for MCP callers (GHSA-6x73-v3rc-f57c); cleared by
     // MCPDispatcher in a finally.
     MCPToolUtils.bindCurrentUser(database, user);

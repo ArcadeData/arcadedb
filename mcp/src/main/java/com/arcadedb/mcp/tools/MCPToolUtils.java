@@ -79,7 +79,7 @@ public class MCPToolUtils {
     if (!user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
-    final ServerDatabase database = server.getDatabase(databaseName);
+    final ServerDatabase database = server.getDatabaseForClient(databaseName);
     bindCurrentUser(database, user);
     return new DatabaseAccess(database, permissions);
   }
