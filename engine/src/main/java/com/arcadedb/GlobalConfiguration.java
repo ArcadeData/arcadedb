@@ -654,7 +654,8 @@ public enum GlobalConfiguration {
       file are held, on average, for less than this time, so a lock held across a disk flush costs no spinning (the \
       average is kept while the file stays contended: the first waiter of each burst of contention spins once). Pays off \
       for many threads writing into the same type with arcadedb.txWalFlush=0 (50 is a good value: measured +15-19% \
-      commits/s), at the price of the CPU the spinning thread burns (+35-40% CPU per commit). 0, the default, disables \
+      commits/s), at the price of the CPU the spinning thread burns (+35-40% CPU per commit). Under a CPU quota (a \
+      container limited to fewer cores than it sees), that CPU comes out of the quota the lock owner needs. 0, the default, disables \
       the spin. Read when the database opens""", Long.class, 0),
 
   TX_RETRIES("arcadedb.txRetries", SCOPE.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
