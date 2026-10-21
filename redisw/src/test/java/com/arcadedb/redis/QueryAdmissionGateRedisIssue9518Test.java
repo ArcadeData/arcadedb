@@ -26,6 +26,11 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.exceptions.JedisDataException;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -79,5 +84,45 @@ public class QueryAdmissionGateRedisIssue9518Test extends BaseRedisServerTest {
       assertThat(jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(), "Gate9518", "{\"id\":3}")).isEqualTo(1L);
     }
     assertThat(gate.getRunning()).isZero();
+  }
+
+  /**
+   * The replies queued before a command that waits for the gate go out before it waits: a client pipelining a GET and a
+   * record write must not wait for the write's slot to read the GET's answer.
+   */
+  @Test
+  void repliesQueuedBeforeAGatedCommandDoNotWaitForItsSlot() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(30_000L);
+    getServerDatabase(0, getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE Gate9518Flush");
+
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
+      socket.setSoTimeout(10_000);
+      final OutputStream out = socket.getOutputStream();
+      final InputStream in = socket.getInputStream();
+      out.write(resp("AUTH", "root", DEFAULT_PASSWORD_FOR_TESTS));
+      out.flush();
+      assertThat(new String(in.readNBytes(5), StandardCharsets.US_ASCII)).isEqualTo("+OK\r\n");
+
+      final QueryAdmissionGate.Ticket held = gate.admit();
+      try {
+        // one write: the SET is answered at once, the HSET then waits for the slot this test holds
+        out.write(resp("SET", "gate9518flush", "v"));
+        out.write(resp("HSET", getDatabaseName(), "Gate9518Flush", "{\"id\":1}"));
+        out.flush();
+        assertThat(new String(in.readNBytes(5), StandardCharsets.US_ASCII)).isEqualTo("+OK\r\n");
+      } finally {
+        held.close();
+      }
+      assertThat(new String(in.readNBytes(4), StandardCharsets.US_ASCII)).isEqualTo(":1\r\n");
+    }
+    assertThat(gate.getRunning()).isZero();
+  }
+
+  private static byte[] resp(final String... parts) {
+    final StringBuilder command = new StringBuilder("*").append(parts.length).append("\r\n");
+    for (final String part : parts)
+      command.append('$').append(part.getBytes(StandardCharsets.UTF_8).length).append("\r\n").append(part).append("\r\n");
+    return command.toString().getBytes(StandardCharsets.UTF_8);
   }
 }

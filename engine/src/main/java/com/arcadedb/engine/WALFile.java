@@ -320,10 +320,16 @@ public class WALFile extends LockContext {
   public synchronized void close() throws IOException {
     // A group commit may still owe this file's last writes a flush: a closed file is never flushed again. A failed flush
     // still closes the file below, and reaches the caller after it
+    // The flags are lowered only AFTER this flush completes, unlike a group-commit pass: a pass running meanwhile then either
+    // still sees them and flushes again (harmless), or sees them lowered only once the writes are on disk - never "nothing
+    // owed" while this flush is still running. No lock is shared with the pass: its flush may reopen the channel, which takes
+    // this file's monitor, held here
     IOException syncFailure = null;
     if (unsynced && open && channel != null && channel.isOpen())
       try {
-        syncIfUnsynced();
+        force(syncMetaData);
+        unsynced = false;
+        syncMetaData = false;
       } catch (final IOException e) {
         syncFailure = e;
       }

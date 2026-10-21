@@ -325,7 +325,7 @@ public class RedisNetworkExecutor extends Thread {
       preAuthTicket.release();
   }
 
-  private void executeCommand(final Object command) {
+  private void executeCommand(final Object command) throws IOException {
     value.setLength(0);
 
     if (command instanceof List) {
@@ -378,6 +378,11 @@ public class RedisNetworkExecutor extends Thread {
       // Redis is traced like the other protocols (protocol=redis comes from ProtocolContext, set in
       // run()). No query language applies to a native Redis command, so language is null. No-op
       // unless the tracing plugin is active.
+      // A command that may wait (for the admission gate, a lock, the disk) must not hold back the replies queued before it:
+      // the client may be waiting for those already
+      if (!UNGATED_COMMANDS.contains(cmdString))
+        flushReplies();
+
       QueryAdmissionGate.Ticket admission = null;
       RunningQuery runningQuery = null;
       try (final QueryTracer.Span span = QueryTracer.Holder.begin(
@@ -1131,6 +1136,12 @@ public class RedisNetworkExecutor extends Thread {
 
     final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
     final SecurityDatabaseUser user = authenticatedUser.getDatabaseUser(database);
+
+    if (Thread.currentThread() != this) {
+      // not on the connection's own thread: the shortcut below would bind another thread's context
+      DatabaseContext.INSTANCE.init(database).setCurrentUser(user);
+      return database;
+    }
 
     // This thread serves this connection alone (RedisNetworkListener starts one RedisNetworkExecutor, a Thread, per accepted
     // socket; a pooled model would have to drop this shortcut), so the context the previous command bound is still the thread's: when it
