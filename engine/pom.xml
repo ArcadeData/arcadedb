@@ -83,6 +83,8 @@
               because every GraphIndexBuilder this engine constructs backs onto OnHeapGraphIndex, whose
               View.close() is a documented no-op as of 4.0.0-rc.9 - re-verify that close() still touches no
               live state before relying on it after a version bump.
+            - JVectorProviderSelectionTest matches jvector's log text "Native vector API was not enabled" to tell a
+              native load failure from an ignored property - re-check that wording in the new jvector release.
         -->
         <jvector.version>4.0.2</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>

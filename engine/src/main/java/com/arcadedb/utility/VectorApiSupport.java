@@ -44,11 +44,11 @@ public final class VectorApiSupport {
    * The system property with which jvector 4.0.2 and later switch its native (Highway, FFM) provider on or off. Unset, jvector
    * defaults to on.
    */
-  public static final String JVECTOR_NATIVE_PROPERTY       = "jvector.enable_native_vectorization";
+  static final        String JVECTOR_NATIVE_PROPERTY       = "jvector.enable_native_vectorization";
   /**
    * The deprecated name of {@link #JVECTOR_NATIVE_PROPERTY}, which jvector still honours when the new one is unset.
    */
-  public static final String JVECTOR_NATIVE_ALIAS_PROPERTY = "jvector.experimental.enable_native_vectorization";
+  static final        String JVECTOR_NATIVE_ALIAS_PROPERTY = "jvector.experimental.enable_native_vectorization";
 
   private VectorApiSupport() {
   }

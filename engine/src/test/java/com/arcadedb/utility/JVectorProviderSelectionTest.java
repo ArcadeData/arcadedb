@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * logs a warning and uses the Java Vector API. The cases that ask for native therefore accept {@code Native}, or {@code Panama}
  * with jvector's logged load failure; the default-off cases always expect {@code Panama}. None is skipped.
  */
+@Tag("slow")
 class JVectorProviderSelectionTest {
   private static final String PANAMA = "PanamaVectorizationProvider";
   private static final String NATIVE = "NativeVectorizationProvider";
@@ -87,6 +89,10 @@ class JVectorProviderSelectionTest {
   void aForcedJVectorProviderWinsOverTheSetting() throws Exception {
     assertThat(providerWith("-Darcadedb.vectorIndex.nativeVectorization=true", "-Djvector.vectorization_provider=panama"))
         .isEqualTo(PANAMA);
+    assertThat(providerWith("-Djvector.enable_native_vectorization=true", "-Djvector.vectorization_provider=panama"))
+        .isEqualTo(PANAMA);
+    assertThat(providerWith("-Darcadedb.vectorIndex.nativeVectorization=true", "-Djvector.enable_native_vectorization=true",
+        "-Djvector.vectorization_provider=panama")).isEqualTo(PANAMA);
   }
 
   /**

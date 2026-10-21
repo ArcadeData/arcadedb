@@ -1539,7 +1539,9 @@ public enum GlobalConfiguration {
       Vector API. jvector chooses once per JVM, when the first database is opened, so set this before that. An explicit \
       '-Djvector.enable_native_vectorization=true|false' (or its deprecated alias \
       'jvector.experimental.enable_native_vectorization') wins over this setting, and so does \
-      '-Djvector.vectorization_provider'. A GraalVM native image never uses the native library.""",
+      '-Djvector.vectorization_provider'. When you have not set the jvector property, this setting writes the system \
+      property 'jvector.enable_native_vectorization' (true or false) at startup, so other jvector users in the same JVM \
+      see its value. A GraalVM native image never uses the native library.""",
       Boolean.class, false),
 
   VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT("arcadedb.vectorIndex.rebuildMaxHeapPercent", SCOPE.DATABASE,
