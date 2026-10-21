@@ -134,6 +134,12 @@ class Issue10139DurationMapSubSecondReachTest extends TestHelper {
     map.put("milliseconds", 1_000.25d);
     assertThat(CypherDuration.fromMap(map)).isEqualTo(new CypherDuration(0, 0, 1, 250_000L));
 
+    // the sign is carried by both halves, the whole part and the rounded fraction
+    map.put("milliseconds", -4_000_000_000_000_000.5d);
+    assertThat(CypherDuration.fromMap(map)).isEqualTo(new CypherDuration(0, 0, -4_000_000_000_000L, -500_000L));
+    map.put("milliseconds", -1_000.25d);
+    assertThat(CypherDuration.fromMap(map)).isEqualTo(new CypherDuration(0, 0, -1, -250_000L));
+
     map.remove("milliseconds");
     map.put("microseconds", 2_000_000.5d);
     assertThat(CypherDuration.fromMap(map)).isEqualTo(new CypherDuration(0, 0, 2, 500L));
