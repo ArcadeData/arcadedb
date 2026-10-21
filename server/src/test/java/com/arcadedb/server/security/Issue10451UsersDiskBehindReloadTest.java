@@ -175,7 +175,7 @@ class Issue10451UsersDiskBehindReloadTest {
     assumeTrue(applyFails(payload(withoutAlice())), "the directory is still writable (running as a superuser?)");
 
     makeWritable();
-    security.saveUsers();
+    security.saveUsers(security.usersToJSON());
     assertThat(Files.readString(usersFile, StandardCharsets.UTF_8)).doesNotContain("alice");
 
     handEdit(usersFile, withAliceOnDisk);
@@ -191,8 +191,8 @@ class Issue10451UsersDiskBehindReloadTest {
     final String rootOnly = Files.readString(usersFile, StandardCharsets.UTF_8);
     makeReadOnly();
     try {
-      security.saveUsers();
-      assumeTrue(false, "the directory is still writable (running as a superuser?)");
+      security.saveUsers(security.usersToJSON());
+      assumeTrue(false,"the directory is still writable (running as a superuser?)");
     } catch (final ServerSecurityException expected) {
       // nothing published
     }

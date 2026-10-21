@@ -681,6 +681,35 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Grants {@code userName} access to {@code databaseName} under {@code groups} on THIS node only, merging the groups into the
+   * ones the user already holds for it. Persisted before it is published, through {@link #updateUser} (issue #10535): the grant is
+   * made on a copy of the user, because {@link #getUser} hands out the live object and a grant made on it was already in force
+   * when the save that could refuse it ran. A refused save leaves the user as it was.
+   * <p>
+   * A user that already holds the database under every one of the groups is left alone and nothing is written, so that what the
+   * server does at startup for the credentials of its default databases is repeatable on a configuration directory that cannot be
+   * written (a Kubernetes ConfigMap mount) once the first start has made the grant. A cluster-wide grant is an
+   * {@link #updateUserClusterWide} of the user's configuration.
+   *
+   * @throws ServerSecurityException when the user does not exist or the users file cannot be written
+   */
+  public synchronized ServerSecurityUser addDatabaseToUser(final String userName, final String databaseName, final String[] groups) {
+    final ServerSecurityUser current = users.get(userName);
+    if (current == null)
+      throw new ServerSecurityException("User '" + userName + "' not found");
+
+    if (current.holdsDatabaseWithGroups(databaseName, groups))
+      return current;
+
+    final JSONObject configuration = current.toJSON().copy();
+    if (!configuration.has("databases"))
+      configuration.put("databases", new JSONObject());
+    // The grant itself stays where it is defined: on a user nobody else can see yet, whose configuration is the copy
+    new ServerSecurityUser(server, configuration).addDatabase(databaseName, groups);
+    return updateUser(configuration);
+  }
+
+  /**
    * Publishes a local change of one user - {@code user}, or its removal when {@code null} - as a NEW map rather than an
    * edit of the one in force (issue #10460), so a users-file reload that read the file before the change fails its
    * compare-and-set instead of publishing over it. A compare-and-set here too, retried, because the replicated install
@@ -1376,18 +1405,20 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return json;
   }
 
-  public void saveUsers() {
-    saveUsers(usersToJSON());
-  }
-
   /**
    * Writes an explicit user list to {@code server-users.jsonl}, so a mutation can be persisted <i>before</i>
    * it is published to the in-memory map. Publishing first and saving after leaves the change authoritative
    * in memory while nothing reached the disk when the write fails - and the propagated failure then also
    * skips whatever the caller does afterwards (session invalidation, most importantly), so the mutation ends
    * up half-applied instead of not applied at all.
+   * <p>
+   * There is deliberately no form that serialises the live map: {@link #getUser} hands out the live user, so a caller
+   * that mutated it and then saved "what is there" had already published the change, which is the order this method
+   * exists to prevent (issue #10535). A caller that changes a user goes through {@link #createUser},
+   * {@link #updateUser}, {@link #addDatabaseToUser} or {@link #dropUserLocally}, which all persist first. Package-private
+   * for the tests that write a list they built themselves.
    */
-  private void saveUsers(final List<JSONObject> snapshot) {
+  void saveUsers(final List<JSONObject> snapshot) {
     try {
       usersRepository.save(snapshot);
     } catch (final IOException e) {
@@ -2542,8 +2573,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final String encodedPassword = encodePassword(rootPassword, ServerSecurity.generateRandomSalt());
 
     if (existsUser("root")) {
-      getUser("root").setPassword(encodedPassword);
-      saveUsers();
+      // A copy, persisted before it is published (issue #10535): setting the password on the live user and saving after
+      // left root authenticating against a password a read-only configuration directory never received
+      final JSONObject updated = getUser("root").toJSON().copy();
+      updated.put("password", encodedPassword);
+      updateUser(updated);
     } else
       createUser(new JSONObject().put("name", "root").put("password", encodedPassword));
   }

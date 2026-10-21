@@ -28,6 +28,7 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -101,10 +102,11 @@ class Issue6808LoginTokenRevocationIT extends BaseGraphServerTest {
         // The bearer path only requires the principal to still resolve by name, and it does, so the reload
         // has to compare the stored hashes and revoke on its own.
         final ServerSecurity security = getServer(serverIndex).getSecurity();
-        for (final JSONObject user : security.usersToJSON())
+        final List<JSONObject> fromFile = security.usersToJSON();
+        for (final JSONObject user : fromFile)
           if (USER.equals(user.getString("name")))
             user.put("password", security.encodePassword(PWD + "-from-file"));
-        security.saveUsers();
+        security.saveUsers(fromFile);
         security.loadUsers();
 
         assertThat(queryWithToken(serverIndex, token))

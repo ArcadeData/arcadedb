@@ -587,6 +587,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           "Cannot wait for the asynchronous executor of database '" + name + "' from one of its own worker threads: "
               + "the wait would never end. Run this command synchronously (awaitResponse=true) instead");
 
+    // ALREADY QUIESCED BY THIS THREAD (issue #10537): the quiescence committed every worker's batch before it parked the worker, which
+    // is all this barrier asks for, and the park holds the workers until it is released - after this call returns. The marker the
+    // barrier would enqueue on each of them is therefore never dequeued, and a builder reached from under a frame that took its
+    // quiescence before the write lock (the CREATE ... TYPE statement, TypeBuilder, Labels.ensureCompositeType) waited here until its
+    // timeout. A nested quiescence rides on the outer one for the same reason (see quiesceWorkers).
+    if (executor.isQuiescedByCurrentThread())
+      return;
+
     // Unconditional, and that is the whole point (issue #6281). isProcessing() is not a precondition that can be
     // tested first: a worker keeps ONE transaction open across up to ASYNC_TX_BATCH_SIZE tasks, so an executor whose
     // queues are drained and whose workers are parked can still be holding thousands of uncommitted records.

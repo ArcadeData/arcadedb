@@ -2754,38 +2754,31 @@ public class ArcadeDBServer {
         final String userPassword = credentialParts[1];
         final String userGroup = credentialParts.length > 2 ? credentialParts[2] : null;
 
+        final String[] groups = new String[] { userGroup };
+
         if (security.existsUser(userName)) {
           // EXISTING USER: CHECK CREDENTIALS
-          ServerSecurityUser user = security.getUser(userName);
+          final ServerSecurityUser user = security.getUser(userName);
           if (user.canAccessToDatabase(dbName)) {
             try {
-              user = security.authenticate(userName, userPassword, dbName);
-
-              // UPDATE DB LIST + GROUP
-              user.addDatabase(dbName, new String[] { userGroup });
-              security.saveUsers();
-
+              security.authenticate(userName, userPassword, dbName);
             } catch (final ServerSecurityException e) {
               LogManager.instance().log(this, Level.WARNING,
                   "Cannot create database '%s' because the user '%s' already exists with a different password", null,
                   dbName,
                   userName);
+              continue;
             }
-          } else {
-            // UPDATE DB LIST
-            user.addDatabase(dbName, new String[] { userGroup });
-            security.saveUsers();
           }
+
+          // UPDATE DB LIST + GROUP: persisted before it is published, and outside the try above, so a users file that cannot be
+          // written is not reported as a password mismatch (issue #10535)
+          security.addDatabaseToUser(userName, dbName, groups);
         } else {
-          // CREATE A NEW USER
+          // CREATE A NEW USER, with its database and group in the one write
           security.createUser(new JSONObject().put("name", userName)//
               .put("password", security.encodePassword(userPassword))//
-              .put("databases", new JSONObject().put(dbName, new JSONArray())));
-
-          // UPDATE DB LIST + GROUP
-          ServerSecurityUser user = security.getUser(userName);
-          user.addDatabase(dbName, new String[] { userGroup });
-          security.saveUsers();
+              .put("databases", new JSONObject().put(dbName, new JSONArray(groups))));
         }
       }
     }
