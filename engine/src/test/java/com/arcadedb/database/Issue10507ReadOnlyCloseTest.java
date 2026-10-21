@@ -101,4 +101,24 @@ class Issue10507ReadOnlyCloseTest extends TestHelper {
         readOnly.close();
     }
   }
+
+  @Test
+  void closingAReadOnlyHandleLeavesAWriterWalFileAlone() throws IOException {
+    database.close();
+
+    // A WAL file nobody holds open, as a writer that crashed leaves behind: only a read-write open may replay or delete it
+    final File wal = new File(getDatabasePath(), "txlog_0.wal");
+    Files.write(wal.toPath(), new byte[0]);
+    assertThat(wal).exists();
+
+    final Database readOnly = factory.open(ComponentFile.MODE.READ_ONLY);
+    try {
+      assertThat(readOnly.countType(TYPE, true)).isEqualTo(100);
+      readOnly.close();
+      assertThat(wal).as("the WAL file of a writer").exists();
+    } finally {
+      if (readOnly.isOpen())
+        readOnly.close();
+    }
+  }
 }

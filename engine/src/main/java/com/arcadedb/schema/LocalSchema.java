@@ -2810,7 +2810,8 @@ public class LocalSchema implements Schema {
     timeSeriesEnginesAwaitingReplay = null;
     // Save dirty configuration before clearing everything. The database's close has saved it already while it was still open
     // (saveBeforeClose()): this only catches a schema closed some other way, e.g. by an open that failed
-    if (dirtyGeneration.get() > savedGeneration) {
+    // Not for a READ_ONLY handle, which never writes its schema (#10507)
+    if (dirtyGeneration.get() > savedGeneration && database.getMode() == ComponentFile.MODE.READ_WRITE) {
       try {
         // Force save even if transaction is active - this is the last chance to save
         LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
