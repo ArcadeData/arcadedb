@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #10543: a graph build over an INT8 or BINARY index whose corpus does not fit the float cache re-read the
@@ -216,7 +217,12 @@ class Issue10543QuantizedGraphBuildTest extends TestHelper {
 
     final byte[] row = new byte[wide];
     final float[] scales = new float[2];
-    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    final Object managementBean = ManagementFactory.getThreadMXBean();
+    assumeTrue(managementBean instanceof ThreadMXBean, "per-thread allocation counters are unavailable on this JVM");
+    final ThreadMXBean threads = (ThreadMXBean) managementBean;
+    assumeTrue(threads.isThreadAllocatedMemorySupported(), "per-thread allocation counters are unsupported on this JVM");
+    threads.setThreadAllocatedMemoryEnabled(true);
+    assumeTrue(threads.isThreadAllocatedMemoryEnabled(), "per-thread allocation counters are disabled on this JVM");
     final int rounds = 20_000;
     for (int i = 0; i < rounds; i++) { // warm up
       assertThat(lsm.readQuantizedRowFromOffset(offset, compacted, row, 0, scales)).isEqualTo(LSMVectorIndex.ROW_OK);

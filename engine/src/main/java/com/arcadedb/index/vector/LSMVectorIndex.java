@@ -4183,7 +4183,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Nothing reads the quantized rows again - the unreachable-node scan and the persistence below go through the
       // page reader - and they can be most of the heap, so they go back before the graph is written, not with this
       // method's frame. Only on this path: a cancelled build leaves them to the collector, since a worker that has
-      // not noticed yet may still be reading.
+      // not noticed yet may still be reading. Here the insertion and the cleanup have both returned and the builder is
+      // closed, so no reader can still be live.
       if (quantizedBuildStore != null)
         quantizedBuildStore.release();
 

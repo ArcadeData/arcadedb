@@ -30,6 +30,7 @@ import java.util.Random;
 import java.util.concurrent.CancellationException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.assertj.core.api.Assertions.within;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -250,7 +251,12 @@ class QuantizedBuildVectorsTest {
           return true;
         });
 
-    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    final Object managementBean = ManagementFactory.getThreadMXBean();
+    assumeTrue(managementBean instanceof ThreadMXBean, "per-thread allocation counters are unavailable on this JVM");
+    final ThreadMXBean threads = (ThreadMXBean) managementBean;
+    assumeTrue(threads.isThreadAllocatedMemorySupported(), "per-thread allocation counters are unsupported on this JVM");
+    threads.setThreadAllocatedMemoryEnabled(true);
+    assumeTrue(threads.isThreadAllocatedMemoryEnabled(), "per-thread allocation counters are disabled on this JVM");
     final int rounds = 20_000;
     float sink = 0;
     for (int i = 0; i < rounds; i++) // warm up: let the JIT settle so the measurement is the steady state
