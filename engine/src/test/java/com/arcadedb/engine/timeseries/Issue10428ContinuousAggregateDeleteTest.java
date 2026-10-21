@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.ContinuousAggregateImpl;
@@ -29,6 +30,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -327,6 +332,61 @@ class Issue10428ContinuousAggregateDeleteTest extends TestHelper {
     refresh();
 
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 8), new Bucket(H0 + 2 * HOUR, "a", 20));
+    assertThat(pendingFrom()).isEqualTo(Long.MIN_VALUE);
+  }
+
+  @Test
+  void aDeleteThatLandsWhileARefreshRunsIsAppliedWhenThatRefreshEnds() throws Exception {
+    createSourceAndAggregate();
+    insert(H0, "a", 10);
+    insert(H0 + HOUR, "a", 20);
+    insert(H0 + 2 * HOUR, "a", 30);
+    refresh();
+
+    // a first delete whose own refresh stands aside, so that the refresh below has a range to recompute
+    final ContinuousAggregateImpl aggregate = (ContinuousAggregateImpl) database.getSchema().getContinuousAggregate("A");
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    delete("ts = " + H0);
+    aggregate.endRefresh();
+
+    // the refresh stops when it deletes the old row of the first bucket, after it read the range of the first delete
+    final CountDownLatch inRefresh = new CountDownLatch(1);
+    final CountDownLatch resume = new CountDownLatch(1);
+    final AtomicBoolean first = new AtomicBoolean(true);
+    database.getSchema().getType("A").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
+      if (first.getAndSet(false)) {
+        inRefresh.countDown();
+        try {
+          resume.await(30, TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      return true;
+    });
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread refresher = new Thread(() -> {
+      try {
+        refresh();
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    refresher.start();
+    try {
+      assertThat(inRefresh.await(30, TimeUnit.SECONDS)).isTrue();
+
+      // a second delete, in a bucket the refresh in progress did not read: its own refresh finds the aggregate busy
+      delete("ts = " + (H0 + HOUR));
+      assertThat(pendingFrom()).as("recorded, and not yet applied").isEqualTo(H0);
+    } finally {
+      resume.countDown();
+      refresher.join(30_000);
+    }
+
+    assertThat(failure.get()).isNull();
+    // the refresh that was in progress ran again when it ended: nothing asked for a third
+    assertThat(buckets()).containsExactly(new Bucket(H0 + 2 * HOUR, "a", 30));
     assertThat(pendingFrom()).isEqualTo(Long.MIN_VALUE);
   }
 

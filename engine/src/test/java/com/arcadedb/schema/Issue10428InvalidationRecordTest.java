@@ -75,6 +75,19 @@ class Issue10428InvalidationRecordTest extends TestHelper {
   }
 
   @Test
+  void everyRecordedRangeIsANewInstanceEvenWhenItEqualsTheOneThere() {
+    final ContinuousAggregateImpl aggregate = newAggregate();
+    aggregate.invalidate(100, 200);
+    final ContinuousAggregateImpl.Invalidation first = aggregate.getInvalidation();
+
+    aggregate.invalidate(100, 200);
+    final ContinuousAggregateImpl.Invalidation second = aggregate.getInvalidation();
+
+    // the clearing of the range a refresh read compares references: it must not take an equal record for the one it read
+    assertThat(second).isEqualTo(first).isNotSameAs(first);
+  }
+
+  @Test
   void aRangeWhoseClearingCouldNotBePersistedComesBackWithWhatWasRecordedSince() {
     final ContinuousAggregateImpl aggregate = newAggregate();
     aggregate.invalidate(100, 200);

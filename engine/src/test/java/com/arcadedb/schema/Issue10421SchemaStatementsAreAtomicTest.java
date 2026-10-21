@@ -298,6 +298,9 @@ class Issue10421SchemaStatementsAreAtomicTest extends TestHelper {
       assertThat(database.getSchema().existsIndex(subIndex.getName())).isTrue();
     assertThat(database.getSchema().getTypeByBucketId(t10.getBuckets(false).getFirst().getFileId())).isSameAs(t10);
     assertThat(t5.getBucketIds(true)).hasSize(2);
+    assertThat(t10.getBucketIds(true)).hasSize(1);
+    assertThat(t10.getPolymorphicPropertyNames()).contains("p");
+    assertThat(t10.isSubTypeOf("T5")).isTrue();
   }
 
   private void createSuperAndSubType() {

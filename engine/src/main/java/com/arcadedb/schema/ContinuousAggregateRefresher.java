@@ -45,12 +45,33 @@ public class ContinuousAggregateRefresher {
    */
   private static final String[] CLAUSES_AFTER_WHERE = { "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" };
 
+  /**
+   * Refreshes the aggregate, or has the refresh in progress do it when it ends. #10428: a refresh asked for while another one runs
+   * used to be dropped, and the one running may have read the aggregate before the change that asked (a delete recording the range
+   * of buckets to recompute): the change then waited for the next refresh, which nothing may ask for. The request is remembered, and
+   * the refresh in progress runs again when it ends. A request is made BEFORE the attempt to begin, so one that arrives as the
+   * refresh in progress ends is either seen by it (it looks again after releasing the aggregate) or finds the aggregate free.
+   */
   public static void incrementalRefresh(final Database database, final ContinuousAggregateImpl ca) {
-    if (!ca.tryBeginRefresh()) {
-      LogManager.instance().log(ContinuousAggregateRefresher.class, Level.FINE,
-          "Skipping concurrent refresh for continuous aggregate '%s' — already in progress", null, ca.getName());
-      return;
+    ca.requestRefresh();
+    while (ca.isRefreshRequested()) {
+      if (!ca.tryBeginRefresh()) {
+        LogManager.instance().log(ContinuousAggregateRefresher.class, Level.FINE,
+            "Concurrent refresh for continuous aggregate '%s' — already in progress, it runs again when it ends", null, ca.getName());
+        return;
+      }
+      // cleared once the aggregate is held and before anything is read: a request that arrives from here on is for the next run
+      ca.clearRefreshRequest();
+      try {
+        refreshOnce(database, ca);
+      } finally {
+        ca.endRefresh();
+      }
     }
+  }
+
+  /** One refresh, run by the caller that holds the aggregate (see {@link ContinuousAggregateImpl#tryBeginRefresh}). */
+  private static void refreshOnce(final Database database, final ContinuousAggregateImpl ca) {
     ca.setStatus(MaterializedViewStatus.BUILDING);
     final long startNs = System.nanoTime();
     try {
@@ -175,8 +196,6 @@ public class ContinuousAggregateRefresher {
       LogManager.instance().log(ContinuousAggregateRefresher.class, Level.SEVERE,
           "Error refreshing continuous aggregate '%s': %s", e, ca.getName(), e.getMessage());
       throw e;
-    } finally {
-      ca.endRefresh();
     }
   }
 

@@ -75,6 +75,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
+  private final    AtomicBoolean          refreshRequested  = new AtomicBoolean(false);
 
   // Runtime metrics (not persisted)
   private final AtomicLong refreshCount          = new AtomicLong(0);
@@ -313,6 +314,19 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   public boolean tryBeginRefresh() {
     return refreshInProgress.compareAndSet(false, true);
+  }
+
+  /** A refresh was asked for and has not begun: see {@link ContinuousAggregateRefresher#incrementalRefresh}. */
+  void requestRefresh() {
+    refreshRequested.set(true);
+  }
+
+  boolean isRefreshRequested() {
+    return refreshRequested.get();
+  }
+
+  void clearRefreshRequest() {
+    refreshRequested.set(false);
   }
 
   public void endRefresh() {

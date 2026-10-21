@@ -3199,6 +3199,10 @@ public class LocalSchema implements Schema {
    * the files and the schema graph in front of it, and what it leaves behind is neither the schema it found nor the one it meant to
    * reach. A file that is already gone is not a refusal: the delete of it fails as it always did, and the statement is the one that
    * finds it out.
+   * <p>
+   * A best-effort pre-check, not a guarantee: the state of a file can change between the check and the delete, and
+   * {@link Files#isWritable} on a directory says nothing reliable on some platforms or for a process that runs as root. What the
+   * check does not detect fails the delete as it always did.
    *
    * @param statement what the statement does, for the message: "drop the type 'T'"
    */
