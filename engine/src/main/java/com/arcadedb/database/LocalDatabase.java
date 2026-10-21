@@ -4029,6 +4029,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         dataSafeOnDisk = false;
       }
 
+      // A fenced database (#5053) is waiting for exactly this close and the reopen's recovery: the flush pipeline discards its
+      // queued pages, and acks their WAL entries, precisely because recovery is to replay them. Deleting the WAL here would
+      // leave nothing to replay - the case of a group commit whose shared WAL flush failed after its pages were published
+      if (fenceReason != null)
+        dataSafeOnDisk = false;
+
       final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
 
       if (!drop)

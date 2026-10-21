@@ -226,6 +226,21 @@ public enum GlobalConfiguration {
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
 
+  TX_WAL_GROUP_COMMIT("arcadedb.txWalGroupCommit", SCOPE.DATABASE, """
+      With arcadedb.txWalFlush 1 or 2, moves the flush of the WAL out of the commit's file locks and shares it between the \
+      transactions committing at the same time: a commit still returns only once its WAL is on disk, but one flush covers \
+      every commit that was waiting for one, where each used to flush on its own while holding the locks of the files it \
+      wrote, which serialized every commit on the same type behind the disk's flush time. A page never reaches its data \
+      file before the WAL that describes it. The transaction is visible to other transactions from the moment it is \
+      published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to the commits of a database \
+      that is not replicated (embedded, or served by a single server) with the asynchronous page flush (the default): \
+      the commits of an HA cluster go through the replication log and are not affected. The deferred appends go to two \
+      WAL files that alternate at each flush instead of the arcadedb.txWalFiles pool, so one flush covers them all and the \
+      next appends do not wait for it. With arcadedb.txWalFiles=1 there is one file only, and an append waits for a flush in \
+      progress on file systems that serialize them (APFS). The background page flush may also wait for, or run, a WAL \
+      flush before it writes a page, so on a slow disk the page flush follows the WAL flush latency""",
+      Boolean.class, false),
+
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
