@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -36,7 +38,8 @@ import java.util.logging.Level;
 /**
  * Derives and caches the cluster token used for inter-node authentication.
  * The token is either explicitly configured or derived from the cluster name
- * and root password using PBKDF2-HMAC-SHA256.
+ * and root password using PBKDF2-HMAC-SHA256. The root password is taken inline or,
+ * failing that, from the file at {@code arcadedb.server.rootPasswordPath}.
  */
 class ClusterTokenProvider {
 
@@ -77,15 +80,13 @@ class ClusterTokenProvider {
     if (clusterName == null || clusterName.isEmpty())
       throw new ConfigurationException(
           "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
-    // Check both the server's ContextConfiguration and the global default (system property)
-    String rootPasswordStr = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
-      rootPasswordStr = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
+    final String rootPasswordStr = resolveRootPassword(configuration);
+    if (rootPasswordStr == null)
       throw new ConfigurationException(
           """
           Cannot start HA mode without authentication: the auto-derived cluster token requires a root password. \
-          Set arcadedb.server.rootPassword or provide an explicit arcadedb.ha.clusterToken""");
+          Set arcadedb.server.rootPassword or arcadedb.server.rootPasswordPath, or provide an explicit \
+          arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath""");
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE))
         && "arcadedb".equalsIgnoreCase(clusterName))
       LogManager.instance().log(this, Level.WARNING,
@@ -120,12 +121,10 @@ class ClusterTokenProvider {
     if (clusterName == null || clusterName.isEmpty())
       throw new ConfigurationException(
           "Cannot derive cluster token: the cluster name is empty. Set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken");
-    String rootPasswordStr = config.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
-    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
-      rootPasswordStr = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPasswordStr == null || rootPasswordStr.isEmpty())
+    final String rootPasswordStr = resolveRootPassword(config);
+    if (rootPasswordStr == null)
       throw new ConfigurationException(
-          "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken");
+          "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword, arcadedb.server.rootPasswordPath, arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath");
 
     config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenInternal(clusterName, rootPasswordStr));
   }
@@ -164,6 +163,48 @@ class ClusterTokenProvider {
     if (token.isEmpty())
       throw new ConfigurationException("Cluster token file at path '" + tokenPath + "' is empty");
     return token;
+  }
+
+  /**
+   * Resolves the root password the token is derived from, with the same precedence as
+   * {@code ServerSecurity.askForRootPassword()} uses to create the root user:
+   * <ol>
+   *   <li>{@link GlobalConfiguration#SERVER_ROOT_PASSWORD}, from the server's configuration, then from the global one;</li>
+   *   <li>otherwise the content of the file at {@link GlobalConfiguration#SERVER_ROOT_PASSWORD_PATH}, looked up the same
+   *   way, read by {@link ServerSecurity#readRootPasswordFile(String)}.</li>
+   * </ol>
+   * The file is read with the very same normalization as the root user's password, so a node configured with the
+   * password inline and a node reading it from a file derive the same token (issue #10462).
+   *
+   * @return the root password, or {@code null} when neither setting is configured
+   *
+   * @throws ConfigurationException if the password file is configured but cannot be read, or is empty.
+   */
+  private static String resolveRootPassword(final ContextConfiguration config) {
+    final String inline = nonEmptyValue(config, GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (inline != null)
+      return inline;
+
+    final String passwordPath = nonEmptyValue(config, GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH);
+    if (passwordPath == null)
+      return null;
+
+    try {
+      return ServerSecurity.readRootPasswordFile(passwordPath);
+    } catch (final ServerSecurityException e) {
+      throw new ConfigurationException("Cannot derive cluster token from the root password file: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Returns the setting from the server's configuration, falling back to the global default (system property), or
+   * {@code null} when neither carries a non-empty value.
+   */
+  private static String nonEmptyValue(final ContextConfiguration config, final GlobalConfiguration setting) {
+    String value = config.getValueAsString(setting);
+    if (value == null || value.isEmpty())
+      value = setting.getValueAsString();
+    return value == null || value.isEmpty() ? null : value;
   }
 
   /**
