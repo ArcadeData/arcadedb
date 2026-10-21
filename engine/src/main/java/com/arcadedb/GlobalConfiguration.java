@@ -647,6 +647,15 @@ public enum GlobalConfiguration {
   COMMIT_LOCK_TIMEOUT("arcadedb.commitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources during commit", Long.class,
       5000),
 
+  COMMIT_LOCK_SPIN("arcadedb.commitLockSpin", SCOPE.DATABASE, """
+      Microseconds the next transaction in line for a file lock (commit or explicit lock) spins before it sleeps. A lock \
+      handed to a sleeping thread stays idle until the operating system wakes that thread: the spin turns that wake-up \
+      into a hand-off between running threads. Only one thread per contended file spins, and only while the locks of that \
+      file are held, on average, for less than this time, so a lock held across a disk flush costs no spinning. Pays off \
+      for many threads writing into the same type with arcadedb.txWalFlush=0 (50 is a good value: measured +15-19% \
+      commits/s), at the price of the CPU the spinning thread burns (+35-40% CPU per commit). 0, the default, disables \
+      the spin. Read when the database opens""", Long.class, 0),
+
   TX_RETRIES("arcadedb.txRetries", SCOPE.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
 
   TX_RETRY_DELAY("arcadedb.txRetryDelay", SCOPE.DATABASE,

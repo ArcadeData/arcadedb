@@ -100,7 +100,7 @@ public class TransactionManager {
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
   private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
-  private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
+  private final LockManager<Integer, Object> fileIdsLockManager;
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   /**
    * Group commit (arcadedb.txWalGroupCommit). A WAL write that defers its flush takes a ticket from walWriteSequence once
@@ -194,6 +194,8 @@ public class TransactionManager {
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
+    this.fileIdsLockManager = new LockManager<>(
+        TimeUnit.MICROSECONDS.toNanos(Math.max(0L, database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_SPIN))));
 
     this.logContext = LogManager.instance().getContext();
 
@@ -1118,6 +1120,12 @@ public class TransactionManager {
     map.put("groupCommitSyncs", statsGroupSyncs.get());
     // page writes that found their WAL not durable yet and had to wait for, or run, a flush first
     map.put("groupCommitPageWaits", statsGroupCommitPageWaits.get());
+    // file lock hand-offs to a spinning waiter (a wake-up saved), to a parked one, and spins that ran out (#10501)
+    map.put("lockSpinHandOffs", fileIdsLockManager.getSpinHandOffs());
+    map.put("lockParkHandOffs", fileIdsLockManager.getParkHandOffs());
+    map.put("lockSpinsExpired", fileIdsLockManager.getSpinsExpired());
+    // total time from a release to the new owner running, over all those hand-offs
+    map.put("lockHandOffNanos", fileIdsLockManager.getHandOffNanos());
     return map;
   }
 

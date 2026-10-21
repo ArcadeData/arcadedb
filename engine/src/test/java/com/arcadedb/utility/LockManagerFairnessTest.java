@@ -59,7 +59,12 @@ class LockManagerFairnessTest {
 
   @BeforeEach
   void setUp() {
-    lockManager = new LockManager<>();
+    lockManager = newLockManager();
+  }
+
+  /** The plain park/unpark hand-off; {@code LockManagerSpinFairnessTest} runs the same tests with the head spinning. */
+  protected LockManager<String, String> newLockManager() {
+    return new LockManager<>();
   }
 
   @AfterEach
