@@ -234,7 +234,10 @@ public class RedisNetworkExecutor extends Thread {
           }
           close();
         } catch (final IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
+          // The stream position, or the replies queued for the client, can no longer be trusted: a write that failed half way
+          // dropped replies the client is waiting for, so going on would leave it waiting forever. Close instead
+          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request or sending replies, closing connection", e);
+          close();
         }
       }
     } finally {
