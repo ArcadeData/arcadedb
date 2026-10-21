@@ -283,8 +283,11 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   }
 
   /**
-   * Forgets {@code recomputed}, the range a refresh has just recomputed. A no-op when another delete widened the record meanwhile:
-   * that one is recomputed by the next refresh.
+   * Forgets {@code recomputed}, the range a refresh has just recomputed. A no-op when another delete was recorded meanwhile, even
+   * one inside the range, which widens nothing: that delete may have landed after the refresh read the source, so the next refresh
+   * recomputes it. This rests on the {@link AtomicReference} comparing REFERENCES, and on {@link #invalidate} storing a new
+   * instance every time - never an equal record already there - so it is the identity of the record that tells a refresh whether
+   * anything was recorded since it read it.
    */
   void clearInvalidation(final Invalidation recomputed) {
     invalidation.compareAndSet(recomputed, null);
