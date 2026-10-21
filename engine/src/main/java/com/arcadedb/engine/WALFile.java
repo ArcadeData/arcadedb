@@ -905,6 +905,8 @@ public class WALFile extends LockContext {
 
   private void discardTornAppend(final long startPos, final IOException cause) {
     if (startPos < 0)
+      // channel.size() failed before the first write, so this attempt wrote nothing. A retry after a reopen that started from
+      // the reopened size and failed too is not cut: where it started is not known, so cutting could remove committed records
       return;
     try {
       if (channel.size() > startPos)
