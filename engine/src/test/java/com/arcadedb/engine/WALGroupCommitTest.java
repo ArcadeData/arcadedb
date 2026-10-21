@@ -264,6 +264,8 @@ class WALGroupCommitTest extends TestHelper {
   @Test
   void aPageReachesItsDataFileOnlyAfterItsWALIsFlushed() throws Exception {
     final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    // the pages of the schema created in beginTest() must not be flushed while the probe below is installed
+    assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database)).isTrue();
     final long syncsBefore = stat("groupCommitSyncs");
     final List<Long> syncsAtPageWrite = Collections.synchronizedList(new ArrayList<>());
     transactionManager.walSyncFaultInjector = file -> {

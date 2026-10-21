@@ -72,4 +72,30 @@ class WALFileGroupCommitSyncTest {
       file.drop();
     }
   }
+
+  /** A file whose close could not flush its owed writes must never be reported flushed afterwards. */
+  @Test
+  void aCloseThatCouldNotFlushLeavesTheWritesOwed() throws Exception {
+    final File directory = new File("target/databases/WALFileGroupCommitSyncTest");
+    directory.mkdirs();
+    final AtomicBoolean fail = new AtomicBoolean(true);
+    final WALFile file = new WALFile(new File(directory, "groupcommit-close.wal").getAbsolutePath()) {
+      @Override
+      void force(final boolean metaData) throws IOException {
+        if (fail.get())
+          throw new IOException("injected flush failure");
+      }
+    };
+    try {
+      file.markUnsynced(false);
+      assertThatThrownBy(file::close).isInstanceOf(IOException.class);
+
+      // a group-commit pass reaching the closed file must fail, not report the writes durable
+      fail.set(false);
+      assertThatThrownBy(file::syncIfUnsynced).isInstanceOf(IOException.class).hasMessageContaining("could not be flushed");
+      assertThatThrownBy(file::syncIfUnsynced).isInstanceOf(IOException.class);
+    } finally {
+      new File(directory, "groupcommit-close.wal").delete();
+    }
+  }
 }

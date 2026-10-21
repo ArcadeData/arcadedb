@@ -309,14 +309,19 @@ public class WALFile extends LockContext {
       return;
     unsynced = false;
     final boolean metaData = syncMetaData.getAndSet(false);
-    if (open)
-      try {
-        force(metaData);
-      } catch (final IOException | RuntimeException e) {
-        // still owed, with the metadata flush it asked for
-        markUnsynced(metaData);
-        throw e;
-      }
+    if (!open) {
+      // close() leaves the flags raised only when its own flush of them failed: these writes are NOT durable, and reporting
+      // the file flushed would let the pass acknowledge them
+      markUnsynced(metaData);
+      throw new IOException("WAL file '" + filePath + "' was closed with writes that could not be flushed");
+    }
+    try {
+      force(metaData);
+    } catch (final IOException | RuntimeException e) {
+      // still owed, with the metadata flush it asked for
+      markUnsynced(metaData);
+      throw e;
+    }
   }
 
   public synchronized void close() throws IOException {
