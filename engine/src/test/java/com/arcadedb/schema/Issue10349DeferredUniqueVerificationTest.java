@@ -228,6 +228,33 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   }
 
   @Test
+  void theDeferralHoldsForTheBuildAloneAndIsGivenBackWithIt() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
+    database.getSchema().createDocumentType("Other");
+    createPopulatedType("Work", 2, 5_000);
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Work");
+    final List<String> properties = List.of("id");
+    final List<Boolean> deferredWhileBuilding = new ArrayList<>();
+
+    // NOT BEFORE THE BUILD HAS THE WRITE LOCK (A CREATOR WAITING FOR IT WOULD SKIP THE CHECK OF AN INDEX ANOTHER ONE JUST PUBLISHED)...
+    assertThat(type.isUniqueCheckDeferred(properties)).isFalse();
+
+    database.begin();
+    database.newDocument("Other").set("x", 1).save();
+    database.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+        .withCallback((document, totalIndexed) -> {
+          if (deferredWhileBuilding.isEmpty())
+            deferredWhileBuilding.add(type.isUniqueCheckDeferred(properties));
+        }).create();
+    database.commit();
+
+    // ...ON FOR THE BUILD, AND OFF AGAIN ONCE IT HAS RETURNED, WHATEVER THE SCHEMA SESSION DOES AFTER THE LOCK IS RELEASED
+    assertThat(deferredWhileBuilding).containsExactly(true);
+    assertThat(type.isUniqueCheckDeferred(properties)).isFalse();
+    assertThat(type.getIndexByProperties("id").countEntries()).isEqualTo(5_000);
+  }
+
+  @Test
   void recordsDeletedBeforeTheBuildLeaveNothingInTheIndex() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
     database.getSchema().createDocumentType("Other");

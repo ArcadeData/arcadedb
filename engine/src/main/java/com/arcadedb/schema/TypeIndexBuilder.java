@@ -501,8 +501,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // Registered from here to the end of the build: the index is visible to the planners bucket by bucket while it is
     // populated, and until it is complete it must not answer a query (issue #9331)
     type.beginIndexConstruction(metadata.propertyNames);
-    if (deferredUniqueCheck)
-      type.deferUniqueCheck(metadata.propertyNames);
+    // Whether this build still holds the deferral: set under the write lock below, given back under it once the final pass has run
+    final boolean[] deferralHeld = new boolean[1];
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
       schema.recordFileChanges(() -> {
@@ -534,6 +534,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           final ReplacedIndexDefinition definition = ReplacedIndexDefinition.of(current);
           current.drop();
           replaced[0] = definition;
+        }
+
+        if (deferredUniqueCheck) {
+          // UNDER THE WRITE LOCK, AFTER THE DECISION OVER AN EXISTING INDEX AND THE DROP OF A REPLACED ONE: NO OTHER INDEX ON THESE
+          // PROPERTIES IS LIVE, AND NOBODY ELSE CAN COMMIT TO THE ONE BUILT HERE UNTIL verifyUniqueKeys HAS RUN. Set any earlier, a
+          // commit to an index another creator had just published would skip its check while this build waited for the lock
+          type.deferUniqueCheck(metadata.propertyNames);
+          deferralHeld[0] = true;
         }
 
         if (sortedBuild) {
@@ -592,10 +600,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             database.transaction(() -> buildCreatedIndex(indexes[finalIdx], true), true, maxAttempts, null, null);
           }
 
-        if (deferredUniqueCheck)
+        if (deferredUniqueCheck) {
           // EVERY BUCKET IS BUILT: A KEY TWO RECORDS SHARE ACROSS BUCKETS IS ONLY VISIBLE FROM HERE. A REFUSAL ENDS THE BUILD LIKE
           // THE DUPLICATE OF A BATCH ALWAYS DID, THROUGH THE CLEAN-UP BELOW
           verifyUniqueKeys(type.getIndexByProperties(metadata.propertyNames));
+          // STILL UNDER THE WRITE LOCK: EVERY COMMIT AFTER THE LOCK IS RELEASED CHECKS THE INDEX AGAIN, WHATEVER THE SCHEMA SESSION
+          // DOES NEXT (A REPLICATED ONE SHIPS ITS ENTRY AFTER THE LOCK IS GONE)
+          type.resumeUniqueCheck(metadata.propertyNames);
+          deferralHeld[0] = false;
+        }
 
         return null;
       }, sortedBuild);
@@ -641,8 +654,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
           + describeFailure(e), e);
     } finally {
-      // Before the end of the construction, and whatever the build ended in: every commit after this one checks the index again
-      if (deferredUniqueCheck)
+      // A build that failed holds the deferral still (a finished one gave it back under the lock): the index it was filling is
+      // being cleaned up, and giving the check back only costs the commits that reach it meanwhile a lookup
+      if (deferralHeld[0])
         type.resumeUniqueCheck(metadata.propertyNames);
       type.endIndexConstruction(metadata.propertyNames);
     }

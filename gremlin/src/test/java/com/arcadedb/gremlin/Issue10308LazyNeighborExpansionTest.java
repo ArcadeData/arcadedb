@@ -289,7 +289,8 @@ class Issue10308LazyNeighborExpansionTest {
       neighbors.next();
       ++rest;
     }
-    assertThat(rest).isLessThanOrEqualTo(TARGETS - 10 + 1);
+    // THE WALK ENDS WHERE THE LISTS THE DELETE FREED WOULD HAVE TO BE READ: IT DOES NOT GO ON THROUGH THE WHOLE REMAINDER
+    assertThat(rest).isLessThan(TARGETS - 10 + 1);
   }
 
   @Test
