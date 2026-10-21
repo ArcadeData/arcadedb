@@ -247,6 +247,24 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     return this;
   }
 
+  /**
+   * Stores the PQ codes of the neighbours inline in every node of the graph file (jvector's FusedPQ), PRODUCT only. Off by
+   * default: it makes the graph file several times larger (issue #10514).
+   */
+  public BucketLSMVectorIndexBuilder withFusedPQ(final boolean fusedPQ) {
+    vectorMetadata().fusedPQ = fusedPQ;
+    return this;
+  }
+
+  /**
+   * Sets the candidates per requested neighbour that a search of a PRODUCT index re-ranks on the stored vectors when the
+   * query does not say (issue #10514); 0 returns the PQ scores alone, without reading a stored vector.
+   */
+  public BucketLSMVectorIndexBuilder withRerankOversample(final int rerankOversample) {
+    vectorMetadata().setRerankOversample(rerankOversample);
+    return this;
+  }
+
   @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     if (metadata instanceof LSMVectorIndexMetadata) {

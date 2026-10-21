@@ -359,9 +359,11 @@ public class SelectExecutor {
       final List<Pair<RID, Float>> neighbors;
       try {
         if (select.vectorApproximate)
-          neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK, null, guard);
+          // approximate(true) is the PQ scores alone unless rerank() says otherwise
+          neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK, -1,
+              Math.max(0, select.vectorRerankOversample), null, guard);
         else
-          neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, fetchK, -1, null, guard);
+          neighbors = lsmIndex.findNeighbors(select.vectorQuery, fetchK, -1, select.vectorRerankOversample, null, guard);
       } catch (final TimeoutException e) {
         // #9896: THE DEADLINE WENT INSIDE THE SEARCH. THE SAME ANSWER THE CHECKPOINT ABOVE GIVES: THROWN WHEN ASKED FOR, AN
         // EMPTY LIST OTHERWISE
