@@ -478,7 +478,8 @@ abstract class PostgresCatalogExpression {
 
   private static Object scalarFunction(final String name, final List<Object> values) {
     switch (name) {
-    case "lower", "upper", "length", "abs", "trim", "btrim", "ltrim", "rtrim", "replace", "concat" -> {
+    case "lower", "upper", "length", "abs", "trim", "btrim", "ltrim", "rtrim", "replace", "concat", "substring", "substr",
+         "array_upper", "array_lower", "array_length", "cardinality" -> {
       for (final Object value : values)
         if (value == UNKNOWN)
           return UNKNOWN;
@@ -495,6 +496,9 @@ abstract class PostgresCatalogExpression {
           buffer.append(asString(value));
       return buffer.toString();
     }
+
+    if (name.startsWith("array_") || "cardinality".equals(name))
+      return arrayFunction(name, values);
 
     if (values.isEmpty() || values.get(0) == null)
       return values.isEmpty() ? UNKNOWN : null;
@@ -516,6 +520,63 @@ abstract class PostgresCatalogExpression {
       case "abs" -> values.get(0) instanceof Number n ? (Object) Math.abs(n.doubleValue()) : UNKNOWN;
       case "replace" -> values.size() == 3 && values.get(1) != null && values.get(2) != null ?
           first.replace(asString(values.get(1)), asString(values.get(2))) : (values.size() == 3 ? null : UNKNOWN);
+      case "substring", "substr" -> substring(first, values);
+      default -> UNKNOWN;
+    };
+  }
+
+  /**
+   * {@code substring(text, from [, count])}: the characters at the positions {@code from} (counted from 1) up to {@code count} of
+   * them, that lie inside the text. A start before the first character takes its length from the count, as PostgreSQL does, so
+   * {@code substring('abc', 0, 2)} is {@code 'a'}. A NULL position or count is NULL; a negative count is an error in PostgreSQL and
+   * is not read here.
+   */
+  private static Object substring(final String text, final List<Object> values) {
+    if (values.size() < 2 || values.size() > 3)
+      return UNKNOWN;
+    if (values.get(1) == null || values.size() == 3 && values.get(2) == null)
+      return null;
+    if (!(values.get(1) instanceof Number start) || values.size() == 3 && !(values.get(2) instanceof Number))
+      return UNKNOWN;
+
+    final long from = start.longValue();
+    long to = Long.MAX_VALUE;
+    if (values.size() == 3) {
+      final long count = ((Number) values.get(2)).longValue();
+      if (count < 0)
+        return UNKNOWN;
+      // a window that would pass the largest position is the rest of the text
+      to = from > Long.MAX_VALUE - count ? Long.MAX_VALUE : from + count;
+    }
+    final long first = Math.max(from, 1L);
+    final long end = Math.min(to, text.length() + 1L);
+    return end <= first ? "" : text.substring((int) (first - 1), (int) (end - 1));
+  }
+
+  /**
+   * {@code array_upper}, {@code array_lower}, {@code array_length} and {@code cardinality}: the bounds of an array, which is a
+   * one-dimensional list here. An empty array has no bounds, so they are NULL for it (not {@code cardinality}, which is 0), and so
+   * they are for a dimension other than the first. The key arrays of an index ({@link PostgresCatalogIndexes.Vector}) start at 0.
+   */
+  private static Object arrayFunction(final String name, final List<Object> values) {
+    final boolean cardinality = "cardinality".equals(name);
+    if (values.size() != (cardinality ? 1 : 2))
+      return UNKNOWN;
+    if (values.get(0) == null || !cardinality && values.get(1) == null)
+      return null;
+    if (!(values.get(0) instanceof List<?> list) || !cardinality && !(values.get(1) instanceof Number))
+      return UNKNOWN;
+
+    if (cardinality)
+      return (long) list.size();
+    if (((Number) values.get(1)).longValue() != 1L || list.isEmpty())
+      return null;
+
+    final long lower = list instanceof PostgresCatalogIndexes.Vector ? 0L : 1L;
+    return switch (name) {
+      case "array_lower" -> lower;
+      case "array_upper" -> lower + list.size() - 1;
+      case "array_length" -> (long) list.size();
       default -> UNKNOWN;
     };
   }
@@ -1044,6 +1105,59 @@ abstract class PostgresCatalogExpression {
     }
   }
 
+  /**
+   * {@code value op ANY (array)} and {@code value op ALL (array)} ({@code SOME} is {@code ANY}): the comparison against every
+   * element of an array, pgjdbc's {@code n.nspname = ANY(current_schemas(true))} being the one that matters here. As SQL says,
+   * {@code ANY} is TRUE when one element satisfies it, else NULL when one comparison was NULL (a NULL operand or element), else
+   * FALSE, and an empty array is FALSE whatever the operand; {@code ALL} is the same with TRUE and FALSE swapped, so an empty array
+   * is TRUE. A NULL array is NULL.
+   */
+  private static class Quantified extends PostgresCatalogExpression {
+    private final String                    operator;
+    private final boolean                   all;
+    private final PostgresCatalogExpression operand;
+    private final PostgresCatalogExpression array;
+
+    Quantified(final String operator, final boolean all, final PostgresCatalogExpression operand,
+        final PostgresCatalogExpression array) {
+      this.operator = operator;
+      this.all = all;
+      this.operand = operand;
+      this.array = array;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      array.collectColumns(columns);
+    }
+
+    @Override
+    Object evaluate(final Resolver resolver) {
+      final Object value = operand.evaluate(resolver);
+      final Object elements = array.evaluate(resolver);
+      if (value == UNKNOWN || elements == UNKNOWN)
+        return UNKNOWN;
+      if (elements == null)
+        return null;
+      if (!(elements instanceof List<?> list))
+        return UNKNOWN;
+
+      boolean sawNull = false;
+      for (final Object element : list) {
+        final Object result = Binary.compare(operator, value, element);
+        if (result == UNKNOWN)
+          return UNKNOWN;
+        if (result == null)
+          sawNull = true;
+        else if (isTrue(result) != all)
+          // the element that decides it: a match for ANY, a miss for ALL
+          return !all;
+      }
+      return sawNull ? null : all;
+    }
+  }
+
   private static class IsNull extends PostgresCatalogExpression {
     private final PostgresCatalogExpression operand;
     private final boolean                   negated;
@@ -1334,6 +1448,14 @@ abstract class PostgresCatalogExpression {
             return null;
           else if (isComparisonOperator(next)) {
             ++position;
+            final PostgresCatalogToken quantifier = peek();
+            if (quantifier != null && (quantifier.isKeyword("ANY") || quantifier.isKeyword("SOME") || quantifier.isKeyword("ALL"))
+                && peek(1) != null && peek(1).isSymbol("(")) {
+              left = parseQuantified(next, quantifier.isKeyword("ALL"), left);
+              if (left == null)
+                return null;
+              continue;
+            }
             final PostgresCatalogExpression right = parseConcat();
             if (right == null)
               return null;
@@ -1348,6 +1470,32 @@ abstract class PostgresCatalogExpression {
       return token.isSymbol("=") || token.isSymbol("<>") || token.isSymbol("!=") || token.isSymbol("<")
           || token.isSymbol(">") || token.isSymbol("<=") || token.isSymbol(">=") || token.isSymbol("~")
           || token.isSymbol("!~") || token.isSymbol("~*") || token.isSymbol("!~*");
+    }
+
+    /**
+     * {@code ANY (array)}, {@code SOME (array)} or {@code ALL (array)} after the comparison operator {@code operator}, the position
+     * on the quantifier. The array is an expression or a sub-select, whose one column is the elements. Only the operators the
+     * comparison evaluates are read: a regular-expression operator is not compared element by element here.
+     */
+    private PostgresCatalogExpression parseQuantified(final PostgresCatalogToken operator, final boolean all,
+        final PostgresCatalogExpression operand) {
+      if (operator.isSymbol("~") || operator.isSymbol("!~") || operator.isSymbol("~*") || operator.isSymbol("!~*"))
+        return null;
+
+      ++position;
+      final PostgresCatalogExpression array;
+      if (peek(1) != null && peek(1).isKeyword("SELECT")) {
+        final List<PostgresCatalogToken> inner = readParenthesised();
+        if (inner == null)
+          return null;
+        array = new Subquery(inner, SubqueryKind.ARRAY);
+      } else {
+        ++position;
+        array = parseExpression();
+        if (array == null || !skipSymbol(")"))
+          return null;
+      }
+      return new Quantified(operator.text, all, operand, array);
     }
 
     private boolean lookaheadIsKeyword(final int offset, final String... keywords) {

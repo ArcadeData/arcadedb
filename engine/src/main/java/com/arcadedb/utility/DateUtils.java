@@ -609,9 +609,7 @@ public class DateUtils {
    * <ol>
    *   <li>{@link LocalDateTime#parse(CharSequence)} (ISO without zone);</li>
    *   <li>{@link ZonedDateTime#parse(CharSequence)} for ISO inputs ending in {@code Z} or
-   *   with a {@code ±HH:mm} offset - the resulting instant is rebased onto the database's
-   *   configured zone (default {@link ZoneId#systemDefault()}) before stripping the offset,
-   *   so the stored wall-clock follows the database's locale rather than the input's;</li>
+   *   with a {@code ±HH:mm} offset - the instant is converted to UTC before stripping the offset (see below);</li>
    *   <li>the schema's {@code dateTimeFormat};</li>
    *   <li>the schema's {@code dateFormat};</li>
    *   <li>{@link #SPACE_SEPARATED_DATE_TIME}, the SQL-timestamp spelling with an optional fraction and offset
@@ -619,8 +617,18 @@ public class DateUtils {
    *   schema's own patterns already claimed.</li>
    * </ol>
    * When {@code database} is {@code null} the schema patterns are skipped - there is no schema to read them from -
-   * but the ISO and SQL-timestamp formats are still tried, and offset-bearing inputs keep their wall-clock without
-   * rebasing, matching legacy parsing behavior in scopes without a schema.
+   * but the ISO and SQL-timestamp formats are still tried.
+   * <p>
+   * <b>One rule for an offset-bearing input, on every write path (issues #10489, #10498):</b> the instant it names is
+   * stored as the UTC wall clock, the way a {@code LocalDateTime} is stored from a {@link java.util.Date}, a number, an
+   * {@link java.time.Instant}, a {@link ZonedDateTime} or an {@link OffsetDateTime}: the string
+   * {@code 2020-01-02T03:04:05+02:00} gives {@code 2020-01-02T01:04:05}, so a client writing over HTTP or SQL, one writing
+   * over Bolt or Java, and the bulk load ({@code GraphBatch}) store one value for one instant. An input without an offset
+   * has no instant to convert and keeps its wall clock, and so does one in UTC: the {@code Z} Cypher's
+   * {@code datetime('2026-01-01T00:00:00')} renders itself with reads back as the wall clock the query named (issue
+   * #4125). The database's zone plays no part in it: it is how a value is formatted for a reader, not where an instant is
+   * stored, and rebasing onto it (what the bulk path did before #10498) stored a value no other path stores for that
+   * instant, off by the zone's offset, for every database whose zone is not UTC.
    * <p>
    * A step whose format provably cannot match the input is not attempted at all - the order is unchanged, only the
    * wasted work is gone.
@@ -629,44 +637,24 @@ public class DateUtils {
    *                                parsed has to fail the write rather than empty the column.
    */
   public static LocalDateTime parseDateTime(final Database database, final String string) {
-    return parseDateTime(database, string, OffsetPolicy.REBASE_TO_DATABASE_ZONE);
+    return parseDateTime(database, string, OffsetPolicy.CONVERT_TO_UTC);
   }
 
   /**
-   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than rebased: the wall-clock
+   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than converted: the wall-clock
    * written is the wall-clock read. For the callers whose target has no zone to keep, a {@code LocalDate}: the day
    * written is the day meant.
    * <p>
-   * A {@code DATETIME} no longer reads its strings this way: {@link #parseDateTimeAsUtc} stores the instant the text
-   * names, as an {@code OffsetDateTime} value is stored (issue #10489). Issue #8090 unified WHICH FORMATS the chain
+   * A {@code DATETIME} does not read its strings this way: {@link #parseDateTime} stores the instant the text names, as
+   * an {@code OffsetDateTime} value is stored (issues #10489, #10498). Issue #8090 unified WHICH FORMATS the chain
    * accepts, which is what was losing data.
    */
   public static LocalDateTime parseDateTimeKeepingWallClock(final Database database, final String string) {
     return parseDateTime(database, string, OffsetPolicy.KEEP_WALL_CLOCK);
   }
 
-  /**
-   * {@link #parseDateTime} with the instant an offset-bearing input names converted to UTC, the wall-clock a
-   * {@code DATETIME} stores (a {@code LocalDateTime} is a UTC wall clock, see {@code Type.convert}): the string
-   * {@code 2020-01-02T03:04:05+02:00} gives {@code 2020-01-02T01:04:05}, exactly as the same instant typed as an
-   * {@link OffsetDateTime} or a {@link ZonedDateTime} does, so a client writing over HTTP or SQL and one writing over
-   * Bolt or Java store one value (issue #10489).
-   * <p>
-   * An input without an offset has no instant to convert and keeps its wall clock, and so does one in UTC: the {@code Z}
-   * Cypher's {@code datetime('2026-01-01T00:00:00')} renders itself with reads back as the wall clock the query named
-   * (issue #4125). Neither depends on the database's zone.
-   */
-  public static LocalDateTime parseDateTimeAsUtc(final Database database, final String string) {
-    return parseDateTime(database, string, OffsetPolicy.CONVERT_TO_UTC);
-  }
-
   /** What becomes of the offset of an offset-bearing input once it is parsed into a zone-less {@link LocalDateTime}. */
   private enum OffsetPolicy {
-    /**
-     * Move the instant onto the database's configured zone (the bulk path: a client in another zone stores the instant it
-     * meant). It agrees with {@link #CONVERT_TO_UTC} only for a database whose zone is UTC; reconciling the two is issue #10498.
-     */
-    REBASE_TO_DATABASE_ZONE,
     /** Drop the offset: the wall clock written is the wall clock read. */
     KEEP_WALL_CLOCK,
     /** Convert the instant to UTC, the way a typed {@code OffsetDateTime} / {@code ZonedDateTime} is stored. */
@@ -688,7 +676,7 @@ public class DateUtils {
         return LocalDateTime.parse(string);
       } catch (final DateTimeParseException e) {
         try {
-          return dropZone(database, ZonedDateTime.parse(string), offsetPolicy);
+          return dropZone(ZonedDateTime.parse(string), offsetPolicy);
         } catch (final DateTimeParseException e2) {
           isoFailure = e2;
         }
@@ -697,7 +685,7 @@ public class DateUtils {
 
     final Temporal parsed = parseSchemaOrSqlTimestamp(database, string, isoFailure);
     return parsed instanceof OffsetDateTime offset ?
-        dropZone(database, offset.toZonedDateTime(), offsetPolicy) :
+        dropZone(offset.toZonedDateTime(), offsetPolicy) :
         (LocalDateTime) parsed;
   }
 
@@ -872,19 +860,13 @@ public class DateUtils {
   }
 
   /**
-   * Turns an offset-bearing value into the local datetime that gets stored, as the {@link OffsetPolicy} says. Rebasing
-   * onto the database's zone needs one: without a database there is no zone to consult and the wall-clock is kept.
+   * Turns an offset-bearing value into the local datetime that gets stored, as the {@link OffsetPolicy} says. Neither
+   * policy consults the database's zone: an instant is stored as the UTC wall clock or as the wall clock written.
    */
-  private static LocalDateTime dropZone(final Database database, final ZonedDateTime parsed, final OffsetPolicy offsetPolicy) {
-    if (offsetPolicy == OffsetPolicy.CONVERT_TO_UTC)
-      return parsed.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
-
-    if (offsetPolicy == OffsetPolicy.REBASE_TO_DATABASE_ZONE && database != null) {
-      final ZoneId zoneId = database.getSchema().getZoneId();
-      if (zoneId != null)
-        return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
-    }
-    return parsed.toLocalDateTime();
+  private static LocalDateTime dropZone(final ZonedDateTime parsed, final OffsetPolicy offsetPolicy) {
+    return offsetPolicy == OffsetPolicy.CONVERT_TO_UTC ?
+        parsed.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime() :
+        parsed.toLocalDateTime();
   }
 
   public static ChronoUnit parsePrecision(final String precision) {

@@ -130,40 +130,22 @@ class Issue10371UnmodelledRelationTest {
         .hasMessageContaining("shape");
   }
 
-  /** The seven lookups pgjdbc's TypeInfoCache sends, which the catalog cannot evaluate: the one shim, a deliberate one. */
+  /**
+   * The lookups a driver sends to name a type it does not know have no exemption from the refusal (issue #10495): they are answered
+   * from {@link PostgresType} (see {@code Issue10495TypeLookupTest}), and a type query this catalog cannot read is refused like any
+   * other, whatever relations it names.
+   */
   @Test
-  void theTypeLookupsADriverSendsAreProbesAndKeepTheirEmptyAnswer() {
-    final List<String> probes = List.of(
-        "SELECT pg_type.oid, typname FROM pg_catalog.pg_type LEFT JOIN (select ns.oid as nspoid, ns.nspname, r.r from pg_namespace as ns "
-            + "join (select s.r, (current_schemas(false))[s.r] as nspname from generate_series(1, array_upper(current_schemas(false), 1)) "
-            + "as s(r)) as r using (nspname)) as sp ON sp.nspoid = typnamespace WHERE typname = $1 ORDER BY sp.r, pg_type.oid DESC LIMIT 1;",
-        "SELECT t.typarray, arr.typname FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON t.typnamespace = n.oid "
-            + "JOIN pg_catalog.pg_type arr ON arr.oid = t.typarray WHERE t.typname = $1 AND (n.nspname = $2 OR $3 AND n.nspname = ANY "
-            + "(current_schemas(true))) ORDER BY t.oid DESC LIMIT 1",
-        "SELECT t.oid, t.typname FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON t.typnamespace = n.oid WHERE t.typelem = "
-            + "(SELECT oid FROM pg_catalog.pg_type WHERE typname = $1) AND substring(t.typname, 1, 1) = '_' AND t.typlen = -1 ORDER BY "
-            + "t.typelem DESC LIMIT 1",
-        "SELECT n.nspname = ANY(current_schemas(true)), n.nspname, t.typname FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n "
-            + "ON t.typnamespace = n.oid WHERE t.oid = $1",
-        "SELECT e.typdelim FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = $1 and t.typelem = e.oid",
-        "SELECT e.oid, n.nspname = ANY(current_schemas(true)), n.nspname, e.typname FROM pg_catalog.pg_type t JOIN pg_catalog.pg_type e "
-            + "ON t.typelem = e.oid JOIN pg_catalog.pg_namespace n ON t.typnamespace = n.oid WHERE t.oid = $1",
-        // a driver that loads every type up front, composites and ranges included
-        "SELECT ns.nspname, t.oid, t.typname FROM pg_type AS t JOIN pg_namespace AS ns ON (ns.oid = typnamespace) "
-            + "LEFT JOIN pg_range r ON r.rngtypid = t.oid LEFT JOIN pg_enum e ON e.enumtypid = t.oid");
-
-    for (final String probe : probes)
-      assertThat(PostgresCatalog.isTypeResolutionProbe(probe)).as(probe).isTrue();
-  }
-
-  /** What is not a probe is refused: another relation, or an aggregate whose one row an empty answer would lose. */
-  @Test
-  void anythingElseIsNotAProbe() {
-    assertThat(PostgresCatalog.isTypeResolutionProbe("select count(*) from pg_catalog.pg_type where typname = 'int4'")).isFalse();
-    assertThat(PostgresCatalog.isTypeResolutionProbe("select oid from pg_type t, pg_index i where t.oid = i.indrelid")).isFalse();
-    assertThat(PostgresCatalog.isTypeResolutionProbe("select * from pg_catalog.pg_proc")).isFalse();
-    assertThat(PostgresCatalog.isTypeResolutionProbe("select relname from pg_class")).as("no pg_type in it").isFalse();
-    assertThat(PostgresCatalog.isTypeResolutionProbe("select 1")).isFalse();
+  void aTypeQueryThatCannotBeReadIsRefusedLikeAnyOtherCatalogQuery() {
+    // another relation the catalog does not model
+    assertThat(PostgresCatalog.resolve("select * from pg_type t, pg_proc p where p.prorettype = t.oid", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+    // a filter it cannot evaluate, which over the fixed set of types would otherwise select every one of them
+    assertThat(PostgresCatalog.resolve("select t.oid from pg_type t where t.typname = lookup_something(t.oid)", database, USER))
+        .isSameAs(PostgresCatalog.DECLINED);
+    // a lookup of a table function the evaluator does not know
+    assertThat(PostgresCatalog.resolve("select t.oid from pg_type t, generate_subscripts(current_schemas(true), 1) s", database,
+        USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
   /** The control: a modelled relation with no matching row still answers PostgreSQL's one row holding 0. */
