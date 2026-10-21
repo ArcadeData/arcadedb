@@ -183,11 +183,11 @@ class Issue6412CatalogIT extends PostgresWireProtocolTestBase {
   @Test
   void anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt() throws Exception {
     try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement()) {
-      // pg_index has no ArcadeDB equivalent this catalog models. The client is told so, with feature_not_supported (issue #10371),
-      // and not handed an empty answer that reads as "no index here" nor an invented row.
-      assertThatThrownBy(() -> statement.executeQuery("SELECT indexrelid FROM pg_catalog.pg_index")).isInstanceOf(SQLException.class)
+      // pg_proc has no ArcadeDB equivalent this catalog models. The client is told so, with feature_not_supported (issue #10371),
+      // and not handed an empty answer that reads as "no function here" nor an invented row.
+      assertThatThrownBy(() -> statement.executeQuery("SELECT oid FROM pg_catalog.pg_proc")).isInstanceOf(SQLException.class)
           .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("0A000"))
-          .hasMessageContaining("pg_index");
+          .hasMessageContaining("pg_proc");
 
       // and the connection goes on
       try (final ResultSet resultSet = statement.executeQuery("SELECT 1")) {

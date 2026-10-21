@@ -921,6 +921,19 @@ class DeltaOverlay {
   }
 
   /**
+   * Whether {@link #markChangedNodes} would set any node: this overlay changes the {@code edgeType} edges of some node in the given
+   * direction. Constant time, where marking walks every changed node: asked by every read of a view that holds an overlay, to learn
+   * that the slice is the base CSR's own (issue #10471).
+   */
+  boolean changesNodes(final String edgeType, final boolean outgoing) {
+    final Map<Integer, AddedNeighbors> added = (outgoing ? outNeighborIndex : inNeighborIndex).get(edgeType);
+    if (added != null && !added.isEmpty())
+      return true;
+    final IntIntHashMap deleted = (outgoing ? deletedOutEdgeCounts : deletedInEdgeCounts).get(edgeType);
+    return deleted != null && !deleted.isEmpty();
+  }
+
+  /**
    * Sets in {@code nodes} every node whose {@code edgeType} edges in the given direction this overlay changes: the ones it
    * added edges to, and the ones it deleted base edges of. Every other node's adjacency is the base CSR's, entry for entry,
    * which is what lets a whole-graph reader copy it instead of merging it (issue #10411).

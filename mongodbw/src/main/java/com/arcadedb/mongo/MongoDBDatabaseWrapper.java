@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
@@ -546,6 +547,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       try {
         if (collectionName.startsWith("system.")) {
           throw new MongoServerError(16459, "attempt to insert in system namespace");
+        } else if (database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries) {
+          // its samples are not records, so there is no _id index to keep: they go to the engine of the type (issue #10476)
+          n = MongoTimeSeriesInserts.insert(database, timeSeries, documents, isOrdered, writeErrors);
+          this.putLastResult(channel, new Document("n", n));
         } else {
           final MongoDBCollectionWrapper collection = getOrCreateCollection(collectionName);
           try {

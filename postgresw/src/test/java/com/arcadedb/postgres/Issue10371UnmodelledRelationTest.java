@@ -50,11 +50,10 @@ class Issue10371UnmodelledRelationTest {
   private static final String USER          = "root";
 
   /** Relations PostgreSQL has and this catalog does not model: some are empty in ArcadeDB's world, some are not. */
-  private static final List<String> UNMODELLED = List.of("pg_catalog.pg_index", "pg_index", "pg_catalog.pg_proc", "pg_proc",
-      "pg_catalog.pg_constraint", "pg_extension", "pg_trigger", "pg_inherits", "pg_indexes", "pg_stat_activity", "pg_settings",
-      "information_schema.table_constraints", "information_schema.key_column_usage",
-      "information_schema.referential_constraints", "information_schema.table_privileges", "information_schema.routines",
-      "information_schema.sequences", "information_schema.statistics");
+  private static final List<String> UNMODELLED = List.of("pg_catalog.pg_proc", "pg_proc", "pg_extension", "pg_trigger",
+      "pg_stat_activity", "pg_settings", "pg_rewrite", "pg_tablespace", "information_schema.referential_constraints",
+      "information_schema.table_privileges", "information_schema.routines", "information_schema.sequences",
+      "information_schema.statistics");
 
   private Database database;
 
@@ -109,13 +108,13 @@ class Issue10371UnmodelledRelationTest {
 
   @Test
   void aRefusalNamesTheRelationItCouldNotModel() {
-    assertThat(PostgresCatalog.refusalOf("select count(*) from pg_catalog.pg_index")).isInstanceOf(
-        PostgresCatalog.UnsupportedCatalogQuery.class).hasMessageContaining("\"pg_index\"");
-    assertThat(PostgresCatalog.refusalOf("select * from information_schema.table_constraints where 1 = 1"))
-        .hasMessageContaining("\"information_schema.table_constraints\"");
+    assertThat(PostgresCatalog.refusalOf("select count(*) from pg_catalog.pg_proc")).isInstanceOf(
+        PostgresCatalog.UnsupportedCatalogQuery.class).hasMessageContaining("\"pg_proc\"");
+    assertThat(PostgresCatalog.refusalOf("select * from information_schema.routines where 1 = 1"))
+        .hasMessageContaining("\"information_schema.routines\"");
     // a function is not a relation: the one named is the relation it is read from
-    assertThat(PostgresCatalog.refusalOf("select pg_catalog.pg_get_indexdef(i.indexrelid) from pg_catalog.pg_index i"))
-        .hasMessageContaining("\"pg_index\"").hasMessageNotContaining("pg_get_indexdef");
+    assertThat(PostgresCatalog.refusalOf("select pg_catalog.pg_get_functiondef(p.oid) from pg_catalog.pg_proc p"))
+        .hasMessageContaining("\"pg_proc\"").hasMessageNotContaining("pg_get_functiondef");
     // a shape with no unmodelled relation in it still says it is refused, and why
     assertThat(PostgresCatalog.refusalOf("select relname from pg_class a, pg_class b, pg_class c where a.oid = b.oid"))
         .hasMessageContaining("shape");
@@ -125,8 +124,8 @@ class Issue10371UnmodelledRelationTest {
   /** A column reference is not a relation: {@code pg_type.oid} must not be named as the relation that was refused. */
   @Test
   void aColumnReferenceIsNotNamedAsTheRefusedRelation() {
-    assertThat(PostgresCatalog.refusalOf("select pg_type.oid from pg_catalog.pg_index, pg_catalog.pg_type"))
-        .hasMessageContaining("\"pg_index\"").hasMessageNotContaining("pg_type.oid");
+    assertThat(PostgresCatalog.refusalOf("select pg_type.oid from pg_catalog.pg_proc, pg_catalog.pg_type"))
+        .hasMessageContaining("\"pg_proc\"").hasMessageNotContaining("pg_type.oid");
     assertThat(PostgresCatalog.refusalOf("select pg_type.oid from pg_catalog.pg_type, pg_class a, pg_class b, pg_class c"))
         .hasMessageContaining("shape");
   }
@@ -178,22 +177,35 @@ class Issue10371UnmodelledRelationTest {
   }
 
   /**
-   * {@code relhasindex} must not answer true while pg_index is unmodelled: psql's {@code \d} reads it first, and every query that
-   * would then list the indexes names a relation that is refused. The catalog contradicted itself before.
+   * {@code relhasindex} says what {@code pg_index} shows (issue #10473): psql's {@code \d} reads the flag first and lists the
+   * indexes only when it is true. It was false for every type while pg_index was unmodelled.
    */
   @Test
-  void noRelationClaimsAnIndexThatTheCatalogCannotShow() {
+  void relhasindexFollowsTheIndexesTheCatalogShows() {
     final PostgresCatalog.Answer classes = PostgresCatalog.resolve(
         "select relname, relhasindex from pg_catalog.pg_class where relname = 'Person'", database, USER);
     assertThat(classes.rows).hasSize(1);
-    assertThat(classes.rows.get(0)).containsEntry("relhasindex", Boolean.FALSE);
+    assertThat(classes.rows.get(0)).containsEntry("relhasindex", Boolean.TRUE);
 
     final PostgresCatalog.Answer tables = PostgresCatalog.resolve(
         "select tablename, hasindexes from pg_catalog.pg_tables where tablename = 'Person'", database, USER);
     assertThat(tables.rows).hasSize(1);
-    assertThat(tables.rows.get(0)).containsEntry("hasindexes", Boolean.FALSE);
+    assertThat(tables.rows.get(0)).containsEntry("hasindexes", Boolean.TRUE);
 
-    assertThat(PostgresCatalog.resolve("select indexrelid from pg_catalog.pg_index", database, USER)).isSameAs(
-        PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("select indexrelid from pg_catalog.pg_index", database, USER).rows).hasSize(1);
+  }
+
+  /** A type with no index says so in both places. */
+  @Test
+  void aTypeWithNoIndexSaysSo() {
+    database.getSchema().createDocumentType("Plain");
+
+    final PostgresCatalog.Answer classes = PostgresCatalog.resolve(
+        "select relhasindex from pg_catalog.pg_class where relname = 'Plain'", database, USER);
+    assertThat(classes.rows.get(0)).containsEntry("relhasindex", Boolean.FALSE);
+
+    final PostgresCatalog.Answer tables = PostgresCatalog.resolve(
+        "select hasindexes from pg_catalog.pg_tables where tablename = 'Plain'", database, USER);
+    assertThat(tables.rows.get(0)).containsEntry("hasindexes", Boolean.FALSE);
   }
 }
