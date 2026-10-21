@@ -38,6 +38,8 @@ import java.util.Set;
  * <p>
  * The weight follows {@link EdgeWeight}: an edge without a numeric weight weighs 1, and an edge whose
  * weight is negative, NaN or infinite is not walked (issue #9443). Use {@code bellmanFord()} for negative weights.
+ * <p>
+ * {@code maxDepth} is the number of edges the path may have, see {@link SQLFunctionAstar} (issue #10527).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */

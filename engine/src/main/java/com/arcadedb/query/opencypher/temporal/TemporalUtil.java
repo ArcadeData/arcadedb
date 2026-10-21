@@ -607,6 +607,59 @@ public final class TemporalUtil {
     return value instanceof Temporal || value instanceof Date || value instanceof Calendar;
   }
 
+  /**
+   * Whether {@code value} is a temporal {@link #distinctKey(Object)} keys: a Cypher temporal, a native one, or a
+   * {@code java.time} duration or period.
+   */
+  public static boolean isTemporalValue(final Object value) {
+    return value instanceof CypherTemporalValue || isNativeTemporal(value) || value instanceof Duration || value instanceof Period;
+  }
+
+  /**
+   * The value a temporal stands for in duplicate elimination ({@code DISTINCT}, {@code GROUP BY}, {@code UNION}), so that two
+   * temporals which {@code =} reports equal share a key whatever Java class holds them (issue #10526): {@code LocalDateTime.equals}
+   * is false against a {@code ZonedDateTime} for every pair, however equal the instants. The rule is the one of
+   * {@code ComparisonExpression}:
+   * <ul>
+   *   <li>an instant that has no zone of its own - a stored DATETIME, which is read as a local datetime or as a zone-less
+   *   datetime; a raw {@code LocalDateTime}; an {@code Instant}, a {@code java.util.Date} or a {@code Calendar} - is that instant in
+   *   UTC, which is where {@code =} puts it against a zoned datetime in UTC</li>
+   *   <li>a zoned datetime keeps its zone: the same instant in two zones is two values to {@code =}</li>
+   *   <li>a {@code localdatetime()} built by a query is a local datetime, never equal to a datetime, and keeps its own key</li>
+   *   <li>every other temporal is the {@code java.time} value its Cypher wrapper holds; a native duration or period is read as the
+   *   Cypher duration {@code =} reads it as</li>
+   * </ul>
+   * {@code =} is not transitive across the first two kinds (a stored value equals the datetime in every zone at its instant, and
+   * those datetimes are not equal to each other), so the zone-less value joins the one it matches in UTC and no other.
+   *
+   * @return the key, or {@code null} when {@code value} is no temporal this class keys
+   */
+  public static Object distinctKey(final Object value) {
+    return switch (value) {
+      case CypherDateTime dateTime ->
+          dateTime.isZoneless() ? dateTime.getValue().withZoneSameInstant(ZoneOffset.UTC) : dateTime.getValue();
+      case CypherLocalDateTime local -> local.isStored() ? local.getValue().atZone(ZoneOffset.UTC) : local.getValue();
+      case CypherDate date -> date.getValue();
+      case CypherLocalTime time -> time.getValue();
+      case CypherTime time -> time.getValue();
+      // the one wrapper left, the duration: its equals / hashCode compare its months, days, seconds and nanoseconds, as = does
+      case CypherTemporalValue other -> other;
+      case ZonedDateTime zoned -> zoned;
+      case OffsetDateTime offset -> offset.toZonedDateTime();
+      case LocalDateTime local -> local.atZone(ZoneOffset.UTC);
+      case Instant instant -> instant.atZone(ZoneOffset.UTC);
+      // getTime(), not toInstant(): java.sql.Date refuses the latter
+      case Date date -> Instant.ofEpochMilli(date.getTime()).atZone(ZoneOffset.UTC);
+      case Calendar calendar -> Instant.ofEpochMilli(calendar.getTimeInMillis()).atZone(ZoneOffset.UTC);
+      case LocalDate date -> date;
+      case LocalTime time -> time;
+      case OffsetTime time -> time;
+      case Duration duration -> fromCoreJavaType(duration);
+      case Period period -> fromCoreJavaType(period);
+      case null, default -> null;
+    };
+  }
+
   // The classes a non-default arcadedb.dateImplementation reads a DATE into: only these need the schema lookup, so the
   // default LocalDate and every non-temporal value pay one instanceof chain and nothing more
   private static boolean isDateReadAsInstant(final Object value) {

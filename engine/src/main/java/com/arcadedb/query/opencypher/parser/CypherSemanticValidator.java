@@ -2419,22 +2419,37 @@ public class CypherSemanticValidator {
     case MATCH -> {
       final MatchClause matchClause = entry.getTypedClause();
       if (matchClause.hasPathPatterns())
-        patterns.addAll(matchClause.getPathPatterns());
+        for (final PathPattern path : matchClause.getPathPatterns())
+          addWithGroupPatterns(path, patterns);
     }
     case CREATE -> {
       final CreateClause createClause = entry.getTypedClause();
       if (createClause != null && !createClause.isEmpty())
-        patterns.addAll(createClause.getPathPatterns());
+        for (final PathPattern path : createClause.getPathPatterns())
+          addWithGroupPatterns(path, patterns);
     }
     case MERGE -> {
       final MergeClause mergeClause = entry.getTypedClause();
       if (mergeClause != null)
-        patterns.add(mergeClause.getPathPattern());
+        addWithGroupPatterns(mergeClause.getPathPattern(), patterns);
     }
     default -> {
     }
     }
     return patterns;
+  }
+
+  /**
+   * A pattern, and the patterns its quantified path patterns repeat: the variables written in a group are declared by the
+   * clause as well, as {@link #applyClauseToVarTypes} reads them, and the walk reaches those inner patterns since issue #10525.
+   */
+  private static void addWithGroupPatterns(final PathPattern path, final Set<PathPattern> patterns) {
+    if (path == null)
+      return;
+    patterns.add(path);
+    for (final RelationshipPattern relationship : path.getRelationships())
+      if (relationship instanceof QuantifiedPathPattern group)
+        addWithGroupPatterns(group.getInnerPattern(), patterns);
   }
 
   // ================================================
