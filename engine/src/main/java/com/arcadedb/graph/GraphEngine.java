@@ -82,23 +82,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphEngine {
-  private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
-    @Override
-    public boolean hasNext() {
-      return false;
-    }
-
-    @Override
-    public RID next() {
-      throw new NoSuchElementException();
-    }
-
-    @Override
-    public RID getEdgeRID() {
-      throw new IllegalStateException("No entry: next() has not returned one yet");
-    }
-  };
-
   public static final IterableGraph<Vertex> EMPTY_VERTEX_LIST = new IterableGraph<>() {
     @Override
     public Iterator<Vertex> iterator() {
@@ -127,6 +110,24 @@ public class GraphEngine {
   // SHARED: countInto() ONLY READS ITS FILTER ARRAYS, IT WRITES THE COUNTS ALONE
   private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
   private static final boolean[]        SKIP_SELF_LOOPS  = { true };
+
+  // THE ENTRIES OF A VERTEX WITH NO EDGE LIST IN A DIRECTION
+  private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
+    @Override
+    public boolean hasNext() {
+      return false;
+    }
+
+    @Override
+    public RID next() {
+      throw new NoSuchElementException();
+    }
+
+    @Override
+    public RID getEdgeRID() {
+      throw new IllegalStateException("No entry: next() has not returned one yet");
+    }
+  };
 
   /**
    * Told about the edge writes no record event reports (issue #9572). Internal: these are not record events, so no
