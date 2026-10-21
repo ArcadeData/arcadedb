@@ -104,7 +104,7 @@ class Issue9979AlgoViewParityTest extends TestHelper {
       withoutView.add(scores(run("algo.pagerank", false, config)));
 
     // the reporter's numbers: one iteration, three nodes tied for last
-    final Map<Integer, Double> oneIteration = withoutView.getFirst();
+    final Map<Integer, Double> oneIteration = withoutView.get(0);
     assertThat(oneIteration.get(0)).isCloseTo(0.08516, within(1e-5));
     assertThat(oneIteration.get(4)).isCloseTo(0.08516, within(1e-5));
     assertThat(oneIteration.get(3)).isCloseTo(0.19141, within(1e-5));

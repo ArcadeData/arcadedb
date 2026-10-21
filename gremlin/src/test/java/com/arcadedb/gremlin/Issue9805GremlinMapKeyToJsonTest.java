@@ -70,9 +70,9 @@ class Issue9805GremlinMapKeyToJsonTest {
   void aNestedElementMapRendersWithItsTokenKeysNamedLikeTheRow() {
     final List<Result> rows = run("g.V().project('x').by(elementMap())");
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<Object>getProperty("x")).isInstanceOf(Map.class);
+    assertThat(rows.get(0).<Object>getProperty("x")).isInstanceOf(Map.class);
 
-    final JSONObject json = rows.getFirst().toJSON();
+    final JSONObject json = rows.get(0).toJSON();
     final JSONObject x = json.getJSONObject("x");
     // #9781: the tokens are @rid / @type one level down as they are in the row, so a property called id or label cannot displace them
     assertThat(x.keySet()).containsExactlyInAnyOrder("@rid", "@type", "name", "age");
@@ -84,7 +84,7 @@ class Issue9805GremlinMapKeyToJsonTest {
   void aGroupedElementMapRenders() {
     final List<Result> rows = run("g.V().group().by('name').by(elementMap())");
     assertThat(rows).hasSize(1);
-    final JSONObject json = rows.getFirst().toJSON();
+    final JSONObject json = rows.get(0).toJSON();
     assertThat(json.getJSONObject("Jay").getString("@type")).isEqualTo("Person");
   }
 
@@ -92,7 +92,7 @@ class Issue9805GremlinMapKeyToJsonTest {
   void aCountedMapKeyedByANumberRenders() {
     final List<Result> rows = run("g.V().project('byAge').by(groupCount().by('age'))");
     assertThat(rows).hasSize(1);
-    final JSONObject byAge = rows.getFirst().toJSON().getJSONObject("byAge");
+    final JSONObject byAge = rows.get(0).toJSON().getJSONObject("byAge");
     assertThat(byAge.keySet()).hasSize(1);
   }
 }

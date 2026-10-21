@@ -41,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -164,23 +165,17 @@ final class CountPushDownPredicates {
 
     @Override
     public void visit(final Expression expression) {
-      switch (expression) {
-      case FunctionCallExpression call -> {
+      if (Objects.requireNonNull(expression) instanceof FunctionCallExpression call) {
         // A built-in is a function of its arguments, but for the two random ones. A name that may resolve to a
         // DEFINE FUNCTION body or a polyglot function is not known to be: it can read anything and answer
         // differently on every call, so it is left to the row pipeline, which calls it once per row
         if (NON_DETERMINISTIC_FUNCTIONS.contains(call.getFunctionName().toLowerCase(Locale.ROOT))
             || !SimpleCypherStatement.isConfirmedPureFunctionName(call.getFunctionName()))
           perVertex = false;
-      }
-      case ExistsExpression ignored -> perVertex = false;
-      case CountExpression ignored -> perVertex = false;
-      case CollectExpression ignored -> perVertex = false;
-      case PatternComprehensionExpression ignored -> perVertex = false;
-      case ShortestPathExpression ignored -> perVertex = false;
-      default -> {
-      }
-      }
+      } else if (expression instanceof ExistsExpression || expression instanceof CountExpression
+          || expression instanceof CollectExpression || expression instanceof PatternComprehensionExpression
+          || expression instanceof ShortestPathExpression)
+        perVertex = false;
     }
 
     @Override

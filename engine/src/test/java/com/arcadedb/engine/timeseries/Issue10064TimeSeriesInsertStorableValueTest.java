@@ -167,7 +167,7 @@ class Issue10064TimeSeriesInsertStorableValueTest extends TestHelper {
     database.command("sql", "INSERT INTO Parity SET ts = " + BASE_TS + ", l = 7, i = 7, s = 7, b = 7, f = 7.5, d = 7.5");
 
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("Parity");
-    final Object[] row = rows("Parity").getFirst();
+    final Object[] row = rows("Parity").get(0);
     int idx = 1;
     for (final ColumnDefinition col : type.getTsColumns()) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)

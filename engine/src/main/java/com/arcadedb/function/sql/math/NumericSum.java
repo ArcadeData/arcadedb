@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.math;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
+import java.util.Objects;
 
 /**
  * The running total of {@code sum()} and {@code avg()}: the same value, of the same type, as folding every input into a
@@ -95,24 +96,19 @@ final class NumericSum {
     }
     case EMPTY -> {
       // THE FIRST VALUE IS THE TOTAL AS IT IS (A -0.0 STAYS -0.0)
-      switch (value) {
-      case Double d -> {
+      if (Objects.requireNonNull(value) instanceof Double d) {
         state = DOUBLE;
         doubleSum = d;
-      }
-      case Long l -> {
+      } else if (value instanceof Long l) {
         state = LONG;
         longSum = l;
-      }
-      case Integer i -> {
+      } else if (value instanceof Integer i) {
         state = INT;
         longSum = i;
         widened = false;
-      }
-      default -> {
+      } else {
         state = BOXED;
         boxed = value;
-      }
       }
       return;
     }

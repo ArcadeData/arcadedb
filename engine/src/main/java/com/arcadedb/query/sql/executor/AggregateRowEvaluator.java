@@ -174,7 +174,7 @@ final class AggregateRowEvaluator {
       for (final Expression param : params)
         aggregatesSafe &= isSafeOnView(param);
       if (params.size() == 1) {
-        final Expression param = params.getFirst();
+        final Expression param = params.get(0);
         if ("*".equals(param.toString()))
           argumentSlots[i] = function.getFunction() instanceof SQLFunctionCount && !function.isDistinct() ? STAR_SLOT : NO_SLOT;
         else

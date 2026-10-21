@@ -109,7 +109,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
           }
         }
         localFetched++;
-        final Result result = results.removeFirst();
+        final Result result = results.remove(0);
         if (result.isElement())
           markTraversed(result.getElement().get().getIdentity());
         return result;

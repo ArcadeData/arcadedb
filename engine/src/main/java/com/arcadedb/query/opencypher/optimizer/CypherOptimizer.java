@@ -1647,7 +1647,7 @@ public class CypherOptimizer {
     // chain[0] is the outermost (root), chain[last] is the innermost (closest to scan)
     // Reverse to get traversal order: innermost first
     final int chainLen = chain.size();
-    final GraphTraversalProvider provider = chain.getFirst().getProvider();
+    final GraphTraversalProvider provider = chain.get(0).getProvider();
     final Set<String> chainTrackingVars = new HashSet<>();
     for (final GAVExpandAll gav : chain)
       if (gav.getEdgeTrackingVar() != null)
@@ -1750,7 +1750,7 @@ public class CypherOptimizer {
       return null;
 
     // Verify all use the same provider
-    final GraphTraversalProvider provider = chain.getFirst().getProvider();
+    final GraphTraversalProvider provider = chain.get(0).getProvider();
     for (int i = 1; i < chain.size(); i++)
       if (chain.get(i).getProvider() != provider)
         return null;

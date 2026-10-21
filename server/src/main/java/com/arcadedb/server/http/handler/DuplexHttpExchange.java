@@ -523,14 +523,14 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
       return new ChunkedBody();
     }
     if (!lengths.isEmpty()) {
-      final String length = lengths.getFirst().trim();
+      final String length = lengths.get(0).trim();
       // Decimal digits only, which Long.parseLong alone does not enforce: "-1" would pass off an empty body as the
       // leader's whole answer.
       boolean valid = !length.isEmpty() && length.length() <= 18;
       for (int i = 0; valid && i < length.length(); i++)
         valid = length.charAt(i) >= '0' && length.charAt(i) <= '9';
       if (!valid)
-        throw new IOException("Malformed Content-Length from " + request.uri() + ": " + lengths.getFirst());
+        throw new IOException("Malformed Content-Length from " + request.uri() + ": " + lengths.get(0));
       return new LengthBody(Long.parseLong(length));
     }
     // Neither: the body runs until the leader closes the connection, which Connection: close allows.

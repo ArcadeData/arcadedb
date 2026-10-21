@@ -237,7 +237,7 @@ public class MatchExecutionPlanner {
   private void checkOrderByRecordAttributes() {
     if (orderBy == null || orderBy.getItems() == null || returnElements || returnPathElements)
       return;
-    if (!returnPaths && !returnPatterns && returnItems.size() == 1 && returnItems.getFirst().isExpand())
+    if (!returnPaths && !returnPatterns && returnItems.size() == 1 && returnItems.get(0).isExpand())
       return;
 
     for (final OrderByItem item : orderBy.getItems()) {

@@ -143,7 +143,7 @@ class SilenceBoundedInputStreamTest {
       final Runnable task;
       synchronized (this) {
         assertThat(tasks).as("a task to fire").isNotEmpty();
-        task = tasks.removeFirst();
+        task = tasks.remove(0);
       }
       task.run();
     }

@@ -227,7 +227,7 @@ class Issue8629UnidirectionalGraphAlgorithmsTest extends TestHelper {
     final List<List<String>> withoutView = new ArrayList<>();
     for (final String query : queries) {
       withoutView.add(rows(uni, "opencypher", query));
-      assertThat(withoutView.getLast()).as(query).isEqualTo(rows(database, "opencypher", query));
+      assertThat(withoutView.get(withoutView.size() - 1)).as(query).isEqualTo(rows(database, "opencypher", query));
     }
 
     uni.command("sql", "CREATE GRAPH ANALYTICAL VIEW algoView VERTEX TYPES (N) EDGE TYPES (R) PROPERTIES (w) UPDATE MODE OFF");

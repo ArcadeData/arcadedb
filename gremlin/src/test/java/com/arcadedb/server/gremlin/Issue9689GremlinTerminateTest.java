@@ -113,7 +113,7 @@ class Issue9689GremlinTerminateTest extends AbstractGremlinServerIT {
       assertThat(entry.getOutcome()).isEqualTo(RunningQuery.Outcome.TERMINATED);
 
       // The worker serves the next request
-      assertThat(client.submit("g.V().hasLabel('Node9689').count()").all().get().getFirst().getLong()).isEqualTo(VERTICES);
+      assertThat(client.submit("g.V().hasLabel('Node9689').count()").all().get().get(0).getLong()).isEqualTo(VERTICES);
     } finally {
       cluster.close();
     }

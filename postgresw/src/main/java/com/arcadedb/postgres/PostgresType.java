@@ -632,28 +632,43 @@ public enum PostgresType {
       return PostgresType.BYTEA;
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
-      return switch (val) {
-        // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
-        // Byte element, and there is no int2[] entry to pair with a narrower answer. Only the primitive byte[]
-        // means BINARY (handled above); a Byte[] is an array of small integers.
-        case short[] shorts -> PostgresType.ARRAY_INT;
-        case Short[] shorts -> PostgresType.ARRAY_INT;
-        case Byte[] bytes -> PostgresType.ARRAY_INT;
-        case int[] ints -> PostgresType.ARRAY_INT;
-        case Integer[] ints -> PostgresType.ARRAY_INT;
-        case long[] longs -> PostgresType.ARRAY_LONG;
-        case Long[] longs -> PostgresType.ARRAY_LONG;
-        case double[] doubles -> PostgresType.ARRAY_DOUBLE;
-        case Double[] doubles -> PostgresType.ARRAY_DOUBLE;
-        case float[] floats -> PostgresType.ARRAY_REAL;
-        case Float[] floats -> PostgresType.ARRAY_REAL;
-        case boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
-        case Boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
-        case char[] chars -> PostgresType.ARRAY_CHAR;
-        case Character[] chars -> PostgresType.ARRAY_CHAR;
-        case String[] strings -> PostgresType.ARRAY_TEXT;
-        default -> throw new IllegalStateException("Unexpected value: " + val);
-      };
+      // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
+      // Byte element, and there is no int2[] entry to pair with a narrower answer. Only the primitive byte[]
+      // means BINARY (handled above); a Byte[] is an array of small integers.
+      if (val instanceof short[])
+        return PostgresType.ARRAY_INT;
+      else if (val instanceof Short[])
+        return PostgresType.ARRAY_INT;
+      else if (val instanceof Byte[])
+        return PostgresType.ARRAY_INT;
+      else if (val instanceof int[])
+        return PostgresType.ARRAY_INT;
+      else if (val instanceof Integer[])
+        return PostgresType.ARRAY_INT;
+      else if (val instanceof long[])
+        return PostgresType.ARRAY_LONG;
+      else if (val instanceof Long[])
+        return PostgresType.ARRAY_LONG;
+      else if (val instanceof double[])
+        return PostgresType.ARRAY_DOUBLE;
+      else if (val instanceof Double[])
+        return PostgresType.ARRAY_DOUBLE;
+      else if (val instanceof float[])
+        return PostgresType.ARRAY_REAL;
+      else if (val instanceof Float[])
+        return PostgresType.ARRAY_REAL;
+      else if (val instanceof boolean[])
+        return PostgresType.ARRAY_BOOLEAN;
+      else if (val instanceof Boolean[])
+        return PostgresType.ARRAY_BOOLEAN;
+      else if (val instanceof char[])
+        return PostgresType.ARRAY_CHAR;
+      else if (val instanceof Character[])
+        return PostgresType.ARRAY_CHAR;
+      else if (val instanceof String[])
+        return PostgresType.ARRAY_TEXT;
+      else
+        throw new IllegalStateException("Unexpected value: " + val);
     } else if (val instanceof Date) {
       return PostgresType.DATE;
     } else if (val instanceof LocalDate) {
@@ -961,23 +976,34 @@ public enum PostgresType {
 
   /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
   private String arrayElementToText(final Object element) {
-    return switch (element) {
-      case String str -> str;
-      case Float f -> String.valueOf(f.floatValue());
-      case Double d -> String.valueOf(d.doubleValue());
-      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
-      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
-      case Binary binary -> binary.getString();
-      case Collection<?> nested -> new JSONArray(nested).toString();
-      case Result result -> result.toJSON().toString();
-      case JSONObject json -> json.toString();
-      case Map<?, ?> map -> new JSONObject(map).toString();
-      // a Cypher path as the same JSON object the text array carries, not its toString() (issue #9913)
-      case TraversalPath path -> new JSONObject(path.toMap()).toString();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
-      case Record record -> record.toJSON(true).toString();
-      default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
-    };
+    if (element instanceof String str)
+      return str;
+    else if (element instanceof Float f)
+      return String.valueOf(f.floatValue());
+    else if (element instanceof Double d)
+      return String.valueOf(d.doubleValue());
+    else if (element instanceof Date date)
+      return LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+    else if (element instanceof LocalDateTime ldt)
+      return ldt.format(POSTGRES_DATETIME_FORMATTER);
+    else if (element instanceof Binary binary)
+      return binary.getString();
+    else if (element instanceof Collection<?> nested)
+      return new JSONArray(nested).toString();
+    else if (element instanceof Result result)
+      return result.toJSON().toString();
+    else if (element instanceof JSONObject json)
+      return json.toString();
+    else if (element instanceof Map<?, ?> map)
+      return new JSONObject(map).toString();
+    // a Cypher path as the same JSON object the text array carries, not its toString() (issue #9913)
+    else if (element instanceof TraversalPath path)
+      return new JSONObject(path.toMap()).toString();
+    else if (element instanceof EmbeddedDocument embeddedDocument)
+      return embeddedDocument.toJSON(true).toString();
+    else if (element instanceof Record record)
+      return record.toJSON(true).toString();
+    return element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
   }
 
   private void writeString(final Binary typeBuffer, final String value) {
@@ -1085,20 +1111,30 @@ public enum PostgresType {
    * their "@type" attribute, temporal values use the Postgres text format, and nested collections recurse.
    */
   private Object toJsonElement(final Object element) {
-    return switch (element) {
-      case null -> null;
-      case JSONObject json -> json;
-      case JSONArray json -> json;
-      case Result result -> result.toJSON();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true);
-      case Record record -> record.toJSON(true);
-      case Map<?, ?> map -> new JSONObject(map);
-      case Collection<?> nested -> serializeNestedAsJsonArray(nested);
-      case Binary binary -> binary.getString();
-      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
-      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
-      default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
-    };
+    if (element == null)
+      return null;
+    else if (element instanceof JSONObject json)
+      return json;
+    else if (element instanceof JSONArray json)
+      return json;
+    else if (element instanceof Result result)
+      return result.toJSON();
+    else if (element instanceof EmbeddedDocument embeddedDocument)
+      return embeddedDocument.toJSON(true);
+    else if (element instanceof Record record)
+      return record.toJSON(true);
+    else if (element instanceof Map<?, ?> map)
+      return new JSONObject(map);
+    else if (element instanceof Collection<?> nested)
+      return serializeNestedAsJsonArray(nested);
+    else if (element instanceof Binary binary)
+      return binary.getString();
+    else if (element instanceof Date date)
+      return LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+    else if (element instanceof LocalDateTime ldt)
+      return ldt.format(POSTGRES_DATETIME_FORMATTER);
+    else
+      return element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
   }
 
   private JSONArray serializeNestedAsJsonArray(final Collection<?> collection) {

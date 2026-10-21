@@ -97,7 +97,7 @@ class Issue9716CountDuringCompactionTest extends TestHelper {
       }
     });
     assertThat(((Number) during.getProperty("records")).longValue()).isEqualTo(ROWS);
-    final Result shard = during.<List<Result>>getProperty("shards").getFirst();
+    final Result shard = during.<List<Result>>getProperty("shards").get(0);
     assertThat(((Number) shard.getProperty("totalSamples")).longValue()).isEqualTo(ROWS);
     assertThat(((Number) shard.getProperty("sealedSamples")).longValue()
         + ((Number) shard.getProperty("mutableSamples")).longValue()).isEqualTo(ROWS);

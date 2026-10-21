@@ -206,9 +206,9 @@ public class Issue8899StreamedErrorLineIT extends BaseGraphServerTest {
     batchArmed = true;
     final List<JSONObject> events = postBatch();
 
-    assertThat(events.getFirst().has("progress")).as("the failure must come after the stream started: %s", events)
+    assertThat(events.get(0).has("progress")).as("the failure must come after the stream started: %s", events)
         .isTrue();
-    final JSONObject last = events.getLast();
+    final JSONObject last = events.get(events.size() - 1);
     assertThat(last.has("error")).as("terminal line: %s", last).isTrue();
     final JSONObject error = last.getJSONObject("error");
     assertThat(error.getInt("status")).as("error line: %s", error).isEqualTo(503);
@@ -233,10 +233,10 @@ public class Issue8899StreamedErrorLineIT extends BaseGraphServerTest {
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .build();
     final List<JSONObject> events = readAllEvents(send(request));
-    assertThat(events.getFirst().has("record")).as("the failure must come after a row was already sent").isTrue();
+    assertThat(events.get(0).has("record")).as("the failure must come after a row was already sent").isTrue();
     assertThat(events.stream().anyMatch(e -> e.has("stats"))).isFalse();
-    assertThat(events.getLast().has("error")).as("terminal line: %s", events.getLast()).isTrue();
-    return events.getLast().getJSONObject("error");
+    assertThat(events.get(events.size() - 1).has("error")).as("terminal line: %s", events.get(events.size() - 1)).isTrue();
+    return events.get(events.size() - 1).getJSONObject("error");
   }
 
   private List<JSONObject> postBatch() throws Exception {

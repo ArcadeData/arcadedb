@@ -295,7 +295,7 @@ class Issue9891TypeRenameHardeningTest {
   private static Map<Integer, String> shippedRenames(final FakeRaftTransactionBroker broker) {
     final List<List<Object>> calls = broker.calls("replicateSchema");
     assertThat(calls).hasSize(1);
-    return (Map<Integer, String>) calls.getFirst().get(9);
+    return (Map<Integer, String>) calls.get(0).get(9);
   }
 
   private static Map<Integer, String> componentNames(final Database database) {

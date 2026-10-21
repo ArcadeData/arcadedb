@@ -67,7 +67,7 @@ class LightEdgeCensusTest extends TestHelper {
 
     final List<LightEdgeRID> edges = read();
     assertThat(edges).hasSize(10);
-    final LightEdgeCensus census = edges.getFirst().getCensus();
+    final LightEdgeCensus census = edges.get(0).getCensus();
     assertThat(census).isNotNull();
     // one iteration, one census
     for (final LightEdgeRID edge : edges)
@@ -89,7 +89,7 @@ class LightEdgeCensusTest extends TestHelper {
     final List<LightEdgeRID> censused = read();
     for (final LightEdgeRID edge : censused)
       edge.getOccurrence();
-    assertThat(censused.getFirst().getCensus().hasTwins()).isTrue();
+    assertThat(censused.get(0).getCensus().hasTwins()).isTrue();
 
     // the same entries, each resolved by its own walk: a fresh iteration asked one question each, through rebuilt RIDs
     // that remember their origin but share no census
@@ -125,7 +125,7 @@ class LightEdgeCensusTest extends TestHelper {
     for (final LightEdgeRID edge : before)
       if (!edge.getInRID().equals(twinTarget) && asked++ < 2)
         edge.getOccurrence();
-    assertThat(before.getFirst().getCensus().isBuilt()).isTrue();
+    assertThat(before.get(0).getCensus().isBuilt()).isTrue();
 
     database.transaction(() -> {
       for (final Edge edge : database.lookupByRID(hub, true).asVertex().getEdges(Vertex.DIRECTION.OUT))
@@ -171,7 +171,7 @@ class LightEdgeCensusTest extends TestHelper {
     final List<LightEdgeRID> before = read();
     for (final LightEdgeRID edge : before)
       edge.getOccurrence();
-    final LightEdgeCensus census = before.getFirst().getCensus();
+    final LightEdgeCensus census = before.get(0).getCensus();
     assertThat(census.isBuilt()).isTrue();
     assertThat(census.hasTwins()).isFalse();
 
@@ -206,7 +206,7 @@ class LightEdgeCensusTest extends TestHelper {
     final List<LightEdgeRID> before = read();
     for (final LightEdgeRID edge : before)
       edge.getOccurrence();
-    final LightEdgeCensus census = before.getFirst().getCensus();
+    final LightEdgeCensus census = before.get(0).getCensus();
     assertThat(census.hasTwins()).isTrue();
 
     database.transaction(() -> {
@@ -246,7 +246,7 @@ class LightEdgeCensusTest extends TestHelper {
       final List<LightEdgeRID> edges = new ArrayList<>(read());
       for (final Edge edge : database.lookupByRID(twinTarget, true).asVertex().getEdges(Vertex.DIRECTION.IN))
         edges.add((LightEdgeRID) edge.getIdentity());
-      final LightEdgeRID first = edges.getFirst();
+      final LightEdgeRID first = edges.get(0);
       edges.add(new LightEdgeRID(database, first.getBucketId(), hub, twinTarget));
       // some resolved before they meet, some not
       for (int i = 0; i < edges.size(); i += 3)
@@ -265,7 +265,7 @@ class LightEdgeCensusTest extends TestHelper {
   @Test
   void aCensusThatCannotCountTheListGivesUpOnce() {
     buildTwins();
-    final LightEdgeRID edge = read().getFirst();
+    final LightEdgeRID edge = read().get(0);
     final RID missing = database.newRID(hub.getBucketId(), 1_000_000L);
     final LightEdgeCensus census = new LightEdgeCensus((DatabaseInternal) database, missing, Vertex.DIRECTION.OUT);
     assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition(), edge.getOriginChunkUsed())).isFalse();
@@ -366,7 +366,7 @@ class LightEdgeCensusTest extends TestHelper {
     }
     for (int i = 0; i < edges.size(); i++)
       assertThat(edges.get(i).getOccurrence()).as("edge %d", i).isEqualTo(expected.get(i));
-    assertThat(edges.getFirst().getCensus().isBuilt()).isTrue();
+    assertThat(edges.get(0).getCensus().isBuilt()).isTrue();
   }
 
   @SuppressWarnings("deprecation")

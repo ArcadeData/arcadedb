@@ -53,7 +53,7 @@ class Issue8552ServerDatabaseDiscardRecordAfterTest extends TestHelper {
 
   private String bucketName() {
     final DocumentType type = database.getSchema().getType(TYPE);
-    return type.getBuckets(false).getFirst().getName();
+    return type.getBuckets(false).get(0).getName();
   }
 
   @Test

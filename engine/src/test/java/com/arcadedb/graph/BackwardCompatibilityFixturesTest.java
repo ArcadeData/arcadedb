@@ -235,7 +235,7 @@ class BackwardCompatibilityFixturesTest {
           if (e.getInteger("w") == -1)
             next.add(e.getInVertex());
         assertThat(next).hasSize(1);
-        current = next.getFirst();
+        current = next.get(0);
         assertThat(current.getInteger("id")).isEqualTo(i);
       }
 

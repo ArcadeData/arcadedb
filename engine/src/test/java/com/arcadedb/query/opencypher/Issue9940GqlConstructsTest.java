@@ -142,7 +142,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
 
   @Test
   void letItemsReadEarlierItemsAndFollowAnAggregation() {
-    assertThat(rows("LET x = 1, y = x + 1 RETURN x, y").getFirst()).containsEntry("x", 1L).containsEntry("y", 2L);
+    assertThat(rows("LET x = 1, y = x + 1 RETURN x, y").get(0)).containsEntry("x", 1L).containsEntry("y", 2L);
     assertThat(column("MATCH (n:Person) WITH count(n) AS c LET d = c * 2 RETURN d", "d")).containsExactly(8L);
   }
 
@@ -313,7 +313,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
 
   @Test
   void isNormalizedColumnIsNamedAfterTheSourceText() {
-    assertThat(rows("RETURN 'a' IS NORMALIZED").getFirst().keySet()).containsExactly("'a' IS NORMALIZED");
+    assertThat(rows("RETURN 'a' IS NORMALIZED").get(0).keySet()).containsExactly("'a' IS NORMALIZED");
   }
 
   @Test
@@ -399,7 +399,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
 
     final Map<String, Object> row = rows("RETURN $c IS NORMALIZED AS cDefault, $d IS NORMALIZED AS dDefault, "
         + "$d IS NFD NORMALIZED AS dNfd, $c IS NFD NORMALIZED AS cNfd, $c IS NOT NFKC NORMALIZED AS cNotNfkc, "
-        + "$d IS NOT NORMALIZED AS dNot, $d IS NFKD NORMALIZED AS dNfkd, null IS NORMALIZED AS nul", params).getFirst();
+        + "$d IS NOT NORMALIZED AS dNot, $d IS NFKD NORMALIZED AS dNfkd, null IS NORMALIZED AS nul", params).get(0);
     assertThat(row.get("cDefault")).isEqualTo(true);
     assertThat(row.get("dDefault")).isEqualTo(false);
     assertThat(row.get("dNfd")).isEqualTo(true);
@@ -419,7 +419,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
   @Test
   void isNormalizedOfANonStringIsNull() {
     // as Neo4j Cypher 25: only a string has a normal form, anything else is UNKNOWN, so a WHERE drops the row
-    assertThat(rows("RETURN 1 IS NORMALIZED AS n, 1 IS NOT NORMALIZED AS m").getFirst()).containsEntry("n", null).containsEntry("m", null);
+    assertThat(rows("RETURN 1 IS NORMALIZED AS n, 1 IS NOT NORMALIZED AS m").get(0)).containsEntry("n", null).containsEntry("m", null);
     assertThat(column("UNWIND [1, 'a'] AS x WITH x WHERE x IS NORMALIZED RETURN x", "x")).containsExactly("a");
   }
 
@@ -453,7 +453,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
   @Test
   void aPathIsTypedPath() {
     final Map<String, Object> row = rows("MATCH p = (:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}) "
-        + "RETURN p IS TYPED PATH AS typed, p IS :: PATH NOT NULL AS typedNotNull, valueType(p) AS vt, [1, 2] IS TYPED PATH AS list").getFirst();
+        + "RETURN p IS TYPED PATH AS typed, p IS :: PATH NOT NULL AS typedNotNull, valueType(p) AS vt, [1, 2] IS TYPED PATH AS list").get(0);
     assertThat(row.get("typed")).isEqualTo(true);
     assertThat(row.get("typedNotNull")).isEqualTo(true);
     assertThat(row.get("vt")).isEqualTo("PATH NOT NULL");
@@ -478,7 +478,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
   @Test
   void aListThatAlternatesVerticesAndEdgesIsNotAPath() {
     final Map<String, Object> row = rows("MATCH (a:Person {name:'A'})-[r:KNOWS]->(b:Person {name:'B'}) "
-        + "RETURN [a, r, b] IS TYPED PATH AS typed, valueType([a, r, b]) AS vt").getFirst();
+        + "RETURN [a, r, b] IS TYPED PATH AS typed, valueType([a, r, b]) AS vt").get(0);
     assertThat(row.get("typed")).isEqualTo(false);
     assertThat((String) row.get("vt")).startsWith("LIST");
     // the shortestPath of the same hop is a PATH
@@ -555,7 +555,7 @@ class Issue9940GqlConstructsTest extends TestHelper {
   @Test
   void aShortestPathIsNotTypedList() {
     final Map<String, Object> row = rows("MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'C'})) "
-        + "RETURN p IS TYPED LIST<ANY> AS list, p IS TYPED PATH AS path").getFirst();
+        + "RETURN p IS TYPED LIST<ANY> AS list, p IS TYPED PATH AS path").get(0);
     assertThat(row.get("list")).isEqualTo(false);
     assertThat(row.get("path")).isEqualTo(true);
   }

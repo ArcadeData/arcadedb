@@ -25,6 +25,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -35,6 +36,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -55,6 +57,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * guidelines ask for; only the assignment needs reflection.
  */
 class Issue7985StopServiceReleasesForwarderOnFailureTest {
+
+  @BeforeAll
+  static void requireReleasableHttpClient() {
+    // Java 17 cannot release or observe the release of an HttpClient (HttpClientLifecycle is a no-op before Java 21)
+    assumeTrue(HttpClientLifecycle.isSupported(), "HttpClient shutdown/isTerminated need Java 21+");
+  }
 
   private static final String DATABASE_DIRECTORY = "./target/databases-issue7985";
 

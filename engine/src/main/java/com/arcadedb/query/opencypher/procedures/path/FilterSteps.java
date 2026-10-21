@@ -40,20 +40,21 @@ final class FilterSteps {
    * included).
    */
   static List<String> split(final String procedureName, final String parameterName, final Object filter) {
-    final List<String> steps = switch (filter) {
-      case null -> null;
-      case String s -> List.of(s.split(",", -1));
-      case Collection<?> collection -> {
-        final StringJoiner joined = new StringJoiner("|");
-        for (final Object item : collection)
-          if (item != null)
-            joined.add(item.toString());
-        yield List.of(joined.toString());
-      }
-      case Map<?, ?> ignored ->
-          throw new IllegalArgumentException(procedureName + "(): " + parameterName + " must be a string or a list of strings, got a map");
-      default -> List.of(filter.toString());
-    };
+    final List<String> steps;
+    if (filter == null)
+      steps = null;
+    else if (filter instanceof String s)
+      steps = List.of(s.split(",", -1));
+    else if (filter instanceof Collection<?> collection) {
+      final StringJoiner joined = new StringJoiner("|");
+      for (final Object item : collection)
+        if (item != null)
+          joined.add(item.toString());
+      steps = List.of(joined.toString());
+    } else if (filter instanceof Map<?, ?>)
+      throw new IllegalArgumentException(procedureName + "(): " + parameterName + " must be a string or a list of strings, got a map");
+    else
+      steps = List.of(filter.toString());
     return steps == null || isBlank(steps) ? null : steps;
   }
 

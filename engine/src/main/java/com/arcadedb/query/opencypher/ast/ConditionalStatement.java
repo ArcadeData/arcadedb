@@ -105,7 +105,7 @@ public class ConditionalStatement implements CypherStatement {
    */
   @Override
   public ReturnClause getReturnClause() {
-    return branches.getFirst().getReturnClause();
+    return branches.get(0).getReturnClause();
   }
 
   @Override

@@ -70,7 +70,7 @@ public class MergeByScoreStep extends AbstractExecutionStep {
     // evaluates its scoring condition one row at a time (see the class Javadoc). Refused here rather than misordered later
     for (final InternalExecutionPlan plan : subExecutionPlans)
       if (!(plan instanceof final SelectExecutionPlan select) || select.getSteps().isEmpty()
-          || !(select.getSteps().getLast() instanceof FilterStep))
+          || !(select.getSteps().get(select.getSteps().size() - 1) instanceof FilterStep))
         throw new IllegalArgumentException("Every branch merged by $score must end with the filter that scores its rows");
     this.subExecutionPlans = subExecutionPlans;
     final int branches = subExecutionPlans.size();

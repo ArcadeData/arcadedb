@@ -62,7 +62,7 @@ class Issue10051ReplicatedCorpusDeltaTest extends TestHelper {
   /** A WAL entry that raises page 0 of the type's bucket by one version, whatever the follower's copy holds. */
   private WALFile.WALTransaction entryAdvancingTheBucketPage() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType("Doc").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("Doc").getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final PageManager pageManager = db.getPageManager();
     assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();

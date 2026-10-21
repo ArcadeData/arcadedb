@@ -46,7 +46,7 @@ class FakeRaftTransactionBrokerTest {
     assertThat(broker.calls("replicateDropDatabase")).containsExactly(List.of("db"));
     assertThat(broker.calls("replicateTransaction")).hasSize(1);
     // -1: the "not prepared at any index" the real 3-argument overload passes to the 4-argument form
-    assertThat(broker.calls("replicateTransaction").getFirst().get(3)).isEqualTo(-1L);
+    assertThat(broker.calls("replicateTransaction").get(0).get(3)).isEqualTo(-1L);
     assertThat(broker.calls("replicateSecurityGroups")).isEmpty();
   }
 

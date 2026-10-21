@@ -150,9 +150,9 @@ public class GraphQLSchema {
    */
   private static SelectionSet mergeTopLevelSelections(final List<Selection> selections, final Map<String, Object> variables) {
     if (selections.size() < 2)
-      return selections.isEmpty() ? null : selections.getFirst().getSelectionSet();
+      return selections.isEmpty() ? null : selections.get(0).getSelectionSet();
 
-    final Selection first = selections.getFirst();
+    final Selection first = selections.get(0);
     final Map<String, Object> firstArguments = getArguments(first.getArguments(), variables);
     SelectionSet merged = null;
     for (final Selection selection : selections) {

@@ -23,11 +23,13 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -43,6 +45,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7650ForwardHttpClientClosedOnStopTest {
+
+  @BeforeAll
+  static void requireReleasableHttpClient() {
+    // Java 17 cannot release or observe the release of an HttpClient (HttpClientLifecycle is a no-op before Java 21)
+    assumeTrue(HttpClientLifecycle.isSupported(), "HttpClient shutdown/isTerminated need Java 21+");
+  }
 
   @Test
   void stopClosesTheSharedForwardHttpClient() throws Exception {

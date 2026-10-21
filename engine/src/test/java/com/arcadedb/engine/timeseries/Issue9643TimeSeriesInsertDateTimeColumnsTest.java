@@ -110,7 +110,7 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
         try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName + " WHERE k = " + literal)) {
           final List<Result> found = rs.stream().toList();
           assertThat(found).as("%s tag filter", declared).hasSize(1);
-          assertThat(found.getFirst().<Object>getProperty("tail")).isEqualTo(2.5d);
+          assertThat(found.get(0).<Object>getProperty("tail")).isEqualTo(2.5d);
         }
       // and the value a row reads back as finds that row whatever the precision (issue #9725)
       final Object readBack;
@@ -120,7 +120,7 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
       try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName + " WHERE k = ?", readBack)) {
         final List<Result> found = rs.stream().toList();
         assertThat(found).as("%s tag filter by the value read back", declared).hasSize(1);
-        assertThat(found.getFirst().<Object>getProperty("tail")).isEqualTo(2.5d);
+        assertThat(found.get(0).<Object>getProperty("tail")).isEqualTo(2.5d);
       }
 
       engine.compactAll();
@@ -169,8 +169,8 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
     database.command("sql", "INSERT INTO ViaSql SET ts = " + BASE_TS + ", v = 1700000123456");
     engineOf("ViaEngine").appendSamples(new long[] { BASE_TS }, new Object[] { 1_700_000_123_456L });
 
-    assertThat(engineOf("ViaSql").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst())
-        .containsExactly(engineOf("ViaEngine").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst());
+    assertThat(engineOf("ViaSql").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0))
+        .containsExactly(engineOf("ViaEngine").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0));
   }
 
   @Test
@@ -180,7 +180,7 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
 
     final List<Object[]> rows = engineOf("Sparse").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()[2]).isEqualTo(2.5d);
+    assertThat(rows.get(0)[2]).isEqualTo(2.5d);
   }
 
   @Test
@@ -190,7 +190,7 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
 
     final List<Object[]> rows = engineOf("Nulls").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()[3]).isEqualTo(2.5d);
+    assertThat(rows.get(0)[3]).isEqualTo(2.5d);
   }
 
   /**
@@ -222,14 +222,14 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
 
     final List<Object[]> mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
     assertThat(mutable).as("%s row count", declared).hasSize(1);
-    assertThat(mutable.getFirst()[1]).as("%s value from the mutable layer", declared).isEqualTo(expected);
-    assertThat(mutable.getFirst()[2]).as("%s neighbour from the mutable layer", declared).isEqualTo(tail);
+    assertThat(mutable.get(0)[1]).as("%s value from the mutable layer", declared).isEqualTo(expected);
+    assertThat(mutable.get(0)[2]).as("%s neighbour from the mutable layer", declared).isEqualTo(tail);
 
     engine.compactAll();
 
     final List<Object[]> sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
-    assertThat(sealed.getFirst()[1]).as("%s value from the sealed layer", declared).isEqualTo(expected);
-    assertThat(sealed.getFirst()[2]).as("%s neighbour from the sealed layer", declared).isEqualTo(tail);
+    assertThat(sealed.get(0)[1]).as("%s value from the sealed layer", declared).isEqualTo(expected);
+    assertThat(sealed.get(0)[2]).as("%s neighbour from the sealed layer", declared).isEqualTo(tail);
   }
 
   /**

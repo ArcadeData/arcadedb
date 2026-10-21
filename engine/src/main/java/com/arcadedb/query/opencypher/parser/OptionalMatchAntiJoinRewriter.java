@@ -496,8 +496,8 @@ public final class OptionalMatchAntiJoinRewriter {
               relationship.getMinHops(), relationship.getMaxHops(), null) :
           relationship);
 
-    final String first = nodes.getFirst().getVariable();
-    final String last = nodes.getLast().getVariable();
+    final String first = nodes.get(0).getVariable();
+    final String last = nodes.get(nodes.size() - 1).getVariable();
     if ((first == null || !inScope.contains(first)) && last != null && inScope.contains(last)) {
       Collections.reverse(nodes);
       Collections.reverse(relationships);

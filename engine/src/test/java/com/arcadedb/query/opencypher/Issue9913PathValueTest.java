@@ -96,7 +96,7 @@ class Issue9913PathValueTest extends TestHelper {
     assertThat(tree).isNotEmpty();
     for (final Result r : tree)
       assertThat(r.<Long>getProperty("n")).isEqualTo(r.<Long>getProperty("len") + 1);
-    assertThat(tree.getLast().<Long>getProperty("len")).isEqualTo(2L);
+    assertThat(tree.get(tree.size() - 1).<Long>getProperty("len")).isEqualTo(2L);
   }
 
   @Test
@@ -144,7 +144,7 @@ class Issue9913PathValueTest extends TestHelper {
 
     final List<Result> all = all("MATCH path = allShortestPaths((a:City {name: 'A'})-[:ROAD*]->(c:City {name: 'C'}))" + PROJECT);
     assertThat(all).hasSize(1);
-    assertRoute(all.getFirst());
+    assertRoute(all.get(0));
 
     final Result expression = single(ENDS + "WITH shortestPath((a)-[:ROAD*]->(c)) AS path" + PROJECT);
     assertRoute(expression);
@@ -322,7 +322,7 @@ class Issue9913PathValueTest extends TestHelper {
   private Result single(final String query) {
     final List<Result> rows = all(query);
     assertThat(rows).as(query).hasSize(1);
-    return rows.getFirst();
+    return rows.get(0);
   }
 
   private List<Result> all(final String query) {

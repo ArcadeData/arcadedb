@@ -302,7 +302,7 @@ public final class TimeSeriesGateway {
         // A sample whose value a column cannot store is left out HERE, before anything of it reaches the engine, and named: the
         // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). The
         // conversion is the one the Prometheus remote write shares (issue #10030)
-        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.getFirst().getMeasurement(), columns, timestamps,
+        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.get(0).getMeasurement(), columns, timestamps,
             count, false, (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
                 group.get(row).getTags().get(col.getName()) :
                 group.get(row).getFields().get(col.getName()), unreadableValues);

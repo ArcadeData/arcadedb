@@ -283,7 +283,7 @@ class Issue9496GroupByAggregateTest extends TestHelper {
     final String byValue = "SELECT w, count(*) AS n FROM Decimals GROUP BY w ORDER BY n DESC, w LIMIT 5";
     assertThat(render(query(byValue, true))).isEqualTo(render(query(byValue, false)));
     for (final boolean inParallel : new boolean[] { true, false })
-      assertThat(query("SELECT count(*) AS n FROM Decimals WHERE w IS NULL GROUP BY w", inParallel).getFirst().<Long>getProperty("n"))
+      assertThat(query("SELECT count(*) AS n FROM Decimals WHERE w IS NULL GROUP BY w", inParallel).get(0).<Long>getProperty("n"))
           .isEqualTo(500L);
   }
 
@@ -295,8 +295,8 @@ class Issue9496GroupByAggregateTest extends TestHelper {
           parallel)).isEmpty();
       final List<Result> single = query("SELECT count(*) AS n, sum(l_quantity) AS q FROM LineItem WHERE l_quantity < 0", parallel);
       assertThat(single).hasSize(1);
-      assertThat(single.getFirst().<Long>getProperty("n")).isEqualTo(0L);
-      assertThat(single.getFirst().<Object>getProperty("q")).isNull();
+      assertThat(single.get(0).<Long>getProperty("n")).isEqualTo(0L);
+      assertThat(single.get(0).<Object>getProperty("q")).isNull();
     }
   }
 
@@ -513,8 +513,8 @@ class Issue9496GroupByAggregateTest extends TestHelper {
       final List<EmbeddedDocument> nested = new ArrayList<>();
       nested.add((EmbeddedDocument) owner.get("part"));
       nested.add((EmbeddedDocument) cached.getPropertyIfPresent("part", null));
-      nested.add((EmbeddedDocument) ((List<?>) owner.get("parts")).getFirst());
-      nested.add((EmbeddedDocument) ((List<?>) cached.getPropertyIfPresent("parts", null)).getFirst());
+      nested.add((EmbeddedDocument) ((List<?>) owner.get("parts")).get(0));
+      nested.add((EmbeddedDocument) ((List<?>) cached.getPropertyIfPresent("parts", null)).get(0));
       nested.add((EmbeddedDocument) ((Map<?, ?>) owner.get("byName")).get("a"));
       nested.add((EmbeddedDocument) ((Map<?, ?>) cached.getPropertyIfPresent("byName", null)).get("a"));
       for (final EmbeddedDocument document : nested) {

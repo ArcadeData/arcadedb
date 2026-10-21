@@ -22,6 +22,7 @@ import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.HttpServer;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -29,6 +30,7 @@ import java.lang.reflect.Field;
 import java.net.http.HttpClient;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -43,6 +45,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * field; neither is an API anyone else needs, so the test reads both reflectively rather than widening either.
  */
 class Issue8024PostBatchHandlerClientLifecycleTest extends BaseGraphServerTest {
+
+  @BeforeAll
+  static void requireReleasableHttpClient() {
+    // Java 17 cannot release or observe the release of an HttpClient (HttpClientLifecycle is a no-op before Java 21)
+    assumeTrue(HttpClientLifecycle.isSupported(), "HttpClient shutdown/isTerminated need Java 21+");
+  }
 
   @Test
   @Timeout(value = 120, unit = TimeUnit.SECONDS)

@@ -304,7 +304,7 @@ public final class FieldFilter {
   static int select(final List<Condition> conditions, final Object[] columns, final int from, final int to, final int[] selected) {
     assert !conditions.isEmpty() : "a FieldFilter is never empty";
     int count = 0;
-    final Condition first = conditions.getFirst();
+    final Condition first = conditions.get(0);
     if (first.integral) {
       final IntegralColumn column = (IntegralColumn) columns[0];
       final long[] values = column.values;

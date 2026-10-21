@@ -223,7 +223,7 @@ class ChaosRunnerTest {
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
     assertThat(result.steps()).isEqualTo(1);
-    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.violations().get(0).invariant()).isEqualTo("REFORMAT");
     assertThat(result.message()).contains("reformat").contains("longpause");
   }
 

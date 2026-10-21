@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -144,6 +145,8 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
   @Test
   @Timeout(value = 180, unit = TimeUnit.SECONDS)
   void closeAlsoReleasesAClientRetiredByARotationThatIsStillDraining() throws Exception {
+    // Java 17 cannot observe a draining HttpClient (HttpClientLifecycle is a no-op before Java 21)
+    assumeTrue(HttpClientLifecycle.isSupported(), "HttpClient isTerminated needs Java 21+");
     final File truststore = writeEmptyTruststore();
     final ArcadeDBServer server = serverWithTruststore(truststore);
     final TrustedHttpClientCache cache = new TrustedHttpClientCache();

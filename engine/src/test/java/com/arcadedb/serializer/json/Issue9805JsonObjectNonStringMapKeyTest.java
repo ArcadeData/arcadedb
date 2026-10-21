@@ -110,7 +110,7 @@ class Issue9805JsonObjectNonStringMapKeyTest extends TestHelper {
     assertThat(names(fromCollection.getJSONObject(0))).isEqualTo(mixedKeyNames());
 
     final List<JSONObject> objects = array.toListOfObjects();
-    assertThat(names(objects.getFirst())).isEqualTo(mixedKeyNames());
+    assertThat(names(objects.get(0))).isEqualTo(mixedKeyNames());
   }
 
   @Test

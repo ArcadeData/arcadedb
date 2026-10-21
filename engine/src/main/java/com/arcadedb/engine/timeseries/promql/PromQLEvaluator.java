@@ -62,6 +62,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -241,16 +242,27 @@ public class PromQLEvaluator {
     if (depth > MAX_RECURSION_DEPTH)
       throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_RECURSION_DEPTH);
     final int next = depth + 1;
-    return switch (expr) {
-      case NumberLiteral nl -> new ScalarResult(nl.value(), evalTimeMs);
-      case StringLiteral ignored -> new ScalarResult(Double.NaN, evalTimeMs);
-      case VectorSelector vs -> evaluateVectorSelector(vs, evalTimeMs);
-      case MatrixSelector ms -> evaluateMatrixSelector(ms, evalTimeMs);
-      case AggregationExpr agg -> evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-      case FunctionCallExpr fn -> evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-      case BinaryExpr bin -> evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-      case UnaryExpr un -> evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
-    };
+    PromQLResult result;
+    if (Objects.requireNonNull(expr) instanceof NumberLiteral nl) {
+      result = new ScalarResult(nl.value(), evalTimeMs);
+    } else if (expr instanceof StringLiteral) {
+      result = new ScalarResult(Double.NaN, evalTimeMs);
+    } else if (expr instanceof VectorSelector vs) {
+      result = evaluateVectorSelector(vs, evalTimeMs);
+    } else if (expr instanceof MatrixSelector ms) {
+      result = evaluateMatrixSelector(ms, evalTimeMs);
+    } else if (expr instanceof AggregationExpr agg) {
+      result = evaluateAggregation(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else if (expr instanceof FunctionCallExpr fn) {
+      result = evaluateFunction(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else if (expr instanceof BinaryExpr bin) {
+      result = evaluateBinary(bin, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else if (expr instanceof UnaryExpr un) {
+      result = evaluateUnary(un, evalTimeMs, queryStartMs, queryEndMs, stepMs, next);
+    } else {
+      throw new IllegalArgumentException();
+    }
+    return result;
   }
 
   private PromQLResult evaluateVectorSelector(final VectorSelector vs, final long evalTimeMs) {
@@ -426,8 +438,8 @@ public class PromQLEvaluator {
     final List<VectorSample> result = new ArrayList<>();
     for (final Map.Entry<String, List<VectorSample>> entry : groups.entrySet()) {
       final List<VectorSample> group = entry.getValue();
-      final Map<String, String> groupLabels = computeGroupLabels(group.getFirst().labels(), agg.groupLabels(), agg.without());
-      final long ts = group.getFirst().timestampMs();
+      final Map<String, String> groupLabels = computeGroupLabels(group.get(0).labels(), agg.groupLabels(), agg.without());
+      final long ts = group.get(0).timestampMs();
 
       final double value = switch (agg.op()) {
         case SUM -> {
@@ -504,10 +516,10 @@ public class PromQLEvaluator {
     if (isRangeFunction(name)) {
       // every function isRangeFunction() lists takes exactly one argument; quantile_over_time or predict_linear would not
       checkArgumentCount(name, fn.args().size(), 1, 1);
-      final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+      final PromQLResult argResult = evaluate(fn.args().get(0), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
       if (!(argResult instanceof RangeVector rv))
         throw new IllegalArgumentException("expected type range vector in call to function \"" + name + "\", got "
-            + valueTypeName(fn.args().getFirst(), argResult));
+            + valueTypeName(fn.args().get(0), argResult));
 
       final List<VectorSample> samples = new ArrayList<>();
       for (final RangeSeries series : rv.series()) {
@@ -539,13 +551,13 @@ public class PromQLEvaluator {
       final long queryEndMs, final long stepMs, final int depth) {
     final String name = fn.name().toLowerCase(Locale.ROOT);
     checkArgumentCount(name, fn.args().size(), 1, "round".equals(name) ? 2 : 1);
-    final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    final PromQLResult argResult = evaluate(fn.args().get(0), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     // Like Prometheus, only an instant vector is accepted: a range vector used to come back unchanged and a string became
     // a NaN scalar (issue #9883), and a scalar answered a scalar (`abs(-1)` was 1, issue #9924). Checked on the evaluated
     // argument, because whether it is a scalar is not always syntactic (`abs(1 + 1)`, `abs((1 > bool 0))`).
     if (!(argResult instanceof InstantVector iv))
       throw new IllegalArgumentException("expected type instant vector in call to function \"" + name + "\", got "
-          + valueTypeName(fn.args().getFirst(), argResult));
+          + valueTypeName(fn.args().get(0), argResult));
     final double param = extractSecondParam(fn, name, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     final List<VectorSample> samples = new ArrayList<>();
@@ -591,13 +603,16 @@ public class PromQLEvaluator {
   private static String valueTypeName(final PromQLExpr expr, final PromQLResult result) {
     if (expr instanceof StringLiteral)
       return "string";
-    return switch (result) {
-      case ScalarResult ignored -> "scalar";
-      case InstantVector ignored -> "instant vector";
-      case RangeVector ignored -> "range vector";
-      // only evaluateRange() builds one, from the results of evaluate(), so no argument evaluates to it
-      case MatrixResult ignored -> "matrix";
-    };
+    if (Objects.requireNonNull(result) instanceof ScalarResult)
+      return "scalar";
+    if (result instanceof InstantVector)
+      return "instant vector";
+    if (result instanceof RangeVector)
+      return "range vector";
+    // only evaluateRange() builds one, from the results of evaluate(), so no argument evaluates to it
+    if (result instanceof MatrixResult)
+      return "matrix";
+    throw new IllegalStateException("Unexpected PromQL result type: " + result.getClass().getName());
   }
 
   /**

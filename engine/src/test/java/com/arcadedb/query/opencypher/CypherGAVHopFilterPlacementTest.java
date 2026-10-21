@@ -319,7 +319,7 @@ class CypherGAVHopFilterPlacementTest {
     final String pattern = "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) "
         + "WHERE a.id > b.id AND b.id < c.id AND c.id < d.id ";
     final List<String> queries = List.of(pattern + "RETURN count(*) AS n", pattern + "RETURN a.id AS a, b.id AS b, c.id AS c, d.id AS d");
-    assertThat(plan(queries.getFirst())).contains("GAVFusedChain", "filter on (b)=a.id > b.id");
+    assertThat(plan(queries.get(0))).contains("GAVFusedChain", "filter on (b)=a.id > b.id");
     final List<List<String>> withView = new ArrayList<>();
     for (final String query : queries)
       withView.add(rows(query));

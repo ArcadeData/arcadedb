@@ -163,7 +163,7 @@ class Issue9721TimeSeriesIntegralNullTest extends TestHelper {
 
       final MultiColumnAggregationResult result = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
           List.of(new MultiColumnAggregationRequest(2, AggregationType.MIN, "mn"), MultiColumnAggregationRequest.count("c")), 0, null);
-      final long bucket = result.getBucketTimestamps().getFirst();
+      final long bucket = result.getBucketTimestamps().get(0);
       assertThat(result.getValue(bucket, 0)).isEqualTo(7.0);
       assertThat(result.getCount(bucket, 0)).isEqualTo(1L);
       assertThat(result.getValue(bucket, 1)).isEqualTo(2.0);

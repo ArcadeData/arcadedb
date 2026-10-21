@@ -131,13 +131,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
-    return switch (arg) {
-      case null -> throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-      case Vertex vertex -> vertex;
-      case Document doc when doc instanceof Vertex v -> v;
-      default -> throw new IllegalArgumentException(
-          getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
-    };
+    if (arg == null)
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+    if (arg instanceof Vertex vertex)
+      return vertex;
+    if (arg instanceof Document doc && doc instanceof Vertex v)
+      return v;
+    throw new IllegalArgumentException(
+        getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
   }
 
   protected String extractString(final Object arg, final String paramName) {
@@ -167,17 +168,17 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * the schema; null or blank answers null.
    */
   private static String[] parseTypeNames(final Object arg) {
-    return switch (arg) {
-      case null -> null;
-      case String s -> splitRelTypeString(s);
-      case Collection<?> coll -> {
-        // Blank and null entries are dropped as the separated-string form drops empty parts; none left means every type
-        final String[] names = coll.stream().filter(Objects::nonNull).map(o -> o.toString().trim()).filter(s -> !s.isEmpty())
-            .toArray(String[]::new);
-        yield names.length == 0 ? null : names;
-      }
-      default -> new String[]{arg.toString()};
-    };
+    if (arg == null)
+      return null;
+    if (arg instanceof String s)
+      return splitRelTypeString(s);
+    if (arg instanceof Collection<?> coll) {
+      // Blank and null entries are dropped as the separated-string form drops empty parts; none left means every type
+      final String[] names = coll.stream().filter(Objects::nonNull).map(o -> o.toString().trim()).filter(s -> !s.isEmpty())
+          .toArray(String[]::new);
+      return names.length == 0 ? null : names;
+    }
+    return new String[]{arg.toString()};
   }
 
   /**

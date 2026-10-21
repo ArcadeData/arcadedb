@@ -959,7 +959,7 @@ class CollectDistinctTest {
       assertThat(distinct).hasSize(6);
       assertThat(((Number) row.getProperty("n")).longValue()).isEqualTo(6L);
       // the first of equal values is the one kept, as it was
-      assertThat(distinct.getFirst()).isEqualTo(1L);
+      assertThat(distinct.get(0)).isEqualTo(1L);
     }
   }
 }

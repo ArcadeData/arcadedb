@@ -219,7 +219,7 @@ class CypherLabelExpressionVarLengthIssue9117Test {
     assertThat(column("MATCH (n {id: 1}) RETURN [(n)-[:!R*1..3]->(m) | m.id] AS ids", "ids")).containsExactly(List.of(3));
     final List<Object> ids = column("MATCH (n {id: 1}) RETURN [(n)-[:(R|S)&!T*1..3]->(m) | m.id] AS ids", "ids");
     assertThat(ids).hasSize(1);
-    assertThat(ids.getFirst()).asInstanceOf(LIST).containsExactlyInAnyOrder(2, 3, 5);
+    assertThat(ids.get(0)).asInstanceOf(LIST).containsExactlyInAnyOrder(2, 3, 5);
   }
 
   @Test
@@ -227,7 +227,7 @@ class CypherLabelExpressionVarLengthIssue9117Test {
     try (final ResultSet rs = database.query("opencypher", "MATCH (a {id: 1})-[:!R*1..3]->(b) RETURN *")) {
       final List<Result> rows = rs.stream().toList();
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().getPropertyNames()).containsExactlyInAnyOrder("a", "b");
+      assertThat(rows.get(0).getPropertyNames()).containsExactlyInAnyOrder("a", "b");
     }
   }
 

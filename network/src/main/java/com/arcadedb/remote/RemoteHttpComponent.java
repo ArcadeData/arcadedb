@@ -1232,7 +1232,8 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName())
-          && DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey) {
+          // widened to Object: Java 17 rejects a type pattern that matches its expression's own static type
+          && (Object) DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey) {
         // Missing or malformed exceptionArgs (fewer than three parts, a last part that is not a RID) fall through to the
         // generic mapping below: the caller still gets the server's failure, just untyped, instead of an
         // ArrayIndexOutOfBoundsException out of this method (issue #9473)

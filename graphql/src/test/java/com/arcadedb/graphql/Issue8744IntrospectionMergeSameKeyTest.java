@@ -62,7 +62,7 @@ class Issue8744IntrospectionMergeSameKeyTest extends AbstractGraphQLTest {
       final Result record = single(database, "{ __type(name: \"Shelf\") { fields { name } fields { type { name } } } }");
       final List<Result> fields = record.getProperty("fields");
       assertThat(fields).hasSize(1);
-      final Result field = fields.getFirst();
+      final Result field = fields.get(0);
       assertThat(field.getPropertyNames()).containsExactly("name", "type");
       assertThat(field.<String>getProperty("name")).isEqualTo("position");
       assertThat(field.<Result>getProperty("type").<String>getProperty("name")).isEqualTo("Int");

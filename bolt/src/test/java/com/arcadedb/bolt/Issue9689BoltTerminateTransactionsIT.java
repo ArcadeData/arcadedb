@@ -88,10 +88,10 @@ public class Issue9689BoltTerminateTransactionsIT extends BaseBoltServerTest {
           "SHOW TRANSACTIONS YIELD transactionId, currentQuery, username, protocol, connectionId WHERE transactionId = $id",
           Map.of("id", id)).list();
       assertThat(listed).hasSize(1);
-      assertThat(listed.getFirst().get("currentQuery").asString()).isEqualTo(LONG_CYPHER);
-      assertThat(listed.getFirst().get("username").asString()).isEqualTo("root");
-      assertThat(listed.getFirst().get("protocol").asString()).isEqualTo("bolt");
-      assertThat(listed.getFirst().get("connectionId").asString()).startsWith("bolt-");
+      assertThat(listed.get(0).get("currentQuery").asString()).isEqualTo(LONG_CYPHER);
+      assertThat(listed.get(0).get("username").asString()).isEqualTo("root");
+      assertThat(listed.get(0).get("protocol").asString()).isEqualTo("bolt");
+      assertThat(listed.get(0).get("connectionId").asString()).startsWith("bolt-");
 
       // The same statement, in the server's own listing
       final RunningQuery entry = getServer(0).getRunningQueries().get(id);
@@ -154,7 +154,7 @@ public class Issue9689BoltTerminateTransactionsIT extends BaseBoltServerTest {
       // The other user lists only their own SHOW, and is told root's statement does not exist
       final List<Record> visible = other.run("SHOW TRANSACTIONS").list();
       assertThat(visible).hasSize(1);
-      assertThat(visible.getFirst().get("username").asString()).isEqualTo(OTHER);
+      assertThat(visible.get(0).get("username").asString()).isEqualTo(OTHER);
       assertThat(other.run("TERMINATE TRANSACTIONS $id", Map.of("id", id)).single().get("message").asString())
           .isEqualTo("Transaction not found.");
       assertThat(getServer(0).getRunningQueries().get(id).isTerminated()).isFalse();

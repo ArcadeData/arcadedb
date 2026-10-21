@@ -137,7 +137,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
    */
   @Test
   void aCreatedPageIsGivenBackWheneverItsTransactionEnds() throws Exception {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
     database.getSchema().createDocumentType("Issue9694Other");
     database.begin();
     final RID shared = database.newDocument("Issue9694Other").set("v", 0).save().getIdentity();
@@ -186,7 +186,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
    */
   @Test
   void anInsertIsMergedIntoAPageWhoseRecordTableAnotherTransactionFilled() throws Exception {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
     final int maxRecordsInPage = bucket.getMaxRecordsInPage();
     final int prefilled = maxRecordsInPage - 8;
 
@@ -252,7 +252,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     // Not vacuous: both transactions really shared page 0, and the second one took its last slot
     assertThat(firstRid.get().getPosition()).isEqualTo(prefilled);
     assertThat(secondRids).hasSize(7);
-    assertThat(secondRids.getLast().getPosition()).isEqualTo(maxRecordsInPage - 1);
+    assertThat(secondRids.get(secondRids.size() - 1).getPosition()).isEqualTo(maxRecordsInPage - 1);
 
     assertThat(firstFailure.get()).as("the transaction merged into the full record table").isNull();
     database.transaction(() -> {
@@ -286,7 +286,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     assertThat(asyncFailure.get()).isNull();
     database.transaction(() -> assertThat(scanCount()).isEqualTo(total));
 
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
     // ~5 pages hold the records; one partly filled tail page per worker comes on top of that
     assertThat(bucket.getTotalPages()).as("pages used by %s small records", total).isLessThanOrEqualTo(12);
   }
@@ -299,7 +299,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
    */
   @Test
   void aPageTakenOutOfTheFreeSpaceMapIsListedAgainWhenItsReservationsAreReleased() {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
     database.transaction(() -> {
       for (int i = 0; i < 10; i++)
         database.newDocument(TYPE).set("seq", i).save();

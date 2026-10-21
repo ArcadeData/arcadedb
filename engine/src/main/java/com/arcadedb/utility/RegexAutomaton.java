@@ -389,13 +389,16 @@ public final class RegexAutomaton {
   }
 
   private static boolean containsAnchor(final Node node) {
-    return switch (node) {
-      case Anchor anchor -> true;
-      case Symbols symbols -> false;
-      case Sequence sequence -> sequence.items().stream().anyMatch(RegexAutomaton::containsAnchor);
-      case Alternation alternation -> alternation.options().stream().anyMatch(RegexAutomaton::containsAnchor);
-      case Repetition repetition -> containsAnchor(repetition.item());
-    };
+    if (node instanceof Anchor)
+      return true;
+    else if (node instanceof Symbols)
+      return false;
+    else if (node instanceof Sequence sequence)
+      return sequence.items().stream().anyMatch(RegexAutomaton::containsAnchor);
+    else if (node instanceof Alternation alternation)
+      return alternation.options().stream().anyMatch(RegexAutomaton::containsAnchor);
+    // the last permitted subtype of the sealed Node: a null node fails here as the exhaustive switch did
+    return containsAnchor(((Repetition) node).item());
   }
 
   /**
@@ -403,27 +406,24 @@ public final class RegexAutomaton {
    * pattern too large to expand is refused before anything is allocated for it.
    */
   private static long statesOf(final Node node) {
-    return switch (node) {
-      case Symbols symbols -> 2;
-      case Anchor anchor -> 2;
-      case Sequence sequence -> {
-        long total = 1;
-        for (final Node item : sequence.items())
-          total = Math.min(total + statesOf(item), Long.MAX_VALUE / 4);
-        yield total;
-      }
-      case Alternation alternation -> {
-        long total = 1;
-        for (final Node option : alternation.options())
-          total = Math.min(total + statesOf(option) + 1, Long.MAX_VALUE / 4);
-        yield total;
-      }
-      case Repetition repetition -> {
-        final long copies = repetition.max() < 0 ? repetition.min() + 1L : repetition.max();
-        final long item = statesOf(repetition.item()) + 1;
-        yield item > (Long.MAX_VALUE / 4) / Math.max(1, copies) ? Long.MAX_VALUE / 4 : copies * item + 3;
-      }
-    };
+    if (node instanceof Symbols || node instanceof Anchor)
+      return 2;
+    else if (node instanceof Sequence sequence) {
+      long total = 1;
+      for (final Node item : sequence.items())
+        total = Math.min(total + statesOf(item), Long.MAX_VALUE / 4);
+      return total;
+    } else if (node instanceof Alternation alternation) {
+      long total = 1;
+      for (final Node option : alternation.options())
+        total = Math.min(total + statesOf(option) + 1, Long.MAX_VALUE / 4);
+      return total;
+    }
+    // the last permitted subtype of the sealed Node: a null node fails here as the exhaustive switch did
+    final Repetition repetition = (Repetition) node;
+    final long copies = repetition.max() < 0 ? repetition.min() + 1L : repetition.max();
+    final long item = statesOf(repetition.item()) + 1;
+    return item > (Long.MAX_VALUE / 4) / Math.max(1, copies) ? Long.MAX_VALUE / 4 : copies * item + 3;
   }
 
   /**
@@ -575,7 +575,7 @@ public final class RegexAutomaton {
         ++position;
         options.add(parseSequence());
       }
-      return options.size() == 1 ? options.getFirst() : new Alternation(options);
+      return options.size() == 1 ? options.get(0) : new Alternation(options);
     }
 
     private Node parseSequence() {
@@ -586,7 +586,7 @@ public final class RegexAutomaton {
           break;
         items.add(parseQuantified());
       }
-      return items.size() == 1 ? items.getFirst() : new Sequence(items);
+      return items.size() == 1 ? items.get(0) : new Sequence(items);
     }
 
     private Node parseQuantified() {
@@ -876,91 +876,86 @@ public final class RegexAutomaton {
 
     /** @return the entry state and the exit state, an EPSILON state with no move yet */
     private int[] build(final Node node) {
-      return switch (node) {
-        case Symbols symbols -> {
-          final int entry = newState(KIND_SYMBOLS);
-          symbolsLow[entry] = symbols.low();
-          symbolsHigh[entry] = symbols.high();
-          final int exit = newState(KIND_EPSILON);
-          next[entry] = exit;
-          yield new int[] { entry, exit };
+      if (node instanceof Symbols symbols) {
+        final int entry = newState(KIND_SYMBOLS);
+        symbolsLow[entry] = symbols.low();
+        symbolsHigh[entry] = symbols.high();
+        final int exit = newState(KIND_EPSILON);
+        next[entry] = exit;
+        return new int[] { entry, exit };
+      } else if (node instanceof Anchor anchor) {
+        final int entry = newState(anchor.start() ? KIND_START : KIND_END);
+        final int exit = newState(KIND_EPSILON);
+        next[entry] = exit;
+        return new int[] { entry, exit };
+      } else if (node instanceof Sequence sequence) {
+        if (sequence.items().isEmpty()) {
+          final int state = newState(KIND_EPSILON);
+          return new int[] { state, state };
         }
-        case Anchor anchor -> {
-          final int entry = newState(anchor.start() ? KIND_START : KIND_END);
-          final int exit = newState(KIND_EPSILON);
-          next[entry] = exit;
-          yield new int[] { entry, exit };
+        int[] result = null;
+        for (final Node item : sequence.items()) {
+          final int[] fragment = build(item);
+          if (result == null)
+            result = fragment;
+          else {
+            link(result[1], fragment[0]);
+            result[1] = fragment[1];
+          }
         }
-        case Sequence sequence -> {
-          if (sequence.items().isEmpty()) {
-            final int state = newState(KIND_EPSILON);
-            yield new int[] { state, state };
-          }
-          int[] result = null;
-          for (final Node item : sequence.items()) {
-            final int[] fragment = build(item);
-            if (result == null)
-              result = fragment;
-            else {
-              link(result[1], fragment[0]);
-              result[1] = fragment[1];
-            }
-          }
-          yield result;
+        return result;
+      } else if (node instanceof Alternation alternation) {
+        final int exit = newState(KIND_EPSILON);
+        // a chain of binary branches, an EPSILON state having two moves at most
+        int entry = -1;
+        int branch = -1;
+        for (final Node option : alternation.options()) {
+          final int[] fragment = build(option);
+          link(fragment[1], exit);
+          final int split = newState(KIND_EPSILON);
+          link(split, fragment[0]);
+          if (entry < 0)
+            entry = split;
+          else
+            link(branch, split);
+          branch = split;
         }
-        case Alternation alternation -> {
-          final int exit = newState(KIND_EPSILON);
-          // a chain of binary branches, an EPSILON state having two moves at most
-          int entry = -1;
-          int branch = -1;
-          for (final Node option : alternation.options()) {
-            final int[] fragment = build(option);
-            link(fragment[1], exit);
-            final int split = newState(KIND_EPSILON);
-            link(split, fragment[0]);
-            if (entry < 0)
-              entry = split;
-            else
-              link(branch, split);
-            branch = split;
-          }
-          yield new int[] { entry, exit };
+        return new int[] { entry, exit };
+      }
+      // the last permitted subtype of the sealed Node: a null node fails here as the exhaustive switch did
+      final Repetition repetition = (Repetition) node;
+      final int entry = newState(KIND_EPSILON);
+      int exit = entry;
+      for (int i = 0; i < repetition.min(); i++) {
+        final int[] fragment = build(repetition.item());
+        link(exit, fragment[0]);
+        exit = fragment[1];
+      }
+      if (repetition.max() < 0) {
+        // x* : a loop that can be left before or after any turn
+        final int loop = newState(KIND_EPSILON);
+        final int[] fragment = build(repetition.item());
+        final int after = newState(KIND_EPSILON);
+        link(exit, loop);
+        link(loop, fragment[0]);
+        link(loop, after);
+        link(fragment[1], loop);
+        exit = after;
+      } else {
+        // x? x? ... : each optional turn can be skipped straight to the end
+        final int after = newState(KIND_EPSILON);
+        for (int i = repetition.min(); i < repetition.max(); i++) {
+          final int skip = newState(KIND_EPSILON);
+          link(exit, skip);
+          final int[] fragment = build(repetition.item());
+          link(skip, fragment[0]);
+          link(skip, after);
+          exit = fragment[1];
         }
-        case Repetition repetition -> {
-          final int entry = newState(KIND_EPSILON);
-          int exit = entry;
-          for (int i = 0; i < repetition.min(); i++) {
-            final int[] fragment = build(repetition.item());
-            link(exit, fragment[0]);
-            exit = fragment[1];
-          }
-          if (repetition.max() < 0) {
-            // x* : a loop that can be left before or after any turn
-            final int loop = newState(KIND_EPSILON);
-            final int[] fragment = build(repetition.item());
-            final int after = newState(KIND_EPSILON);
-            link(exit, loop);
-            link(loop, fragment[0]);
-            link(loop, after);
-            link(fragment[1], loop);
-            exit = after;
-          } else {
-            // x? x? ... : each optional turn can be skipped straight to the end
-            final int after = newState(KIND_EPSILON);
-            for (int i = repetition.min(); i < repetition.max(); i++) {
-              final int skip = newState(KIND_EPSILON);
-              link(exit, skip);
-              final int[] fragment = build(repetition.item());
-              link(skip, fragment[0]);
-              link(skip, after);
-              exit = fragment[1];
-            }
-            link(exit, after);
-            exit = after;
-          }
-          yield new int[] { entry, exit };
-        }
-      };
+        link(exit, after);
+        exit = after;
+      }
+      return new int[] { entry, exit };
     }
   }
 

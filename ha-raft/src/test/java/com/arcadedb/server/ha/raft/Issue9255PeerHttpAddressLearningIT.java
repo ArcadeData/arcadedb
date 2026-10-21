@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.awaitility.Awaitility;
@@ -125,8 +126,11 @@ class Issue9255PeerHttpAddressLearningIT extends BaseRaftHATest {
         .header(PostCapabilitiesHandler.CALLER_PEER_ID_HEADER, callerPeerId)
         .header(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS_HEADER, "localhost:1")
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(authenticate.apply(builder).build(), HttpResponse.BodyHandlers.ofString());
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 

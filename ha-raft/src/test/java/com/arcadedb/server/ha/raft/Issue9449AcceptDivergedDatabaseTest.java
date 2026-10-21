@@ -133,7 +133,7 @@ class Issue9449AcceptDivergedDatabaseTest {
       assertThat(sm.isResyncInProgress()).isFalse();
 
       assertThat(warnings).hasSize(1);
-      assertThat(warnings.getFirst()).contains(DB_NAME).contains("user 'root' (from 10.0.0.9)").contains("42")
+      assertThat(warnings.get(0)).contains(DB_NAME).contains("user 'root' (from 10.0.0.9)").contains("42")
           .contains(DivergenceCause.APPLY_ERROR.getDescription()).contains("#9449");
     } finally {
       sm.close();

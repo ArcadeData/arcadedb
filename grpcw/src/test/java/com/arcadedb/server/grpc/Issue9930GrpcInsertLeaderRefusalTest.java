@@ -212,7 +212,7 @@ class Issue9930GrpcInsertLeaderRefusalTest extends BaseGraphServerTest {
 
     final List<InsertError> errors = summary.getErrorsList();
     assertThat(errors).as("one whole-chunk entry").hasSize(1);
-    assertNotLeader(errors.getFirst(), -1);
+    assertNotLeader(errors.get(0), -1);
     assertThat(rowCount()).as("the refused chunk was not written").isZero();
   }
 
@@ -225,7 +225,7 @@ class Issue9930GrpcInsertLeaderRefusalTest extends BaseGraphServerTest {
     assertThat(summary.getInserted()).as("the refused commit persisted nothing").isZero();
     final List<InsertError> errors = summary.getErrorsList();
     assertThat(errors).as("one whole-stream entry").hasSize(1);
-    assertNotLeader(errors.getFirst(), -1);
+    assertNotLeader(errors.get(0), -1);
     assertThat(rowCount()).as("the refused stream was not written").isZero();
   }
 

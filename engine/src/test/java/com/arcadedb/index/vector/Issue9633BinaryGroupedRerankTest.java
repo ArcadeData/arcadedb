@@ -63,9 +63,9 @@ class Issue9633BinaryGroupedRerankTest extends TestHelper {
     final List<Result> grouped = query(
         "SELECT expand(`vector.neighbors`('P[embedding]', ?, 3, { groupBy: 'grp', groupSize: 1 }))", query);
 
-    assertThat(plain.getFirst().<Integer>getProperty("pid")).isEqualTo(42);
-    assertThat(grouped.getFirst().<Integer>getProperty("pid")).isEqualTo(42);
-    assertThat(grouped.getFirst().<Float>getProperty("distance")).isCloseTo(0f, within(1e-5f));
+    assertThat(plain.get(0).<Integer>getProperty("pid")).isEqualTo(42);
+    assertThat(grouped.get(0).<Integer>getProperty("pid")).isEqualTo(42);
+    assertThat(grouped.get(0).<Float>getProperty("distance")).isCloseTo(0f, within(1e-5f));
     for (int i = 0; i < plain.size(); i++) {
       assertThat(grouped.get(i).<Integer>getProperty("pid")).isEqualTo(plain.get(i).<Integer>getProperty("pid"));
       assertThat(grouped.get(i).<Float>getProperty("distance")).isCloseTo(plain.get(i).<Float>getProperty("distance"),
@@ -76,7 +76,7 @@ class Issue9633BinaryGroupedRerankTest extends TestHelper {
         "SELECT expand(`vector.neighbors`('P[embedding]', ?, 3, { groupBy: 'grp', groupSize: 1, maxDistance: 0.01 }))",
         query);
     assertThat(bounded).hasSize(1);
-    assertThat(bounded.getFirst().<Integer>getProperty("pid")).isEqualTo(42);
+    assertThat(bounded.get(0).<Integer>getProperty("pid")).isEqualTo(42);
   }
 
   /**
@@ -153,8 +153,8 @@ class Issue9633BinaryGroupedRerankTest extends TestHelper {
     final List<Pair<RID, Float>> restricted = index.findNeighborsFromVectorForGroups(self, Set.of(group), 2, 128, null, groupOf,
         0.01f);
     assertThat(restricted).hasSize(1);
-    assertThat(restricted.getFirst().getFirst()).isEqualTo(ridOfPid(7));
-    assertThat(restricted.getFirst().getSecond()).isCloseTo(0f, within(1e-5f));
+    assertThat(restricted.get(0).getFirst()).isEqualTo(ridOfPid(7));
+    assertThat(restricted.get(0).getSecond()).isCloseTo(0f, within(1e-5f));
   }
 
   /**

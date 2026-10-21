@@ -133,8 +133,8 @@ class Issue9982DescendingOverlappingBlocksTest {
 
       final List<Object[]> latest = store.scanRangeDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, null, 1, null);
       assertThat(latest).hasSize(1);
-      assertThat((long) latest.getFirst()[0]).isEqualTo(T0 + 3_500);
-      assertThat((long) latest.getFirst()[0]).isEqualTo(store.getGlobalMaxTimestamp());
+      assertThat((long) latest.get(0)[0]).isEqualTo(T0 + 3_500);
+      assertThat((long) latest.get(0)[0]).isEqualTo(store.getGlobalMaxTimestamp());
 
       for (final int limit : new int[] { 1, 2, 50, 401, 1_000, 0 })
         assertDescendingMirrorsScanRange(store, Long.MIN_VALUE, Long.MAX_VALUE, limit);

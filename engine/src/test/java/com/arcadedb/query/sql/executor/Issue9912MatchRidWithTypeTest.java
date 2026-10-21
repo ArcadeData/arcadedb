@@ -128,8 +128,8 @@ class Issue9912MatchRidWithTypeTest extends TestHelper {
 
   @Test
   void ridWithABucketOfAnotherTypeAnswersNoRows() {
-    final String smallBucket = database.getSchema().getType("Small").getBuckets(false).getFirst().getName();
-    final String bigBucket = database.getSchema().getType("Big").getBuckets(false).getFirst().getName();
+    final String smallBucket = database.getSchema().getType("Small").getBuckets(false).get(0).getName();
+    final String bigBucket = database.getSchema().getType("Big").getBuckets(false).get(0).getName();
     assertThat(column("MATCH {bucket:" + smallBucket + ", as:x, rid:" + small2 + "} RETURN x.n AS n", "n")).containsExactly(2);
     assertThat(column("MATCH {bucket:" + bigBucket + ", as:x, rid:" + small2 + "} RETURN x.n AS n", "n")).isEmpty();
     assertThat(column("MATCH {bucket:" + bigBucket + ", as:b, rid:" + big7 + "}.in('R'){as:o} RETURN o.n AS n ORDER BY n", "n"))
@@ -153,14 +153,14 @@ class Issue9912MatchRidWithTypeTest extends TestHelper {
   @Test
   void typeAndBucketWithoutRidAreBothApplied() {
     // THE SAME RULE WITHOUT A rid: THE ROOT SCANNED THE TYPE AND DROPPED THE bucket:, WHILE A TRAVERSAL CHECKED BOTH
-    final String smallBucket = database.getSchema().getType("Small").getBuckets(false).getFirst().getName();
-    final String subBucket = database.getSchema().getType("SmallSub").getBuckets(false).getFirst().getName();
+    final String smallBucket = database.getSchema().getType("Small").getBuckets(false).get(0).getName();
+    final String subBucket = database.getSchema().getType("SmallSub").getBuckets(false).get(0).getName();
     assertThat(column("MATCH {type:Small, bucket:" + subBucket + ", as:x} RETURN x.n AS n", "n")).containsExactly(100);
     assertThat(column("MATCH {type:Small, bucket:" + smallBucket + ", as:x} RETURN x.n AS n ORDER BY n", "n"))
         .containsExactly(0, 1, 2, 3, 4);
     assertThat(column("MATCH {type:Small, bucket:" + subBucket + ", as:x}.in('R'){as:o} RETURN o.n AS n ORDER BY n", "n"))
         .containsExactly(0, 1, 2);
-    final String bigBucket = database.getSchema().getType("Big").getBuckets(false).getFirst().getName();
+    final String bigBucket = database.getSchema().getType("Big").getBuckets(false).get(0).getName();
     assertThat(column("MATCH {type:Big, bucket:" + bigBucket + ", as:x}.in('R'){as:o} RETURN count(*) AS c", "c"))
         .containsExactly(3L * BIG_COUNT);
   }

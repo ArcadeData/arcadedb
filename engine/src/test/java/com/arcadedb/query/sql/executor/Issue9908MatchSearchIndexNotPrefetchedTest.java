@@ -164,7 +164,7 @@ class Issue9908MatchSearchIndexNotPrefetchedTest extends TestHelper {
 
   @Test
   void bucketRootedSearchIndexIsStreamed() {
-    final String bucket = database.getSchema().getType("Note").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("Note").getBuckets(false).get(0).getName();
     final String where = "SEARCH_INDEX('Note[a,b]', 'fever') = true";
     final String query = "MATCH {bucket:" + bucket + ", as:n, where:(" + where + ")} RETURN count(*) AS c";
     assertThat(explain(query)).doesNotContain("PREFETCH");

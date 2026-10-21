@@ -28,6 +28,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -148,16 +149,16 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
         assertThat(row.<Float>getProperty("score")).isEqualTo(scores.get(rid));
         paged.add(rid);
       }
-      cursor = paged.getLast();
+      cursor = paged.get(paged.size() - 1);
     }
     assertThat(paged).isEqualTo(byRid);
 
     // Descending, from the end, and a limit past the last match
     final List<RID> descending = rids("SELECT FROM Doc WHERE @rid < :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 5",
-        Map.of("cursor", byRid.getLast()));
-    assertThat(descending).isEqualTo(byRid.reversed().subList(1, 6));
+        Map.of("cursor", byRid.get(byRid.size() - 1)));
+    assertThat(descending).isEqualTo(reversed(byRid).subList(1, 6));
     assertThat(rids("SELECT FROM Doc WHERE @rid < :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 50", Map.of("cursor",
-        byRid.get(9)))).isEqualTo(byRid.subList(0, 9).reversed());
+        byRid.get(9)))).isEqualTo(reversed(byRid.subList(0, 9)));
 
     // SKIP is served out of the same RID order
     final String skipped = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid SKIP 3 LIMIT 5";
@@ -185,7 +186,7 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
 
     final String descending = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 25";
     assertThat(plan(descending, new RID(-1, -1))).contains("ORDER BY @rid DESC (first 25 needed)");
-    assertThat(rids(descending, Map.of("cursor", new RID(-1, -1)))).isEqualTo(all.reversed().subList(0, 25));
+    assertThat(rids(descending, Map.of("cursor", new RID(-1, -1)))).isEqualTo(reversed(all).subList(0, 25));
     assertThat(rids("SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid LIMIT 25", Map.of("cursor",
         all.get(100)))).isEqualTo(all.subList(101, 126));
   }
@@ -204,7 +205,7 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     final String page = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid LIMIT 10";
     assertThat(rids(page, Map.of("cursor", new RID(-1, -1)))).isEqualTo(alive.subList(0, 10));
     assertThat(rids(page.replace("ORDER BY @rid", "ORDER BY @rid DESC"), Map.of("cursor", byRid.get(0))))
-        .isEqualTo(alive.reversed().subList(0, 10));
+        .isEqualTo(reversed(alive).subList(0, 10));
 
     // The dangling index entry and the bucket counter were left wrong on purpose: drop them before the integrity check
     database.getSchema().dropType("Doc");
@@ -322,7 +323,7 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     expectedByRid.sort(Comparator.naturalOrder());
     assertThat(rids(pushed + " ORDER BY @rid LIMIT 7", params)).as(pushed + " ORDER BY @rid LIMIT 7")
         .isEqualTo(expectedByRid.subList(0, Math.min(7, expectedByRid.size())));
-    assertThat(rids(pushed + " ORDER BY @rid DESC", params)).as(pushed + " ORDER BY @rid DESC").isEqualTo(expectedByRid.reversed());
+    assertThat(rids(pushed + " ORDER BY @rid DESC", params)).as(pushed + " ORDER BY @rid DESC").isEqualTo(reversed(expectedByRid));
 
     // The same scores as without the pushdown
     final Map<Object, Float> scores = new HashMap<>();
@@ -399,5 +400,11 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
         rows.add(rs.next());
     }
     return rows;
+  }
+
+  private static <T> List<T> reversed(final List<T> list) {
+    final List<T> copy = new ArrayList<>(list);
+    Collections.reverse(copy);
+    return copy;
   }
 }

@@ -30,3 +30,19 @@ Files that conflict in the 3-way merge take the tag's content and are re-adapted
 compile-first: under `--release 17` every Java 18+ construct is a javac error, except
 two runtime differences found by the tests (Float/Double.toString shortest decimal,
 JDK 19) and a javac 17 crash on a diamond anonymous class inside lambda inference.
+
+## Window 26.10.1 -> 26.10.2 (2026-10)
+
+1151 non-merge commits, worklist 1134 after dropping `chore(deps)`/`build(deps)` and the two
+version commits. Same method as the previous window: take-theirs `cherry-pick -x` (5 came out
+empty), then a reconcile aligned with
+`git merge-tree --write-tree --merge-base=26.10.1 <java17 head> 26.10.2` (80 conflicted files,
+32 of them sources, which take the tag's content and are re-adapted). Kept as on java17:
+`.github/workflows/mvn-release.yml`, the root pom's deploy section (a cherry-pick re-added the
+central-publishing plugin and dropped `maven-deploy-plugin.version`) and the e2e-ha deploy skip.
+Also restored from the tag: `studio-utils.js` / `studio-database.js`, which an earlier window had
+silently reverted (fix 2dbe5ee861). New JDK 17 shapes in this window: a type pattern whose
+expression already has the pattern's static type (`x instanceof T t` with `x` a `T`, legal from
+Java 21), `Thread.ofPlatform()`, `Math.divideExact(long, long)`, `HashMap.newHashMap`,
+`List.reversed()` in tests, and `HttpClient` as a try-with-resources resource in tests (closed
+through `HttpClientLifecycle`).

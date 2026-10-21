@@ -105,15 +105,15 @@ class Issue9689RunningQueryFollowUpsTest {
       // Bob sees only his own: the SHOW he is running
       final List<Result> asBob = cypherAs(registry, "bob", "SHOW TRANSACTIONS", Map.of());
       assertThat(asBob).hasSize(1);
-      assertThat(asBob.getFirst().<String>getProperty("username")).isEqualTo("bob");
+      assertThat(asBob.get(0).<String>getProperty("username")).isEqualTo("bob");
 
       // YIELD reaches the columns a bare SHOW leaves out, and WHERE filters on them
       final List<Result> yielded = cypherAs(registry, "root",
           "SHOW TRANSACTIONS YIELD transactionId, protocol, language, metaData WHERE metaData.tag = 'tag-alice'", Map.of());
       assertThat(yielded).hasSize(1);
-      assertThat(yielded.getFirst().<String>getProperty("transactionId")).isEqualTo(alice.entry.getId());
-      assertThat(yielded.getFirst().<String>getProperty("protocol")).isEqualTo("test");
-      assertThat(yielded.getFirst().<String>getProperty("language")).isEqualTo("opencypher");
+      assertThat(yielded.get(0).<String>getProperty("transactionId")).isEqualTo(alice.entry.getId());
+      assertThat(yielded.get(0).<String>getProperty("protocol")).isEqualTo("test");
+      assertThat(yielded.get(0).<String>getProperty("language")).isEqualTo("opencypher");
 
       // By id, as a literal or a parameter
       assertThat(cypherAs(registry, "root", "SHOW TRANSACTIONS '" + alice.entry.getId() + "'", Map.of())).hasSize(1);
@@ -131,16 +131,16 @@ class Issue9689RunningQueryFollowUpsTest {
       // Another user's statement is not found: its existence is not given away, and it keeps running
       final List<Result> byBob = cypherAs(registry, "bob", "TERMINATE TRANSACTIONS '" + id + "'", Map.of());
       assertThat(byBob).hasSize(1);
-      assertThat(byBob.getFirst().<String>getProperty("message")).isEqualTo("Transaction not found.");
+      assertThat(byBob.get(0).<String>getProperty("message")).isEqualTo("Transaction not found.");
       assertThat(alice.entry.isTerminated()).isFalse();
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       final List<Result> byRoot = cypherAs(registry, "root", "TERMINATE TRANSACTIONS '" + id + "'", Map.of());
       assertThat(byRoot).hasSize(1);
-      assertThat(byRoot.getFirst().getPropertyNames()).containsExactly("transactionId", "username", "message");
-      assertThat(byRoot.getFirst().<String>getProperty("transactionId")).isEqualTo(id);
-      assertThat(byRoot.getFirst().<String>getProperty("username")).isEqualTo("alice");
-      assertThat(byRoot.getFirst().<String>getProperty("message")).isEqualTo("Transaction terminated.");
+      assertThat(byRoot.get(0).getPropertyNames()).containsExactly("transactionId", "username", "message");
+      assertThat(byRoot.get(0).<String>getProperty("transactionId")).isEqualTo(id);
+      assertThat(byRoot.get(0).<String>getProperty("username")).isEqualTo("alice");
+      assertThat(byRoot.get(0).<String>getProperty("message")).isEqualTo("Transaction terminated.");
 
       alice.awaitTerminated();
       watch.assertGaveUpWithin(10_000, "a terminated statement stopping at its next check, against one that runs for 16 s");
@@ -155,7 +155,7 @@ class Issue9689RunningQueryFollowUpsTest {
       final List<Result> rows = cypherAs(registry, "alice", "TERMINATE TRANSACTIONS $ids YIELD transactionId, message",
           Map.of("ids", List.of(alice.entry.getId())));
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<String>getProperty("message")).isEqualTo("Transaction terminated.");
+      assertThat(rows.get(0).<String>getProperty("message")).isEqualTo("Transaction terminated.");
       alice.awaitTerminated();
     }
   }
@@ -170,7 +170,7 @@ class Issue9689RunningQueryFollowUpsTest {
     })) {
       final List<Result> rows = cypherAs(registry, "root", "TERMINATE TRANSACTIONS 'q7-0ff1ce'", Map.of());
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<String>getProperty("message")).isEqualTo("Transaction terminated.");
+      assertThat(rows.get(0).<String>getProperty("message")).isEqualTo("Transaction terminated.");
       forwarded.awaitTerminated();
     }
   }
@@ -184,8 +184,8 @@ class Issue9689RunningQueryFollowUpsTest {
           "SHOW TRANSACTIONS YIELD transactionId AS txId, metaData WHERE metaData.tag = 'stop-me' "
               + "TERMINATE TRANSACTIONS txId YIELD transactionId, message RETURN transactionId, message", Map.of());
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<String>getProperty("transactionId")).isEqualTo(tagged.entry.getId());
-      assertThat(rows.getFirst().<String>getProperty("message")).isEqualTo("Transaction terminated.");
+      assertThat(rows.get(0).<String>getProperty("transactionId")).isEqualTo(tagged.entry.getId());
+      assertThat(rows.get(0).<String>getProperty("message")).isEqualTo("Transaction terminated.");
       tagged.awaitTerminated();
       assertThat(other.entry.isTerminated()).isFalse();
       other.entry.terminate("root");

@@ -66,7 +66,7 @@ class Issue9762FollowerRenameFilesTest {
 
   @Test
   void aFileIsMovedUnderItsNewComponentName() throws Exception {
-    final Bucket bucket = database.getSchema().getType("R").getBuckets(false).getFirst();
+    final Bucket bucket = database.getSchema().getType("R").getBuckets(false).get(0);
     final String newName = "R2" + bucket.getName().substring(1);
 
     ArcadeStateMachine.renameFiles(database, Map.of(bucket.getFileId(), newName));
@@ -78,7 +78,7 @@ class Issue9762FollowerRenameFilesTest {
 
   @Test
   void aReplayOfAnAppliedRenameIsSkipped() throws Exception {
-    final Bucket bucket = database.getSchema().getType("R").getBuckets(false).getFirst();
+    final Bucket bucket = database.getSchema().getType("R").getBuckets(false).get(0);
     final String newName = "R2" + bucket.getName().substring(1);
     ArcadeStateMachine.renameFiles(database, Map.of(bucket.getFileId(), newName));
 
@@ -91,7 +91,7 @@ class Issue9762FollowerRenameFilesTest {
   @Test
   void aReplayAfterAPartialApplyMovesWhatIsLeft() throws Exception {
     database.command("sql", "ALTER TYPE R BUCKET +R_extra");
-    final Bucket first = database.getSchema().getType("R").getBuckets(false).getFirst();
+    final Bucket first = database.getSchema().getType("R").getBuckets(false).get(0);
     final Bucket second = database.getSchema().getBucketByName("R_extra");
     final String firstNewName = "R2" + first.getName().substring(1);
     final Map<Integer, String> renames = new LinkedHashMap<>();

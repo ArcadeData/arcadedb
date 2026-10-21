@@ -178,7 +178,7 @@ class Issue9803PrometheusReadMatchersTest extends BaseGraphServerTest {
     assertThat(response.getResults()).hasSize(1);
 
     final Map<String, List<Sample>> result = new LinkedHashMap<>();
-    for (final TimeSeries ts : response.getResults().getFirst().getTimeSeries()) {
+    for (final TimeSeries ts : response.getResults().get(0).getTimeSeries()) {
       String metric = null;
       final List<String> labels = new ArrayList<>();
       for (final Label label : ts.getLabels())

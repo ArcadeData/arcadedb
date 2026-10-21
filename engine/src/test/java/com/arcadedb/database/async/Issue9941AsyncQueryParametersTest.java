@@ -63,8 +63,8 @@ class Issue9941AsyncQueryParametersTest extends TestHelper {
 
     final List<Result> rows = asyncQuery("sql", "SELECT ? AS a, ? AS b", 1, "x");
     assertThat(rows).hasSize(1);
-    assertThat((Object) rows.getFirst().getProperty("a")).isEqualTo(1);
-    assertThat((Object) rows.getFirst().getProperty("b")).isEqualTo("x");
+    assertThat((Object) rows.get(0).getProperty("a")).isEqualTo(1);
+    assertThat((Object) rows.get(0).getProperty("b")).isEqualTo("x");
   }
 
   @Test
@@ -76,7 +76,7 @@ class Issue9941AsyncQueryParametersTest extends TestHelper {
 
     final List<Result> rows = asyncQuery("sql", "SELECT :k AS a", named);
     assertThat(rows).hasSize(1);
-    assertThat((Object) rows.getFirst().getProperty("a")).isEqualTo(5);
+    assertThat((Object) rows.get(0).getProperty("a")).isEqualTo(5);
   }
 
   @Test
@@ -103,7 +103,7 @@ class Issue9941AsyncQueryParametersTest extends TestHelper {
   void asyncQueryWithoutParametersStillAnswers() {
     final List<Result> rows = asyncQuery("sql", "SELECT count(*) AS total FROM " + TYPE);
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("total")).longValue()).isEqualTo(3L);
+    assertThat(((Number) rows.get(0).getProperty("total")).longValue()).isEqualTo(3L);
   }
 
   private List<Result> asyncQuery(final String language, final String query, final Object... args) {

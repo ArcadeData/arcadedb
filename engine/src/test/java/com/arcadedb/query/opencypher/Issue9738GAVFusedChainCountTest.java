@@ -465,6 +465,6 @@ class Issue9738GAVFusedChainCountTest {
 
   private static long allocatedBytes() {
     final ThreadMXBean bean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    return bean.getThreadAllocatedBytes(Thread.currentThread().threadId());
+    return bean.getThreadAllocatedBytes(Thread.currentThread().getId());
   }
 }

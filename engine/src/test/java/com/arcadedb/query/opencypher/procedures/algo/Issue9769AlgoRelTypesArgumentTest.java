@@ -78,9 +78,9 @@ class Issue9769AlgoRelTypesArgumentTest {
   void mstTakesRelTypesFirst() {
     final List<Result> rows = rows("CALL algo.mst('R', 'w') YIELD source, target, weight, totalWeight RETURN weight, totalWeight");
     assertThat(rows).hasSize(5);
-    assertThat(rows.getFirst().<Double>getProperty("totalWeight")).isCloseTo(6.0, within(1e-9));
+    assertThat(rows.get(0).<Double>getProperty("totalWeight")).isCloseTo(6.0, within(1e-9));
 
-    assertThat(rows("CALL algo.mst(null, 'w') YIELD totalWeight RETURN totalWeight").getFirst().<Double>getProperty("totalWeight"))
+    assertThat(rows("CALL algo.mst(null, 'w') YIELD totalWeight RETURN totalWeight").get(0).<Double>getProperty("totalWeight"))
         .isCloseTo(6.0, within(1e-9));
     assertThat(rows("CALL algo.mst('R') YIELD source RETURN source")).hasSize(5);
     assertThat(rows("CALL algo.mst() YIELD source RETURN source")).hasSize(5);
@@ -102,7 +102,7 @@ class Issue9769AlgoRelTypesArgumentTest {
     final List<Result> rows = rows("CALL algo.apsp('R', 'w') YIELD source, target, distance "
         + "WITH source, target, distance WHERE source.k = 0 AND target.k = 5 RETURN distance");
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<Double>getProperty("distance")).isCloseTo(6.0, within(1e-9));
+    assertThat(rows.get(0).<Double>getProperty("distance")).isCloseTo(6.0, within(1e-9));
 
     assertThatThrownBy(() -> rows("CALL algo.apsp('w', 'R') YIELD distance RETURN distance"))
         .hasStackTraceContaining("algo.apsp(): relationship type 'w' does not exist");
@@ -137,7 +137,7 @@ class Issue9769AlgoRelTypesArgumentTest {
         .hasStackTraceContaining("algo.graphSummary(): node label 'NOPE' does not exist");
     assertThatThrownBy(() -> rows("CALL algo.graphSummary(null, 'R') YIELD nodeCount RETURN nodeCount"))
         .hasStackTraceContaining("'R' is not a node label, it is an edge type");
-    assertThat(rows("CALL algo.graphSummary(null, 'N') YIELD nodeCount RETURN nodeCount").getFirst().<Number>getProperty("nodeCount")
+    assertThat(rows("CALL algo.graphSummary(null, 'N') YIELD nodeCount RETURN nodeCount").get(0).<Number>getProperty("nodeCount")
         .intValue()).isEqualTo(6);
     // The types to skip are names too: a misspelt one would skip nothing
     assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) "

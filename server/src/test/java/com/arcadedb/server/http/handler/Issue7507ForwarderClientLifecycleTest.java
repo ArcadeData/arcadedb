@@ -23,6 +23,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -30,6 +31,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -39,6 +41,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * to release it on the way down.
  */
 class Issue7507ForwarderClientLifecycleTest {
+
+  @BeforeAll
+  static void requireReleasableHttpClient() {
+    // Java 17 cannot release or observe the release of an HttpClient (HttpClientLifecycle is a no-op before Java 21)
+    assumeTrue(HttpClientLifecycle.isSupported(), "HttpClient shutdown/isTerminated need Java 21+");
+  }
 
   private static final String DATABASE_DIRECTORY = "./target/databases-issue7507";
 

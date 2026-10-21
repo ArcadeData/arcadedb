@@ -122,7 +122,7 @@ class Issue9839LightEdgeMetadataTest extends TestHelper {
           "select outE('L1').include('@rid','@type','@cat','@in','@out') as e from V1 where n = 1")) {
         final List<Map<String, Object>> rows = rs.next().getProperty("e");
         assertThat(rows).hasSize(1);
-        final Map<String, Object> row = rows.getFirst();
+        final Map<String, Object> row = rows.get(0);
         assertThat(row.get(Property.RID_PROPERTY)).isEqualTo(readLightEdge().getIdentity().toString());
         assertThat(row.get(Property.TYPE_PROPERTY)).isEqualTo("L1");
         assertThat(row.get(Property.CAT_PROPERTY)).isEqualTo("e");
@@ -138,7 +138,7 @@ class Issue9839LightEdgeMetadataTest extends TestHelper {
       try (final ResultSet rs = database.query("sql", "select outE('L1').exclude('@rid') as e from V1 where n = 1")) {
         final List<Map<String, Object>> rows = rs.next().getProperty("e");
         assertThat(rows).hasSize(1);
-        assertThat(rows.getFirst().keySet()).containsExactlyInAnyOrder(Property.CAT_PROPERTY, Property.TYPE_PROPERTY,
+        assertThat(rows.get(0).keySet()).containsExactlyInAnyOrder(Property.CAT_PROPERTY, Property.TYPE_PROPERTY,
             Property.IN_PROPERTY, Property.OUT_PROPERTY);
       }
     });

@@ -117,10 +117,10 @@ class Issue9506BuildOverPopulatedIndexTest extends TestHelper {
     final LSMVectorIndex index = bucketIndex();
     index.build(null, null);
 
-    database.transaction(() -> rids.getFirst().asDocument().delete());
+    database.transaction(() -> rids.get(0).asDocument().delete());
 
     assertThat(index.countEntries()).isEqualTo(RECORDS - 1);
-    assertThat(index.getVectorIndex().getVectorIdsForRid(rids.getFirst())).isEmpty();
+    assertThat(index.getVectorIndex().getVectorIdsForRid(rids.get(0))).isEmpty();
   }
 
   @Test

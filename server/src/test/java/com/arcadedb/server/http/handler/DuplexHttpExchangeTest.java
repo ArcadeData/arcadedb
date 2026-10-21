@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -60,7 +61,7 @@ class DuplexHttpExchangeTest {
 
   @AfterEach
   void closeClient() {
-    client.shutdownNow();
+    HttpClientLifecycle.shutdownNow(client);
   }
 
   @Test

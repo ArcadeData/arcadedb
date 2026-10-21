@@ -123,7 +123,7 @@ class Issue9833PrometheusTypedTagMatchersTest extends BaseGraphServerTest {
       is.transferTo(baos);
       response = ReadResponse.decode(Snappy.uncompress(baos.toByteArray()));
     }
-    return response.getResults().getFirst().getTimeSeries().stream()
+    return response.getResults().get(0).getTimeSeries().stream()
         .flatMap(ts -> ts.getLabels().stream())
         .filter(label -> "code".equals(label.name()))
         .map(label -> label.value())

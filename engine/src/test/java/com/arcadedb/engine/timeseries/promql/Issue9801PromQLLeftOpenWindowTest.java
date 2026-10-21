@@ -70,7 +70,7 @@ class Issue9801PromQLLeftOpenWindowTest extends TestHelper {
 
     final RangeVector range = (RangeVector) new PromQLEvaluator((DatabaseInternal) database).evaluateInstant(
         new PromQLParser("m1[5m]").parse(), T + LOOKBACK - 1);
-    final RangeSeries series = range.series().getFirst();
+    final RangeSeries series = range.series().get(0);
     // The window itself still starts at t-5m: only which samples fall in it changed
     assertThat(series.rangeStartMs()).isEqualTo(T - 1);
     assertThat(series.rangeEndMs()).isEqualTo(T + LOOKBACK - 1);
@@ -85,7 +85,7 @@ class Issue9801PromQLLeftOpenWindowTest extends TestHelper {
     });
     final List<VectorSample> samples = instant("count_over_time(m1[5m])", T + LOOKBACK);
     assertThat(samples).hasSize(1);
-    assertThat(samples.getFirst().value()).isEqualTo(5.0);
+    assertThat(samples.get(0).value()).isEqualTo(5.0);
   }
 
   @Test

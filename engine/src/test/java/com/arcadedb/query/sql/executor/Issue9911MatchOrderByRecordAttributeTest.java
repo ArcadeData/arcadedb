@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
@@ -86,7 +87,7 @@ class Issue9911MatchOrderByRecordAttributeTest extends TestHelper {
     assertThat(ridColumn("MATCH {type:S, as:s}.out('R'){as:p} RETURN s.@rid AS srid, p.n AS pn ORDER BY s.@rid ASC", "srid"))
         .containsExactlyElementsOf(expected);
     assertThat(ridColumn("MATCH {type:S, as:s}.out('R'){as:p} RETURN s.@rid AS srid, p.n AS pn ORDER BY s.@rid DESC", "srid"))
-        .containsExactlyElementsOf(expected.reversed());
+        .containsExactlyElementsOf(reversed(expected));
   }
 
   @Test
@@ -95,7 +96,7 @@ class Issue9911MatchOrderByRecordAttributeTest extends TestHelper {
     assertThat(ridColumn("MATCH {type:S, as:s}.out('R'){as:p} RETURN s.@rid AS srid, p.n AS pn ORDER BY srid ASC", "srid"))
         .containsExactlyElementsOf(expected);
     assertThat(ridColumn("MATCH {type:S, as:s}.out('R'){as:p} RETURN s.@rid AS srid, p.n AS pn ORDER BY srid DESC", "srid"))
-        .containsExactlyElementsOf(expected.reversed());
+        .containsExactlyElementsOf(reversed(expected));
   }
 
   @Test
@@ -106,7 +107,7 @@ class Issue9911MatchOrderByRecordAttributeTest extends TestHelper {
       while (rs.hasNext())
         actual.add(rs.next().getIdentity().get());
     }
-    assertThat(actual).containsExactlyElementsOf(expected.reversed());
+    assertThat(actual).containsExactlyElementsOf(reversed(expected));
   }
 
   private List<RID> allSRids() {
@@ -127,5 +128,11 @@ class Issue9911MatchOrderByRecordAttributeTest extends TestHelper {
         values.add(rs.next().getProperty(column));
     }
     return values;
+  }
+
+  private static <T> List<T> reversed(final List<T> list) {
+    final List<T> copy = new ArrayList<>(list);
+    Collections.reverse(copy);
+    return copy;
   }
 }

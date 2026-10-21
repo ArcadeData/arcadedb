@@ -96,7 +96,7 @@ public abstract class LiteralParameterizer<S> {
     }
 
     private Map<String, Object> newParameters() {
-      final Map<String, Object> parameters = HashMap.newHashMap(names.length);
+      final Map<String, Object> parameters = new HashMap<>((int) Math.ceil(names.length / 0.75d));
       for (int i = 0; i < names.length; i++)
         parameters.put(names[i], values[i]);
       return parameters;

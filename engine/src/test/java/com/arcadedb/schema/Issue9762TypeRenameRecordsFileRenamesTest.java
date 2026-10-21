@@ -94,7 +94,7 @@ class Issue9762TypeRenameRecordsFileRenamesTest extends TestHelper {
   void anotherTypesFilesAreNeverRecorded() {
     database.command("sql", "CREATE DOCUMENT TYPE A");
     database.command("sql", "CREATE DOCUMENT TYPE B");
-    final int bucketOfB = database.getSchema().getType("B").getBuckets(false).getFirst().getFileId();
+    final int bucketOfB = database.getSchema().getType("B").getBuckets(false).get(0).getFileId();
 
     final Map<Integer, String> recorded = renameRecording("A", "A2");
 

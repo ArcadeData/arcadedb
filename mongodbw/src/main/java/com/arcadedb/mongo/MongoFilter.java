@@ -251,7 +251,7 @@ final class MongoFilter {
     }
     if (conjuncts.isEmpty())
       return null;
-    return conjuncts.size() == 1 && conjuncts.getFirst() instanceof Document single ? single : new Document("$and", conjuncts);
+    return conjuncts.size() == 1 && conjuncts.get(0) instanceof Document single ? single : new Document("$and", conjuncts);
   }
 
   /**
@@ -261,7 +261,7 @@ final class MongoFilter {
    */
   private static boolean leadsAnIndex(final DocumentType type, final String field) {
     for (final TypeIndex index : TypeIndex.filterReadyForQueries(type.getAllIndexes(true)))
-      if (field.equals(index.getPropertyNames().getFirst()))
+      if (field.equals(index.getPropertyNames().get(0)))
         return true;
     return false;
   }

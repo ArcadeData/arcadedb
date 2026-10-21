@@ -78,7 +78,7 @@ class Issue9637ExternalBucketInvolvedTest extends TestHelper {
   void reclaimedExternalBucketIsNoLongerInvolved() {
     final DocumentType type = database.getSchema().createDocumentType("Doc", 1);
     type.createProperty("blob", Type.STRING).setExternal(true);
-    final int extFileId = externalBucketIds((LocalDocumentType) type).getFirst();
+    final int extFileId = externalBucketIds((LocalDocumentType) type).get(0);
 
     type.getProperty("blob").setExternal(false);
     ((LocalDocumentType) type).reclaimEmptyExternalBuckets();
@@ -127,7 +127,7 @@ class Issue9637ExternalBucketInvolvedTest extends TestHelper {
   void explicitBucketLockCoversTheExternalBucket() {
     final DocumentType type = database.getSchema().createDocumentType("Doc", 1);
     type.createProperty("blob", Type.STRING).setExternal(true);
-    final String bucketName = type.getBuckets(false).getFirst().getName();
+    final String bucketName = type.getBuckets(false).get(0).getName();
 
     final RID[] rid = new RID[1];
     database.transaction(() -> {

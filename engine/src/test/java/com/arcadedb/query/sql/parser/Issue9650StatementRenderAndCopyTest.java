@@ -95,7 +95,7 @@ class Issue9650StatementRenderAndCopyTest extends AbstractParserTest {
   @Test
   void clearingAnAbsentMatchFilterAddsNothing() {
     final MatchStatement stmt = (MatchStatement) parse("MATCH {type: 'V', as: foo} RETURN foo");
-    final MatchFilter filter = stmt.getMatchExpressions().getFirst().getOrigin();
+    final MatchFilter filter = stmt.getMatchExpressions().get(0).getOrigin();
     final String before = filter.toString();
 
     filter.setFilter(null);

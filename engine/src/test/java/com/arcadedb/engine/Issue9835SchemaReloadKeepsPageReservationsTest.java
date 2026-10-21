@@ -85,7 +85,7 @@ class Issue9835SchemaReloadKeepsPageReservationsTest extends TestHelper {
     writer.commitAndJoin();
 
     final int maxRecordsInPage = after.getMaxRecordsInPage();
-    final long writerPage = writer.rids.getFirst().getPosition() / maxRecordsInPage;
+    final long writerPage = writer.rids.get(0).getPosition() / maxRecordsInPage;
     for (final RID rid : laterRids) {
       assertThat(rid).as("a later transaction was given the writer's RID").isNotIn(writer.rids);
       assertThat(rid.getPosition() / maxRecordsInPage).as("record %s must not be on the writer's page", rid).isNotEqualTo(writerPage);
@@ -115,7 +115,7 @@ class Issue9835SchemaReloadKeepsPageReservationsTest extends TestHelper {
 
     // Not vacuous: the writer went into the committed page 0, not into a page of its own
     assertThat(before.getInFlightNewPagesForTesting()).isZero();
-    assertThat(writer.rids.getFirst().getPosition() / before.getMaxRecordsInPage()).isZero();
+    assertThat(writer.rids.get(0).getPosition() / before.getMaxRecordsInPage()).isZero();
 
     reloadSchema();
     assertThat(bucket()).as("the full load must have replaced the bucket instance").isNotSameAs(before);
@@ -153,7 +153,7 @@ class Issue9835SchemaReloadKeepsPageReservationsTest extends TestHelper {
   }
 
   private LocalBucket bucket() {
-    return (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    return (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
   }
 
   private void reloadSchema() throws Exception {

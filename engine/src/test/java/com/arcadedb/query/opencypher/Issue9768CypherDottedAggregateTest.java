@@ -93,11 +93,11 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
     load();
     final List<Result> sum = run("MATCH (d:D) RETURN vector.sum(d.v) AS s");
     assertThat(sum).hasSize(1);
-    assertThat(vector(sum.getFirst(), "s")).containsExactly(6f, 8f);
+    assertThat(vector(sum.get(0), "s")).containsExactly(6f, 8f);
 
-    assertThat(vector(run("MATCH (d:D) RETURN vector.avg(d.v) AS s").getFirst(), "s")).containsExactly(1.5f, 2f);
-    assertThat(vector(run("MATCH (d:D) RETURN vector.min(d.v) AS s").getFirst(), "s")).containsExactly(1f, 1f);
-    assertThat(vector(run("MATCH (d:D) RETURN vector.max(d.v) AS s").getFirst(), "s")).containsExactly(2f, 3f);
+    assertThat(vector(run("MATCH (d:D) RETURN vector.avg(d.v) AS s").get(0), "s")).containsExactly(1.5f, 2f);
+    assertThat(vector(run("MATCH (d:D) RETURN vector.min(d.v) AS s").get(0), "s")).containsExactly(1f, 1f);
+    assertThat(vector(run("MATCH (d:D) RETURN vector.max(d.v) AS s").get(0), "s")).containsExactly(2f, 3f);
   }
 
   @Test
@@ -105,8 +105,8 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
     load();
     final List<Result> together = run("MATCH (d:D) RETURN vector.sum(d.v) AS s, count(d) AS c");
     assertThat(together).hasSize(1);
-    assertThat(together.getFirst().<Long>getProperty("c")).isEqualTo(4L);
-    assertThat(vector(together.getFirst(), "s")).containsExactly(6f, 8f);
+    assertThat(together.get(0).<Long>getProperty("c")).isEqualTo(4L);
+    assertThat(vector(together.get(0), "s")).containsExactly(6f, 8f);
 
     final List<Result> grouped = run("MATCH (d:D) RETURN d.g AS g, vector.sum(d.v) AS s ORDER BY g");
     assertThat(grouped).hasSize(2);
@@ -119,11 +119,11 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
     load();
     final List<Result> rows = run("MATCH (d:D) RETURN sql.vector.sum(d.v) AS s");
     assertThat(rows).hasSize(1);
-    assertThat(vector(rows.getFirst(), "s")).containsExactly(6f, 8f);
+    assertThat(vector(rows.get(0), "s")).containsExactly(6f, 8f);
 
     final List<Result> sum = run("MATCH (d:D) RETURN sql.sum(d.n) AS s");
     assertThat(sum).hasSize(1);
-    assertThat(((Number) sum.getFirst().getProperty("s")).longValue()).isEqualTo(10L);
+    assertThat(((Number) sum.get(0).getProperty("s")).longValue()).isEqualTo(10L);
   }
 
   @Test
@@ -138,7 +138,7 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
     // last() folds the rows in SQL; in Cypher it is the last element of a list
     final List<Result> rows = run("MATCH (d:D) RETURN last([1, 2, 3]) AS l");
     assertThat(rows).hasSize(4);
-    assertThat(((Number) rows.getFirst().getProperty("l")).intValue()).isEqualTo(3);
+    assertThat(((Number) rows.get(0).getProperty("l")).intValue()).isEqualTo(3);
   }
 
   /** A function that validates its arguments when it is configured, which the planner's probe configuration must survive. */

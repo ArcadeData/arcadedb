@@ -229,7 +229,7 @@ public final class CypherSchemaCommands {
   private static String typedPropertyType(final DocumentType type, final CypherConstraintRegistry.Entry entry) {
     if (entry.propertyType() != null)
       return entry.propertyType();
-    final Property property = entry.properties().isEmpty() ? null : type.getPropertyIfExists(entry.properties().getFirst());
+    final Property property = entry.properties().isEmpty() ? null : type.getPropertyIfExists(entry.properties().get(0));
     return property != null ? cypherTypeOf(property.getType(), property.getOfType()) : null;
   }
 

@@ -96,8 +96,8 @@ class Issue9988VariadicMethodNullArgumentTest extends TestHelper {
       outcomes.add(outcome(method, f, context, f.a(), f.b(), null));
 
       assertThat(outcomes).as("%s(): leading, middle and trailing null", entry.getKey())
-          .allSatisfy(o -> assertThat(o).isEqualTo(outcomes.getFirst()));
-      assertThat(outcomes.getFirst()).as("%s(): a leading null must not discard the whole call", entry.getKey())
+          .allSatisfy(o -> assertThat(o).isEqualTo(outcomes.get(0)));
+      assertThat(outcomes.get(0)).as("%s(): a leading null must not discard the whole call", entry.getKey())
           .isNotNull();
     }
   }

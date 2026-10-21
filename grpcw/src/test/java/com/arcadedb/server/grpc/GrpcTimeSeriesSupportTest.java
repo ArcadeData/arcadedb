@@ -127,7 +127,7 @@ class GrpcTimeSeriesSupportTest {
 
     final TimeSeriesPoint unsetValue = point().putTags("host", GrpcValue.getDefaultInstance()).build();
     assertThat(GrpcTimeSeriesSupport.toSamples(List.of(unsetValue), "weather",
-        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS).getFirst().getTags()).isEmpty();
+        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS).get(0).getTags()).isEmpty();
   }
 
   @Test

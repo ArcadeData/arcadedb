@@ -106,8 +106,8 @@ class Issue9743PromQLSetOperatorWithScalarTest extends TestHelper {
     for (final String promql : new String[] { "m9743 and m9743", "m9743 or m9743" }) {
       final List<VectorSample> samples = ((InstantVector) instant(promql)).samples();
       assertThat(samples).as(promql).hasSize(1);
-      assertThat(samples.getFirst().value()).as(promql).isEqualTo(5.5);
-      assertThat(samples.getFirst().labels()).as(promql).containsEntry("__name__", "m9743").containsEntry("host", "h1");
+      assertThat(samples.get(0).value()).as(promql).isEqualTo(5.5);
+      assertThat(samples.get(0).labels()).as(promql).containsEntry("__name__", "m9743").containsEntry("host", "h1");
     }
     assertThat(((InstantVector) instant("m9743 unless m9743")).samples()).isEmpty();
   }

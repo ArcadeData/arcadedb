@@ -1667,7 +1667,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (results.size() >= need) {
           trimToDescendingLimit(results, need);
-          cutoffTs = (long) results.getLast()[0];
+          cutoffTs = (long) results.get(results.size() - 1)[0];
         }
       }
 
@@ -1792,7 +1792,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (results.size() >= need) {
           trimToAscendingLimit(results, need);
-          cutoffTs = (long) results.getLast()[0];
+          cutoffTs = (long) results.get(results.size() - 1)[0];
         }
       }
 
@@ -1809,7 +1809,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   static void trimToAscendingLimit(final List<Object[]> rows, final int need) {
     rows.sort(Comparator.comparingLong(row -> (long) row[0]));
     while (rows.size() > need)
-      rows.removeLast();
+      rows.remove(rows.size() - 1);
   }
 
   /**
@@ -1818,7 +1818,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   static void trimToDescendingLimit(final List<Object[]> rows, final int need) {
     rows.sort((a, b) -> Long.compare((long) b[0], (long) a[0]));
     while (rows.size() > need)
-      rows.removeLast();
+      rows.remove(rows.size() - 1);
   }
 
   /**
@@ -3237,7 +3237,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final BlockEntry merged = writeNewBlockToFile(tempFile, total, ts[0], ts[total - 1], compressedCols, stats.build(), colCount,
         tagDistinctValues, newBlockId());
-    merged.downsampledGranularityMs = run.getFirst().downsampledGranularityMs;
+    merged.downsampledGranularityMs = run.get(0).downsampledGranularityMs;
     target.add(merged);
     recordMergeLink(links, merged, run, order);
     return true;
@@ -5012,7 +5012,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // The image holds nothing, so nothing this node held survives it - and "removed" is the honest word for
         // every one of those blocks, not "replaced".
         ? Long.MAX_VALUE
-        : Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
+        : Math.max(retentionRemovedBelowTs, blockDirectory.get(0).minTimestamp);
   }
 
   /**

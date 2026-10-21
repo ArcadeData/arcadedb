@@ -91,7 +91,7 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
     final MultiColumnAggregationResult result = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
         List.of(new MultiColumnAggregationRequest(2, AggregationType.MIN, "mn"), new MultiColumnAggregationRequest(2, AggregationType.MAX, "mx"),
             new MultiColumnAggregationRequest(2, AggregationType.SUM, "s")), 0L, 0L, null, null, metrics, 0);
-    final long bucket = result.getBucketTimestamps().getFirst();
+    final long bucket = result.getBucketTimestamps().get(0);
     assertThat(result.getExactValue(bucket, 0)).isEqualTo(BASE);
     assertThat(result.getExactValue(bucket, 1)).isEqualTo(BASE + 2999);
     assertThat(result.getExactValue(bucket, 2)).isEqualTo(
@@ -143,7 +143,7 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
   void anIntegralFieldConditionIsJudgedOnTheExactStatistics() {
     final ColumnDefinition lng = new ColumnDefinition("l", Type.LONG, ColumnDefinition.ColumnRole.FIELD);
     final long twoPow53 = 1L << 53;
-    final FieldFilter.Condition above = FieldFilter.range(0, lng, twoPow53 + 1, true, null, false).getConditions().getFirst();
+    final FieldFilter.Condition above = FieldFilter.range(0, lng, twoPow53 + 1, true, null, false).getConditions().get(0);
     // a block holding exactly 2^53: its double statistics could not rule out 2^53 + 1, the exact ones can
     assertThat(FieldFilter.blockMatchExact(above, twoPow53, twoPow53, 10, 10)).isEqualTo(FieldFilter.BlockMatch.NONE);
     assertThat(FieldFilter.blockMatchExact(above, twoPow53 + 1, twoPow53 + 5, 10, 10)).isEqualTo(FieldFilter.BlockMatch.ALL);
@@ -246,7 +246,7 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
         expected.add("[bg=" + (BASE + sum / count) + "(Long), host=h" + h + "(String)]");
       }
     assertThat(rows("SELECT host, bg FROM T ORDER BY ts, host")).isEqualTo(expected);
-    assertThat(expected.getFirst()).isEqualTo("[bg=" + (BASE + 13) + "(Long), host=h0(String)]");
+    assertThat(expected.get(0)).isEqualTo("[bg=" + (BASE + 13) + "(Long), host=h0(String)]");
   }
 
   private interface ValueOf {
@@ -305,7 +305,7 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
   private String row(final String sql) {
     final List<String> rows = rows(sql);
     assertThat(rows).hasSize(1);
-    return rows.getFirst();
+    return rows.get(0);
   }
 
   private List<String> rows(final String sql) {

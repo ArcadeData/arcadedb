@@ -4203,6 +4203,127 @@
       ]
     },
     {
+      "type": "org.tartarus.snowball.ext.LovinsStemmer",
+      "methods": [
+        {
+          "name": "r_A",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_AA",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_B",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_BB",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_C",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_CC",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_D",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_E",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_F",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_G",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_H",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_I",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_J",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_K",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_L",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_M",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_N",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_O",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_P",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_Q",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_R",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_S",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_T",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_U",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_V",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_W",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_X",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_Y",
+          "parameterTypes": []
+        },
+        {
+          "name": "r_Z",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "org.xnio.Connection"
     },
     {

@@ -331,7 +331,7 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
 
     final List<Map<String, Object>> stored = rows("SELECT seq, a, b, c, d, e, f, g FROM W ORDER BY seq");
     assertThat(stored).hasSize(2);
-    final Map<String, Object> first = stored.getFirst();
+    final Map<String, Object> first = stored.get(0);
     assertThat(first.get("a")).isInstanceOf(Integer.class).isEqualTo(5);
     assertThat(first.get("b")).isInstanceOf(Long.class).isEqualTo(5L);
     assertThat(first.get("c")).isInstanceOf(Double.class).isEqualTo(2.5D);

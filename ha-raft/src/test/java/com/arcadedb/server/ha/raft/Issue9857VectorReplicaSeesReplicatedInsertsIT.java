@@ -81,7 +81,7 @@ class Issue9857VectorReplicaSeesReplicatedInsertsIT extends BaseRaftHATest {
       for (int k = 0; k < count; k++) {
         final int record = from + k;
         final RID found = withResyncRetry(server,
-            db -> vectorIndex((DatabaseInternal) db).findNeighborsFromVector(embedding(record), 1, 64).getFirst()
+            db -> vectorIndex((DatabaseInternal) db).findNeighborsFromVector(embedding(record), 1, 64).get(0)
                 .getFirst());
         assertThat(found).as("server %d must find record %d by its own embedding", server, record)
             .isEqualTo(expected[k]);

@@ -242,8 +242,8 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
             final int id = (offset * 13 + i) % 100;
             final List<Result> found = query(
                 "MATCH (p:Person {id: " + id + "}) WHERE p.name = 'p" + id + "' RETURN p.name AS n, p.id + 1000 AS k");
-            if (found.size() != 1 || !("p" + id).equals(found.getFirst().getProperty("n"))
-                || ((Number) found.getFirst().getProperty("k")).longValue() != id + 1000)
+            if (found.size() != 1 || !("p" + id).equals(found.get(0).getProperty("n"))
+                || ((Number) found.get(0).getProperty("k")).longValue() != id + 1000)
               failures.add("id " + id + " answered " + found);
           }
         } catch (final Exception e) {
@@ -267,12 +267,12 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
     for (int id = 0; id < 50; id++) {
       final List<Result> rows = query("MATCH (p:Person) WHERE p.id = " + id + " RETURN p.name AS name");
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<String>getProperty("name")).isEqualTo("p" + id);
+      assertThat(rows.get(0).<String>getProperty("name")).isEqualTo("p" + id);
     }
     for (int id = 0; id < 50; id++) {
       final List<Result> rows = query("MATCH (p:Person {id: " + id + "}) RETURN p.name AS name");
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<String>getProperty("name")).isEqualTo("p" + id);
+      assertThat(rows.get(0).<String>getProperty("name")).isEqualTo("p" + id);
     }
 
     // one template per query shape, not one entry per value; the first text of each shape ran as written
@@ -319,14 +319,14 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
 
   @Test
   void stringsDoublesNegativesAndEscapesBindTheValueTheParserWouldHaveBuilt() {
-    assertThat(query("MATCH (p:Person) WHERE p.name = 'p42' RETURN p.id AS id").getFirst().<Integer>getProperty("id")).isEqualTo(42);
-    assertThat(query("MATCH (p:Person) WHERE p.name = \"p43\" RETURN p.id AS id").getFirst().<Integer>getProperty("id")).isEqualTo(43);
-    assertThat(query("MATCH (p:Person) WHERE p.score = 15.0 RETURN p.id AS id").getFirst().<Integer>getProperty("id")).isEqualTo(10);
-    assertThat(query("MATCH (p:Person) WHERE p.id > -5 AND p.id < 2 RETURN count(*) AS c").getFirst().<Long>getProperty("c"))
+    assertThat(query("MATCH (p:Person) WHERE p.name = 'p42' RETURN p.id AS id").get(0).<Integer>getProperty("id")).isEqualTo(42);
+    assertThat(query("MATCH (p:Person) WHERE p.name = \"p43\" RETURN p.id AS id").get(0).<Integer>getProperty("id")).isEqualTo(43);
+    assertThat(query("MATCH (p:Person) WHERE p.score = 15.0 RETURN p.id AS id").get(0).<Integer>getProperty("id")).isEqualTo(10);
+    assertThat(query("MATCH (p:Person) WHERE p.id > -5 AND p.id < 2 RETURN count(*) AS c").get(0).<Long>getProperty("c"))
         .isEqualTo(2L);
-    assertThat(query("MATCH (p:Person) WHERE p.id = 0x1F RETURN p.name AS n").getFirst().<String>getProperty("n")).isEqualTo("p31");
+    assertThat(query("MATCH (p:Person) WHERE p.id = 0x1F RETURN p.name AS n").get(0).<String>getProperty("n")).isEqualTo("p31");
 
-    assertThat(query("RETURN 'it\\'s' AS s, -9223372036854775808 AS m, 1.5e3 AS d, -2.5 AS nd").getFirst().toMap())
+    assertThat(query("RETURN 'it\\'s' AS s, -9223372036854775808 AS m, 1.5e3 AS d, -2.5 AS nd").get(0).toMap())
         .containsEntry("s", "it's").containsEntry("m", Long.MIN_VALUE).containsEntry("d", 1500.0D).containsEntry("nd", -2.5D);
 
     // the extracted values keep the types the parser gives the literals
@@ -336,16 +336,16 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
 
   @Test
   void anUnaliasedProjectionKeepsItsLiteralSoTheColumnKeepsItsName() {
-    final Result row = query("MATCH (p:Person {id: 5}) RETURN 1, p.id + 10, 'a' + p.name").getFirst();
+    final Result row = query("MATCH (p:Person {id: 5}) RETURN 1, p.id + 10, 'a' + p.name").get(0);
     assertThat(row.getPropertyNames()).containsExactlyInAnyOrder("1", "p.id + 10", "'a' + p.name");
     assertThat(row.<Long>getProperty("p.id + 10")).isEqualTo(15L);
 
-    final Result other = query("MATCH (p:Person {id: 6}) RETURN 2, p.id + 20").getFirst();
+    final Result other = query("MATCH (p:Person {id: 6}) RETURN 2, p.id + 20").get(0);
     assertThat(other.getPropertyNames()).containsExactlyInAnyOrder("2", "p.id + 20");
     assertThat(other.<Long>getProperty("p.id + 20")).isEqualTo(26L);
 
     // WITH follows the same rule
-    final Result with = query("MATCH (p:Person {id: 7}) WITH p.id * 3 RETURN *").getFirst();
+    final Result with = query("MATCH (p:Person {id: 7}) WITH p.id * 3 RETURN *").get(0);
     assertThat(with.getPropertyNames()).containsExactly("p.id * 3");
   }
 
@@ -380,13 +380,13 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
       database.command("opencypher", "CREATE (:Typed {n: 6, big: 8888888888, list: [3, 4], name: 'b'})");
     });
 
-    final Result first = query("MATCH (t:Typed {n: 5}) RETURN t.n AS n, t.big AS big, t.list AS list, t.name AS name").getFirst();
+    final Result first = query("MATCH (t:Typed {n: 5}) RETURN t.n AS n, t.big AS big, t.list AS list, t.name AS name").get(0);
     assertThat(first.<Object>getProperty("n")).isInstanceOf(Integer.class).isEqualTo(5);
     assertThat(first.<Object>getProperty("big")).isInstanceOf(Long.class).isEqualTo(9999999999L);
     assertThat(first.<List<Object>>getProperty("list")).containsExactly(1L, 2L);
     assertThat(first.<String>getProperty("name")).isEqualTo("a");
 
-    final Result second = query("MATCH (t:Typed {n: 6}) RETURN t.n AS n, t.list AS list").getFirst();
+    final Result second = query("MATCH (t:Typed {n: 6}) RETURN t.n AS n, t.list AS list").get(0);
     assertThat(second.<Object>getProperty("n")).isInstanceOf(Integer.class).isEqualTo(6);
     assertThat(second.<List<Object>>getProperty("list")).containsExactly(3L, 4L);
 
@@ -395,7 +395,7 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
       database.command("opencypher", "INSERT (:Typed {n: 7, big: 7777777777})");
       database.command("opencypher", "INSERT (:Typed {n: 8, big: 6666666666})");
     });
-    final Result inserted = query("MATCH (t:Typed {n: 8}) RETURN t.n AS n, t.big AS big").getFirst();
+    final Result inserted = query("MATCH (t:Typed {n: 8}) RETURN t.n AS n, t.big AS big").get(0);
     assertThat(inserted.<Object>getProperty("n")).isInstanceOf(Integer.class).isEqualTo(8);
     assertThat(inserted.<Object>getProperty("big")).isInstanceOf(Long.class).isEqualTo(6666666666L);
   }
@@ -446,7 +446,7 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
       final Lookup<ParsedQuery> lookup = lookup("MATCH (p:Person) WHERE p.id = 3 RETURN p.name AS name");
       assertThat(lookup.parameters()).isNull();
       assertThat(lookup.cacheKey()).isEqualTo("MATCH (p:Person) WHERE p.id = 3 RETURN p.name AS name");
-      assertThat(query("MATCH (p:Person) WHERE p.id = 3 RETURN p.name AS name").getFirst().<String>getProperty("name"))
+      assertThat(query("MATCH (p:Person) WHERE p.id = 3 RETURN p.name AS name").get(0).<String>getProperty("name"))
           .isEqualTo("p3");
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION, true);
@@ -480,7 +480,7 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
 
   @Test
   void roundKeepsItsRoundingMode() {
-    assertThat(query("RETURN round(2.5, 0, 'HALF_UP') AS r").getFirst().<Double>getProperty("r")).isEqualTo(3.0D);
+    assertThat(query("RETURN round(2.5, 0, 'HALF_UP') AS r").get(0).<Double>getProperty("r")).isEqualTo(3.0D);
     assertThatThrownBy(() -> query("RETURN round(2.5, 0, 'NOT_A_MODE') AS r")).isNotNull();
   }
 
@@ -493,7 +493,7 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
         database.command("opencypher", "CREATE (e:Event {seq: " + i + ", label: 'e" + i + "'}) SET e.weight = " + (i * 0.5D));
     });
     assertThat(db().getCypherStatementCache().size()).isEqualTo(1);
-    final Result row = query("MATCH (e:Event {seq: 7}) RETURN e.label AS l, e.weight AS w, e.seq AS s").getFirst();
+    final Result row = query("MATCH (e:Event {seq: 7}) RETURN e.label AS l, e.weight AS w, e.seq AS s").get(0);
     assertThat(row.<String>getProperty("l")).isEqualTo("e7");
     assertThat(row.<Double>getProperty("w")).isEqualTo(3.5D);
     assertThat(row.<Object>getProperty("s")).isInstanceOf(Integer.class);

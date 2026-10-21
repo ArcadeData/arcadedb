@@ -212,33 +212,27 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final CypherShowSchemaStatement.ConstraintFilter filter;
     Cypher25Parser.ShowConstraintEntityContext entity = null;
     final Cypher25Parser.ShowConstraintsEndContext end;
-    switch (ctx) {
-    case Cypher25Parser.ShowConstraintUniqueContext unique -> {
+    if (ctx instanceof Cypher25Parser.ShowConstraintUniqueContext unique) {
       filter = CypherShowSchemaStatement.ConstraintFilter.UNIQUENESS;
       entity = unique.showConstraintEntity();
       end = unique.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintExistContext exist -> {
+    } else if (ctx instanceof Cypher25Parser.ShowConstraintExistContext exist) {
       filter = CypherShowSchemaStatement.ConstraintFilter.EXISTENCE;
       entity = exist.showConstraintEntity();
       end = exist.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintKeyContext key -> {
+    } else if (ctx instanceof Cypher25Parser.ShowConstraintKeyContext key) {
       filter = CypherShowSchemaStatement.ConstraintFilter.KEY;
       entity = key.showConstraintEntity();
       end = key.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintPropTypeContext propType -> {
+    } else if (ctx instanceof Cypher25Parser.ShowConstraintPropTypeContext propType) {
       filter = CypherShowSchemaStatement.ConstraintFilter.PROPERTY_TYPE;
       entity = propType.showConstraintEntity();
       end = propType.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintAllContext all -> {
+    } else if (ctx instanceof Cypher25Parser.ShowConstraintAllContext all) {
       filter = CypherShowSchemaStatement.ConstraintFilter.ALL;
       end = all.showConstraintsEnd();
-    }
-    default -> throw new CommandParsingException("Unsupported SHOW CONSTRAINTS form: " + ctx.getText());
-    }
+    } else
+      throw new CommandParsingException("Unsupported SHOW CONSTRAINTS form: " + ctx.getText());
     if (end.composableCommandClauses() != null)
       throw new CommandParsingException("SHOW CONSTRAINTS cannot be followed by another command");
 
@@ -574,7 +568,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return type;
     if (suffixes.size() > 1 || type.isList())
       throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
-    return new CypherTypeName(CypherTypeName.LIST, type.name(), isNonNull(suffixes.getFirst().typeNullability()), type.nonNull());
+    return new CypherTypeName(CypherTypeName.LIST, type.name(), isNonNull(suffixes.get(0).typeNullability()), type.nonNull());
   }
 
   private static boolean isNonNull(final Cypher25Parser.TypeNullabilityContext nullability) {
@@ -1981,7 +1975,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         // A node pattern written right after an unquantified parenthesized path is that path's last node (GQL
         // juxtaposition): the two are one node, not two consecutive ones
         if (i > 0 && isUnquantifiedParenthesizedPath(ctx.getChild(i - 1)))
-          nodes.set(nodes.size() - 1, mergeJuxtaposedNodes(nodes.getLast(), node));
+          nodes.set(nodes.size() - 1, mergeJuxtaposedNodes(nodes.get(nodes.size() - 1), node));
         else
           nodes.add(node);
       } else if (child instanceof Cypher25Parser.RelationshipPatternContext) {
@@ -2141,9 +2135,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     if (outerNodes.size() == outerRels.size() + 1)
-      outerNodes.set(outerNodes.size() - 1, mergeJuxtaposedNodes(outerNodes.getLast(), innerNodes.getFirst()));
+      outerNodes.set(outerNodes.size() - 1, mergeJuxtaposedNodes(outerNodes.get(outerNodes.size() - 1), innerNodes.get(0)));
     else
-      outerNodes.add(innerNodes.getFirst());
+      outerNodes.add(innerNodes.get(0));
     for (int i = 0; i < inner.getRelationshipCount(); i++) {
       outerRels.add(inner.getRelationship(i));
       outerNodes.add(innerNodes.get(i + 1));

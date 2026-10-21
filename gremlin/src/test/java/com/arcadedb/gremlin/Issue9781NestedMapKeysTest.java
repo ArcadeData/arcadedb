@@ -83,7 +83,7 @@ class Issue9781NestedMapKeysTest {
   }
 
   private String ridOf(final String name) {
-    return run("g.V().has('name','" + name + "').elementMap()").getFirst().getProperty("@rid").toString();
+    return run("g.V().has('name','" + name + "').elementMap()").get(0).getProperty("@rid").toString();
   }
 
   @Test
@@ -109,7 +109,7 @@ class Issue9781NestedMapKeysTest {
   void theJsonOfANestedMapAgreesWithTheMap() {
     final String ridOfA = ridOf("a");
 
-    final JSONObject json = run("g.V().has('name','a').project('x').by(elementMap())").getFirst().toJSON();
+    final JSONObject json = run("g.V().has('name','a').project('x').by(elementMap())").get(0).toJSON();
     final JSONObject x = json.getJSONObject("x");
     assertThat(x.getString("@rid")).isEqualTo(ridOfA);
     assertThat(x.getString("@type")).isEqualTo("NP");
@@ -121,7 +121,7 @@ class Issue9781NestedMapKeysTest {
   void aGroupedElementMapNamesTheTokens() {
     final String ridOfA = ridOf("a");
 
-    final Result row = run("g.V().hasLabel('NP').group().by('name').by(elementMap())").getFirst();
+    final Result row = run("g.V().hasLabel('NP').group().by('name').by(elementMap())").get(0);
     final Map<String, Object> a = map(row.getProperty("a"));
     assertThat(a.get("@rid").toString()).isEqualTo(ridOfA);
     assertThat(a.get("id")).isEqualTo("uid");
@@ -135,7 +135,7 @@ class Issue9781NestedMapKeysTest {
   void aFoldedListOfElementMapsNamesTheTokens() {
     final String ridOfA = ridOf("a");
 
-    final Result row = run("g.V().has('name','a').elementMap().fold()").getFirst();
+    final Result row = run("g.V().has('name','a').elementMap().fold()").get(0);
     final Object folded = row.getProperty("result");
     assertThat(folded).isInstanceOf(Collection.class);
     final Map<String, Object> only = map(((Collection<?>) folded).iterator().next());
@@ -150,7 +150,7 @@ class Issue9781NestedMapKeysTest {
   void aPathOfElementMapsStaysAPathAndNamesTheTokens() {
     final String ridOfA = ridOf("a");
 
-    final Result row = run("g.V().has('name','a').path().by(elementMap())").getFirst();
+    final Result row = run("g.V().has('name','a').path().by(elementMap())").get(0);
     final Object path = row.getProperty("result");
     assertThat(path).as("the object a traversal answers is still a Path").isInstanceOf(Path.class);
     assertThat(map(((Path) path).get(0)).get("@rid").toString()).isEqualTo(ridOfA);
@@ -161,7 +161,7 @@ class Issue9781NestedMapKeysTest {
 
   @Test
   void anEdgeAndItsEndpointsUseTheSameNames() {
-    final Map<String, Object> edge = run("g.E().hasLabel('knows').elementMap()").getFirst().toMap();
+    final Map<String, Object> edge = run("g.E().hasLabel('knows').elementMap()").get(0).toMap();
     assertThat(edge).containsKeys("@rid", "@type", "id");
     assertThat(edge.get("id")).isEqualTo("eid");
 
@@ -197,14 +197,14 @@ class Issue9781NestedMapKeysTest {
 
     final Result row = ArcadeGremlin.mapToResult(Map.of("items", List.of(element)));
 
-    final Map<String, Object> only = map(((List<?>) row.getProperty("items")).getFirst());
+    final Map<String, Object> only = map(((List<?>) row.getProperty("items")).get(0));
     assertThat(only).containsOnlyKeys("@rid", "id");
     assertThat(only.get("@rid")).isEqualTo("#1:0");
   }
 
   @Test
   void aNestedNullKeyIsNamedNull() {
-    final Result row = run("g.V().hasLabel('NP').project('g').by(group().by(constant(null)).by(count()))").getFirst();
+    final Result row = run("g.V().hasLabel('NP').project('g').by(group().by(constant(null)).by(count()))").get(0);
     final Map<String, Object> grouped = map(row.getProperty("g"));
     assertThat(grouped).containsOnlyKeys("null");
     // ONE TRAVERSER PER VERTEX: THE GROUP OF EACH ROW COUNTS ITS OWN VERTEX
@@ -213,8 +213,8 @@ class Issue9781NestedMapKeysTest {
 
   @Test
   void aTopLevelMapAndANestedOneAreTheSameShape() {
-    final Map<String, Object> top = run("g.V().has('name','a').elementMap()").getFirst().toMap();
-    final Map<String, Object> nested = map(run("g.V().has('name','a').project('x').by(elementMap())").getFirst().getProperty("x"));
+    final Map<String, Object> top = run("g.V().has('name','a').elementMap()").get(0).toMap();
+    final Map<String, Object> nested = map(run("g.V().has('name','a').project('x').by(elementMap())").get(0).getProperty("x"));
     assertThat(nested).isEqualTo(top);
   }
 

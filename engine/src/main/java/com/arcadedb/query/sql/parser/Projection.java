@@ -131,9 +131,9 @@ public class Projection extends SimpleNode {
    */
   public boolean returnsRecordAsIs() {
     return items.size() == 1 &&
-        items.getFirst().getExpression() != null &&
-        Property.THIS_PROPERTY.equals(items.getFirst().getExpression().toString()) &&
-        items.getFirst().nestedProjection == null;
+        items.get(0).getExpression() != null &&
+        Property.THIS_PROPERTY.equals(items.get(0).getExpression().toString()) &&
+        items.get(0).nestedProjection == null;
   }
 
   /**
@@ -273,7 +273,7 @@ public class Projection extends SimpleNode {
   }
 
   public boolean isExpand() {
-    return items != null && items.size() == 1 && items.getFirst().isExpand();
+    return items != null && items.size() == 1 && items.get(0).isExpand();
   }
 
   public void validate() {
@@ -288,7 +288,7 @@ public class Projection extends SimpleNode {
   public Projection getExpandContent() {
     final Projection result = new Projection();
     result.setItems(new ArrayList<>());
-    result.getItems().add(this.getItems().getFirst().getExpandContent());
+    result.getItems().add(this.getItems().get(0).getExpandContent());
     return result;
   }
 

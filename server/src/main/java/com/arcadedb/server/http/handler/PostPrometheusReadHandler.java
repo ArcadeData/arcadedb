@@ -234,10 +234,10 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
       for (final List<Object[]> groupRows : grouped.values()) {
         // a series' samples are spread over every shard, and a remote-read series lists them in timestamp order
         groupRows.sort(Comparator.comparingLong(row -> (long) row[0]));
-        metricSeries.add(new TimeSeries(labelsOf(metricName, columns, groupRows.getFirst()), samplesOf(groupRows, valueRowIndex)));
+        metricSeries.add(new TimeSeries(labelsOf(metricName, columns, groupRows.get(0)), samplesOf(groupRows, valueRowIndex)));
       }
       // Ordered by each series' first sample, the order the merged ascending read this replaces gave them
-      metricSeries.sort(Comparator.comparingLong(series -> series.getSamples().getFirst().timestampMs()));
+      metricSeries.sort(Comparator.comparingLong(series -> series.getSamples().get(0).timestampMs()));
       seriesList.addAll(metricSeries);
     }
     return seriesList;

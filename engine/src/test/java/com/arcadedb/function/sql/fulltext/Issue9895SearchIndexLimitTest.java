@@ -192,7 +192,7 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
     final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache()
         .get("SELECT SEARCH_INDEX('Doc[content]', 'common') FROM Doc");
     final FromClause target = statement.getTarget();
-    final BaseExpression call = (BaseExpression) statement.getProjection().getItems().getFirst().getExpression().mathExpression;
+    final BaseExpression call = (BaseExpression) statement.getProjection().getItems().get(0).getExpression().mathExpression;
     final Expression[] arguments = call.identifier.levelZero.functionCall.getParams().toArray(new Expression[0]);
 
     final BasicCommandContext context = new BasicCommandContext();

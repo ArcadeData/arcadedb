@@ -90,7 +90,7 @@ public class RWLockContext {
     // READ LOCK THIS THREAD CAN HOLD IS ITS OWN STRIPE, SO THAT IS THE ONE TO ASK. A WRITER THAT TOOK THE READ LOCK
     // TOO (A DOWNGRADE) STILL OWNS THE WRITE LOCK AND RE-ENTERS IT NORMALLY. REFUSED RATHER THAN PARKED: A DDL ISSUED
     // FROM A RECORD READ LISTENER, OR FROM ANYTHING ELSE RUNNING UNDER THE READ LOCK, USED TO HANG THE THREAD (#10012)
-    final ReentrantReadWriteLock own = stripes[(int) Thread.currentThread().threadId() & stripeMask];
+    final ReentrantReadWriteLock own = stripes[(int) Thread.currentThread().getId() & stripeMask];
     if (own.getReadHoldCount() > 0 && !own.isWriteLockedByCurrentThread())
       throw new DatabaseOperationException("Cannot acquire the exclusive lock while this thread holds the shared lock: "
           + "a read lock cannot be upgraded. The operation (e.g. a schema change) was issued from code running under the "

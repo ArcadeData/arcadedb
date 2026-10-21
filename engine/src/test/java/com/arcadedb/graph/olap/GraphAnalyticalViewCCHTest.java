@@ -407,8 +407,8 @@ class GraphAnalyticalViewCCHTest {
     try (final ResultSet rs = database.query("sql", "SELECT cchShortestPath(?, ?, 'distance', 'OUT') AS path", junctions[s],
         junctions[t])) {
       final List<RID> path = rs.next().getProperty("path");
-      assertThat(path.getFirst()).isEqualTo(junctions[s]);
-      assertThat(path.getLast()).isEqualTo(junctions[t]);
+      assertThat(path.get(0)).isEqualTo(junctions[s]);
+      assertThat(path.get(path.size() - 1)).isEqualTo(junctions[t]);
       assertThat(pathWeight(path, Vertex.DIRECTION.OUT, true)).isCloseTo(reference(s, Vertex.DIRECTION.OUT, true)[t],
           within(EPS));
     }
@@ -439,8 +439,8 @@ class GraphAnalyticalViewCCHTest {
     try (final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews WHERE name = 'roads'")) {
       final List<Map<String, Object>> hierarchies = rs.next().getProperty("contractionHierarchies");
       assertThat(hierarchies).hasSize(1);
-      assertThat(hierarchies.getFirst().get("weightProperty")).isEqualTo("distance");
-      assertThat(hierarchies.getFirst().get("status")).isEqualTo("READY");
+      assertThat(hierarchies.get(0).get("weightProperty")).isEqualTo("distance");
+      assertThat(hierarchies.get(0).get("status")).isEqualTo("READY");
     }
 
     // reopen: the definition, and with it the hierarchy, comes back
@@ -748,8 +748,8 @@ class GraphAnalyticalViewCCHTest {
             final int t = random.nextInt(junctions.length);
             final ShortestPathFinder.Result result = find(s, t, Vertex.DIRECTION.OUT);
             if (result != null) {
-              assertThat(result.vertices().getFirst()).isEqualTo(junctions[s]);
-              assertThat(result.vertices().getLast()).isEqualTo(junctions[t]);
+              assertThat(result.vertices().get(0)).isEqualTo(junctions[s]);
+              assertThat(result.vertices().get(result.vertices().size() - 1)).isEqualTo(junctions[t]);
             }
           }
         } catch (final Throwable e) {
@@ -811,8 +811,8 @@ class GraphAnalyticalViewCCHTest {
       if (s != t && engine != null)
         assertThat(result.engine()).isEqualTo(engine);
       assertThat(result.weight()).as("%d -> %d %s", s, t, direction).isCloseTo(expected, within(EPS));
-      assertThat(result.vertices().getFirst()).isEqualTo(junctions[s]);
-      assertThat(result.vertices().getLast()).isEqualTo(junctions[t]);
+      assertThat(result.vertices().get(0)).isEqualTo(junctions[s]);
+      assertThat(result.vertices().get(result.vertices().size() - 1)).isEqualTo(junctions[t]);
       assertThat(pathWeight(result.vertices(), direction)).isCloseTo(expected, within(EPS));
     }
   }

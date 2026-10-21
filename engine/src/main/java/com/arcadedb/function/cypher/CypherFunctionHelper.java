@@ -154,39 +154,41 @@ public final class CypherFunctionHelper {
    * a POINT when it has the shape point() gives it: three key lookups, so classifying a map stays cheap.
    */
   public static String cypherTypeName(final Object value) {
-    return switch (value) {
-      case null -> "NULL";
-      case Long ignored -> "INTEGER";
-      case Integer ignored -> "INTEGER";
-      case Short ignored -> "INTEGER";
-      case Byte ignored -> "INTEGER";
-      case Double ignored -> "FLOAT";
-      case Float ignored -> "FLOAT";
-      case String ignored -> "STRING";
-      case Boolean ignored -> "BOOLEAN";
-      case Vertex ignored -> "NODE";
-      case Edge ignored -> "RELATIONSHIP";
-      case TraversalPath ignored -> "PATH";
-      case List ignored -> "LIST<ANY>";
-      // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)
-      case CypherDate ignored -> "DATE";
-      case LocalDate ignored -> "DATE";
-      case CypherLocalDateTime ignored -> "LOCAL DATETIME";
-      case LocalDateTime ignored -> "LOCAL DATETIME";
-      case CypherDateTime ignored -> "ZONED DATETIME";
-      case ZonedDateTime ignored -> "ZONED DATETIME";
-      case OffsetDateTime ignored -> "ZONED DATETIME";
-      case CypherLocalTime ignored -> "LOCAL TIME";
-      case LocalTime ignored -> "LOCAL TIME";
-      case CypherTime ignored -> "ZONED TIME";
-      case OffsetTime ignored -> "ZONED TIME";
-      case CypherDuration ignored -> "DURATION";
-      case Duration ignored -> "DURATION";
-      case Period ignored -> "DURATION";
-      // a point is a map at runtime: point() builds one, and the storage returns one
-      case Map<?, ?> map -> CypherValues.isPointShaped(map) ? "POINT" : "MAP";
-      default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
-    };
+    if (value == null)
+      return "NULL";
+    if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return "INTEGER";
+    if (value instanceof Double || value instanceof Float)
+      return "FLOAT";
+    if (value instanceof String)
+      return "STRING";
+    if (value instanceof Boolean)
+      return "BOOLEAN";
+    if (value instanceof Vertex)
+      return "NODE";
+    if (value instanceof Edge)
+      return "RELATIONSHIP";
+    if (value instanceof TraversalPath)
+      return "PATH";
+    if (value instanceof List)
+      return "LIST<ANY>";
+    // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)
+    if (value instanceof CypherDate || value instanceof LocalDate)
+      return "DATE";
+    if (value instanceof CypherLocalDateTime || value instanceof LocalDateTime)
+      return "LOCAL DATETIME";
+    if (value instanceof CypherDateTime || value instanceof ZonedDateTime || value instanceof OffsetDateTime)
+      return "ZONED DATETIME";
+    if (value instanceof CypherLocalTime || value instanceof LocalTime)
+      return "LOCAL TIME";
+    if (value instanceof CypherTime || value instanceof OffsetTime)
+      return "ZONED TIME";
+    if (value instanceof CypherDuration || value instanceof Duration || value instanceof Period)
+      return "DURATION";
+    // a point is a map at runtime: point() builds one, and the storage returns one
+    if (value instanceof Map<?, ?> map)
+      return CypherValues.isPointShaped(map) ? "POINT" : "MAP";
+    return value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
   }
 
   /**

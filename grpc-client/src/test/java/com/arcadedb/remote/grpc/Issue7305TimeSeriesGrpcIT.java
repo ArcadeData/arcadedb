@@ -338,7 +338,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
     assertThat(summary.written()).isEqualTo(1);
     assertThat(summary.dropped()).isEqualTo(1);
     assertThat(summary.unreadableValues()).hasSize(1);
-    assertThat(summary.unreadableValues().getFirst()).startsWith(TYPE + ".temperature (field)").contains("'temperature'");
+    assertThat(summary.unreadableValues().get(0)).startsWith(TYPE + ".temperature (field)").contains("'temperature'");
     assertThat(grpcClient().timeSeriesQuery(new TimeSeriesQuery(TYPE)).count()).isEqualTo(1);
   }
 
@@ -364,7 +364,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
     assertThat(summary.written()).isEqualTo(1);
     assertThat(summary.dropped()).isEqualTo(1);
     assertThat(summary.unreadableValues()).hasSize(1);
-    assertThat(summary.unreadableValues().getFirst()).startsWith(TYPE + ".temperature (field)");
+    assertThat(summary.unreadableValues().get(0)).startsWith(TYPE + ".temperature (field)");
   }
 
   @Test

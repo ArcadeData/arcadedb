@@ -102,7 +102,7 @@ public class Rid extends SimpleNode {
       final int bucketId;
       final long position;
       try {
-        bucketId = Integer.parseInt(parts.getFirst());
+        bucketId = Integer.parseInt(parts.get(0));
         position = Long.parseLong(parts.get(1));
       } catch (final NumberFormatException e) {
         throw new CommandExecutionException("Cannot convert to RID: " + result, e);

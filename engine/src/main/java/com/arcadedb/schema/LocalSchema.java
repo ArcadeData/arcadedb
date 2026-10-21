@@ -3492,24 +3492,25 @@ public class LocalSchema implements Schema {
         final LocalDocumentType type;
 
         final String kind = (String) schemaType.get("type");
-        type = switch (kind) {
-          case "v" -> new LocalVertexType(this, typeName);
-          case "e" -> new LocalEdgeType(this, typeName,
+        if ("v".equals(kind)) {
+          type = new LocalVertexType(this, typeName);
+        } else if ("e".equals(kind)) {
+          type = new LocalEdgeType(this, typeName,
               !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"),
               schemaType.getBoolean("lightweight", false), schemaType.getBoolean("unique", false));
-          case "d" -> new LocalDocumentType(this, typeName);
-          case "t" -> {
-            final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
-            tsType.fromJSON(schemaType);
-            // Not built here when the open has a WAL to replay (issue #9452): see openDeferredTimeSeriesEngines()
-            if (timeSeriesEnginesAwaitingReplay != null)
-              timeSeriesEnginesAwaitingReplay.add(tsType);
-            else
-              openTimeSeriesEngine(tsType);
-            yield tsType;
-          }
-          case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");
-        };
+        } else if ("d".equals(kind)) {
+          type = new LocalDocumentType(this, typeName);
+        } else if ("t".equals(kind)) {
+          final LocalTimeSeriesType tsType = new LocalTimeSeriesType(this, typeName);
+          tsType.fromJSON(schemaType);
+          // Not built here when the open has a WAL to replay (issue #9452): see openDeferredTimeSeriesEngines()
+          if (timeSeriesEnginesAwaitingReplay != null)
+            timeSeriesEnginesAwaitingReplay.add(tsType);
+          else
+            openTimeSeriesEngine(tsType);
+          type = tsType;
+        } else
+          throw new ConfigurationException("Type '" + kind + "' is not supported");
 
         graph.put(typeName, type);
 

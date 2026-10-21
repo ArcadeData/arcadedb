@@ -3266,7 +3266,7 @@ public class SelectExecutionPlanner {
     if (flattenedWhere == null || flattenedWhere.size() != 1)
       return null;
     FieldFilter filter = null;
-    for (final BooleanExpression expr : flattenedWhere.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : flattenedWhere.get(0).getSubBlocks()) {
       final FieldFilter one = fieldFilterOf(expr, columns, context);
       if (one != null)
         filter = filter == null ? one : filter.and(one);
@@ -4238,7 +4238,7 @@ public class SelectExecutionPlanner {
           info.target, context);
       if (functions == null || functions.size() != 1)
         return false;
-      final BinaryCondition function = functions.getFirst();
+      final BinaryCondition function = functions.get(0);
       if (!function.indexedFunctionAnswersByScore(context) || !function.executeIndexedFunctionAfterIndexSearch(info.target, context))
         return false;
       // By identity, as the residual of indexedFunctionRowLimit: the function's condition is the very instance the block holds
@@ -4423,7 +4423,7 @@ public class SelectExecutionPlanner {
   private static boolean isOrderByScoreDescending(final QueryPlanningInfo info) {
     if (info.orderBy.getItems() == null || info.orderBy.getItems().size() != 1)
       return false;
-    final OrderByItem item = info.orderBy.getItems().getFirst();
+    final OrderByItem item = info.orderBy.getItems().get(0);
     if (item.modifier != null || item.recordAttr != null || item.getDirectionParameter() != null
         || !OrderByItem.DESC.equalsIgnoreCase(item.getType()))
       return false;

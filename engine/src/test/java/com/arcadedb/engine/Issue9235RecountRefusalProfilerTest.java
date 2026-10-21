@@ -63,7 +63,7 @@ class Issue9235RecountRefusalProfilerTest {
           for (int i = 0; i < 10; i++)
             db.newDocument("Counted").set("name", "record-" + i).save();
         });
-        final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+        final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).get(0);
 
         // What an unlocked replicated apply does to a recompute that overlapped it (#8640/#8649): the stamp the scan
         // read at its start is no longer current, so the publish is refused

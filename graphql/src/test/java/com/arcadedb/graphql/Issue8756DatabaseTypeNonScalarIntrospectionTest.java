@@ -113,8 +113,8 @@ class Issue8756DatabaseTypeNonScalarIntrospectionTest extends AbstractGraphQLTes
         final Result home = fieldType(resultSet.next(), "home");
         final List<Result> fields = home.getProperty("fields");
         assertThat(fields).hasSize(1);
-        assertThat(fields.getFirst().<String>getProperty("name")).isEqualTo("city");
-        assertNamed(fields.getFirst().getProperty("type"), "SCALAR", "String");
+        assertThat(fields.get(0).<String>getProperty("name")).isEqualTo("city");
+        assertNamed(fields.get(0).getProperty("type"), "SCALAR", "String");
       }
       return null;
     });

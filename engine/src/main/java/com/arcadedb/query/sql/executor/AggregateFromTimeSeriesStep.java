@@ -212,7 +212,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
             // The one bucket the engine filled, or none when no sample matched: the result then answers a COUNT of 0 and the
             // absent marker for every other request, which aggregateValue turns into the NULL the generic plan answers
             final List<Long> buckets = aggResult.getBucketTimestamps();
-            final long bucketTs = buckets.isEmpty() ? Long.MIN_VALUE : buckets.getFirst();
+            final long bucketTs = buckets.isEmpty() ? Long.MIN_VALUE : buckets.get(0);
             final Object[] values = new Object[requests.size()];
             for (int i = 0; i < values.length; i++)
               values[i] = aggregateValue(aggResult, requests.get(i), bucketTs, i);
@@ -400,7 +400,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
 
     return new Iterator<>() {
       private int            group   = 0;
-      private Iterator<Long> buckets = results.isEmpty() ? null : results.getFirst().getBucketTimestamps().iterator();
+      private Iterator<Long> buckets = results.isEmpty() ? null : results.get(0).getBucketTimestamps().iterator();
 
       @Override
       public boolean hasNext() {

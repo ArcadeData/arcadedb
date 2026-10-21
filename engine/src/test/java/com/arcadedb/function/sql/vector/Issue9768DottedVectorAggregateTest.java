@@ -100,16 +100,16 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
   @Test
   void dottedAggregatesAnswerTheSameValuesAsTheirAliasAndTheBackTickedName() {
     load();
-    assertThat(vector(run("SELECT vector.sum(v) AS s FROM D").getFirst(), "s")).containsExactly(6f, 8f);
-    assertThat(vector(run("SELECT vector.avg(v) AS s FROM D").getFirst(), "s")).containsExactly(1.5f, 2f);
-    assertThat(vector(run("SELECT vector.min(v) AS s FROM D").getFirst(), "s")).containsExactly(1f, 1f);
-    assertThat(vector(run("SELECT vector.max(v) AS s FROM D").getFirst(), "s")).containsExactly(2f, 3f);
+    assertThat(vector(run("SELECT vector.sum(v) AS s FROM D").get(0), "s")).containsExactly(6f, 8f);
+    assertThat(vector(run("SELECT vector.avg(v) AS s FROM D").get(0), "s")).containsExactly(1.5f, 2f);
+    assertThat(vector(run("SELECT vector.min(v) AS s FROM D").get(0), "s")).containsExactly(1f, 1f);
+    assertThat(vector(run("SELECT vector.max(v) AS s FROM D").get(0), "s")).containsExactly(2f, 3f);
 
     for (final String name : new String[] { "sum", "avg", "min", "max" }) {
-      final float[] dotted = vector(run("SELECT vector." + name + "(v) AS s FROM D").getFirst(), "s");
-      final float[] alias = vector(run("SELECT vector" + Character.toUpperCase(name.charAt(0)) + name.substring(1) + "(v) AS s FROM D").getFirst(),
+      final float[] dotted = vector(run("SELECT vector." + name + "(v) AS s FROM D").get(0), "s");
+      final float[] alias = vector(run("SELECT vector" + Character.toUpperCase(name.charAt(0)) + name.substring(1) + "(v) AS s FROM D").get(0),
           "s");
-      final float[] quoted = vector(run("SELECT `vector." + name + "`(v) AS s FROM D").getFirst(), "s");
+      final float[] quoted = vector(run("SELECT `vector." + name + "`(v) AS s FROM D").get(0), "s");
       assertThat(dotted).as(name).containsExactly(alias);
       assertThat(quoted).as(name).containsExactly(alias);
     }
@@ -121,8 +121,8 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
 
     final List<Result> together = run("SELECT vector.sum(v) AS s, count(*) AS c FROM D");
     assertThat(together).hasSize(1);
-    assertThat(together.getFirst().<Long>getProperty("c")).isEqualTo(4L);
-    assertThat(vector(together.getFirst(), "s")).containsExactly(6f, 8f);
+    assertThat(together.get(0).<Long>getProperty("c")).isEqualTo(4L);
+    assertThat(vector(together.get(0), "s")).containsExactly(6f, 8f);
 
     final List<Result> grouped = run("SELECT g, vector.sum(v) AS s FROM D GROUP BY g ORDER BY g");
     assertThat(grouped).hasSize(2);
@@ -135,8 +135,8 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
     load();
     // SQL function names are case-insensitive, and so was the namespace set before the registry decided
     assertThat(run("SELECT Vector.SUM(v) AS s FROM D")).hasSize(1);
-    assertThat(vector(run("SELECT VECTOR.sum(v) AS s FROM D").getFirst(), "s")).containsExactly(6f, 8f);
-    assertThat(run("SELECT GEO.point(1, 2) AS p").getFirst().<Object>getProperty("p")).isNotNull();
+    assertThat(vector(run("SELECT VECTOR.sum(v) AS s FROM D").get(0), "s")).containsExactly(6f, 8f);
+    assertThat(run("SELECT GEO.point(1, 2) AS p").get(0).<Object>getProperty("p")).isNotNull();
   }
 
   @Test
@@ -158,11 +158,11 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
 
     final List<Result> rows = run("SELECT vector.size() AS n FROM E");
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<Integer>getProperty("n")).isEqualTo(3);
+    assertThat(rows.get(0).<Integer>getProperty("n")).isEqualTo(3);
 
     // a chain whose FIRST method is not a registered function stays a chain on the property, however long it is
-    assertThat(run("SELECT vector.size().asString() AS s FROM E").getFirst().<String>getProperty("s")).isEqualTo("3");
-    assertThat(run("SELECT `vector`.size() AS n FROM E").getFirst().<Integer>getProperty("n")).isEqualTo(3);
+    assertThat(run("SELECT vector.size().asString() AS s FROM E").get(0).<String>getProperty("s")).isEqualTo("3");
+    assertThat(run("SELECT `vector`.size() AS n FROM E").get(0).<Integer>getProperty("n")).isEqualTo(3);
   }
 
   /**
@@ -193,7 +193,7 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
       checked.add(name);
       try {
         final SelectStatement statement = (SelectStatement) db.getStatementCache().get("SELECT " + name + "(v) FROM D");
-        if (!statement.projection.items.getFirst().isAggregate(context))
+        if (!statement.projection.items.get(0).isAggregate(context))
           failures.add(name);
       } catch (final RuntimeException e) {
         failures.add(name + " (" + e.getMessage() + ")");
@@ -230,7 +230,7 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
     try {
       final List<Result> rows = run("SELECT acme9768.twice(21) AS n");
       assertThat(rows).hasSize(1);
-      assertThat(rows.getFirst().<Integer>getProperty("n")).isEqualTo(42);
+      assertThat(rows.get(0).<Integer>getProperty("n")).isEqualTo(42);
     } finally {
       factory.unregister("acme9768.twice");
     }
@@ -240,14 +240,14 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
   void methodCallsSelectorsAndModifiersAfterTheFunctionChainInSourceOrder() {
     load();
     // vector.normalize([3, 4]) = [0.6, 0.8]: the function, then two method calls, then an array selector
-    assertThat(run("SELECT vector.normalize([3.0, 4.0]).size() AS n").getFirst().<Integer>getProperty("n")).isEqualTo(2);
-    assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0]).asList()[1] AS e").getFirst().getProperty("e")).doubleValue())
+    assertThat(run("SELECT vector.normalize([3.0, 4.0]).size() AS n").get(0).<Integer>getProperty("n")).isEqualTo(2);
+    assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0]).asList()[1] AS e").get(0).getProperty("e")).doubleValue())
         .isCloseTo(0.8, Offset.offset(1e-6));
-    assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0])[0] AS e").getFirst().getProperty("e")).doubleValue()).isCloseTo(
+    assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0])[0] AS e").get(0).getProperty("e")).doubleValue()).isCloseTo(
         0.6, Offset.offset(1e-6));
     // the grammar is methodCall* arraySelector* modifier*: a method after a selector is a modifier, and chains after it
-    assertThat(run("SELECT vector.normalize([3.0, 4.0])[0].asString() AS s").getFirst().<String>getProperty("s")).startsWith("0.6");
-    assertThat(run("SELECT vector.normalize([3.0, 4.0]).asList().size() AS n").getFirst().<Integer>getProperty("n")).isEqualTo(2);
+    assertThat(run("SELECT vector.normalize([3.0, 4.0])[0].asString() AS s").get(0).<String>getProperty("s")).startsWith("0.6");
+    assertThat(run("SELECT vector.normalize([3.0, 4.0]).asList().size() AS n").get(0).<Integer>getProperty("n")).isEqualTo(2);
   }
 
   @Test
@@ -257,6 +257,6 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
     final SelectStatement statement = (SelectStatement) db.getStatementCache().get("SELECT vector.thisDoesNotExist(v) FROM D");
     final CommandContext context = new BasicCommandContext();
     ((BasicCommandContext) context).setDatabase(db);
-    assertThat(statement.projection.items.getFirst().isAggregate(context)).isFalse();
+    assertThat(statement.projection.items.get(0).isAggregate(context)).isFalse();
   }
 }

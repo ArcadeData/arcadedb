@@ -459,7 +459,7 @@ class Issue10049PathUniquenessTest {
         }
         final List<Vertex> vertices = path.getVertices();
         final List<Edge> edges = path.getEdges();
-        final StringBuilder text = new StringBuilder(vertices.getFirst().getString("name"));
+        final StringBuilder text = new StringBuilder(vertices.get(0).getString("name"));
         for (int i = 0; i < edges.size(); i++) {
           final Edge edge = edges.get(i);
           final boolean forward = edge.getOut().equals(vertices.get(i).getIdentity());
@@ -487,7 +487,7 @@ class Issue10049PathUniquenessTest {
       while (rs.hasNext()) {
         final TraversalPath path = rs.next().getProperty("path");
         if (path.length() > 0)
-          relationships.add(path.getEdges().getLast().getIdentity());
+          relationships.add(path.getEdges().get(path.getEdges().size() - 1).getIdentity());
       }
     }
     return relationships;

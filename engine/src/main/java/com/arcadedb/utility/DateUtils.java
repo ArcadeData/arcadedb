@@ -419,22 +419,30 @@ public class DateUtils {
     if (unitsPerSecond == 0L)
       return dateTimeToTimestamp(database, value, precisionToUse);
     try {
-      return switch (value) {
-        case null -> null;
-        // millisecond types: narrowed toward zero as convertTimestamp narrows them, widened exactly
-        case Date date -> millisToUnit(date.getTime(), unitsPerSecond);
-        case Calendar calendar -> millisToUnit(calendar.getTimeInMillis(), unitsPerSecond);
-        case LocalDateTime localDateTime -> secondsToUnit(localDateTime.toEpochSecond(ZoneOffset.UTC), localDateTime.getNano(), unitsPerSecond);
-        case LocalDate localDate -> Math.multiplyExact(Math.multiplyExact(localDate.toEpochDay(), 86_400L), unitsPerSecond);
-        case ZonedDateTime zonedDateTime -> secondsToUnit(zonedDateTime.toEpochSecond(), zonedDateTime.getNano(), unitsPerSecond);
-        case OffsetDateTime offsetDateTime -> secondsToUnit(offsetDateTime.toEpochSecond(), offsetDateTime.getNano(), unitsPerSecond);
-        case Instant instant -> secondsToUnit(instant.getEpochSecond(), instant.getNano(), unitsPerSecond);
-        // already a count in the target unit, as dateTimeToTimestamp reads it
-        case Number number -> numberToEpochUnits(number);
-        case String string -> FileUtils.isLong(string) ? Long.parseLong(string) :
+      if (value == null)
+        return null;
+      // millisecond types: narrowed toward zero as convertTimestamp narrows them, widened exactly
+      else if (value instanceof Date date)
+        return millisToUnit(date.getTime(), unitsPerSecond);
+      else if (value instanceof Calendar calendar)
+        return millisToUnit(calendar.getTimeInMillis(), unitsPerSecond);
+      else if (value instanceof LocalDateTime localDateTime)
+        return secondsToUnit(localDateTime.toEpochSecond(ZoneOffset.UTC), localDateTime.getNano(), unitsPerSecond);
+      else if (value instanceof LocalDate localDate)
+        return Math.multiplyExact(Math.multiplyExact(localDate.toEpochDay(), 86_400L), unitsPerSecond);
+      else if (value instanceof ZonedDateTime zonedDateTime)
+        return secondsToUnit(zonedDateTime.toEpochSecond(), zonedDateTime.getNano(), unitsPerSecond);
+      else if (value instanceof OffsetDateTime offsetDateTime)
+        return secondsToUnit(offsetDateTime.toEpochSecond(), offsetDateTime.getNano(), unitsPerSecond);
+      else if (value instanceof Instant instant)
+        return secondsToUnit(instant.getEpochSecond(), instant.getNano(), unitsPerSecond);
+      // already a count in the target unit, as dateTimeToTimestamp reads it
+      else if (value instanceof Number number)
+        return numberToEpochUnits(number);
+      else if (value instanceof String string)
+        return FileUtils.isLong(string) ? Long.parseLong(string) :
             dateTimeToTimestampExact(database, parseDateTime(database, string), precisionToUse);
-        default -> null;
-      };
+      return null;
     } catch (final ArithmeticException e) {
       throw new IllegalArgumentException("Date/time value " + value + " is outside the range a " + precisionToUse.toString()
           .toLowerCase(Locale.ENGLISH) + "-precision timestamp can represent");

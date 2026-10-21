@@ -69,7 +69,7 @@ public interface PropertyReadExpression extends Expression {
       return null;
     if (base instanceof FunctionCallExpression call && call.getArguments().size() == 1 && "properties".equals(
         call.getFunctionName().toLowerCase(Locale.ROOT)))
-      return recordOf(call.getArguments().getFirst(), row, context);
+      return recordOf(call.getArguments().get(0), row, context);
     return InlineProperties.boundRecord(OpenCypherQueryEngine.getExpressionEvaluator().evaluate(base, row, context));
   }
 }

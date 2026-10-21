@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -170,8 +169,8 @@ public class MutableEdge extends MutableDocument implements Edge {
     // A move needs an endpoint to move FROM: an instance whose endpoint is still unknown is being initialized, as when
     // JavaBinarySerializer rebuilds an edge from its toMap() before the trailing endpoint block is read
     final RID current = direction == Vertex.DIRECTION.IN ? in : out;
-    if (rid != null && current != null && !newEndpoint.equals(current) && database instanceof DatabaseInternal dbInt)
-      dbInt.getGraphEngine().moveEdge(this, direction, newEndpoint);
+    if (rid != null && current != null && !newEndpoint.equals(current) && database != null)
+      database.getGraphEngine().moveEdge(this, direction, newEndpoint);
     else if (direction == Vertex.DIRECTION.IN)
       this.in = newEndpoint;
     else

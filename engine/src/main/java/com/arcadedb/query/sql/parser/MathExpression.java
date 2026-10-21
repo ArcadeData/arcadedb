@@ -915,7 +915,12 @@ public class MathExpression extends SimpleNode {
           case PLUS -> Math.addExact(left, right);
           case MINUS -> Math.subtractExact(left, right);
           case STAR -> Math.multiplyExact(left, right);
-          case SLASH -> Math.divideExact(left, right);
+          case SLASH -> {
+            // Math.divideExact is Java 18+: the only overflowing long division is MIN_VALUE / -1
+            if (left == Long.MIN_VALUE && right == -1)
+              throw new ArithmeticException("long overflow");
+            yield left / right;
+          }
           default -> throw new IllegalStateException("Operator " + op + " has no exact integer form");
         };
       } catch (final ArithmeticException e) {
@@ -941,17 +946,17 @@ public class MathExpression extends SimpleNode {
       return null;
 
     if (childExpressions.size() == 1)
-      return childExpressions.getFirst().execute(currentRecord, context);
+      return childExpressions.get(0).execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
       // Extract scalar values from ResultSets for arithmetic operations (issue #1723)
-      final Object leftValue = extractScalarFromResultSet(childExpressions.getFirst().execute(currentRecord, context));
+      final Object leftValue = extractScalarFromResultSet(childExpressions.get(0).execute(currentRecord, context));
       // `??` is the one operator whose result can be decided by the left operand alone, so the right one - which may
       // be a function call or a sub-query - is not evaluated when the fallback is not taken (issue #6393).
-      if (operators.getFirst() == Operator.NULL_COALESCING && leftValue != null)
+      if (operators.get(0) == Operator.NULL_COALESCING && leftValue != null)
         return leftValue;
       final Object rightValue = extractScalarFromResultSet(childExpressions.get(1).execute(currentRecord, context));
-      return operators.getFirst().apply(leftValue, rightValue);
+      return operators.get(0).apply(leftValue, rightValue);
     }
 
     return calculateWithOpPriority(currentRecord, context);
@@ -962,17 +967,17 @@ public class MathExpression extends SimpleNode {
       return null;
 
     if (childExpressions.size() == 1)
-      return childExpressions.getFirst().execute(currentRecord, context);
+      return childExpressions.get(0).execute(currentRecord, context);
 
     if (childExpressions.size() == 2) {
       // Extract scalar values from ResultSets for arithmetic operations (issue #1723)
-      final Object leftValue = extractScalarFromResultSet(childExpressions.getFirst().execute(currentRecord, context));
+      final Object leftValue = extractScalarFromResultSet(childExpressions.get(0).execute(currentRecord, context));
       // `??` is the one operator whose result can be decided by the left operand alone, so the right one - which may
       // be a function call or a sub-query - is not evaluated when the fallback is not taken (issue #6393).
-      if (operators.getFirst() == Operator.NULL_COALESCING && leftValue != null)
+      if (operators.get(0) == Operator.NULL_COALESCING && leftValue != null)
         return leftValue;
       final Object rightValue = extractScalarFromResultSet(childExpressions.get(1).execute(currentRecord, context));
-      return operators.getFirst().apply(leftValue, rightValue);
+      return operators.get(0).apply(leftValue, rightValue);
     }
 
     return calculateWithOpPriority(currentRecord, context);
@@ -982,7 +987,7 @@ public class MathExpression extends SimpleNode {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
-    final MathExpression nextExpression = childExpressions.getFirst();
+    final MathExpression nextExpression = childExpressions.get(0);
     // Extract scalar from ResultSet for arithmetic operations (issue #1723)
     final Object val = extractScalarFromResultSet(nextExpression.execute(currentRecord, context));
     valuesStack.push(val == null ? NULL_VALUE : val);
@@ -1012,7 +1017,7 @@ public class MathExpression extends SimpleNode {
     final Deque valuesStack = new ArrayDeque<>();
     final Deque<Operator> operatorsStack = new ArrayDeque<Operator>();
 
-    final MathExpression nextExpression = childExpressions.getFirst();
+    final MathExpression nextExpression = childExpressions.get(0);
     // Extract scalar from ResultSet for arithmetic operations (issue #1723)
     final Object val = extractScalarFromResultSet(nextExpression.execute(currentRecord, context));
     valuesStack.push(val == null ? NULL_VALUE : val);
@@ -1158,7 +1163,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return false;
     }
-    return this.childExpressions.getFirst().isIndexedFunctionCall(context);
+    return this.childExpressions.get(0).isIndexedFunctionCall(context);
   }
 
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
@@ -1166,7 +1171,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return -1;
     }
-    return this.childExpressions.getFirst().estimateIndexedFunction(target, context, operator, right);
+    return this.childExpressions.get(0).estimateIndexedFunction(target, context, operator, right);
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
@@ -1175,14 +1180,14 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return null;
     }
-    return this.childExpressions.getFirst().executeIndexedFunction(target, context, operator, right, pushdown);
+    return this.childExpressions.get(0).executeIndexedFunction(target, context, operator, right, pushdown);
   }
 
   public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context,
       final BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1)
       return null;
-    return this.childExpressions.getFirst().getIndexedFunctionScoringExplain(target, context, operator, right);
+    return this.childExpressions.get(0).getIndexedFunctionScoringExplain(target, context, operator, right);
   }
 
   /**
@@ -1200,7 +1205,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1) {
       return false;
     }
-    return this.childExpressions.getFirst().canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
+    return this.childExpressions.get(0).canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
   }
 
   /**
@@ -1217,7 +1222,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1)
       return false;
 
-    return this.childExpressions.getFirst().allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
+    return this.childExpressions.get(0).allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
   }
 
   /**
@@ -1236,12 +1241,12 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1)
       return false;
 
-    return this.childExpressions.getFirst().executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
+    return this.childExpressions.get(0).executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
   }
 
   public boolean isBaseIdentifier() {
     if (this.childExpressions != null && childExpressions.size() == 1)
-      return childExpressions.getFirst().isBaseIdentifier();
+      return childExpressions.get(0).isBaseIdentifier();
 
     return false;
   }
@@ -1307,7 +1312,7 @@ public class MathExpression extends SimpleNode {
     if (this.childExpressions.size() != 1)
       return false;
 
-    return this.childExpressions.getFirst().isCount();
+    return this.childExpressions.get(0).isCount();
   }
 
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
@@ -1386,7 +1391,7 @@ public class MathExpression extends SimpleNode {
     if (childExpressions.size() != 1)
       throw new CommandExecutionException("cannot apply REMOVE " + this);
 
-    childExpressions.getFirst().applyRemove(result, context);
+    childExpressions.get(0).applyRemove(result, context);
   }
   @Override
   public Map<String, Object> toJSON() {

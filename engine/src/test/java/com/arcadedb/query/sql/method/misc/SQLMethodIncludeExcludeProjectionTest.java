@@ -137,12 +137,12 @@ class SQLMethodIncludeExcludeProjectionTest extends TestHelper {
       assertThat(excluded).isInstanceOf(List.class);
       final List<?> excludedList = (List<?>) excluded;
       assertThat(excludedList).hasSize(1);
-      assertThat((Map<String, Object>) excludedList.getFirst()).doesNotContainKey("z").containsEntry("w", 7);
+      assertThat((Map<String, Object>) excludedList.get(0)).doesNotContainKey("z").containsEntry("w", 7);
 
       final Object included = single("select outE('R1').include('w') as c from V1 where n = 1");
       final List<?> includedList = (List<?>) included;
       assertThat(includedList).hasSize(1);
-      assertThat((Map<String, Object>) includedList.getFirst()).containsOnlyKeys("w");
+      assertThat((Map<String, Object>) includedList.get(0)).containsOnlyKeys("w");
     });
     assertSourceIntact();
   }

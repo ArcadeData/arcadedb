@@ -96,7 +96,7 @@ class Issue9467LinkSubSelectionTest extends AbstractGraphQLTest {
         assertThat(doc.<Result>getProperty("owner").<String>getProperty("city")).isEqualTo("Rome");
         final List<Result> links = doc.getProperty("links");
         assertThat(links).hasSize(1);
-        assertThat(links.getFirst().<String>getProperty("city")).isEqualTo("Rome");
+        assertThat(links.get(0).<String>getProperty("city")).isEqualTo("Rome");
       }
       database.command("sql", "DELETE FROM LinkedAddress");
       try (final ResultSet resultSet = database.query("graphql", "{ docs { id owner { city } links { city } } }")) {

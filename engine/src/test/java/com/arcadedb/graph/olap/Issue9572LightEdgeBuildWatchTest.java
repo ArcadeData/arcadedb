@@ -234,7 +234,7 @@ class Issue9572LightEdgeBuildWatchTest extends TestHelper {
     database.transaction(() -> {
       final List<Edge> edges = new ArrayList<>();
       a.asVertex().getEdges(Vertex.DIRECTION.OUT, "K").forEach(edges::add);
-      edges.getFirst().delete();
+      edges.get(0).delete();
     });
     return change(false);
   }

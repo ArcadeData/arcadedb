@@ -79,7 +79,7 @@ class Issue9506BuildOverPopulatedIndexHATest extends BaseRaftHATest {
     assertThat(followerBucketIndex.findNeighborsFromVector(new float[] { 0.5f, 0.5f }, BATCH * 3)).hasSize(BATCH);
     assertIndexOnEveryServer(index.getName(), BATCH);
 
-    leader.transaction(() -> rids.getFirst().asVertex().delete());
+    leader.transaction(() -> rids.get(0).asVertex().delete());
     assertIndexOnEveryServer(index.getName(), BATCH - 1);
   }
 

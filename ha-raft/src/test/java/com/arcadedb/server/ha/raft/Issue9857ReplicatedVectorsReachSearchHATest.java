@@ -180,7 +180,7 @@ class Issue9857ReplicatedVectorsReachSearchHATest extends BaseRaftHATest {
   private RID nearest(final int serverIndex, final String indexName, final float[] query) {
     return withResyncRetry(serverIndex, db -> {
       final List<Pair<RID, Float>> answer = vectorIndex(db, indexName).findNeighborsFromVector(query, 1);
-      return answer.isEmpty() ? null : answer.getFirst().getFirst();
+      return answer.isEmpty() ? null : answer.get(0).getFirst();
     });
   }
 

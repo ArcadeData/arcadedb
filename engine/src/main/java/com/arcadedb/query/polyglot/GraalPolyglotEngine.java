@@ -379,7 +379,9 @@ public class GraalPolyglotEngine implements AutoCloseable {
      */
     @Override
     public void run() {
-      Thread.ofPlatform().daemon().name("ArcadeDB-ScriptTermination").start(this::interruptIfArmed);
+      final Thread thread = new Thread(this::interruptIfArmed, "ArcadeDB-ScriptTermination");
+      thread.setDaemon(true);
+      thread.start();
     }
 
     private synchronized void interruptIfArmed() {

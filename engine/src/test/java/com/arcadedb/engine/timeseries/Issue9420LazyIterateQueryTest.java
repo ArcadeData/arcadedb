@@ -93,7 +93,7 @@ class Issue9420LazyIterateQueryTest extends TestHelper {
       assertThat((long) row[0]).as("the shards are still merged by timestamp").isGreaterThanOrEqualTo(previous);
       previous = (long) row[0];
     }
-    assertThat(iterated.getLast()[1]).isEqualTo("host_only_in_the_mutable_bucket");
+    assertThat(iterated.get(iterated.size() - 1)[1]).isEqualTo("host_only_in_the_mutable_bucket");
   }
 
   /** Range bounds and tag filter apply exactly as they do for {@code query()}. */
@@ -159,7 +159,7 @@ class Issue9420LazyIterateQueryTest extends TestHelper {
     final List<Object[]> rest = drain(it);
     assertThat(metrics.getVanishedBlocks()).as("the blocks retention removed are counted, not hidden").isPositive();
     assertThat(rest.size() + 1).as("the answer is short by the rows retention removed").isLessThan(TAGS * PER_TAG + 1);
-    assertThat(rest.getLast()[1]).isEqualTo("host_only_in_the_mutable_bucket");
+    assertThat(rest.get(rest.size() - 1)[1]).isEqualTo("host_only_in_the_mutable_bucket");
     assertThat(firstTs).isEqualTo(BASE_TS);
   }
 

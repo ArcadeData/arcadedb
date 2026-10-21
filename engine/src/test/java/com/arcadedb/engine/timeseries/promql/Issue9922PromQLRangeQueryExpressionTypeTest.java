@@ -79,12 +79,12 @@ class Issue9922PromQLRangeQueryExpressionTypeTest extends TestHelper {
   void validRangeQueriesStillWork() {
     final MatrixResult vector = range("m9922");
     assertThat(vector.series()).hasSize(1);
-    assertThat(vector.series().getFirst().values()).isNotEmpty();
+    assertThat(vector.series().get(0).values()).isNotEmpty();
 
     final MatrixResult scalar = range("1 + 1");
     assertThat(scalar.series()).hasSize(1);
-    assertThat(scalar.series().getFirst().values()).hasSize(3);
-    assertThat(scalar.series().getFirst().values().getFirst()[1]).isEqualTo(2.0);
+    assertThat(scalar.series().get(0).values()).hasSize(3);
+    assertThat(scalar.series().get(0).values().get(0)[1]).isEqualTo(2.0);
 
     assertThat(range("sum_over_time(m9922[5m])").series()).hasSize(1);
     // an instant vector with no series is still an instant vector: an empty matrix, not a refusal

@@ -2660,7 +2660,7 @@ public class GraphEngine {
       final Vertex.DIRECTION dir, final String[] relTypes, final LongConsumer entryCount) {
     final int n = vertices.size();
     if (dir != Vertex.DIRECTION.OUT && n > 0) {
-      final String[] unidirectional = IncomingEdgeLookup.getUnidirectionalTypes(vertices.getFirst().getDatabase().getSchema(),
+      final String[] unidirectional = IncomingEdgeLookup.getUnidirectionalTypes(vertices.get(0).getDatabase().getSchema(),
           relTypes);
       if (unidirectional.length > 0)
         return buildTransposedAdjacencyList(vertices, ridToIdx, dir, relTypes, unidirectional, entryCount);
@@ -2733,7 +2733,7 @@ public class GraphEngine {
   private static int[][] buildTransposedAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes, final String[] unidirectional, final LongConsumer entryCount) {
     final int n = vertices.size();
-    final EdgeBucketMask unidirectionalBuckets = EdgeBucketMask.of((DatabaseInternal) vertices.getFirst().getDatabase(),
+    final EdgeBucketMask unidirectionalBuckets = EdgeBucketMask.of((DatabaseInternal) vertices.get(0).getDatabase(),
         unidirectional);
     final int[] counts = new int[n];
     walkTransposedAdjacency(vertices, ridToIdx, dir, relTypes, unidirectional, unidirectionalBuckets, counts, null);

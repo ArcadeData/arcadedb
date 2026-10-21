@@ -118,7 +118,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<String> parts = parseCommand(query);
       if (parts.isEmpty())
         return analyzed(true, CollectionUtils.singletonSet(OperationType.READ));
-      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+      final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
       return analyzed(isIdempotentCommand(cmd), detectRedisOperationTypes(cmd));
     }
 
@@ -131,7 +131,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<String> parts = parseCommand(trimmed);
       if (parts.isEmpty())
         continue;
-      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+      final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
       idempotent &= isIdempotentCommand(cmd);
       ops.addAll(detectRedisOperationTypes(cmd));
     }
@@ -488,7 +488,7 @@ public class RedisQueryEngine implements QueryEngine {
       throw new CommandParsingException("Empty Redis command");
     }
 
-    final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+    final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
     // the table the RESP wire path uses (#9161): a surplus argument is no longer an amount, a missing one no longer defaults
     try {
       RedisCommandArity.checkRam(cmd, parts.size());

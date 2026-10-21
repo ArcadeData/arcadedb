@@ -91,7 +91,7 @@ class Issue9841NestedProjectionPrefixWildcardTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "select $r:{s*} as p let $r = (select n, secret, m from D1)")) {
       final List<Result> rows = rs.next().getProperty("p");
       assertThat(rows).hasSize(1);
-      final Result p = rows.getFirst();
+      final Result p = rows.get(0);
       assertThat(p.isElement()).isFalse();
       assertThat(p.getPropertyNames()).containsExactly("secret");
       assertThat(p.<String>getProperty("secret")).isEqualTo("s");

@@ -373,7 +373,7 @@ class Issue9706ConstraintNamesAndTypedDropTest extends TestHelper {
   private Map<String, Object> onlyRow(final String cypher) {
     final List<Map<String, Object>> rows = rows(cypher);
     assertThat(rows).hasSize(1);
-    return rows.getFirst();
+    return rows.get(0);
   }
 
   private Result single(final String cypher) {

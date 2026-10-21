@@ -3916,7 +3916,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private BaseExpression buildNamespaceQualifiedFunctionCall(final String namespace,
       final List<SQLParser.MethodCallContext> methodCalls, final SQLParser.IdentifierChainContext chainCtx) {
     final BaseExpression baseExpr = new BaseExpression();
-    final SQLParser.MethodCallContext methodCtx = methodCalls.getFirst();
+    final SQLParser.MethodCallContext methodCtx = methodCalls.get(0);
 
     try {
       // Build the combined function name: "geo.point", "geo.within", etc.

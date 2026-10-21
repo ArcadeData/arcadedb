@@ -156,9 +156,9 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
 
   @Test
   void validArgumentsStillWork() {
-    assertThat(((InstantVector) instant("sum(m9883)")).samples().getFirst().value()).isCloseTo(2.8, offset(1e-9));
+    assertThat(((InstantVector) instant("sum(m9883)")).samples().get(0).value()).isCloseTo(2.8, offset(1e-9));
     assertThat(((InstantVector) instant("sum(sum_over_time(m9883[5m]))")).samples()).hasSize(1);
-    assertThat(((InstantVector) instant("topk(1, m9883)")).samples().getFirst().value()).isEqualTo(5.4);
+    assertThat(((InstantVector) instant("topk(1, m9883)")).samples().get(0).value()).isEqualTo(5.4);
     assertThat(((InstantVector) instant("sum(missing_9883)")).samples()).isEmpty();
 
     final List<VectorSample> abs = ((InstantVector) instant("abs(m9883)")).samples();

@@ -105,7 +105,7 @@ class Issue9330PromQLDropMetricNameTest extends TestHelper {
 
     final InstantVector empty = evaluate("e9363{host=\"\"}");
     assertThat(empty.samples()).hasSize(1);
-    assertThat(empty.samples().getFirst().value()).isEqualTo(1.0);
+    assertThat(empty.samples().get(0).value()).isEqualTo(1.0);
 
     // an absent label is "" for the regex matchers too
     assertThat(evaluate("e9363{host=~\".*\"}").samples()).hasSize(2);
@@ -115,7 +115,7 @@ class Issue9330PromQLDropMetricNameTest extends TestHelper {
 
     final InstantVector present = evaluate("e9363{host!=\"\"}");
     assertThat(present.samples()).hasSize(1);
-    assertThat(present.samples().getFirst().value()).isEqualTo(2.0);
+    assertThat(present.samples().get(0).value()).isEqualTo(2.0);
   }
 
   private DatabaseInternal getDatabaseInternal() {
@@ -125,7 +125,7 @@ class Issue9330PromQLDropMetricNameTest extends TestHelper {
   private VectorSample only(final String promql) {
     final InstantVector iv = evaluate(promql);
     assertThat(iv.samples()).hasSize(1);
-    return iv.samples().getFirst();
+    return iv.samples().get(0);
   }
 
   private InstantVector evaluate(final String promql) {

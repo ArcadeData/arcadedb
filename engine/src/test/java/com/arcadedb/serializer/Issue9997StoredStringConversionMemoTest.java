@@ -234,13 +234,13 @@ class Issue9997StoredStringConversionMemoTest extends TestHelper {
     assertThat(json.getJSONObject("byName").getJSONObject("morning").getString("@type")).isEqualTo("Slot");
 
     final List<?> slots = reloaded.getList("slots");
-    assertThat(((Document) slots.getFirst()).get("at")).isEqualTo(LocalTime.of(10, 15, 30));
+    assertThat(((Document) slots.get(0)).get("at")).isEqualTo(LocalTime.of(10, 15, 30));
     final Map<String, ?> byName = reloaded.getMap("byName");
     assertThat(((Document) byName.get("morning")).get("at")).isEqualTo(LocalTime.of(11, 0));
 
     final Result r = first("SELECT slots, byName, title FROM Planner");
     assertThat(r.<Object>getProperty("title")).isEqualTo("10:15:30");
-    assertThat(((Document) r.<List<?>>getProperty("slots").getFirst()).get("at")).isEqualTo(LocalTime.of(10, 15, 30));
+    assertThat(((Document) r.<List<?>>getProperty("slots").get(0)).get("at")).isEqualTo(LocalTime.of(10, 15, 30));
     assertThat(((Document) r.<Map<String, ?>>getProperty("byName").get("morning")).get("at")).isEqualTo(LocalTime.of(11, 0));
   }
 

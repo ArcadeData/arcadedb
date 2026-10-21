@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
@@ -160,8 +161,11 @@ class Issue10074TakenDatabaseNameAnswers409IT extends BaseGraphServerTest {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("command", command).toString()))
         .build();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString());
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

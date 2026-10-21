@@ -402,7 +402,7 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     final MultiColumnAggregationResult result = engine().aggregateMulti(T0 + 30 * 60_000L, T0 + 270 * 60_000L,
         List.of(MultiColumnAggregationRequest.count("c")), 0, 0, null, null, metrics, 0);
     assertThat(result.getBucketTimestamps()).hasSize(1);
-    assertThat((long) result.getValue(result.getBucketTimestamps().getFirst(), 0)).isEqualTo(241L);
+    assertThat((long) result.getValue(result.getBucketTimestamps().get(0), 0)).isEqualTo(241L);
     assertThat(metrics.getSlowPathBlocks()).isEqualTo(2);
     assertThat(metrics.getFastPathBlocks()).isEqualTo(3);
   }
@@ -416,7 +416,7 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     final FieldFilter filter = FieldFilter.range(1, columns.get(2), 150.5, false, null, false);
     final MultiColumnAggregationResult result = engine().aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
         List.of(MultiColumnAggregationRequest.count("c")), 0, 0, null, filter, metrics, 0);
-    assertThat((long) result.getValue(result.getBucketTimestamps().getFirst(), 0)).isEqualTo(209L);
+    assertThat((long) result.getValue(result.getBucketTimestamps().get(0), 0)).isEqualTo(209L);
     assertThat(metrics.getSkippedBlocks()).isEqualTo(2);
     assertThat(metrics.getSlowPathBlocks()).isEqualTo(1);
     assertThat(metrics.getFastPathBlocks()).isEqualTo(3);
@@ -508,18 +508,18 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     final ColumnDefinition lng = new ColumnDefinition("l", Type.LONG, ColumnDefinition.ColumnRole.FIELD);
     // 2^53 + 1 rounds to 2^53 as a double, so a block whose statistics read [2^53, 2^53] may hold 2^53 + 1
     final long big = (1L << 53) + 1;
-    final FieldFilter.Condition above = FieldFilter.range(0, lng, big, true, null, false).getConditions().getFirst();
+    final FieldFilter.Condition above = FieldFilter.range(0, lng, big, true, null, false).getConditions().get(0);
     final double rounded = (double) (1L << 53);
     assertThat(FieldFilter.blockMatch(above, rounded, rounded, 10, 10)).isEqualTo(FieldFilter.BlockMatch.SOME);
     assertThat(FieldFilter.blockMatch(above, rounded + 4, rounded + 8, 10, 10)).isEqualTo(FieldFilter.BlockMatch.ALL);
     assertThat(FieldFilter.blockMatch(above, 0, 100, 10, 10)).isEqualTo(FieldFilter.BlockMatch.NONE);
     // within 2^53 a block whose minimum IS the inclusive bound matches whole
-    final FieldFilter.Condition atLeastTen = FieldFilter.range(0, lng, 10, true, 20, true).getConditions().getFirst();
+    final FieldFilter.Condition atLeastTen = FieldFilter.range(0, lng, 10, true, 20, true).getConditions().get(0);
     assertThat(FieldFilter.blockMatch(atLeastTen, 10, 20, 10, 10)).isEqualTo(FieldFilter.BlockMatch.ALL);
     assertThat(FieldFilter.blockMatch(atLeastTen, 9, 20, 10, 10)).isEqualTo(FieldFilter.BlockMatch.SOME);
 
     final ColumnDefinition dbl = new ColumnDefinition("d", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD);
-    final FieldFilter.Condition over = FieldFilter.range(0, dbl, 10, false, null, false).getConditions().getFirst();
+    final FieldFilter.Condition over = FieldFilter.range(0, dbl, 10, false, null, false).getConditions().get(0);
     assertThat(FieldFilter.blockMatch(over, 0, 10, 5, 5)).isEqualTo(FieldFilter.BlockMatch.NONE);
     assertThat(FieldFilter.blockMatch(over, 11, 20, 5, 5)).isEqualTo(FieldFilter.BlockMatch.ALL);
     // an absent sample in the block fails every condition, so the block cannot be answered as a whole

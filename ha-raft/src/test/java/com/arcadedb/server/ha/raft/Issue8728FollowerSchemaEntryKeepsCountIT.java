@@ -124,7 +124,7 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
     final LocalBucket bucketBefore = followerBucket(followerIndex);
 
     final LSMTreeIndex leaderBucketIndex = (LSMTreeIndex) leaderDb.getSchema().getType(TYPE).getIndexesByProperties("uuid")
-        .getFirst().getIndexesOnBuckets()[0];
+        .get(0).getIndexesOnBuckets()[0];
     leaderDb.async().waitCompletion();
     leaderBucketIndex.scheduleCompaction();
     assertThat(leaderBucketIndex.compact()).as("the compaction must actually run to ship a compaction entry").isTrue();
@@ -137,7 +137,7 @@ class Issue8728FollowerSchemaEntryKeepsCountIT extends BaseRaftHATest {
 
     final String leaderName = leaderBucketIndex.getName();
     testEachServer(serverIndex -> assertThat(getServerDatabase(serverIndex, getDatabaseName()).getSchema().getType(TYPE)
-        .getIndexesByProperties("uuid").getFirst().getIndexesOnBuckets()[0].getName())
+        .getIndexesByProperties("uuid").get(0).getIndexesOnBuckets()[0].getName())
         .as("bucket index name on server %d (issue #9213)", serverIndex).isEqualTo(leaderName));
 
     assertCachedCountOnEveryServer();

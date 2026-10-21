@@ -113,7 +113,7 @@ class Issue10051FullTextCorpusDeltaReplicationTest {
   private List<CorpusDelta> carriedDeltas() {
     final List<List<Object>> calls = broker.calls("replicateTransaction");
     assertThat(calls).hasSize(1);
-    return (List<CorpusDelta>) calls.getFirst().get(4);
+    return (List<CorpusDelta>) calls.get(0).get(4);
   }
 
   // ---- the wire format

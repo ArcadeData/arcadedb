@@ -89,7 +89,7 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
     int maxPagesWritten = 0;
     int insertsChainingAPage = 0;
     for (int i = 0; i < 300; i++) {
-      final RID rid = new RID(hot.getFirst().getBucketId(), 10_000_000L + i);
+      final RID rid = new RID(hot.get(0).getBucketId(), 10_000_000L + i);
       database.begin();
       bucket.put(new Object[] { 1L }, rid);
       final int written = db.getTransaction().getModifiedPages();
@@ -246,7 +246,7 @@ class Issue9228HashHotKeyRidListTest extends TestHelper {
 
     // The first key sits on the full head page with one RID: its second RID cannot grow the entry there, the bucket cannot
     // split, and the value (one RID) is shorter than the pointer that replaces it, so the entry is written again elsewhere
-    final long first = keys.getFirst();
+    final long first = keys.get(0);
     putAll(bucket, first, List.of(new RID(1_001, first)));
     assertThat(countRidListPages()).isEqualTo(1);
     assertThat(lookupInBucket(bucket, first)).containsExactlyInAnyOrder(new RID(1_000, first), new RID(1_001, first));

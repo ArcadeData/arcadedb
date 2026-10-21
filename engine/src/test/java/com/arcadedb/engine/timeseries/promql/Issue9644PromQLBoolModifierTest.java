@@ -192,8 +192,8 @@ class Issue9644PromQLBoolModifierTest extends TestHelper {
     // only h1 exists on both sides: h2 of n9644 has no partner in m9644, so it is not in the result at all
     final InstantVector iv = evaluate("n9644 < bool m9644");
     assertThat(iv.samples()).hasSize(1);
-    assertThat(iv.samples().getFirst().labels()).containsEntry("host", "h1").doesNotContainKey("__name__");
-    assertThat(iv.samples().getFirst().value()).isEqualTo(1.0);
+    assertThat(iv.samples().get(0).labels()).containsEntry("host", "h1").doesNotContainKey("__name__");
+    assertThat(iv.samples().get(0).value()).isEqualTo(1.0);
   }
 
   @Test
@@ -253,9 +253,9 @@ class Issue9644PromQLBoolModifierTest extends TestHelper {
     assertThat(result).isInstanceOf(MatrixResult.class);
     final List<MatrixSeries> series = ((MatrixResult) result).series();
     assertThat(series).hasSize(1);
-    assertThat(series.getFirst().labels()).doesNotContainKey("__name__").containsEntry("host", "h1");
+    assertThat(series.get(0).labels()).doesNotContainKey("__name__").containsEntry("host", "h1");
     // steps at 1000 (1.5 -> 0), 3000 (3.5 -> 1), 5000 (5.5 -> 1): the false step is reported, not filtered
-    final List<double[]> values = series.getFirst().values();
+    final List<double[]> values = series.get(0).values();
     assertThat(values).hasSize(3);
     assertThat(values.get(0)[1]).isEqualTo(0.0);
     assertThat(values.get(1)[1]).isEqualTo(1.0);
@@ -269,7 +269,7 @@ class Issue9644PromQLBoolModifierTest extends TestHelper {
   private VectorSample only(final String promql) {
     final InstantVector iv = evaluate(promql);
     assertThat(iv.samples()).as(promql).hasSize(1);
-    return iv.samples().getFirst();
+    return iv.samples().get(0);
   }
 
   private double scalar(final String promql) {

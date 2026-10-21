@@ -93,9 +93,9 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     assertCounts(2);
 
     // One the overlay added, one from the base CSR
-    database.transaction(() -> outEdges("b").getFirst().delete());
+    database.transaction(() -> outEdges("b").get(0).delete());
     assertCounts(1);
-    database.transaction(() -> outEdges("a").getFirst().delete());
+    database.transaction(() -> outEdges("a").get(0).delete());
     assertCounts(0);
     assertThat(view().getEdgeCount()).isZero();
 
@@ -119,11 +119,11 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     database.transaction(() -> vertex("b").newLightEdge("K", vertex("a")));
     assertCounts(4);
 
-    database.transaction(() -> outEdges("b").getFirst().delete());
+    database.transaction(() -> outEdges("b").get(0).delete());
     assertCounts(3);
     database.transaction(() -> {
-      outEdges("b").getFirst().delete();
-      outEdges("b").getFirst().delete();
+      outEdges("b").get(0).delete();
+      outEdges("b").get(0).delete();
     });
     assertCounts(1);
 
@@ -131,7 +131,7 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     database.transaction(() -> {
       vertex("b").newLightEdge("K", vertex("a"));
       vertex("b").newLightEdge("K", vertex("a"));
-      outEdges("b").getFirst().delete();
+      outEdges("b").get(0).delete();
     });
     assertCounts(2);
 
@@ -148,9 +148,9 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
 
     database.transaction(() -> vertex("a").newLightEdge("K", vertex("b")));
     assertCounts(3);
-    database.transaction(() -> outEdges("a").getFirst().delete());
+    database.transaction(() -> outEdges("a").get(0).delete());
     assertCounts(2);
-    database.transaction(() -> outEdges("a").getFirst().delete());
+    database.transaction(() -> outEdges("a").get(0).delete());
     assertCounts(1);
 
     dropViewAndAssertCounts(1);
@@ -173,7 +173,7 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     assertThat(view().awaitReady(60, TimeUnit.SECONDS)).isTrue();
     assertCounts(3);
 
-    database.transaction(() -> outEdges("b").getFirst().delete());
+    database.transaction(() -> outEdges("b").get(0).delete());
     assertThat(view().getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
 
     dropViewAndAssertCounts(2);
@@ -189,7 +189,7 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     awaitEdgeCount(3);
     assertCounts(3);
 
-    database.transaction(() -> outEdges("b").getFirst().delete());
+    database.transaction(() -> outEdges("b").get(0).delete());
     awaitEdgeCount(2);
     assertCounts(2);
 
@@ -313,7 +313,7 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     assertThat(view().getEdgeCount()).isEqualTo(3);
     view().setCompactionThreshold(GraphAnalyticalView.DEFAULT_COMPACTION_THRESHOLD);
 
-    database.transaction(() -> outEdges("b").getFirst().delete());
+    database.transaction(() -> outEdges("b").get(0).delete());
     assertCounts(2);
 
     dropViewAndAssertCounts(2);

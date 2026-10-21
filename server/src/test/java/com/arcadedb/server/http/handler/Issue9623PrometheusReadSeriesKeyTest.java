@@ -140,7 +140,7 @@ class Issue9623PrometheusReadSeriesKeyTest extends BaseGraphServerTest {
     assertThat(response.getResults()).hasSize(1);
 
     final Map<Map<String, String>, List<Sample>> result = new LinkedHashMap<>();
-    for (final TimeSeries ts : response.getResults().getFirst().getTimeSeries()) {
+    for (final TimeSeries ts : response.getResults().get(0).getTimeSeries()) {
       final Map<String, String> labels = new LinkedHashMap<>();
       for (final Label label : ts.getLabels())
         if (!"__name__".equals(label.name()))

@@ -195,9 +195,9 @@ class Issue9834Fp16BlockMaxBoundTest extends TestHelper {
       final List<RidScore> top = BmwScorer.topK(queryDims, queryWeights, cursors, 1);
       assertThat(top).hasSize(1);
       if (expected)
-        assertThat(top.getFirst().rid()).as("the document decoding above the threshold must be top-1").isEqualTo(TARGET_RID);
+        assertThat(top.get(0).rid()).as("the document decoding above the threshold must be top-1").isEqualTo(TARGET_RID);
       else
-        assertThat(top.getFirst().rid()).isNotEqualTo(TARGET_RID);
+        assertThat(top.get(0).rid()).isNotEqualTo(TARGET_RID);
     } finally {
       for (final DimCursor c : cursors)
         c.close();

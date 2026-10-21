@@ -188,7 +188,7 @@ class Issue9615StaleIndexBeforeFirstRowTest extends TestHelper {
       while (rs.hasNext())
         ids.add(rs.next().<Long>getProperty("id"));
     }
-    if (ids.size() > 1 && ids.getFirst() > ids.getLast())
+    if (ids.size() > 1 && ids.get(0) > ids.get(ids.size() - 1))
       return ids; // the ORDER BY DESC case: the order is part of the answer
     ids.sort(null);
     return ids;

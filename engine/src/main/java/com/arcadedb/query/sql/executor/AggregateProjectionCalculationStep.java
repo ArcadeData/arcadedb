@@ -352,7 +352,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         if (shared != null)
           sources.add(shared);
       } else
-        merged = shared != null ? shared : partials.getFirst();
+        merged = shared != null ? shared : partials.get(0);
       // THE GROUPS OF EVERY PARTIAL TO MERGE, THE TARGET INCLUDED: ONLY TO DECIDE WHETHER THE MERGE PAYS TO RUN IN PARALLEL.
       // THE SHARED GROUPS ARE COUNTED BY sharedGroupCount (THEIR groupCount STAYS 0), ONCE, AS THE TARGET OR IN sources
       long partialGroups = shared != null && merged == shared ? sharedGroupCount.get() : 0;

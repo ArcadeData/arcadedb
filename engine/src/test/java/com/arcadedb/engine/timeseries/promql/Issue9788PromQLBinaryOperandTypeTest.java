@@ -137,16 +137,16 @@ class Issue9788PromQLBinaryOperandTypeTest extends TestHelper {
 
     final List<VectorSample> plusOne = ((InstantVector) instant("m9788 + 1")).samples();
     assertThat(plusOne).hasSize(1);
-    assertThat(plusOne.getFirst().value()).isEqualTo(6.5);
+    assertThat(plusOne.get(0).value()).isEqualTo(6.5);
 
     final List<VectorSample> negated = ((InstantVector) instant("-m9788")).samples();
     assertThat(negated).hasSize(1);
-    assertThat(negated.getFirst().value()).isEqualTo(-5.5);
+    assertThat(negated.get(0).value()).isEqualTo(-5.5);
 
     // a range vector consumed by a range function is an instant vector, a legal operand
     final List<VectorSample> summed = ((InstantVector) instant("sum_over_time(m9788[5m]) * 2")).samples();
     assertThat(summed).hasSize(1);
-    assertThat(summed.getFirst().value()).isEqualTo(11.0);
+    assertThat(summed.get(0).value()).isEqualTo(11.0);
   }
 
   private void assertRefused(final String promql, final String message) {

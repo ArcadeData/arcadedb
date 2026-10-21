@@ -228,7 +228,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   @Test
   void aBackwardScanAndAScanOfPositionsAreBoundedToo() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_BATCH_MAX_BYTES, 1024L * 1024);
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).get(0);
     final long bound = 1024L * 1024 / LARGE_PAYLOAD + 1;
 
     // BACKWARD: THE LAST RECORD FIRST, EVERY RECORD ONCE
@@ -310,7 +310,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
 
   @Test
   void aPositionedIteratorReturnsTheRecordAtThePositionAndGoesOn() throws Exception {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).get(0);
     final Iterator<Record> all = bucket.iterator();
     all.next();
     all.next();
@@ -331,7 +331,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
 
   @Test
   void aPositionedIteratorDropsTheBatchItAlreadyRead() throws Exception {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Large").getBuckets(false).get(0);
     final Iterator<Record> all = bucket.iterator();
     final Record first = all.next();
     all.next();
@@ -563,7 +563,7 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
   private BucketIterator openIterator(final String typeName) {
     final DocumentType type = database.getSchema().getType(typeName);
     final long before = recordsRead();
-    final BucketIterator iterator = (BucketIterator) ((LocalBucket) type.getBuckets(false).getFirst()).iterator();
+    final BucketIterator iterator = (BucketIterator) ((LocalBucket) type.getBuckets(false).get(0)).iterator();
     // THE FIRST BATCH IS READ WHEN THE ITERATOR IS FIRST READ
     iterator.hasNext();
     lastBatch = recordsRead() - before;

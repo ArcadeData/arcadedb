@@ -44,7 +44,7 @@ class Issue9891TypeRenamePublishSignalTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE Held BUCKETS 2");
     database.transaction(() -> database.newDocument("Held").set("id", 1).save());
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Held");
-    final String bucketName = type.getBuckets(false).getFirst().getName();
+    final String bucketName = type.getBuckets(false).get(0).getName();
 
     final AtomicInteger publishes = countPublishes(() -> {
       type.renameLock.lock();
@@ -59,7 +59,7 @@ class Issue9891TypeRenamePublishSignalTest extends TestHelper {
     assertThat(publishes).hasValue(0);
     assertThat(database.getSchema().existsType("Held")).isTrue();
     assertThat(database.getSchema().existsType("Held2")).isFalse();
-    assertThat(type.getBuckets(false).getFirst().getName()).as("no file moved").isEqualTo(bucketName);
+    assertThat(type.getBuckets(false).get(0).getName()).as("no file moved").isEqualTo(bucketName);
   }
 
   @Test

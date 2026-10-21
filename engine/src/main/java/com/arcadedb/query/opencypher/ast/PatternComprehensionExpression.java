@@ -327,7 +327,7 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.remove(pathElements.size() - 1);
         pathElements.remove(pathElements.size() - 1);
       }
-      walkedEdges.removeLast();
+      walkedEdges.remove(walkedEdges.size() - 1);
       usedEdges.remove(edgeRid);
     }
   }
@@ -376,7 +376,7 @@ public class PatternComprehensionExpression implements Expression {
 
     if (trackPath)
       for (int i = 0; i < edges.size() * 2; i++)
-        pathElements.removeLast();
+        pathElements.remove(pathElements.size() - 1);
     for (int i = 0; i < edges.size(); i++)
       usedEdges.remove(edges.get(i).getIdentity());
   }

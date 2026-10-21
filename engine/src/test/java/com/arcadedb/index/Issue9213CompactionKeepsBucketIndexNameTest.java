@@ -137,7 +137,7 @@ class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("text", "word" + i + " other" + (i * 7) + " shared").save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").get(0);
     final IndexInternal bucketIndex = typeIndex.getIndexesOnBuckets()[0];
     final String nameBefore = bucketIndex.getName();
     final LSMTreeIndex lsm = (LSMTreeIndex) ((LSMTreeIndexMutable) bucketIndex.getComponent()).getMainIndex();
@@ -147,7 +147,7 @@ class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
 
     reopenDatabase();
 
-    final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").getFirst();
+    final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").get(0);
     assertThat(reloaded.getIndexesOnBuckets()[0].getName()).isEqualTo(nameBefore);
     assertThat(database.getSchema().getIndexByName(nameBefore).getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
     assertThat(reloaded.get(new Object[] { "word42" }).hasNext()).isTrue();
@@ -167,7 +167,7 @@ class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("location", "POINT (" + (i % 170) + "." + i + " " + (i % 80) + ".5)").save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").get(0);
     final IndexInternal bucketIndex = typeIndex.getIndexesOnBuckets()[0];
     final String nameBefore = bucketIndex.getName();
     final LSMTreeIndex lsm = (LSMTreeIndex) ((LSMTreeIndexMutable) bucketIndex.getComponent()).getMainIndex();
@@ -180,7 +180,7 @@ class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
 
     reopenDatabase();
 
-    final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").getFirst();
+    final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").get(0);
     assertThat(reloaded.getIndexesOnBuckets()[0].getName()).isEqualTo(nameBefore);
     assertThat(database.getSchema().getIndexByName(nameBefore).getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
   }
@@ -241,14 +241,14 @@ class Issue9213CompactionKeepsBucketIndexNameTest extends TestHelper {
   }
 
   private void assertIndexServes(final List<String> keys) {
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").get(0);
     assertThat(typeIndex.countEntries()).isEqualTo(keys.size());
     for (int i = 0; i < keys.size(); i += 97)
       assertThat(typeIndex.get(new Object[] { keys.get(i) }).hasNext()).as("key %s", keys.get(i)).isTrue();
   }
 
   private LSMTreeIndex bucketIndex() {
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").get(0);
     return (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
   }
 }

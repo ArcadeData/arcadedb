@@ -122,7 +122,7 @@ class Issue10068ServerPeerDialsGoThroughOneBuilderTest {
           stale.add(exempt.getKey() + " matches " + matches.size() + " files");
           continue;
         }
-        final String source = Files.readString(matches.getFirst(), StandardCharsets.UTF_8);
+        final String source = Files.readString(matches.get(0), StandardCharsets.UTF_8);
         for (final String bypass : exempt.getValue())
           if (!source.contains(bypass))
             stale.add(exempt.getKey() + " no longer uses " + bypass);

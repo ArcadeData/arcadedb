@@ -100,7 +100,7 @@ class Issue9723PromQLScalarComparisonWithoutBoolTest extends TestHelper {
   void aComparisonWithAVectorOperandStillFiltersWithoutBool() {
     final InstantVector left = (InstantVector) instant("m9723 > 1");
     assertThat(left.samples()).hasSize(1);
-    final VectorSample s = left.samples().getFirst();
+    final VectorSample s = left.samples().get(0);
     assertThat(s.value()).isEqualTo(5.5);
     assertThat(s.labels()).containsEntry("__name__", "m9723");
 

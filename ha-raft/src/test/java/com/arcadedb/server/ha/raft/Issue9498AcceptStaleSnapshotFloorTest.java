@@ -141,7 +141,7 @@ class Issue9498AcceptStaleSnapshotFloorTest {
     assertThat(raft.calls("notifyApplied")).as("the reads the floor held back are woken").hasSize(1);
 
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains("user 'root' (from 10.0.0.9)").contains(String.valueOf(PERSISTED_APPLIED))
+    assertThat(warnings.get(0)).contains("user 'root' (from 10.0.0.9)").contains(String.valueOf(PERSISTED_APPLIED))
         .contains(String.valueOf(SNAPSHOT_INDEX)).contains("#9498");
 
     // The restart path: the same marker, read against what is now persisted
