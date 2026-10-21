@@ -30,9 +30,16 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #10536: a configuration directory moved off {@code <root>/config} (for example onto a Kubernetes
@@ -110,6 +117,35 @@ class Issue10536ConfigDirectorySeedTest extends StaticBaseServerTest {
 
     assertThat(ConfigDirectorySeeder.seed(shipped, configDir)).isEmpty();
     assertThat(configDir.resolve("gremlin-server.yaml")).doesNotExist();
+  }
+
+  @Test
+  void aSeedThatFailsHalfwayLeavesNoFileBehindSoTheNextStartSeedsAgain(@TempDir final Path tempDir) throws Exception {
+    final Path shipped = shipDefaults(tempDir.resolve("root"));
+    final Path configDir = tempDir.resolve("config");
+    // server-groups.json is copied first: an unreadable file after it makes the seed fail halfway
+    final Path unreadable = shipped.resolve("gremlin-server.yaml");
+    assumeTrue(Files.getFileStore(shipped).supportsFileAttributeView(PosixFileAttributeView.class));
+    final Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(unreadable);
+    Files.setPosixFilePermissions(unreadable, Set.of());
+    try {
+      assumeFalse(Files.isReadable(unreadable), "running as root, every file is readable");
+
+      assertThatThrownBy(() -> ConfigDirectorySeeder.seed(shipped, configDir)).isInstanceOf(IOException.class);
+      // A half-seeded directory would hold a file, and so would never be seeded again
+      try (final Stream<Path> left = Files.list(configDir)) {
+        assertThat(left.filter(Files::isRegularFile)).isEmpty();
+      }
+      // The server logs it and starts on its built-in defaults
+      ConfigDirectorySeeder.seedFromRoot(tempDir.resolve("root").toString(), configDir.toString());
+    } finally {
+      Files.setPosixFilePermissions(unreadable, permissions);
+    }
+
+    assertThat(ConfigDirectorySeeder.seed(shipped, configDir)).containsExactlyElementsOf(ConfigDirectorySeeder.SEEDED_FILES);
+    try (final Stream<Path> left = Files.list(configDir)) {
+      assertThat(left.filter(Files::isDirectory)).as("the staging directory is removed").isEmpty();
+    }
   }
 
   @Test
