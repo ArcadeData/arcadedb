@@ -275,6 +275,11 @@ public class TransactionContext implements Transaction {
   // Set by publishCommittedPages once the WAL append crossed the point of no return; drives the failure regime of
   // the 2nd phase whichever thread concludes it.
   private       boolean                              phase2WalAppended;
+  // Group commit (arcadedb.txWalGroupCommit): raised by commit() around its 2nd phase, the only path that waits for the
+  // deferred flush. The ticket is what that flush owes this transaction, 0 when nothing is owed
+  private       boolean                              deferWALSync;
+  private       long                                 deferredWALSyncTicket;
+  private final boolean                              configuredGroupCommit;
   private       Boolean                              asyncFlush;
   private       WALFile.FlushType                    walFlush;
   private final WALFile.FlushType                    configuredWALFlush;
@@ -398,6 +403,7 @@ public class TransactionContext implements Transaction {
     this.database = database;
     this.configuredWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
     this.configuredUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+    this.configuredGroupCommit = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL_GROUP_COMMIT);
     this.embedded = database.getEmbedded() instanceof LocalDatabase local ? local : null;
     this.indexChanges = new TransactionIndexContext(database);
   }
@@ -455,7 +461,15 @@ public class TransactionContext implements Transaction {
     // method calls next and which every other commit path reaches directly.
     final TransactionPhase1 phase1 = commit1stPhase(true);
     if (phase1 != null) {
-      commit2ndPhase(phase1);
+      // Group commit: the WAL flush moves out of the file locks, to resetAndFireCallbacks(). Only on this path, which is the
+      // one that waits for it, and only with the asynchronous page flush: a synchronous one writes the pages to their data
+      // files inside the 2nd phase, before any flush could have run
+      deferWALSync = configuredGroupCommit && embedded != null && isAsyncFlush();
+      try {
+        commit2ndPhase(phase1);
+      } finally {
+        deferWALSync = false;
+      }
     } else
       resetAndFireCallbacks();
 
@@ -993,7 +1007,21 @@ public class TransactionContext implements Transaction {
     // They run below, so reset() has no abandonment to owe on their behalf
     afterCommitCallbacks = null;
     final boolean commitPointWasReached = commitPointReached;
+    final long walSyncTicket = deferredWALSyncTicket;
+    // reset() clears the id, which the failure of the flush has to name
+    final long committedTxId = txId;
     reset();
+    if (walSyncTicket > 0) {
+      // Group commit: the locks are released, so the commits arriving now can append while this one waits, and share its
+      // flush. Before the callbacks, which are told the transaction is committed
+      try {
+        awaitDeferredWALSync(walSyncTicket, committedTxId);
+      } catch (final RuntimeException e) {
+        if (callbacks != null && commitPointWasReached)
+          abandonOrderedCallbacks(callbacks, 0);
+        throw e;
+      }
+    }
     if (callbacks != null) {
       int next = 0;
       try {
@@ -1030,6 +1058,21 @@ public class TransactionContext implements Transaction {
           LogManager.instance().log(this, Level.WARNING, "Error taking the commit order of a post-commit callback: %s", e, e.getMessage());
         }
       }
+  }
+
+  /**
+   * Waits for the WAL flush a group commit owes this transaction. A failed flush leaves a transaction that other
+   * transactions may already read but that is not durable, so the database is fenced: it must be closed and reopened, and
+   * recovery replays what reached the disk.
+   */
+  private void awaitDeferredWALSync(final long walSyncTicket, final long committedTxId) {
+    try {
+      database.getTransactionManager().awaitWALDurable(walSyncTicket);
+    } catch (final IOException e) {
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+        localDatabase.fenceForRecovery("the WAL flush of tx " + committedTxId + " failed after its pages were published", e);
+      throw new TransactionException("Transaction " + committedTxId + " was applied but its WAL could not be flushed to disk", e);
+    }
   }
 
   private void abandonOrderedCallbacks(final List<Runnable> callbacks, final int from) {
@@ -2865,7 +2908,13 @@ public class TransactionContext implements Transaction {
 
       if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
-        database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, getWALFlush(), txId, changes.result);
+        final WALFile.FlushType walFlush = getWALFlush();
+        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+          // the flush is owed, and paid outside the file locks before the commit returns (see resetAndFireCallbacks)
+          deferredWALSyncTicket = database.getTransactionManager()
+              .writeTransactionToWALDeferringSync(changes.modifiedPages, walFlush, txId, changes.result);
+        else
+          database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
         // Only a REAL append crosses the point of no return (#5053/#4940): with useWAL=false (bulk loads)
         // changes.result is null, nothing is durable and there is no WAL record for recovery to replay - a
         // publish failure must then behave like any pre-durability failure (full rollback of user-held
@@ -2885,8 +2934,15 @@ public class TransactionContext implements Transaction {
       // never by aborting.
       // #8492: nothing writes these images again - the transaction drops them at reset() - so the read cache can
       // share their arrays instead of copying every page
-      for (final MutablePage page : pagesToPublish)
+      // The WAL rule under group commit: no page reaches its data file before the WAL writes it may carry are durable. Its own
+      // write when it deferred the flush, and in any case every deferred write appended before now: a transaction that did not
+      // defer (txWalFlush 0, a synchronous page flush) may still have read, and so carries, another's unflushed changes
+      final long pageWALSyncTicket = Math.max(deferredWALSyncTicket, database.getTransactionManager().getPendingWALSyncTicket());
+      for (final MutablePage page : pagesToPublish) {
         page.markPublished();
+        if (pageWALSyncTicket > 0)
+          page.setWALSyncTicket(pageWALSyncTicket);
+      }
       database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
@@ -3259,6 +3315,7 @@ public class TransactionContext implements Transaction {
 
     remotelyCommitted = false;
     phase2WalAppended = false;
+    deferredWALSyncTicket = 0;
     status = STATUS.INACTIVE;
     // The refusal belonged to the transaction that is ending here, not to the context, which begin() reuses.
     rollbackOnlyReason = null;

@@ -2264,6 +2264,20 @@ public class PageManager extends LockContext {
         LogManager.instance()
             .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().threadId());
 
+      // The WAL rule under group commit (arcadedb.txWalGroupCommit): the commit published this page before flushing the WAL
+      // that describes it, so the page waits for that flush - or runs it - before it reaches the data file. A page on disk
+      // with no durable WAL behind it would be a partial transaction after a power loss, with nothing for recovery to replay
+      final long walSyncTicket = page.getWALSyncTicket();
+      if (walSyncTicket > 0)
+        try {
+          database.getTransactionManager().awaitWALDurableForPageWrite(walSyncTicket);
+        } catch (final IOException e) {
+          // the same verdict as a committer whose wait fails: published pages whose WAL may not be durable
+          if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+            localDatabase.fenceForRecovery("the WAL flush a page flush waited for failed", e);
+          throw e;
+        }
+
       final PageWriteFaultInjector faultInjector = pageWriteFaultInjector;
       if (faultInjector != null)
         faultInjector.onPageWrite(page.pageId);
