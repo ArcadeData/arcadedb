@@ -879,20 +879,38 @@ public class WALFile extends LockContext {
     // channel's own size is the right place to start.
     long startPos = -1;
     try {
-      startPos = channel.size();
-      appendAt(buffer, startPos);
-    } catch (final ClosedChannelException e) {
-      // #7768: a thread interrupt closed the channel mid-append. Reopen it and write the record again from
-      // the offset the first attempt started at - NOT from the reopened channel's size(), which already
-      // counts however many bytes the interrupted write managed to put down. Restarting past them would
-      // leave that torn prefix in the log ahead of the complete record, which is exactly the corruption the
-      // #4508 gap detector reports. Rewriting over them is safe: these are positional writes into a region
-      // no committed record has ever claimed.
-      final long retryFrom = startPos;
-      retryAfterReopen(e, "append", () -> {
-        appendAt(buffer, retryFrom >= 0 ? retryFrom : channel.size());
-        return null;
-      });
+      try {
+        startPos = channel.size();
+        appendAt(buffer, startPos);
+      } catch (final ClosedChannelException e) {
+        // #7768: a thread interrupt closed the channel mid-append. Reopen it and write the record again from
+        // the offset the first attempt started at - NOT from the reopened channel's size(), which already
+        // counts however many bytes the interrupted write managed to put down. Restarting past them would
+        // leave that torn prefix in the log ahead of the complete record, which is exactly the corruption the
+        // #4508 gap detector reports. Rewriting over them is safe: these are positional writes into a region
+        // no committed record has ever claimed.
+        final long retryFrom = startPos;
+        retryAfterReopen(e, "append", () -> {
+          appendAt(buffer, retryFrom >= 0 ? retryFrom : channel.size());
+          return null;
+        });
+      }
+    } catch (final IOException e) {
+      // #10509 review: any other failure (a full disk) can come after part of the record was written. Cut it off, or the
+      // next append - a group commit writes the same record again on the next flush pass - lands behind a torn prefix
+      discardTornAppend(startPos, e);
+      throw e;
+    }
+  }
+
+  private void discardTornAppend(final long startPos, final IOException cause) {
+    if (startPos < 0)
+      return;
+    try {
+      if (channel.size() > startPos)
+        channel.truncate(startPos);
+    } catch (final IOException e) {
+      cause.addSuppressed(e);
     }
   }
 

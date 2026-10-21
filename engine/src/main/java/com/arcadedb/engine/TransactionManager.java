@@ -116,7 +116,9 @@ public class TransactionManager {
   private final AtomicReference<CountDownLatch> walSyncInProgress = new AtomicReference<>();
   private final Set<WALFile>                 unsyncedWALFiles    = ConcurrentHashMap.newKeySet();
   // Guarded by its own monitor, which also covers the ticket a record takes: the records are in ticket order, and the order
-  // of the tickets is the order the commits held their file locks in, so a transaction is never written before one it read
+  // of the tickets is the order the commits held their file locks in, so a transaction is never written before one it read.
+  // Not bounded, and it does not need to be: every queued record belongs to a commit still waiting for its flush, so it holds
+  // at most one record per committing thread, and a failed flush fences the database before more can queue
   private final ArrayDeque<DeferredWALWrite> deferredWALWrites = new ArrayDeque<>();
   // Writes the queued records one batch at a time, so two batches never interleave in the files
   private final ReentrantLock                deferredWALWriteLock = new ReentrantLock();
