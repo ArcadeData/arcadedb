@@ -336,10 +336,10 @@ public class SecurityGroupFileRepository {
 
     /** The default is SAVED, and only here: the one place a file that cannot be used is replaced by the default. */
     @Override
-    protected void publish(final JSONObject json, final boolean isFallback) {
+    protected boolean publish(final JSONObject json, final boolean isFallback) {
       if (!isFallback) {
         latestGroupConfiguration = json;
-        return;
+        return true;
       }
       try {
         save(json);
@@ -348,6 +348,7 @@ public class SecurityGroupFileRepository {
             "Error on saving default group configuration to file '%s'", e, FILE_NAME);
         latestGroupConfiguration = json;
       }
+      return true;
     }
 
     @Override
