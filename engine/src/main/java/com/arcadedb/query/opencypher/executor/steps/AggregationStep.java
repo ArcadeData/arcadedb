@@ -52,8 +52,8 @@ public class AggregationStep extends AbstractExecutionStep {
   // rather than a large fixed size: a mutating clause upstream of the aggregation (SET/CREATE/
   // MERGE/DELETE) can be interleaved with a variable-length path traversal that freezes node
   // references into a path at the moment the path is built (TraversalPath / RowAliases -
-  // propagateUpdate only redirects a row's own top-level aliases, not nodes nested inside a path,
-  // list or map). Pulling one huge batch up front makes this step traverse - and freeze - a later
+  // propagateUpdate only redirects the aliases and paths of the row being written, never another row's
+  // path, nor nodes nested inside a list or map). Pulling one huge batch up front makes this step traverse - and freeze - a later
   // row's path before an earlier row's write to that very same node has run, permanently baking in
   // a pre-write value that a non-aggregating pull of the same query would not see (issue #6368: a
   // bare COLLECT()/UNWIND changed which property values a later WHERE/RETURN observed, purely

@@ -1914,6 +1914,9 @@ public class CypherExecutionPlan {
         }
         currentStep = mergeStep;
         eagerness.observeWrite(mergeClause);
+        // What the MERGE binds is as much a bound name as what a MATCH binds: a MATCH after it that ends at one of them
+        // starts from that entity instead of scanning the side it leaves open (issue #10515)
+        collectPatternVariables(List.of(mergeClause.getPathPattern()), boundVariables);
         break;
 
       case CREATE:
@@ -1927,6 +1930,7 @@ public class CypherExecutionPlan {
           }
           currentStep = createStep;
           eagerness.observeWriteClause();
+          collectPatternVariables(createClause.getPathPatterns(), boundVariables);
         }
         break;
 
@@ -2025,6 +2029,13 @@ public class CypherExecutionPlan {
 
       case SUBQUERY:
         final SubqueryClause subqueryClause = entry.getTypedClause();
+        final CypherStatement subqueryBody = subqueryClause.getInnerStatement();
+        // The body runs once per row the enumeration behind it hands over, so a node it deletes is unlinked while that
+        // enumeration is still walking it (issue #10512). The rows are read ahead of the first run on the same terms as for
+        // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided
+        if (currentStep != null && subqueryBodyDeletes(subqueryBody)
+            && (matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()))
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
         if (currentStep != null) {
@@ -3312,6 +3323,41 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * True when the body of a {@code CALL { }} subquery deletes anything: a DELETE clause, a FOREACH that holds one, or a nested
+   * subquery that does, in any branch of a UNION.
+   */
+  private static boolean subqueryBodyDeletes(final CypherStatement body) {
+    if (body == null)
+      return false;
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (subqueryBodyDeletes(branch))
+          return true;
+      return false;
+    }
+    final List<ClauseEntry> clauses = body.getClausesInOrder();
+    // a body that kept no clause order is classified by the flag the parser set
+    if (clauses == null || clauses.isEmpty())
+      return body.hasDelete();
+    for (final ClauseEntry bodyClause : clauses)
+      switch (bodyClause.getType()) {
+      case DELETE:
+        return true;
+      case FOREACH:
+        if (((ForeachClause) bodyClause.getClause()).containsDelete())
+          return true;
+        break;
+      case SUBQUERY:
+        if (subqueryBodyDeletes(((SubqueryClause) bodyClause.getClause()).getInnerStatement()))
+          return true;
+        break;
+      default:
+        break;
+      }
+    return false;
+  }
+
+  /**
    * True when a DELETE (or a FOREACH containing one) fed by the given MATCH clause(s) must read its whole
    * upstream row set before applying the first deletion, because that MATCH can let a later row observe
    * what an earlier row's deletion already removed.
@@ -3434,13 +3480,23 @@ public class CypherExecutionPlan {
    * {@code MATCH (a:A), (b:B) MERGE (a)-[:R]->(b)} from being read as creating unlabelled vertices.
    */
   private static void collectPatternVariables(final MatchClause matchClause, final Set<String> target) {
-    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+    collectPatternVariables(matchClause.getPathPatterns(), target);
+  }
+
+  /**
+   * Adds every node, relationship and path variable of the given patterns to {@code target}: the names a MATCH, a
+   * CREATE or a MERGE leaves bound in the row.
+   */
+  private static void collectPatternVariables(final List<PathPattern> pathPatterns, final Set<String> target) {
+    for (final PathPattern pathPattern : pathPatterns) {
       for (final NodePattern node : pathPattern.getNodes())
         if (node.getVariable() != null)
           target.add(node.getVariable());
       for (final RelationshipPattern relationship : pathPattern.getRelationships())
         if (relationship.getVariable() != null)
           target.add(relationship.getVariable());
+      if (pathPattern.hasPathVariable())
+        target.add(pathPattern.getPathVariable());
     }
   }
 
