@@ -345,6 +345,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean             persistedPQKnownStale;
   private volatile PQVectors            pqVectors;
   private volatile ProductQuantization  productQuantization;
+  /** How many vectors the last codebook was trained on; -1 until one has been. */
+  private volatile int                  lastPqTrainingSampleSize = -1;
+  private static final long             PQ_TRAINING_SAMPLE_SEED  = 0x10514L;
 
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
   private final ReentrantLock graphBuildLock = new ReentrantLock();
@@ -3873,7 +3876,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int pqSubspaces = resolvePQSubspaces();
 
         // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
-        earlyPq = ProductQuantization.compute(vectors, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
+        earlyPq = trainProductQuantization(vectors, pqSubspaces);
 
         // Encode all vectors. An ordinal whose vector cannot be read yields the placeholder, not null, and encoding
         // that would put a PQ code carrying the placeholder's own direction into the table - a code the approximate
@@ -4700,6 +4703,75 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Trains the PQ codebook of this index on at most {@code pqTrainingLimit} vectors (issue #10514).
+   * <p>
+   * The sample is a fixed-seed random subset of the ordinals, so the same data trains the same codebook, and it never
+   * has fewer vectors than there are clusters, which JVector's k-means++ refuses. JVector caps whatever it is given at
+   * {@link ProductQuantization#MAX_PQ_TRAINING_SET_SIZE} on its own, so the effective size is capped at that too and
+   * {@link #getLastPqTrainingSampleSize()} reports what the codebook really saw.
+   */
+  private ProductQuantization trainProductQuantization(final RandomAccessVectorValues vectors, final int pqSubspaces) {
+    final int total = vectors.size();
+    final int sample = Math.min(total, Math.min(Math.max(metadata.pqTrainingLimit, metadata.pqClusters),
+        ProductQuantization.MAX_PQ_TRAINING_SET_SIZE));
+    lastPqTrainingSampleSize = sample;
+    final RandomAccessVectorValues training = sample >= total ? vectors : new SampledVectorValues(vectors, sampleOrdinals(total, sample));
+    return ProductQuantization.compute(training, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
+  }
+
+  /** @return {@code sample} distinct ordinals out of {@code [0, total)}, ascending, the same ones for the same arguments */
+  private static int[] sampleOrdinals(final int total, final int sample) {
+    final int[] ordinals = new int[total];
+    for (int i = 0; i < total; i++)
+      ordinals[i] = i;
+    final java.util.Random random = new java.util.Random(PQ_TRAINING_SAMPLE_SEED);
+    for (int i = 0; i < sample; i++) {
+      final int j = i + random.nextInt(total - i);
+      final int t = ordinals[i];
+      ordinals[i] = ordinals[j];
+      ordinals[j] = t;
+    }
+    final int[] picked = Arrays.copyOf(ordinals, sample);
+    Arrays.sort(picked);
+    return picked;
+  }
+
+  /** The vectors at the given ordinals of another source, numbered from 0. */
+  private record SampledVectorValues(RandomAccessVectorValues delegate, int[] ordinals) implements RandomAccessVectorValues {
+    @Override
+    public int size() {
+      return ordinals.length;
+    }
+
+    @Override
+    public int dimension() {
+      return delegate.dimension();
+    }
+
+    @Override
+    public VectorFloat<?> getVector(final int ordinal) {
+      return delegate.getVector(ordinals[ordinal]);
+    }
+
+    @Override
+    public boolean isValueShared() {
+      return delegate.isValueShared();
+    }
+
+    @Override
+    public RandomAccessVectorValues copy() {
+      return new SampledVectorValues(delegate.copy(), ordinals);
+    }
+  }
+
+  /**
+   * @return how many vectors the most recent PQ codebook of this index was trained on, or -1 when none was trained yet
+   */
+  int getLastPqTrainingSampleSize() {
+    return lastPqTrainingSampleSize;
+  }
+
+  /**
    * Forget any Product Quantization data currently associated with this index, both in memory and on disk.
    */
   private void discardProductQuantization() {
@@ -4864,20 +4936,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "PQ configuration: M=%d subspaces, K=%d clusters, globalCentering=%b",
           pqSubspaces, pqClusters, centerGlobally);
 
-      // Limit training set size (JVector recommends max 128K vectors for training)
-      final int trainingLimit = Math.min(vectorCount, metadata.pqTrainingLimit);
-
-      // Build ProductQuantization codebook
-      final ProductQuantization pq = ProductQuantization.compute(
-          vectors,           // Training vectors
-          pqSubspaces,       // M - number of subspaces
-          pqClusters,        // K - clusters per subspace
-          centerGlobally     // Global centering
-      );
+      // Build ProductQuantization codebook (trains on at most metadata.pqTrainingLimit vectors)
+      final ProductQuantization pq = trainProductQuantization(vectors, pqSubspaces);
 
       LogManager.instance().log(this, Level.INFO,
-          "PQ codebook computed in %d ms (trained on %d vectors)",
-          System.currentTimeMillis() - startTime, trainingLimit);
+          "PQ codebook computed in %d ms (trained on %d of %d vectors)",
+          System.currentTimeMillis() - startTime, lastPqTrainingSampleSize, vectorCount);
 
       // Encode all vectors with PQ
       final long encodeStart = System.currentTimeMillis();

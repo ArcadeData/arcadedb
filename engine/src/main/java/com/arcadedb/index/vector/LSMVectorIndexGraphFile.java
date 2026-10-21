@@ -74,6 +74,16 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   private volatile long lastWrittenGraphBytes = -1L;
 
   /**
+   * Whether anything reads the FusedPQ codes of a persisted graph. Nothing does today: the search scores through
+   * {@code liveOnlyScoreFunction}, see the TODO in {@code LSMVectorIndex.findNeighborsFromVector}. The feature stores the
+   * PQ codes of all {@code maxConnections} neighbours inline in every node, {@code maxConnections * pqSubspaces} bytes per
+   * node, which made the graph file of a PRODUCT index several times the size of the file of the same data without
+   * quantization (issue #10514). It is therefore not written until the reader is back. Graph files written earlier carry the
+   * feature and are loaded as they are: the format describes its own features. Set this together with the reader.
+   */
+  static final boolean FUSED_PQ_READER_ENABLED = false;
+
+  /**
    * Says which records the graph on these pages was built over. The graph itself is addressed by ordinal and carries
    * nothing that identifies them, so this is what makes reusing it safe (issue #6106).
    */
@@ -210,13 +220,21 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
   }
 
   /**
-   * Write a graph to pages with optional FusedPQ for cache-friendly search traversal.
-   * When PQ data is provided, PQ codes are stored inline with graph nodes so that during
-   * search traversal, approximate distances are computed without separate I/O.
+   * Write a graph to pages. When PQ data is provided and {@link #FUSED_PQ_READER_ENABLED} is set, PQ codes are stored
+   * inline with graph nodes so that during search traversal, approximate distances are computed without separate I/O.
    */
   public void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
                          final long chunkSizeMB, final ChunkCommitCallback chunkCallback,
                          final ProductQuantization pq, final PQVectors pqVectors) {
+    writeGraph(graph, vectors, chunkSizeMB, chunkCallback, pq, pqVectors, FUSED_PQ_READER_ENABLED);
+  }
+
+  /**
+   * @param writeFusedPQ whether the PQ codes are stored inline with the graph nodes when {@code pq} allows it
+   */
+  void writeGraph(final ImmutableGraphIndex graph, final RandomAccessVectorValues vectors,
+                  final long chunkSizeMB, final ChunkCommitCallback chunkCallback,
+                  final ProductQuantization pq, final PQVectors pqVectors, final boolean writeFusedPQ) {
 
     if (!database.isTransactionActive())
       throw new IllegalStateException("writeGraph() must be called within an active transaction");
@@ -264,12 +282,12 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
                 "Writing graph WITHOUT inline vectors - topology only (vectors fetched from documents on-demand)");
       }
 
-      // Add FusedPQ feature when PQ data is available — stores PQ codes inline with graph nodes
-      // for cache-friendly approximate scoring during search traversal.
+      // FusedPQ stores PQ codes inline with graph nodes for cache-friendly approximate scoring during search
+      // traversal. Only written while a reader for it exists (FUSED_PQ_READER_ENABLED, issue #10514).
       // FusedPQ requires a 256-cluster PQ; with a custom pqClusters configuration (issue #3160)
       // we skip the FusedPQ optimization and persist topology + inline vectors only, otherwise
       // the JVector constructor throws and prevents the graph from being persisted.
-      final boolean hasFusedPQ = pq != null && pqVectors != null && pq.getClusterCount() == 256;
+      final boolean hasFusedPQ = writeFusedPQ && pq != null && pqVectors != null && pq.getClusterCount() == 256;
       if (hasFusedPQ) {
         LogManager.instance().log(this, Level.INFO,
             "Writing graph WITH FusedPQ: PQ codes stored inline with graph nodes for cache-friendly search");
