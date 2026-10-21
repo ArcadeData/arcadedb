@@ -381,7 +381,9 @@ public class TransactionManager {
       final File f = lastTxIdFile();
       if (f != null && f.exists())
         f.delete();
-    } else {
+    } else if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+      // Not for a READ_ONLY handle: its lastTxId is the one of its open, so a read-write process that committed since would
+      // have its marker rewound (#10507)
       writePersistedLastTransactionId();
     }
 

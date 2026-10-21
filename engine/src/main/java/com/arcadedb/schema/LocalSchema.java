@@ -2833,7 +2833,10 @@ public class LocalSchema implements Schema {
       timeSeriesMaintenanceScheduler = null;
     }
 
-    writeStatisticsFile();
+    // A READ_ONLY handle writes nothing to the directory: its counters are those of its open, and a read-write process may have
+    // committed since, so writing them back would rewind the writer's record counts (#10507)
+    if (database.getMode() == ComponentFile.MODE.READ_WRITE)
+      writeStatisticsFile();
     materializedViews.clear();
     continuousAggregates.clear();
     extensions.clear();
