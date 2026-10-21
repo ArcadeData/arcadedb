@@ -50,6 +50,10 @@ import java.util.Set;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
+ * <p>
+ * The {@code rerank} option (issue #10514) is the number of candidates per requested neighbour that a PRODUCT index walks on
+ * its PQ codes and then scores again on the stored vectors; {@code 0} returns the PQ scores. It applies to PRODUCT indexes
+ * only, and is ignored for {@code groupBy} searches and for the other quantizations.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -462,6 +466,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public String getSyntax() {
     return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | "
         + "{ efSearch: <int>, filter: [<rid>, ...], where: { <property>: <value>, ... } | '<condition>', groupBy: <field>, "
-        + "groupSize: <int>, maxDistance: <float>, rerank: <int> }])";
+        + "groupSize: <int>, maxDistance: <float>, rerank: <int> }]); rerank: PRODUCT indexes only, "
+        + "ignored with groupBy and for other quantizations";
   }
 }
