@@ -80,6 +80,8 @@ import io.github.jbellis.jvector.graph.OnHeapGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
+import io.github.jbellis.jvector.graph.disk.feature.FeatureId;
+import io.github.jbellis.jvector.graph.disk.feature.FusedPQ;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
@@ -115,6 +117,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.PrimitiveIterator;
 import java.util.PriorityQueue;
+import java.util.Random;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -345,6 +348,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean             persistedPQKnownStale;
   private volatile PQVectors            pqVectors;
   private volatile ProductQuantization  productQuantization;
+  /** How many vectors the last codebook was trained on; -1 until one has been. */
+  private volatile int                  lastPqTrainingSampleSize = -1;
+  private static final long             PQ_TRAINING_SAMPLE_SEED  = 0x10514L;
 
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
   private final ReentrantLock graphBuildLock = new ReentrantLock();
@@ -3873,7 +3879,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int pqSubspaces = resolvePQSubspaces();
 
         // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
-        earlyPq = ProductQuantization.compute(vectors, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
+        earlyPq = trainProductQuantization(vectors, pqSubspaces);
 
         // Encode all vectors. An ordinal whose vector cannot be read yields the placeholder, not null, and encoding
         // that would put a PQ code carrying the placeholder's own direction into the table - a code the approximate
@@ -4700,6 +4706,99 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Trains the PQ codebook of this index on at most {@code pqTrainingLimit} vectors (issue #10514).
+   * <p>
+   * The sample is a fixed-seed random subset of the ordinals, so the same data trains the same codebook, and it never
+   * has fewer vectors than there are clusters, which JVector's k-means++ refuses. JVector caps whatever it is given at
+   * {@link ProductQuantization#MAX_PQ_TRAINING_SET_SIZE} on its own, so the effective size is capped at that too and
+   * {@link #getLastPqTrainingSampleSize()} reports what the codebook really saw.
+   */
+  private ProductQuantization trainProductQuantization(final RandomAccessVectorValues vectors, final int pqSubspaces) {
+    final int total = vectors.size();
+    final int sample = Math.min(total, Math.min(Math.max(metadata.pqTrainingLimit, metadata.pqClusters),
+        ProductQuantization.MAX_PQ_TRAINING_SET_SIZE));
+    lastPqTrainingSampleSize = sample;
+    final RandomAccessVectorValues training = sample >= total ? vectors : new SampledVectorValues(vectors, sampleOrdinals(total, sample));
+    return ProductQuantization.compute(training, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
+  }
+
+  /**
+   * @return {@code sample} distinct ordinals out of {@code [0, total)}, ascending, the same ones for the same arguments. Floyd's algorithm: O(sample)
+   *         memory however large {@code total} is, where shuffling an array of all ordinals costs 4 bytes per vector of the index to train on a few
+   *         thousand of them. Membership is tested in a primitive open-addressing table, so no {@code Integer} is allocated per ordinal.
+   */
+  static int[] sampleOrdinals(final int total, final int sample) {
+    final Random random = new Random(PQ_TRAINING_SAMPLE_SEED);
+    // A power of two of at least twice the sample, so the load factor stays at or below one half; ordinals are never negative, so -1 marks a free slot
+    final int capacity = Integer.highestOneBit(Math.max(sample, 1) * 2 - 1) << 1;
+    final int mask = capacity - 1;
+    final int[] table = new int[capacity];
+    Arrays.fill(table, -1);
+    for (int j = total - sample; j < total; j++) {
+      int candidate = random.nextInt(j + 1);
+      int slot = candidate & mask;
+      boolean seen = false;
+      while (table[slot] != -1) {
+        if (table[slot] == candidate) {
+          seen = true;
+          break;
+        }
+        slot = (slot + 1) & mask;
+      }
+      if (seen) {
+        // Floyd: the ordinal drawn was taken already, so j itself, which no earlier round could have drawn, takes its place
+        candidate = j;
+        slot = candidate & mask;
+        while (table[slot] != -1)
+          slot = (slot + 1) & mask;
+      }
+      table[slot] = candidate;
+    }
+    final int[] ordinals = new int[sample];
+    int i = 0;
+    for (final int ordinal : table)
+      if (ordinal != -1)
+        ordinals[i++] = ordinal;
+    Arrays.sort(ordinals);
+    return ordinals;
+  }
+
+  /** The vectors at the given ordinals of another source, numbered from 0. */
+  private record SampledVectorValues(RandomAccessVectorValues delegate, int[] ordinals) implements RandomAccessVectorValues {
+    @Override
+    public int size() {
+      return ordinals.length;
+    }
+
+    @Override
+    public int dimension() {
+      return delegate.dimension();
+    }
+
+    @Override
+    public VectorFloat<?> getVector(final int ordinal) {
+      return delegate.getVector(ordinals[ordinal]);
+    }
+
+    @Override
+    public boolean isValueShared() {
+      return delegate.isValueShared();
+    }
+
+    @Override
+    public RandomAccessVectorValues copy() {
+      return new SampledVectorValues(delegate.copy(), ordinals);
+    }
+  }
+
+  /**
+   * @return how many vectors the most recent PQ codebook of this index was trained on, or -1 when none was trained yet
+   */
+  int getLastPqTrainingSampleSize() {
+    return lastPqTrainingSampleSize;
+  }
+
+  /**
    * Forget any Product Quantization data currently associated with this index, both in memory and on disk.
    */
   private void discardProductQuantization() {
@@ -4864,20 +4963,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "PQ configuration: M=%d subspaces, K=%d clusters, globalCentering=%b",
           pqSubspaces, pqClusters, centerGlobally);
 
-      // Limit training set size (JVector recommends max 128K vectors for training)
-      final int trainingLimit = Math.min(vectorCount, metadata.pqTrainingLimit);
-
-      // Build ProductQuantization codebook
-      final ProductQuantization pq = ProductQuantization.compute(
-          vectors,           // Training vectors
-          pqSubspaces,       // M - number of subspaces
-          pqClusters,        // K - clusters per subspace
-          centerGlobally     // Global centering
-      );
+      // Build ProductQuantization codebook (trains on at most metadata.pqTrainingLimit vectors)
+      final ProductQuantization pq = trainProductQuantization(vectors, pqSubspaces);
 
       LogManager.instance().log(this, Level.INFO,
-          "PQ codebook computed in %d ms (trained on %d vectors)",
-          System.currentTimeMillis() - startTime, trainingLimit);
+          "PQ codebook computed in %d ms (trained on %d of %d vectors)",
+          System.currentTimeMillis() - startTime, lastPqTrainingSampleSize, vectorCount);
 
       // Encode all vectors with PQ
       final long encodeStart = System.currentTimeMillis();
@@ -8075,6 +8166,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return reranked.size() > k ? new ArrayList<>(reranked.subList(0, k)) : reranked;
   }
 
+  /**
+   * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph that has them score the walk
+   * and {@code exact} re-ranks what it finds; every other graph scores both on {@code exact}.
+   * <p>
+   * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour list, in <b>that view</b>,
+   * while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the view of the searcher, as jvector's
+   * {@code FusedPQ.approximateScoreFunctionFor} documents. Any graph file that has the feature is read through it, whatever the {@code fusedPQ} option
+   * says, so files written by releases that wrote it keep working. The reader that was switched off for returning one result passed
+   * {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no neighbours of the entry node and stopped there (issue #10514).
+   */
+  private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
+      final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
+    if (graph instanceof OnDiskGraphIndex diskGraph
+        && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
+      final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
+      return new DefaultSearchScoreProvider(
+          fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, exact), exact);
+    }
+    return new DefaultSearchScoreProvider(exact, exact);
+  }
+
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
     // Track search metrics
@@ -8201,15 +8313,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
 
-          // Use exact scoring for graph traversal.
-          // FusedPQ approximate scoring is currently disabled due to a bug where PQ codes
-          // written through ArcadeDB's page-based storage produce incorrect approximate scores,
-          // causing beam search to return too few results. The exact scoring path reads vectors
-          // from the graph file (if storeVectorsInGraph=true), quantized pages (if INT8/BINARY),
-          // or documents (if NONE), and provides correct results.
-          // TODO: Re-enable FusedPQ once page-based PQ code persistence is verified correct
-          final DefaultSearchScoreProvider ssp =
-              new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
+          // A graph that carries the FusedPQ feature is walked on the PQ codes stored beside its nodes, and the best candidates
+          // are scored again on the stored vectors; any other graph is walked on the stored vectors (issue #10514)
+          final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, exactScoreFunction);
 
           if (efSearch > 0) {
             // Explicit efSearch: use fixed beam width (per-query or index default override)
@@ -10865,6 +10971,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("pqClusters", metadata.pqClusters);
     json.put("pqCenterGlobally", metadata.pqCenterGlobally);
     json.put("pqTrainingLimit", metadata.pqTrainingLimit);
+    json.put("fusedPQ", metadata.fusedPQ);
 
     return json;
   }
@@ -11795,6 +11902,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Single read, not a check-then-use, and this runs on the thread that owns the initial build while the
       // index is UNAVAILABLE (no concurrent COMPACT INDEX possible) - intentionally left out of #6536's
       // local-capture sweep.
+      // This 4-argument overload passes no PQ, so it never writes FusedPQ. CREATE INDEX and REBUILD INDEX do not reach this method today (issue #10514)
       graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
       // Final commit for graph
