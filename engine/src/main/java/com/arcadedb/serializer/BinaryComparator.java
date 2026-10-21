@@ -758,8 +758,14 @@ public class BinaryComparator {
       if (a instanceof Boolean || b instanceof Boolean)
         throw new IllegalArgumentException(
             "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
-      return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
-          .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
+      final Long timestampA = DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS);
+      final Long timestampB = DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS);
+      // The same refusal for every other operand the helper has no timestamp for (a list, a map): it answers null for them too, which
+      // NPE'd on the unboxing of the comparison of a date against one (issue #10541)
+      if (timestampA == null || timestampB == null)
+        throw new IllegalArgumentException(
+            "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
+      return timestampA.compareTo(timestampB);
     } else if (a instanceof Double da && b instanceof Double db)
       // Double.compareTo orders -0.0 below 0.0 (issue #8920)
       return compareDoubles(da, db);

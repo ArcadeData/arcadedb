@@ -49,6 +49,7 @@ import java.text.SimpleDateFormat;
 import java.time.*;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -447,6 +448,49 @@ public enum Type {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return null;
     }
+  }
+
+  /**
+   * Whether {@code value}, the operand of an index LOOKUP (an equality, an {@code IN} element or a range bound), can be read as a key of
+   * {@code targetClass} (issue #10541). A value of a kind the key type cannot hold - a {@code LocalDate} for a BOOLEAN key, a list for an
+   * INTEGER one - is answered by {@link #convertIndexKeyOrNull} in one of two ways that are not a key: left as it was, which the key
+   * comparison then casts ({@code ClassCastException}, or "Comparison between type N and N not supported"), or {@code null}, which a
+   * range bound reads as "no bound" and answers every row. A lookup of such a value matches no entry, as the same predicate matches no
+   * row without the index.
+   * <p>
+   * Only the scalar key classes are held to it, the ones whose conversion has a defined result: string, boolean, the numbers and the
+   * temporals. A key class with a structure of its own (a RID, an array, an embedded document) keeps the conversion it had.
+   * A {@code null} value is not asked about: it is a lookup of the null key, which the index answers on its own.
+   */
+  public static boolean canBeIndexLookupKey(final Database database, final Object value, final Class<?> targetClass) {
+    if (value == null || targetClass == null || !isScalarKeyClass(targetClass))
+      return true;
+
+    final Object converted;
+    try {
+      converted = convertIndexKeyOrNull(database, value, targetClass);
+    } catch (final IllegalArgumentException e) {
+      // a value the key type cannot read ('7.0' for an INTEGER key, a number past the range of the type) equals no key (issue #8888)
+      return false;
+    }
+    return isReadAsIndexKey(value, converted, targetClass);
+  }
+
+  /**
+   * Whether {@code converted}, what {@link #convertIndexKeyOrNull} made of the lookup value {@code original}, is a key of
+   * {@code targetClass}. For the caller that has converted the value already and so does not convert it twice, see
+   * {@link #canBeIndexLookupKey}.
+   */
+  public static boolean isReadAsIndexKey(final Object original, final Object converted, final Class<?> targetClass) {
+    if (original == null || targetClass == null || !isScalarKeyClass(targetClass))
+      return true;
+    return targetClass.isInstance(converted);
+  }
+
+  private static boolean isScalarKeyClass(final Class<?> targetClass) {
+    return targetClass == String.class || targetClass == Boolean.class || Number.class.isAssignableFrom(targetClass)
+        || Temporal.class.isAssignableFrom(targetClass) || Date.class.isAssignableFrom(targetClass)
+        || Calendar.class.isAssignableFrom(targetClass);
   }
 
   /**

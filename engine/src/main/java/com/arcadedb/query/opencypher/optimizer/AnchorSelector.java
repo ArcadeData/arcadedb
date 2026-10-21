@@ -182,7 +182,7 @@ public class AnchorSelector {
     // IN-list is anchorable exactly like equality. Recognizing it here makes the planner start a
     // multi-hop pattern from the filtered node and expand forward, instead of anchoring on the far
     // side and reverse-traversing (which silently returns empty over unidirectional edges or a GAV).
-    final Map<String, List<Expression>> inListPredicates = extractInListPredicates(variable, plan);
+    final Map<String, InListOperand> inListPredicates = extractInListPredicates(variable, plan);
 
     // An OR whose every disjunct is an equality or IN-list on an indexed property is a union of index seeks (issue #8723).
     // Over one property that is the IN-list seek above; over several it is a seek per property, tried further down. The
@@ -228,9 +228,9 @@ public class AnchorSelector {
       }
 
       // IN-list over an indexed property → multi-value index seek (one seek per list value).
-      for (final Map.Entry<String, List<Expression>> property : inListPredicates.entrySet()) {
+      for (final Map.Entry<String, InListOperand> property : inListPredicates.entrySet()) {
         final String propertyName = property.getKey();
-        final List<Expression> values = property.getValue();
+        final List<Expression> values = property.getValue().elements();
 
         final IndexStatistics indexStats = findEqualitySeekIndex(indexes, propertyName, allPredicates.keySet());
 
@@ -244,7 +244,7 @@ public class AnchorSelector {
           // Cost of nValues independent seeks. Still far below a full scan for any sane list size.
           final double cost = nValues * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
 
-          final InListValues inListValues = new InListValues(values);
+          final InListValues inListValues = new InListValues(values, Collections.emptySet(), wholeRightSides(property.getValue()));
           return new AnchorSelection(
               variable,
               node,
@@ -657,8 +657,8 @@ public class AnchorSelector {
    * @param plan     the logical plan containing WHERE clauses
    * @return map of property names to the list of value expressions to seek
    */
-  private Map<String, List<Expression>> extractInListPredicates(final String variable, final LogicalPlan plan) {
-    final Map<String, List<Expression>> predicates = new HashMap<>();
+  private Map<String, InListOperand> extractInListPredicates(final String variable, final LogicalPlan plan) {
+    final Map<String, InListOperand> predicates = new HashMap<>();
 
     if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty())
       return predicates;
@@ -670,7 +670,7 @@ public class AnchorSelector {
   }
 
   private void extractInListPredicatesFromExpression(final String variable, final BooleanExpression expression,
-      final Map<String, List<Expression>> predicates) {
+      final Map<String, InListOperand> predicates) {
     if (expression == null)
       return;
 
@@ -704,7 +704,7 @@ public class AnchorSelector {
       if (list == null)
         return;
 
-      predicates.putIfAbsent(propAccess.getPropertyName(), list);
+      predicates.putIfAbsent(propAccess.getPropertyName(), new InListOperand(list, isWholeRightSide(inExpr)));
     }
   }
 
@@ -716,10 +716,34 @@ public class AnchorSelector {
   private static final class SeekValues {
     final List<Expression> values = new ArrayList<>();
     final Set<Expression>  scalar = Collections.newSetFromMap(new IdentityHashMap<>());
+    // The elements that are the whole right side of an IN, which has to be a list (issue #10541)
+    final Set<Expression>  whole  = Collections.newSetFromMap(new IdentityHashMap<>());
 
     InListValues toInList() {
-      return new InListValues(values, scalar);
+      return new InListValues(values, scalar, whole);
     }
+  }
+
+  /**
+   * What an IN predicate on one property is sought with: its elements, and whether they are the whole right side (an IN over one
+   * parameter or variable, {@code x IN $ids}, which has to resolve to a list and is split into one key per item) and not the items of a
+   * list literal ({@code x IN [$a, $b]}, where each is one key whatever it resolves to) (issue #10541).
+   */
+  private record InListOperand(List<Expression> elements, boolean wholeRightSide) {
+  }
+
+  private static Set<Expression> wholeRightSides(final InListOperand operand) {
+    if (!operand.wholeRightSide())
+      return Collections.emptySet();
+    final Set<Expression> whole = Collections.newSetFromMap(new IdentityHashMap<>());
+    whole.addAll(operand.elements());
+    return whole;
+  }
+
+  /** {@code x IN $ids} or {@code x IN f()}: one expression that is not a list literal, so it is the whole right side. */
+  private static boolean isWholeRightSide(final InExpression inExpr) {
+    final List<Expression> list = inExpr.getList();
+    return list != null && list.size() == 1 && !(list.get(0) instanceof ListExpression);
   }
 
   /**
@@ -846,7 +870,10 @@ public class AnchorSelector {
       final List<Expression> values = seekableInListValues(inExpr);
       if (values == null)
         return false;
-      branches.computeIfAbsent(access.getPropertyName(), k -> new SeekValues()).values.addAll(values);
+      final SeekValues target = branches.computeIfAbsent(access.getPropertyName(), k -> new SeekValues());
+      target.values.addAll(values);
+      if (isWholeRightSide(inExpr))
+        target.whole.addAll(values);
       return true;
     }
 
@@ -870,6 +897,7 @@ public class AnchorSelector {
       final SeekValues target = into.computeIfAbsent(entry.getKey(), k -> new SeekValues());
       target.values.addAll(entry.getValue().values);
       target.scalar.addAll(entry.getValue().scalar);
+      target.whole.addAll(entry.getValue().whole);
     }
   }
 
