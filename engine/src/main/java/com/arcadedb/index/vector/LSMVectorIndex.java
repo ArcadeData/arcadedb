@@ -3747,7 +3747,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 validationSuccesses++;
               }
             } catch (final Exception e) {
-              // Error reading quantized vector - skip
+              // Error reading quantized vector - skip. The reader logs its own failures; this keeps whatever else got here
+              LogManager.instance().log(this, Level.FINE, "Skipping vector %d of index %s during the graph build: %s", vectorId,
+                  indexName, e.getMessage());
               skippedDeletedDocs++;
             }
           } else if (inlineQuantization) {

@@ -44,32 +44,19 @@ import java.util.concurrent.CancellationException;
 final class QuantizedBuildVectorValues implements RandomAccessVectorValues {
   private static final VectorTypeSupport VTS = VectorApiSupport.jvectorProvider().getVectorTypeSupport();
 
-  /** Reads the quantized row of an ordinal the store does not hold, from wherever the index keeps it. */
-  @FunctionalInterface
-  interface NonResidentRows {
-    /**
-     * @param ordinal the ordinal to read
-     * @param row     receives the row: {@link QuantizedBuildVectors#rowBytes} bytes
-     * @param scales  receives the floats that scale it: the minimum and the maximum, or the median
-     *
-     * @return false when the row cannot be read
-     */
-    boolean read(int ordinal, byte[] row, float[] scales);
-  }
-
-  private final QuantizedBuildVectors store;
-  private final NonResidentRows       nonResident;
+  private final QuantizedBuildVectors  store;
+  private final NonResidentRows        nonResident;
   private final VectorQuantizationType type;
-  private final int                   size;
-  private final int                   dimensions;
-  private final VectorFloat<?>        sentinel;
+  private final int                    size;
+  private final int                    dimensions;
+  private final VectorFloat<?>         sentinel;
 
   // The reader's own: a copy shares everything above it and none of this
-  private final float[]               scratchArray;
-  private final VectorFloat<?>        scratch;
-  private final boolean               scratchWrapsArray;
-  private final byte[]                row;
-  private final float[]               scales = new float[2];
+  private final float[]                scratchArray;
+  private final VectorFloat<?>         scratch;
+  private final boolean                scratchWrapsArray;
+  private final byte[]                 row;
+  private final float[]                scales = new float[2];
 
   private QuantizedBuildVectorValues(final QuantizedBuildVectors store, final NonResidentRows nonResident,
       final VectorQuantizationType type, final int size, final int dimensions, final VectorFloat<?> sentinel) {
@@ -99,7 +86,7 @@ final class QuantizedBuildVectorValues implements RandomAccessVectorValues {
     return new QuantizedBuildVectorValues(store, nonResident, type, size, dimensions, createSentinel(dimensions));
   }
 
-  /** A reader over a store that holds the whole corpus; the quantization is the store's own. */
+  /** For tests: an INT8 reader over a store that holds the whole corpus, with nothing to fall back on. */
   static QuantizedBuildVectorValues ofStoreOnly(final QuantizedBuildVectors store, final int size, final int dimensions) {
     return create(store, VectorQuantizationType.INT8, size, dimensions, null);
   }
@@ -168,5 +155,18 @@ final class QuantizedBuildVectorValues implements RandomAccessVectorValues {
     final float[] sentinel = new float[dimensions];
     Arrays.fill(sentinel, 1.0f);
     return VTS.createFloatVector(sentinel);
+  }
+
+  /** Reads the quantized row of an ordinal the store does not hold, from wherever the index keeps it. */
+  @FunctionalInterface
+  interface NonResidentRows {
+    /**
+     * @param ordinal the ordinal to read
+     * @param row     receives the row: {@link QuantizedBuildVectors#rowBytes} bytes
+     * @param scales  receives the floats that scale it: the minimum and the maximum, or the median
+     *
+     * @return false when the row cannot be read
+     */
+    boolean read(int ordinal, byte[] row, float[] scales);
   }
 }
