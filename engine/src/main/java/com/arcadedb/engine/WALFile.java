@@ -69,6 +69,9 @@ public class WALFile extends LockContext {
   private volatile FileLock         lock;
   private volatile boolean          active            = true;
   private volatile boolean          open;
+  // Writes appended without the flush their commit asked for, owed by a group commit (see markUnsynced)
+  private volatile boolean          unsynced;
+  private volatile boolean          syncMetaData;
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
@@ -281,7 +284,33 @@ public class WALFile extends LockContext {
     }
   }
 
+  /**
+   * Records that a transaction was appended to this file without the flush its commit asks for, which a group commit owes
+   * it ({@link TransactionManager#awaitWALDurable(long)}). Only ever raised by that path.
+   */
+  void markUnsynced(final boolean metaData) {
+    // sticky once raised: lowering it would race with a write marking it again, and the file would get a data-only flush
+    if (metaData)
+      syncMetaData = true;
+    unsynced = true;
+  }
+
+  /**
+   * Flushes the writes {@link #markUnsynced} recorded, if any. The flag is lowered BEFORE the flush: a write appended
+   * while the flush runs raises it again, so it is never lost, at worst flushed twice.
+   */
+  void syncIfUnsynced() throws IOException {
+    if (!unsynced)
+      return;
+    unsynced = false;
+    if (open)
+      force(syncMetaData);
+  }
+
   public synchronized void close() throws IOException {
+    // a group commit may still owe this file's last writes a flush: a closed file is never flushed again
+    if (unsynced && open && channel != null && channel.isOpen())
+      syncIfUnsynced();
     this.open = false;
     if (lock != null)
       try {

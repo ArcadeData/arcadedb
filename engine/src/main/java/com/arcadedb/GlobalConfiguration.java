@@ -222,6 +222,16 @@ public enum GlobalConfiguration {
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
 
+  TX_WAL_GROUP_COMMIT("arcadedb.txWalGroupCommit", SCOPE.DATABASE, """
+      With arcadedb.txWalFlush 1 or 2, moves the flush of the WAL out of the commit's file locks and shares it between the \
+      transactions committing at the same time: a commit still returns only once its WAL is on disk, but one flush covers \
+      every commit that was waiting for one, where each used to flush on its own while holding the locks of the files it \
+      wrote, which serialized every commit on the same type behind the disk's flush time. A page never reaches its data \
+      file before the WAL that describes it. The transaction is visible to other transactions from the moment it is \
+      published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to embedded and leader \
+      commits with the asynchronous page flush (the default)""",
+      Boolean.class, false),
+
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
