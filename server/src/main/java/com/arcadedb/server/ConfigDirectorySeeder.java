@@ -77,7 +77,7 @@ public final class ConfigDirectorySeeder {
    * @return the stream, or null when {@code file} is not one of the bundled defaults
    */
   public static InputStream openBundledDefault(final String file) {
-    return ConfigDirectorySeeder.class.getClassLoader().getResourceAsStream(BUNDLED_DEFAULTS + file);
+    return ConfigDirectorySeeder.class.getResourceAsStream("/" + BUNDLED_DEFAULTS + file);
   }
 
   /**
@@ -172,8 +172,8 @@ public final class ConfigDirectorySeeder {
   }
 
   /**
-   * Seeds the configuration directory of a server from {@code <root>/config} and the bundled defaults. A failure is logged, not thrown: the server
-   * still starts on its built-in defaults, as it did before seeding existed.
+   * Seeds the configuration directory of a server from {@code <root>/config} and the bundled defaults. A failure is
+   * logged, not thrown: the server still starts on its built-in defaults, as it did before seeding existed.
    */
   static void seedFromRoot(final String rootPath, final String configPath) {
     final Path shipped = Path.of(rootPath, "config");
@@ -182,8 +182,9 @@ public final class ConfigDirectorySeeder {
       final List<String> seeded = seed(shipped, target);
       if (!seeded.isEmpty())
         LogManager.instance()
-            .log(ConfigDirectorySeeder.class, Level.INFO, "Seeded the configuration directory '%s' with the defaults %s from '%s' and the server's bundled copies",
-                target, seeded, shipped);
+            .log(ConfigDirectorySeeder.class, Level.INFO,
+                "Seeded the configuration directory '%s' with the defaults %s, from '%s' or the copies bundled in the server", target,
+                seeded, shipped);
     } catch (final IOException | RuntimeException e) {
       LogManager.instance()
           .log(ConfigDirectorySeeder.class, Level.WARNING,
