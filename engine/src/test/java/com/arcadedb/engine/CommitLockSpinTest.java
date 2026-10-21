@@ -66,7 +66,8 @@ class CommitLockSpinTest extends TestHelper {
       reopenDatabase();
       final HandOffs stats = commitBehindAHeldFileLock();
 
-      // the spin is forced off on a single core
+      // The held file lock was taken fresh, so it has no hold history yet and its first waiter spins (a resource's average
+      // starts at its first release); the spin is forced off on a single core
       if (Runtime.getRuntime().availableProcessors() > 1)
         assertThat(stats.spinsExpired).isGreaterThanOrEqualTo(1);
       assertThat(stats.parkHandOffs).isGreaterThanOrEqualTo(1);

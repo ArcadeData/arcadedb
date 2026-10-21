@@ -161,6 +161,9 @@ public class LockManager<RESOURCE, REQUESTER> {
    * cost the releaser a system call and leave a permit that makes the waiter's next park, anywhere, return at once. The
    * waiter clears it and reads {@code granted} once more before it parks, the release writes {@code granted} and then
    * reads {@code spinning} (all volatile): either the waiter sees the grant or the release sees it parking and unparks it.
+   * This covers the grant only: the early wake of the next head (see {@link #unlock}) is an unpark on purpose, and may
+   * leave a permit when that waiter has not parked yet; its park then returns at once and its loop re-checks, as for a
+   * spurious wake-up.
    */
   private static final class Waiter<R> {
     final R          requester;

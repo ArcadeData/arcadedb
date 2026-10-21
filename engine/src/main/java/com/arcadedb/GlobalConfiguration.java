@@ -651,7 +651,8 @@ public enum GlobalConfiguration {
       Microseconds the next transaction in line for a file lock (commit or explicit lock) spins before it sleeps. A lock \
       handed to a sleeping thread stays idle until the operating system wakes that thread: the spin turns that wake-up \
       into a hand-off between running threads. Only one thread per contended file spins, and only while the locks of that \
-      file are held, on average, for less than this time, so a lock held across a disk flush costs no spinning. Pays off \
+      file are held, on average, for less than this time, so a lock held across a disk flush costs no spinning (the \
+      average is kept while the file stays contended: the first waiter of each burst of contention spins once). Pays off \
       for many threads writing into the same type with arcadedb.txWalFlush=0 (50 is a good value: measured +15-19% \
       commits/s), at the price of the CPU the spinning thread burns (+35-40% CPU per commit). 0, the default, disables \
       the spin. Read when the database opens""", Long.class, 0),
