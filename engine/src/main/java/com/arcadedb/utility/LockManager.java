@@ -344,7 +344,9 @@ public class LockManager<RESOURCE, REQUESTER> {
       // Moving average of the hold time, which decides whether the head waiters spin. The first sample seeds it: a 1/8
       // weight from 0 would let the heads of a resource held across an fsync spin through its first several hand-offs
       final long now = System.nanoTime();
-      final long held = now - rl.runningSinceNanos;
+      // The owner writes its start before its tryLock returns, so a release normally reads its own; the clamp only keeps
+      // the average sane if a caller releases on behalf of a requester whose tryLock has not returned yet
+      final long held = Math.max(0L, now - rl.runningSinceNanos);
       if (rl.holdSampled)
         rl.averageHoldNanos += (held - rl.averageHoldNanos) >> HOLD_AVERAGE_SHIFT;
       else {

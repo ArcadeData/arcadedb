@@ -656,7 +656,7 @@ public enum GlobalConfiguration {
       for many threads writing into the same type with arcadedb.txWalFlush=0 (50 is a good value: measured +15-19% \
       commits/s), at the price of the CPU the spinning thread burns (+35-40% CPU per commit). Under a CPU quota (a \
       container limited to fewer cores than it sees), that CPU comes out of the quota the lock owner needs. 0, the default, disables \
-      the spin. Read when the database opens""", Long.class, 0),
+      the spin. At most 1000. Read when the database opens""", Long.class, 0),
 
   TX_RETRIES("arcadedb.txRetries", SCOPE.DATABASE, "Number of retries in case of MVCC exception", Integer.class, 3),
 

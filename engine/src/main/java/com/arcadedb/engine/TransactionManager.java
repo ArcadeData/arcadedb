@@ -59,6 +59,7 @@ import java.util.logging.Level;
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
   private static final int  WRITE_WAL_TIMEOUT = 30_000;
+  private static final long MAX_COMMIT_LOCK_SPIN_MICROS = 1_000;
   // #8649: refused recomputes in a row after which the applies wait for a running recompute again. One is the normal
   // cost of a catch-up; a second one means the replication is not leaving the bucket a quiet window by itself
   static final         long PATIENT_AFTER_REFUSED_RECOMPUTES = 2;
@@ -194,8 +195,10 @@ public class TransactionManager {
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
-    this.fileIdsLockManager = new LockManager<>(
-        TimeUnit.MICROSECONDS.toNanos(Math.max(0L, database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_SPIN))));
+    // Clamped to [0, 1ms]: a spin is only worth it for holds shorter than an OS wake-up, and a misconfigured huge value
+    // would keep one thread per contended file busy until an average over the budget is sampled
+    this.fileIdsLockManager = new LockManager<>(TimeUnit.MICROSECONDS.toNanos(
+        Math.min(MAX_COMMIT_LOCK_SPIN_MICROS, Math.max(0L, database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_SPIN)))));
 
     this.logContext = LogManager.instance().getContext();
 
