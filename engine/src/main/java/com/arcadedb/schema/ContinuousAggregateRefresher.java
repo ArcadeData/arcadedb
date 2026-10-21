@@ -45,6 +45,9 @@ public class ContinuousAggregateRefresher {
    */
   private static final String[] CLAUSES_AFTER_WHERE = { "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" };
 
+  /** How many times a caller runs the refresh again for the requests that arrived while it ran, see {@link #incrementalRefresh}. */
+  private static final int MAX_FOLLOW_UP_REFRESHES = 5;
+
   /**
    * Refreshes the aggregate, or has the refresh in progress do it when it ends. #10428: a refresh asked for while another one runs
    * used to be dropped, and the one running may have read the aggregate before the change that asked (a delete recording the range
@@ -54,7 +57,11 @@ public class ContinuousAggregateRefresher {
    */
   public static void incrementalRefresh(final Database database, final ContinuousAggregateImpl ca) {
     ca.requestRefresh();
-    while (ca.isRefreshRequested()) {
+    // The first pass is this caller's own; the others are for the requests that arrived while it ran, bounded so that one thread
+    // (the committer of an INSERT, say) is not kept refreshing for as long as others keep asking. What is left over stays requested,
+    // and the next caller runs it. The same holds when a refresh fails: the request made during it stays, and the next refresh
+    // applies it
+    for (int pass = 0; pass <= MAX_FOLLOW_UP_REFRESHES && ca.isRefreshRequested(); pass++) {
       if (!ca.tryBeginRefresh()) {
         LogManager.instance().log(ContinuousAggregateRefresher.class, Level.FINE,
             "Concurrent refresh for continuous aggregate '%s' — already in progress, it runs again when it ends", null, ca.getName());
@@ -247,7 +254,9 @@ public class ContinuousAggregateRefresher {
     final String bucketColumn = ca.getBucketColumn();
     final long interval = ca.bucketIntervalMs();
 
-    // A bucket starting at b holds the samples in [b, b + interval): it reaches the range when b <= toTs and b + interval > fromTs
+    // A bucket starting at b holds the samples in [b, b + interval): it reaches the range when b <= toTs and b + interval > fromTs.
+    // Every bucket is `interval` wide: ts.timeBucket() takes fixed units only (s, m, h, d, w), and a time zone whose offset changes
+    // (daylight saving), which would make some buckets 23 or 25 hours, is refused rather than approximated
     final StringBuilder where = new StringBuilder("`" + bucketColumn + "` < ?");
     final List<Object> params = new ArrayList<>(3);
     params.add(new Date(watermark));
@@ -263,11 +272,12 @@ public class ContinuousAggregateRefresher {
     final long first;
     final long last;
     try (final ResultSet rs = database.query("sql",
-        "SELECT min(`" + bucketColumn + "`) AS first, max(`" + bucketColumn + "`) AS last FROM `" + backingTypeName + "` WHERE " + where,
+        "SELECT min(`" + bucketColumn + "`) AS minBucket, max(`" + bucketColumn + "`) AS maxBucket FROM `" + backingTypeName
+            + "` WHERE " + where,
         params.toArray())) {
       final Result row = rs.next();
-      final Object firstValue = row.getProperty("first");
-      final Object lastValue = row.getProperty("last");
+      final Object firstValue = row.getProperty("minBucket");
+      final Object lastValue = row.getProperty("maxBucket");
       if (firstValue == null || lastValue == null)
         return;
       first = toEpochMs(firstValue, bucketColumn, ca.getName());

@@ -1383,10 +1383,9 @@ public class TimeSeriesEngine implements AutoCloseable {
     final LocalSchema schema = (LocalSchema) database.getSchema();
     boolean invalidated = false;
     for (final ContinuousAggregate aggregate : schema.getContinuousAggregates())
-      if (aggregate instanceof ContinuousAggregateImpl impl && typeName.equals(impl.getSourceTypeName())) {
-        impl.invalidate(fromTs, toTs);
+      // a range inside the one already recorded changes nothing the schema holds: no write for it
+      if (aggregate instanceof ContinuousAggregateImpl impl && typeName.equals(impl.getSourceTypeName()) && impl.invalidate(fromTs, toTs))
         invalidated = true;
-      }
     if (invalidated)
       schema.saveConfiguration();
   }

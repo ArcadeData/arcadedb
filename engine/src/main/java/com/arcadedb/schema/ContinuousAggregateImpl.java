@@ -271,11 +271,20 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   /**
    * Records that samples in {@code [fromTs, toTs]} of the source type were removed, so the next refresh recomputes the buckets they
-   * were in. The caller persists the schema (inside the replication unit of the delete, under HA).
+   * were in. The caller persists the schema (inside the replication unit of the delete, under HA) when the answer is {@code true}.
+   *
+   * @return {@code false} when the range was inside the one already recorded, which is then what the schema already holds. It is
+   * recorded all the same, as a new instance: a refresh that read the range before this delete must not clear it
    */
-  public void invalidate(final long fromTs, final long toTs) {
+  public boolean invalidate(final long fromTs, final long toTs) {
     final Invalidation added = new Invalidation(fromTs, toTs);
-    invalidation.updateAndGet(current -> added.merge(current));
+    final boolean[] widened = new boolean[1];
+    invalidation.updateAndGet(current -> {
+      // assigned on every try of the update: the last one is the one that took effect
+      widened[0] = current == null || fromTs < current.fromTs() || toTs > current.toTs();
+      return added.merge(current);
+    });
+    return widened[0];
   }
 
   /** The range recorded by {@link #invalidate}, or {@code null} when the buckets of the aggregate all match the source. */

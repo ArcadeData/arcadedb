@@ -75,6 +75,21 @@ class Issue10428InvalidationRecordTest extends TestHelper {
   }
 
   @Test
+  void onlyARangeThatWidensTheRecordedOneNeedsTheSchemaToBeWritten() {
+    final ContinuousAggregateImpl aggregate = newAggregate();
+
+    assertThat(aggregate.invalidate(100, 200)).as("nothing recorded before").isTrue();
+    assertThat(aggregate.invalidate(120, 180)).as("inside").isFalse();
+    assertThat(aggregate.invalidate(100, 200)).as("the same").isFalse();
+    assertThat(aggregate.invalidate(100, 250)).as("later end").isTrue();
+    assertThat(aggregate.invalidate(50, 250)).as("earlier start").isTrue();
+    assertThat(aggregate.getInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(50, 250));
+
+    aggregate.clearInvalidation(aggregate.getInvalidation());
+    assertThat(aggregate.invalidate(120, 180)).as("nothing recorded any more").isTrue();
+  }
+
+  @Test
   void everyRecordedRangeIsANewInstanceEvenWhenItEqualsTheOneThere() {
     final ContinuousAggregateImpl aggregate = newAggregate();
     aggregate.invalidate(100, 200);
