@@ -646,11 +646,15 @@ class Issue10228PsqlOdbcCatalogShapesTest {
         + "and relname !~ '^(.*)(.*)(.*)(.*)(.*)Y$'"), "relname")).containsExactly("City", "Note", "Person");
   }
 
-  /** A second alias read in an inner join's condition would read the first alias's row: declined, not answered wrong. */
+  /**
+   * A second alias read in an inner join's condition reads a row of its own (issue #10495), as it does in PostgreSQL: every
+   * relation paired with the one named Person.
+   */
   @Test
-  void aSecondAliasReadOnlyInAnInnerJoinConditionIsDeclined() {
-    assertThat(PostgresCatalog.resolve("select c.relname from pg_class c join pg_class p on p.relname = 'Person'",
-        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  void aSecondAliasReadOnlyInAnInnerJoinConditionReadsItsOwnRow() {
+    assertThat(column(resolve("select c.relname from pg_class c join pg_class p on p.relname = 'Person'"), "relname"))
+        .containsExactly("City", "Note", "Person");
+    assertThat(column(resolve("select c.relname from pg_class c join pg_class p on p.relname = 'Nobody'"), "relname")).isEmpty();
   }
 
   /** OFFSET and FETCH after a set operation's ORDER BY are outside the slice: never folded into the sort key. */
@@ -707,15 +711,28 @@ class Issue10228PsqlOdbcCatalogShapesTest {
   }
 
   /**
-   * A join never multiplies rows here: each family is enumerated once and a join only decorates its rows, so a
-   * cross join of a relation with itself - which would be a product - is declined rather than built.
+   * A cross join of a relation with itself is the product, as in PostgreSQL (issue #10495): each alias has the rows of the relation
+   * of its own. The product is bounded by the statement's work budget, so a join of many aliases is refused rather than built.
    */
   @Test
-  void aSelfCrossJoinIsDeclinedNotMultiplied() {
-    assertThat(PostgresCatalog.resolve("select a.attname, b.attname from pg_attribute a, pg_attribute b", database, USER))
-        .isSameAs(PostgresCatalog.DECLINED);
-    assertThat(PostgresCatalog.resolve("select a.attname, b.attname from pg_attribute a cross join pg_attribute b",
-        database, USER)).isSameAs(PostgresCatalog.DECLINED);
+  void aSelfCrossJoinIsTheProductAndIsBoundedByTheWorkBudget() {
+    final int attributes = resolve("select attname from pg_attribute").rows.size();
+    assertThat(attributes).isGreaterThan(1);
+
+    assertThat(resolve("select a.attname, b.attname from pg_attribute a, pg_attribute b").rows).hasSize(attributes * attributes);
+    assertThat(resolve("select a.attname, b.attname from pg_attribute a cross join pg_attribute b").rows)
+        .hasSize(attributes * attributes);
+
+    // every alias is read by the projection: an alias nothing reads is not a row of the product. The relation has few rows, so it
+    // takes many aliases for the product to pass the budget
+    final StringBuilder projection = new StringBuilder("a0.attname");
+    final StringBuilder from = new StringBuilder("pg_attribute a0");
+    for (int i = 1; i < 30; i++) {
+      projection.append(", a").append(i).append(".attname");
+      from.append(", pg_attribute a").append(i);
+    }
+    assertThatThrownBy(() -> PostgresCatalog.resolve("select " + projection + " from " + from, database, USER)).isInstanceOf(
+        PostgresCatalog.WorkLimitExceeded.class);
   }
 
   @Test

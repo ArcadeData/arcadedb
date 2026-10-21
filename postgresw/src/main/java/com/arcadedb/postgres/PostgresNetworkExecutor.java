@@ -1621,13 +1621,11 @@ public class PostgresNetworkExecutor extends Thread {
    * Refuses a catalog query the resolver declined, with {@code feature_not_supported} (issue #10371). Not while its placeholders
    * are unbound: a Parse, or a Describe of a statement, sees the query before the values of its filters arrive, and a shape whose
    * resolver needs a value to recognise it declines until they do (issue #8562). That is not the answer yet, so it is deferred as
-   * an empty one and asked again at Execute, where the same refusal is final.
-   * <p>
-   * Nor a type-resolution probe ({@link PostgresCatalog#isTypeResolutionProbe}): the lookups a driver sends to name a type it does
-   * not know keep the empty "no such type" they have always been given, the one deliberate shim of this refusal.
+   * an empty one and asked again at Execute, where the same refusal is final. The lookups a driver sends to name a type it does not
+   * know are answered from {@link PostgresType} like any other catalog query (issue #10495): there is no exemption for them.
    */
   private static CatalogAnswer refuseCatalogQuery(final String query, final Object[] parameters) {
-    if (parameters.length < PostgresCatalog.countPlaceholders(query) || PostgresCatalog.isTypeResolutionProbe(query))
+    if (parameters.length < PostgresCatalog.countPlaceholders(query))
       return new CatalogAnswer(Collections.emptyList(), Map.of());
     throw PostgresCatalog.refusalOf(query);
   }

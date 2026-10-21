@@ -1001,7 +1001,7 @@ public enum Type {
             // instant (issue #10489). The Z Cypher's datetime() renders itself with is UTC, so
             // `SET n.t = datetime('2026-01-01T00:00:00')` still reads back 00:00 (issue #4125), and an offset-less string
             // keeps its wall clock. Not the bulk path's rebasing onto the database's zone: a LocalDateTime is a UTC wall clock.
-            return truncateToPropertyPrecision(DateUtils.parseDateTimeAsUtc(database, valueAsString), property);
+            return truncateToPropertyPrecision(DateUtils.parseDateTime(database, valueAsString), property);
         }
       } else if (targetClass.equals(ZonedDateTime.class)) {
         if (value instanceof ZonedDateTime time) {

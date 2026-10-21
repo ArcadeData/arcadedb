@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
@@ -190,9 +191,9 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
    */
   @Test
   void everyOffsetWidthDenotesTheSameInstant() {
-    // The bulk path rebases an offset onto the database's zone, so all three widths have to land on one instant.
+    // An offset is stored as the UTC wall clock of its instant (issues #10489, #10498), so all three widths have to land on one instant.
     final LocalDateTime expected = OffsetDateTime.parse("2024-02-29T13:45:10.123456+01:00")
-        .atZoneSameInstant(database.getSchema().getZoneId()).toLocalDateTime();
+        .atZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
 
     for (final String offset : new String[] { "+01", "+0100", "+01:00" })
       assertThat(DateUtils.parseDateTime(database, "2024-02-29 13:45:10.123456" + offset)).as("offset '%s'", offset)

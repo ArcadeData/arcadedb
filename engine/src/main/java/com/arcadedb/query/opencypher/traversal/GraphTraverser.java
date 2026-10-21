@@ -204,9 +204,12 @@ public abstract class GraphTraverser {
     private final Database                database;
     private final VertexInternal          source;
     // Only for the sides that are not read off an adjacency list of this vertex (the incoming side of a unidirectional edge type, which
-    // the lookup answers with the vertices themselves, and a vertex that is not an engine vertex)
+    // the lookup answers with the vertices themselves, and a vertex that is not an engine vertex): read after the lists
     private final Iterator<Vertex>        resolved;
     private       Vertex                  resolvedVertex;
+    // Whether the entry next() returned last came from resolved, which has no edge RID to ask the bucket about
+    private       boolean                 lastResolved;
+    // The adjacency list being read, null once every list is read
     private       EdgeEntryRIDIterator    entries;
     // The list still to be read after the current one: the incoming one of an undirected hop
     private       Vertex.DIRECTION        pending;
@@ -217,14 +220,18 @@ public abstract class GraphTraverser {
       this.source = null;
     }
 
-    private Neighbours(final VertexInternal source, final Vertex.DIRECTION direction) {
-      this.resolved = null;
+    /**
+     * @param direction the side of the vertex to read off its adjacency list(s), null for none
+     * @param resolved  the vertices of the sides not read that way, null for none
+     */
+    private Neighbours(final VertexInternal source, final Vertex.DIRECTION direction, final Iterator<Vertex> resolved) {
+      this.resolved = resolved;
       this.source = source;
       this.database = source.getDatabase();
       if (direction == Vertex.DIRECTION.BOTH) {
         entries = open(Vertex.DIRECTION.OUT);
         pending = Vertex.DIRECTION.IN;
-      } else
+      } else if (direction != null)
         entries = open(direction);
     }
 
@@ -233,24 +240,29 @@ public abstract class GraphTraverser {
     }
 
     public boolean hasNext() {
-      if (resolved != null)
-        return resolved.hasNext();
-      while (!entries.hasNext()) {
+      while (entries != null) {
+        if (entries.hasNext())
+          return true;
         if (pending == null)
-          return false;
-        entries = open(pending);
-        pending = null;
+          entries = null;
+        else {
+          entries = open(pending);
+          pending = null;
+        }
       }
-      return true;
+      return resolved != null && resolved.hasNext();
     }
 
     /** The RID of the vertex the next entry leads to, null for an entry that names none. */
     public RID next() {
-      if (resolved != null) {
-        resolvedVertex = resolved.next();
-        return resolvedVertex.getIdentity();
+      // hasNext() leaves entries on the list the next entry is in, and null when the lists are read and it is in resolved
+      if (entries != null) {
+        lastResolved = false;
+        return entries.next();
       }
-      return entries.next();
+      lastResolved = true;
+      resolvedVertex = resolved.next();
+      return resolvedVertex.getIdentity();
     }
 
     /**
@@ -258,18 +270,16 @@ public abstract class GraphTraverser {
      * without spending the vertex it names: another, live, entry may reach it.
      */
     public boolean liveEdge() {
-      // The vertices a lookup answered have no edge RID to ask about. What is covered: the incoming side of a unidirectional type is
+      // The vertices a lookup answered have no edge RID to ask about, and need none: the incoming side of a unidirectional type is
       // answered from a scan of the edge RECORDS of the type, which a ghost has none of, and a stored incoming side reads the edge
-      // when it reads the source, which fails on a ghost where the expansions catch it. What is not: the outgoing side of an undirected
-      // hop over such a type is a stored list read by its entries, which follows a ghost as getVertices() does. A walk reaching here
-      // is one over a unidirectional edge type, a case the engine-vertex path above does not serve; closing it means answering the
-      // entries of those lists with their edge RIDs, in IncomingEdgeLookup (issue #10463)
-      return resolved != null || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
+      // when it reads the source, which fails on a ghost where the expansions catch it. The outgoing list of an undirected hop over
+      // such a type is stored, so it is read by its entries like every other list and probed here (issue #10463)
+      return lastResolved || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
     }
 
     /** The vertex the entry {@link #next()} last returned leads to, or null when its record is gone. */
     public Vertex vertex(final RID rid) {
-      if (resolved != null)
+      if (lastResolved)
         return resolvedVertex;
       try {
         return (Vertex) database.lookupByRID(rid, false);
@@ -283,9 +293,16 @@ public abstract class GraphTraverser {
    * The adjacency entries of {@code vertex} in the direction and over the relationship types of this walk, see {@link Neighbours}.
    */
   protected Neighbours getNeighbours(final Vertex vertex) {
-    if (isIncomingLookupNeeded(vertex) || !(vertex instanceof VertexInternal internal))
+    if (!(vertex instanceof VertexInternal internal))
       return new Neighbours(getNextVertices(vertex).iterator(), vertex.getDatabase());
-    return new Neighbours(internal, direction.toArcadeDirection());
+
+    final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+    if (isIncomingLookupNeeded(vertex))
+      // Over a unidirectional type the lookup answers the incoming side; the outgoing list of an undirected hop is stored, and read
+      // by its entries to be asked about each of them (issue #10463)
+      return new Neighbours(internal, arcadeDirection == Vertex.DIRECTION.BOTH ? Vertex.DIRECTION.OUT : null,
+          IncomingEdgeLookup.getIncomingVertices(context, vertex, arcadeDirection, relationshipTypes));
+    return new Neighbours(internal, arcadeDirection, null);
   }
 
   /**
