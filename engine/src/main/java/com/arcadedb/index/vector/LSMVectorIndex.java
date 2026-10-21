@@ -9470,7 +9470,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code rerankOversample > 0} the walk keeps {@code max(k * rerankOversample, efSearch)} candidates scored by the PQ
    * codes, then scores exactly those on the stored vectors, as the BINARY quantization does, and returns the nearest
    * {@code k} with their <b>exact</b> distances. The cost is one stored-vector read per candidate. The delta buffer and the
-   * allow-list pre-filter plan are then answered exactly too, so every row of the answer is on one scale.
+   * allow-list pre-filter plan are then answered exactly too, so every row of the answer is on one scale. Which plan an
+   * allow-list takes therefore depends on this argument: re-ranked, it is the exact plan, gated by
+   * {@code VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY}; PQ scores alone, the PQ-scaled one, gated by the lower
+   * {@code VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY}. Tune the two knobs separately.
    *
    * @param efSearch        the beam, in candidates, when it is larger than {@code k * rerankOversample}; zero or negative
    *                        for none

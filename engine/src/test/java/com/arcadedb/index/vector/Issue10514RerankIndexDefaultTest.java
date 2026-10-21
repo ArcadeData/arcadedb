@@ -26,6 +26,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.select.SelectVectorResult;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.Pair;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Tag;
@@ -177,6 +178,24 @@ class Issue10514RerankIndexDefaultTest extends TestHelper {
     final List<Pair<RID, Float>> exact = index.findNeighborsFromVector(query, K, -1, null);
     final List<Result> rows = sql(query);
     assertSameRowsAs(exact, rows, "distance");
+    assertThat(cypher(query)).extracting(r -> (int) r.getProperty("vid")).containsExactlyElementsOf(
+        exact.stream().map(p -> vid(p.getFirst())).toList());
+  }
+
+  @Test
+  void aProductIndexWithoutATrainedCodebookFallsBackToTheExactWalk() {
+    // fewer vectors than the 256 clusters of the default codebook: no PQ is trained, so there are no codes to walk on
+    final float[][] base = clustered(new Random(6L), 100);
+    load(base, "PRODUCT", "");
+    final LSMVectorIndex index = indexOf();
+    index.buildVectorGraphNow();
+    assertThat(index.isPQSearchAvailable()).as("the scenario needs an index without a codebook").isFalse();
+
+    final float[] query = base[3];
+    final List<Pair<RID, Float>> exact = index.findNeighborsFromVector(query, K, -1, null);
+    assertThat(exact).hasSize(K);
+    assertThat(index.findNeighbors(query, K, -1, -1, null, WorkGuard.forCommandDeadline(null))).isEqualTo(exact);
+    assertSameRowsAs(exact, sql(query), "distance");
     assertThat(cypher(query)).extracting(r -> (int) r.getProperty("vid")).containsExactlyElementsOf(
         exact.stream().map(p -> vid(p.getFirst())).toList());
   }
