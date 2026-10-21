@@ -82,8 +82,12 @@ class Issue10524TextFunctionsKeepEveryCharacterTest {
       lost.add(function.getName() + " fails on '" + astral + "' where it answers '" + twin + "' for '" + bmp + "': " + e);
       return;
     }
-    if (answer == null)
+    if (answer == null) {
+      // a function that answers null for the astral letter, where its BMP twin is kept, has refused the letter
+      if (twin.contains(bmp))
+        lost.add(function.getName() + " keeps '" + bmp + "' but answers null for '" + astral + "'");
       return;
+    }
 
     if (hasUnpairedSurrogate(answer))
       lost.add(function.getName() + " answers an unpaired surrogate for 'x" + astral + "y': " + escaped(answer));

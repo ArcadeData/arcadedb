@@ -93,7 +93,8 @@ class CypherDistinctTemporalKeyIssue10526Test extends TestHelper {
 
   @Test
   void aSetAndTheListOfItsElementsAreOneValue() {
-    assertThat(scalar("RETURN $a = $b AS v", Map.of("a", new int[] { 1, 2 }, "b", Set.of(1, 2)))).isEqualTo(true);
+    // an ordered set: Set.of() iterates in an order that changes from one JVM run to the next, and = reads a Set as a sequence
+    assertThat(scalar("RETURN $a = $b AS v", Map.of("a", new int[] { 1, 2 }, "b", new LinkedHashSet<>(List.of(1, 2))))).isEqualTo(true);
     assertThat(scalar("UNWIND [$a, $b] AS x RETURN count(DISTINCT x) AS v", Map.of("a", new int[] { 1, 2 }, "b", new LinkedHashSet<>(List.of(1, 2)))))
         .isEqualTo(1L);
     assertThat(scalar("UNWIND [$a, $b] AS x RETURN count(DISTINCT x) AS v", Map.of("a", List.of(1L, 2L), "b", new LinkedHashSet<>(List.of(1.0, 2.0)))))
