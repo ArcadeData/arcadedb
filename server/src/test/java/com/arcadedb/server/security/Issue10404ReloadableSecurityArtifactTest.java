@@ -113,8 +113,9 @@ class Issue10404ReloadableSecurityArtifactTest {
     }
 
     @Override
-    protected void publish(final List<String> value, final boolean isFallback) {
+    protected boolean publish(final List<String> value, final boolean isFallback) {
       inForce = value;
+      return true;
     }
 
     @Override
