@@ -118,6 +118,18 @@ public class LocalDocumentType implements DocumentType {
    * builder runs on, which is also the type the readiness check asks (the TypeIndex is minted on it), subtypes included.
    */
   private final Map<List<String>, AtomicInteger>    indexesUnderConstruction     = new ConcurrentHashMap<>();
+  /**
+   * The property lists of the UNIQUE indexes whose build leaves the uniqueness check to one pass over the finished index (issue
+   * #10349): a commit of that build does not look each key up in the index it is filling, which is what made the build quadratic.
+   * Set by {@link TypeIndexBuilder} once it holds the database write lock and has decided over any existing index, and given back
+   * under that lock as soon as its final pass has run: for that span nobody else commits to the index, and no other index on these
+   * properties is live. It is a set and not a count because two builds of the same properties cannot overlap under that lock.
+   * <p>
+   * Keyed by the property list of THIS type, which names exactly one index: there is one index per property set on a type, the
+   * bucket indexes of a type (its sub-types' buckets included) all carry that type's name, and an index of a super type on the same
+   * properties belongs to the super type's own registry, which is never asked for these buckets.
+   */
+  private final Set<List<String>>                   indexesWithDeferredUniqueCheck = ConcurrentHashMap.newKeySet();
   // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the
   // registry of every record's type (issue #9997)
   protected final RecordEventsRegistry              events;
@@ -2332,6 +2344,25 @@ public class LocalDocumentType implements DocumentType {
 
   void endIndexConstruction(final List<String> propertyNames) {
     indexesUnderConstruction.computeIfPresent(propertyNames, (k, count) -> count.decrementAndGet() <= 0 ? null : count);
+  }
+
+  /** Leaves the uniqueness check of the index on {@code propertyNames} to the build populating it, see {@link #indexesWithDeferredUniqueCheck}. */
+  void deferUniqueCheck(final List<String> propertyNames) {
+    indexesWithDeferredUniqueCheck.add(propertyNames);
+  }
+
+  /** Gives the uniqueness check of the index on {@code propertyNames} back to every commit. */
+  void resumeUniqueCheck(final List<String> propertyNames) {
+    indexesWithDeferredUniqueCheck.remove(propertyNames);
+  }
+
+  /**
+   * Whether a commit must skip the uniqueness check of the index on {@code propertyNames}, because the build populating it checks
+   * the finished index once instead (issue #10349).
+   */
+  public boolean isUniqueCheckDeferred(final List<String> propertyNames) {
+    // The emptiness test is the fast path: this runs once per unique index of every commit, and nothing is being built nearly always
+    return !indexesWithDeferredUniqueCheck.isEmpty() && indexesWithDeferredUniqueCheck.contains(propertyNames);
   }
 
   /**

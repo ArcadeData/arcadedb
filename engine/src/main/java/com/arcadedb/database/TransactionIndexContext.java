@@ -30,6 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
@@ -1146,7 +1147,7 @@ public class TransactionIndexContext {
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
-      if (index.isUnique()) {
+      if (index.isUnique() && !isUniqueCheckDeferred(index)) {
         final TypeIndex typeIndex = index.getTypeIndex();
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
@@ -1166,6 +1167,18 @@ public class TransactionIndexContext {
         }
       }
     }
+  }
+
+  /**
+   * Whether the build that is populating this index checks it once, when it has finished, instead of every commit looking each key
+   * up in the index it is filling (issue #10349). That lookup walks every page written so far and nothing compacts an index while it
+   * is built, so a build of a large type took time with the square of its record count. The build owns the database write lock, so
+   * no other transaction commits to the index until its own pass has run.
+   */
+  private boolean isUniqueCheckDeferred(final IndexInternal index) {
+    final String typeName = index.getTypeName();
+    return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
+        && type.isUniqueCheckDeferred(index.getPropertyNames());
   }
 
   private Map<TypeIndex, Map<ComparableKey, Set<RID>>> getTxDeletedEntries() {
