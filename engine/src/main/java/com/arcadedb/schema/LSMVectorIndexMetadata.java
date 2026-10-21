@@ -486,7 +486,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("fusedPQ"))
       this.fusedPQ = metadata.getBoolean("fusedPQ");
 
+    // Through the setter, like "similarity" above: a negative value from a hand-edited schema.json fails while OPENING the
+    // database, not on the first search of every door that reads the index default
     if (metadata.has("rerankOversample"))
-      this.rerankOversample = metadata.getInt("rerankOversample");
+      setRerankOversample(metadata.getInt("rerankOversample"));
   }
 }

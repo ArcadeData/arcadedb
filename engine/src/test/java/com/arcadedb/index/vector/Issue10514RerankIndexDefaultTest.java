@@ -27,6 +27,9 @@ import com.arcadedb.query.select.SelectVectorResult;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Tag;
@@ -180,6 +183,33 @@ class Issue10514RerankIndexDefaultTest extends TestHelper {
     assertSameRowsAs(exact, rows, "distance");
     assertThat(cypher(query)).extracting(r -> (int) r.getProperty("vid")).containsExactlyElementsOf(
         exact.stream().map(p -> vid(p.getFirst())).toList());
+  }
+
+  @Test
+  void aSelectRerankAppliesWithoutApproximateToo() {
+    final float[][] base = clustered(new Random(7L), VECTORS);
+    load(base, "PRODUCT", "\"rerankOversample\": 0, ");
+    final LSMVectorIndex index = indexOf();
+    index.buildVectorGraphNow();
+
+    final float[] query = base[31];
+    final long start = index.metrics.getVectorFetchFromDocuments();
+    final List<SelectVectorResult<Document>> rows = database.select().fromType("Doc").nearestTo("embedding", query, K).rerank(10)
+        .documents();
+    final long reads = index.metrics.getVectorFetchFromDocuments() - start;
+
+    assertThat(rows).hasSize(K);
+    assertThat(reads).as("rerank(10) beats the index default of 0, as the rerank option of vector.neighbors does")
+        .isBetween((long) K, 200L);
+  }
+
+  @Test
+  void aNegativePersistedRerankOversampleFailsWhenTheSchemaLoads() {
+    final LSMVectorIndexMetadata metadata = new LSMVectorIndexMetadata("Doc", new String[] { "embedding" }, 0);
+    final JSONObject persisted = new JSONObject().put("typeName", "Doc").put("properties", new JSONArray().put("embedding"))
+        .put("rerankOversample", -1);
+    assertThatThrownBy(() -> metadata.fromJSON(persisted)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("rerankOversample");
   }
 
   @Test

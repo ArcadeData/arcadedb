@@ -48,17 +48,19 @@ public class SelectVectorBuilder {
   }
 
   /**
-   * Re-ranks the approximate (PQ) search on the stored vectors, with {@link LSMVectorIndex#DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE}
-   * candidates per requested neighbour, and returns exact distances (issue #10514). Only meaningful with
-   * {@link #approximate(boolean)} set; the cost is one record read per candidate.
+   * Re-ranks the PQ search of a PRODUCT index on the stored vectors, with
+   * {@link LSMVectorIndex#DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} candidates per requested neighbour, and returns exact
+   * distances (issue #10514). It applies with {@link #approximate(boolean)} set and without it, where it overrides the index's
+   * {@code rerankOversample}; the cost is one record read per candidate.
    */
   public SelectVectorBuilder rerank() {
     return rerank(LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE);
   }
 
   /**
-   * @param oversample candidates per requested neighbour to re-rank exactly on the stored vectors; {@code 0} (the default)
-   *                   returns the PQ scores of the approximate search as they are
+   * @param oversample candidates per requested neighbour to re-rank exactly on the stored vectors; {@code 0} returns the PQ
+   *                   scores as they are. When never called, {@code approximate(true)} returns the PQ scores and the exact
+   *                   search takes the index's {@code rerankOversample}
    *
    * @see #rerank()
    */
