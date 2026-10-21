@@ -289,28 +289,44 @@ public class WALFile extends LockContext {
    * it ({@link TransactionManager#awaitWALDurable(long)}). Only ever raised by that path.
    */
   void markUnsynced(final boolean metaData) {
-    // sticky once raised: lowering it would race with a write marking it again, and the file would get a data-only flush
+    // the metadata request is raised BEFORE the pending flag: see syncIfUnsynced for why that order makes lowering it safe
     if (metaData)
       syncMetaData = true;
     unsynced = true;
   }
 
   /**
-   * Flushes the writes {@link #markUnsynced} recorded, if any. The flag is lowered BEFORE the flush: a write appended
-   * while the flush runs raises it again, so it is never lost, at worst flushed twice.
+   * Flushes the writes {@link #markUnsynced} recorded, if any. Both flags are lowered BEFORE the flush, the pending one first:
+   * a write marked after either was lowered raises it again for the next pass, and one marked before is covered by this
+   * flush, with its metadata when it asked for it (it raised the metadata request before the pending flag that this pass
+   * lowered). So nothing is lost, at worst flushed twice, and a file stops paying full flushes once its writes stop asking.
    */
   void syncIfUnsynced() throws IOException {
     if (!unsynced)
       return;
     unsynced = false;
+    final boolean metaData = syncMetaData;
+    syncMetaData = false;
     if (open)
-      force(syncMetaData);
+      force(metaData);
   }
 
   public synchronized void close() throws IOException {
-    // a group commit may still owe this file's last writes a flush: a closed file is never flushed again
+    // A group commit may still owe this file's last writes a flush: a closed file is never flushed again. A failed flush
+    // still closes the file below, and reaches the caller after it
+    IOException syncFailure = null;
     if (unsynced && open && channel != null && channel.isOpen())
-      syncIfUnsynced();
+      try {
+        syncIfUnsynced();
+      } catch (final IOException e) {
+        syncFailure = e;
+      }
+    closeFile();
+    if (syncFailure != null)
+      throw syncFailure;
+  }
+
+  private void closeFile() throws IOException {
     this.open = false;
     if (lock != null)
       try {

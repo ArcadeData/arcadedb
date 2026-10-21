@@ -21,15 +21,18 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -140,7 +143,8 @@ class WALGroupCommitTest extends TestHelper {
   @Test
   void aFailedFlushFailsTheCommitAndFencesTheDatabase() throws Exception {
     final AtomicReference<Throwable> failure = new AtomicReference<>();
-    TransactionManager.walSyncFaultInjector = file -> {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    transactionManager.walSyncFaultInjector = file -> {
       throw new IOException("injected WAL flush failure");
     };
     try {
@@ -154,7 +158,7 @@ class WALGroupCommitTest extends TestHelper {
       worker.start();
       worker.join();
     } finally {
-      TransactionManager.walSyncFaultInjector = null;
+      transactionManager.walSyncFaultInjector = null;
     }
 
     assertThat(failure.get()).isInstanceOf(TransactionException.class).hasMessageContaining("could not be flushed");
@@ -165,6 +169,77 @@ class WALGroupCommitTest extends TestHelper {
     assertThat(((DatabaseInternal) database).isFencedForRecovery()).isFalse();
     // looked up, not counted: the cached record count is persisted at close and would answer 1 even for a lost record
     database.transaction(() -> assertThat(database.lookupByKey(TYPE, "id", "flush-failure").hasNext()).isTrue());
+  }
+
+  /**
+   * Many commits waiting on flush passes that all fail: none of them may report success, every one is released (no thread
+   * stays parked on a pass), and whatever they wrote is recovered by the reopen.
+   */
+  @Test
+  void failedFlushesReleaseEveryWaiterWithoutASuccess() throws Exception {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    transactionManager.walSyncFaultInjector = file -> {
+      // long enough for the other commits to queue on this pass
+      try {
+        Thread.sleep(20);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      throw new IOException("injected WAL flush failure");
+    };
+    final AtomicInteger succeeded = new AtomicInteger();
+    final AtomicInteger failed = new AtomicInteger();
+    final List<Thread> workers = new ArrayList<>();
+    try {
+      for (int t = 0; t < 8; t++) {
+        final int thread = t;
+        final Thread worker = new Thread(() -> {
+          try {
+            database.transaction(() -> database.newDocument(TYPE).set("id", "fail-" + thread).save());
+            succeeded.incrementAndGet();
+          } catch (final Throwable e) {
+            failed.incrementAndGet();
+          }
+        });
+        workers.add(worker);
+        worker.start();
+      }
+      for (final Thread worker : workers) {
+        worker.join(30_000);
+        assertThat(worker.isAlive()).as("a commit stayed parked on a failed flush pass").isFalse();
+      }
+    } finally {
+      transactionManager.walSyncFaultInjector = null;
+    }
+
+    assertThat(succeeded.get()).isZero();
+    assertThat(failed.get()).isEqualTo(8);
+    assertThat(((DatabaseInternal) database).isFencedForRecovery()).isTrue();
+
+    database.close();
+    database = factory.open();
+    assertThat(((DatabaseInternal) database).isFencedForRecovery()).isFalse();
+  }
+
+  /**
+   * The close of a fenced database keeps the WAL also without group commit (#5053 regime): the reopen recovers the committed
+   * records whatever the flush pipeline did with their pages while the database was fenced.
+   */
+  @Test
+  void aFencedDatabaseKeepsItsWALOnCloseWithoutGroupCommit() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_GROUP_COMMIT, false);
+    runInThreads(1, 10);
+
+    ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).fenceForRecovery("test: fenced after the commits");
+    database.close();
+    assertThat(new File(getDatabasePath()).listFiles((dir, name) -> name.endsWith(".wal"))).isNotEmpty();
+
+    database = factory.open();
+    assertThat(((DatabaseInternal) database).isFencedForRecovery()).isFalse();
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        assertThat(database.lookupByKey(TYPE, "id", "0-" + i).hasNext()).isTrue();
+    });
   }
 
   @Test

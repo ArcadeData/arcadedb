@@ -201,11 +201,14 @@ public class RedisPipeliningTest extends BaseRedisServerTest {
   @Test
   void repliesKeepTheirOrderAcrossTheBufferAndDirectWrites() throws Exception {
     final String nearTheBound = "n".repeat(262_100);
+    // "$262133\r\n" + value + "\r\n" is exactly 262144 bytes, the bound itself
+    final String atTheBound = "a".repeat(262_133);
     final String overTheBound = "o".repeat(300_000);
     final String nonAscii = "città-ü-€";
     try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
       jedis.set("pipe:near", nearTheBound);
+      jedis.set("pipe:at", atTheBound);
       jedis.set("pipe:over", overTheBound);
       jedis.set("pipe:utf8", nonAscii);
       jedis.set("pipe:small", "s");
@@ -218,9 +221,11 @@ public class RedisPipeliningTest extends BaseRedisServerTest {
       pipeline.get("pipe:over");
       pipeline.get("pipe:near");
       pipeline.get("pipe:small");
+      pipeline.get("pipe:at");
+      pipeline.get("pipe:small");
       final List<Object> replies = pipeline.syncAndReturnAll();
 
-      assertThat(replies).containsExactly("s", nearTheBound, nonAscii, "s", overTheBound, nearTheBound, "s");
+      assertThat(replies).containsExactly("s", nearTheBound, nonAscii, "s", overTheBound, nearTheBound, "s", atTheBound, "s");
     }
   }
 

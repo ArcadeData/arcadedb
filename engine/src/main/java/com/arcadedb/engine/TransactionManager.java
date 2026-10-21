@@ -115,12 +115,9 @@ public class TransactionManager {
   // is being flushed waits for the flush on some systems (APFS), and the append runs under the commit's file locks, which
   // serialized the commits behind the flush again. With two files the next wave appends while the previous one flushes
   private volatile int                       groupCommitSlot     = 0;
-  /** Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. */
-  interface WALSyncFaultInjector {
-    void beforeSync(WALFile file) throws IOException;
-  }
-
-  static volatile WALSyncFaultInjector walSyncFaultInjector;
+  // Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. Per instance, so tests
+  // running concurrently in one JVM do not see each other's
+  volatile WALSyncFaultInjector              walSyncFaultInjector;
   private final AtomicLong                   statsGroupCommits   = new AtomicLong();
   private final AtomicLong                   statsGroupSyncs     = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
@@ -2217,5 +2214,10 @@ public class TransactionManager {
   @Override
   public String toString() {
     return "TransactionManager for database '" + database.getName() + "':" + fileIdsLockManager;
+  }
+
+  /** See {@link #walSyncFaultInjector}. */
+  interface WALSyncFaultInjector {
+    void beforeSync(WALFile file) throws IOException;
   }
 }

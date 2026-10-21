@@ -2269,7 +2269,14 @@ public class PageManager extends LockContext {
       // with no durable WAL behind it would be a partial transaction after a power loss, with nothing for recovery to replay
       final long walSyncTicket = page.getWALSyncTicket();
       if (walSyncTicket > 0)
-        database.getTransactionManager().awaitWALDurable(walSyncTicket);
+        try {
+          database.getTransactionManager().awaitWALDurable(walSyncTicket);
+        } catch (final IOException e) {
+          // the same verdict as a committer whose wait fails: published pages whose WAL may not be durable
+          if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+            localDatabase.fenceForRecovery("the WAL flush a page flush waited for failed", e);
+          throw e;
+        }
 
       final PageWriteFaultInjector faultInjector = pageWriteFaultInjector;
       if (faultInjector != null)

@@ -217,8 +217,11 @@ bench() {
   csv=$("$REDIS_BENCHMARK_BIN" -h "$BENCH_HOST" -p "$port" ${auth[@]+"${auth[@]}"} -c "$clients" -P "$pipeline" -n "$requests" \
     --threads "$threads" --seed "$((RANDOM * 32768 + RANDOM))" ${rkeys[@]+"${rkeys[@]}"} --csv "$@" 2>>"$OUT_DIR/redis-benchmark.err") \
     || { echo "redis-benchmark failed for $server/$pair/$workload (see $OUT_DIR/redis-benchmark.err)" >&2; return 1; }
-  local row name
+  local row name rows=0 expected=1
+  # a -t set,get,incr run reports one row per test; a single command one row
+  case "$workload" in -|warmup) expected=3 ;; esac
   while IFS= read -r row; do
+    rows=$((rows + 1))
     name=$workload
     # a redis-benchmark -t run reports one row per test (SET, GET, INCR): the label column names the workload
     [ "$workload" = - ] && name=$(printf '%s' "$row" | sed -E 's/^"([^"]*)".*/\1/')
@@ -226,6 +229,10 @@ bench() {
       "$(printf '%s' "$row" | sed -E 's/.*"([0-9.]+)","([0-9.]+)","([0-9.]+)","([0-9.]+)","([0-9.]+)","([0-9.]+)","([0-9.]+)"$/\1 \2 \4 \5 \6 \7/' | tr ' ' '\t')" \
       >>"$RESULTS"
   done < <(printf '%s\n' "$csv" | grep -E '"[0-9.]+","[0-9.]+","[0-9.]+","[0-9.]+","[0-9.]+","[0-9.]+","[0-9.]+"$')
+  if [ "$rows" -ne "$expected" ]; then
+    echo "redis-benchmark returned $rows of $expected result rows for $server/$pair/$workload (see $OUT_DIR/redis-benchmark.err)" >&2
+    return 1
+  fi
 }
 
 # the warm-up runs go through bench() like everything else; their rows are dropped here
@@ -239,7 +246,7 @@ drop_warmup() {
 # plain redis-cli reading one command per line from stdin is the loader both servers understand. One round trip per key, so
 # keep KEYSPACE modest; its elapsed time is not a benchmark figure.
 preload() { # <server> <port> <count>
-  local server=$1 port=$2 count=$3 auth=() start end
+  local server=$1 port=$2 count=$3 auth=() start end status=0
   [ "$server" = arcadedb ] && auth=(--user root -a "$ROOT_PASSWORD")
   log "$server: preloading $count keys"
   start=$(date +%s)
@@ -251,8 +258,9 @@ preload() { # <server> <port> <count>
       else
         printf "SET %s %s\n", key, payload
     }
-  }' | "$REDIS_CLI_BIN" -h "$BENCH_HOST" -p "$port" ${auth[@]+"${auth[@]}"} >"$OUT_DIR/preload-$server.log" 2>&1 || true
-  if grep -qiE 'err|error|not found' "$OUT_DIR/preload-$server.log"; then
+  }' | "$REDIS_CLI_BIN" -h "$BENCH_HOST" -p "$port" ${auth[@]+"${auth[@]}"} >"$OUT_DIR/preload-$server.log" 2>&1 || status=$?
+  # redis-cli exits 0 on an error REPLY, and a refused connection prints no "error": both checks are needed
+  if [ "$status" -ne 0 ] || grep -qiE 'err|error|not found|could not connect' "$OUT_DIR/preload-$server.log"; then
     echo "preload failed, see $OUT_DIR/preload-$server.log" >&2
     return 1
   fi
@@ -358,6 +366,8 @@ run_scale() { # <server kind> <label> <port>
     for size in $SCALE_SIZES; do
       log "$label: scale ${size}B x$LOADGENS generators (run $r/$REPEAT)"
       pids=()
+      # a previous run that failed half way must not leave its generators' rows to be summed with this one's
+      rm -f "$OUT_DIR"/scale.*.csv
       cpu0=$(cpu_seconds "$SERVER_PID"); start=$(now)
       for g in $(seq 1 "$LOADGENS"); do
         "$REDIS_BENCHMARK_BIN" -h "$BENCH_HOST" -p "$port" ${auth[@]+"${auth[@]}"} -c "$SCALE_CLIENTS" -P "$SCALE_PIPELINE" \

@@ -252,7 +252,8 @@ public class RedisNetworkExecutor extends Thread {
    * Writes a reply to the channel's buffer without flushing it. A client that pipelines sends many commands in one write, and
    * flushing each reply on its own cost one system call per command: at 16 commands per batch that was most of the time a
    * command took. The replies go out when the input runs dry ({@link #fill()}), which is exactly when the client is waiting
-   * for them, and in the order the commands arrived.
+   * for them, and in the order the commands arrived. Those are the only flush points with {@link #replyToClient}: a new code
+   * path that can block after queuing a reply (other than by reading) must flush first, or the client waits for nothing.
    */
   private void queueReply(final StringBuilder response) throws IOException {
     if (LogManager.instance().isLoggable(this, Level.FINE))
@@ -1131,7 +1132,8 @@ public class RedisNetworkExecutor extends Thread {
     final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
     final SecurityDatabaseUser user = authenticatedUser.getDatabaseUser(database);
 
-    // This thread serves this connection alone, so the context the previous command bound is still the thread's: when it
+    // This thread serves this connection alone (RedisNetworkListener starts one RedisNetworkExecutor, a Thread, per accepted
+    // socket; a pooled model would have to drop this shortcut), so the context the previous command bound is still the thread's: when it
     // holds just the idle transaction of this very database instance, re-binding the user is all init() would do that
     // matters. init() rolls that transaction back and builds a new one, which was one command in ten's worth of time
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
@@ -1356,28 +1358,7 @@ public class RedisNetworkExecutor extends Thread {
    * malformed or out-of-range token is refused exactly as before, naming its text.
    */
   private int parseIntUntilLF(final String what) throws IOException {
-    int length = 0;
-    boolean slashR = false;
-    while (!shutdown) {
-      final byte b = readNext();
-      if (!slashR) {
-        if (b == '\r')
-          slashR = true;
-        else {
-          if (length >= MAX_TOKEN_LENGTH)
-            throw new RedisProtocolLimitException("Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
-          tokenBytes[length++] = b;
-        }
-      } else {
-        if (b == '\n')
-          break;
-        else
-          LogManager.instance().log(this, Level.SEVERE, """
-              Redis wrapper: Error on parsing value waiting for LF, but \
-              found '%s' after /r""", (char) b);
-      }
-    }
-
+    final int length = readTokenUntilLF();
     int i = 0;
     final boolean negative = length > 0 && tokenBytes[0] == '-';
     if (length > 0 && (negative || tokenBytes[0] == '+'))
@@ -1411,20 +1392,27 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private String parseValueUntilLF() throws IOException {
-    value.setLength(0);
+    return new String(tokenBytes, 0, readTokenUntilLF(), StandardCharsets.ISO_8859_1);
+  }
 
+  /**
+   * Reads a RESP token up to its CRLF into {@link #tokenBytes} and returns its length: the one reader of simple strings and of
+   * length/integer tokens, so the {@link #MAX_TOKEN_LENGTH} bound and the handling of a stray byte after CR cannot drift
+   * apart between them.
+   */
+  private int readTokenUntilLF() throws IOException {
+    int length = 0;
     boolean slashR = false;
-
     while (!shutdown) {
       final byte b = readNext();
-
       if (!slashR) {
         if (b == '\r')
           slashR = true;
         else {
-          if (value.length() >= MAX_TOKEN_LENGTH)
-            throw new RedisProtocolLimitException("Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
-          value.append((char) b);
+          if (length >= MAX_TOKEN_LENGTH)
+            throw new RedisProtocolLimitException(
+                "Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
+          tokenBytes[length++] = b;
         }
       } else {
         if (b == '\n')
@@ -1435,8 +1423,7 @@ public class RedisNetworkExecutor extends Thread {
               found '%s' after /r""", (char) b);
       }
     }
-
-    return value.toString();
+    return length;
   }
 
   private void respondValue(final Object v, final boolean forceString) {
