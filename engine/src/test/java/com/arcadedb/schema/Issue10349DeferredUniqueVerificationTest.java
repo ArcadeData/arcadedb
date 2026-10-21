@@ -46,22 +46,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10349 (follow-up of #10334): {@code CREATE INDEX ... UNIQUE} on a populated type stayed quadratic wherever the sorted build
- * cannot run - on a replicated (HA) database, inside a transaction with pending changes. The record-at-a-time build commits every
- * batch through the uniqueness check, which looks each key up in the index being built, and that lookup walks every page of the
- * mutable index: nothing compacts an index while it is built, and a replicated build cannot compact it either.
+ * cannot run - on a replicated (HA) database, inside a transaction with pending writes to the buckets it indexes. The
+ * record-at-a-time build commits every batch through the uniqueness check, which looks each key up in the index being built, and
+ * that lookup walks every page of the mutable index: nothing compacts an index while it is built, and a replicated build cannot
+ * compact it either.
  * <p>
  * The build now leaves the check to ONE ordered pass over the finished index (the index's own order, across every bucket, so a
  * duplicate in another bucket is found too) when the type holds at least
  * {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS} records. Nobody else can commit while the build holds the
  * database write lock, so the keys of the build are the only ones the index holds until the pass has run.
  * <p>
- * A build the sorted build cannot take is made here by a transaction with a pending change on another type, the same refusal a
- * replicated database gives ("Sorted build requires no pending changes in any active transaction").
+ * A build the sorted build cannot take is made here by a transaction with a pending record in the type being indexed, the same
+ * refusal a replicated database gives (issue #10466: a write to another type no longer is one).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue10349DeferredUniqueVerificationTest extends TestHelper {
-  private final List<SortedIndexBuildMetrics> sortedBuilds = new ArrayList<>();
+  private final List<SortedIndexBuildMetrics> sortedBuilds   = new ArrayList<>();
+  private       int                           pendingRecords = 0;
 
   @BeforeEach
   void captureSortedBuilds() {
@@ -75,7 +77,6 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
 
   @Test
   void theBuildOfALargeUniqueIndexTheSortedBuildCannotTakeIsNotQuadratic() {
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Small", 3, 30_000);
     createPopulatedType("Large", 3, 60_000);
 
@@ -91,7 +92,8 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     for (final String typeName : new String[] { "Small", "Large" }) {
       final TypeIndex index = database.getSchema().getType(typeName).getIndexByProperties("id");
       assertThat(index.isUnique()).isTrue();
-      assertThat(index.countEntries()).isEqualTo(typeName.equals("Small") ? 30_000 : 60_000);
+      // THE RECORDS OF THE TYPE AND THE ONE THE CALLER WROTE, QUEUED ON ITS TRANSACTION AND COMMITTED WITH IT
+      assertThat(index.countEntries()).isEqualTo(typeName.equals("Small") ? 30_001 : 60_001);
       assertThat(count(index.get(new Object[] { workId(12_345) }))).isEqualTo(1);
     }
   }
@@ -99,7 +101,6 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   @Test
   void aDuplicateInTheSameBucketIsRefusedAndLeavesNoIndex() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 1, 5_000);
     database.transaction(() -> database.newDocument("Work").set("id", workId(2_500)).save());
 
@@ -110,7 +111,6 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   @Test
   void aDuplicateInAnotherBucketIsRefusedAndLeavesNoIndex() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 4, 5_000);
     // THE SECOND RECORD AND THE LAST ONE: INSERTED IN TURN, SO INTO DIFFERENT BUCKETS
     database.transaction(() -> database.newDocument("Work").set("id", workId(1)).save());
@@ -128,7 +128,6 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   @Test
   void aDuplicateUnderTheCaseInsensitiveCollationIsRefused() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     final DocumentType type = database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(3).create();
     type.createProperty("k", Type.STRING);
     database.transaction(() -> {
@@ -139,7 +138,7 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     });
 
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    database.newDocument("Doc").set("k", "pending").save();
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Doc (k COLLATE CI) UNIQUE").close())
         .hasRootCauseInstanceOf(DuplicatedKeyException.class);
     database.rollback();
@@ -147,15 +146,14 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
 
     // WITHOUT THE COLLATION THE TWO STRINGS ARE TWO KEYS
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    database.newDocument("Doc").set("k", "pending").save();
     database.command("sql", "CREATE INDEX ON Doc (k) UNIQUE").close();
     database.commit();
-    assertThat(database.getSchema().getType("Doc").getIndexByProperties("k").countEntries()).isEqualTo(3_001);
+    assertThat(database.getSchema().getType("Doc").getIndexByProperties("k").countEntries()).isEqualTo(3_002);
   }
 
   @Test
   void nullAndCompositeKeysGiveTheSameIndexAsTheClassicBuild() {
-    database.getSchema().createDocumentType("Other");
     final DocumentType type = database.getSchema().buildDocumentType().withName("Paper").withTotalBuckets(3).create();
     type.createProperty("id", Type.STRING);
     type.createProperty("a", Type.INTEGER);
@@ -179,7 +177,7 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     for (final long minRecords : new long[] { 1_000L, 0L }) {
       database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, minRecords);
       database.begin();
-      database.newDocument("Other").set("x", 1).save();
+      database.newDocument("Paper").set("id", "pending-" + minRecords).set("a", -1).set("b", -1).save();
       assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Paper (a, b) UNIQUE").close())
           .hasRootCauseInstanceOf(DuplicatedKeyException.class);
       database.rollback();
@@ -190,11 +188,10 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   @Test
   void theIndexRefusesDuplicatesOnceBuilt() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 2, 5_000);
 
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn("Work");
     database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
     database.commit();
 
@@ -230,7 +227,6 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   @Test
   void theDeferralHoldsForTheBuildAloneAndIsGivenBackWithIt() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 2, 5_000);
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Work");
     final List<String> properties = List.of("id");
@@ -240,7 +236,7 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     assertThat(type.isUniqueCheckDeferred(properties)).isFalse();
 
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn("Work");
     database.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
         .withCallback((document, totalIndexed) -> {
           if (deferredWhileBuilding.isEmpty())
@@ -251,13 +247,12 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     // ...ON FOR THE BUILD, AND OFF AGAIN ONCE IT HAS RETURNED, WHATEVER THE SCHEMA SESSION DOES AFTER THE LOCK IS RELEASED
     assertThat(deferredWhileBuilding).containsExactly(true);
     assertThat(type.isUniqueCheckDeferred(properties)).isFalse();
-    assertThat(type.getIndexByProperties("id").countEntries()).isEqualTo(5_000);
+    assertThat(type.getIndexByProperties("id").countEntries()).isEqualTo(5_001);
   }
 
   @Test
   void recordsDeletedBeforeTheBuildLeaveNothingInTheIndex() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 3, 5_000);
     // A HUNDRED RECORDS GONE, AND A DUPLICATE OF A KEY THE TYPE HOLDS ADDED THEN DELETED: THE INDEX IS MADE OF THE LIVE RECORDS ALONE
     database.transaction(() -> database.command("sql", "DELETE FROM Work LIMIT 100").close());
@@ -266,18 +261,17 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     final long live = database.countType("Work", true);
 
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn("Work");
     database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
     database.commit();
 
     assertThat(sortedBuilds).isEmpty();
-    assertThat(database.getSchema().getType("Work").getIndexByProperties("id").countEntries()).isEqualTo(live);
+    assertThat(database.getSchema().getType("Work").getIndexByProperties("id").countEntries()).isEqualTo(live + 1);
   }
 
   @Test
   void aWriterStartedDuringTheBuildCannotSlipADuplicateIn() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 2, 5_000);
 
     // THE BUILD LEAVES THE CHECK TO ITS FINAL PASS, SO IT RELIES ON NOBODY COMMITTING WHILE IT RUNS: A WRITER STARTED FROM INSIDE
@@ -287,7 +281,7 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     final Thread[] writer = new Thread[1];
 
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn("Work");
     database.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
         .withCallback((document, totalIndexed) -> {
           if (writer[0] == null) {
@@ -315,20 +309,19 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     assertThat(writerOutcome.get()).isInstanceOf(DuplicatedKeyException.class);
 
     final TypeIndex index = database.getSchema().getType("Work").getIndexByProperties("id");
-    assertThat(index.countEntries()).isEqualTo(5_000);
+    assertThat(index.countEntries()).isEqualTo(5_001);
     assertThat(count(index.get(new Object[] { workId(4_999) }))).isEqualTo(1);
   }
 
   @Test
   void typeBelowTheThresholdKeepsTheCheckOfEveryBatch() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
-    database.getSchema().createDocumentType("Other");
     createPopulatedType("Work", 2, 999);
     database.transaction(() -> database.newDocument("Work").set("id", workId(500)).save());
 
     // THE SAME REFUSAL AS EVER, WITH THE RECORD ALREADY HOLDING THE KEY
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn("Work");
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close())
         .hasRootCauseInstanceOf(DuplicatedKeyException.class)
         .rootCause().hasMessageContaining("Duplicated key [" + workId(500) + "] found on index 'Work[id]' already assigned to record #");
@@ -338,13 +331,13 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   private void assertDuplicateRefused(final String typeName, final String key) {
     // REPORTED AS THE CLASSIC BUILD REPORTS IT: THE INDEX, THE KEY AND THE RECORD ALREADY HOLDING IT
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn(typeName);
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON " + typeName + " (id) UNIQUE").close())
         .hasRootCauseInstanceOf(DuplicatedKeyException.class)
         .rootCause().hasMessageContaining("Duplicated key [" + key + "] found on index '" + typeName + "[id]' already assigned to record #");
     // THE CALLER'S TRANSACTION IS HANDED BACK ACTIVE AND USABLE
     assertThat(database.isTransactionActive()).isTrue();
-    database.newDocument("Other").set("x", 2).save();
+    database.newDocument(typeName).set("id", "after-refusal").save();
     database.commit();
     assertThat(sortedBuilds).isEmpty();
   }
@@ -360,16 +353,16 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     // FIXING THE DATA LETS THE SAME STATEMENT SUCCEED
     database.transaction(() -> database.command("sql", "DELETE FROM " + typeName + " WHERE id = ? LIMIT 1", duplicatedKey).close());
     database.begin();
-    database.newDocument("Other").set("x", 3).save();
+    pendingRecordIn(typeName);
     database.command("sql", "CREATE INDEX ON " + typeName + " (id) UNIQUE").close();
     database.commit();
     assertThat(database.getSchema().getType(typeName).getIndexByProperties("id")).isNotNull();
   }
 
-  /** The page accesses of one CREATE INDEX that the sorted build cannot take: a transaction with a pending change on another type. */
+  /** The page accesses of one CREATE INDEX that the sorted build cannot take: a transaction with a pending record in the type. */
   private long pageAccessesOfTheBuild(final String typeName) {
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    pendingRecordIn(typeName);
 
     final PageManager.PPageManagerStats before = PageManager.INSTANCE.getStats();
     database.command("sql", "CREATE INDEX ON " + typeName + " (id) UNIQUE").close();
@@ -379,10 +372,10 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     return (after.cacheHits + after.cacheMiss) - (before.cacheHits + before.cacheMiss);
   }
 
-  /** Builds the UNIQUE indexes on id and (a, b) inside a transaction with a pending change elsewhere, answers their entry counts. */
+  /** Builds the UNIQUE indexes on id and (a, b) inside a transaction with a pending record, answers their entry counts. */
   private long[] buildBothWithPendingChange(final String typeName) {
     database.begin();
-    database.newDocument("Other").set("x", 1).save();
+    database.newDocument(typeName).set("id", "pending").set("a", -1).set("b", -1).save();
     database.command("sql", "CREATE INDEX ON " + typeName + " (id) UNIQUE").close();
     database.command("sql", "CREATE INDEX ON " + typeName + " (a, b) UNIQUE").close();
     final DocumentType type = database.getSchema().getType(typeName);
@@ -392,7 +385,15 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
     database.commit();
     database.getSchema().dropIndex(byId.getName());
     database.getSchema().dropIndex(byPair.getName());
+    // THE PENDING RECORD IS COMMITTED NOW: THE NEXT CALL OF THIS METHOD WRITES ITS OWN, WITH ANOTHER KEY
+    database.transaction(() -> database.command("sql", "DELETE FROM " + typeName + " WHERE id = 'pending'").close());
     return entries;
+  }
+
+  /** A record the caller writes in the type's own buckets, with a key no other record holds: what refuses the sorted build. */
+  private void pendingRecordIn(final String typeName) {
+    // A KEY OF ITS OWN EVERY TIME: A TEST THAT COMMITS ONE PENDING RECORD AND WRITES ANOTHER MUST NOT REPEAT IT
+    database.newDocument(typeName).set("id", "pending-" + typeName + "-" + (++pendingRecords)).save();
   }
 
   private void createPopulatedType(final String typeName, final int buckets, final int records) {
