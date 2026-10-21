@@ -20,7 +20,6 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.CommittedReadScope;
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
@@ -454,7 +453,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final long sortedBuildStarted = sortedBuild ? System.nanoTime() : 0L;
 
     if (sortedBuild)
-      validateSortedBuildPreconditions();
+      validateSortedBuildPreconditions(buckets);
 
     // The replaced index is dropped as the last thing before the build, under the lock below: everything above can still
     // refuse the request (an undeclared property, a BY ITEM on a non-LIST, a sorted build on a replicated database), and
@@ -529,8 +528,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
 
         if (sortedBuild) {
-          // The sorted build writes its pages outside any transaction, so the caller's - empty, see
-          // validateSortedBuildPreconditions - is set aside for its duration and given back untouched. An HTTP command
+          // The sorted build writes its pages outside any transaction, so the caller's - free of writes to these buckets,
+          // see validateSortedBuildPreconditions - is set aside for its duration and given back untouched. Whatever the
+          // caller wrote ELSEWHERE stays pending in it (issue #10466): the build writes only into the index files it
+          // creates below, which no transaction of the caller can hold a page of, and reads only these buckets. An HTTP command
           // always arrives inside the auto-commit transaction of its handler, which is how CREATE INDEX from Studio runs
           // (issue #10334). Reading outside a transaction misses nothing: no other transaction can commit while the build
           // holds the database write lock taken by recordFileChanges, and the async workers are quiesced above.
@@ -841,8 +842,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         metadata, build);
   }
 
-  private void validateSortedBuildPreconditions() {
-    final String refusal = sortedBuildRefusal();
+  private void validateSortedBuildPreconditions(final List<Bucket> buckets) {
+    final String refusal = sortedBuildRefusal(buckets);
     if (refusal != null)
       throw new IndexException(refusal);
   }
@@ -853,25 +854,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * {@link #isSortedBuildChosenFor}, which falls back to the record-at-a-time build instead: a guard known to one and not the
    * other would turn a DEFAULT build into a refused one.
    */
-  private String sortedBuildRefusal() {
+  private String sortedBuildRefusal(final List<Bucket> buckets) {
     if (indexType != Schema.INDEX_TYPE.LSM_TREE)
       return "Sorted build currently supports only LSM_TREE indexes";
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
       return "Sorted build is not supported on replicated databases";
-    if (anyCallerTransactionHasChanges())
-      // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction
-      return "Sorted build requires no pending changes in any active transaction";
+    if (anyCallerTransactionHasChangesIn(database, buckets))
+      // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction. A
+      // write elsewhere does not count (issue #10466): the scan would not find it in these buckets either way
+      return "Sorted build requires no pending changes to the indexed buckets in any active transaction";
     return null;
-  }
-
-  /**
-   * Asks EVERY transaction stacked on this thread, not only the innermost one {@link #callerTransactionHasChangesIn} answers for: the
-   * sorted build sets the whole stack aside ({@link CommittedReadScope}), so an empty nested transaction over an outer one that
-   * wrote a record would hide that record from the scan - and nothing would add it to the index when the outer one commits.
-   */
-  private boolean anyCallerTransactionHasChanges() {
-    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    return context != null && context.hasActiveTransactionWithChanges();
   }
 
   /**
@@ -886,7 +878,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * every key, which a bulk build over existing records does not need, and the sorted build skips it, so its threshold is far
    * higher and only where the saving is felt.
    * <p>
-   * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal()}). The record count is the buckets' cached
+   * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal(List)}). The record count is the buckets' cached
    * counters, polymorphic like the build itself, so asking costs nothing; a counter that is off after an unclean shutdown only
    * picks the other build, which produces the same index.
    */
@@ -906,7 +898,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (records < minRecords)
       return false;
 
-    final String refusal = sortedBuildRefusal();
+    final String refusal = sortedBuildRefusal(buckets);
     if (refusal != null) {
       if (unique)
         // Said out loud: on a type this large the record-at-a-time build is the slow one, and this is the only place that knows why
