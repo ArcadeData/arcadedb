@@ -132,7 +132,7 @@ public final class AiSchemaDigest {
       if (cached != null && now - cached.builtAt() < cacheTtlMs)
         return cached.digest();
     }
-    final DatabaseInternal database = server.getDatabase(databaseName);
+    final DatabaseInternal database = server.getDatabaseForClient(databaseName);
     final String digest = DatabaseUserContext.runAs(database, user, () -> build(database, databaseName));
     synchronized (CACHE) {
       CACHE.put(key, new Cached(digest, now));

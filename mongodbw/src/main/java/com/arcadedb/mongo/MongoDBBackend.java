@@ -88,7 +88,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   @Override
   protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
-    return new MongoDBDatabaseWrapper(server.getDatabase(databaseName), plugin, this);
+    return new MongoDBDatabaseWrapper(server.getDatabaseForClient(databaseName), plugin, this);
   }
 
   @Override
@@ -203,7 +203,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // slot. The command document is described only if somebody lists it
     final RunningQuery runningQuery = admission != null ? registerRunningQuery(channel, databaseName, command, query, user) : null;
     try {
-      final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+      final DatabaseInternal database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
       ctx.setCurrentUser(user.getDatabaseUser(database));
       try {

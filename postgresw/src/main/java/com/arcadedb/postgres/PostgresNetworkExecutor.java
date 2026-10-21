@@ -3992,7 +3992,7 @@ public class PostgresNetworkExecutor extends Thread {
       final ServerSecurityUser dbUser = server.getSecurity().authenticate(userName, userPassword, databaseName);
       authenticatedUser = dbUser;
 
-      database = server.getDatabase(databaseName);
+      database = server.getDatabaseForClient(databaseName);
 
       DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
       sessionSettings.setSuperuser(ServerSecurityUser.ROOT_USER.equals(dbUser.getName()));

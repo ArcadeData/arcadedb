@@ -6186,7 +6186,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (arcadeServer != null) {
 
       // This is how other plugins do it - get the already-open database
-      Database db = arcadeServer.getDatabase(databaseName);
+      Database db = arcadeServer.getDatabaseForClient(databaseName);
 
       LogManager.instance().log(this, Level.FINE, "getDatabase(): db = %s isOpen = %s", db, db.isOpen());
 
@@ -6205,7 +6205,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Below this line the service is running WITHOUT an ArcadeDBServer, which only a standalone or embedded use of
     // this class does - GrpcServerPlugin, the single production construction site, always passes one. The branch
-    // above returns or throws in that case: ArcadeDBServer.getDatabase(name) opens from disk and raises
+    // above returns or throws in that case: ArcadeDBServer.getDatabaseForClient(name) opens from disk and raises
     // DatabaseOperationException("... does not exist") rather than returning null, so `db != null` never falls
     // through on a real server. That is what keeps the raw DatabaseFactory.create() below outside the set of
     // database creators the restore name reservation has to bind (issue #7441).
