@@ -206,6 +206,28 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   }
 
   @Test
+  void aRecordTheCallerWroteInTheSameTransactionIsStillRefusedAtItsCommit() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
+    createPopulatedType("Work", 2, 5_000);
+
+    database.begin();
+    // THE CALLER'S PENDING RECORD REPEATS A KEY THE TYPE HOLDS: ITS ENTRY QUEUES ON THE CALLER'S TRANSACTION, WHICH THE BUILD DOES NOT
+    // CHECK - THE CHECK OF ITS COMMIT IS BACK BY THEN, WHATEVER THE BUILD LEFT TO ITS FINAL PASS
+    database.newDocument("Work").set("id", workId(7)).save();
+    database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(DuplicatedKeyException.class);
+    if (database.isTransactionActive())
+      database.rollback();
+
+    // The index the build made over the committed records stands, and holds none of the refused record
+    final TypeIndex index = database.getSchema().getType("Work").getIndexByProperties("id");
+    assertThat(index).isNotNull();
+    assertThat(index.countEntries()).isEqualTo(5_000);
+    assertThat(count(index.get(new Object[] { workId(7) }))).isEqualTo(1);
+  }
+
+  @Test
   void aWriterStartedDuringTheBuildCannotSlipADuplicateIn() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
     database.getSchema().createDocumentType("Other");
