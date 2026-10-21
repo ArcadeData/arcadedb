@@ -193,6 +193,30 @@ class Issue10307AlwaysEmptyFilterTest {
   }
 
   @Test
+  void aMutationInsideTheFilterChildStillRunsForEveryTraverser() {
+    final GraphTraversalSource g = graph.traversal();
+
+    // THE CHILD'S STEPS IN FRONT OF ITS limit(0) RUN ONCE FOR EACH TRAVERSER THE FILTER IS OFFERED: ONE HERE, THE ROOT
+    g.V(root.id()).filter(__.sideEffect(__.addV("Target").property("uid", -3L)).limit(0)).iterate();
+    graph.tx().commit();
+
+    assertThat(graph.traversal().V().hasLabel("Target").has("uid", -3L).count().next()).isEqualTo(1L);
+  }
+
+  @Test
+  void aLambdaInsideTheFilterChildStillSeesEveryTraverser() {
+    final GraphTraversalSource g = graph.traversal();
+    final AtomicLong seenByFilter = new AtomicLong();
+    final AtomicLong seenByWhere = new AtomicLong();
+
+    g.V(root.id()).out("High").filter(__.sideEffect(t -> seenByFilter.incrementAndGet()).limit(0)).iterate();
+    g.V(root.id()).out("High").where(__.sideEffect(t -> seenByWhere.incrementAndGet()).limit(0)).iterate();
+
+    assertThat(seenByFilter.get()).isEqualTo(TARGETS);
+    assertThat(seenByWhere.get()).isEqualTo(TARGETS);
+  }
+
+  @Test
   void aMutationNestedInFrontOfTheFilterStillRuns() {
     final GraphTraversalSource g = graph.traversal();
 

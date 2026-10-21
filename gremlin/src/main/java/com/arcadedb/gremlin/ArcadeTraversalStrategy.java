@@ -269,7 +269,9 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         continue;
 
       final List<?> children = ((TraversalParent) step).getLocalChildren();
-      if (children.size() != 1 || !neverEmitsAnything((Traversal.Admin<?, ?>) children.get(0)) || !hasNoEffect(steps.subList(0, i)))
+      // THE CHILD TOO: ITS STEPS IN FRONT OF THE limit(0) RUN ONCE FOR EVERY TRAVERSER THE FILTER IS OFFERED, AND THE FILTER IS GONE
+      if (children.size() != 1 || !neverEmitsAnything((Traversal.Admin<?, ?>) children.get(0))
+          || !hasNoEffect(((Traversal.Admin<?, ?>) children.get(0)).getSteps()) || !hasNoEffect(steps.subList(0, i)))
         continue;
 
       final RangeGlobalStep<?> stop = new RangeGlobalStep<>(traversal, 0L, 0L);
@@ -281,8 +283,9 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   }
 
   /**
-   * Whether the traversal emits nothing whatever it is fed: it ends with a {@code limit(0)}, which stops at the first traverser it is
-   * offered whatever the steps in front of it did with it.
+   * Whether the traversal emits nothing whatever it is fed: it ends with a {@code limit(0)}, which lets no traverser through. The
+   * steps in front of it still run, once for each traverser the traversal is offered, before the {@code limit(0)} stops it: whoever
+   * drops the traversal has to know they have no effect ({@link #hasNoEffect}).
    */
   private static boolean neverEmitsAnything(final Traversal.Admin<?, ?> child) {
     final List<? extends Step> childSteps = child.getSteps();

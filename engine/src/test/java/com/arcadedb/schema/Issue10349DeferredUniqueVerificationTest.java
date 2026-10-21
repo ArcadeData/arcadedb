@@ -228,6 +228,26 @@ class Issue10349DeferredUniqueVerificationTest extends TestHelper {
   }
 
   @Test
+  void recordsDeletedBeforeTheBuildLeaveNothingInTheIndex() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
+    database.getSchema().createDocumentType("Other");
+    createPopulatedType("Work", 3, 5_000);
+    // A HUNDRED RECORDS GONE, AND A DUPLICATE OF A KEY THE TYPE HOLDS ADDED THEN DELETED: THE INDEX IS MADE OF THE LIVE RECORDS ALONE
+    database.transaction(() -> database.command("sql", "DELETE FROM Work LIMIT 100").close());
+    database.transaction(() -> database.newDocument("Work").set("id", workId(4_999)).save());
+    database.transaction(() -> database.command("sql", "DELETE FROM Work WHERE id = ? LIMIT 1", workId(4_999)).close());
+    final long live = database.countType("Work", true);
+
+    database.begin();
+    database.newDocument("Other").set("x", 1).save();
+    database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close();
+    database.commit();
+
+    assertThat(sortedBuilds).isEmpty();
+    assertThat(database.getSchema().getType("Work").getIndexByProperties("id").countEntries()).isEqualTo(live);
+  }
+
+  @Test
   void aWriterStartedDuringTheBuildCannotSlipADuplicateIn() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
     database.getSchema().createDocumentType("Other");
