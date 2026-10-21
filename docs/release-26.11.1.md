@@ -188,8 +188,34 @@ already stored are not rewritten: those that came from a client in another time 
 be rewritten if they are to be read as UTC. The bulk path (`GraphBatch`) still rebases onto the database's zone, the same value as
 the rule above for a UTC database (#10498).
 
+### Vector search: a `PRODUCT` index walks on its PQ codes and re-ranks, and its graph file is small (#10514)
+
+SQL `vector.neighbors`, the openCypher procedure `db.index.vector.queryNodes` and the fluent `select().nearestTo()` search a
+`PRODUCT` index by walking the graph on the in-memory PQ codes, keeping `k * rerankOversample` candidates and scoring those on the
+stored vectors. They used to score every node the walk visited on the stored vectors, as a `NONE` index does, so the PQ codes built
+the graph and never searched it. The distances returned are still the exact ones. `rerankOversample` is a new index setting
+(default 10; `CREATE INDEX ... METADATA { "rerankOversample": 30 }`), and `vector.neighbors` takes `rerank` per query. `0` returns
+the PQ scores alone, without reading a stored vector, at a recall of about 0.7 on SIFT-1M with 32 subspaces whatever the beam: the
+distances are then PQ estimates. The grouped search (`groupBy`) and the other quantizations keep their exact walk.
+
+The graph file of a `PRODUCT` index no longer stores the PQ codes of every node's neighbours (jvector FusedPQ) unless the new
+`fusedPQ` index setting is `true`: the `.vecgraph` was about 8x a `NONE` index's and nothing read the codes. Files written
+earlier keep them and are searched through them. `pqTrainingLimit` now sets the size of the random sample the PQ codebook is
+trained on; it was accepted and ignored. The Java `findNeighborsFromVectorApproximate(query, k)` and `select().approximate(true)`
+keep the PQ-scores-only answer, and take `rerankOversample` / `.rerank()` to re-rank.
+
+**Who sees a different answer.** A `PRODUCT` index searched through SQL, openCypher or the select: the ranking can differ from the
+exact walk's: jvector alone measured recall@10 0.9873 against 0.9897 at a beam of 100 on SIFT-1M with 32 subspaces (#10514), and
+more is lost at fewer subspaces. Raise `rerank`
+(or `rerankOversample` on the index) and `efSearch` to close the gap; `INT8` is the quantization to pick when the exact walk is
+what matters.
+
 ## Fixes
 
+- **#10514** A `PRODUCT` vector index searches with its PQ codes (see the migration note above), its graph file is about the size
+  of a `NONE` index's instead of 8x, `pqTrainingLimit` is honoured, the PQ-only search can re-rank on the stored vectors, and the
+  FusedPQ reader that was switched off for returning a single result is back behind the `fusedPQ` index setting: it was handed a
+  graph view the walk never reads.
 - **#10488** A list nested in a list or in a map HTTP parameter is stored as a list, like the same value written as a literal or
   from Java, whether the property is declared or not. It was stored as the primitive `long[]` or `double[]` the request parser
   leaves at any depth, so `=`, `.type()` and `GROUP BY` saw a different value for the same data.

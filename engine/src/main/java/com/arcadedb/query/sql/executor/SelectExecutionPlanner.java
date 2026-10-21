@@ -3049,9 +3049,16 @@ public class SelectExecutionPlanner {
     for (final AndBlock andBlock : flattenedWhere) {
       long blockFrom = Long.MIN_VALUE;
       long blockTo = Long.MAX_VALUE;
+      boolean matchesNothing = false;
       for (final BooleanExpression expr : andBlock.getSubBlocks()) {
         final long[] range = extractTimeRange(expr, timestampColumn, context);
         if (range != null) {
+          // A predicate that is empty by itself empties the block. Said here, and not left to the bounds below: Long.MIN_VALUE
+          // and Long.MAX_VALUE on a side read as "no bound", so an empty range's own ends would not tighten anything (issue #10528)
+          if (range[0] > range[1]) {
+            matchesNothing = true;
+            break;
+          }
           // Tighten bounds: take the most restrictive range
           if (range[0] != Long.MIN_VALUE)
             blockFrom = Math.max(blockFrom, range[0]);
@@ -3059,13 +3066,13 @@ public class SelectExecutionPlanner {
             blockTo = Math.min(blockTo, range[1]);
         }
       }
-      if (blockFrom > blockTo)
+      if (matchesNothing || blockFrom > blockTo)
         continue; // contradictory block: matches nothing
       anyBlock = true;
       from = Math.min(from, blockFrom);
       to = Math.max(to, blockTo);
     }
-    return anyBlock ? new long[] { from, to } : new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+    return anyBlock ? new long[] { from, to } : emptyTimeRange();
   }
 
   /**
@@ -3106,11 +3113,11 @@ public class SelectExecutionPlanner {
         // When field is on the right side, invert the operator semantics
         if (leftIsTs) {
           if (op instanceof GtOperator)
-            return new long[] { val + 1, Long.MAX_VALUE };
+            return after(val);
           if (op instanceof GeOperator)
             return new long[] { val, Long.MAX_VALUE };
           if (op instanceof LtOperator)
-            return new long[] { Long.MIN_VALUE, val - 1 };
+            return before(val);
           if (op instanceof LeOperator)
             return new long[] { Long.MIN_VALUE, val };
           if (op instanceof EqualsCompareOperator)
@@ -3118,11 +3125,11 @@ public class SelectExecutionPlanner {
         } else {
           // timestamp is on the right: "value > ts" means "ts < value"
           if (op instanceof GtOperator)
-            return new long[] { Long.MIN_VALUE, val - 1 };
+            return before(val);
           if (op instanceof GeOperator)
             return new long[] { Long.MIN_VALUE, val };
           if (op instanceof LtOperator)
-            return new long[] { val + 1, Long.MAX_VALUE };
+            return after(val);
           if (op instanceof LeOperator)
             return new long[] { val, Long.MAX_VALUE };
           if (op instanceof EqualsCompareOperator)
@@ -3131,6 +3138,28 @@ public class SelectExecutionPlanner {
       }
     }
     return null;
+  }
+
+  /**
+   * The range of no timestamp at all, {@code [Long.MAX_VALUE, Long.MIN_VALUE]}: what a predicate that no {@code long} satisfies, or
+   * a block of predicates that contradict each other, is pushed down as. A scan or a DELETE over it touches nothing.
+   */
+  private static long[] emptyTimeRange() {
+    return new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+  }
+
+  /**
+   * The range {@code ts > val}. The first timestamp above {@code Long.MAX_VALUE} does not exist: {@code val + 1} would wrap to
+   * {@code Long.MIN_VALUE}, which the range union reads as "no lower bound", and a predicate no sample satisfies would select (and
+   * DELETE) every one of them (issue #10528).
+   */
+  private static long[] after(final long val) {
+    return val == Long.MAX_VALUE ? emptyTimeRange() : new long[] { val + 1, Long.MAX_VALUE };
+  }
+
+  /** The range {@code ts < val}, empty at {@code Long.MIN_VALUE} for the reason {@link #after} is empty at the other extreme. */
+  private static long[] before(final long val) {
+    return val == Long.MIN_VALUE ? emptyTimeRange() : new long[] { Long.MIN_VALUE, val - 1 };
   }
 
   /**

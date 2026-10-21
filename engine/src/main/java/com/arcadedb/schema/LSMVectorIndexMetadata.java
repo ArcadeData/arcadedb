@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorLocationIndex;
 import com.arcadedb.index.vector.VectorQuantizationType;
@@ -48,7 +49,8 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   private static final Set<String> USER_METADATA_KEYS = Set.of("dimensions", "similarity", "quantization", "encoding",
       "maxConnections", "beamWidth", "efSearch", "neighborOverflowFactor", "alphaDiversityRelaxation", "idPropertyName",
       "locationCacheSize", "graphBuildCacheSize", "mutationsBeforeRebuild", "inactivityRebuildTimeoutMs",
-      "storeVectorsInGraph", "addHierarchy", "pqSubspaces", "pqClusters", "pqCenterGlobally", "pqTrainingLimit");
+      "storeVectorsInGraph", "addHierarchy", "pqSubspaces", "pqClusters", "pqCenterGlobally", "pqTrainingLimit", "fusedPQ",
+      "rerankOversample");
 
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
@@ -100,7 +102,12 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      pqSubspaces              = -1;    // Number of subspaces (M), -1 = auto (dimensions/4, capped at 512)
   public int                      pqClusters               = 256;   // Clusters per subspace (K), typically 256 for byte-sized codes
   public boolean                  pqCenterGlobally         = true;  // Whether to globally center vectors before PQ encoding
-  public int                      pqTrainingLimit          = 128000; // Max vectors for PQ training (128K is JVector's recommended max)
+  // Whether the graph file stores the PQ codes of the neighbours inline in every node (jvector FusedPQ); PRODUCT only
+  public boolean                  fusedPQ                  = false;
+  // PRODUCT only: candidates per requested neighbour that a search walking on the PQ codes scores again on the stored vectors
+  // (0 = the PQ scores alone, no stored vector read); the default of every search that does not say otherwise (issue #10514)
+  public int                      rerankOversample         = LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE;
+  public int                      pqTrainingLimit          = 128000; // Max vectors the PQ codebook is trained on, a sample (JVector caps it at 128K)
 
   public LSMVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
@@ -141,6 +148,8 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     copy.pqClusters = pqClusters;
     copy.pqCenterGlobally = pqCenterGlobally;
     copy.pqTrainingLimit = pqTrainingLimit;
+    copy.fusedPQ = fusedPQ;
+    copy.rerankOversample = rerankOversample;
     return copy;
   }
 
@@ -215,6 +224,12 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (json.has("pqTrainingLimit"))
       setPQTrainingLimit(metadataInt(json, "pqTrainingLimit"));
+
+    if (json.has("fusedPQ"))
+      this.fusedPQ = metadataBoolean(json, "fusedPQ");
+
+    if (json.has("rerankOversample"))
+      setRerankOversample(metadataInt(json, "rerankOversample"));
   }
 
   @Override
@@ -240,6 +255,8 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       case "pqClusters" -> pqClusters;
       case "pqCenterGlobally" -> pqCenterGlobally;
       case "pqTrainingLimit" -> pqTrainingLimit;
+      case "fusedPQ" -> fusedPQ;
+      case "rerankOversample" -> rerankOversample;
       default -> null;
     };
   }
@@ -373,6 +390,13 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     this.pqTrainingLimit = pqTrainingLimit;
   }
 
+  /** Sets the candidates per requested neighbour a PRODUCT search re-ranks on the stored vectors by default; 0 for none. */
+  public void setRerankOversample(final int rerankOversample) {
+    if (rerankOversample < 0)
+      throw new IllegalArgumentException("rerankOversample must be at least 0 (0 = the PQ scores alone)");
+    this.rerankOversample = rerankOversample;
+  }
+
   @Override
   public void fromJSON(final JSONObject metadata) {
     super.fromJSON(metadata);
@@ -459,5 +483,12 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("pqTrainingLimit"))
       this.pqTrainingLimit = metadata.getInt("pqTrainingLimit");
 
+    if (metadata.has("fusedPQ"))
+      this.fusedPQ = metadata.getBoolean("fusedPQ");
+
+    // Through the setter, like "similarity" above: a negative value from a hand-edited schema.json fails while OPENING the
+    // database, not on the first search of every door that reads the index default
+    if (metadata.has("rerankOversample"))
+      setRerankOversample(metadata.getInt("rerankOversample"));
   }
 }
