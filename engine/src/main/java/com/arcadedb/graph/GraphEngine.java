@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
@@ -529,8 +530,11 @@ public class GraphEngine {
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
-    if (edge instanceof LightEdge)
+    if (edge instanceof LightEdge) {
       lightEdgeEntryAppended(fromVertex.getIdentity(), Vertex.DIRECTION.OUT, edge.getIdentity().getBucketId(), toVertex.getIdentity());
+      // A lightweight edge is an entry in the edge lists of its two vertices and no record of its own: see DeferredExistenceChecks
+      DeferredExistenceChecks.lightEdgeConnected(database);
+    }
     recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
     // EVERY LIGHTWEIGHT EDGE IS CREATED THROUGH HERE (Java API, SQL, Cypher, async): A REGULAR ONE WAS ALREADY REPORTED
     // BY ITS RECORD'S save(). A LISTENER THAT THROWS FAILS THE CREATION, AS A RECORD LISTENER DOES: THE APPEND ABOVE IS

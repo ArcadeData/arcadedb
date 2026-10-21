@@ -1461,6 +1461,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       success = true;
       countCreatedRecord(record);
       transaction.countCompletedRecordWrite();
+      if (DeferredExistenceChecks.anyScopeArmed())
+        DeferredExistenceChecks.createCounted(this, record.getIdentity());
 
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
@@ -1738,16 +1740,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
-    if (record instanceof MutableDocument document)
-      document.validate();
+    try {
+      if (record instanceof MutableDocument document)
+        document.validate();
 
-    // INVOKE EVENT CALLBACKS
-    if (fireEvents) {
-      if (!events.onBeforeUpdate(record))
-        return false;
-      if (record instanceof Document document)
-        if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
-          return false;
+      // INVOKE EVENT CALLBACKS
+      if (fireEvents) {
+        if (!events.onBeforeUpdate(record))
+          return refusedUpdateOfQueuedRecordDoomsCommit(record);
+        if (record instanceof Document document)
+          if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
+            return refusedUpdateOfQueuedRecordDoomsCommit(record);
+      }
+    } catch (final RuntimeException | Error e) {
+      // Whatever refused the update, a validation, a listener, even an Error: the values are on the queued instance, and over-refusing
+      // the commit is the safe side of not knowing why it failed. Counting changes nothing for an exception that is rethrown as is
+      countRefusedUpdateOfQueuedRecord(record);
+      throw e;
     }
 
     if (writeNow)
@@ -1849,11 +1858,42 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return true;
   }
 
+  /**
+   * A refusal of an update (a constraint, a before-update listener) comes after the caller set the new values on the record, and for
+   * a record the transaction has not updated yet that instance is thrown away with the statement. For one it HAS already updated the
+   * instance is the one queued for the commit (the transaction's own copy answers the lookup), so the refused values stay on it and
+   * the commit would store them: a {@code w} above its {@code MAX}, an update a listener vetoed (issue #10482). The engine has no
+   * savepoint to restore it to, so the refusal is counted as a write that stands: the statement that raised it makes the transaction
+   * refuse its commit, as for any other half-applied statement (see {@link #refuseCommitOfHalfAppliedStatement}).
+   */
+  private void countRefusedUpdateOfQueuedRecord(final Record record) {
+    final TransactionContext tx = getTransactionIfExists();
+    if (tx != null && tx.isActive() && tx.isQueuedInstance(record))
+      tx.countCompletedRecordWrite();
+  }
+
+  /**
+   * The same refusal answered by a listener that returns {@code false} instead of throwing: nothing is raised, so no statement fails
+   * and the guard above never looks. The refused values are on the queued instance all the same, so the commit is refused here, directly,
+   * where a refusal that throws is only counted: counting leaves the decision to the guard, which does not refuse a script that handles
+   * its own failures ({@code COMMIT RETRY ... ELSE}).
+   *
+   * @return false, the answer of an update that was not made
+   */
+  private boolean refusedUpdateOfQueuedRecordDoomsCommit(final Record record) {
+    final TransactionContext tx = getTransactionIfExists();
+    if (tx != null && tx.isActive() && tx.isQueuedInstance(record))
+      tx.setRollbackOnly("a before-update listener refused the update of record " + record.getIdentity()
+          + ", which the transaction had already updated, and the transaction has no savepoint to take it back to");
+    return false;
+  }
+
   /** Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it. */
   private void countCompletedUpdate(final TransactionContext tx, final Record record) {
     tx.countCompletedRecordWrite();
     if (DeferredExistenceChecks.anyScopeArmed())
-      DeferredExistenceChecks.updateCounted(this, record.getIdentity());
+      DeferredExistenceChecks.updateCounted(this, record.getIdentity(),
+          !(record instanceof MutableDocument document) || !document.arePropertiesAssigned());
   }
 
   public Document getOriginalDocument(final Record record) {
@@ -2124,6 +2164,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       final TransactionContext transaction = getTransaction();
       transaction.countCompletedRecordWrite();
+      if (DeferredExistenceChecks.anyScopeArmed())
+        DeferredExistenceChecks.deleteCounted(this, record.getIdentity());
       if (record.getIdentity().getPosition() >= 0)
         // A record-less RID (a lightweight edge) never allocated a record in the bucket, so there is nothing to
         // subtract. Folding a -1 anyway drifts the cached counter behind count(*), and the drift is persisted in

@@ -47,6 +47,7 @@ import javax.crypto.spec.PBEKeySpec;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -2335,6 +2336,25 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return password;
   }
 
+  /**
+   * Reads the root password from the file at {@code rootPasswordPath} ({@code arcadedb.server.rootPasswordPath}),
+   * dropping one trailing line terminator (see {@link #stripTrailingNewline(String)}). Shared by the creation of the
+   * root user and by the HA cluster-token derivation, so both read the very same password out of the same file.
+   *
+   * @throws ServerSecurityException if the file cannot be read, or holds an empty password
+   */
+  public static String readRootPasswordFile(final String rootPasswordPath) {
+    final String rootPassword;
+    try {
+      rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
+    } catch (final IOException | InvalidPathException e) {
+      throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'", e);
+    }
+    if (rootPassword.isEmpty())
+      throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
+    return rootPassword;
+  }
+
   protected void askForRootPassword() throws IOException {
     String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
@@ -2345,15 +2365,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
           GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
 
-      if (rootPasswordPath != null) {
-        if (Files.isReadable(Path.of(rootPasswordPath)))
-          rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
-        else
-          throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'");
-
-        if (rootPassword.isEmpty())
-          throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
-      }
+      if (rootPasswordPath != null)
+        rootPassword = readRootPasswordFile(rootPasswordPath);
     }
 
     if (rootPassword == null) {
