@@ -34,11 +34,17 @@ import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.step.LambdaHolder;
+import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
+import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
+import org.apache.tinkerpop.gremlin.process.traversal.step.SideEffectCapable;
 import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.IsStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.filter.RangeGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.TraversalFilterStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.WhereTraversalStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.CallStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
@@ -86,11 +92,19 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   private static final String LABEL_KEY = "~label";
 
+  // THE STEPS OF TINKERPOP AND OF THIS MODULE DO NOTHING BUT READ UNLESS THEY ARE MARKED OTHERWISE (SEE hasNoEffect()): A STEP OF ANY
+  // OTHER PACKAGE IS UNKNOWN, AND AN UNKNOWN STEP IS ASSUMED TO HAVE AN EFFECT
+  private static final String TINKERPOP_STEP_PACKAGE = "org.apache.tinkerpop.gremlin.process.traversal.step.";
+  private static final String ARCADE_STEP_PREFIX     = "com.arcadedb.gremlin.Arcade";
+
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
     // BEFORE ANY REWRITE: THE REWRITES BELOW TAKE THE LABEL OUT OF THE has() STEP (#10442)
     if (traversal.getGraph().orElse(null) instanceof ArcadeGraph arcadeGraph)
       TimeSeriesLabelGuard.check(arcadeGraph.database.getSchema(), traversal);
+
+    // A FILTER THAT CAN NEVER LET A TRAVERSER THROUGH ENDS THE WALK IN FRONT OF IT, BEFORE ANY OF THE REWRITES BELOW LOOKS AT THE STEPS
+    applyAlwaysEmptyFilterOptimization(traversal);
 
     boolean replacedWithFilterByType = false;
     final List<Step> steps = traversal.getSteps();
@@ -231,6 +245,74 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
     // GAV optimization: replace where(outE().count().is(...)) with O(1) degree check
     applyEdgeCountFilterOptimization(traversal);
+  }
+
+  /**
+   * Replaces {@code filter(limit(0))} and {@code where(limit(0))} with a {@code limit(0)} of their own (issue #10307).
+   * <p>
+   * The child of such a filter is empty for every input, so the filter drops every traverser - but only after the traversal in front
+   * of it produced each one: {@code g.V(x).out('E').filter(__.limit(0))} expanded every neighbor of {@code x}, to throw each of them
+   * away. A {@code limit(0)} in the traversal itself stops at the first traverser it is offered, which is the same answer: nothing.
+   * <p>
+   * Only when nothing in front of the filter has an effect of its own ({@link #hasNoEffect}): stopping at the first traverser also
+   * stops what the steps in front would have done for the others, and TinkerPop's answer includes it. A mutation, a side effect that
+   * is read back ({@code aggregate('x')...cap('x')}), a lambda, a service call and any step this module does not know all keep the
+   * filter where it is.
+   */
+  private static void applyAlwaysEmptyFilterOptimization(final Traversal.Admin<?, ?> traversal) {
+    final List<Step> steps = traversal.getSteps();
+    for (int i = 0; i < steps.size(); i++) {
+      final Step<?, ?> step = steps.get(i);
+      if (!(step instanceof TraversalFilterStep<?> || step instanceof WhereTraversalStep<?>))
+        continue;
+
+      final List<?> children = ((TraversalParent) step).getLocalChildren();
+      if (children.size() != 1 || !neverEmitsAnything((Traversal.Admin<?, ?>) children.get(0)) || !hasNoEffect(steps.subList(0, i)))
+        continue;
+
+      final RangeGlobalStep<?> stop = new RangeGlobalStep<>(traversal, 0L, 0L);
+      // A LABEL ON THE FILTER (as('x') AFTER IT) STAYS ON THE STEP THAT TAKES ITS PLACE
+      TraversalHelper.copyLabels(step, stop, false);
+      traversal.removeStep(i);
+      traversal.addStep(i, stop);
+    }
+  }
+
+  /**
+   * Whether the traversal emits nothing whatever it is fed: it ends with a {@code limit(0)}, which stops at the first traverser it is
+   * offered whatever the steps in front of it did with it.
+   */
+  private static boolean neverEmitsAnything(final Traversal.Admin<?, ?> child) {
+    final List<? extends Step> childSteps = child.getSteps();
+    return !childSteps.isEmpty() && childSteps.get(childSteps.size() - 1) instanceof RangeGlobalStep<?> range
+        && range.getHighRange() == 0L;
+  }
+
+  /**
+   * Whether running the steps does nothing but read the graph, so that running them for fewer traversers changes nothing but the
+   * work: no mutation, no side effect another step can read, no lambda, no service call, no step that is not TinkerPop's or this
+   * module's. The children of a step are asked too.
+   */
+  private static boolean hasNoEffect(final Iterable<? extends Step> steps) {
+    for (final Step<?, ?> step : steps) {
+      if (step instanceof Mutating || step instanceof SideEffectCapable || step instanceof ReadWriting || step instanceof LambdaHolder
+          || step instanceof CallStep)
+        return false;
+
+      final String className = step.getClass().getName();
+      if (!className.startsWith(TINKERPOP_STEP_PACKAGE) && !className.startsWith(ARCADE_STEP_PREFIX))
+        return false;
+
+      if (step instanceof TraversalParent parent) {
+        for (final Object child : parent.getLocalChildren())
+          if (!hasNoEffect(((Traversal.Admin<?, ?>) child).getSteps()))
+            return false;
+        for (final Object child : parent.getGlobalChildren())
+          if (!hasNoEffect(((Traversal.Admin<?, ?>) child).getSteps()))
+            return false;
+      }
+    }
+    return true;
   }
 
   /**

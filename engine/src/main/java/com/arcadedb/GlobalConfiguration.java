@@ -1214,8 +1214,10 @@ public enum GlobalConfiguration {
       key it adds against the index being built, and that lookup reads every page written so far, so its time grows \
       with the square of the record count. The sorted build sorts the keys externally, within a bounded memory budget, \
       and refuses a duplicate key in the stream. Builds inside a transaction with pending changes and on replicated \
-      databases keep the record-at-a-time build whatever the record count; an empty transaction (such as the auto-commit \
-      one of an HTTP command) does not stop the switch. 0 disables the switch.""",
+      databases keep the record-at-a-time build whatever the record count, but from this many records on it no longer \
+      checks every key against the index it is filling (issue #10349): it checks the keys once, over the finished index, \
+      and refuses the first duplicate then. An empty transaction (such as the auto-commit one of an HTTP command) does \
+      not stop the switch. 0 disables the switch and that deferred check with it.""",
       Long.class, 10_000L),
 
   INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedNonUniqueMinRecords", SCOPE.DATABASE,

@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -62,7 +63,27 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       throw new IllegalArgumentException("Edge chunk is null");
     this.database = database;
     this.initialContainer = current;
-    this.currentContainer = current;
+    this.currentContainer = walkable(current);
+  }
+
+  /**
+   * The segment a walk reads: the segment itself, or a PRIVATE COPY of it when the transaction has written it (issue #10308).
+   * <p>
+   * A segment the transaction wrote is the transaction's own cached instance, and a lookup hands that very instance to the walk.
+   * Whatever the transaction does to the list afterwards then happens under the walk's position: an edge removed from the segment
+   * moves the entries behind it back, so every second entry is never reached, and an edge added moves them forward, so some are
+   * reached twice. A segment the transaction has not written is not at risk: its first write goes to a copy of the page, and the
+   * walk goes on reading the version it started on.
+   * <p>
+   * Nothing walked a list while writing to it as long as the Gremlin neighbor expansion read the whole list up front; now the walk
+   * is lazy and a traversal can drop what it walks.
+   */
+  private static EdgeSegment walkable(final EdgeSegment segment) {
+    final RID rid = segment != null ? segment.getIdentity() : null;
+    if (rid == null)
+      return segment;
+    final TransactionContext tx = ((DatabaseInternal) segment.getDatabase()).getTransactionIfExists();
+    return tx != null && tx.getWrittenRecord(rid) == segment ? segment.copy() : segment;
   }
 
   final void setCensusSource(final EdgeLinkedList list) {
@@ -114,7 +135,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
 
   @Override
   public void reset() {
-    this.currentContainer = initialContainer;
+    this.currentContainer = walkable(initialContainer);
     cycleGuard = null;
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
     browsed = 0;
@@ -182,7 +203,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
 
     final EdgeSegment container = returnedContainer;
     final DatabaseInternal database = (DatabaseInternal) container.getDatabase();
-    final int usedBefore = container.getUsed();
+    // THE TRANSACTION'S COPY, NOT THE WALKED ONE: A SEGMENT THE TRANSACTION HAD WRITTEN IS WALKED AS A PRIVATE COPY (see walkable())
+    final int usedBefore = ((EdgeSegment) database.lookupByRID(container.getIdentity(), true)).getUsed();
 
     if (!deleteEdgeOfEntry(database, listOwner, listDirection)) {
       // VETOED BY A BEFORE-DELETE LISTENER: NOTHING WAS DELETED, SO THE ENTRY STAYS, AS WITH edge.delete()
@@ -341,7 +363,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     final RID currentIdentity = currentContainer.getIdentity();
     if (cycleGuard == null)
       cycleGuard = new ChainCycleGuard(initialContainer.getIdentity());
-    currentContainer = currentContainer.getPrevious();
+    currentContainer = walkable(currentContainer.getPrevious());
     if (currentContainer != null) {
       final RID previousIdentity = currentContainer.getIdentity();
       // THE CHUNK'S "previous" POINTER NAMES ITSELF, OR THE CHAIN CLOSES ON A CHUNK ALREADY WALKED: STOP INSTEAD OF LOOPING FOREVER
