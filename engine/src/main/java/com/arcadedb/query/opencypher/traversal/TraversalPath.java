@@ -317,6 +317,49 @@ public class TraversalPath {
   }
 
   /**
+   * Returns this path with every node or relationship stored under {@code rid} replaced by {@code replacement}, or this
+   * very path - by identity, so the caller can tell nothing moved - when no member needed it. A member that already is the
+   * replacement is left alone. The path is never modified: a row may share it with other rows.
+   * <p>
+   * A path holds record snapshots, not references: the version of a node it captured is not the one a later write of the
+   * same row produced, and keeps answering with the state from before that write (issue #10513).
+   *
+   * @param rid         the identity the members to replace were stored under
+   * @param replacement the record to put in their place: a {@link Vertex} replaces nodes, an {@link Edge} relationships
+   */
+  public TraversalPath withRecord(final RID rid, final Document replacement) {
+    final boolean isVertex = replacement instanceof Vertex;
+    final List<? extends Document> members = isVertex ? vertices : edges;
+    if (!isVertex && !(replacement instanceof Edge))
+      return this;
+
+    int firstStale = -1;
+    for (int i = 0; i < members.size(); i++) {
+      final Document member = members.get(i);
+      if (member != replacement && rid.equals(member.getIdentity())) {
+        firstStale = i;
+        break;
+      }
+    }
+    if (firstStale < 0)
+      return this;
+
+    final ArrayList<Vertex> liveVertices = new ArrayList<>(vertices);
+    final ArrayList<Edge> liveEdges = new ArrayList<>(edges);
+    if (isVertex)
+      for (int i = firstStale; i < liveVertices.size(); i++) {
+        if (rid.equals(liveVertices.get(i).getIdentity()))
+          liveVertices.set(i, (Vertex) replacement);
+      }
+    else
+      for (int i = firstStale; i < liveEdges.size(); i++) {
+        if (rid.equals(liveEdges.get(i).getIdentity()))
+          liveEdges.set(i, (Edge) replacement);
+      }
+    return new TraversalPath(liveVertices, liveEdges);
+  }
+
+  /**
    * Returns the part of this path between its relationships {@code fromEdge} (inclusive) and {@code toEdge} (exclusive):
    * those relationships and the nodes they join. {@code fromEdge == toEdge} is the zero-length path at that node.
    *
