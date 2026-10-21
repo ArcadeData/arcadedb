@@ -131,6 +131,31 @@ class RootPasswordFromFileTest {
     }
   }
 
+  // readRootPasswordFile() is the one reader shared by the root user's creation and by the HA cluster-token derivation
+  // (issue #10462): both must get the very same password out of the same file, or nodes disagree on the token.
+
+  @Test
+  void sharedReaderDropsOnlyOneTrailingLineTerminator() throws Exception {
+    assertThat(ServerSecurity.readRootPasswordFile(writePasswordFile(PASSWORD).toString())).isEqualTo(PASSWORD);
+    assertThat(ServerSecurity.readRootPasswordFile(writePasswordFile(PASSWORD + "\n").toString())).isEqualTo(PASSWORD);
+    assertThat(ServerSecurity.readRootPasswordFile(writePasswordFile(PASSWORD + "\r\n").toString())).isEqualTo(PASSWORD);
+    assertThat(ServerSecurity.readRootPasswordFile(writePasswordFile(PASSWORD + " \n\n").toString())).isEqualTo(PASSWORD + " \n");
+  }
+
+  @Test
+  void sharedReaderRejectsAMissingFileWithItsPath() {
+    final String missing = Path.of(CONFIG_PATH, "missing").toString();
+    assertThatThrownBy(() -> ServerSecurity.readRootPasswordFile(missing)).isInstanceOf(ServerSecurityException.class)
+        .hasMessageContaining(missing);
+  }
+
+  @Test
+  void sharedReaderRejectsAnEmptyFileWithItsPath() throws Exception {
+    final String empty = writePasswordFile("\n").toString();
+    assertThatThrownBy(() -> ServerSecurity.readRootPasswordFile(empty)).isInstanceOf(ServerSecurityException.class)
+        .hasMessageContaining(empty).hasMessageContaining("empty");
+  }
+
   private Path writePasswordFile(final String content) throws Exception {
     final Path passwordFile = Path.of(CONFIG_PATH, "rootPassword");
     Files.writeString(passwordFile, content);

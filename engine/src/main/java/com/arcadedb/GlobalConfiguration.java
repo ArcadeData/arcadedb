@@ -1213,12 +1213,13 @@ public enum GlobalConfiguration {
       with the sorted build instead of the record-at-a-time one (issue #10334). The record-at-a-time build checks every \
       key it adds against the index being built, and that lookup reads every page written so far, so its time grows \
       with the square of the record count. The sorted build sorts the keys externally, within a bounded memory budget, \
-      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes and on replicated \
-      databases keep the record-at-a-time build whatever the record count, but from this many records on it no longer \
-      checks every key against the index it is filling (issue #10349): it checks the keys once, over the finished index, \
-      and refuses the first duplicate then, so a duplicate costs the whole build before it is reported, where the check of \
-      every batch refused it at the first batch that held one. An empty transaction (such as the auto-commit one of an HTTP command) does \
-      not stop the switch. 0 disables the switch and that deferred check with it.""",
+      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes to the indexed type's \
+      buckets and on replicated databases keep the record-at-a-time build whatever the record count, but from this many \
+      records on it no longer checks every key against the index it is filling (issue #10349): it checks the keys once, \
+      over the finished index, and refuses the first duplicate then, so a duplicate costs the whole build before it is \
+      reported, where the check of every batch refused it at the first batch that held one. An empty transaction (such as \
+      the auto-commit one of an HTTP command), or one that wrote only to other types, does not stop the switch. 0 \
+      disables the switch and that deferred check with it.""",
       Long.class, 10_000L),
 
   INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedNonUniqueMinRecords", SCOPE.DATABASE,
@@ -1229,8 +1230,8 @@ public enum GlobalConfiguration {
       build sorts the keys and writes the index pages directly, and when the keys fit its memory budget it takes about \
       two thirds of the time. Unlike the UNIQUE case (arcadedb.index.buildSortedUniqueMinRecords) the record-at-a-time \
       build is not quadratic here, so the switch is left to the sizes where the saving is felt. The same conditions apply: \
-      builds inside a transaction with pending changes and on replicated databases keep the record-at-a-time build. \
-      0 disables the switch.""",
+      builds inside a transaction with pending changes to the indexed type's buckets and on replicated databases keep the \
+      record-at-a-time build. 0 disables the switch.""",
       Long.class, 1_000_000L),
 
   INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
@@ -1704,7 +1705,8 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
-      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
+      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user. "
+          + "With HA enabled and no arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath, the cluster token is derived from this password",
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
