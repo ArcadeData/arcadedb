@@ -115,6 +115,12 @@ public class TransactionManager {
   // is being flushed waits for the flush on some systems (APFS), and the append runs under the commit's file locks, which
   // serialized the commits behind the flush again. With two files the next wave appends while the previous one flushes
   private volatile int                       groupCommitSlot     = 0;
+  /** Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. */
+  interface WALSyncFaultInjector {
+    void beforeSync(WALFile file) throws IOException;
+  }
+
+  static volatile WALSyncFaultInjector walSyncFaultInjector;
   private final AtomicLong                   statsGroupCommits   = new AtomicLong();
   private final AtomicLong                   statsGroupSyncs     = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
@@ -560,6 +566,9 @@ public class TransactionManager {
     for (final WALFile file : new ArrayList<>(unsyncedWALFiles)) {
       unsyncedWALFiles.remove(file);
       try {
+        final WALSyncFaultInjector injector = walSyncFaultInjector;
+        if (injector != null)
+          injector.beforeSync(file);
         file.syncIfUnsynced();
       } catch (final IOException | RuntimeException e) {
         // still owed: a later pass must not move walDurableSequence past these writes without flushing them
@@ -581,7 +590,9 @@ public class TransactionManager {
       // A write whose flush is shared goes to the group-commit file, not to its thread's: a shared flush has to flush every
       // file holding a pending write, and spreading the writes over the pool made each one flush up to a file per core (on
       // macOS each a full flush of the drive's cache, ~3.5ms). The appends are short, the file's monitor serializes them
-      final int slot = deferSync ? Math.min(groupCommitSlot, pool.length - 1) : (int) (Thread.currentThread().threadId() % pool.length);
+      final int slot = deferSync ?
+          Math.min(groupCommitSlot, pool.length - 1) :
+          (int) (Thread.currentThread().threadId() % pool.length);
 
       // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE. READ WITHOUT
       // walSlotLock: A FILE SEEN HERE IS SAFELY PUBLISHED, ITS PATH BEING FINAL AND ITS CHANNEL, LOCK AND STATE VOLATILE, AND

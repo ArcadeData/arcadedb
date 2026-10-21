@@ -21,10 +21,12 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -128,6 +130,41 @@ class WALGroupCommitTest extends TestHelper {
     database = factory.open();
 
     assertThat(database.countType(TYPE, false)).isEqualTo(300);
+  }
+
+  /**
+   * A flush that fails after the pages were published: the commit must not report success, and the database is fenced so that
+   * nothing commits on top of a transaction that may not be durable. The close keeps the WAL (the fenced database's pages
+   * were discarded, not written) and the reopen's recovery replays it.
+   */
+  @Test
+  void aFailedFlushFailsTheCommitAndFencesTheDatabase() throws Exception {
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    TransactionManager.walSyncFaultInjector = file -> {
+      throw new IOException("injected WAL flush failure");
+    };
+    try {
+      final Thread worker = new Thread(() -> {
+        try {
+          database.transaction(() -> database.newDocument(TYPE).set("id", "flush-failure").save());
+        } catch (final Throwable e) {
+          failure.set(e);
+        }
+      });
+      worker.start();
+      worker.join();
+    } finally {
+      TransactionManager.walSyncFaultInjector = null;
+    }
+
+    assertThat(failure.get()).isInstanceOf(TransactionException.class).hasMessageContaining("could not be flushed");
+    assertThat(((DatabaseInternal) database).isFencedForRecovery()).isTrue();
+
+    database.close();
+    database = factory.open();
+    assertThat(((DatabaseInternal) database).isFencedForRecovery()).isFalse();
+    // looked up, not counted: the cached record count is persisted at close and would answer 1 even for a lost record
+    database.transaction(() -> assertThat(database.lookupByKey(TYPE, "id", "flush-failure").hasNext()).isTrue());
   }
 
   @Test

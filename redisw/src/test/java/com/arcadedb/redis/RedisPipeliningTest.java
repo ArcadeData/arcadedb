@@ -178,6 +178,52 @@ public class RedisPipeliningTest extends BaseRedisServerTest {
     }
   }
 
+  @Test
+  void repliesQueuedBeforeAProtocolErrorAreSentBeforeIt() throws Exception {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
+      socket.setSoTimeout(10_000);
+      final OutputStream out = socket.getOutputStream();
+      out.write(command("AUTH", "root", DEFAULT_PASSWORD_FOR_TESTS));
+      out.write(command("SET", "pipe:before-error", "v"));
+      out.write(command("GETDEL", "pipe:before-error"));
+      // the server answers a protocol error and closes: what it queued for the commands before must leave first
+      out.write("*1\r\n$99999999999\r\n".getBytes(StandardCharsets.US_ASCII));
+      out.flush();
+      final String reply = readUntilEndOfStream(socket.getInputStream());
+      assertThat(reply).startsWith("+OK\r\n+OK\r\n$1\r\nv\r\n-ERR");
+    }
+  }
+
+  /**
+   * One batch mixing replies that go through the connection's buffer (ASCII), around its 256KB bound, and replies written on
+   * their own (non-ASCII, larger than the bound): they must all arrive whole and in the order of the commands.
+   */
+  @Test
+  void repliesKeepTheirOrderAcrossTheBufferAndDirectWrites() throws Exception {
+    final String nearTheBound = "n".repeat(262_100);
+    final String overTheBound = "o".repeat(300_000);
+    final String nonAscii = "città-ü-€";
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
+      jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
+      jedis.set("pipe:near", nearTheBound);
+      jedis.set("pipe:over", overTheBound);
+      jedis.set("pipe:utf8", nonAscii);
+      jedis.set("pipe:small", "s");
+
+      final Pipeline pipeline = jedis.pipelined();
+      pipeline.get("pipe:small");
+      pipeline.get("pipe:near");
+      pipeline.get("pipe:utf8");
+      pipeline.get("pipe:small");
+      pipeline.get("pipe:over");
+      pipeline.get("pipe:near");
+      pipeline.get("pipe:small");
+      final List<Object> replies = pipeline.syncAndReturnAll();
+
+      assertThat(replies).containsExactly("s", nearTheBound, nonAscii, "s", overTheBound, nearTheBound, "s");
+    }
+  }
+
   private static byte[] command(final String... parts) {
     final StringBuilder resp = new StringBuilder("*").append(parts.length).append("\r\n");
     for (final String part : parts)
