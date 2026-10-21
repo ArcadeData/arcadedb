@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexKeyEquality;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 public class DocumentIndexer {
   private final LocalDatabase database;
@@ -100,6 +102,14 @@ public class DocumentIndexer {
 
   public void addToIndex(final Index entry, final RID rid, final Document record) {
     forEachIndexKey(entry, record, keyValues -> entry.put(keyValues, new RID[] { rid }));
+  }
+
+  /**
+   * Takes out of ONE index the entries {@link #addToIndex} puts for {@code record}: the keys it derives are the same, so what
+   * a build added for a record is exactly what this removes (issue #10490).
+   */
+  public void removeFromIndex(final Index entry, final RID rid, final Document record) {
+    forEachIndexKey(entry, record, keyValues -> entry.remove(keyValues, rid));
   }
 
   /**
@@ -548,6 +558,71 @@ public class DocumentIndexer {
    */
   private static boolean sameKeyValue(final Object a, final Object b) {
     return IndexKeyEquality.sameValue(a, b);
+  }
+
+  /**
+   * Records, as the state a later update of the record inside this transaction diffs against, what the indexes hold for
+   * {@code pending} once {@code built} has been built over its pending state (issue #10490).
+   * <p>
+   * An update diffs against {@link TransactionContext#getLastIndexedSnapshot} when there is one and against the committed
+   * buffer otherwise, and neither knows that an index created after the record was written has been brought up to its
+   * pending state: the next update would remove and add from the committed (or the creation) values, and the entry queued for
+   * the intermediate value would stay in the index for good. The snapshot built here takes the values of the properties
+   * {@code built} indexes from {@code pending}, and those of every other index from the diff source it had, an earlier snapshot
+   * or the buffer, since the reconciliation did not touch them. Nothing is recorded for a record the transaction did not
+   * write: its buffer is its pending state.
+   */
+  public void snapshotAfterBuild(final TransactionContext tx, final Document pending, final IndexInternal built) {
+    final RID rid = pending.getIdentity();
+    if (rid == null || tx.getWrittenRecord(rid) == null)
+      return;
+
+    final List<IndexInternal> indexes = getInvolvedIndexes(pending);
+    if (indexes == null || indexes.isEmpty())
+      return;
+
+    Document baseline = tx.getLastIndexedSnapshot(rid);
+    if (baseline == null)
+      try {
+        baseline = database.getOriginalDocument(pending);
+      } catch (final IllegalStateException e) {
+        // No buffer to read: the other indexes are given the pending values, the best state left to describe them. Benign: with
+        // no earlier snapshot, no index was changed by the writes that came before, so the pending values of their properties
+        // are the ones they already hold
+        LogManager.instance().log(this, Level.FINE, "No original buffer for record %s: the indexes other than '%s' are described by "
+            + "its pending values in the snapshot of the next update", rid, built.getName());
+        baseline = pending;
+      }
+
+    final Map<String, Object> values = new LinkedHashMap<>();
+    for (final IndexInternal index : indexes) {
+      final Document source = index == built ? pending : baseline;
+      final List<String> keyNames = index.getPropertyNames();
+      final String[] propertyNames = new String[keyNames.size()];
+      final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNames);
+
+      for (int i = 0; i < propertyNames.length; ++i) {
+        // the same keys updateDocument() stores: the root of a list read per item, the map as a whole, the value otherwise
+        final String key;
+        final Object value;
+        if (expansions[i] == KeyExpansion.LIST_ITEM) {
+          final int dot = propertyNames[i].indexOf('.');
+          key = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+          value = source.get(key);
+        } else if (expansions[i] == KeyExpansion.MAP_KEY || expansions[i] == KeyExpansion.MAP_VALUE) {
+          key = propertyNames[i];
+          value = source.get(key);
+        } else {
+          key = propertyNames[i];
+          value = getPropertyValue(source, key);
+        }
+        // One value per property name: the built index wins over the others for a property they share. They cannot disagree in
+        // practice, an index that existed was brought to the pending state by the update that changed it (and left a snapshot)
+        if (!values.containsKey(key) || index == built)
+          values.put(key, copyForSnapshot(value));
+      }
+    }
+    tx.setLastIndexedSnapshot(rid, new DetachedDocument(pending, values));
   }
 
   /**
