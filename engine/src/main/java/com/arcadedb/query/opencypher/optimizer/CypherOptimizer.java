@@ -52,6 +52,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVEdgeRef;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
@@ -70,6 +71,7 @@ import com.arcadedb.query.opencypher.optimizer.rules.JoinOrderRule;
 import com.arcadedb.query.opencypher.optimizer.rules.OptimizationRule;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
+import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
@@ -168,6 +170,33 @@ public class CypherOptimizer {
    * operators can represent, in which case the caller falls back to the ordinary pipeline
    */
   public PhysicalPlan optimize() {
+    final PhysicalPlan plan = buildPhysicalPlan();
+    if (plan != null && !statement.isReadOnly())
+      readRangesFirstWhereWritten(plan.getRootOperator(), CypherEagernessAnalyzer.ofPropertyWrites(statement.getClausesInOrder()));
+    return plan;
+  }
+
+  /**
+   * Makes every index range scan of the plan whose key the statement can write read its whole range before the first row,
+   * so the statement does not meet the entries its own writes move ahead of the cursor (issue #10251, the Halloween
+   * problem), and every prefix seek of such an index, a leaf or the inner side of an index nested-loop join, serve each
+   * vertex once. A seek of a whole key is answered at once, and the seeks of a label disjunction already serve each vertex
+   * once. Every input of every operator is visited, through {@link PhysicalOperator#getInputs()}.
+   */
+  private static void readRangesFirstWhereWritten(final PhysicalOperator operator, final CypherEagernessAnalyzer writes) {
+    if (operator == null)
+      return;
+    if (operator instanceof NodeIndexRangeScan rangeScan && writes.writesAnyPropertyOf(rangeScan.getIndexProperties()))
+      rangeScan.setReadsEntriesFirst(true);
+    else if (operator instanceof NodeIndexSeek seek && writes.writesAnyPropertyOf(seek.getIndexProperties()))
+      seek.setStatementWritesKey(true);
+    else if (operator instanceof IndexNestedLoopJoin join && writes.writesAnyPropertyOf(join.getIndexProperties()))
+      join.setStatementWritesKey(true);
+    for (final PhysicalOperator input : operator.getInputs())
+      readRangesFirstWhereWritten(input, writes);
+  }
+
+  private PhysicalPlan buildPhysicalPlan() {
     // 1. Build logical plan from AST
     final LogicalPlan logicalPlan = buildLogicalPlan();
 
@@ -621,8 +650,10 @@ public class CypherOptimizer {
    * of an edge, and labels compare only with labels. Relationship uniqueness therefore holds either when every
    * relationship of the clause that could collide binds a label, or when every one of them binds an edge record - never
    * a mix. A clause qualifies when each of those relationships is anonymous (a named one is materialized so that it can
-   * be tracked), has a fixed length (variable-length expansion walks edge records) and is covered by a ready view, and
-   * none of the edge types it walks has a sub-type. Otherwise all of them walk the edge records.
+   * be tracked), has a fixed length (variable-length expansion walks edge records) and is covered by a ready view.
+   * Otherwise all of them walk the edge records. An edge type with sub-types qualifies too: the tracked walk reads one
+   * concrete slice at a time and labels each relationship with the type of its slice, so a hop on {@code E} and a hop on
+   * {@code F EXTENDS E} give one {@code F} edge the same label (issue #10213, which lifted the leaf-only rule of #8394).
    *
    * @return the view for every relationship that binds a label; the others must not be walked through a view
    */
@@ -647,7 +678,7 @@ public class CypherOptimizer {
         }
         final String[] edgeTypes = rel.getTypes().toArray(new String[0]);
         final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
-        if (provider == null || !walksOnlyLeafEdgeTypes(edgeTypes)) {
+        if (provider == null) {
           eligible = false;
           break;
         }
@@ -663,23 +694,6 @@ public class CypherOptimizer {
         result.putAll(clauseProviders);
     }
     return result;
-  }
-
-  /**
-   * Whether every edge type a tracked hop would walk has no sub-type. A view keeps one slice per concrete type (#8426)
-   * and answers a type polymorphically, so a hop on a type with sub-types walks their slices too: two hops asking for
-   * the parent and for the sub-type would then label one edge twice, under two names, and never see the collision
-   * (#8394). A leaf type answers with exactly its own edges, which is what makes the type part of a label an identity.
-   * An untyped hop walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have
-   * to be leaves.
-   */
-  private boolean walksOnlyLeafEdgeTypes(final String[] edgeTypes) {
-    for (final String type : GAVEdgeRef.trackedEdgeTypes(database, edgeTypes)) {
-      final DocumentType schemaType = database.getSchema().getTypeOrNull(type);
-      if (schemaType == null || !schemaType.getSubTypes().isEmpty())
-        return false;
-    }
-    return true;
   }
 
   /**

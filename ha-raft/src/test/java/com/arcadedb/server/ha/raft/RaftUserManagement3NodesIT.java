@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Verifies that {@code create user} and {@code drop user} submitted to a Raft cluster propagate
  * to every replica via the SECURITY_USERS_ENTRY log entry. Covers login verification
- * on every node (HTTP 200 on success, 403 on rejected credentials) and byte-level equality
+ * on every node (HTTP 200 on success, 401 on rejected credentials, issue #10109) and byte-level equality
  * of the server-users.jsonl files after concurrent mutations.
  */
 class RaftUserManagement3NodesIT extends BaseRaftHATest {
@@ -141,10 +141,10 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
           return true;
         });
 
-    // Login probe: alice should be rejected on every peer (server returns 403 for bad credentials)
+    // Login probe: alice should be rejected on every peer (server returns 401 for bad credentials, issue #10109)
     for (int i = 0; i < getServerCount(); i++) {
       final int status = postServerCommandReturnStatus(i, "list databases", "alice", "alicepw1234");
-      assertThat(status).as("server %d login as alice after drop", i).isEqualTo(403);
+      assertThat(status).as("server %d login as alice after drop", i).isEqualTo(401);
     }
   }
 
@@ -258,7 +258,7 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
 
     for (int i = 0; i < getServerCount(); i++)
       assertThat(postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword2"))
-          .as("server %d login as bob after DELETE /api/v1/server/users", i).isEqualTo(403);
+          .as("server %d login as bob after DELETE /api/v1/server/users", i).isEqualTo(401);
   }
 
   /**
@@ -304,7 +304,7 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
 
     for (int i = 0; i < getServerCount(); i++)
       assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword1"))
-          .as("server %d must reject carol's rotated-away password", i).isEqualTo(403);
+          .as("server %d must reject carol's rotated-away password", i).isEqualTo(401);
 
     retryOn503(() -> cypher(0, "DROP USER carol"));
 
@@ -318,7 +318,7 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
 
     for (int i = 0; i < getServerCount(); i++)
       assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword2"))
-          .as("server %d login as carol after a Cypher DROP USER", i).isEqualTo(403);
+          .as("server %d login as carol after a Cypher DROP USER", i).isEqualTo(401);
   }
 
   /**

@@ -343,9 +343,19 @@ final class MongoFilter {
   }
 
   /**
-   * Visits the identity of every record that matches the (non-empty) filter, until the visitor answers {@code false}.
+   * Visits the identity of every record that matches the (non-empty) filter, until the visitor answers {@code false}. A row with
+   * no identity - a sample of a TIMESERIES type - is not visited: there is no record to change.
    */
   void scanMatches(final Database database, final String collectionName, final Predicate<RID> visitor) {
+    scanMatchingRows(database, collectionName, row -> row.getIdentity().isEmpty() || visitor.test(row.getIdentity().get()));
+  }
+
+  /**
+   * Visits every row that matches the (non-empty) filter, until the visitor answers {@code false}. Unlike
+   * {@link #scanMatches(Database, String, Predicate)} a row with no identity is visited too: the samples of a TIMESERIES type
+   * have none, and a count must still see them (issue #10442).
+   */
+  void scanMatchingRows(final Database database, final String collectionName, final Predicate<Result> visitor) {
     // always a SQL query, narrowed by the _id when the filter has a part on it: it is how the query is counted by the metrics of the
     // protocol and bounded by the command timeout, like every other query
     final Map<String, Object> params = new HashMap<>();
@@ -354,7 +364,7 @@ final class MongoFilter {
     try (final ResultSet rs = database.query("sql", text.toString(), params)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
-        if (matchesRow(row) && row.getIdentity().isPresent() && !visitor.test(row.getIdentity().get()))
+        if (matchesRow(row) && !visitor.test(row))
           return;
       }
     }

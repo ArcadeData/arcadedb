@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
@@ -34,6 +36,7 @@ import io.swagger.v3.oas.models.parameters.RequestBody;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -124,6 +127,23 @@ public class CoreApiSpec implements OpenApiContributor {
       Session id returned by 'beginTransaction', identifying the transaction to end. Omitting it, or \
       presenting an id that no longer resolves to an open transaction, is an idempotent no-op: the \
       call still answers 204, but commits or rolls back nothing.""";
+  // Issue #10164: a commit naming a session the server does not hold answered 204 too, the same answer as a real commit,
+  // so a client whose transaction had been rolled back - by 'terminate transaction', the idle timeout, a /rollback - was
+  // told its work stood. Rollback keeps the no-op above: the outcome its caller asked for holds either way.
+  private static final String COMMIT_SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction', identifying the transaction to commit. Omitting it commits \
+      nothing and answers 204. An id that no longer resolves to an open transaction of the caller - never \
+      issued, rolled back, ended by 'terminate transaction', expired, or another user's - answers 404: nothing \
+      was committed. The exception is a retry of a commit that did end this session, sent to the same server \
+      within the session timeout ('arcadedb.server.httpSessionExpireTimeout'): it answers 204 again, so a client whose \
+      first answer was lost is not told its work is gone. A retry sent while the first commit is still running \
+      waits for it, up to 5 seconds: it answers 204 when that commit succeeded, 404 when it failed, and a lock \
+      timeout error when the commit outlasts the wait. The server remembers this in memory only: a retry sent to another server \
+      of a cluster, after a restart or past the timeout answers 404 although the first commit may have landed.""";
+  private static final String COMMIT_404_DESCRIPTION = """
+      Database not found, or the session id header names a transaction that no longer resolves \
+      ("Remote transaction session not found or expired"): it was rolled back, terminated, expired or never \
+      existed, and nothing was committed""";
 
   // Shared by the POST query and command operations, which both reach the stale-session branch of
   // DatabaseAbstractHandler.setTransactionInThreadLocal. Held in one place so the two cannot desync:
@@ -179,6 +199,11 @@ public class CoreApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("QueryResponse", createQueryResponseSchema());
     openAPI.getComponents().addSchemas("NdJsonQueryEvent", createNdJsonQueryEventSchema());
     openAPI.getComponents().addSchemas("CommandRequest", createCommandRequestSchema());
+    openAPI.getComponents().addSchemas("ServerCommandResponse", createServerCommandResponseSchema());
+    openAPI.getComponents().addSchemas("RunningQuery", createRunningQuerySchema());
+    openAPI.getComponents().addSchemas("BeginRequest", createBeginRequestSchema());
+    openAPI.getComponents().addSchemas("TransactionSession", createTransactionSessionSchema());
+    openAPI.getComponents().addSchemas("TerminationStatus", createTerminationStatusSchema());
     openAPI.getComponents().addSchemas("ErrorResponse", createErrorResponseSchema());
     openAPI.getComponents().addSchemas("ServerInfo", createServerInfoSchema());
     openAPI.getComponents().addSchemas("DatabaseList", createDatabaseListSchema());
@@ -254,6 +279,8 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
+    // Not QueryResponse: every server command answers {"result": ...}, whose shape depends on the command (issue #10164)
+    postOp.getResponses().addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "ServerCommandResponse"));
     // Besides the 'Query terminated' the shared set declares, 'create database' and 'import database' answer 409 for a
     // name that is already taken (issue #10074). 'restore database' and 'restore backup' keep their 400 for a taken
     // target (issue #7395).
@@ -459,6 +486,10 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BEGIN_SESSION_REQUEST_DESCRIPTION, false));
     postOp.addParametersItem(SpecBuilders.queryTagHeaderParam());
+    // PostBeginHandler reads an optional 'isolationLevel' from this body; with no body, or one that omits it, the
+    // transaction runs at the database's default isolation (issue #10295)
+    postOp.setRequestBody(SpecBuilders.jsonBody("Optional transaction settings. Omit the body to begin at the database's "
+        + "default isolation level", "BeginRequest", false));
     postOp.setResponses(createBeginResponses());
     pathItem.setPost(postOp);
 
@@ -474,8 +505,10 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("commitTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, TRANSACTION_END_SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, COMMIT_SESSION_REQUEST_DESCRIPTION, false));
+    // A fresh set: rollback shares createTransactionResponses() and keeps its plain 404 (issue #10164)
     postOp.setResponses(createTransactionResponses());
+    postOp.getResponses().addApiResponse("404", SpecBuilders.errorResponse(COMMIT_404_DESCRIPTION));
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -746,7 +779,11 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(STALE_SESSION_404_DESCRIPTION));
-    responses.addApiResponse("409", SpecBuilders.errorResponse(QUERY_TERMINATED_409_DESCRIPTION));
+    // A create or rename onto a taken schema object name is the other conflict a command answers (issue #10153)
+    responses.addApiResponse("409", SpecBuilders.errorResponse(QUERY_TERMINATED_409_DESCRIPTION + ". Also a create, or a rename, "
+        + "onto a schema object name already taken - a type, property, index, constraint, bucket, trigger, view or function: "
+        + "'error' names the kind (e.g. 'Type already exists'), 'exception' is com.arcadedb.exception.AlreadyExistsException "
+        + "and 'exceptionArgs' the kind (TYPE, PROPERTY, INDEX, ...). Not retryable: the name is held"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
@@ -759,7 +796,8 @@ public class CoreApiSpec implements OpenApiContributor {
     final ApiResponse successResponse = new ApiResponse();
     successResponse.setDescription("Transaction operation completed successfully");
     // All three transaction operations degrade rather than refuse an id they cannot resolve, which is what makes
-    // an idempotent retry of a commit or a rollback a no-op instead of an error (issue #7714).
+    // an idempotent retry of a commit or a rollback a no-op instead of an error (issue #7714). A commit answers the
+    // degrade 404 unless it is the retry of a commit that ended that session (issue #10164).
     successResponse.addHeaderObject(SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
     responses.addApiResponse("204", successResponse);
 
@@ -784,7 +822,21 @@ public class CoreApiSpec implements OpenApiContributor {
         of every subsequent call that belongs to this transaction.""".formatted(SESSION_HEADER)));
     responses.addApiResponse("409", SpecBuilders.errorResponse(
         "A transaction is already open on this session"));
+    // The 400 is begin's own wording: commit and rollback share createTransactionResponses() and take no body (issue #10295)
+    responses.addApiResponse("400", SpecBuilders.errorResponse(
+        "Bad request, including an 'isolationLevel' that is not one of the values the request body declares"));
     return responses;
+  }
+
+  private Schema<?> createBeginRequestSchema() {
+    final Schema<Object> schema = SpecBuilders.object("Begin transaction request object");
+    final Schema<String> isolationLevel = SpecBuilders.string("Isolation level of the transaction. Optional: when absent "
+        + "the transaction runs at the database's default isolation level. The value is case-sensitive, and any other "
+        + "value is refused with 400.");
+    // Taken from the engine enum PostBeginHandler resolves the value against, so the two cannot drift apart
+    isolationLevel.setEnum(Arrays.stream(Database.TRANSACTION_ISOLATION_LEVEL.values()).map(Enum::name).toList());
+    schema.addProperty("isolationLevel", isolationLevel);
+    return schema;
   }
 
   private Schema<?> createQueryRequestSchema() {
@@ -832,7 +884,97 @@ public class CoreApiSpec implements OpenApiContributor {
         behind ('truncated'). No value here can widen a single response past the server's hard ceiling \
         ('arcadedb.server.httpQueryMaxResultRows'): a result that would exceed it is refused with 413 \
         instead of being truncated.""").example(100));
+    // Read only by POST /api/v1/server, which shares this request object (issue #10164)
+    schema.addProperty("wait", SpecBuilders.integer("""
+        Server commands only (POST /api/v1/server): how long 'terminate query', 'terminate queries tag' and \
+        'terminate transaction' wait for the work to end before answering, in milliseconds. %d when absent, at \
+        most %d. Work still running when it is over is answered 'terminating'.""".formatted(
+        ServerControlPlane.DEFAULT_TERMINATE_WAIT_MS, ServerControlPlane.MAX_TERMINATE_WAIT_MS)).example(1000));
     schema.setRequired(List.of("command", "language"));
+    return schema;
+  }
+
+  /**
+   * The answer of POST /api/v1/server, which used to be declared as a QueryResponse for every command (issue #10164). Its
+   * 'result' is anyOf rather than oneOf: an empty array validates against every array branch.
+   */
+  private Schema<?> createServerCommandResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object("Answer of a server command");
+    final Schema<Object> result = SpecBuilders.anyValue("""
+        What the command answered. "ok" for the commands that only act; the names of the databases for 'list \
+        databases'; RunningQuery rows for 'list queries'; TransactionSession rows for 'list transactions'; one \
+        TerminationStatus for 'terminate query' and 'terminate transaction'; an array of them for 'terminate \
+        queries tag'; an object for the commands that report one, such as 'get server events'.""");
+    result.setAnyOf(List.of(//
+        SpecBuilders.string("\"ok\""),//
+        SpecBuilders.arrayOf(SpecBuilders.string("Database name"), "list databases"),//
+        SpecBuilders.arrayOf(SpecBuilders.ref("RunningQuery"), "list queries"),//
+        SpecBuilders.arrayOf(SpecBuilders.ref("TransactionSession"), "list transactions"),//
+        SpecBuilders.ref("TerminationStatus"),//
+        SpecBuilders.arrayOf(SpecBuilders.ref("TerminationStatus"), "terminate queries tag"),//
+        SpecBuilders.freeFormObject("The report of a command that answers one, such as 'get server events'")));
+    schema.addProperty("result", result);
+    schema.setRequired(List.of("result"));
+    return schema;
+  }
+
+  /** One row of 'list queries': RunningQuery.toJSON() plus the server that runs it (issue #10164). */
+  private Schema<?> createRunningQuerySchema() {
+    final Schema<Object> schema = SpecBuilders.object("A statement this server is running");
+    schema.addProperty("id", SpecBuilders.string("Id to pass to 'terminate query'"));
+    schema.addProperty("database", SpecBuilders.string("Database the statement runs against"));
+    schema.addProperty("user", SpecBuilders.string("User that sent it"));
+    schema.addProperty("protocol", SpecBuilders.string("Protocol it arrived on, such as 'http'"));
+    schema.addProperty("language", SpecBuilders.string("Query language"));
+    schema.addProperty("text", SpecBuilders.string("Statement text"));
+    schema.addProperty("startedAt", SpecBuilders.integer("When it started, in milliseconds since the epoch"));
+    schema.addProperty("elapsedMs", SpecBuilders.integer("How long it has been running, in milliseconds"));
+    schema.addProperty("terminating", SpecBuilders.bool("True once a terminate asked it to stop"));
+    schema.addProperty("server", SpecBuilders.string("Name of the server running it"));
+    schema.addProperty("sessionId", SpecBuilders.string("Transaction session it runs in. Absent outside one"));
+    schema.addProperty("tag", SpecBuilders.string("Label from the X-ArcadeDB-Query-Tag request header. Absent without one"));
+    schema.addProperty("terminatedBy", SpecBuilders.string("User that asked it to stop. Absent until one did"));
+    schema.addProperty("connectionId", SpecBuilders.string("Connection it arrived on, where the protocol has one"));
+    schema.addProperty("clientAddress", SpecBuilders.string("Address of the client, where known"));
+    schema.addProperty("forwardedFrom", SpecBuilders.string("Id it has on the server that forwarded it here"));
+    schema.addProperty("forwardedTo", SpecBuilders.string("Server this one forwarded it to"));
+    schema.setRequired(List.of("id", "database", "user", "protocol", "language", "text", "startedAt", "elapsedMs", "terminating",
+        "server"));
+    return schema;
+  }
+
+  /** One row of 'list transactions' (issue #10164). */
+  private Schema<?> createTransactionSessionSchema() {
+    final Schema<Object> schema = SpecBuilders.object("An open transaction session");
+    schema.addProperty("id", SpecBuilders.string("Session id, to pass to 'terminate transaction'"));
+    schema.addProperty("user", SpecBuilders.string("User that opened it"));
+    schema.addProperty("database", SpecBuilders.string("Database of its transaction"));
+    schema.addProperty("idleMs", SpecBuilders.integer("Milliseconds since it was last used"));
+    schema.addProperty("busy", SpecBuilders.bool("True while a request runs in it"));
+    schema.addProperty("runningQueries", SpecBuilders.arrayOf(SpecBuilders.string("RunningQuery id"),
+        "Ids of the statements running in it"));
+    schema.addProperty("server", SpecBuilders.string("Name of the server holding it"));
+    schema.addProperty("tag", SpecBuilders.string("Label it was opened with. Absent without one"));
+    schema.setRequired(List.of("id", "user", "database", "idleMs", "busy", "runningQueries", "server"));
+    return schema;
+  }
+
+  /** What 'terminate query', 'terminate queries tag' and 'terminate transaction' answer for each piece of work (issue #10164). */
+  private Schema<?> createTerminationStatusSchema() {
+    final Schema<Object> schema = SpecBuilders.object("How a terminate ended");
+    schema.addProperty("id", SpecBuilders.string("Statement id, or session id for 'terminate transaction'"));
+    final Schema<String> status = SpecBuilders.string("""
+        'terminated': it stopped and what it wrote was rolled back. 'completed': it ended on its own before it \
+        noticed, and what it did stands (statements only). 'terminating': not stopped within 'wait'. 'not found': \
+        no such work, or not the caller's to see.""");
+    status.setEnum(List.of("terminated", "completed", "terminating", "not found"));
+    schema.addProperty("status", status);
+    schema.addProperty("sessionId", SpecBuilders.string("""
+        Statements only: the transaction session the statement ran in. Absent outside one"""));
+    schema.addProperty("sessionOpen", SpecBuilders.bool("""
+        Statements only, with 'sessionId': whether the session is still open. A terminated command ends its \
+        session, a terminated read leaves it to its client. For 'terminating', only the state when the answer was built"""));
+    schema.setRequired(List.of("id", "status"));
     return schema;
   }
 

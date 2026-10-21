@@ -48,6 +48,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -343,6 +344,176 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * The UTF-16 offset of the code point at index {@code codePointIndex}, clamped to the string: an index at or below 0 is 0 and an
+   * index past the last code point is the string length. A surrogate that is not part of a pair counts as one code point.
+   * <p>
+   * The cost is that of the position, not of the string, and constant for Latin-1 text. Text with other characters is walked up to
+   * the position, so a loop that reads every character of a long one by position is quadratic; such a loop is better off with
+   * {@code codePoints()}.
+   */
+  public static int charOffsetOfCodePoint(final String str, final int codePointIndex) {
+    if (codePointIndex <= 0)
+      return 0;
+    final int size = str.length();
+    final int limit = Math.min(codePointIndex, size);
+    // No surrogate pair before the limit, and none straddling it: a unit per code point, so the answer is the limit itself. The
+    // count is a constant-time answer for Latin-1 text, which is how the JVM stores most of it
+    if (str.codePointCount(0, limit) == limit && !(limit < size && Character.isHighSurrogate(str.charAt(limit - 1))
+        && Character.isLowSurrogate(str.charAt(limit))))
+      return limit;
+    int offset = 0;
+    for (int i = 0; i < codePointIndex && offset < size; i++)
+      offset += Character.charCount(str.codePointAt(offset));
+    return offset;
+  }
+
+  /**
+   * The code point at index {@code codePointIndex} as a one-character string, or {@code null} when the index is out of range; never
+   * returns half of a surrogate pair.
+   */
+  public static String charAtCodePoint(final String str, final int codePointIndex) {
+    if (codePointIndex < 0)
+      return null;
+    final int offset = charOffsetOfCodePoint(str, codePointIndex);
+    if (offset >= str.length())
+      return null;
+    return str.substring(offset, offset + Character.charCount(str.codePointAt(offset)));
+  }
+
+  /**
+   * Index, counted in code points, of the first occurrence of {@code toFind} at or after code point {@code fromCodePoint}, or -1.
+   * A match never starts or ends inside a surrogate pair.
+   */
+  public static int indexOfCodePoints(final String str, final String toFind, final int fromCodePoint) {
+    int from = charOffsetOfCodePoint(str, fromCodePoint);
+    while (true) {
+      final int index = str.indexOf(toFind, from);
+      if (index < 0)
+        return -1;
+      if (!splitsSurrogatePair(str, index, index + toFind.length()))
+        return str.codePointCount(0, index);
+      from = index + 1;
+    }
+  }
+
+  /**
+   * Index, counted in code points, of the last occurrence of {@code toFind} starting at or before code point {@code fromCodePoint}
+   * (pass {@link Integer#MAX_VALUE} for "anywhere"), or -1. A match never starts or ends inside a surrogate pair.
+   */
+  public static int lastIndexOfCodePoints(final String str, final String toFind, final int fromCodePoint) {
+    if (fromCodePoint < 0)
+      return -1;
+    int from = charOffsetOfCodePoint(str, fromCodePoint);
+    while (true) {
+      final int index = str.lastIndexOf(toFind, from);
+      if (index < 0)
+        return -1;
+      if (!splitsSurrogatePair(str, index, index + toFind.length()))
+        return str.codePointCount(0, index);
+      from = index - 1;
+      if (from < 0)
+        return -1;
+    }
+  }
+
+  /**
+   * Splits {@code str} around every occurrence of the literal {@code delimiter}, as openCypher {@code split()} does, and as every
+   * other split of this engine now does (issue #10485): the pieces are the ones {@code String.split(Pattern.quote(delimiter), -1)}
+   * returns - every occurrence, left to right and not overlapping, with the empty leading, inner and trailing pieces kept - except
+   * that a surrogate pair is never cut.
+   * <ul>
+   * <li>An empty delimiter splits into characters, a pair being one: {@code "a😀"} is {@code ["a", "😀"]}, where the regex matches
+   * between UTF-16 units and answers the two lone halves of the emoji. The empty string is the one piece {@code [""]}.</li>
+   * <li>The delimiter is found with {@code indexOf}, not a regex compiled on every call, which a quoted pattern never gets out of.
+   * {@code indexOf} compares UTF-16 units and the regex compares code points: an occurrence that starts or ends inside a pair of
+   * {@code str}, which only a delimiter with a lone surrogate at that end can produce, is not one.</li>
+   * </ul>
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final String delimiter) {
+    if (delimiter.isEmpty()) {
+      if (str.isEmpty())
+        return List.of("");
+      final List<String> characters = new ArrayList<>(str.length());
+      for (int begin = 0; begin < str.length(); ) {
+        final int end = begin + Character.charCount(str.codePointAt(begin));
+        characters.add(str.substring(begin, end));
+        begin = end;
+      }
+      return Collections.unmodifiableList(characters);
+    }
+
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = str.indexOf(delimiter);
+    while (at >= 0) {
+      final int end = at + delimiter.length();
+      if (splitsSurrogatePair(str, at, end)) {
+        at = str.indexOf(delimiter, at + 1);
+        continue;
+      }
+      pieces.add(str.substring(from, at));
+      from = end;
+      at = str.indexOf(delimiter, from);
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
+   * Replaces every occurrence of the literal {@code search} in {@code str}, as {@code String.replace(CharSequence, CharSequence)}
+   * does, except that a surrogate pair is never cut (issue #10485, #10484): an empty {@code search} puts the replacement before
+   * every character and after the last - {@code "-a-😀-"} for {@code ("a😀", "", "-")}, never between the two halves of the emoji -
+   * and an occurrence that starts or ends inside a pair, which only a search with a lone surrogate at that end can produce, is not
+   * one. The string itself is returned when nothing is replaced.
+   */
+  public static String replaceLiteral(final String str, final String search, final String replacement) {
+    if (search.isEmpty()) {
+      // Sized in a long and capped: a long text with a long replacement is a size an int cannot hold, which the builder reports
+      // when it outgrows its limit and not as a negative capacity here
+      final long expected = str.length() + (long) (codePointLength(str) + 1) * replacement.length();
+      final StringBuilder result = new StringBuilder((int) Math.min(expected, 1 << 20));
+      for (int begin = 0; begin < str.length(); ) {
+        final int end = begin + Character.charCount(str.codePointAt(begin));
+        result.append(replacement).append(str, begin, end);
+        begin = end;
+      }
+      return result.append(replacement).toString();
+    }
+
+    int at = str.indexOf(search);
+    if (at < 0)
+      return str;
+
+    StringBuilder result = null;
+    int from = 0;
+    while (at >= 0) {
+      final int end = at + search.length();
+      if (splitsSurrogatePair(str, at, end)) {
+        at = str.indexOf(search, at + 1);
+        continue;
+      }
+      if (result == null)
+        result = new StringBuilder(str.length());
+      result.append(str, from, at).append(replacement);
+      from = end;
+      at = str.indexOf(search, from);
+    }
+    return result == null ? str : result.append(str, from, str.length()).toString();
+  }
+
+  /**
+   * Answers whether cutting {@code str} at {@code begin} or at {@code end} (UTF-16 offsets) would separate the two halves of a
+   * surrogate pair.
+   */
+  private static boolean splitsSurrogatePair(final String str, final int begin, final int end) {
+    final int size = str.length();
+    return begin > 0 && begin < size && Character.isLowSurrogate(str.charAt(begin)) && Character.isHighSurrogate(str.charAt(begin - 1))
+        || end > 0 && end < size && Character.isHighSurrogate(str.charAt(end - 1)) && Character.isLowSurrogate(str.charAt(end));
+  }
+
+  /**
    * Answers whether an optional argument was written as an explicit {@code null} rather than left out, so that a
    * function can propagate it instead of falling back on its default.
    * <p>
@@ -392,21 +563,34 @@ public final class CypherFunctionHelper {
     return list;
   }
 
+  /** {@link #cypherTypeRank(Object)} of a path, and of any value Cypher has no type for. */
+  public static final int TYPE_RANK_PATH_OR_OTHER = 4;
+  /** {@link #cypherTypeRank(Object)} of the first temporal type, DATETIME: the six follow in {@link #temporalTypeRank(Object)} order. */
+  public static final int TYPE_RANK_FIRST_TEMPORAL = 5;
+  /** {@link #cypherTypeRank(Object)} of the last temporal type, DURATION. */
+  public static final int TYPE_RANK_LAST_TEMPORAL  = TYPE_RANK_FIRST_TEMPORAL + 5;
+  public static final int TYPE_RANK_STRING         = TYPE_RANK_LAST_TEMPORAL + 1;
+  public static final int TYPE_RANK_BOOLEAN        = TYPE_RANK_STRING + 1;
+  public static final int TYPE_RANK_NUMBER         = TYPE_RANK_BOOLEAN + 1;
+  public static final int TYPE_RANK_NAN            = TYPE_RANK_NUMBER + 1;
+  public static final int TYPE_RANK_NULL           = TYPE_RANK_NAN + 1;
+
   /**
    * Returns the Cypher type order rank for mixed-type comparison.
-   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < STRING(5) < BOOLEAN(6) < NUMBER(7) < NaN(8) < NULL(9)
+   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < the six temporal types (5-10, see
+   * {@link #temporalTypeRank(Object)}) < STRING(11) < BOOLEAN(12) < NUMBER(13) < NaN(14) < NULL(15)
    */
   public static int cypherTypeRank(final Object value) {
     if (value == null)
-      return 9;
+      return TYPE_RANK_NULL;
     if (value instanceof Number) {
       final double d = ((Number) value).doubleValue();
-      return Double.isNaN(d) ? 8 : 7;
+      return Double.isNaN(d) ? TYPE_RANK_NAN : TYPE_RANK_NUMBER;
     }
     if (value instanceof Boolean)
-      return 6;
+      return TYPE_RANK_BOOLEAN;
     if (value instanceof String)
-      return 5;
+      return TYPE_RANK_STRING;
     if (value instanceof List)
       return 3;
     if (value instanceof Vertex)
@@ -415,7 +599,54 @@ public final class CypherFunctionHelper {
       return 2;
     if (value instanceof Map)
       return 0;
-    return 4; // path or other
+    // An array that is not a BINARY value is a sequence, ordered with the lists (issue #10380)
+    if (MultiValue.isSequenceArray(value))
+      return 3;
+    // After the common graph and collection values, which are never temporal, so a sort over them skips the temporal checks
+    final int temporal = temporalTypeRank(value);
+    if (temporal >= 0)
+      return TYPE_RANK_FIRST_TEMPORAL + temporal;
+    return TYPE_RANK_PATH_OR_OTHER;
+  }
+
+  /** Whether a {@link #cypherTypeRank(Object)} is the rank of a temporal type. */
+  public static boolean isTemporalTypeRank(final int rank) {
+    return rank >= TYPE_RANK_FIRST_TEMPORAL && rank <= TYPE_RANK_LAST_TEMPORAL;
+  }
+
+  /**
+   * The rank of a temporal value among the temporal types in the Cypher order of values: DATETIME(0) < LOCAL DATETIME(1) <
+   * DATE(2) < TIME(3) < LOCAL TIME(4) < DURATION(5), all of them after PATH and before STRING, as Neo4j orders them. Values of
+   * two different temporal types are ordered by this rank and never by their content: comparing them used to throw
+   * "Cannot compare DateTime with CypherDate" out of ORDER BY (issue #10200). A native {@code java.time} or
+   * {@code java.util.Date} value, or a {@code java.time.Duration} / {@code Period} parameter, ranks as the Cypher type it is
+   * read as; -1 for any other value.
+   */
+  public static int temporalTypeRank(final Object value) {
+    switch (value) {
+    case CypherDateTime ignored:
+      return 0;
+    case CypherLocalDateTime ignored:
+      return 1;
+    case CypherDate ignored:
+      return 2;
+    case CypherTime ignored:
+      return 3;
+    case CypherLocalTime ignored:
+      return 4;
+    case CypherDuration ignored:
+      return 5;
+    case Duration ignored:
+      return 5;
+    case Period ignored:
+      return 5;
+    case null, default:
+      break;
+    }
+    if (!TemporalUtil.isNativeTemporal(value))
+      return -1;
+    // A native java.time / java.util.Date value ranks as the Cypher type it is wrapped in
+    return TemporalUtil.fromCoreJavaType(value) instanceof CypherTemporalValue wrapped ? temporalTypeRank(wrapped) : -1;
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -430,6 +661,10 @@ public final class CypherFunctionHelper {
     final int rankB = cypherTypeRank(b);
     if (rankA != rankB)
       return Integer.compare(rankA, rankB);
+    // Two values of one temporal type, either of them possibly a native java.time value: temporalTypeRank ranks a native value
+    // by the Cypher class fromCoreJavaType wraps it in, so one rank is one class and the cast holds
+    if (isTemporalTypeRank(rankA))
+      return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
     // Same type category - compare within type
     if (a instanceof Number && b instanceof Number)
       return BinaryComparator.compareDoubles(((Number) a).doubleValue(), ((Number) b).doubleValue());
@@ -437,9 +672,13 @@ public final class CypherFunctionHelper {
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
       return Boolean.compare((Boolean) a, (Boolean) b);
-    if (a instanceof List && b instanceof List) {
-      final List<?> la = (List<?>) a;
-      final List<?> lb = (List<?>) b;
+    // BINARY values order by their bytes, unsigned, as SQL and the index order them. A byte[] is not Comparable, so without this arm
+    // every pair of them tied and min() / max() kept the first row (issue #10380)
+    if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
+      return BinaryComparator.compareBytes(bytesA, bytesB);
+    if ((a instanceof List || MultiValue.isSequenceArray(a)) && (b instanceof List || MultiValue.isSequenceArray(b))) {
+      final List<?> la = MultiValue.getMultiValueAsList(a);
+      final List<?> lb = MultiValue.getMultiValueAsList(b);
       for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
         final int cmp = cypherCompare(la.get(i), lb.get(i));
         if (cmp != 0)
@@ -594,7 +833,7 @@ public final class CypherFunctionHelper {
     value = map.get("second");
     if (value != null)
       time = time.withSecond(TemporalUtil.toIntField("second", value));
-    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano()));
+    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano(), true));
     return time;
   }
 

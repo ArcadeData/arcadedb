@@ -34,6 +34,7 @@ import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionEndedException;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -138,7 +139,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         throw new SecurityException(
             "User '" + user.getName() + "' is not allowed to access database '" + databaseName.getFirst() + "'");
 
-      database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
+      // OPENED ON ITS FIRST REQUEST WHEN IT IS ON DISK BUT NOT OPEN (#10234), AS THE BINARY PROTOCOLS ALWAYS DID
+      database = httpServer.getServer().getDatabaseForRequest(databaseName.getFirst());
 
       current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
       if (current != null && !current.transactions.isEmpty() && current.transactions.getFirst().isActive()) {
@@ -268,13 +270,21 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         disconnectWatch = HttpClientDisconnectWatch.arm(exchange, runningQuery);
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
-        activeSession.execute(user, () -> {
-          if (finalAtomicTransaction)
-            executeInTransaction(exchange, user, database, payload, response, retries);
-          else
-            response.set(execute(exchange, user, database, payload));
-          return null;
-        }, rollsBackSessionTransactionOnFailure(), endsSession(), participatesInSessionTransaction());
+        try {
+          activeSession.execute(user, () -> {
+            if (finalAtomicTransaction)
+              executeInTransaction(exchange, user, database, payload, response, retries);
+            else
+              response.set(execute(exchange, user, database, payload));
+            return null;
+          }, rollsBackSessionTransactionOnFailure(), endsSession(), participatesInSessionTransaction());
+        } catch (final HttpSessionEndedException e) {
+          // THE SESSION WAS ENDED WHILE THIS REQUEST WAITED FOR ITS LOCK: NOTHING RAN, AND THE ROUTE DECIDES THE ANSWER (issue #10171)
+          final ExecutionResponse answer = answerForEndedSession(exchange, user, e.getSessionId());
+          if (answer == null)
+            throw e;
+          response.set(answer);
+        }
       } else {
         if (finalAtomicTransaction)
           executeInTransaction(exchange, user, database, payload, response, retries);
@@ -763,6 +773,17 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean endsSession() {
     return false;
+  }
+
+  /**
+   * The answer to a request whose session another request ended while this one waited for the session lock, or null to refuse
+   * it with 404 like any request naming a session that is no longer resolvable. Nothing of this request ran. A route answers for
+   * itself only when the session's end is what the request asked for, as a retried {@code /commit} of a session that committed
+   * does (issue #10171).
+   */
+  protected ExecutionResponse answerForEndedSession(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String sessionId) {
+    return null;
   }
 
   /** The session the request names that the principal owns, or null when it names none or it is no longer resolvable. */

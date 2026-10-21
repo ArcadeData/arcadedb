@@ -68,6 +68,8 @@ class Issue7578EveryComponentSchemaDeclaresRequiredTest {
       Map.entry("JsonRpcMessage", "a oneOf over one envelope and a batch of them; the envelope carries the required list"),
       Map.entry("VerifyDatabaseResponse", "a oneOf over the local and cluster shapes, which carry the required lists"),
       Map.entry("TransferLeaderRequest", "an empty object is a valid request - it lets Raft choose the target"),
+      // Issue #10295: PostBeginHandler falls back to the database's default isolation when 'isolationLevel' is absent
+      Map.entry("BeginRequest", "an empty object is a valid request - it begins at the database's default isolation"),
       Map.entry("UpdateUserRequest", "both members are optional; a body carrying neither is accepted and changes nothing"),
       // Every member is optional and the schema's own descriptions say so: `reason` is "Optional.", `catchUp`
       // reads "false (or absent)", and `fingerprints` says "Omit them to have every document seeded", which is

@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IntHashSet;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -45,6 +46,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 
@@ -81,7 +83,9 @@ import java.util.zip.CRC32;
  */
 class GraphAnalyticalViewCSRPersistence {
   private static final int    MAGIC          = 0x47415643; // "GAVC"
-  private static final int    FORMAT_VERSION = 2;
+  // 3: a listed vertex type brings its sub-types (issue #10208), so a file written for the type alone is not reused
+  // 4: the header carries the scan's coverage of the edge types (issue #10214)
+  private static final int    FORMAT_VERSION = 4;
   // NODE-LOCAL (#9638): DECLARED IN NodeLocalFiles SO A CROSS-NODE CHECKSUM LEAVES THE FILE OUT
   private static final String FILE_PREFIX    = NodeLocalFiles.GAV_CSR_FILE_PREFIX;
   private static final String FILE_EXTENSION = NodeLocalFiles.GAV_CSR_FILE_EXTENSION;
@@ -118,9 +122,15 @@ class GraphAnalyticalViewCSRPersistence {
 
   // --- Save ---
 
+  /**
+   * @param scannedEdgeTypes     the edge types the scan materialized, null when not known
+   * @param uncoveredEdgeBuckets the buckets of the edges of a type the view does not materialize that the scan met (issue
+   *                             #10214); null when not known. An edge written after the scan needs no record here: its commit
+   *                             moves the transaction id past the certificate, and the file is not restored
+   */
   static void save(final Database database, final String viewName, final String[] vertexTypes, final String[] edgeTypes,
-      final String[] propertyFilter, final String[] edgePropertyFilter, final GraphAnalyticalView.Snapshot snapshot)
-      throws IOException {
+      final String[] propertyFilter, final String[] edgePropertyFilter, final GraphAnalyticalView.Snapshot snapshot,
+      final String[] scannedEdgeTypes, final int[] uncoveredEdgeBuckets) throws IOException {
     final ByteArrayOutputStream payloadBuffer = new ByteArrayOutputStream(1024);
     try (final DataOutputStream payloadOut = new DataOutputStream(payloadBuffer)) {
       writeNodeMapping(payloadOut, snapshot.nodeMapping);
@@ -151,6 +161,8 @@ class GraphAnalyticalViewCSRPersistence {
       writeStringArray(out, edgeTypes);
       writeStringArray(out, propertyFilter);
       writeStringArray(out, edgePropertyFilter);
+      writeStringArray(out, scannedEdgeTypes);
+      writeOptionalInts(out, uncoveredEdgeBuckets);
       out.writeLong(snapshot.asOfTransactionId);
       out.writeBoolean(encryption != null);
       out.writeInt(storedPayload.length);
@@ -196,6 +208,29 @@ class GraphAnalyticalViewCSRPersistence {
     out.writeInt(values.length);
     for (final String v : values)
       writeString(out, v);
+  }
+
+  private static void writeOptionalInts(final DataOutputStream out, final int[] values) throws IOException {
+    if (values == null) {
+      out.writeInt(-1);
+      return;
+    }
+    out.writeInt(values.length);
+    for (final int v : values)
+      out.writeInt(v);
+  }
+
+  private static int[] readOptionalInts(final DataInputStream in) throws IOException {
+    final int length = in.readInt();
+    if (length < 0)
+      return null;
+    // READ BEFORE THE CHECKSUM: A CORRUPT HEADER MUST NOT SIZE AN ALLOCATION. ONE ENTRY PER BUCKET, SO THE FILE BOUNDS IT
+    if (length > in.available() / Integer.BYTES)
+      throw new EOFException("declared " + length + " bucket ids exceed what the file holds");
+    final int[] values = new int[length];
+    for (int i = 0; i < length; i++)
+      values[i] = in.readInt();
+    return values;
   }
 
   private static void writeNodeMapping(final DataOutputStream out, final NodeIdMapping mapping) throws IOException {
@@ -325,7 +360,7 @@ class GraphAnalyticalViewCSRPersistence {
    */
   static GraphAnalyticalView.Snapshot load(final Database database, final String viewName, final String[] vertexTypes,
       final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
-      final long currentLastTransactionId) throws IOException {
+      final long currentLastTransactionId, final long uncoveredWritesMark) throws IOException {
     final File file = fileFor(database, viewName);
     if (!file.isFile())
       return null;
@@ -333,6 +368,8 @@ class GraphAnalyticalViewCSRPersistence {
     final byte[] storedPayload;
     final boolean encrypted;
     final long asOfTransactionId;
+    final String[] scannedEdgeTypes;
+    final int[] uncoveredEdgeBuckets;
 
     try (final DataInputStream in = new DataInputStream(new FileInputStream(file))) {
       if (in.readInt() != MAGIC || in.readInt() != FORMAT_VERSION)
@@ -343,6 +380,8 @@ class GraphAnalyticalViewCSRPersistence {
           || !Arrays.equals(readStringArray(in), propertyFilter)
           || !Arrays.equals(readStringArray(in), edgePropertyFilter))
         return null;
+      scannedEdgeTypes = readStringArray(in);
+      uncoveredEdgeBuckets = readOptionalInts(in);
       asOfTransactionId = in.readLong();
       if (asOfTransactionId != currentLastTransactionId)
         return null;
@@ -391,9 +430,18 @@ class GraphAnalyticalViewCSRPersistence {
         final Map<String, ColumnStore> edgeColumnStores = readOptionalColumnStoreMap(payloadIn);
         final Map<String, int[]> bwdToFwd = readOptionalIntArrayMap(payloadIn);
 
+        // Nothing was committed since the file was written (the certificate above), so the scan's coverage still holds, measured
+        // from the restoring view's own counter of the uncovered edges written
+        IntHashSet uncovered = null;
+        if (uncoveredEdgeBuckets != null) {
+          uncovered = new IntHashSet(Math.max(16, uncoveredEdgeBuckets.length * 2));
+          for (final int bucketId : uncoveredEdgeBuckets)
+            uncovered.add(bucketId);
+        }
         return new GraphAnalyticalView.Snapshot(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwd,
             null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
-            vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
+            vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L,
+            scannedEdgeTypes != null ? Set.copyOf(Arrays.asList(scannedEdgeTypes)) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered);
       }
     } catch (final IOException | OutOfMemoryError | RuntimeException e) {
       // IOException here also catches the "encrypted but no DataEncryption configured" case thrown above:

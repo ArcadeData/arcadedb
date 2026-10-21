@@ -44,9 +44,15 @@ final class FakeNodeControl implements NodeControl {
   final int[]            reformatted      = new int[5];
   /** An unpaused node restarts Ratis in place reformatting (or recovering) its storage. */
   boolean                reformatOnUnpause;
+  /** A started node reformats its Raft storage while it comes back up, as the new server process counts it. */
+  boolean                reformatOnStart;
+  /** Like {@link #reformatOnStart}, for one node only (-1 for none). */
+  int                    reformatOnStartOfNode = -1;
   boolean                recoverOnUnpause;
   /** An unpaused node's server process restarts: its counts drop to zero. */
   boolean                processRestartsOnUnpause;
+  /** A reconnected node's server process restarts too, which no fault of that kind performs. */
+  boolean                processRestartsOnReconnect;
   /** After an unpause, reading the in-place restart counts fails, as for a node that no longer answers HTTP. */
   boolean                countsUnreadableAfterUnpause;
   boolean                restartCountsUnreadable;
@@ -60,16 +66,23 @@ final class FakeNodeControl implements NodeControl {
   @Override
   public void kill(final int node) {
     log("kill:" + node);
+    // The counts live in the server process: a new process starts them from zero
+    recovered[node] = 0;
+    reformatted[node] = 0;
   }
 
   @Override
   public void stopGracefully(final int node) {
     log("stop:" + node);
+    recovered[node] = 0;
+    reformatted[node] = 0;
   }
 
   @Override
   public void start(final int node) {
     log("start:" + node);
+    if (reformatOnStart || reformatOnStartOfNode == node)
+      ++reformatted[node];
   }
 
   @Override
@@ -100,6 +113,11 @@ final class FakeNodeControl implements NodeControl {
   @Override
   public void reconnect(final int node) {
     log("reconnect:" + node);
+    // A server process restart nobody asked for, as an OOM kill and a restart policy would make one
+    if (processRestartsOnReconnect) {
+      recovered[node] = 0;
+      reformatted[node] = 0;
+    }
   }
 
   @Override

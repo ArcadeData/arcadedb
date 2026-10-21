@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -102,14 +103,22 @@ public class DepthFirstTraverser extends GraphTraverser {
         return;
       }
 
-      // Recursively explore neighbors using fast getNextVertices() (skips loading edge records)
-      for (final Vertex nextVertex : getNextVertices(vertex)) {
+      // Recursively explore the neighbors the adjacency entries name, without loading the edge records. The edge of an entry is asked
+      // about only once the entry would reach a vertex not met yet (issue #10149): a ghost is skipped and reported, as the walks that
+      // read the edge do
+      final Neighbours entries = getNeighbours(vertex);
+      while (entries.hasNext()) {
+        final RID rid = entries.next();
         // Skip if already visited
-        if (detectCycles && isVisited(nextVertex, visited)) {
+        if (rid == null || detectCycles && visited.contains(rid))
           continue;
-        }
 
-        performDFS(nextVertex, depth + 1, visited);
+        if (!entries.liveEdge())
+          continue;
+
+        final Vertex nextVertex = entries.vertex(rid);
+        if (nextVertex != null)
+          performDFS(nextVertex, depth + 1, visited);
       }
     }
 

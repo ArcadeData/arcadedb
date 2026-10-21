@@ -22,7 +22,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
@@ -444,26 +446,19 @@ public class CallStep extends AbstractExecutionStep {
 
   /**
    * Executes a registered procedure.
-   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory - except on
-   * the auto-commit path (see below), which fully materializes before returning.
+   * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory.
    * <p>
    * A write procedure (e.g. merge.node, apoc.refactor.mergeNodes) mutates the graph synchronously inside
-   * {@link CypherProcedure#execute}, the same way {@code SetStep}/{@code DeleteStep}/etc. mutate it - but unlike
-   * those steps it was never wrapped in an auto-commit, so a top-level {@code CALL} to a write procedure with no
-   * transaction already open failed with "Transaction not active" (issue #6073). Auto-commit here mirrors
-   * {@code SetStep.applySetOperations}: begin only when no transaction is already active, so a caller-managed
-   * transaction around the CALL is left untouched.
+   * {@link CypherProcedure#execute}, the same way {@code SetStep}/{@code DeleteStep}/etc. mutate it, and like them it
+   * runs in the statement's transaction: a statement that calls one is a write statement, which
+   * {@code OpenCypherQueryEngine} runs in one transaction when the caller has none open (issues #6073, #10190).
    */
   private Object executeProcedure(final CypherProcedure procedure, final Object[] args,
                                    final Result inputRow, final CommandContext context) {
-    final boolean autoCommit = procedure.isWriteProcedure() && !context.getDatabase().isTransactionActive();
     // The stream the procedure answered, for the paths out of here that leave it open: a failure, and a call answered by a count
     Stream<ResultInternal> resultStream = null;
     try {
       procedure.validateArgs(args);
-
-      if (autoCommit)
-        context.getDatabase().begin();
 
       resultStream = procedure.execute(args, inputRow, context, requestedYieldFields(procedure))
           .map(this::convertProcedureResultToInternal);
@@ -482,41 +477,22 @@ public class CallStep extends AbstractExecutionStep {
         return track(resultStream, Spliterators.iterator(rows));
       }
 
-      // .map()/.iterator() are lazy, so without forcing it here commit() would run before the stream is ever
-      // drained. Every current write procedure happens to mutate and materialize its Stream eagerly inside
-      // execute() (see the contract documented on CypherProcedure#execute), so this only pays the list-copy
-      // cost on the auto-commit path - the no-active-transaction path is exactly where a future write
-      // procedure returning a lazily-generated Stream would otherwise commit before it ever mutates anything.
-      // Everywhere else, keep the iterator for lazy evaluation instead of collecting to list - this prevents
-      // memory exhaustion for procedures that yield many results.
-      final Iterator<ResultInternal> result;
-      if (autoCommit) {
-        // Read to the end here, so the stream has nothing more to give
-        result = resultStream.toList().iterator();
-        resultStream.close();
-        context.getDatabase().commit();
-      } else
-        result = track(resultStream, resultStream.iterator());
-
-      return result;
-    } catch (final NeedRetryException retryable) {
-      closeAfterFailure(resultStream, retryable);
-      // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487)
-      if (autoCommit && context.getDatabase().isTransactionActive())
-        context.getDatabase().rollback();
-      throw retryable;
+      // Kept lazy instead of collected to a list, so a procedure that yields many results does not exhaust the memory: the
+      // statement's transaction is committed only once the write statement has been drained to its end
+      return track(resultStream, resultStream.iterator());
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      closeAfterFailure(resultStream, refusal);
+      // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487).
+      // Nor is a refusal of the heap limits, which says the query asked for too much, not that the call found nothing (#10160)
+      throw refusal;
     } catch (final CommandParsingException clientError) {
       closeAfterFailure(resultStream, clientError);
       // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
-      if (autoCommit && context.getDatabase().isTransactionActive())
-        context.getDatabase().rollback();
       throw clientError;
     } catch (final Exception e) {
       closeAfterFailure(resultStream, e);
-      if (autoCommit && context.getDatabase().isTransactionActive())
-        context.getDatabase().rollback();
       if (callClause.isOptional())
         return null;
       throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
@@ -550,9 +526,10 @@ public class CallStep extends AbstractExecutionStep {
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
       throw clientError;
-    } catch (final NeedRetryException retryable) {
-      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
-      throw retryable;
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487). So does a refusal of
+      // the heap limits (#10160)
+      throw refusal;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
@@ -597,9 +574,10 @@ public class CallStep extends AbstractExecutionStep {
       }
 
       return result;
-    } catch (final NeedRetryException retryable) {
-      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
-      throw retryable;
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487). So does a refusal of
+      // the heap limits (#10160)
+      throw refusal;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;

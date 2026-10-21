@@ -169,6 +169,34 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return DDLClassification.NOT_DDL;
   }
 
+  /**
+   * A script handles its own failure when it has a {@code COMMIT RETRY n} block and every write it makes is inside a {@code BEGIN ...
+   * COMMIT} block, where the retries roll back what a failed attempt wrote and the {@code ELSE} branch answers the failure (issue
+   * #10379). A write outside any block, before it or after it, is the caller's transaction's: nothing takes it back when the script
+   * fails, so the commit is refused as for any other statement.
+   */
+  @Override
+  public boolean handlesItsOwnFailures(final String query) {
+    try {
+      boolean retryBlock = false;
+      int blockDepth = 0;
+      for (final Statement statement : parseScript(query, database)) {
+        if (statement instanceof BeginStatement)
+          blockDepth++;
+        else if (statement instanceof CommitStatement commit) {
+          if (blockDepth > 0)
+            blockDepth--;
+          retryBlock |= commit.getRetry() != null;
+        } else if (blockDepth == 0 && !statement.isIdempotent())
+          return false;
+      }
+      return retryBlock;
+    } catch (final CommandSQLParsingException e) {
+      // A script that does not parse failed before it wrote anything, and is not one that handles anything
+      return false;
+    }
+  }
+
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
     try {
       return new SQLAntlrParser(database).parseScript(script);

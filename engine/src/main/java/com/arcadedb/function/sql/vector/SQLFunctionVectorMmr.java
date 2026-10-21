@@ -23,9 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
-import com.arcadedb.index.sparsevector.RidScore;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -33,7 +31,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -123,7 +120,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     if (Float.isNaN(lambda) || lambda < 0.0f || lambda > 1.0f)
       throw new CommandSQLParsingException(NAME + " lambda must be in [0, 1], got " + lambda);
 
-    final List<RidScore> rawCandidates = materializeCandidates(source);
+    final List<RawCandidate> rawCandidates = materializeCandidates(source);
     if (rawCandidates.isEmpty())
       return new ArrayList<>(0);
 
@@ -140,24 +137,26 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     // an error - the cosine math would silently produce garbage.
     final ArrayList<Candidate> usable = new ArrayList<>(rawCandidates.size());
     int expectedDim = -1;
-    for (final RidScore rs : rawCandidates) {
-      try {
-        final Document rec = (Document) db.lookupByRID(rs.rid(), true);
-        final Object raw = rec.get(embeddingProperty);
-        if (raw == null)
-          continue;
-        final float[] vector = toFloatArray(raw);
-        if (expectedDim == -1) {
-          expectedDim = vector.length;
-        } else if (vector.length != expectedDim) {
-          throw new CommandSQLParsingException(
-              NAME + " embedding dimension mismatch on " + rs.rid() + ": " + vector.length
-                  + " vs " + expectedDim);
-        }
-        usable.add(new Candidate(rs.score(), vector, rec));
-      } catch (final RecordNotFoundException ignored) {
-        // candidate's record was deleted between the upstream scoring and now; drop it
+    for (final RawCandidate rc : rawCandidates) {
+      // The record the row carries (the output of `vector.neighbors`, `vector.fuse`, ...) is read as the transaction sees it
+      // now (issue #10217); only a row carrying just a RID is loaded here (issue #10170). A candidate whose record was deleted
+      // between the upstream scoring and now, or that is not a document, is dropped
+      final Document carried = rc.record() != null ? currentState(db, rc.record()) : null;
+      final Document rec = carried != null ? carried : candidateRecord(db, null, rc.rid());
+      if (rec == null)
+        continue;
+      final Object raw = rec.get(embeddingProperty);
+      if (raw == null)
+        continue;
+      final float[] vector = toFloatArray(raw);
+      if (expectedDim == -1) {
+        expectedDim = vector.length;
+      } else if (vector.length != expectedDim) {
+        throw new CommandSQLParsingException(
+            NAME + " embedding dimension mismatch on " + rc.rid() + ": " + vector.length
+                + " vs " + expectedDim);
       }
+      usable.add(new Candidate(rc.score(), vector, rec));
     }
     if (usable.isEmpty())
       return new ArrayList<>(0);
@@ -219,14 +218,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
 
     final ArrayList<Object> result = new ArrayList<>(selected.size());
     for (final Candidate c : selected) {
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", c.record());
-      for (final String prop : c.record().getPropertyNames())
-        entry.put(prop, c.record().get(prop));
-      entry.put("@rid", c.record().getIdentity());
-      entry.put("@type", c.record().getTypeName());
-      entry.put("score", c.score());
-      result.add(entry);
+      result.add(new ScoredRecordRow(c.record(), "score", c.score()));
     }
     return result;
   }
@@ -242,13 +234,18 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
    */
   private record Candidate(float score, float[] vector, Document record) {}
 
-  private static List<RidScore> materializeCandidates(final Object src) {
+  /**
+   * One upstream row: its RID, its score and the record it carries, null when it carries none.
+   */
+  private record RawCandidate(RID rid, float score, Document record) {}
+
+  private static List<RawCandidate> materializeCandidates(final Object src) {
     if (src == null)
       return Collections.emptyList();
     if (!(src instanceof Iterable<?> iter))
       throw new CommandSQLParsingException(NAME + " 1st argument must be an iterable of scored rows, got "
           + src.getClass().getSimpleName());
-    final ArrayList<RidScore> out = new ArrayList<>();
+    final ArrayList<RawCandidate> out = new ArrayList<>();
     for (final Object row : iter) {
       final RID rid = extractRidFromRow(row);
       if (rid == null)
@@ -261,7 +258,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
       if (Float.isNaN(score))
         throw new CommandSQLParsingException(
             NAME + " requires every source row to carry a numeric 'score' or 'distance' field; missing on row " + rid);
-      out.add(new RidScore(rid, score));
+      out.add(new RawCandidate(rid, score, heldRecord(row, rid)));
     }
     return out;
   }

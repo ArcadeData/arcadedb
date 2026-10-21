@@ -134,7 +134,11 @@ public enum GlobalConfiguration {
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
-        PageManager.INSTANCE.configure();
+        // THE STARTUP PASS IS NOT A LIVE CHANGE: THE FIRST ContextConfiguration OF AN EMBEDDED JVM IS CREATED BY
+        // PageManager.startup(), AFTER ITS REFERENCE COUNT WENT UP FOR THE DATABASE BEING OPENED, SO configure() WOULD
+        // WARN THAT THE PROFILE WAS "PARTIALLY applied" FOR A DATABASE THAT WAS OPENED AFTER IT (#10446)
+        if (!readingConfiguration)
+          PageManager.INSTANCE.configure();
 
       } else if ("low-cpu".equalsIgnoreCase(v)) {
         ASYNC_WORKER_THREADS.setValue(1);
@@ -222,9 +226,32 @@ public enum GlobalConfiguration {
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
 
+  TX_WAL_GROUP_COMMIT("arcadedb.txWalGroupCommit", SCOPE.DATABASE, """
+      With arcadedb.txWalFlush 1 or 2, moves the flush of the WAL out of the commit's file locks and shares it between the \
+      transactions committing at the same time: a commit still returns only once its WAL is on disk, but one flush covers \
+      every commit that was waiting for one, where each used to flush on its own while holding the locks of the files it \
+      wrote, which serialized every commit on the same type behind the disk's flush time. A page never reaches its data \
+      file before the WAL that describes it. The transaction is visible to other transactions from the moment it is \
+      published, a little before its WAL is flushed, as with arcadedb.txWalFlush 0. Applies to the commits of a database \
+      that is not replicated (embedded, or served by a single server) with the asynchronous page flush (the default): \
+      the commits of an HA cluster go through the replication log and are not affected. The deferred appends go to two \
+      WAL files that alternate at each flush instead of the arcadedb.txWalFiles pool, so one flush covers them all and the \
+      next appends do not wait for it. With arcadedb.txWalFiles=1 there is one file only, and an append waits for a flush in \
+      progress on file systems that serialize them (APFS). The background page flush may also wait for, or run, a WAL \
+      flush before it writes a page, so on a slow disk the page flush follows the WAL flush latency""",
+      Boolean.class, false),
+
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
       Integer.class, Math.max(Runtime.getRuntime().availableProcessors(), 1)),
+
+  TX_WAL_IDLE_TIMEOUT("arcadedb.txWalIdleTimeout", SCOPE.DATABASE, """
+      Milliseconds a WAL file of the pool can stay without writes before the WAL housekeeping closes and removes it, \
+      once all its pages reached the data files. A WAL file is opened on the first commit that needs it, so a database \
+      that is only read, or not written for this long, holds no WAL file open. A database written less often than this \
+      creates, locks and deletes a WAL file per write, and its WAL file counter grows with them. 0 or a negative value \
+      keeps every WAL file open until the database is closed""",
+      Long.class, 60_000L),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", SCOPE.DATABASE, "Percentage (0-100) of memory to free when Page RAM is full", Integer.class,
       50),
@@ -949,7 +976,8 @@ public enum GlobalConfiguration {
       database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
       of a LET subquery, the records a TRAVERSE has visited or a MATCH prefetches, the record addresses an UPDATE reads ahead \
       of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
-      materialization ahead of a write. Every buffer reserves its estimated size from this budget as it grows and gives it \
+      materialization ahead of a write, or the record addresses an index range reads ahead of a write to its key. Every \
+      buffer reserves its estimated size from this budget as it grows and gives it \
       back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
       below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \
       fails with a QueryHeapBudgetExceededException, which is transient: the same query can succeed once the others release \
@@ -1178,6 +1206,33 @@ public enum GlobalConfiguration {
       Smaller chunks reduce memory pressure but add commit overhead. \
       Recommended: 50MB for typical workloads, 100MB for high-memory systems, 25MB for constrained environments.""",
       Long.class, 50L),
+
+  INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedUniqueMinRecords", SCOPE.DATABASE,
+      """
+      Minimum number of records a type must hold for CREATE INDEX ... UNIQUE (LSM_TREE, default build mode) to be built \
+      with the sorted build instead of the record-at-a-time one (issue #10334). The record-at-a-time build checks every \
+      key it adds against the index being built, and that lookup reads every page written so far, so its time grows \
+      with the square of the record count. The sorted build sorts the keys externally, within a bounded memory budget, \
+      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes to the indexed type's \
+      buckets and on replicated databases keep the record-at-a-time build whatever the record count, but from this many \
+      records on it no longer checks every key against the index it is filling (issue #10349): it checks the keys once, \
+      over the finished index, and refuses the first duplicate then, so a duplicate costs the whole build before it is \
+      reported, where the check of every batch refused it at the first batch that held one. An empty transaction (such as \
+      the auto-commit one of an HTTP command), or one that wrote only to other types, does not stop the switch. 0 \
+      disables the switch and that deferred check with it.""",
+      Long.class, 10_000L),
+
+  INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedNonUniqueMinRecords", SCOPE.DATABASE,
+      """
+      Minimum number of records a type must hold for CREATE INDEX ... NOTUNIQUE (LSM_TREE, default build mode) to be built \
+      with the sorted build instead of the record-at-a-time one (issue #10267). The record-at-a-time build adds every key \
+      through the transaction bookkeeping of a write, which a bulk build over existing records does not need; the sorted \
+      build sorts the keys and writes the index pages directly, and when the keys fit its memory budget it takes about \
+      two thirds of the time. Unlike the UNIQUE case (arcadedb.index.buildSortedUniqueMinRecords) the record-at-a-time \
+      build is not quadratic here, so the switch is left to the sizes where the saving is felt. The same conditions apply: \
+      builds inside a transaction with pending changes to the indexed type's buckets and on replicated databases keep the \
+      record-at-a-time build. 0 disables the switch.""",
+      Long.class, 1_000_000L),
 
   INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
       """
@@ -1650,7 +1705,8 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
-      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
+      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user. "
+          + "With HA enabled and no arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath, the cluster token is derived from this password",
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
@@ -1799,6 +1855,11 @@ public enum GlobalConfiguration {
 
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
+
+  SERVER_QUERY_WARM_UP("arcadedb.server.queryWarmUp", SCOPE.SERVER, """
+      Once the server is online, warms the query stack in the background: parses a SQL statement and runs a trivial \
+      statement in SQL and OpenCypher on a database the server holds open, so the first client request does not pay for \
+      loading the parsers and the function registry""", Boolean.class, true),
 
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
@@ -3315,6 +3376,15 @@ public enum GlobalConfiguration {
       When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. \
       Stale data is faster but may not reflect the latest committed changes""", Boolean.class, false),
 
+  GAV_COMMIT_ORDER_MAX_WAIT("arcadedb.gavCommitOrderMaxWait", SCOPE.DATABASE,
+      """
+      Milliseconds a commit on a SYNCHRONOUS or ASYNCHRONOUS Graph Analytical View (GAV/CSR) waits, after it is durable, for the \
+      commits ahead of it to reach the view, so that its own change is in the view (or counted as pending) when commit() \
+      returns. The changes always reach the view in the order the transactions committed; this only bounds the wait. A \
+      transaction that never reports (its thread died between its commit point and its callback) costs the commits behind \
+      it one such wait, logged as a WARNING, and is then skipped. 0 does not wait: commit() may return before its change \
+      is in the view""", Long.class, 30_000L),
+
   GAV_RESTORE_AWAIT_TIMEOUT("arcadedb.gavRestoreAwaitTimeout", SCOPE.DATABASE,
       """
       Milliseconds database open() blocks waiting for Graph Analytical Views (GAV/CSR) restored from persisted \
@@ -3417,6 +3487,10 @@ public enum GlobalConfiguration {
   // class, which already carries the happens-before edge.
   private static boolean                        readingConfiguration;
   private static boolean                        dumpPending;
+  // Issue #10446: the settings written since the startup pass began, so the pass can tell a value an earlier setting's
+  // callback chose (the profile's) from the compiled-in default. Only non-null while readConfiguration() runs, and
+  // created there rather than here for the reason above.
+  private static Set<GlobalConfiguration>       assignedDuringPass;
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
@@ -3877,6 +3951,7 @@ public enum GlobalConfiguration {
     // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
     // semantics) and tests, but a future "reload configuration" entry point must not have to rediscover that.
     readingConfiguration = true;
+    assignedDuringPass = EnumSet.noneOf(GlobalConfiguration.class);
     try {
       for (final GlobalConfiguration config : values()) {
         String source = "system property";
@@ -3891,6 +3966,7 @@ public enum GlobalConfiguration {
       }
     } finally {
       readingConfiguration = false;
+      assignedDuringPass = null;
     }
 
     // Issue #7281: the dump describes the configuration this pass PRODUCED. Firing it from the callback, as the
@@ -3958,8 +4034,21 @@ public enum GlobalConfiguration {
    * @param source what to name as its origin when reporting a value that cannot be read
    */
   void applyConfigurationSource(final String prop, final String source) {
-    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null)
+    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null
+        && !assignedEarlierInPass())
       setValue(callbackIfNoSet.call(null));
+  }
+
+  /**
+   * Issue #10446: whether an earlier setting of the startup pass already chose this one's value. The profile does, for
+   * the settings it lists, and they come after {@code PROFILE} in the enum: without this the computed default of
+   * {@code arcadedb.maxPageRAM} (a quarter of the heap) overwrote the profile's 16 MB under {@code -Darcadedb.profile=low-ram}.
+   * The precedence is an explicit property or variable, then the profile, then the computed default. The first needs no
+   * test here, since a value that was read is applied after the profile and so replaces it.
+   */
+  private boolean assignedEarlierInPass() {
+    final Set<GlobalConfiguration> assigned = assignedDuringPass;
+    return readingConfiguration && assigned != null && assigned.contains(this);
   }
 
   /**
@@ -4423,6 +4512,10 @@ public enum GlobalConfiguration {
       value = invokeCallback(value);
 
       checkAllowed(value);
+
+      final Set<GlobalConfiguration> assigned = assignedDuringPass;
+      if (readingConfiguration && assigned != null)
+        assigned.add(this);
 
     } catch (final Exception e) {
       // RESTORE THE PREVIOUS VALUE - INCLUDING WHETHER THERE WAS ONE. A WRITE THAT WAS ROLLED BACK IS NOT A CHOICE

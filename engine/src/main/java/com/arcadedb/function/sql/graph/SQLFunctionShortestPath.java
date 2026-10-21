@@ -30,6 +30,7 @@ import com.arcadedb.graph.EdgeToVertexIterable;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -202,7 +203,10 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     // Try CSR-accelerated provider for non-edge path
     if (!Boolean.TRUE.equals(shortestPathContext.edge)) {
       final Database db = shortestPathContext.sourceVertex.getDatabase();
-      shortestPathContext.provider = GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam);
+      // Pinned: the search asks it for node ids, neighbours and RIDs until the paths meet, all of the same numbering (issue #10350),
+      // the statement's pin when it has one (issue #10415)
+      shortestPathContext.provider = GraphViewPins.pin(context,
+          GraphTraversalProviderRegistry.findProvider(db, shortestPathContext.edgeTypeParam));
       if (shortestPathContext.provider != null)
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
     }
@@ -219,11 +223,14 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     // per-layer granularity already used by the Cypher unconstrained allShortestPaths() BFS.
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
+    // Every walkLeft()/walkRight() expands one BFS layer, and the k-th expansion is the one that finds a path of k
+    // edges, so `depth` is the number of the expansion about to run and maxDepth bounds the edges on the path, the same
+    // as Cypher's *..n and the documented "ignore paths longer than maxDepth". It used to start at the same value but
+    // stop one expansion early (maxDepth <= depth), so a path of exactly maxDepth edges was never found (issue #10439).
     int depth = 1;
     while (true) {
-      if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
+      if (shortestPathContext.maxDepth != null && depth > shortestPathContext.maxDepth)
         break;
-      }
       if (shortestPathContext.queueLeft.isEmpty() || shortestPathContext.queueRight.isEmpty())
         break;
 
@@ -239,9 +246,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         if (neighborIdentity != null)
           return neighborIdentity;
         depth++;
-        if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
+        if (shortestPathContext.maxDepth != null && depth > shortestPathContext.maxDepth)
           break;
-        }
 
         if (shortestPathContext.queueLeft.isEmpty())
           break;
@@ -257,9 +263,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           return neighborIdentity;
 
         depth++;
-        if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
+        if (shortestPathContext.maxDepth != null && depth > shortestPathContext.maxDepth)
           break;
-        }
 
         if (shortestPathContext.queueRight.isEmpty())
           break;

@@ -405,10 +405,10 @@ public class StripedEdgeList extends EdgeLinkedList {
    * stripe's worth of edges pointing at a record that is gone - the same reasoning as {@code chainsForNeighbour}.
    */
   @Override
-  public Iterator<Edge> edgeIteratorForRemoval() {
+  public Iterator<Edge> edgeIteratorForRemoval(final RID skippedNeighbor) {
     final MultiIterator<Edge> iterator = new MultiIterator<>();
     for (final EdgeLinkedList chain : allChains(true))
-      iterator.addIterator(chain.edgeIterator());
+      iterator.addIterator(chain.edgeIteratorForRemoval(skippedNeighbor));
     return iterator;
   }
 
@@ -552,10 +552,17 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   @Override
-  public void removeEdge(final Edge edge) {
-    // The edge lives in the stripe of its neighbour (per generation); the non-owning candidate chains no-op.
-    for (final EdgeLinkedList chain : chainsForNeighbour(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut()))
-      chain.removeEdge(edge);
+  public int removeEdge(final Edge edge) {
+    // The edge lives in the stripe of its neighbour (per generation); the non-owning candidate chains no-op. Stop at the
+    // first chain that removed an entry: a regular edge's RID is in one chain only, and a lightweight edge is located by
+    // (edge type bucket, neighbour), which every generation holding a twin matches - walking on would remove one twin per
+    // generation instead of the single entry the classic layout removes (#10314).
+    for (final EdgeLinkedList chain : chainsForNeighbour(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut())) {
+      final int removed = chain.removeEdge(edge);
+      if (removed > 0)
+        return removed;
+    }
+    return 0;
   }
 
   @Override

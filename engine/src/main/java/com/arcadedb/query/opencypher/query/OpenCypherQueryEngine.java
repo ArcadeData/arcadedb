@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
@@ -26,7 +27,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.ExistingRecordsCheck;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
@@ -90,7 +93,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.StringJoiner;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -545,6 +547,29 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (statement.isReadOnly())
       return profile ? plan.profile() : plan.execute(null, timeExecution);
 
+    if (execDb.isTransactionActive())
+      return executeWrite(plan, execDb, profile, timeExecution);
+
+    // An AUTO-COMMIT write (issue #10190): the statement is one transaction, begun here and committed once it has run to
+    // the end, as the HTTP handler does around every command and Neo4j does for an implicit transaction. The write steps
+    // used to begin and commit their own, row by row, so a statement that failed kept what it wrote before the error, a
+    // MERGE over several pairs conflicted with its own earlier rows, and a label round trip that moves the record met
+    // it again in the scan of the label it put back, forever. A conflict re-runs the whole statement from committed
+    // state, which is safe because nothing of the failed attempt survives in the database - unless a CALL { ... } IN
+    // TRANSACTIONS already committed batches of it, which a second run would apply twice: that statement gets one attempt.
+    // What a procedure did OUTSIDE the database (a call to another system) is repeated by the retry, as it is by the retry
+    // of the HTTP handler and of Database.transaction(): such a procedure has to be idempotent, or run with retries at 1.
+    // The statement is also one unit for memory: a write over millions of records is held until its commit, as over HTTP
+    // and in Neo4j, and CALL { ... } IN TRANSACTIONS is the way to commit it in batches.
+    final ResultSet[] result = new ResultSet[1];
+    execDb.transaction(() -> result[0] = executeWrite(plan, execDb, profile, timeExecution), false,
+        statement.hasSubqueryInTransactions() ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    return result[0];
+  }
+
+  /** Runs a write statement inside the transaction already open, with the existence constraints checked at its end. */
+  private static ResultSet executeWrite(final CypherExecutionPlan plan, final DatabaseInternal execDb, final boolean profile,
+      final boolean timeExecution) {
     final DeferredExistenceChecks deferredChecks = DeferredExistenceChecks.open(execDb);
     try {
       final ResultSet result = profile ? plan.profile() : plan.execute(null, timeExecution);
@@ -568,17 +593,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * The database a Cypher plan executes against, and therefore the one {@code CommandContext.getDatabase()} returns.
    * <p>
-   * The write steps auto-commit: {@code SetStep}, {@code DeleteStep}, {@code MergeStep}, {@code RemoveStep},
-   * {@code ForeachStep} and a writing {@code CALL} subquery each call {@code begin()}/{@code commit()} directly on
-   * {@code context.getDatabase()} when no transaction is already open. Handing them the raw instance sends those
-   * commits to {@code LocalDatabase.commit()}, which on an HA leader applies the pages locally and never proposes
-   * them to Raft: followers then trail by exactly those page versions and the next replicated entry touching one of
-   * them fails the version check (#5492, #5655). Off HA the wrapper is the instance itself, so this is a no-op there.
-   * <p>
-   * {@code CreateStep} would be safe either way - it wraps its work in {@code database.transaction(...)}, and
-   * {@code LocalDatabase.transaction()} drives {@code wrappedDatabaseInstance} internally rather than {@code this}.
-   * That is why a bare {@code CREATE} replicated correctly while an equally ordinary {@code SET} did not, and it is
-   * the kind of asymmetry that makes a smoke test look green.
+   * A write statement commits: the transaction {@link #execute} opens around it when the caller has none (#10190), and
+   * the batches of a {@code CALL { ... } IN TRANSACTIONS}, which {@code SubqueryStep} begins and commits on
+   * {@code context.getDatabase()}. Handing them the raw instance sends those commits to {@code LocalDatabase.commit()},
+   * which on an HA leader applies the pages locally and never proposes them to Raft: followers then trail by exactly
+   * those page versions and the next replicated entry touching one of them fails the version check (#5492, #5655). Off
+   * HA the wrapper is the instance itself, so this is a no-op there. The write steps used to commit row by row on that
+   * same database, which is how a bare {@code SET} once failed to replicate while a {@code CREATE}, committed through
+   * {@code database.transaction(...)} and so through the wrapper, did not.
    * <p>
    * A read-only statement keeps the raw instance. It cannot commit, so resolving the wrapper would change nothing
    * about durability, while it would put the nested reads the steps issue on a different footing. Being precise
@@ -883,14 +905,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (CypherConstraintRegistry.findOwner(schema, constraintName) != null) {
       if (ddl.isIfNotExists())
         return;
-      throw new SchemaException("Constraint '" + constraintName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.CONSTRAINT, "Constraint '" + constraintName + "' already exists");
     }
     // Indexes and constraints share one namespace, as in Neo4j: since CREATE INDEX <name> names the index (#9705), a
     // constraint taking the same name would make DROP CONSTRAINT <name> drop the index instead
     if (constraintName != null && schema.existsIndex(constraintName)) {
       if (ddl.isIfNotExists())
         return;
-      throw new SchemaException("There already exists an index called '" + constraintName + "'");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX, "There already exists an index called '" + constraintName + "'");
     }
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
@@ -1296,13 +1318,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (isolationLevel != null) {
         final Database.TRANSACTION_ISOLATION_LEVEL level;
         try {
-          level = Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel.toUpperCase(Locale.ENGLISH));
+          // A level the engine cannot provide is refused, with the words every surface refuses it with (issue #10386)
+          level = IsolationLevels.parse(isolationLevel.toUpperCase(Locale.ENGLISH));
         } catch (final IllegalArgumentException e) {
-          final StringJoiner validLevels = new StringJoiner(", ");
-          for (final Database.TRANSACTION_ISOLATION_LEVEL l : Database.TRANSACTION_ISOLATION_LEVEL.values())
-            validLevels.add(l.name());
-          throw new CommandParsingException(
-              "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: " + validLevels);
+          throw new CommandParsingException(e.getMessage());
         }
         txDatabase.begin(level);
       } else
@@ -1439,7 +1458,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
         if (ddl.isIfNotExists())
           return;
-        throw new SchemaException(
+        throw new AlreadyExistsException(taken ? AlreadyExistsException.Kind.INDEX : AlreadyExistsException.Kind.CONSTRAINT,
             "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
       }
     }

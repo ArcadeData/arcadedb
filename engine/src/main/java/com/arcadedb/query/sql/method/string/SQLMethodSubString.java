@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -47,34 +48,16 @@ public class SQLMethodSubString extends AbstractSQLMethod {
       return null;
     }
 
+    // The indexes count Unicode code points, so a character outside the BMP is never cut in two (issue #10248)
     if (params.length > 1) {
-      int from = indexArgument(params[0], "from-index");
-      int to = indexArgument(params[1], "to-index");
-      final String thisString = value.toString();
-      if (from < 0) {
-        from = 0;
-      }
-      if (from >= thisString.length()) {
+      final int from = Math.max(0, indexArgument(params[0], "from-index"));
+      final int to = indexArgument(params[1], "to-index");
+      if (to <= from)
         return "";
-      }
-      if (to > thisString.length()) {
-        to = thisString.length();
-      }
-      if (to <= from) {
-        return "";
-      }
 
-      return thisString.substring(from, to);
-    } else {
-      int from = indexArgument(params[0], "from-index");
-      final String thisString = value.toString();
-      if (from < 0) {
-        from = 0;
-      }
-      if (from >= thisString.length()) {
-        return "";
-      }
-      return thisString.substring(from);
+      return CypherFunctionHelper.substringCodePoints(value.toString(), from, (long) to - from);
     }
+
+    return CypherFunctionHelper.substringCodePoints(value.toString(), Math.max(0, indexArgument(params[0], "from-index")), Long.MAX_VALUE);
   }
 }

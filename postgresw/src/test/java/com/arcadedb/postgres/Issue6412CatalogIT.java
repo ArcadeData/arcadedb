@@ -24,12 +24,14 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the second half of issue #6412: the catalog answers a client needs to render a
@@ -181,10 +183,15 @@ class Issue6412CatalogIT extends PostgresWireProtocolTestBase {
   @Test
   void anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt() throws Exception {
     try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement()) {
-      // pg_index has no ArcadeDB equivalent this catalog models. The client gets the empty answer the rest of
-      // pg_catalog has always given, not an error and not an invented row.
-      try (final ResultSet resultSet = statement.executeQuery("SELECT indexrelid FROM pg_catalog.pg_index")) {
-        assertThat(resultSet.next()).isFalse();
+      // pg_proc has no ArcadeDB equivalent this catalog models. The client is told so, with feature_not_supported (issue #10371),
+      // and not handed an empty answer that reads as "no function here" nor an invented row.
+      assertThatThrownBy(() -> statement.executeQuery("SELECT oid FROM pg_catalog.pg_proc")).isInstanceOf(SQLException.class)
+          .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("0A000"))
+          .hasMessageContaining("pg_proc");
+
+      // and the connection goes on
+      try (final ResultSet resultSet = statement.executeQuery("SELECT 1")) {
+        assertThat(resultSet.next()).isTrue();
       }
     }
   }

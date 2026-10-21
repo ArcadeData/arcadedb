@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13.0"
+
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       - name: Login to Docker Hub
@@ -44,7 +44,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
@@ -59,8 +59,11 @@ jobs:
       # no credentials and got HTTP 401 on every run since the runner image moved from Maven 3.9.16 to
       # 3.10.0 (2026-10-08). The flag restores the id-only matching every earlier deploy relied on, and
       # is ignored by Maven 3.9. .github/scripts/check-deploy-credential-scope.py keeps it here.
+      # ./mvnw, not the runner's mvn (#10134): the runner image's Maven upgrade is what broke this
+      # step in the first place. The wrapper pins Maven 3.10.0 too, so the flag above is still needed.
+      # .github/scripts/check-maven-wrapper.py keeps every workflow on the wrapper.
       - name: Publish to OSS and Docker hub
-        run: mvn deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests -Dmaven.repository.credentialScope=id
+        run: ./mvnw deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests -Dmaven.repository.credentialScope=id
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
@@ -70,6 +73,6 @@ jobs:
 
       - name: E2E Test
         if: success()
-        run: mvn verify -pl e2e
+        run: ./mvnw verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -30,6 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
@@ -781,8 +782,11 @@ public class TransactionIndexContext {
           if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues)) {
             // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
             // Skip duplicate check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
+            // A pending REPLACE is a claim on the key exactly like an ADD: it is the ADD of a record that took the key over from
+            // its committed holder (REMOVE A, ADD B). Treating only an ADD as a claim let a second record's ADD displace B's
+            // REPLACE in the one-entry-per-key map, so the commit indexed one record while two held the key (issue #10265)
             final IndexKey entry = values.get(v);
-            if (entry != null && entry.operation == IndexKey.IndexKeyOperation.ADD && !entry.rid.equals(rid))
+            if (entry != null && entry.operation != IndexKey.IndexKeyOperation.REMOVE && !entry.rid.equals(rid))
               throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), entry.rid);
 
             // REPLACE EXISTENT WITH THIS
@@ -795,6 +799,19 @@ public class TransactionIndexContext {
               else if (entry.operation == IndexKey.IndexKeyOperation.REPLACE)
                 // PROPAGATE THE OLD RID FROM THE PREVIOUS REPLACE OPERATION (e.g. REMOVE → ADD → ADD)
                 v.oldRid = entry.oldRid;
+            }
+          } else {
+            // A NON-UNIQUE KEY (or an all-null one, which is exempt from uniqueness) IS TRACKED PER RID, SO THIS ADD IS WHAT
+            // RETIRES A REMOVE OF THE VERY SAME (KEY, RID): A RECORD WHOSE KEY WENT AWAY AND CAME BACK IN THE TRANSACTION
+            // (issue #10269). KEEPING ONLY THE ADD WOULD REPLAY A PUT OF AN ENTRY THE INDEX ALREADY HOLDS, AND AN INDEX THAT
+            // APPENDS A RID WITHOUT ASKING IF IT IS THERE (THE HASH ONE) THEN LISTS THE RECORD TWICE: THE LATER DELETE OR KEY
+            // CHANGE REMOVES ONE ENTRY AND LEAVES THE OTHER UNDER A KEY THE RECORD NO LONGER HOLDS. A REPLACE OF ITS OWN RID
+            // REPLAYS EXACTLY "REMOVE THE ENTRY, THEN PUT IT", WHICH LEAVES ONE WHETHER OR NOT THE COMMITTED INDEX HELD IT, AND
+            // THE READS ALREADY HIDE THE OLD RID OF A REPLACE (PendingIndexRemovals).
+            final IndexKey entry = values.get(v);
+            if (entry != null && entry.operation == IndexKey.IndexKeyOperation.REMOVE) {
+              v.operation = IndexKey.IndexKeyOperation.REPLACE;
+              v.oldRid = rid;
             }
           }
         } else if (v.operation == IndexKey.IndexKeyOperation.REMOVE && index.isUnique()) {
@@ -830,7 +847,8 @@ public class TransactionIndexContext {
             final Map<IndexKey, IndexKey> otherIndexValues = entries.get(k);
             if (otherIndexValues != null)
               for (final IndexKey e : otherIndexValues.values()) {
-                if (e.operation == IndexKey.IndexKeyOperation.ADD && !e.rid.equals(rid))
+                // a REPLACE in another bucket's sub-index is a live claim too, same as in the same-lane check above (issue #10265)
+                if (e.operation != IndexKey.IndexKeyOperation.REMOVE && !e.rid.equals(rid))
                   throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), e.rid);
                 // REPLACE EXISTENT WITH THIS
                 v.operation = IndexKey.IndexKeyOperation.REPLACE;
@@ -1054,7 +1072,7 @@ public class TransactionIndexContext {
   /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
-  private void checkUniqueIndexKeys(final Index index, final IndexKey key, final RID deleted) {
+  private void checkUniqueIndexKeys(final Index index, final IndexKey key, final Set<RID> deleted) {
     // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS.
     // A MANUAL index has no type (#5765): nothing else indexes its keys, so it IS the whole search space and the
     // polymorphic lookup below has nothing to widen it to. Resolving getTypeName() as a type name threw a
@@ -1077,7 +1095,7 @@ public class TransactionIndexContext {
           ++totalEntries;
 
         if (found.hasNext() || (totalEntries == 1 && !firstEntry.equals(key.rid))) {
-          if (firstEntry.equals(deleted))
+          if (deleted != null && deleted.contains(firstEntry.getIdentity()))
             // DELETED IN TX
             return;
 
@@ -1125,11 +1143,11 @@ public class TransactionIndexContext {
    * Checks unique indexes integrity. Since a type index is composed by multiple bucket indexes, the deleted keys are first collected across all the indexes.
    */
   private void checkUniqueIndexKeys() {
-    final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = getTxDeletedEntries();
+    final Map<TypeIndex, Map<ComparableKey, Set<RID>>> deletedKeys = getTxDeletedEntries();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
-      if (index.isUnique()) {
+      if (index.isUnique() && !isUniqueCheckDeferred(index)) {
         final TypeIndex typeIndex = index.getTypeIndex();
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
@@ -1141,8 +1159,8 @@ public class TransactionIndexContext {
               // Skip uniqueness check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
               if (LSMTreeIndexAbstract.isKeyNull(entry.keyValues))
                 continue;
-              final Map<ComparableKey, RID> deletedEntries = deletedKeys.get(typeIndex);
-              final RID deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
+              final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
+              final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
             }
           }
@@ -1151,9 +1169,21 @@ public class TransactionIndexContext {
     }
   }
 
-  private Map<TypeIndex, Map<ComparableKey, RID>> getTxDeletedEntries() {
+  /**
+   * Whether the build that is populating this index checks it once, when it has finished, instead of every commit looking each key
+   * up in the index it is filling (issue #10349). That lookup walks every page written so far and nothing compacts an index while it
+   * is built, so a build of a large type took time with the square of its record count. The build owns the database write lock, so
+   * no other transaction commits to the index until its own pass has run.
+   */
+  private boolean isUniqueCheckDeferred(final IndexInternal index) {
+    final String typeName = index.getTypeName();
+    return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
+        && type.isUniqueCheckDeferred(index.getPropertyNames());
+  }
+
+  private Map<TypeIndex, Map<ComparableKey, Set<RID>>> getTxDeletedEntries() {
     // GET ANY DELETED OPERATION FIRST
-    final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = new HashMap<>();
+    final Map<TypeIndex, Map<ComparableKey, Set<RID>>> deletedKeys = new HashMap<>();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
@@ -1166,18 +1196,21 @@ public class TransactionIndexContext {
             if (entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE ||
                 entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE) {
               final TypeIndex typeIndex = index.getTypeIndex();
-              final Map<ComparableKey, RID> entries = deletedKeys.computeIfAbsent(typeIndex, k -> new HashMap<>());
+              final Map<ComparableKey, Set<RID>> entries = deletedKeys.computeIfAbsent(typeIndex, k -> new HashMap<>());
 
-              final ComparableKey key = new ComparableKey(entry.getValue().keyValues);
-              final RID existent = entries.get(key);
-              if (existent == null || entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE) {
-                // MULTIPLE OPERATIONS ON THE SAME KEY (DIFFERENT BUCKETS), PREFER THE REMOVE ONE.
-                // For REPLACE entries that originated from a same-bucket REMOVE→ADD merge, use the oldRid (the actual deleted RID).
-                // oldRid is the committed RID a REPLACE, or a REMOVE that displaced one (issue #8961), stands for
-                final RID deletedRid = entry.getValue().oldRid != null ? entry.getValue().oldRid
-                    : entry.getKey().rid;
-                entries.put(key, deletedRid);
-              }
+              // EVERY RID THE TRANSACTION TAKES OFF THE KEY, NOT ONE OF THEM: the same key can carry several removals in
+              // different buckets' sub-indexes - the committed holder's, and that of a record that claimed the key in this
+              // transaction and gave it back. Keeping only the last one seen let the uncommitted record's stand for the
+              // key, and the committed holder's real removal was then refused as a duplicate (issue #10265).
+              // oldRid is the committed RID a REPLACE, or a REMOVE that displaced one (issue #8961), stands for
+              final IndexKey value = entry.getValue();
+              final Set<RID> deletedRids = entries.computeIfAbsent(new ComparableKey(value.keyValues), k -> new HashSet<>(2));
+              // A REPLACE removes only its oldRid: a RID-less one (the cross-bucket check) removes nothing, and its rid is the
+              // new claimant, which must not be exempted
+              if (value.oldRid != null)
+                deletedRids.add(value.oldRid);
+              if (value.operation == IndexKey.IndexKeyOperation.REMOVE && value.rid != null)
+                deletedRids.add(value.rid);
             }
           }
         }

@@ -102,6 +102,10 @@ public class LocalProperty extends AbstractProperty {
               + "': " + e.getMessage(), e);
     }
 
+    if (convertedValue != DEFAULT_NOT_SET && Property.fillsInAValue(convertedValue))
+      checkTimeSeriesAttributeHonoured("DEFAULT", "no write path of a TIMESERIES type fills in an absent column: the line protocol, "
+          + "gRPC and Prometheus remote write store an absent value as null, and so does INSERT");
+
     // Compiled once here rather than on every record create, and before any state is touched, so a rejected default
     // leaves the property exactly as it was. Before the "did it change?" check and not inside it: a default persisted
     // by an earlier release is loaded without validation, so re-setting one to the same invalid text is the one case
@@ -203,6 +207,8 @@ public class LocalProperty extends AbstractProperty {
   @Override
   public Property setHidden(final boolean hidden) {
     checkForSchemaMutation();
+    if (hidden)
+      checkTimeSeriesAttributeHonoured("HIDDEN", "the rows of a TIMESERIES type are read from its engine, which returns every column");
     final boolean changed = !Objects.equals(this.hidden, hidden);
     if (changed)
       publish(() -> this.hidden = hidden);
@@ -416,6 +422,28 @@ public class LocalProperty extends AbstractProperty {
         + "' because the type is a TIMESERIES type: a column's role is fixed by CREATE TIMESERIES TYPE and is never "
         + "read from property metadata"
         + (column != null ? ", the role of '" + name + "' is " + column.getRole() : ""));
+  }
+
+  /**
+   * Refuses an attribute no path of a TIMESERIES type honours (issue #10238), the way {@link #checkTimeSeriesRoleNotCustomised}
+   * refuses {@code CUSTOM role}: accepting it stored a setting that looked like it changed what the column does and had no effect.
+   * MANDATORY, NOTNULL, MIN, MAX and REGEXP are not among them, they are held to every sample a write path appends
+   * ({@code TimeSeriesColumnConstraints}), and READONLY holds by construction, a sample being immutable.
+   * <p>
+   * A schema loaded from disk is not refused, so a database written before this rule opens; the load warns, naming the remedy.
+   */
+  private void checkTimeSeriesAttributeHonoured(final String attribute, final String why) {
+    if (!(owner instanceof LocalTimeSeriesType tsType))
+      return;
+
+    final String reason = "Cannot set " + attribute + " on property '" + tsType.getName() + "." + name
+        + "' because the type is a TIMESERIES type: " + why;
+    if (tsType.getSchema().getEmbedded().isReadingFromFile()) {
+      LogManager.instance().log(this, Level.WARNING, "%s. The attribute stored in the schema has no effect, remove it with ALTER "
+          + "PROPERTY `%s`.`%s` %s %s", reason, tsType.getName(), name, attribute, attribute.equals("HIDDEN") ? "false" : "null");
+      return;
+    }
+    throw new SchemaException(reason);
   }
 
   @Override

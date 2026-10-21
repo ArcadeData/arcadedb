@@ -23,15 +23,19 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
@@ -1254,8 +1258,18 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(QueryTerminatedException.class.getName())) {
         // STOPPED ON REQUEST (issue #9689): ITS OWN TYPE, SO NO RETRY LOOP MISTAKES IT FOR A FAILURE WORTH REPEATING
         return new QueryTerminatedException(detail);
+      } else if (exception.equals(AlreadyExistsException.class.getName())
+          || exception.equals(TypeAlreadyExistsException.class.getName())) {
+        // A TAKEN SCHEMA OBJECT NAME (ISSUE #10153): STILL A SchemaException, WHICH IS WHAT THESE CAME BACK AS BEFORE, WITH THE
+        // KIND OF OBJECT THAT HOLDS THE NAME IN exceptionArgs
+        return new AlreadyExistsException(AlreadyExistsException.Kind.fromName(exceptionArgs), detail);
       } else if (exception.equals(SchemaException.class.getName())) {
         return new SchemaException(detail);
+      } else if (exception.equals(RecordVetoedException.class.getName())) {
+        // A LISTENER REFUSED THE WRITE (ISSUES #10085, #10161): ITS OWN TYPE, SO A CALLER CAN TELL A REFUSAL FROM A FAULT
+        return new RecordVetoedException(detail);
+      } else if (exception.equals(ValidationException.class.getName())) {
+        return new ValidationException(detail);
       } else if (exception.equals(NoSuchElementException.class.getName())) {
         return new NoSuchElementException(detail);
       } else if (exception.equals(SecurityException.class.getName())) {

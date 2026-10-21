@@ -268,17 +268,18 @@ public class ArithmeticExpression implements Expression {
         return ld.subtract(rd);
     }
 
-    // Duration * Number or Number * Duration
+    // Duration * Number or Number * Duration. An INTEGER operand stays a long: as a double it loses every integer past 2^53
+    // (issue #10198)
     if (op == Operator.MULTIPLY) {
-      if (leftValue instanceof CypherDuration ld && rightValue instanceof Number)
-        return ld.multiply(((Number) rightValue).doubleValue());
-      if (leftValue instanceof Number && rightValue instanceof CypherDuration rd)
-        return rd.multiply(((Number) leftValue).doubleValue());
+      if (leftValue instanceof CypherDuration ld && rightValue instanceof Number factor)
+        return isInteger(factor) ? ld.multiply(factor.longValue()) : ld.multiply(factor.doubleValue());
+      if (leftValue instanceof Number factor && rightValue instanceof CypherDuration rd)
+        return isInteger(factor) ? rd.multiply(factor.longValue()) : rd.multiply(factor.doubleValue());
     }
 
     // Duration / Number
-    if (op == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number)
-      return ld.divide(((Number) rightValue).doubleValue());
+    if (op == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number divisor)
+      return isInteger(divisor) ? ld.divide(divisor.longValue()) : ld.divide(divisor.doubleValue());
 
     // Instant ± duration is only defined for + and -; * / % are a type error and must fall through (issue #9338).
     // + is also defined with the duration on the left, since duration + instant is the same operation.

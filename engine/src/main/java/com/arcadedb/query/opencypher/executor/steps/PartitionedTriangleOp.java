@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
@@ -279,7 +280,7 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   /** Ordered triples of distinct loops among {@code loops}: loops * (loops - 1) * (loops - 2), exact. */
-  private static long orderedLoopTriples(final long loops) {
+  static long orderedLoopTriples(final long loops) {
     return loops < 3 ? 0L : Math.multiplyExact(Math.multiplyExact(loops, loops - 1), loops - 2);
   }
 
@@ -287,7 +288,7 @@ public final class PartitionedTriangleOp implements CountOp {
    * Triples with one loop and an ordered pair of distinct edges among the {@code run} between the loop's vertex and another
    * one, in each of the three positions the repeated vertex can take: 3 * loops * run * (run - 1), exact.
    */
-  private static long repeatedPairTriples(final long loops, final long run) {
+  static long repeatedPairTriples(final long loops, final long run) {
     return run < 2 ? 0L : Math.multiplyExact(Math.multiplyExact(3L * loops, run), run - 1);
   }
 
@@ -301,7 +302,7 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   /** End (exclusive) of the run of values equal to {@code a[from]} in the sorted range {@code [from, to)}. */
-  private static int runEnd(final int[] a, final int from, final int to) {
+  static int runEnd(final int[] a, final int from, final int to) {
     final int value = a[from];
     int end = from + 1;
     while (end < to && a[end] == value)
@@ -718,7 +719,7 @@ public final class PartitionedTriangleOp implements CountOp {
     }
 
     // Try GAV provider for accelerated neighbor lookups
-    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
+    final GraphTraversalProvider gavProvider = GraphViewPins.pinAlone(GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType));
 
     // The edge list of every vertex is read ONCE (issue #9400): the triangle loop below meets each vertex once per
     // neighbour, and reloading its edges each time dominated the whole count. Only the in-partition neighbours are kept,

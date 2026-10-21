@@ -30,6 +30,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.*;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -185,13 +186,17 @@ public class CSRBuilder {
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
     final Set<String> scannedEdgeTypes = Set.copyOf(bucketToEdgeType.values());
     boolean uncoveredEdgesSeen = false;
+    // THE BUCKETS OF THE UNCOVERED EDGES MET: A TYPE THAT JOINS THE FILTER LATER HELD EDGES THE CSR DOES NOT HAVE (#10214)
+    final IntHashSet uncoveredEdgeBuckets = new IntHashSet();
     final boolean extractProps = propertyIncludeSet == null || !propertyIncludeSet.isEmpty() || propertyExcludeSet != null;
 
     // --- Phase A: Collect RID positions for node ID mapping ---
     final NodeIdMapping mapping = new NodeIdMapping(16);
-    registerVertexBuckets(mapping, vertexTypes);
+    // A listed vertex type brings its sub-types, as an edge type does (issue #10208)
+    final Set<String> concreteVertexTypes = concreteVertexTypes(vertexTypes);
+    registerVertexBuckets(mapping, concreteVertexTypes);
 
-    final Iterator<Record> collectIter = createVertexIterator(vertexTypes);
+    final Iterator<Record> collectIter = createVertexIterator(concreteVertexTypes);
     while (collectIter.hasNext()) {
       final Record record = collectIter.next();
       final RID rid = record.getIdentity();
@@ -206,12 +211,12 @@ public class CSRBuilder {
       final long elapsedMs = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO, "CSR built: 0 nodes, 0 edges, 0.0 MB, %d ms", elapsedMs);
       return new CSRResult(new HashMap<>(), mapping, createEmptyBucketColumns(mapping)).withScanCoverage(uncoveredMark,
-          scannedEdgeTypes);
+          scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
     }
 
     // Detect property types from schema (instant, no scanning needed).
     // Falls back to runtime sampling for schemaless properties.
-    final Map<String, Column.Type> detectedTypes = extractProps ? detectPropertyTypesFromSchema(vertexTypes) : new HashMap<>();
+    final Map<String, Column.Type> detectedTypes = extractProps ? detectPropertyTypesFromSchema(concreteVertexTypes) : new HashMap<>();
     final boolean schemaComplete = !detectedTypes.isEmpty();
 
     // Create per-bucket column stores upfront (columns added as types are discovered)
@@ -243,7 +248,7 @@ public class CSRBuilder {
     final List<RID> scannedEdges = observer != null ? new ArrayList<>() : null;
     final List<RID> scannedTargets = observer != null ? new ArrayList<>() : null;
 
-    final Iterator<Record> mainIter = createVertexIterator(vertexTypes);
+    final Iterator<Record> mainIter = createVertexIterator(concreteVertexTypes);
     while (mainIter.hasNext()) {
       final Vertex vertex = (Vertex) mainIter.next();
       final RID rid = vertex.getIdentity();
@@ -294,6 +299,7 @@ public class CSRBuilder {
           if (edgeTypeName == null) {
             // AN EDGE OF A TYPE THE VIEW DOES NOT MATERIALIZE, LIGHTWEIGHT ONES INCLUDED: NO RECORD COUNT CAN SAY THAT
             uncoveredEdgesSeen = true;
+            uncoveredEdgeBuckets.add(entry.getFirst().getBucketId());
             continue;
           }
           final int targetGlobalId = mapping.getGlobalId(entry.getSecond());
@@ -599,34 +605,21 @@ public class CSRBuilder {
         totalMemory / (1024.0 * 1024.0), elapsedMs);
 
     return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap).withScanCoverage(
-        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes);
+        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
   }
 
-  private void registerVertexBuckets(final NodeIdMapping mapping, final String[] vertexTypes) {
-    if (vertexTypes == null || vertexTypes.length == 0) {
-      for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType)
-          for (final int bucketId : dt.getBucketIds(false))
-            mapping.registerBucket(bucketId, dt.getName(), (int) database.countBucket(
-                database.getSchema().getBucketById(bucketId).getName()));
-    } else {
-      for (final String typeName : vertexTypes)
-        for (final int bucketId : database.getSchema().getType(typeName).getBucketIds(false))
-          mapping.registerBucket(bucketId, typeName, (int) database.countBucket(
-              database.getSchema().getBucketById(bucketId).getName()));
-    }
+  private void registerVertexBuckets(final NodeIdMapping mapping, final Set<String> concreteVertexTypes) {
+    // Each bucket is attributed to the type that stores its vertices, so a node reports its own type, not the listed one
+    for (final String typeName : concreteVertexTypes)
+      for (final int bucketId : database.getSchema().getType(typeName).getBucketIds(false))
+        mapping.registerBucket(bucketId, typeName, (int) database.countBucket(
+            database.getSchema().getBucketById(bucketId).getName()));
   }
 
-  private Map<String, Column.Type> detectPropertyTypesFromSchema(final String[] vertexTypes) {
+  private Map<String, Column.Type> detectPropertyTypesFromSchema(final Set<String> concreteVertexTypes) {
     final Map<String, Column.Type> result = new HashMap<>();
-    if (vertexTypes == null || vertexTypes.length == 0) {
-      for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof VertexType)
-          collectSchemaProperties(dt, result);
-    } else {
-      for (final String typeName : vertexTypes)
-        collectSchemaProperties(database.getSchema().getType(typeName), result);
-    }
+    for (final String typeName : concreteVertexTypes)
+      collectSchemaProperties(database.getSchema().getType(typeName), result);
     return result;
   }
 
@@ -686,16 +679,13 @@ public class CSRBuilder {
       if (column == null)
         continue;
 
-      // Skip values whose runtime type doesn't match the detected column type
-      // (e.g., LocalDateTime in a property detected as LONG from schema or sampling)
-      switch (entry.getValue()) {
-      case INT:
-      case LONG:
-      case DOUBLE:
-        if (!(value instanceof Number))
-          continue;
-        break;
-      }
+      // Skip values the column cannot hand back as they are (e.g., LocalDateTime in a property detected as LONG from schema
+      // or sampling): the column stays null for the node, and a read of it falls back to the record. A schemaless property
+      // takes its type from the first values sampled, so a 2.5 in a LONG column read back as 2, a NaN as 0, a FLOAT as its
+      // binary double and a number in a STRING column as its text, and every reader through the view, the row pipeline
+      // included, compared what the record does not hold (issue #10255)
+      if (!roundTrips(entry.getValue(), value))
+        continue;
 
       switch (entry.getValue()) {
       case INT:
@@ -712,6 +702,16 @@ public class CSRBuilder {
         break;
       }
     }
+  }
+
+  /** Whether a node column of {@code type} reads {@code value} back as the same Cypher value. */
+  static boolean roundTrips(final Column.Type type, final Object value) {
+    return switch (type) {
+      case INT -> value instanceof Integer || value instanceof Short || value instanceof Byte;
+      case LONG -> value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte;
+      case DOUBLE -> value instanceof Double;
+      case STRING -> value instanceof String;
+    };
   }
 
   private ColumnStore[] createEmptyBucketColumns(final NodeIdMapping mapping) {
@@ -756,19 +756,29 @@ public class CSRBuilder {
       collectTypeFamily(subType, names);
   }
 
-  private Iterator<Record> createVertexIterator(final String[] vertexTypes) {
+  /**
+   * The requested vertex types and all their sub-types, or every vertex type of the schema when none is requested: a
+   * vertex type answers for its sub-types on the record path, and the view holds what a query on the type reads (issue
+   * #10208).
+   */
+  private Set<String> concreteVertexTypes(final String[] vertexTypes) {
+    final Set<String> names = new LinkedHashSet<>();
     if (vertexTypes == null || vertexTypes.length == 0) {
-      final MultiIterator<Record> multi = new MultiIterator<>();
       for (final DocumentType dt : database.getSchema().getTypes())
         if (dt instanceof VertexType)
-          multi.addIterator(database.iterateType(dt.getName(), false));
-      return multi;
-    }
-    if (vertexTypes.length == 1)
-      return database.iterateType(vertexTypes[0], false);
+          names.add(dt.getName());
+    } else
+      for (final String vertexType : vertexTypes)
+        collectTypeFamily(database.getSchema().getType(vertexType), names);
+    return names;
+  }
+
+  private Iterator<Record> createVertexIterator(final Set<String> concreteVertexTypes) {
+    if (concreteVertexTypes.size() == 1)
+      return database.iterateType(concreteVertexTypes.iterator().next(), false);
 
     final MultiIterator<Record> multi = new MultiIterator<>();
-    for (final String typeName : vertexTypes)
+    for (final String typeName : concreteVertexTypes)
       multi.addIterator(database.iterateType(typeName, false));
     return multi;
   }
@@ -1211,6 +1221,9 @@ public class CSRBuilder {
     // SEE GraphAnalyticalView.Snapshot.uncoveredEdgeFreeAsOf (ISSUE #9915). -1: UNKNOWN, OR THE SCAN MET SUCH AN EDGE
     private       long                           uncoveredEdgeFreeAsOf = -1L;
     private       Set<String>                    scannedEdgeTypes;
+    // SEE GraphAnalyticalView.Snapshot.uncoveredWritesMark AND uncoveredEdgeBuckets (ISSUE #10214)
+    private       long                           uncoveredWritesMark   = -1L;
+    private       IntHashSet                     uncoveredEdgeBuckets;
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
@@ -1227,14 +1240,19 @@ public class CSRBuilder {
       this.bwdToFwd = bwdToFwd;
     }
 
-    CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes) {
+    CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
+        final IntHashSet uncoveredEdgeBuckets) {
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
+      this.uncoveredWritesMark = uncoveredWritesMark;
+      this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
       return this;
     }
 
     long getUncoveredEdgeFreeAsOf() { return uncoveredEdgeFreeAsOf; }
     Set<String> getScannedEdgeTypes() { return scannedEdgeTypes; }
+    long getUncoveredWritesMark() { return uncoveredWritesMark; }
+    IntHashSet getUncoveredEdgeBuckets() { return uncoveredEdgeBuckets; }
     public Map<String, CSRAdjacencyIndex> getCsrPerType() { return csrPerType; }
     public NodeIdMapping getMapping() { return mapping; }
     public ColumnStore[] getBucketColumns() { return bucketColumns; }

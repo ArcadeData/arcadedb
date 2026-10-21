@@ -288,9 +288,10 @@ public class BinaryCondition extends BooleanExpression {
         if (right.isEarlyCalculated(info.getContext())) {
           if (operator instanceof EqualsCompareOperator) {
             Object vl = this.right.execute((Result) null, info.getContext());
-            if (vl instanceof Collection<?> collection) {
-              return !collection.isEmpty();
-            }
+            if (vl instanceof Collection<?> collection)
+              // A BY ITEM index holds one entry per ITEM of the list, so a whole list is no key of it: the lookup found nothing where
+              // the scan compares the list value by value (issue #10448)
+              return !collection.isEmpty() && !info.isIndexByItem();
             // A null value is not tested here: the plan is cached by statement text and reused by runs with another parameter value,
             // so the index step skips the seek when the value is null (#9238, #9274)
             return true;

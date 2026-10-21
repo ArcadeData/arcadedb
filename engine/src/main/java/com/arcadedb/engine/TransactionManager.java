@@ -45,8 +45,13 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
@@ -69,12 +74,27 @@ public class TransactionManager {
    * snapshot transfer ships this marker alongside the data files (issue #5277).
    */
   public static final String LAST_TX_ID_FILE_NAME = "last-tx-id.bin";
+  private static final long HOUSEKEEPING_PERIOD_MS = 1000;
+  private static final long SLOW_GROUP_COMMIT_FLUSH_MS = 1000;
 
   private final DatabaseInternal             database;
+  /**
+   * One slot per concurrent WAL file ({@link GlobalConfiguration#TX_WAL_FILES}). A slot holds no file until the first
+   * commit that writes to it opens one, and the housekeeping empties a slot whose file nobody wrote for
+   * {@link GlobalConfiguration#TX_WAL_IDLE_TIMEOUT} (issue #10234): a database that is only read holds no WAL file.
+   */
   private       WALFile[]                    activeWALFilePool;
   private final List<WALFile>                inactiveWALFilePool = Collections.synchronizedList(new ArrayList<>());
+  /**
+   * Guards the transitions of a pool slot between empty and holding a file - the commit that opens a file for an empty
+   * slot, the housekeeping that rotates or releases one, and the close or kill that empties them all - so that a
+   * commit never opens a file a close has already retired the pool past ({@link #walPoolRetired}).
+   */
+  private final Object                       walSlotLock         = new Object();
+  // Guarded by walSlotLock: set by close()/kill(), after which no commit opens a WAL file on this instance again
+  private       boolean                      walPoolRetired;
   private final String                       logContext;
-  private final Timer                        task;
+  private volatile ScheduledFuture<?>        housekeeping;
   private final AtomicLong                   transactionIds      = new AtomicLong();
   // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
@@ -82,6 +102,26 @@ public class TransactionManager {
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
+  /**
+   * Group commit (arcadedb.txWalGroupCommit). A WAL write that defers its flush takes a ticket from walWriteSequence once
+   * it is appended, and its file joins unsyncedWALFiles before that; walDurableSequence is the highest ticket every
+   * flush so far covers. walSyncInProgress lets one flush run at a time, which is what makes them shared: while one thread
+   * flushes, the commits that arrive wait for it, and the first of them to find no flush running flushes once for all.
+   */
+  private final AtomicLong                   walWriteSequence    = new AtomicLong();
+  private volatile long                      walDurableSequence  = 0;
+  private final AtomicReference<CountDownLatch> walSyncInProgress = new AtomicReference<>();
+  private final Set<WALFile>                 unsyncedWALFiles    = ConcurrentHashMap.newKeySet();
+  // The pool slot the group commit appends to, alternating between 0 and 1 at each shared flush: an append to a file that
+  // is being flushed waits for the flush on some systems (APFS), and the append runs under the commit's file locks, which
+  // serialized the commits behind the flush again. With two files the next wave appends while the previous one flushes
+  private volatile int                       groupCommitSlot     = 0;
+  // Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. Per instance, so tests
+  // running concurrently in one JVM do not see each other's
+  volatile WALSyncFaultInjector              walSyncFaultInjector;
+  private final AtomicLong                   statsGroupCommits   = new AtomicLong();
+  private final AtomicLong                   statsGroupSyncs     = new AtomicLong();
+  private final AtomicLong                   statsGroupCommitPageWaits = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
   /**
    * Serializes the housekeeping pass (rotation and retirement of WAL files) against the code that replaces or
@@ -169,39 +209,101 @@ public class TransactionManager {
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
 
-      // #5418: DAEMON timer. A leaked (never closed) Database used to keep this non-daemon thread alive and
-      // with it the whole JVM. The WAL housekeeping it drives is best-effort background work; the durable
-      // part of the shutdown runs in TransactionManager.close(), reached through the JVM shutdown hook
+      // Volatile, because the field is assigned from the return value of the call that schedules the first tick, which runs on
+      // another thread a second later: housekeepingTick() reads it, and a tick that finds it still null only skips the cancel
+      // of a closed database, which the next tick does.
+      //
+      // #10234: ONE SCHEDULER FOR THE WAL HOUSEKEEPING OF EVERY DATABASE OF THE JVM, NOT A TIMER THREAD PER DATABASE: A
+      // SERVER WITH THOUSANDS OF DATABASES HELD A THREAD FOR EACH. Its threads are daemon, as the timer's was since #5418:
+      // a leaked (never closed) Database must not keep the JVM alive. The housekeeping is best-effort background work;
+      // the durable part of the shutdown runs in TransactionManager.close(), reached through the JVM shutdown hook
       // installed by DatabaseFactory, which completes before daemon threads are stopped.
-      task = new Timer("ArcadeDB TransactionManager " + database.getName(), true);
-      task.schedule(new TimerTask() {
-        @Override
-        public void run() {
-          try {
-            if (!database.isOpen() || database.isFencedForRecovery()) {
-              // DB CLOSED, OR FENCED AND WAITING FOR A CLOSE/REOPEN TO RUN RECOVERY (#5053): CANCEL THE TASK.
-              // A fenced database never clears the fence on its own, so there is nothing left for this task to
-              // do until close() creates a fresh TransactionManager (and timer) on reopen. Leaving the task
-              // running would otherwise hit checkDatabaseIsOpen()'s fenced check every second and log a
-              // misleading SEVERE stack trace on top of the real fencing failure already logged.
-              cancel();
-              return;
-            }
+      housekeeping = HousekeepingScheduler.INSTANCE.scheduleWithFixedDelay(this::housekeepingTick, HOUSEKEEPING_PERIOD_MS,
+          HOUSEKEEPING_PERIOD_MS, TimeUnit.MILLISECONDS);
+    }
+  }
 
-            if (logContext != null)
-              LogManager.instance().setContext(logContext);
+  /**
+   * The scheduler every {@link TransactionManager} of the JVM runs its WAL housekeeping on (issue #10234), created on
+   * first use. A pass is short - a size check per WAL file, and a data fsync only when a file is retired - so a couple of
+   * threads serve any number of databases; there are two so that one database's fsync does not hold back the passes of
+   * all the others. The trade-off is accepted on purpose: the work is best effort, and a pass held back by another database
+   * only lets a WAL file grow past its rotation size, or stay open past its idle timeout, for that long. The cancelled task
+   * of a closed database is removed from the queue at once. Never shut down: its threads are daemon, so they end with the
+   * JVM, and an embedded application opening and closing databases keeps reusing them.
+   */
+  private static final class HousekeepingScheduler {
+    private static final int                         THREADS  = 2;
+    private static final ScheduledThreadPoolExecutor INSTANCE = create();
 
-            runWALHousekeeping();
-          } catch (Throwable e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on transaction manager task", e);
-          } finally {
-            if (logContext != null)
-              LogManager.instance().setContext(null);
-          }
-        }
-      }, 1000, 1000);
-    } else
-      task = null;
+    private static ScheduledThreadPoolExecutor create() {
+      final AtomicInteger counter = new AtomicInteger();
+      final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(THREADS, runnable -> {
+        final Thread thread = new Thread(runnable, "ArcadeDB WAL Housekeeping-" + counter.incrementAndGet());
+        thread.setDaemon(true);
+        return thread;
+      });
+      executor.setRemoveOnCancelPolicy(true);
+      executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+      return executor;
+    }
+  }
+
+  private void housekeepingTick() {
+    try {
+      if (!database.isOpen() || database.isFencedForRecovery()) {
+        // DB CLOSED, OR FENCED AND WAITING FOR A CLOSE/REOPEN TO RUN RECOVERY (#5053): CANCEL THE TASK. A fenced
+        // database never clears the fence on its own, so there is nothing left for this task to do until close()
+        // creates a fresh TransactionManager (and task) on reopen. Leaving the task running would otherwise hit
+        // checkDatabaseIsOpen()'s fenced check every second and log a misleading SEVERE stack trace on top of the
+        // real fencing failure already logged.
+        if (housekeeping != null)
+          housekeeping.cancel(false);
+        return;
+      }
+
+      if (logContext != null)
+        LogManager.instance().setContext(logContext);
+
+      final long beginTime = System.nanoTime();
+      runWALHousekeeping();
+      // THE SCHEDULER IS SHARED BY EVERY DATABASE: A PASS LONGER THAN THE PERIOD HOLDS BACK THE OTHERS, SAY SO
+      final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - beginTime);
+      if (elapsedMs > HOUSEKEEPING_PERIOD_MS)
+        LogManager.instance()
+            .log(this, elapsedMs > 10 * HOUSEKEEPING_PERIOD_MS ? Level.WARNING : Level.FINE,
+                "WAL housekeeping of database '%s' took %dms, longer than its %dms period: the passes of the other databases "
+                    + "sharing the scheduler waited meanwhile", null, database.getName(), elapsedMs, HOUSEKEEPING_PERIOD_MS);
+    } catch (final Throwable e) {
+      // NEVER LET IT ESCAPE: AN EXCEPTION OUT OF A PERIODIC TASK SILENTLY SUPPRESSES EVERY LATER RUN OF IT
+      LogManager.instance().log(this, Level.SEVERE, "Error on transaction manager task", e);
+    } finally {
+      if (logContext != null)
+        LogManager.instance().setContext(null);
+    }
+  }
+
+  /**
+   * Whether the periodic housekeeping of this instance is still scheduled. Package-visible for tests, which used to
+   * look for this instance's own timer thread.
+   */
+  boolean isHousekeepingScheduled() {
+    return housekeeping != null && !housekeeping.isDone();
+  }
+
+  /**
+   * Test-support hook (issue #10234): the release of idle WAL files alone, the file retired into the inactive list and not
+   * yet dropped after the fsync of the data files. A crash right after it leaves the file on disk for the recovery of the
+   * next open.
+   */
+  void releaseIdleWALFilesForTesting() {
+    releaseIdleWALFiles();
+  }
+
+  /** Test-support hook: stops the periodic housekeeping, as a test that drives every pass by hand needs. */
+  void cancelHousekeepingForTesting() {
+    if (housekeeping != null)
+      housekeeping.cancel(false);
   }
 
   public void close(final boolean drop) {
@@ -222,6 +324,7 @@ public class TransactionManager {
         return;
 
       checkWALFiles();
+      releaseIdleWALFiles();
       // Runtime WAL rotation: fsync the data files before a rotated WAL is dropped, so a power loss cannot lose pages
       // that were only write()'n to the OS cache (issue #4509).
       cleanWALFiles(true, false, true);
@@ -240,8 +343,8 @@ public class TransactionManager {
    * teardown) now waits for a running recovery to finish instead of retiring the pool under it.
    */
   private void stopHousekeeping() {
-    if (task != null)
-      task.cancel();
+    if (housekeeping != null)
+      housekeeping.cancel(false);
 
     walMaintenanceLock.lock();
     try {
@@ -282,17 +385,8 @@ public class TransactionManager {
       writePersistedLastTransactionId();
     }
 
-    if (activeWALFilePool != null) {
-      // MOVE ALL WAL FILES AS INACTIVE
-      for (int i = 0; i < activeWALFilePool.length; ++i) {
-        final WALFile file = activeWALFilePool[i];
-        if (file != null) {
-          activeWALFilePool[i] = null;
-          inactiveWALFilePool.add(file);
-          file.setActive(false);
-        }
-      }
-    }
+    // MOVE ALL WAL FILES AS INACTIVE
+    retireWALFilePool();
 
     // Ground-truth durability check BEFORE the files are closed below: any unacked page means some WAL
     // entry is the only durable copy of a committed change (e.g. a contained flush failure, #4928).
@@ -373,13 +467,171 @@ public class TransactionManager {
 
   public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
       final Binary bufferChanges) {
+    // A commit that flushes its own WAL must not become durable on top of a group commit's write that is not: it may have
+    // read that transaction's published pages, and recovery would find its page versions with the previous one missing. So
+    // the deferred writes appended so far are flushed first - BEFORE this append, so a failure here leaves no WAL record of
+    // this transaction behind
+    if (sync != WALFile.FlushType.NO) {
+      final long pending = getPendingWALSyncTicket();
+      if (pending > 0)
+        try {
+          awaitWALDurable(pending);
+        } catch (final IOException e) {
+          throw new TransactionException("Cannot flush the WAL of the group commits before writing transaction " + txId, e);
+        }
+    }
+    writeTransactionToWAL(pages, sync, txId, bufferChanges, false);
+  }
+
+  /**
+   * The ticket of the last group-commit WAL write when it is not durable yet, 0 when every one is: what a page published
+   * now must wait for before reaching its data file, since its transaction may have read any of those writes.
+   * <p>
+   * The two reads are not atomic, and do not need to be because of one ordering this depends on: a group commit takes its ticket
+   * right after its WAL append and BEFORE it publishes its pages or releases its file locks
+   * ({@link #writeTransactionToWALDeferringSync}). A transaction can depend on it only by reading those pages or taking those
+   * locks, so it reads a sequence that already covers it. A change that publishes before taking the ticket breaks this.
+   */
+  public long getPendingWALSyncTicket() {
+    final long written = walWriteSequence.get();
+    return written > walDurableSequence ? written : 0;
+  }
+
+  /**
+   * Appends the transaction to the WAL WITHOUT the flush {@code sync} asks for, which the caller owes it: it must call
+   * {@link #awaitWALDurable(long)} with the ticket returned before it tells anybody the transaction is committed, and
+   * outside its file locks, which is the point (arcadedb.txWalGroupCommit). The pages it publishes must carry the ticket
+   * ({@link MutablePage#setWALSyncTicket(long)}), so none of them reaches its data file before this WAL write is durable.
+   *
+   * @return the ticket of this write, always greater than 0
+   */
+  public long writeTransactionToWALDeferringSync(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
+      final Binary bufferChanges) {
+    writeTransactionToWAL(pages, sync, txId, bufferChanges, true);
+    // AFTER the append and after its file joined unsyncedWALFiles: a flush that reads a sequence covering this ticket is
+    // bound to find the file, see awaitWALDurable
+    statsGroupCommits.incrementAndGet();
+    return walWriteSequence.incrementAndGet();
+  }
+
+  /**
+   * Returns once every WAL write up to {@code ticket} is on disk, flushing the WAL files that hold unflushed writes when
+   * no flush already covers it. Every file with a pending write is flushed, not only the one this ticket wrote to: a
+   * transaction may have read the pages of another, published but still unflushed in a different file, and must not be
+   * durable without it - recovery would find a page version with the one before it missing.
+   * <p>
+   * The flushes are serialized, and that is the group commit: the commits that arrive while a flush runs wait for it, and
+   * the first of them to find none running flushes once for all of them. A write that takes its ticket while a pass runs is
+   * not covered by that pass (its target was read at the start) and waits for the next one: up to two flushes of latency,
+   * the price of sharing them. There is no timeout: a flush that hangs holds every commit waiting for it, as an fsync that
+   * hangs holds a commit without group commit.
+   */
+  public void awaitWALDurable(final long ticket) throws IOException {
+    boolean interrupted = false;
+    try {
+      while (ticket > walDurableSequence) {
+        final CountDownLatch running = walSyncInProgress.get();
+        if (running != null) {
+          // a flush is running: it may cover this ticket, and when it does not, the next pass is started below. Waiting on
+          // the pass rather than on a lock releases every commit it covers at once: a monitor woke them one at a time
+          try {
+            running.await();
+          } catch (final InterruptedException e) {
+            // the WAL write is done and the flush is near: finish waiting, and give the interrupt back afterwards
+            interrupted = true;
+          }
+          continue;
+        }
+
+        final CountDownLatch pass = new CountDownLatch(1);
+        if (!walSyncInProgress.compareAndSet(null, pass))
+          continue;
+        try {
+          if (ticket > walDurableSequence)
+            syncUnsyncedWALFiles();
+        } finally {
+          walSyncInProgress.set(null);
+          pass.countDown();
+        }
+      }
+    } finally {
+      if (interrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * The WAL rule of a page write under group commit: returns once the WAL writes up to {@code ticket} are durable, counting
+   * the page writes that had to wait for them.
+   */
+  public void awaitWALDurableForPageWrite(final long ticket) throws IOException {
+    if (ticket <= walDurableSequence)
+      return;
+    statsGroupCommitPageWaits.incrementAndGet();
+    awaitWALDurable(ticket);
+  }
+
+  /** One pass of the group commit's flush. Only one runs at a time: see {@link #awaitWALDurable(long)}. */
+  private void syncUnsyncedWALFiles() throws IOException {
+    // READ BEFORE THE FILES ARE TAKEN: a write with a ticket up to here joined unsyncedWALFiles before taking it, so it is
+    // in the snapshot below or was taken, and flushed, by an earlier pass. A file is removed BEFORE its flush, so a write
+    // landing meanwhile puts it back for the next pass
+    final long target = walWriteSequence.get();
+    // the writes arriving from now on go to the other file, out of the way of this flush
+    final WALFile[] pool = activeWALFilePool;
+    // a read-modify-write of a volatile, safe because only one pass runs at a time (walSyncInProgress)
+    if (pool != null && pool.length > 1)
+      groupCommitSlot = 1 - groupCommitSlot;
+    final long start = System.nanoTime();
+    for (final WALFile file : new ArrayList<>(unsyncedWALFiles)) {
+      unsyncedWALFiles.remove(file);
+      try {
+        final WALSyncFaultInjector injector = walSyncFaultInjector;
+        if (injector != null)
+          injector.beforeSync(file);
+        file.syncIfUnsynced();
+      } catch (final IOException | RuntimeException e) {
+        // still owed (syncIfUnsynced raised the file's flags again, metadata request included): a later pass must not move
+        // walDurableSequence past these writes without flushing them. The files after this one in the snapshot are still in
+        // the set, since a file leaves it only right before its own flush. A later pass that succeeds does make them durable
+        // and moves past them: safe, because the commit whose wait failed has fenced the database by then, so nothing new
+        // commits on top and the failed commit itself was reported as failed
+        unsyncedWALFiles.add(file);
+        throw e;
+      }
+    }
+    walDurableSequence = target;
+    statsGroupSyncs.incrementAndGet();
+
+    // every commit waiting for this pass waited this long too: say so when the disk is that slow
+    final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+    if (elapsedMs >= SLOW_GROUP_COMMIT_FLUSH_MS)
+      LogManager.instance().log(this, Level.WARNING, "Group commit: a WAL flush of database '%s' took %dms, every commit waiting for it"
+          + " waited as long", null, database.getName(), elapsedMs);
+  }
+
+  private void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
+      final Binary bufferChanges, final boolean deferSync) {
     final long begin = System.currentTimeMillis();
 
     while (true) {
       final WALFile[] pool = activeWALFilePool;
-      final int slot = (int) (Thread.currentThread().threadId() % pool.length);
+      // A write whose flush is shared goes to the group-commit file, not to its thread's: a shared flush has to flush every
+      // file holding a pending write, and spreading the writes over the pool made each one flush up to a file per core (on
+      // macOS each a full flush of the drive's cache, ~3.5ms). The appends are short, the file's monitor serializes them
+      final int slot = deferSync ?
+          Math.min(groupCommitSlot, pool.length - 1) :
+          (int) (Thread.currentThread().threadId() % pool.length);
 
-      if (tryWriteTransactionToWALFile(pool[slot], pages, sync, txId, bufferChanges))
+      // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE. READ WITHOUT
+      // walSlotLock: A FILE SEEN HERE IS SAFELY PUBLISHED, ITS PATH BEING FINAL AND ITS CHANNEL, LOCK AND STATE VOLATILE, AND
+      // acquire() TAKES THE MONITOR OF THE FILE; A NULL IS READ AGAIN UNDER THE LOCK BY openWALFileForSlot(), AND A FILE THE
+      // HOUSEKEEPING RETIRES MEANWHILE REFUSES THE WRITE (INACTIVE), SO THE COMMIT MOVES ON TO ANOTHER SLOT
+      WALFile file = pool[slot];
+      if (file == null)
+        file = openWALFileForSlot(pool, slot);
+
+      if (tryWriteTransactionToWALFile(file, pages, sync, txId, bufferChanges, deferSync))
         break;
 
       // #7768: this thread's own slot refused the write. Before sleeping on it, offer the transaction to the
@@ -390,8 +642,15 @@ public class TransactionManager {
       // arcadedb.txWalFiles=1 it took down the database's whole commit path.
       boolean writtenElsewhere = false;
       for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
-        if (i != slot)
-          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges);
+        if (i != slot && pool[i] != null)
+          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges, deferSync);
+
+      // AN EMPTY SLOT IS OPENED FOR THE FALLBACK TOO (#10234), BUT ONLY WHEN NO FILE ALREADY OPEN TOOK THE WRITE: WITH THE FILES
+      // OPENED ON DEMAND, THE OTHER SLOTS ARE OFTEN ALL EMPTY, AND SKIPPING THEM WOULD LEAVE A COMMIT WHOSE OWN SLOT IS UNUSABLE
+      // NOTHING TO FALL BACK TO; A TRANSIENT REFUSAL ON A MOSTLY IDLE DATABASE MUST NOT OPEN A FILE IN EVERY SLOT
+      for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
+        if (i != slot && pool[i] == null)
+          writtenElsewhere = tryWriteTransactionToWALFile(openWALFileForSlot(pool, i), pages, sync, txId, bufferChanges, deferSync);
 
       if (writtenElsewhere)
         break;
@@ -433,9 +692,15 @@ public class TransactionManager {
    * loud. Only a cleanly refused slot - closed, absent or mid-rotation - is routed elsewhere.
    */
   private boolean tryWriteTransactionToWALFile(final WALFile file, final List<MutablePage> pages,
-      final WALFile.FlushType sync, final long txId, final Binary bufferChanges) {
+      final WALFile.FlushType sync, final long txId, final Binary bufferChanges, final boolean deferSync) {
     return file != null && file.acquire(() -> {
-      file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
+      if (deferSync && sync != WALFile.FlushType.NO) {
+        file.writeTransactionToFile(database, pages, WALFile.FlushType.NO, file, txId, bufferChanges);
+        // under the file's monitor, like the write: a retirement that closes the file flushes what is marked here
+        file.markUnsynced(sync == WALFile.FlushType.YES_FULL);
+        unsyncedWALFiles.add(file);
+      } else
+        file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
       return null;
     });
   }
@@ -848,6 +1113,11 @@ public class TransactionManager {
 
     map.put("pagesWritten", pagesWritten);
     map.put("bytesWritten", bytesWritten);
+    // group commit: how many commits deferred their WAL flush, and how many flushes served them
+    map.put("groupCommits", statsGroupCommits.get());
+    map.put("groupCommitSyncs", statsGroupSyncs.get());
+    // page writes that found their WAL not durable yet and had to wait for, or run, a flush first
+    map.put("groupCommitPageWaits", statsGroupCommitPageWaits.get());
     return map;
   }
 
@@ -1363,16 +1633,7 @@ public class TransactionManager {
 
     fileIdsLockManager.close();
 
-    if (activeWALFilePool != null) {
-      for (int i = 0; i < activeWALFilePool.length; ++i) {
-        final WALFile file = activeWALFilePool[i];
-        if (file != null) {
-          activeWALFilePool[i] = null;
-          inactiveWALFilePool.add(file);
-          file.setActive(false);
-        }
-      }
-    }
+    retireWALFilePool();
 
     // WAIT FOR ALL THE PAGE TO BE FLUSHED
     for (int retry = 0; retry < 20 && !cleanWALFiles(false, true); ++retry) {
@@ -1615,45 +1876,146 @@ public class TransactionManager {
           }
       }
 
+    // #10234: THE SLOTS START EMPTY. Each WAL file is opened by the first commit that writes to its slot
+    // (openWALFileForSlot), so a database that is only read - most of them, on a server holding thousands - keeps no WAL
+    // file open, where it used to keep one per core from the moment it opened.
     activeWALFilePool = new WALFile[walFilePoolSize(database.getConfiguration())];
-    for (int i = 0; i < activeWALFilePool.length; ++i) {
-      final long counter = logFileCounter.getAndIncrement();
-      final String walFilePath = database.getDatabasePath() + File.separator + "txlog_" + counter + ".wal";
+  }
+
+  /**
+   * Opens the WAL file of an empty pool slot, for the commit about to write to it (issue #10234), and returns the file the
+   * slot holds afterwards: the one this call opened, or the one a concurrent commit opened first. Returns null once a
+   * close or a kill retired the pool: the caller then tries the other slots, as it does for any slot that refuses a write.
+   *
+   * @throws TransactionException when the file cannot be created (disk full, permissions), which fails the commit before
+   *                              any of its pages is written; or when the new file is held by another process or database
+   *                              instance (#7479), in which case the database is fenced, as the rotation in
+   *                              {@link #checkWALFiles} does in the same case
+   */
+  private WALFile openWALFileForSlot(final WALFile[] pool, final int slot) {
+    synchronized (walSlotLock) {
+      if (walPoolRetired || pool != activeWALFilePool)
+        return null;
+      if (pool[slot] != null)
+        return pool[slot];
+
+      final String walFilePath = database.getDatabasePath() + File.separator + "txlog_" + logFileCounter.getAndIncrement() + ".wal";
+      final WALFile file;
       try {
-        activeWALFilePool[i] = database.getWALFileFactory().newInstance(walFilePath);
+        file = database.getWALFileFactory().newInstance(walFilePath);
       } catch (final FileNotFoundException e) {
+        // THE COMMIT FAILS NOW, BEFORE ANY OF ITS PAGES IS WRITTEN OR PUBLISHED: A WAL FILE THAT CANNOT BE CREATED (DISK FULL,
+        // PERMISSIONS) IS NOT A SLOT TO TRY AGAIN FOR THE 30 SECONDS OF WRITE_WAL_TIMEOUT, AS A SLOT THAT REFUSES A WRITE IS
         LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, walFilePath);
-        continue;
+        throw new TransactionException("Cannot create the WAL file '" + walFilePath + "': " + e.getMessage(), e);
       }
 
-      // #7479: the counter above is seeded past every WAL file this scan could see, so a brand-new name
-      // colliding with one that already exists - and is still locked - means another process/instance
-      // raced this same open and got there first. Refuse the open outright rather than silently sharing
-      // that file with whoever holds it, the same way lockDatabase() already refuses on the whole-database
-      // lock file. Every slot already opened before this one is closed first (review on #7502): the throw
-      // otherwise left them as leaked handles and self-locks for the life of the JVM, since neither this
-      // constructor nor its caller retains a reference to a TransactionManager whose constructor never
-      // finished.
-      if (!activeWALFilePool[i].acquiredLock()) {
-        for (int alreadyOpened = 0; alreadyOpened < i; ++alreadyOpened) {
-          // A slot that hit FileNotFoundException above and `continue`d never got a WALFile at all.
-          if (activeWALFilePool[alreadyOpened] == null)
-            continue;
-          try {
-            activeWALFilePool[alreadyOpened].close();
-          } catch (final IOException e) {
-            LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[alreadyOpened]);
-          }
-        }
+      // #7479: the counter is seeded past every WAL file the open could see, so a brand-new name colliding with one that
+      // already exists - and is still locked - means another process/instance is writing to this database's files. Never
+      // share the file with whoever holds it: fence the database, the same way the rotation does.
+      if (!file.acquiredLock()) {
         try {
-          activeWALFilePool[i].close();
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, activeWALFilePool[i]);
+          file.close();
+        } catch (final IOException ignored) {
+          // IGNORE IT: the database is being fenced regardless
         }
-        throw new LockException(
-            "WAL file '" + walFilePath + "' is already open by another process or database instance");
+        final String reason = "WAL file '" + walFilePath + "' is already open by another process or database instance";
+        if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+          localDatabase.fenceForRecovery(reason);
+        throw new TransactionException(reason);
+      }
+
+      pool[slot] = file;
+      return file;
+    }
+  }
+
+  /**
+   * Moves every WAL file of the pool to the inactive list and stops commits from opening new ones: what {@link #close}
+   * and {@link #kill} start with.
+   */
+  private void retireWALFilePool() {
+    synchronized (walSlotLock) {
+      walPoolRetired = true;
+      if (activeWALFilePool == null)
+        return;
+
+      for (int i = 0; i < activeWALFilePool.length; ++i) {
+        final WALFile file = activeWALFilePool[i];
+        if (file != null) {
+          activeWALFilePool[i] = null;
+          inactiveWALFilePool.add(file);
+          file.setActive(false);
+        }
       }
     }
+  }
+
+  /**
+   * Releases the WAL files nobody wrote for {@link GlobalConfiguration#TX_WAL_IDLE_TIMEOUT} and whose pages all reached
+   * the data files (issue #10234): the slot is emptied, so the next commit on it opens a fresh file, and the file is
+   * retired exactly as a rotated one is - {@link #cleanWALFiles} drops it after an fsync of the data files. A database
+   * nobody writes to stops holding WAL files open a minute after its last commit.
+   * <p>
+   * A commit racing the release either wrote before the file was set inactive - its pages are then pending and the file
+   * is dropped only once they are flushed, as for a rotation - or is refused by the inactive file and goes to another
+   * slot, or opens a new file for this one.
+   */
+  private void releaseIdleWALFiles() {
+    final WALFile[] pool = activeWALFilePool;
+    if (pool == null)
+      return;
+
+    // A DATABASE THAT HOLDS NO WAL FILE - MOST OF THEM, ON A SERVER WITH THOUSANDS - COSTS THIS SHARED SCHEDULER NO CONFIGURATION
+    // LOOKUP: ITS TICK IS A SCAN OF A FEW NULL SLOTS
+    boolean holdsAFile = false;
+    for (final WALFile file : pool)
+      if (file != null) {
+        holdsAFile = true;
+        break;
+      }
+    if (!holdsAFile)
+      return;
+
+    final long idleTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_WAL_IDLE_TIMEOUT);
+    if (idleTimeout <= 0)
+      return;
+
+    final long now = System.currentTimeMillis();
+    for (int i = 0; i < pool.length; ++i) {
+      final WALFile file = pool[i];
+      if (file == null || file.getPendingPagesToFlush() > 0 || now - file.getLastWriteTime() < idleTimeout)
+        continue;
+
+      synchronized (walSlotLock) {
+        if (walPoolRetired || pool[i] != file)
+          continue;
+        pool[i] = null;
+        file.setActive(false);
+        inactiveWALFilePool.add(file);
+      }
+    }
+  }
+
+  /**
+   * Test-support hook (issue #10234): the WAL file of pool slot {@code slot}, opened now when the slot holds none, as the
+   * first commit writing to it would. For tests that work on the file of a slot before anything was committed.
+   */
+  WALFile openWALFileForTesting(final int slot) {
+    final WALFile[] pool = activeWALFilePool;
+    final WALFile file = pool[slot];
+    return file != null ? file : openWALFileForSlot(pool, slot);
+  }
+
+  /** Test-support hook (issue #10234): the WAL files the pool slots hold right now. */
+  int getOpenWALFileCountForTesting() {
+    final WALFile[] pool = activeWALFilePool;
+    int count = 0;
+    if (pool != null)
+      for (final WALFile file : pool)
+        if (file != null)
+          ++count;
+    return count;
   }
 
   private void checkWALFiles() {
@@ -1886,5 +2248,10 @@ public class TransactionManager {
   @Override
   public String toString() {
     return "TransactionManager for database '" + database.getName() + "':" + fileIdsLockManager;
+  }
+
+  /** See {@link #walSyncFaultInjector}. */
+  interface WALSyncFaultInjector {
+    void beforeSync(WALFile file) throws IOException;
   }
 }

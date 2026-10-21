@@ -63,11 +63,16 @@ class Issue9348DurationRangeIndexTest {
     database.command("cypher", "CREATE INDEX FOR (s:S) ON (s.d)");
     insertDurations();
 
-    assertThat(names("MATCH (s:S) WHERE s.d > duration({days: 2}) RETURN s.n AS r")).containsExactlyInAnyOrder("3d", "10d");
-    assertThat(names("MATCH (s:S) WHERE s.d >= duration({days: 3}) RETURN s.n AS r")).containsExactlyInAnyOrder("3d", "10d");
-    assertThat(names("MATCH (s:S) WHERE s.d < duration({days: 10}) RETURN s.n AS r")).containsExactlyInAnyOrder("2d", "3d");
-    assertThat(names("MATCH (s:S) WHERE s.d <= duration({days: 3}) AND s.d > duration({days: 1}) RETURN s.n AS r"))
-        .containsExactlyInAnyOrder("2d", "3d");
+    // Durations are not comparable (issue #10200, as in Neo4j): < and > answer null and keep no row, and >= / <= keep only
+    // the equal one. The index must answer exactly as the scan does
+    assertThat(names("MATCH (s:S) WHERE s.d > duration({days: 2}) RETURN s.n AS r")).isEmpty();
+    assertThat(names("MATCH (s:S) WHERE s.d >= duration({days: 3}) RETURN s.n AS r")).containsExactly("3d");
+    assertThat(names("MATCH (s:S) WHERE s.d < duration({days: 10}) RETURN s.n AS r")).isEmpty();
+    assertThat(names("MATCH (s:S) WHERE s.d <= duration({days: 3}) AND s.d > duration({days: 1}) RETURN s.n AS r")).isEmpty();
+    for (final String predicate : new String[] { "s.d > duration({days: 2})", "s.d >= duration({days: 3})", "s.d <= duration({days: 3})" })
+      assertThat(names("MATCH (s:S) WHERE " + predicate + " RETURN s.n AS r"))
+          .as(predicate).containsExactlyInAnyOrderElementsOf(names("MATCH (s:S) WITH s, s.d AS d WHERE "
+              + predicate.replace("s.d", "d") + " RETURN s.n AS r"));
   }
 
   @Test
@@ -75,14 +80,15 @@ class Issue9348DurationRangeIndexTest {
     database.command("cypher", "CREATE INDEX FOR (s:S) ON (s.d)");
     insertDurations();
 
-    assertThat(names("MATCH (s:S) WHERE s.d > $lo RETURN s.n AS r", Map.of("lo", CypherDuration.parse("P2D"))))
-        .containsExactlyInAnyOrder("3d", "10d");
+    // Not comparable (issue #10200): the parameter answers as the literal does
+    assertThat(names("MATCH (s:S) WHERE s.d > $lo RETURN s.n AS r", Map.of("lo", CypherDuration.parse("P2D")))).isEmpty();
     assertThat(names("MATCH (s:S) WHERE s.d >= $lo RETURN s.n AS r", Map.of("lo", CypherDuration.parse("P3D"))))
-        .containsExactlyInAnyOrder("3d", "10d");
-    assertThat(names("MATCH (s:S) WHERE s.d < $hi RETURN s.n AS r", Map.of("hi", CypherDuration.parse("P10D"))))
-        .containsExactlyInAnyOrder("2d", "3d");
+        .containsExactly("3d");
+    assertThat(names("MATCH (s:S) WHERE s.d < $hi RETURN s.n AS r", Map.of("hi", CypherDuration.parse("P10D")))).isEmpty();
     assertThat(names("MATCH (s:S) WHERE s.d > $lo AND s.d <= $hi RETURN s.n AS r",
-        Map.of("lo", CypherDuration.parse("P2D"), "hi", CypherDuration.parse("P10D")))).containsExactlyInAnyOrder("3d", "10d");
+        Map.of("lo", CypherDuration.parse("P2D"), "hi", CypherDuration.parse("P10D")))).isEmpty();
+    assertThat(names("MATCH (s:S) WHERE s.d <= $hi RETURN s.n AS r", Map.of("hi", CypherDuration.parse("P10D"))))
+        .containsExactly("10d");
   }
 
   @Test

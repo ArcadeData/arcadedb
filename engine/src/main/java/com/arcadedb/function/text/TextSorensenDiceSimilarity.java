@@ -61,13 +61,17 @@ public class TextSorensenDiceSimilarity extends AbstractTextFunction {
     if (str1.isEmpty() && str2.isEmpty())
       return 1.0;
 
-    if (str1.length() < 2 || str2.length() < 2) {
+    // characters, not UTF-16 units: a bigram is two characters and is never cut inside a surrogate pair
+    final int[] chars1 = codePointsOf(str1);
+    final int[] chars2 = codePointsOf(str2);
+
+    if (chars1.length < 2 || chars2.length < 2) {
       // For very short strings, fall back to equality check
       return str1.equals(str2) ? 1.0 : 0.0;
     }
 
-    final Set<String> bigrams1 = getBigrams(str1);
-    final Set<String> bigrams2 = getBigrams(str2);
+    final Set<String> bigrams1 = getBigrams(chars1);
+    final Set<String> bigrams2 = getBigrams(chars2);
 
     // Count intersection
     int intersection = 0;
@@ -81,10 +85,10 @@ public class TextSorensenDiceSimilarity extends AbstractTextFunction {
     return (2.0 * intersection) / (bigrams1.size() + bigrams2.size());
   }
 
-  private Set<String> getBigrams(final String s) {
+  private Set<String> getBigrams(final int[] chars) {
     final Set<String> bigrams = new HashSet<>();
-    for (int i = 0; i < s.length() - 1; i++) {
-      bigrams.add(s.substring(i, i + 2).toLowerCase(Locale.ROOT));
+    for (int i = 0; i < chars.length - 1; i++) {
+      bigrams.add(new String(chars, i, 2).toLowerCase(Locale.ROOT));
     }
     return bigrams;
   }

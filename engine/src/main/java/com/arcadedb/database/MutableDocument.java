@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalProperty;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
@@ -498,7 +499,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (isReservedName(name))
       setMetadata(name, value);
     else
-      map.put(name, convertValueToSchemaType(name, setTransformValue(value, name), type));
+      // a primitive array nested in a list or a map (what the HTTP params parser leaves at any depth) is stored as the list it
+      // stands for, like the same value written as a literal or from Java (issue #10488)
+      map.put(name, convertValueToSchemaType(name, setTransformValue(Type.unwrapNestedPrimitiveArrays(value), name), type));
   }
 
   /**
@@ -655,6 +658,11 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     final Property property = type.getPolymorphicPropertyIfExists(name);
     if (property != null) {
+      // A TIMESERIES column is converted once, by ColumnDefinition.storableValue at the append, the contract every ingestion
+      // surface shares: converting it here first would hand that contract a value already coerced to the declared class
+      // (issue #10137)
+      if (type instanceof LocalTimeSeriesType tsType && tsType.skipsDocumentConversion(name))
+        return value;
       try {
         final Type propType = property.getType();
 

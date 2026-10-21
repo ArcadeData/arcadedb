@@ -45,6 +45,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
@@ -589,7 +590,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   @Override
   public void deleteRecord(final Record record) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
@@ -613,11 +613,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final DeleteRecordResponse resp = callUnary("DeleteRecord",
           () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).deleteRecord(req));
 
-      // Prefer the proto's 'deleted' flag (your other overload uses it)
-      if (!resp.getDeleted()) {
-        throw new DatabaseOperationException(
-            "Failed to delete record: " + (resp.getMessage().isEmpty() ? "unknown error" : resp.getMessage()));
-      }
+      // The server answers deleted=false for a delete a before-delete listener vetoed: a refusal, raised as the HTTP driver
+      // raises it (issue #10230). A missing record never answers false: the server's lookup of the RID fails first, and arrives
+      // here as RecordNotFoundException
+      if (!resp.getDeleted())
+        throw RecordVetoedException.ofDelete(record.getIdentity());
+      // counted only once the server confirmed the delete, like createRecord and updateRecord in saveRecord (issue #10141)
+      stats.deleteRecord.incrementAndGet();
 
     } catch (StatusRuntimeException | StatusException e) {
       handleGrpcWriteException(e, "DeleteRecord", commitsOnItsOwn(req.getTransaction()));
@@ -625,9 +627,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
   }
 
+  /**
+   * Deletes the record {@code rid} with its own deadline. Unlike {@link #deleteRecord(Record)}, which throws
+   * {@link RecordVetoedException}, a delete a before-delete listener vetoed answers {@code false} here (issue #10230). A missing
+   * record still fails with {@link RecordNotFoundException}.
+   */
   public boolean deleteRecord(final String rid, final long timeoutMs) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     final DeleteRecordRequest.Builder deleteBuilder = DeleteRecordRequest.newBuilder().setDatabase(getName()).setRid(rid)
         .setCredentials(buildCredentials());
@@ -648,6 +654,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final DeleteRecordResponse res = callUnary("DeleteRecord",
           () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).deleteRecord(req));
 
+      // counted only when the server reports the record deleted (issue #10141)
+      if (res.getDeleted())
+        stats.deleteRecord.incrementAndGet();
       return res.getDeleted();
 
     } catch (StatusRuntimeException | StatusException e) {
@@ -905,21 +914,23 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (transactionId != null)
         updateBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
 
+      final UpdateRecordResponse response;
       try {
-
-        @SuppressWarnings("unused")
-        UpdateRecordResponse response =
-            blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
-
-        // If your proto has flags, you can check response.getSuccess()/getUpdated()
-        // Otherwise, treat non-exception as success.
-        // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
-        stats.updateRecord.incrementAndGet();
-        return rid;
+        response = blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
       } catch (StatusRuntimeException | StatusException e) {
         handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(updateBuilder.getTransaction()));
         return null;
       }
+
+      // The server answers success=false for an update a before-update listener vetoed: a refusal, raised as the HTTP driver
+      // raises it, and not a write to report as applied (issue #10161). A server older than #10084 always answers true. A missing
+      // record never answers false: the server's lookup of the RID fails first, and arrives here as RecordNotFoundException
+      if (!response.getSuccess())
+        throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
+
+      // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
+      stats.updateRecord.incrementAndGet();
+      return rid;
     } else {
       // -------- CREATE --------
       GrpcRecord recMsg =
@@ -2042,19 +2053,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return DatabaseCredentials.newBuilder().setUsername(getUserName()).setPassword(getUserPassword()).build();
   }
 
-  private TransactionIsolation mapIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL level) {
-    switch (level) {
-//      case READ_UNCOMMITTED:
-//        return TransactionIsolation.READ_UNCOMMITTED;
-      case READ_COMMITTED:
-        return TransactionIsolation.READ_COMMITTED;
-      case REPEATABLE_READ:
-        return TransactionIsolation.REPEATABLE_READ;
-//      case SERIALIZABLE:
-//        return TransactionIsolation.SERIALIZABLE;
-      default:
-        return TransactionIsolation.READ_COMMITTED;
-    }
+  // Exhaustive on purpose (issue #10386): a level the engine gains later must be mapped here, or this does not compile,
+  // rather than silently beginning at READ_COMMITTED. The server refuses a level it cannot provide (SERIALIZABLE).
+  private TransactionIsolation mapIsolationLevel(final Database.TRANSACTION_ISOLATION_LEVEL level) {
+    return switch (level) {
+      case READ_COMMITTED -> TransactionIsolation.READ_COMMITTED;
+      case REPEATABLE_READ -> TransactionIsolation.REPEATABLE_READ;
+    };
   }
 
   // ---- TX helpers -------------------------------------------------------------

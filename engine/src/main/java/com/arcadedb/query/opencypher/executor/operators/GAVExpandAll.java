@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
@@ -127,6 +128,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
+    // The view as the statement reads it: every row maps, walks and maps back in one snapshot, and so do the operators the
+    // rows go on to (issue #10415). The plan holds the live view, since plans are cached
+    final GraphTraversalProvider provider = GraphViewPins.pin(context, this.provider);
 
     return new ResultSet() {
       private Result currentInputResult = null;
@@ -139,7 +143,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private boolean finished = false;
       // Tracked mode (#8394): the current source's adjacency, one slice per (edge type, orientation)
       private final String[] trackedTypes = edgeTrackingVar != null ?
-          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
+          GAVEdgeRef.trackedEdgeTypes(provider, context.getDatabase(), edgeTypes) : null;
       private GAVEdgeRef[] boundRefs;
       private int sourceNodeId;
       private RID sourceRID;
@@ -215,15 +219,11 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
             }
 
             // CSR lookup: accept both GAVVertex and Vertex as source
-            final int nodeId;
-            if (sourceObj instanceof GAVVertex)
-              nodeId = ((GAVVertex) sourceObj).getNodeId();
-            else if (sourceObj instanceof Vertex)
-              nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
-            else {
+            if (!(sourceObj instanceof Vertex)) {
               neighborIds = null;
               continue;
             }
+            final int nodeId = GAVVertex.nodeIdIn(sourceObj, provider);
 
             if (nodeId < 0) {
               // Vertex not in GAV mapping (created after last build) — fall back to OLTP
@@ -335,13 +335,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         entryIdx = 0;
 
         final Object sourceObj = input.getProperty(sourceVariable);
-        final int nodeId;
-        if (sourceObj instanceof GAVVertex gavVertex)
-          nodeId = gavVertex.getNodeId();
-        else if (sourceObj instanceof Vertex vertex)
-          nodeId = provider.getNodeId(vertex.getIdentity());
-        else
+        if (!(sourceObj instanceof Vertex))
           return;
+        final int nodeId = GAVVertex.nodeIdIn(sourceObj, provider);
 
         boundRefs = GAVEdgeRef.collect(input, sameClausePrecedingRelVars);
 
@@ -364,11 +360,12 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
           sliceOutgoing = new boolean[slices.length];
           sliceSorted = new boolean[slices.length];
         }
+        // One concrete type per slice, sub-types left out: each has its own (issue #10213)
         for (final String type : trackedTypes) {
           if (direction != Direction.IN)
-            addSlice(type, true, provider.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, type));
+            addSlice(type, true, provider.getNeighborIdsOfSlice(nodeId, Vertex.DIRECTION.OUT, type));
           if (direction != Direction.OUT)
-            addSlice(type, false, provider.getNeighborIds(nodeId, Vertex.DIRECTION.IN, type));
+            addSlice(type, false, provider.getNeighborIdsOfSlice(nodeId, Vertex.DIRECTION.IN, type));
         }
       }
 

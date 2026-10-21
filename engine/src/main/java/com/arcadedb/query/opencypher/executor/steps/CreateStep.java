@@ -367,15 +367,13 @@ public class CreateStep extends AbstractExecutionStep {
       // Create all vertices in the path
       for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
         final NodePattern nodePattern = pathPattern.getNode(i);
-        Vertex vertex = null;
-
-        // Check if vertex already exists in result (from MATCH)
-        if (nodePattern.getVariable() != null) {
-          final Object existing = result.getProperty(nodePattern.getVariable());
-          if (existing instanceof Vertex) {
-            vertex = (Vertex) existing;
-          }
-        }
+        // The node an earlier clause bound, if any. Bound to null (an OPTIONAL MATCH that found nothing) or to something
+        // that is not a node, the relationship has no endpoint and the statement fails, as on Neo4j: a node used to be
+        // created in its place (issue #10191)
+        Vertex vertex = WritePatternChecks.boundEndpoint(result, nodePattern.getVariable());
+        // One bound to a bare RID is the vertex from now on, as for every other clause of the statement
+        if (vertex != null && result.getProperty(nodePattern.getVariable()) != vertex)
+          result.setProperty(nodePattern.getVariable(), vertex);
 
         // Create vertex if not found
         if (vertex == null) {

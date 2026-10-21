@@ -359,6 +359,9 @@ public class GraphBatch implements AutoCloseable {
   // DeferredHeadChunks (both directions in one slot, RIDs packed, no boxing) is safe under this lifecycle because
   // writes are never concurrent and concurrent reads never race a write. It holds an entry per vertex the batch
   // touches, which on a 200M-vertex load is the batch's largest structure (issue #9575).
+  // Invariant: it holds only segments this batch wrote, each sized to its content and so full. The connect paths chain the
+  // next segment to a head found here without reading it (#9575): a head with room left (pre-allocated, or found on the
+  // disk) must go to outChunkRIDCache / inChunkRIDCache only, or its free space is never filled.
   private final DeferredHeadChunks deferredHeads;
 
   // --- Known-new vertices: created by createVertices(), guaranteed no existing segments ---
@@ -376,6 +379,8 @@ public class GraphBatch implements AutoCloseable {
   // #9575: vertices a flush had to read to find the edge list it appends to. An adder: the parallel flush counts from its
   // workers, and only a test or a diagnostic reads it
   private final LongAdder   vertexHeadReads    = new LongAdder();
+  // #9575: edge-list head segments a flush read back to append to. Counted the same way as vertexHeadReads
+  private final LongAdder   segmentHeadReads   = new LongAdder();
 
   // --- Statistics ---
   private long totalVerticesCreated;
@@ -1803,6 +1808,15 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
+   * Edge-list head segments a flush read back to append to. A segment this batch wrote is never among them: it is sized to its
+   * content, so the next edges of its vertex go to a new segment chained to it, which takes its RID and nothing else (#9575).
+   * What is left are the heads the batch found on the disk, which may have room.
+   */
+  public long getSegmentHeadReads() {
+    return segmentHeadReads.sum();
+  }
+
+  /**
    * Edge records this batch created, failed to connect to any vertex, and deleted again (issue #6083 item 2).
    * Non-zero only after a flush failed part-way.
    */
@@ -2053,10 +2067,13 @@ public class GraphBatch implements AutoCloseable {
         final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded, hasNoOutEdges);
 
         // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons its
-        // chunk pages. Since #5596 that needs no side condition: the merge accepts a page only when EVERY byte this
-        // transaction wrote to it was declared replayable, and these bulk writes declare nothing - so a page this
-        // path touched can never be rebased, even if the same transaction also drove EdgeLinkedList.add on it.
-        // See docs/supernode.md §3.
+        // chunk pages. Since #5596 the merge accepts a page only when EVERY byte this transaction wrote to it was
+        // declared replayable, and a segment write is declared so only when the segment has tracked appends - which
+        // no segment this path writes has, because it neither tracks nor runs inside a caller's transaction whose
+        // EdgeLinkedList.add could have tracked one. That last condition is load-bearing: a segment carrying tracked
+        // appends is declared as a whole, rewrites included (#10375), so a bulk write that could reach one must go
+        // through EdgeLinkedList.updateRewrittenSegment instead. The refusal is pinned by
+        // Issue9242GraphBatchCallerTransactionTest. See docs/supernode.md §3.
         if (lastSegmentPromoted) {
           // #5667: the vertex is already a promoted super-node - route this group through the standard,
           // MVCC-safe StripedEdgeList write path instead of the bulk segment path.
@@ -2529,22 +2546,18 @@ public class GraphBatch implements AutoCloseable {
       // Get or create IN segment
       EdgeSegment inChunk;
       boolean isNew;
-      final RID cachedChunkRID = inChunkRIDCache.get(vertexKey);
-      // Checked unconditionally (not just for known-new vertices): a pre-existing vertex touched
-      // earlier in this batch is equally vulnerable to inChunkRIDCache eviction, and its on-disk head
-      // is stale mid-batch too (issue #5950 review, second sub-case).
-      final RID deferredChunkRID = cachedChunkRID == null ? deferredHeads.getIn(vertexKey) : null;
-      if (cachedChunkRID != null) {
+      // Checked unconditionally (not just for known-new vertices) and first: the IN side of deferredHeads is unbounded and
+      // always authoritative for the current head, of a pre-existing vertex touched earlier in this batch too, so reusing it
+      // is what keeps a duplicate, unlinked segment from being created (issue #5950 review: silent edge loss otherwise). A
+      // head it holds is chained to without being read, see getOrCreateOutSegmentDeferred (#9575).
+      final RID deferredChunkRID = deferredHeads.getIn(vertexKey);
+      final RID cachedChunkRID = deferredChunkRID == null ? inChunkRIDCache.get(vertexKey) : null;
+      if (deferredChunkRID != null) {
+        inChunk = newSegmentChainedTo(deferredChunkRID, totalBytesNeeded);
+        isNew = true;
+      } else if (cachedChunkRID != null) {
+        segmentHeadReads.increment();
         inChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
-        isNew = false;
-      } else if (deferredChunkRID != null) {
-        // inChunkRIDCache entry was LRU-evicted: the IN side of deferredHeads is unbounded and always authoritative
-        // for the current head, so reuse it instead of creating an unlinked duplicate segment (issue
-        // #5950 review: silent edge loss otherwise). Repopulate the cache so a vertex touched again
-        // later in this parallel round doesn't keep paying for the fallback lookup (issue #5950
-        // review cycle 3: minor cache-refresh consistency with the sequential path).
-        inChunkRIDCache.put(vertexKey, deferredChunkRID);
-        inChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (hasNoInEdges || knownNewVertexKeys.contains(vertexKey)) {
         assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(dstBucket, dstPos, false);
@@ -2559,6 +2572,7 @@ public class GraphBatch implements AutoCloseable {
         // so signalling through a shared instance field (as the single-threaded sequential path does) would race.
         final RID dstHeadChunk = dstVertex.getInEdgesHeadChunk();
         if (dstHeadChunk != null) {
+          segmentHeadReads.increment();
           final Record head = database.lookupByRID(dstHeadChunk, true);
           if (head instanceof StripeDirectory directory) {
             // Route through StripedEdgeList and skip the bulk segment write below entirely.
@@ -2594,6 +2608,7 @@ public class GraphBatch implements AutoCloseable {
         // Fill first, then persist once
         inChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
             localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+        assert isFull(inChunk) : "a deferred head must be full, see deferredHeads";
         database.createRecord(inChunk, edgeBucketName);
         sharedInChunkCache.put(vertexKey, inChunk.getIdentity());
         sharedDeferredInHead.put(vertexKey, inChunk.getIdentity());
@@ -2763,26 +2778,27 @@ public class GraphBatch implements AutoCloseable {
 
     lastSegmentPromoted = false;
 
-    // Check cache first
-    final RID cachedRID = outChunkRIDCache.get(vertexKey);
-    if (cachedRID != null) {
-      lastSegmentIsNew = false;
-      return (EdgeSegment) database.lookupByRID(cachedRID, true);
-    }
-
-    // outChunkRIDCache is LRU-bounded and may have already evicted this vertex's entry even though
-    // the vertex was already given a segment earlier in this batch (large batch, many other vertices
-    // touched in between) - both for a known-new vertex (whose on-disk head stays null until close())
-    // and for a pre-existing vertex (whose on-disk head, if any, predates this batch and is stale once
-    // this batch has overflowed it). The OUT side of deferredHeads is unbounded for the whole batch and always
-    // reflects the vertex's true current head once touched, so it must be checked BEFORE falling back
-    // to knownNewVertexKeys / an on-disk read for either case (issue #5950 review, both sub-cases:
-    // a second, unlinked segment would otherwise silently orphan the earlier one's committed edges).
+    // The OUT side of deferredHeads is unbounded for the whole batch and always reflects the vertex's true current head
+    // once touched, of a known-new vertex (whose on-disk head stays null until close()) and of a pre-existing one (whose
+    // on-disk head is stale once this batch has overflowed it) alike, so it must be checked BEFORE falling back to
+    // knownNewVertexKeys / an on-disk read (issue #5950 review, both sub-cases: a second, unlinked segment would otherwise
+    // silently orphan the earlier one's committed edges).
+    //
+    // It holds only segments this batch wrote, each sized to its content: nothing more fits in one, so the next edges go to
+    // a new segment chained to it, which takes the head's RID and not the head. Reading the head back only to find it full
+    // cost a random disk read per vertex and flush once the segments outgrew the memory (#9575). It is checked before
+    // outChunkRIDCache, which can also hold a head found on the disk or pre-allocated, with room left.
     final RID deferredRID = deferredHeads.getOut(vertexKey);
     if (deferredRID != null) {
-      outChunkRIDCache.put(vertexKey, deferredRID);
+      lastSegmentIsNew = true;
+      return newSegmentChainedTo(deferredRID, dataBytesNeeded);
+    }
+
+    final RID cachedRID = outChunkRIDCache.get(vertexKey);
+    if (cachedRID != null) {
+      segmentHeadReads.increment();
       lastSegmentIsNew = false;
-      return (EdgeSegment) database.lookupByRID(deferredRID, true);
+      return (EdgeSegment) database.lookupByRID(cachedRID, true);
     }
 
     // For known-new vertices with no deferred head yet, skip loading — we know there's no existing segment
@@ -2792,6 +2808,7 @@ public class GraphBatch implements AutoCloseable {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
       if (headChunk != null) {
+        segmentHeadReads.increment();
         final Record head = database.lookupByRID(headChunk, true);
         if (head instanceof StripeDirectory directory) {
           // #5667: the bulk path manipulates the vertex head pointer directly and cannot safely touch a
@@ -2823,19 +2840,20 @@ public class GraphBatch implements AutoCloseable {
 
     lastSegmentPromoted = false;
 
-    final RID cachedRID = inChunkRIDCache.get(vertexKey);
-    if (cachedRID != null) {
-      lastSegmentIsNew = false;
-      return (EdgeSegment) database.lookupByRID(cachedRID, true);
-    }
-
-    // See getOrCreateOutSegmentDeferred: the IN side of deferredHeads must be checked unconditionally, before
-    // knownNewVertexKeys / an on-disk read, for both the known-new and pre-existing vertex cases.
+    // See getOrCreateOutSegmentDeferred: the IN side of deferredHeads must be checked unconditionally and first, before
+    // knownNewVertexKeys / an on-disk read, for both the known-new and pre-existing vertex cases, and a head it holds is
+    // chained to without being read (#9575).
     final RID deferredRID = deferredHeads.getIn(vertexKey);
     if (deferredRID != null) {
-      inChunkRIDCache.put(vertexKey, deferredRID);
+      lastSegmentIsNew = true;
+      return newSegmentChainedTo(deferredRID, dataBytesNeeded);
+    }
+
+    final RID cachedRID = inChunkRIDCache.get(vertexKey);
+    if (cachedRID != null) {
+      segmentHeadReads.increment();
       lastSegmentIsNew = false;
-      return (EdgeSegment) database.lookupByRID(deferredRID, true);
+      return (EdgeSegment) database.lookupByRID(cachedRID, true);
     }
 
     assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, false);
@@ -2844,6 +2862,7 @@ public class GraphBatch implements AutoCloseable {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getInEdgesHeadChunk();
       if (headChunk != null) {
+        segmentHeadReads.increment();
         final Record head = database.lookupByRID(headChunk, true);
         if (head instanceof StripeDirectory directory) {
           // #5667: see getOrCreateOutSegmentDeferred - route through StripedEdgeList instead of failing.
@@ -2864,10 +2883,25 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
+   * A new segment for {@code dataBytesNeeded} bytes of edges, chained to {@code head}: a segment this batch wrote, full by
+   * construction (#9575). Not persisted yet, like any new segment: the caller fills it, then persists it as the new head.
+   */
+  private MutableEdgeSegment newSegmentChainedTo(final RID head, final int dataBytesNeeded) {
+    final MutableEdgeSegment segment = new MutableEdgeSegment(database, MutableEdgeSegment.CONTENT_START_POSITION + dataBytesNeeded);
+    segment.setPrevious(head);
+    return segment;
+  }
+
+  private static boolean isFull(final EdgeSegment segment) {
+    return segment.getUsed() == segment.getRecordSize();
+  }
+
+  /**
    * Persists a newly created segment (fill-then-persist pattern) and updates caches.
    */
   private void persistNewSegment(final EdgeSegment segment, final int bucketId,
       final Vertex.DIRECTION direction, final long vertexKey) {
+    assert isFull(segment) : "a deferred head must be full, see deferredHeads";
     final String bucketName = database.getGraphEngine().getEdgesBucketName(bucketId, direction);
     database.createRecord(segment, bucketName);
 
@@ -3455,22 +3489,18 @@ public class GraphBatch implements AutoCloseable {
       // Get or create OUT segment
       EdgeSegment outChunk;
       boolean isNew;
-      final RID cachedChunkRID = outChunkRIDCache.get(vertexKey);
-      // Checked unconditionally (not just for known-new vertices): a pre-existing vertex touched
-      // earlier in this batch is equally vulnerable to outChunkRIDCache eviction, and its on-disk head
-      // is stale mid-batch too (issue #5950 review, second sub-case).
-      final RID deferredChunkRID = cachedChunkRID == null ? deferredHeads.getOut(vertexKey) : null;
-      if (cachedChunkRID != null) {
+      // Checked unconditionally (not just for known-new vertices) and first: the OUT side of deferredHeads is unbounded and
+      // always authoritative for the current head, of a pre-existing vertex touched earlier in this batch too, so reusing it
+      // is what keeps a duplicate, unlinked segment from being created (issue #5950 review: silent edge loss otherwise). A
+      // head it holds is chained to without being read, see getOrCreateOutSegmentDeferred (#9575).
+      final RID deferredChunkRID = deferredHeads.getOut(vertexKey);
+      final RID cachedChunkRID = deferredChunkRID == null ? outChunkRIDCache.get(vertexKey) : null;
+      if (deferredChunkRID != null) {
+        outChunk = newSegmentChainedTo(deferredChunkRID, totalBytesNeeded);
+        isNew = true;
+      } else if (cachedChunkRID != null) {
+        segmentHeadReads.increment();
         outChunk = (EdgeSegment) database.lookupByRID(cachedChunkRID, true);
-        isNew = false;
-      } else if (deferredChunkRID != null) {
-        // outChunkRIDCache entry was LRU-evicted: the OUT side of deferredHeads is unbounded and always authoritative
-        // for the current head, so reuse it instead of creating an unlinked duplicate segment (issue
-        // #5950 review: silent edge loss otherwise). Repopulate the cache so a vertex touched again
-        // later in this parallel round doesn't keep paying for the fallback lookup (issue #5950
-        // review cycle 3: minor cache-refresh consistency with the sequential path).
-        outChunkRIDCache.put(vertexKey, deferredChunkRID);
-        outChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (hasNoOutEdges || knownNewVertexKeys.contains(vertexKey)) {
         assert !hasNoOutEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(srcBucket, srcPos, true);
@@ -3484,6 +3514,7 @@ public class GraphBatch implements AutoCloseable {
         // method runs concurrently across async-executor threads, so a shared instance field would race.
         final RID srcHeadChunk = srcVertex.getOutEdgesHeadChunk();
         if (srcHeadChunk != null) {
+          segmentHeadReads.increment();
           final Record head = database.lookupByRID(srcHeadChunk, true);
           if (head instanceof StripeDirectory directory) {
             addGroupThroughStripedEdgeList(srcVertex, Vertex.DIRECTION.OUT, directory,
@@ -3516,6 +3547,7 @@ public class GraphBatch implements AutoCloseable {
       if (isNew) {
         outChunk.addManyAtEndDirect(localTmpEdgeBucketIds, localTmpEdgePositions,
             localTmpVertexBucketIds, localTmpVertexPositions, 0, groupSize);
+        assert isFull(outChunk) : "a deferred head must be full, see deferredHeads";
         database.createRecord(outChunk, edgeBucketName);
         sharedOutChunkCache.put(vertexKey, outChunk.getIdentity());
         sharedDeferredOutHead.put(vertexKey, outChunk.getIdentity());

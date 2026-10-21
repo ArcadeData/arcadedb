@@ -19,10 +19,8 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * split() function - splits a string by a delimiter.
@@ -50,6 +48,6 @@ public class SplitFunction implements StatelessFunction {
       return null;
     final String str = args[0].toString();
     final String delimiter = args[1].toString();
-    return List.of(str.split(Pattern.quote(delimiter)));
+    return CypherFunctionHelper.splitLiteral(str, delimiter);
   }
 }

@@ -30,6 +30,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.LightEdgeRID;
@@ -559,6 +560,77 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Reduces an undirected adjacency to the neighbour sets of the simple graph it stands for, in place: each row is
+   * sorted, and self-loops and repeated neighbours - parallel edges, and an edge stored in both directions - are
+   * dropped.
+   * <p>
+   * Triangles and clustering are defined on that graph: three distinct, mutually adjacent vertices are one triangle
+   * whatever the multiplicity or the direction of the edges between them, and a self-loop is no neighbour at all
+   * (issue #10203). Counted on the raw {@code BOTH} adjacency instead, a self-loop makes a vertex its own neighbour
+   * twice and every repeated neighbour is intersected once per copy. The CSR kernel
+   * {@code GraphAlgorithms.localClusteringCoefficient} compacts its own merged adjacency the same way.
+   * </p>
+   * A row is trimmed only when something was dropped, so a graph that is already simple allocates nothing. The rows are
+   * sorted in place, so they must belong to the caller: {@code GraphData.adjacency()} hands out copies, never the arrays of
+   * a CSR view or of a cache.
+   */
+  protected static void toSimpleNeighbourSets(final int[][] adj, final WorkGuard guard) {
+    for (int u = 0; u < adj.length; u++) {
+      guard.checkPeriodically(u);
+      final int[] row = adj[u];
+      Arrays.sort(row);
+      int write = 0;
+      int last = -1; // node ids are non-negative, so -1 never matches
+      for (final int v : row)
+        if (v != u && v != last)
+          row[write++] = last = v;
+      if (write < row.length)
+        adj[u] = Arrays.copyOf(row, write);
+    }
+  }
+
+  /**
+   * Counts the triangles every node belongs to, over the sorted neighbour sets {@link #toSimpleNeighbourSets} builds.
+   * <p>
+   * The forward technique: a triangle {@code u < v < w} is found exactly once, from its lowest edge {@code (u, v)}, by
+   * a sorted merge of the two rows past {@code v}, and credited to its three vertices. No memory beyond the result,
+   * where a neighbour bit matrix costs {@code n²/8} bytes. One node's turn costs the sum of its higher neighbours' row
+   * lengths, so a supernode's turn is long enough to want the check unthrottled (issue #6302).
+   * </p>
+   */
+  protected static long[] countTriangles(final int[][] adj, final WorkGuard guard) {
+    final int n = adj.length;
+    final long[] triangles = new long[n];
+    for (int u = 0; u < n; u++) {
+      guard.check();
+      final int[] nu = adj[u];
+      // A row holds neither its own node nor duplicates, so the binary search always answers an insertion point
+      for (int k = -Arrays.binarySearch(nu, u) - 1; k < nu.length; k++) {
+        final int v = nu[k];
+        final int[] nv = adj[v];
+        int iu = k + 1;
+        int iv = -Arrays.binarySearch(nv, v) - 1;
+        while (iu < nu.length && iv < nv.length) {
+          final int a = nu[iu];
+          final int b = nv[iv];
+          if (a < b)
+            iu++;
+          else if (a > b)
+            iv++;
+          else {
+            triangles[u]++;
+            triangles[v]++;
+            triangles[a]++;
+            iu++;
+            iv++;
+          }
+        }
+      }
+    }
+    return triangles;
+  }
+
+  /**
    * Creates the {@link MemoryBudget} of one algorithm call, carrying
    * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}.
    */
@@ -691,6 +763,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * ready provider that covers every edge type and every vertex type, the same terms as the
    * exact-match lookup: a view over a subset of the vertex types would run the algorithm on part
    * of the graph and answer as if it were the whole.
+   * <p>
+   * The provider is {@linkplain GraphTraversalProvider#pinned() pinned}: an algorithm asks it which nodes are live, then their
+   * neighbours, then the RID of each, and a view rebuilt between two of those questions numbers its nodes afresh, so the later
+   * answers would name other vertices (issue #10350). Pinned for the statement when it opened a scope, so the vertices the
+   * procedure yields carry ids the rest of the query reads in the same snapshot (issue #10415).
    *
    * @param db       the database
    * @param relTypes edge types to filter by (null = any provider)
@@ -699,7 +776,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected GraphTraversalProvider findProvider(final Database db, final String[] relTypes, final CommandContext context) {
     final GraphTraversalProvider provider = findReadyProvider(db, relTypes);
     if (provider != null)
-      return provider;
+      return GraphViewPins.pin(context, provider);
     // The first isReady() above dispatches a view's deferred restore-from-disk and answers false for that call (#6641),
     // so the first whole-graph call after a reopen would take the record-by-record scan, which costs far more than the
     // restore it did not wait for (#9220). Wait for the views that cover the request and are restoring, within the
@@ -713,7 +790,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // Ask again whatever the wait reported: the restore runs on another thread and can finish between the first lookup
     // and the moment the wait samples it. It then has nothing to wait for, yet the view is ready, and answering null
     // here would send this call down the record-by-record path anyway. The lookup is a few volatile reads.
-    return findReadyProvider(db, relTypes);
+    final GraphTraversalProvider restored = findReadyProvider(db, relTypes);
+    return GraphViewPins.pin(context, restored);
   }
 
   private GraphTraversalProvider findReadyProvider(final Database db, final String[] relTypes) {

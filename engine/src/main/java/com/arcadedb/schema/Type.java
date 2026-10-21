@@ -189,6 +189,8 @@ public enum Type {
     TYPES_BY_USERTYPE.put(Date.class, DATETIME);
     TYPES_BY_USERTYPE.put(Calendar.class, DATETIME);
     TYPES_BY_USERTYPE.put(LocalDateTime.class, DATETIME);
+    // The class a DATE is read as: without it validateValue() refused it, so a graph import could not write one back (issue #10202)
+    TYPES_BY_USERTYPE.put(LocalDate.class, DATE);
     TYPES_BY_USERTYPE.put(ZonedDateTime.class, ZONED_DATETIME);
     TYPES_BY_USERTYPE.put(OffsetDateTime.class, DATETIME);
     TYPES_BY_USERTYPE.put(Instant.class, DATETIME);
@@ -994,12 +996,12 @@ public enum Type {
             // literal carrying more digits than the column holds reads back the same before and after a reload
             // instead of keeping digits the serializer is about to drop.
             //
-            // ...KeepingWallClock: this branch has always dropped the offset of an offset-bearing string rather than
-            // rebasing it onto the database's zone, because Cypher's datetime() renders itself with a Z and
-            // `SET n.t = datetime('2026-01-01T00:00:00')` must read back 00:00 (issue #4125). Only the ACCEPTED
-            // FORMATS are unified here; the zone disagreement with the bulk path is its own change.
-            return truncateToPropertyPrecision(DateUtils.parseDateTimeKeepingWallClock(database, valueAsString),
-                property);
+            // ...AsUtc: the instant an offset-bearing string names is stored the way the same instant typed as an
+            // OffsetDateTime / ZonedDateTime is (the branches above), so HTTP, SQL, Bolt and Java write one value for one
+            // instant (issue #10489). The Z Cypher's datetime() renders itself with is UTC, so
+            // `SET n.t = datetime('2026-01-01T00:00:00')` still reads back 00:00 (issue #4125), and an offset-less string
+            // keeps its wall clock. Not the bulk path's rebasing onto the database's zone: a LocalDateTime is a UTC wall clock.
+            return truncateToPropertyPrecision(DateUtils.parseDateTime(database, valueAsString), property);
         }
       } else if (targetClass.equals(ZonedDateTime.class)) {
         if (value instanceof ZonedDateTime time) {
@@ -2678,6 +2680,85 @@ public enum Type {
   public static boolean isPrimitiveNumberArray(final Object value) {
     return value instanceof long[] || value instanceof double[] || value instanceof int[] || value instanceof float[]
         || value instanceof short[];
+  }
+
+  /**
+   * The list a JSON array is once its numbers are read one by one: a {@code long[]} gives an {@link Integer} for every element
+   * that fits one, as the JSON parser answers a scalar number, and a {@link Long} for the others. Any other primitive array
+   * is boxed as {@link #primitiveArrayToList} does.
+   */
+  public static List<Object> primitiveArrayToJsonList(final Object array) {
+    if (array instanceof long[] longs) {
+      final List<Object> list = new ArrayList<>(longs.length);
+      for (final long v : longs)
+        list.add(v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE ? (Object) (int) v : (Object) v);
+      return list;
+    }
+    return primitiveArrayToList(array);
+  }
+
+  /**
+   * Answers {@code value} with every {@code long[]}/{@code double[]} nested inside it turned into the list it stands for, or
+   * {@code value} itself when it holds none. A primitive array is what a JSON parser configured for large numeric payloads
+   * (the HTTP {@code params}, see {@code JSONObject.toMap(true)}) leaves at ANY depth of a request, while the stored value of a
+   * list or map holds lists: the same value written as a literal or from Java is a list, and {@code =}, {@code .type()} and
+   * {@code GROUP BY} tell the two apart (issue #10488). The array that IS the value is left alone: its target decides what it
+   * becomes (a list, an {@code ARRAY_OF_FLOATS}).
+   * <p>
+   * Only {@code long[]} and {@code double[]} are replaced: they are the two shapes {@code JSONArray.toPrimitiveNumericArrayOrNull}
+   * produces, and the only ones a request can leave in a value. A new shape added there has to be added here.
+   * <p>
+   * Nothing is copied unless something is to be replaced, so the common case costs one walk over the nested containers and no
+   * garbage. A container holding a replacement is copied, in the same family: a {@link List} to an {@link ArrayList}, a
+   * {@link Set} to a {@link LinkedHashSet}, a {@link Map} to a {@link LinkedHashMap}. A sorted or otherwise special container
+   * ({@code TreeMap}, {@code TreeSet}, a custom comparator) therefore loses its type and its ordering rule when it holds an
+   * array, and keeps both when it does not; a stored value is read back as the plain family anyway.
+   */
+  public static Object unwrapNestedPrimitiveArrays(final Object value) {
+    if (value instanceof Collection<?> collection)
+      return holdsNestedPrimitiveArray(collection) ? rebuildWithoutPrimitiveArrays(collection) : value;
+    if (value instanceof Map<?, ?> map)
+      return holdsNestedPrimitiveArray(map.values()) ? rebuildWithoutPrimitiveArrays(map) : value;
+    return value;
+  }
+
+  private static boolean holdsNestedPrimitiveArray(final Collection<?> items) {
+    for (final Object item : items) {
+      // The scalars come first: the common content of a list is numbers and text, and a vector held as a list of floats runs
+      // through here on every write
+      if (item == null || item instanceof Number || item instanceof String)
+        continue;
+      if (item instanceof long[] || item instanceof double[])
+        return true;
+      if (item instanceof Collection<?> collection) {
+        if (holdsNestedPrimitiveArray(collection))
+          return true;
+      } else if (item instanceof Map<?, ?> map && holdsNestedPrimitiveArray(map.values()))
+        return true;
+    }
+    return false;
+  }
+
+  private static Object unwrapItem(final Object item) {
+    if (item instanceof long[] || item instanceof double[])
+      return primitiveArrayToJsonList(item);
+    return unwrapNestedPrimitiveArrays(item);
+  }
+
+  private static Object rebuildWithoutPrimitiveArrays(final Object container) {
+    if (container instanceof Map<?, ?> map) {
+      final Map<Object, Object> copy = new LinkedHashMap<>((int) (map.size() / 0.75f) + 1);
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        copy.put(entry.getKey(), unwrapItem(entry.getValue()));
+      return copy;
+    }
+
+    final Collection<?> collection = (Collection<?>) container;
+    final Collection<Object> copy =
+        container instanceof Set<?> ? new LinkedHashSet<>((int) (collection.size() / 0.75f) + 1) : new ArrayList<>(collection.size());
+    for (final Object item : collection)
+      copy.add(unwrapItem(item));
+    return copy;
   }
 
   /** Boxes the elements of a primitive array into a mutable list (the shape a collection target expects). */

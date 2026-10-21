@@ -160,11 +160,18 @@ class SQLFunctionShortestPathTest {
       function = new SQLFunctionShortestPath();
 
       final Map<String, Object> additionalParams = new HashMap<String, Object>();
+      // The path from 1 to 20 has 10 edges: maxDepth bounds the edges, so 10 still finds it and 9 does not (issue #10439)
       additionalParams.put(SQLFunctionShortestPath.PARAM_MAX_DEPTH, 10);
       final List<RID> result = function.execute(null, null, null,
           new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());
 
-      assertThat(result).isEmpty();
+      assertThat(result).hasSize(11);
+
+      additionalParams.put(SQLFunctionShortestPath.PARAM_MAX_DEPTH, 9);
+      final List<RID> tooShort = function.execute(null, null, null,
+          new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());
+
+      assertThat(tooShort).isEmpty();
     });
   }
 

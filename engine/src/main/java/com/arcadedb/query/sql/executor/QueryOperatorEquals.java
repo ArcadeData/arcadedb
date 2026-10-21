@@ -24,9 +24,12 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.DateUtils;
 
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class QueryOperatorEquals {
@@ -52,6 +55,11 @@ public class QueryOperatorEquals {
 
     // EmbeddedDocument has null identity; the Identifiable branch below would misroute it as a sub-query result.
     if (left instanceof EmbeddedDocument && right instanceof EmbeddedDocument)
+      return BinaryComparator.equals(left, right);
+
+    // Two lists or two maps of different implementations (a stored ArrayList against an immutable List.of() parameter) are compared
+    // as they are, not converted into one another first: the elements follow the numeric rule of "=" (issue #10448)
+    if ((left instanceof List && right instanceof List) || (left instanceof Map && right instanceof Map))
       return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {
@@ -87,6 +95,8 @@ public class QueryOperatorEquals {
     try {
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
       // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.
+      // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206)
+      left = DateUtils.dateAsMidnightAgainst(left, right);
       right = Type.convertOrNull(null, right, left.getClass());
       if (right == null)
         return false;

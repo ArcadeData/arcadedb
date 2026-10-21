@@ -34,10 +34,16 @@ class TxDelta {
   // Numbers every lightweight edge change, see lightEdgeKey()
   private static final AtomicLong LIGHT_EDGE_CHANGES = new AtomicLong();
 
+  // Stands, in addedEdges, for a creation the transaction took back by deleting the edge (see cancelAddedEdge). Never reaches a frozen delta
+  private static final EdgeDelta  CANCELLED          = new EdgeDelta(null, null, null, null);
+
   final List<VertexDelta>          addedVertices    = new ArrayList<>();
   final Set<RID>                   deletedVertices  = new HashSet<>();
   final List<EdgeDelta>            addedEdges       = new ArrayList<>();
   final List<EdgeDelta>            deletedEdges     = new ArrayList<>();
+  // The updated vertices' properties, per vertex. Each map is the vertex's COMPLETE state after the update, whatever the view's
+  // property filter: DeltaOverlay.merge() replaces what it holds with it, so a property the vertex no longer has reads as missing
+  // (issue #10335). A producer must never report only the properties it changed. One entry per vertex: the last update wins.
   final Map<RID, Map<String, Object>> updatedProperties = new HashMap<>();
 
   // Covered edges whose properties changed, with the values they changed to. An edge THIS overlay window
@@ -59,6 +65,12 @@ class TxDelta {
   // marks the columns out of date outright rather than being resolved against the overlay's own additions.
   boolean                          forceEdgePropertyRebuild = false;
 
+  // The position in addedEdges of each record-backed edge the transaction created, built by cancelAddedEdge() on the first deletion
+  // of a transaction that created edges, and kept up to date by addEdge() from then on. Null until then
+  private Map<RID, Integer>        addedEdgeSlots;
+  // How many entries of addedEdges are CANCELLED tombstones
+  private int                      cancelledEdges;
+
   /**
    * True when this transaction changed a covered edge's properties, however the change is spelled: the
    * individual edges while there were few enough of them to track, or the bare flag {@link DeltaCollector}
@@ -73,7 +85,7 @@ class TxDelta {
 
   boolean isEmpty() {
     return addedVertices.isEmpty() && deletedVertices.isEmpty()
-        && addedEdges.isEmpty() && deletedEdges.isEmpty()
+        && addedEdges.size() == cancelledEdges && deletedEdges.isEmpty()
         && updatedProperties.isEmpty() && !hasEdgePropertyChanges();
   }
 
@@ -85,6 +97,60 @@ class TxDelta {
     updatedProperties.clear();
     updatedEdges.clear();
     forceEdgePropertyRebuild = false;
+    addedEdgeSlots = null;
+    cancelledEdges = 0;
+  }
+
+  /** Reports an edge the transaction created. Edges are reported through here, so a later deletion can find its creation. */
+  void addEdge(final EdgeDelta edge) {
+    addedEdges.add(edge);
+    if (addedEdgeSlots != null && !edge.isLightweight())
+      addedEdgeSlots.put(edge.rid, addedEdges.size() - 1);
+  }
+
+  /**
+   * Takes back the creation of the record-backed edge {@code rid} when this transaction made it, because the transaction now
+   * deletes it: an edge created and deleted by one transaction is no change to the committed state, and a deletion reported for its
+   * RID would be applied to whichever edge another transaction committed into the same slot meanwhile (this one holds its own copy
+   * of the page, so it was handed the slot out again), losing that edge from the view (issue #10305). Another transaction's edge
+   * cannot be mistaken for it: the slot is the transaction's own for as long as it holds the edge.
+   * <p>
+   * The index of the created edges is built on the first deletion of a transaction that created edges, so a transaction that only
+   * inserts, a bulk load by the million, pays nothing for it. A cancelled entry stays in the list as a tombstone, so the creation
+   * order of the others is kept and nothing shifts.
+   *
+   * @return true when the transaction created the edge, whose deletion must then not be reported
+   */
+  boolean cancelAddedEdge(final RID rid) {
+    if (addedEdges.size() == cancelledEdges)
+      return false;
+    if (addedEdgeSlots == null) {
+      addedEdgeSlots = new HashMap<>();
+      for (int i = 0; i < addedEdges.size(); i++) {
+        final EdgeDelta edge = addedEdges.get(i);
+        if (edge != CANCELLED && !edge.isLightweight())
+          addedEdgeSlots.put(edge.rid, i);
+      }
+    }
+    final Integer slot = addedEdgeSlots.remove(rid);
+    if (slot == null)
+      return false;
+    addedEdges.set(slot, CANCELLED);
+    ++cancelledEdges;
+    // the properties it was given after its creation went with it
+    updatedEdges.remove(rid);
+    return true;
+  }
+
+  /** Adds the edges the transaction created and kept, in the order it created them, to {@code target}. */
+  void copyAddedEdgesTo(final List<EdgeDelta> target) {
+    if (cancelledEdges == 0) {
+      target.addAll(addedEdges);
+      return;
+    }
+    for (final EdgeDelta edge : addedEdges)
+      if (edge != CANCELLED)
+        target.add(edge);
   }
 
   static class VertexDelta {

@@ -3735,6 +3735,18 @@
       "type": "org.apache.lucene.util.fst.GrowableByteArrayDataOutput"
     },
     {
+      "type": "org.apache.ratis.grpc.server.GrpcServerProtocolClient",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "org.apache.ratis.grpc.server.GrpcStubPool",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "org.apache.ratis.grpc.server.GrpcStubPool$Stub",
+      "allDeclaredFields": true
+    },
+    {
       "type": "org.apache.ratis.metrics.impl.MetricRegistriesImpl"
     },
     {
@@ -4148,6 +4160,171 @@
     },
     {
       "type": "org.jboss.threads.management.StandardThreadPoolMXBean"
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.BinaryCodec",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.GeoJSONWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.LegacyShapeReader",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.LegacyShapeWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.PolyshapeReader",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.PolyshapeWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.WKTReader",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.WKTWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.jts.JtsBinaryCodec",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContext",
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.jts.JtsGeoJSONWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.jts.JtsPolyshapeWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.io.jts.JtsWKTWriter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContext",
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.SpatialContext",
+            "org.locationtech.spatial4j.context.SpatialContextFactory"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.locationtech.spatial4j.shape.jts.JtsShapeFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContext",
+            "org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory"
+          ]
+        }
+      ]
     },
     {
       "type": "org.robolectric.Robolectric"

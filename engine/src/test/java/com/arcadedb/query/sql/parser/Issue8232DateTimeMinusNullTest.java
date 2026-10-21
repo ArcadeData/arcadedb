@@ -34,15 +34,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * unboxing in {@code apply(Long, Long)} threw a {@link NullPointerException} - taking the whole query down, since the
  * everyday trigger is simply a missing/optional field next to a stored {@code DATETIME}.
  * <p>
- * {@code date - null} now returns the date unchanged, matching {@code date + null} and {@code number - null}.
- * {@code null - date} returns {@code null}: unlike a number, a date has no meaningful negative to fall back to.
+ * {@code date - null} and {@code null - date} answer {@code null}, like {@code number - null} and the other arithmetic
+ * operators with a NULL operand (#10186; before it {@code date - null} kept the date).
  */
 class Issue8232DateTimeMinusNullTest {
 
   @Test
-  void dateMinusNullOperatorReturnsTheDateUnchanged() {
+  void dateMinusNullOperatorIsNull() {
     final LocalDateTime dt = LocalDateTime.now();
-    assertThat(MathExpression.Operator.MINUS.apply(dt, null)).isEqualTo(dt);
+    assertThat(MathExpression.Operator.MINUS.apply(dt, null)).isNull();
     assertThat(MathExpression.Operator.MINUS.apply(null, dt)).isNull();
     assertThat(MathExpression.Operator.MINUS.apply((Object) null, null)).isNull();
   }
@@ -59,13 +59,11 @@ class Issue8232DateTimeMinusNullTest {
       db.transaction(() -> db.newDocument("D").set("dt", LocalDateTime.now()).set("n", 5L).save());
 
       try (final ResultSet rs = db.query("sql", "select dt - nosuch as x, dt from D")) {
-        final var result = rs.next();
-        assertThat(result.<Object>getProperty("x")).isEqualTo(result.getProperty("dt"));
+        assertThat(rs.next().<Object>getProperty("x")).isNull();
       }
 
       try (final ResultSet rs = db.query("sql", "select dt - null as x, dt from D")) {
-        final var result = rs.next();
-        assertThat(result.<Object>getProperty("x")).isEqualTo(result.getProperty("dt"));
+        assertThat(rs.next().<Object>getProperty("x")).isNull();
       }
 
       try (final ResultSet rs = db.query("sql", "select nosuch - dt as x from D")) {
@@ -76,13 +74,15 @@ class Issue8232DateTimeMinusNullTest {
         assertThat(rs.next().<Object>getProperty("x")).isNull();
       }
 
-      // control: the paths that already worked must keep working
+      // a NULL operand of the arithmetic is NULL for a number and a date alike (#10186)
       try (final ResultSet rs = db.query("sql", "select n - nosuch as x from D")) {
-        assertThat(rs.next().<Object>getProperty("x")).isEqualTo(5L);
+        assertThat(rs.next().<Object>getProperty("x")).isNull();
       }
       try (final ResultSet rs = db.query("sql", "select dt + nosuch as x, dt from D")) {
-        final var result = rs.next();
-        assertThat(result.<Object>getProperty("x")).isEqualTo(result.getProperty("dt"));
+        assertThat(rs.next().<Object>getProperty("x")).isNull();
+      }
+      try (final ResultSet rs = db.query("sql", "select dt - dt as x from D")) {
+        assertThat(rs.next().<Object>getProperty("x")).isNotNull();
       }
     });
   }

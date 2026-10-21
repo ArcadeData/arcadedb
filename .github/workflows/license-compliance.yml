@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: '21'
           distribution: 'temurin'
@@ -73,7 +73,7 @@ jobs:
       - name: Generate aggregated third-party license report
         run: |
           echo "Generating aggregated license report for the whole reactor..."
-          mvn org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests
+          ./mvnw org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests
         continue-on-error: false
 
       # #5651: this allow-list check replaces the previous "grep for GPL/AGPL/SSPL" deny-only step.
@@ -94,7 +94,7 @@ jobs:
       - name: Download license files
         run: |
           echo "Downloading license files..."
-          mvn org.codehaus.mojo:license-maven-plugin:aggregate-download-licenses -DskipTests
+          ./mvnw org.codehaus.mojo:license-maven-plugin:aggregate-download-licenses -DskipTests
         continue-on-error: true
 
       - name: Sanitize license filenames for upload-artifact compatibility

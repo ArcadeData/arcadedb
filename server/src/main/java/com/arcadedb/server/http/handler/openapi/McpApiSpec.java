@@ -47,6 +47,14 @@ public class McpApiSpec implements OpenApiContributor {
    */
   public static final Set<String> MCP_PATHS = Set.of("/api/v1/mcp", "/api/v1/mcp/config");
 
+  /**
+   * The {@code "METHOD path"} of every operation {@link #MCP_PATHS} declares, verified against {@link #contribute} by
+   * {@code ApiSpecPathConstantsTest} and against the plugin's actual {@code registerAPI} output by
+   * {@code MCPPluginRegisteredRoutesMatchApiSpecTest} (issue #10157).
+   */
+  public static final Set<String> MCP_OPERATIONS = Set.of("POST /api/v1/mcp", "GET /api/v1/mcp/config",
+      "POST /api/v1/mcp/config");
+
   private static final String MCP_PLUGIN_REQUIRED =
       "Requires MCPPlugin: present in every standard distribution, absent from a custom build that excludes the MCP module.";
 

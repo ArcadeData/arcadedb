@@ -19,6 +19,7 @@
 package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -65,7 +66,7 @@ class SQLDefinedJavascriptFunctionTest extends TestHelper {
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(100, 50);
     assertThat(result).isEqualTo(150);
 
-    assertThatThrownBy(() -> database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"))).isInstanceOf(AlreadyExistsException.class);
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
     database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));

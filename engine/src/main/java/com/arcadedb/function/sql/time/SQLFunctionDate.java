@@ -91,7 +91,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
           // quietly ignoring it is the thing issue #6388 set out to stop.
           validateZone(timezone);
 
-          date = DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), dateAsString);
+          date = DateUtils.parseDateTime(context.getDatabase(), dateAsString);
         } else
           date = LocalDateTime.parse(dateAsString, formatterFor(format, timezone, context));
       } catch (final DateTimeParseException e) {

@@ -19,14 +19,19 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CommittedReadScope;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.IntHashSet;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -452,18 +457,27 @@ public abstract class IndexBuilder<T extends Index> {
    * <p>
    * Two conditions, and the second is the one that is easy to get wrong. The index family has to be able to use a
    * shared transaction at all ({@link Schema.INDEX_TYPE#buildCanShareCallerTransaction}); and the open transaction has
-   * to actually HOLD uncommitted work, because that is the entire reason for sharing it. An EMPTY transaction has
-   * nothing for the scan to see, so joining it buys nothing and costs the build its chunked commit - and empty is
-   * exactly what a transaction opened as scaffolding looks like. {@code DatabaseAsyncExecutorImpl.runCommand} opens
-   * one around every dispatched command because {@code requiresActiveTx()} defaults to true, so without this test a
-   * {@code CREATE INDEX} sent with {@code awaitResponse=false} - the case issue #6303 item 3 and #6324 item 5 exist
-   * to make work - would build the whole index in one uncommitted transaction, whatever batch size it was given.
+   * to have WRITTEN TO THE BUCKETS THE BUILD SCANS, because seeing those writes is the entire reason for sharing it.
+   * <p>
+   * An EMPTY transaction has nothing for the scan to see, so joining it buys nothing and costs the build its chunked
+   * commit - and empty is exactly what a transaction opened as scaffolding looks like. {@code
+   * DatabaseAsyncExecutorImpl.runCommand} opens one around every dispatched command because {@code requiresActiveTx()}
+   * defaults to true, so without this test a {@code CREATE INDEX} sent with {@code awaitResponse=false} - the case issue
+   * #6303 item 3 and #6324 item 5 exist to make work - would build the whole index in one uncommitted transaction,
+   * whatever batch size it was given.
+   * <p>
+   * A transaction that wrote only ELSEWHERE is the same case (issue #10450): the scan reads the indexed buckets only, so
+   * it finds nothing of that transaction there either. Joining it would queue one entry per scanned record until the
+   * caller commits - for a vector index over a large bucket, one heavy entry each - where a build of its own commits in
+   * chunks. A build in a transaction of its own is correct whenever the caller has not written to its buckets.
    * <p>
    * Asked BEFORE the build opens anything, because afterwards there is always a transaction and the answer is always
    * yes.
+   *
+   * @param buckets the buckets the build is about to scan
    */
-  protected boolean buildSharesCallerTransaction() {
-    return indexType != null && indexType.buildCanShareCallerTransaction() && callerTransactionHasChanges(database);
+  protected boolean buildSharesCallerTransaction(final Collection<? extends Bucket> buckets) {
+    return indexType != null && indexType.buildCanShareCallerTransaction() && callerTransactionHasChangesIn(database, buckets);
   }
 
   /**
@@ -474,14 +488,75 @@ public abstract class IndexBuilder<T extends Index> {
    * is that call site arriving back at the defect #6324 item 1 fixed, and the predicate lives here so a third spelling
    * of it cannot drift from the other two.
    * <p>
+   * Only the innermost transaction is asked, the one a shared build would join. An OUTER transaction's writes are out
+   * of reach of either answer: a nested transaction does not see its outer transaction's uncommitted pages, so neither
+   * a build that joins the innermost transaction nor one in a transaction of its own would index them. That was the
+   * case before issue #10450 too, and narrowing the test to the scanned buckets does not change it. A record's content
+   * can also live in the paired external-property bucket of its own bucket, so that one counts as written to as well.
+   * <p>
    * Timing is the whole trap: inside the component-creation transaction there is ALWAYS one open, it is EMPTY, and the
    * answer would always be no.
+   *
+   * @param buckets the buckets the build is about to scan
    */
-  static boolean callerTransactionHasChanges(final DatabaseInternal database) {
+  static boolean callerTransactionHasChangesIn(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
     if (!database.isTransactionActive())
       return false;
     final TransactionContext tx = database.getTransactionIfExists();
-    return tx != null && tx.hasChanges();
+    if (tx == null || !tx.hasChanges())
+      return false;
+    return tx.hasChangesInFiles(scannedFileIds(database, buckets));
+  }
+
+  /**
+   * The same question as {@link #callerTransactionHasChangesIn}, asked of EVERY active transaction stacked on this thread rather
+   * than only the innermost one, for the sorted build (issue #10466). That build sets the whole stack aside
+   * ({@link CommittedReadScope}), so a write any frame made to the scanned buckets would be missed by the
+   * scan and never added to the index when that frame commits - an empty nested transaction over an outer one that wrote a record
+   * is the shape that matters. A write a frame made ELSEWHERE is invisible to the scan anyway, and the build writes only into
+   * index files it creates itself, which no frame of the caller can hold a page of.
+   *
+   * @param buckets the buckets the build is about to scan
+   */
+  static boolean anyCallerTransactionHasChangesIn(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      return false;
+
+    IntHashSet fileIds = null;
+    for (int i = context.transactions.size() - 1; i > -1; --i) {
+      final TransactionContext tx = context.transactions.get(i);
+      if (!tx.isActive() || !tx.hasChanges())
+        continue;
+      if (fileIds == null)
+        fileIds = scannedFileIds(database, buckets);
+      if (tx.hasChangesInFiles(fileIds))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * The files a scan of {@code buckets} reads: each bucket and the paired external-property bucket a record's content can
+   * live in.
+   */
+  private static IntHashSet scannedFileIds(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final IntHashSet fileIds = new IntHashSet(buckets.size() * 2);
+    for (final Bucket bucket : buckets) {
+      if (bucket == null)
+        continue;
+      // A bucket's file id IS its bucket id, the value RID.getBucketId() carries, which is what lets one set answer for
+      // both the pages and the queued record updates hasChangesInFiles looks at
+      final int bucketId = bucket.getFileId();
+      fileIds.add(bucketId);
+      if (schema.getTypeByBucketId(bucketId) instanceof LocalDocumentType owner) {
+        final Integer externalBucketId = owner.getExternalBucketIdFor(bucketId);
+        if (externalBucketId != null)
+          fileIds.add(externalBucketId);
+      }
+    }
+    return fileIds;
   }
 
   /**
@@ -495,17 +570,46 @@ public abstract class IndexBuilder<T extends Index> {
    * inside {@code recordFileChanges}.
    */
   protected void buildCreatedIndex(final Index index, final boolean sharesCallerTransaction) {
-    buildCreatedIndex(index, batchSize, sharesCallerTransaction, callback);
+    buildCreatedIndex(database, index, batchSize, sharesCallerTransaction, callback);
   }
 
-  /** @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above. */
-  static void buildCreatedIndex(final Index index, final int batchSize, final boolean sharesCallerTransaction,
-      final Index.BuildIndexCallback callback) {
+  /**
+   * @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above.
+   * <p>
+   * A build that shares the caller's transaction is NOT one scan inside it (issue #10490). That scan reads the caller's
+   * pending pages first and the committed ones underneath, so it queued an entry for every record, the committed ones
+   * included, on a transaction the caller may then roll back, and the index - whose component is committed on its own -
+   * was left with the schema entry and no entries. It is two steps instead:
+   * <ol>
+   *   <li>the COMMITTED state is indexed with the caller's transaction set aside, in a transaction of its own that commits
+   *   in chunks like any build that shares nothing, so those entries survive whatever the caller does;</li>
+   *   <li>what the caller itself created, updated or deleted in the bucket is queued on the caller's transaction by
+   *   {@link IndexBuildCallerChanges}, so it commits, or rolls back, with the records it describes.</li>
+   * </ol>
+   * No writer can slip in between the two: every caller runs inside the schema's write lock ({@code recordFileChanges}), which
+   * no other transaction commits under, and the index is registered on its type before the first step, so what the caller writes
+   * afterwards is indexed live. The second step reads the committed version of the caller's writes a chunk at a time. A
+   * failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
+   * {@code TypeIndexBuilder#create} and {@code BucketIndexBuilder}, the guard around the super-type propagation), the same
+   * as a failure anywhere in a build.
+   */
+  static void buildCreatedIndex(final DatabaseInternal database, final Index index, final int batchSize,
+      final boolean sharesCallerTransaction, final Index.BuildIndexCallback callback) {
     final IndexInternal internal = (IndexInternal) index;
     if (!internal.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
         IndexInternal.INDEX_STATUS.AVAILABLE))
       throw new IndexException("Cannot build the index '" + index.getName() + "' because it is not available");
-    internal.build(batchSize, sharesCallerTransaction, callback);
+
+    if (!sharesCallerTransaction) {
+      internal.build(batchSize, false, callback);
+      return;
+    }
+
+    final long[] committedRecords = new long[1];
+    try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
+      database.transaction(() -> committedRecords[0] = internal.build(batchSize, false, callback), false, 1, null, null);
+    }
+    IndexBuildCallerChanges.apply(database, internal, callback, committedRecords[0]);
   }
 
   /**

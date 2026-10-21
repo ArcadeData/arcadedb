@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -250,7 +251,8 @@ class PostgresCatalogTest {
             + "WHERE table_name = 'Article' ORDER BY ordinal_position");
 
     assertThat(names(answer.rows, "column_name")).containsExactly("id", "title");
-    assertThat(answer.rows.get(0)).containsEntry("data_type", "int4");
+    // the SQL standard name, as format_type() reads it (issue #10370); udt_name is the one that stays int4
+    assertThat(answer.rows.get(0)).containsEntry("data_type", "integer");
     assertThat(answer.rows.get(0)).containsEntry("is_nullable", "YES");
     assertThat(answer.rows.get(1)).containsEntry("is_nullable", "NO");
   }
@@ -281,7 +283,7 @@ class PostgresCatalogTest {
 
   @Test
   void aQueryAboutARelationThisCatalogDoesNotModelIsDeclined() {
-    assertThat(resolveRaw("SELECT indexrelid FROM pg_catalog.pg_index")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_proc")).isSameAs(PostgresCatalog.DECLINED);
   }
 
   @Test
@@ -416,13 +418,17 @@ class PostgresCatalogTest {
   }
 
   @Test
-  void aSetOperationOrAGroupByIsDeclined() {
-    // Both change what the rows are, and answering the half this catalog understands would be answering a
-    // different question.
-    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace")).isSameAs(
+  void aSetOperationAndAGroupByAreAnsweredWhole() {
+    // Both change what the rows are, so they are answered whole (issue #10228) rather than by the half this
+    // catalog used to understand - which would be answering a different question.
+    assertThat(names(resolve("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace ORDER BY 1").rows,
+        "relname")).containsExactly("Article", "Author", database.getName());
+    assertThat(names(resolve("SELECT relkind FROM pg_class GROUP BY relkind").rows, "relkind")).containsExactly("r");
+    // A set operation with an arm this catalog cannot answer is declined whole, not answered by its other arm.
+    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT proname FROM pg_proc")).isSameAs(
         PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT relkind FROM pg_class GROUP BY relkind")).isSameAs(PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT relname FROM pg_class LIMIT ALL")).isSameAs(PostgresCatalog.DECLINED);
+    // LIMIT ALL is no limit (issue #10228).
+    assertThat(names(resolve("SELECT relname FROM pg_class LIMIT ALL").rows, "relname")).containsExactly("Article", "Author");
   }
 
   @Test
@@ -534,13 +540,14 @@ class PostgresCatalogTest {
   void aPgTypeFilterThatWillNotEvenParseDeclinesToo() {
     // Parsing and evaluating are two ways to fail to read the same predicate, and only the second used to
     // decline: a WHERE written with a construct the expression parser does not implement - a scalar
-    // sub-query here - left the parse result null, which the caller read as "no filter" and answered every
-    // type with. The two have to be treated alike (issue #7180).
-    assertThat(resolveRaw("SELECT typname FROM pg_type t WHERE t.oid = (SELECT 1 FROM pg_type LIMIT 1)"))
+    // IS DISTINCT FROM here, a sub-query before sub-queries were evaluated (issue #10228) - left the parse result
+    // null, which the caller read as "no filter" and answered every type with. The two have to be treated alike
+    // (issue #7180).
+    assertThat(resolveRaw("SELECT typname FROM pg_type t WHERE t.typname IS DISTINCT FROM 'int4'"))
         .isSameAs(PostgresCatalog.DECLINED);
 
     // The same shape over a relation whose rows are the user's own types is still answered permissively.
-    assertThat(names(resolve("SELECT relname FROM pg_class WHERE oid = (SELECT 1 FROM pg_class LIMIT 1)").rows,
+    assertThat(names(resolve("SELECT relname FROM pg_class WHERE relname IS DISTINCT FROM 'Article'").rows,
         "relname")).containsExactly("Article", "Author");
   }
 
@@ -561,7 +568,8 @@ class PostgresCatalogTest {
 
     final PostgresCatalog.Answer present = resolve(PSYCOPG_TYPE_LOOKUP.formatted("'int4'::text"));
     assertThat(names(present.rows, "name")).containsExactly("int4");
-    assertThat(present.rows.get(0)).containsEntry("regtype", "int4")
+    // regtype prints the SQL name, as PostgreSQL does: 23::regtype::text is 'integer' (issue #10228).
+    assertThat(present.rows.get(0)).containsEntry("regtype", "integer")
         .containsEntry("array_oid", PostgresType.ARRAY_INT.code);
   }
 
@@ -590,15 +598,24 @@ class PostgresCatalogTest {
   }
 
   @Test
-  void readingOneRelationThroughTwoAliasesIsDeclined() {
-    // Every Row carries one map per relation, so two aliases of the same relation read the same map. The
-    // second would answer with the first's values, and a projection naming a column through both announces
-    // one column where the client asked for two - a miscount that makes a strict client abort. There is no
-    // honest answer, so the query is declined rather than guessed at.
-    assertThat(resolveRaw("SELECT t.typname, e.typname FROM pg_type t, pg_type e WHERE t.typelem = e.oid"))
-        .isSameAs(PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT a.relname, b.relname FROM pg_class a, pg_class b WHERE a.oid = b.oid"))
-        .isSameAs(PostgresCatalog.DECLINED);
+  void readingOneRelationThroughTwoAliasesReadsARowForEachAlias() {
+    // Every Row carries one map per relation, so the one-row-per-entity model reads the same map through two aliases of a relation:
+    // the second would answer with the first's values, and a projection naming a column through both would announce one column
+    // where the client asked for two. That statement is answered by joining the rows of its entries instead (issue #10495), each
+    // alias with its own, so the second alias reads the row it is paired with.
+    final PostgresCatalog.Answer elements = resolveRaw(
+        "SELECT t.typname, e.typname FROM pg_type t, pg_type e WHERE t.typelem = e.oid AND t.typname = '_int4'");
+    assertThat(elements.columns).hasSize(2);
+    assertThat(elements.rows).hasSize(1);
+    assertThat(new ArrayList<>(elements.rows.get(0).values())).containsExactly("_int4", "int4");
+
+    final PostgresCatalog.Answer classes = resolveRaw("SELECT a.relname, b.relname FROM pg_class a, pg_class b WHERE a.oid = b.oid");
+    assertThat(classes.rows).isNotEmpty();
+    for (final Map<String, Object> row : classes.rows) {
+      final List<Object> pair = new ArrayList<>(row.values());
+      assertThat(pair).hasSize(2);
+      assertThat(pair.get(0)).isEqualTo(pair.get(1));
+    }
   }
 
   @Test
@@ -680,7 +697,8 @@ class PostgresCatalogTest {
     final PostgresCatalog.Answer named = resolve(
         "SELECT attname, atttypid::regtype AS t FROM pg_catalog.pg_attribute WHERE attrelid = 'Author'::regclass");
 
-    assertThat(names(named.rows, "t")).containsExactly("varchar");
+    // The name PostgreSQL prints for the type, which is not its typname (issue #10228).
+    assertThat(names(named.rows, "t")).containsExactly("character varying");
 
     final PostgresCatalog.Answer filtered = resolve(
         "SELECT attname FROM pg_catalog.pg_attribute WHERE atttypid = 'int4'::regtype");

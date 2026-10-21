@@ -25,9 +25,11 @@ import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.util.List;
 
@@ -56,6 +58,13 @@ public class DeleteExecutionPlanner {
   public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
     final DeleteExecutionPlan result = new DeleteExecutionPlan(context, 0);
 
+    // THE SAMPLES OF A TIMESERIES TYPE ARE NOT RECORDS: THEY ARE DELETED BY THE ENGINE OF THE TYPE, BY TIME RANGE AND TAGS (issue #10342)
+    final LocalTimeSeriesType tsType = timeSeriesTarget(fromClause, context);
+    if (tsType != null) {
+      handleTimeSeriesTarget(result, tsType, context);
+      return result;
+    }
+
     if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, context)) {
       if (limit != null)
         throw new CommandExecutionException("Cannot apply a LIMIT on a delete from index");
@@ -76,6 +85,39 @@ public class DeleteExecutionPlanner {
       handleReturn(result, context, this.returnBefore);
     }
     return result;
+  }
+
+  /** The TIMESERIES type the statement deletes from, or {@code null} when its target is anything else. */
+  private static LocalTimeSeriesType timeSeriesTarget(final FromClause target, final CommandContext context) {
+    final Identifier identifier = target != null && target.getItem() != null ? target.getItem().getIdentifier() : null;
+    return identifier != null && context.getDatabase().getSchema()
+        .getTypeOrNull(identifier.getStringValue()) instanceof LocalTimeSeriesType tsType ? tsType : null;
+  }
+
+  /**
+   * {@code DELETE FROM <timeseries type> [WHERE <time range> AND <tag> = <value> ...]} (issue #10342): the whole statement is one
+   * step, which hands the engine the time range and the tag filter. What cannot be deleted exactly is refused, since a DELETE that
+   * took more than the WHERE says could not be put back: a predicate on a FIELD column, an OR, any other function of the
+   * timestamp; and what a time series cannot honour - a LIMIT, a BATCH, the records BEFORE the delete - is refused rather than ignored.
+   */
+  private void handleTimeSeriesTarget(final DeleteExecutionPlan result, final LocalTimeSeriesType tsType, final CommandContext context) {
+    if (limit != null)
+      throw new CommandExecutionException("Cannot apply a LIMIT to a DELETE on the TIMESERIES type '" + tsType.getName()
+          + "': it removes every sample the time range and the tags name");
+    if (batch != null)
+      throw new CommandExecutionException("Cannot apply a BATCH to a DELETE on the TIMESERIES type '" + tsType.getName() + "'");
+    if (returnBefore)
+      throw new CommandExecutionException("Cannot apply a RETURN BEFORE to a DELETE on the TIMESERIES type '" + tsType.getName()
+          + "': a sample is not a record");
+
+    final SelectExecutionPlanner.TimeSeriesDeleteScope scope = SelectExecutionPlanner.timeSeriesDeleteScope(tsType, whereClause, context);
+    if (scope == null)
+      throw new CommandExecutionException("Cannot DELETE from the TIMESERIES type '" + tsType.getName() + "' with this WHERE: it removes "
+          + "the samples in a time range of the timestamp column '" + tsType.getTimestampColumn() + "' with the given values of the TAG "
+          + "columns, joined by AND (for example WHERE " + tsType.getTimestampColumn() + " < '2024-01-01' AND <tag> = 'x'). A "
+          + "predicate on a FIELD column, an OR, or any other expression is not supported: a sample is never updated, and the "
+          + "samples to remove are named by their time and their series");
+    result.chain(new DeleteFromTimeSeriesStep(tsType, scope.fromTs(), scope.toTs(), scope.tagFilter(), context));
   }
 
   private boolean handleIndexAsTarget(final DeleteExecutionPlan result, final IndexIdentifier indexIdentifier,

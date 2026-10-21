@@ -42,7 +42,6 @@ import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -63,14 +62,16 @@ import java.util.concurrent.TimeoutException;
  * string. {@code queryIndices} is an {@code int[]} of non-negative dimension ids and
  * {@code queryValues} is the matching {@code float[]}.
  * <p>
- * Optional 5th argument: a map with keys {@code filter} (List of allowed RIDs).
+ * Optional 5th argument: a map with keys {@code filter} (List of allowed RIDs), {@code where} (a map of property to value, or
+ * a SQL condition, tested on each candidate's record as the search meets it), {@code groupBy}, {@code groupSize} and
+ * {@code minScore}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.sparseNeighbors";
 
-  private static final Set<String> OPTIONS = Set.of("filter", "groupBy", "groupSize", "minScore");
+  private static final Set<String> OPTIONS = Set.of("filter", "where", "groupBy", "groupSize", "minScore");
 
   // Hard cap on the candidate pool when grouping is enabled. Same rationale as
   // SQLFunctionVectorNeighbors.MAX_FETCH_CANDIDATES: bounds memory at a few MB on pathological
@@ -106,7 +107,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (params.length >= 5 && params[4] != null) {
       if (params[4] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
-        allowedRIDs = parseRidFilter(opts.getList("filter"), NAME, context);
+        // Same `where` predicate as vector.neighbors (issue #10169)
+        allowedRIDs = RecordPredicateRidSet.of(opts.get("where"), parseRidFilter(opts.getList("filter"), NAME, context), NAME,
+            context);
         groupBy = opts.getString("groupBy", null);
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
@@ -378,14 +381,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
           continue;
       }
 
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", record);
-      for (final String prop : record.getPropertyNames())
-        entry.put(prop, record.get(prop));
-      entry.put("@rid", record.getIdentity());
-      entry.put("@type", record.getTypeName());
-      entry.put("score", neighbor.score());
-      result.add(entry);
+      result.add(new ScoredRecordRow(record, "score", neighbor.score()));
     }
 
     return result;
@@ -503,6 +499,6 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   @Override
   public String getSyntax() {
     return NAME + "(<index-name>, <indices>, <values>, <k>[, { filter: [<rid>, ...], "
-        + "groupBy: <field>, groupSize: <int> }])";
+        + "where: { <property>: <value>, ... } | '<condition>', groupBy: <field>, groupSize: <int>, minScore: <float> }])";
   }
 }

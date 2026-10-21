@@ -25,6 +25,7 @@ import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -37,6 +38,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.Temporal;
@@ -222,7 +224,12 @@ public class ComparisonExpression implements BooleanExpression {
     // relationships, which the RID cannot tell apart and LightEdgeRID.isSameEdge can (issue #10008)
     if (left instanceof Identifiable leftIdentifiable
         && right instanceof Identifiable rightIdentifiable) {
-      final boolean equal = LightEdgeRID.isSameEdge(leftIdentifiable.getIdentity(), rightIdentifiable.getIdentity());
+      final RID leftRid = leftIdentifiable.getIdentity();
+      final RID rightRid = rightIdentifiable.getIdentity();
+      // An embedded document has no RID and is equal to another by its content, which its own equals() compares; against a record
+      // it is never equal (issue #10380)
+      final boolean equal = leftRid != null && rightRid != null ? LightEdgeRID.isSameEdge(leftRid, rightRid)
+          : leftRid == null && rightRid == null && leftIdentifiable.equals(rightIdentifiable);
       if (operator == Operator.EQUALS)
         return equal;
       if (operator == Operator.NOT_EQUALS)
@@ -250,15 +257,35 @@ public class ComparisonExpression implements BooleanExpression {
     else if (rightZoneless && !leftZoneless && leftTemporal instanceof CypherDateTime zoned)
       rightTemporal = adoptZone(right, (CypherDateTime) rightTemporal, zoned.getValue().getZone());
     if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
+      // Durations are equal or not, component by component (P1D <> PT24H), and are not comparable: neither is less than the
+      // other, so < and > answer null, and <= and >= answer only what equality settles. Neo4j answers the same; the order
+      // compareTo gives them is the ORDER BY order (issue #10200)
+      if (leftTemporal instanceof CypherDuration || rightTemporal instanceof CypherDuration) {
+        final boolean equal = leftTemporal.equals(rightTemporal);
+        return switch (operator) {
+          case EQUALS -> equal;
+          case NOT_EQUALS -> !equal;
+          case LESS_THAN_OR_EQUAL, GREATER_THAN_OR_EQUAL -> equal ? Boolean.TRUE : null;
+          case LESS_THAN, GREATER_THAN -> null;
+        };
+      }
       try {
-        // A LocalDateTime and a zoned DateTime compare by instant (the LocalDateTime read as UTC): compareTo also
-        // orders the two types apart at one instant, which ORDER BY needs and = must not see.
+        // A local and a zoned datetime are two types: never equal, and not comparable (issue #10200, as in Neo4j). The
+        // exception is a DATETIME read from storage, which ArcadeDB keeps as an instant and reads back as a local datetime
+        // in UTC: it compares with a zoned datetime by instant, so a filter on a stored DATETIME against a datetime()
+        // literal or parameter keeps working. A raw LocalDateTime operand comes from storage or a driver, never from a
+        // localdatetime() of the query, and counts as stored: a java.time.LocalDateTime PARAMETER therefore compares with a
+        // zoned datetime by instant (read as UTC) as well, a deliberate deviation from Neo4j, which answers null.
         final int cmp;
-        if (leftTemporal instanceof CypherLocalDateTime local && rightTemporal instanceof CypherDateTime zoned)
+        if (leftTemporal instanceof CypherLocalDateTime local && rightTemporal instanceof CypherDateTime zoned) {
+          if (!isStoredLocal(left, local))
+            return differentTypes();
           cmp = local.getValue().toInstant(ZoneOffset.UTC).compareTo(zoned.getValue().toInstant());
-        else if (leftTemporal instanceof CypherDateTime zoned && rightTemporal instanceof CypherLocalDateTime local)
+        } else if (leftTemporal instanceof CypherDateTime zoned && rightTemporal instanceof CypherLocalDateTime local) {
+          if (!isStoredLocal(right, local))
+            return differentTypes();
           cmp = zoned.getValue().toInstant().compareTo(local.getValue().toInstant(ZoneOffset.UTC));
-        else
+        } else
           cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
         return switch (operator) {
           case EQUALS -> cmp == 0;
@@ -270,9 +297,7 @@ public class ComparisonExpression implements BooleanExpression {
         };
       } catch (final IllegalArgumentException e) {
         // Different temporal types: for equality, return false/true; for ordering, return null
-        if (operator == Operator.EQUALS) return false;
-        if (operator == Operator.NOT_EQUALS) return true;
-        return null;
+        return differentTypes();
       }
     }
 
@@ -339,6 +364,23 @@ public class ComparisonExpression implements BooleanExpression {
     // String comparison (strings only compare with strings), by code point, as the index orders them (issue #8422)
     if (left instanceof String && right instanceof String) {
       final int comparison = BinaryComparator.compareStrings((String) left, (String) right);
+      return switch (operator) {
+        case EQUALS -> comparison == 0;
+        case NOT_EQUALS -> comparison != 0;
+        case LESS_THAN -> comparison < 0;
+        case GREATER_THAN -> comparison > 0;
+        case LESS_THAN_OR_EQUAL -> comparison <= 0;
+        case GREATER_THAN_OR_EQUAL -> comparison >= 0;
+      };
+    }
+
+    // BINARY values compare by their bytes, unsigned, as ORDER BY, min()/max() and SQL do, and a BINARY value is not a list: coerced to
+    // one, its bytes were compared as signed numbers, so 0x80 was below 0x7f, and the value equalled the list of the same numbers,
+    // which no DISTINCT or GROUP BY key can follow (issue #10380)
+    if (left instanceof byte[] || right instanceof byte[]) {
+      if (!(left instanceof byte[] leftBytes && right instanceof byte[] rightBytes))
+        return differentTypes();
+      final int comparison = BinaryComparator.compareBytes(leftBytes, rightBytes);
       return switch (operator) {
         case EQUALS -> comparison == 0;
         case NOT_EQUALS -> comparison != 0;
@@ -488,6 +530,19 @@ public class ComparisonExpression implements BooleanExpression {
     final Object coerced = TemporalUtil.fromCoreJavaType(value);
     temporalCoercionMemo = new Object[] { value, coerced, dateMillis(value) };
     return coerced;
+  }
+
+  /** Values of two types: never equal, and neither less nor greater than the other. */
+  private Boolean differentTypes() {
+    return switch (operator) {
+      case EQUALS -> false;
+      case NOT_EQUALS -> true;
+      default -> null;
+    };
+  }
+
+  private static boolean isStoredLocal(final Object raw, final CypherLocalDateTime coerced) {
+    return raw instanceof LocalDateTime || coerced.isStored();
   }
 
   private static boolean isStoredZoneless(final Object value) {

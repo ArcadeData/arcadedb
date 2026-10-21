@@ -34,6 +34,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -73,6 +74,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -264,8 +266,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
+      // #10135: a session that was open before this attempt belongs to the caller, whatever happens below - joined, or
+      // refused by begin() ("Transaction already begun") when not joining
+      final boolean callerTxActive = isTransactionActive();
       try {
-        if (joinCurrentTransaction && isTransactionActive())
+        if (joinCurrentTransaction && callerTxActive)
           createdNewTx = false;
         else
           begin();
@@ -339,12 +344,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         if (retry + 1 < attempts)
           pauseBeforeRetry(retry, e);
 
-      } catch (final Exception e) {
+      } catch (final Throwable e) {
         // Same as above: the transaction this attempt left open on the server is never going to be committed,
         // so release it now instead of holding its locks until the server-side timeout (issue #7030).
-        rollbackQuietly();
-        setSessionId(null);
-        resetCreatedRecordsIdentity();
+        // #10135: but only when this call OPENED it. A call that joined the caller's transaction owns nothing, and
+        // rolling it back here would discard the caller's earlier work and drop its session, so its next request
+        // would run outside any transaction. The same ownership rule the retryable arm above applies. Throwable, not
+        // Exception: an Error thrown by a block this call opened must release the server-side transaction too. Best
+        // effort for an OutOfMemoryError or StackOverflowError: rollbackQuietly() swallows its own failure.
+        if (!callerTxActive) {
+          rollbackQuietly();
+          setSessionId(null);
+          resetCreatedRecordsIdentity();
+        }
 
         if (error != null)
           error.call(e);
@@ -744,12 +756,30 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public void deleteRecord(final Record record) {
     checkDatabaseIsOpen();
-    stats.deleteRecord.incrementAndGet();
 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    command("SQL", "delete from " + record.getIdentity());
+    // a SQL DELETE answers one row whose "count" is the number of records deleted (DeleteExecutionPlanner chains CountStep),
+    // the same contract the update arm of saveRecord reads
+    final long deleted;
+    try (final ResultSet result = command("SQL", "delete from " + record.getIdentity())) {
+      deleted = result.hasNext() ? result.next().<Number>getProperty("count", 0).longValue() : 0;
+    }
+    // a DELETE matches zero records both when the RID no longer exists and when a before-delete listener vetoed it. The first
+    // fails with RecordNotFoundException as the embedded engine and the gRPC remote do, the second with RecordVetoedException,
+    // as the update arm of saveRecord does (issue #10230): the probe tells them apart, on the refusal path only. It is the same
+    // heuristic as saveRecord's (see recordExistsUncounted): a record another client deletes or recreates between the DELETE and
+    // the probe is reported as it stands at the probe. A probe that fails (network, permission) raises its own error, the only
+    // one there is: the DELETE raised nothing
+    if (deleted == 0) {
+      if (recordExistsUncounted(record.getIdentity()))
+        throw RecordVetoedException.ofDelete(record.getIdentity());
+      throw new RecordNotFoundException("Record " + record.getIdentity() + " not found", record.getIdentity());
+    }
+    // counted only once the server reported the row it deleted, like createRecord and updateRecord in saveRecord: a
+    // record that never left the client, a refused delete or one that matched nothing is not a delete (issue #10141)
+    stats.deleteRecord.incrementAndGet();
   }
 
   @Override
@@ -1857,19 +1887,25 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     if (rid != null) {
-      // SQL UPDATE silently matches zero records when the RID no longer exists (e.g. the record was deleted or the
-      // transaction that created it was rolled back). Saving such a record must fail with RecordNotFoundException to be
-      // consistent with the embedded engine and the gRPC remote (issue #4562).
-      final ResultSet result = command("sql", "update " + rid + " content " + json);
-      final long updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
-      if (updated == 0)
+      // SQL UPDATE matches zero records both when the RID no longer exists (e.g. the record was deleted or the transaction
+      // that created it was rolled back) and when a before-update listener vetoed the write. The first must fail with
+      // RecordNotFoundException to be consistent with the embedded engine and the gRPC remote (issue #4562), the second with
+      // RecordVetoedException, as the gRPC remote does (issue #10161): the probe tells them apart, on the refusal path only
+      final long updated;
+      try (final ResultSet result = command("sql", "update " + rid + " content " + json)) {
+        updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
+      }
+      if (updated == 0) {
+        if (recordExistsUncounted(rid))
+          throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
+      }
       // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
       stats.updateRecord.incrementAndGet();
     } else {
       final ResultSet result = command("sql",
           "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
-      rid = result.next().getIdentity().get();
+      rid = insertedRID(result, record);
       trackCreatedRecord(record);
       stats.createRecord.incrementAndGet();
     }
@@ -1888,10 +1924,56 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final ResultSet result = command("sql",
         "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
             + " content " + json);
-    final RID newRID = result.next().getIdentity().get();
+    final RID newRID = insertedRID(result, record);
     trackCreatedRecord(record);
     stats.createRecord.incrementAndGet();
     return newRID;
+  }
+
+  /**
+   * The {@code saveReportingVeto()} of the remote records: runs their {@code save()}, which raises {@link RecordVetoedException}
+   * for a create or an update a server side listener refused, and answers that refusal as {@code false} (issue #10161).
+   */
+  static boolean savedUnlessVetoed(final Runnable save) {
+    try {
+      save.run();
+      return true;
+    } catch (final RecordVetoedException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} and
+   * {@link #deleteRecord(Record)} to tell a veto from a missing record. Not counted in any statistic: the caller made no read,
+   * and the statistics count what the caller did (issue #10095). It runs in the caller's session, so inside a remote
+   * transaction it sees that transaction's records.
+   * <p>
+   * A heuristic, as an UPDATE that matched nothing says no more: a record deleted by someone else between the UPDATE and this
+   * probe reads as missing, which it is by then, and a record the UPDATE could not change for any other reason that leaves it
+   * readable and raises nothing reads as vetoed. A listener's veto is the one such reason the server has today.
+   */
+  private boolean recordExistsUncounted(final RID rid) {
+    // ASKED OF THE LEADER, AS THE UPDATE WAS: A LAGGING REPLICA COULD STILL HOLD A RECORD THE LEADER DELETED, OR NOT YET HOLD ONE
+    // IT JUST CREATED
+    try (final ResultSet result = (ResultSet) databaseCommand("query", "sql", "select @rid from " + rid, null, true,
+        (connection, response) -> createResultSet(response))) {
+      return result.hasNext();
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The RID an INSERT answered. An INSERT a before-create listener vetoed answers no row at all, which used to escape as a bare
+   * {@link NoSuchElementException} out of {@code save()} (issue #10161).
+   */
+  private static RID insertedRID(final ResultSet result, final MutableDocument record) {
+    try (result) {
+      if (!result.hasNext())
+        throw RecordVetoedException.ofCreate(record.getTypeName());
+      return result.next().getIdentity().get();
+    }
   }
 
   protected Map<String, Object> mapArgs(final Object[] args) {

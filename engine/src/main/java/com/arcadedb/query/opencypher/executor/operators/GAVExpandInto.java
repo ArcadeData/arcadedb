@@ -22,8 +22,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -93,6 +95,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
+    // The view as the statement reads it, one snapshot for every row (issue #10415)
+    final GraphTraversalProvider provider = GraphViewPins.pin(context, this.provider);
 
     return new ResultSet() {
       private final List<Result> buffer = new ArrayList<>();
@@ -100,7 +104,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private boolean finished = false;
       // Resolved once per execution, not per row: an untyped hop reads every edge type of the schema
       private final String[] trackedTypes = edgeTrackingVar != null ?
-          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
+          GAVEdgeRef.trackedEdgeTypes(provider, context.getDatabase(), edgeTypes) : null;
 
       @Override
       public boolean hasNext() {
@@ -138,8 +142,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           }
 
           // CSR multiplicity lookup: O(log(degree)) binary search plus the equal range
-          final int srcId = provider.getNodeId(sourceVertex.getIdentity());
-          final int tgtId = provider.getNodeId(targetVertex.getIdentity());
+          final int srcId = GAVVertex.nodeIdIn(sourceVertex, provider);
+          final int tgtId = GAVVertex.nodeIdIn(targetVertex, provider);
 
           // One or both vertices not in the GAV mapping, or a provider that cannot state the
           // multiplicity exactly (a negative answer) — fall back to the OLTP edge list
@@ -175,8 +179,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         final GAVEdgeRef[] bound = GAVEdgeRef.collect(inputResult, sameClausePrecedingRelVars);
         final RID source = sourceVertex.getIdentity();
         final RID target = targetVertex.getIdentity();
-        final int srcId = provider.getNodeId(source);
-        final int tgtId = provider.getNodeId(target);
+        final int srcId = GAVVertex.nodeIdIn(sourceVertex, provider);
+        final int tgtId = GAVVertex.nodeIdIn(targetVertex, provider);
         for (final String type : trackedTypes) {
           if (direction != Direction.IN)
             emitTracked(inputResult, bound, type, source, target, srcId, tgtId, Vertex.DIRECTION.OUT, sourceVertex, targetVertex);
@@ -189,7 +193,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private void emitTracked(final Result inputResult, final GAVEdgeRef[] bound, final String type, final RID out,
           final RID in, final int srcId, final int tgtId, final Vertex.DIRECTION orientation, final Vertex sourceVertex,
           final Vertex targetVertex) {
-        long parallel = srcId < 0 || tgtId < 0 ? -1 : provider.countEdgesBetween(srcId, tgtId, orientation, type);
+        // The concrete type alone, as the label names it and as the record fallback counts it (issue #10213)
+        long parallel = srcId < 0 || tgtId < 0 ? -1 : provider.countEdgesBetweenInSlice(srcId, tgtId, orientation, type);
         if (parallel < 0)
           parallel = countTypedOLTP(sourceVertex, targetVertex, orientation, type);
         for (int occurrence = 0; occurrence < parallel; occurrence++) {

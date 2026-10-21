@@ -368,7 +368,7 @@ public final class GraphAlgorithms {
    *
    * @param tolerance the largest change of any rank in one iteration below which the ranks are taken as converged
    */
-  public static double[] pageRank(final GraphAnalyticalView view, final double damping, final int iterations,
+  public static double[] pageRank(final GraphAnalyticalView.Pinned view, final double damping, final int iterations,
       final double tolerance, final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
@@ -502,6 +502,12 @@ public final class GraphAlgorithms {
     return rank;
   }
 
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static double[] pageRank(final GraphAnalyticalView view, final double damping, final int iterations,
+      final double tolerance, final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
+    return pageRank(view.pinned(), damping, iterations, tolerance, direction, checkpoint, edgeTypes);
+  }
+
   /**
    * Computes PageRank over the given view for the specified edge types using directed (OUT) semantics.
    */
@@ -538,7 +544,7 @@ public final class GraphAlgorithms {
    * @param edgeTypes edge types to consider (null or empty = all)
    * @return int[] of component IDs indexed by dense node ID (component ID = min node ID in component)
    */
-  public static int[] connectedComponents(final GraphAnalyticalView view, final String... edgeTypes) {
+  public static int[] connectedComponents(final GraphAnalyticalView.Pinned view, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new int[0];
@@ -561,6 +567,11 @@ public final class GraphAlgorithms {
       allBwdNeighbors[t] = csr.getBackwardNeighbors();
     }
     return connectedComponents(n, allFwdOffsets, allFwdNeighbors, allBwdOffsets, allBwdNeighbors);
+  }
+
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static int[] connectedComponents(final GraphAnalyticalView view, final String... edgeTypes) {
+    return connectedComponents(view.pinned(), edgeTypes);
   }
 
   /**
@@ -711,7 +722,7 @@ public final class GraphAlgorithms {
    * @param edgeTypes edge types to traverse (null or empty = all)
    * @return hop count, or -1 if no path exists
    */
-  public static int shortestPath(final GraphAnalyticalView view, final int source, final int target,
+  public static int shortestPath(final GraphAnalyticalView.Pinned view, final int source, final int target,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
     if (source == target)
       return 0;
@@ -805,6 +816,12 @@ public final class GraphAlgorithms {
     return -1;
   }
 
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static int shortestPath(final GraphAnalyticalView view, final int source, final int target,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return shortestPath(view.pinned(), source, target, direction, edgeTypes);
+  }
+
   /**
    * Returns the full distance array from a source node to all reachable nodes.
    * Unreachable nodes have distance -1.
@@ -813,7 +830,7 @@ public final class GraphAlgorithms {
    * hysteresis thresholds (separate enter/exit), and parallel pull mode.
    * Push mode uses VarHandle CAS on the visited bitmap for lock-free thread safety.
    */
-  public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
+  public static int[] shortestPathAll(final GraphAnalyticalView.Pinned view, final int source,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
 
@@ -1268,6 +1285,12 @@ public final class GraphAlgorithms {
     return dist;
   }
 
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return shortestPathAll(view.pinned(), source, direction, edgeTypes);
+  }
+
   // --- Dijkstra Single-Source Shortest Path (weighted) ---
 
   /**
@@ -1297,14 +1320,14 @@ public final class GraphAlgorithms {
    * @return double[] of distances indexed by dense node ID (POSITIVE_INFINITY = unreachable), or {@code null}
    * if a node reached along the way cannot be answered exactly
    */
-  public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
+  public static double[] dijkstraSingleSource(final GraphAnalyticalView.Pinned view, final int source,
       final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
     // One snapshot for the whole kernel, not one accessor call per part of it. Checking for an overlay and
     // then fetching the offsets, the neighbours and the weight columns through four more reads of the field
     // would let a commit land between any two of them, and the arrays either side of it are halves of two
     // different graphs - out of which this would compute a plausible wrong distance rather than fail, which is
     // the failure class issue #6315 exists to close, not to move.
-    final GraphAnalyticalView.Snapshot snap = view.captureSnapshot();
+    final GraphAnalyticalView.Snapshot snap = view.snapshot();
 
     // dist is indexed by dense node id, and while an overlay is active that space runs past nodeMapping.size():
     // the overlay allocates every added node's id above the base mapping and never reclaims a deleted one's
@@ -1422,19 +1445,24 @@ public final class GraphAlgorithms {
     return dist;
   }
 
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
+      final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return dijkstraSingleSource(view.pinned(), source, weightProperty, direction, edgeTypes);
+  }
+
   /**
    * Same Dijkstra as {@link #dijkstraSingleSource}, run while a delta overlay is active: each popped node's
    * neighbours and weights come from {@link com.arcadedb.graph.GraphTraversalProvider#edgeWeightsOf}, which
    * resolves the overlay against the columns, instead of the raw CSR arrays the overlay-free path indexes
    * directly. {@code dist} arrives with {@code dist[source] = 0} already set by the caller.
    * <p>
-   * {@code dist} is sized once, against the id-space upper bound the caller's snapshot reported at the start of
-   * the search - but this method reads the live {@code view} once per popped node, not that pinned snapshot, so
-   * a commit that widens the overlay further while a long search is still in flight could hand back a neighbour
-   * id past the end of {@code dist}. Refusing that node the same way an unresolvable one is refused, rather than
-   * indexing past the array, is what keeps that race a refusal instead of an {@code ArrayIndexOutOfBoundsException}.
+   * {@code dist} is sized once, against the id-space upper bound of the pinned snapshot, and every popped node is read
+   * from that same snapshot, so a commit that widens the overlay while a long search is in flight cannot hand back a
+   * neighbour id past the end of {@code dist} (issue #10350). A neighbour past it is still refused the way an unresolvable
+   * one is, rather than indexed past the array.
    */
-  private static double[] dijkstraSingleSourceViaProvider(final GraphAnalyticalView view, final int source,
+  private static double[] dijkstraSingleSourceViaProvider(final GraphAnalyticalView.Pinned view, final int source,
       final double[] dist, final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
     final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
     heap.offer(new double[]{ 0.0, source });
@@ -1455,7 +1483,7 @@ public final class GraphAlgorithms {
       for (int j = 0; j < neighbors.length; j++) {
         final int v = neighbors[j];
         if (v >= dist.length)
-          return null; // a concurrent commit widened the id space past this search's pinned bound; refuse rather than overrun it
+          return null; // past the bound of the pinned snapshot: refused rather than overrun
         final double w = weights[j];
         if (!EdgeWeight.isWalkable(w))
           continue;
@@ -1547,7 +1575,7 @@ public final class GraphAlgorithms {
    *
    * @param direction the edges whose far end a node reads labels from
    */
-  public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters, final int[] rank,
+  public static int[] labelPropagation(final GraphAnalyticalView.Pinned view, final int maxIters, final int[] rank,
       final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
@@ -1683,6 +1711,12 @@ public final class GraphAlgorithms {
     return labels;
   }
 
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters, final int[] rank,
+      final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
+    return labelPropagation(view.pinned(), maxIters, rank, direction, checkpoint, edgeTypes);
+  }
+
   /**
    * Inverts a tie-break rank: {@code result[rank[i]] == i}.
    *
@@ -1739,7 +1773,7 @@ public final class GraphAlgorithms {
    *
    * @param checkpoint called periodically; throws to abort. {@link WorkCheckpoint#NONE} to run unbounded
    */
-  public static double[] localClusteringCoefficient(final GraphAnalyticalView view, final WorkCheckpoint checkpoint,
+  public static double[] localClusteringCoefficient(final GraphAnalyticalView.Pinned view, final WorkCheckpoint checkpoint,
       final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
@@ -1750,13 +1784,19 @@ public final class GraphAlgorithms {
     return lccBuildAndIntersect(view, types, n, checkpoint);
   }
 
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static double[] localClusteringCoefficient(final GraphAnalyticalView view, final WorkCheckpoint checkpoint,
+      final String... edgeTypes) {
+    return localClusteringCoefficient(view.pinned(), checkpoint, edgeTypes);
+  }
+
   /**
    * Builds a flat merged undirected adjacency from CSR arrays, then counts triangles via
    * sorted-merge intersection. For single edge type, uses merge (O(d)) instead of sort (O(d log d))
    * since CSR forward and backward arrays are already individually sorted.
    * Multi-type sort phase and triangle counting are both parallelized.
    */
-  private static double[] lccBuildAndIntersect(final GraphAnalyticalView view, final String[] types, final int n,
+  private static double[] lccBuildAndIntersect(final GraphAnalyticalView.Pinned view, final String[] types, final int n,
       final WorkCheckpoint checkpoint) {
     final boolean singleType = types.length == 1;
     // First pass: compute degree per node
@@ -1936,7 +1976,7 @@ public final class GraphAlgorithms {
 
   // --- Helpers ---
 
-  private static String[] resolveEdgeTypes(final GraphAnalyticalView view, final String... edgeTypes) {
+  private static String[] resolveEdgeTypes(final GraphAnalyticalView.Pinned view, final String... edgeTypes) {
     // A requested type brings its materialized sub-types along: the view keeps one slice per concrete type (#8426)
     if (edgeTypes != null && edgeTypes.length > 0)
       return view.resolveEdgeTypes(edgeTypes);

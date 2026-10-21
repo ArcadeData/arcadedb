@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -52,10 +53,7 @@ public class TextCharAt extends AbstractTextFunction {
     if (str == null)
       return null;
 
-    final int index = asInt(args[1], 0);
-    if (index < 0 || index >= str.length())
-      return null;
-
-    return String.valueOf(str.charAt(index));
+    // A character is a Unicode code point, never half of a surrogate pair (issue #10378)
+    return CypherFunctionHelper.charAtCodePoint(str, asInt(args[1], 0));
   }
 }

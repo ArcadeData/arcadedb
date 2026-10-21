@@ -18,23 +18,33 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import com.arcadedb.log.LogManager;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.util.AffineTransformation;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
 import org.locationtech.jts.io.WKTWriter;
+import org.locationtech.jts.operation.distance.DistanceOp;
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.context.SpatialContextFactory;
+import org.locationtech.spatial4j.context.jts.DatelineRule;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContext;
 import org.locationtech.spatial4j.context.jts.JtsSpatialContextFactory;
 import org.locationtech.spatial4j.io.ShapeIO;
+import org.locationtech.spatial4j.shape.Circle;
 import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.jts.JtsGeometry;
+import org.locationtech.spatial4j.shape.jts.JtsShapeFactory;
 
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Geospatial utility class.
@@ -42,12 +52,30 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class GeoUtils {
-  static final JtsSpatialContextFactory FACTORY         = new JtsSpatialContextFactory();
+  static final JtsSpatialContextFactory FACTORY         = newFactory();
   static final JtsSpatialContext        SPATIAL_CONTEXT = new JtsSpatialContext(FACTORY);
+  /** Mean Earth radius of the haversine formula {@code geo.distance()} answers with, in kilometres. */
+  public static final double EARTH_RADIUS_KM = 6371.0;
 
   // WKTReader/WKTWriter are not thread-safe; use ThreadLocal to avoid per-call allocation
   private static final ThreadLocal<WKTReader> WKT_READER = ThreadLocal.withInitial(WKTReader::new);
   private static final ThreadLocal<WKTWriter> WKT_WRITER = ThreadLocal.withInitial(WKTWriter::new);
+
+  /**
+   * Geodetic (lon/lat), with {@link DatelineRule#none}: a polygon means the area its coordinates enclose, read on the
+   * longitude/latitude plane as OGC WKT, PostGIS {@code geometry}, Shapely and GeoJSON (RFC 7946) read it.
+   * <p>
+   * Spatial4j's default, {@link DatelineRule#width180}, assumed no polygon is wider than 180 degrees and read a wider
+   * one as crossing the antimeridian: a band from -100 to 100 of longitude was taken for the 160 degrees around the
+   * back of the globe, a polar cap from -180 to 180 collapsed to nothing, and a wide polygon that is not a rectangle
+   * failed to parse at all (issue #10210). A shape crossing the antimeridian is written either as a MULTIPOLYGON split
+   * at 180, or with longitudes past it ({@code 170 .. 190}), which {@link #parseGeometry} splits there.
+   */
+  private static JtsSpatialContextFactory newFactory() {
+    final JtsSpatialContextFactory factory = new JtsSpatialContextFactory();
+    factory.datelineRule = DatelineRule.none;
+    return factory;
+  }
 
   public static SpatialContextFactory getFactory() {
     return FACTORY;
@@ -124,9 +152,99 @@ public class GeoUtils {
       return null;
     try {
       return SPATIAL_CONTEXT.getFormats().getReader(ShapeIO.WKT).read(wkt);
-    } catch (Exception e) {
-      throw new IllegalArgumentException("Cannot parse geometry from: " + wkt, e);
+    } catch (final Exception e) {
+      final Shape wrapped = splitAtAntimeridian(wkt);
+      if (wrapped != null)
+        return wrapped;
+      throw new IllegalArgumentException("Cannot parse geometry from: " + wkt + " (" + e.getMessage() + ")", e);
     }
+  }
+
+  /**
+   * Reads a WKT whose longitudes run past +/-180 (up to one turn of the globe either way) as the same shape cut at the
+   * antimeridian, each part moved back into [-180, 180]: {@code POLYGON ((170 0, 190 0, 190 10, 170 10, 170 0))} is the
+   * 20 degrees across the antimeridian, two polygons on either side of it. The way to write a crossing shape as one
+   * polygon now that a wide polygon is read as written (issue #10210), as PostGIS's {@code ST_WrapX} does.
+   *
+   * @return null when the WKT is not such a shape: unreadable, a latitude out of range, a longitude past one turn
+   */
+  private static Shape splitAtAntimeridian(final String wkt) {
+    final Geometry geometry;
+    try {
+      geometry = WKT_READER.get().read(wkt);
+    } catch (final ParseException e) {
+      return null;
+    }
+    final Envelope envelope = geometry.getEnvelopeInternal();
+    if (envelope.isNull() || (envelope.getMinX() >= -180 && envelope.getMaxX() <= 180) || envelope.getMinY() < -90
+        || envelope.getMaxY() > 90 || envelope.getMinX() < -540 || envelope.getMaxX() > 540)
+      return null;
+
+    try {
+      final GeometryFactory factory = geometry.getFactory();
+      Geometry result = null;
+      for (int shift = -360; shift <= 360; shift += 360) {
+        // the part that lands inside [-180, 180] once moved by 'shift'
+        final Geometry part = geometry.intersection(factory.toGeometry(new Envelope(-180 - shift, 180 - shift, -90, 90)));
+        if (part.isEmpty())
+          continue;
+        final Geometry moved = AffineTransformation.translationInstance(shift, 0).transform(part);
+        result = result == null ? moved : result.union(moved);
+      }
+      return result == null ? null : SPATIAL_CONTEXT.getShapeFactory().makeShapeFromGeometry(result);
+    } catch (final RuntimeException e) {
+      // an invalid shape (a self-intersecting polygon) fails in the overlay: not a geometry, like any other unreadable one
+      LogManager.instance().log(GeoUtils.class, Level.FINE, "Cannot split the geometry '%s' at the antimeridian: %s", wkt,
+          e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * The great-circle distance between two shapes, in degrees of arc: 0 when they intersect, otherwise the distance
+   * between their two closest points. {@code geo.dWithin} and {@code geo.distance} used to measure between the CENTRES
+   * of the shapes, so a point inside a polygon was far from it and a point near its edge farther than it is (issue #10210).
+   * <p>
+   * The closest points are found on the longitude/latitude plane, the way the predicates read a shape, with the second
+   * shape also tried one turn either way so that two shapes facing each other across the antimeridian are measured the
+   * short way round. A circle is its centre less its radius. The distance between those two points is the great-circle
+   * one, so it is exact for a point and, for a larger shape, close to the shortest distance on the sphere but not always
+   * equal to it: the plane picks the nearest edge in degrees, and a degree of longitude is shorter the nearer the pole.
+   */
+  public static double distanceDegrees(final Shape a, final Shape b) {
+    if (a instanceof Circle circle)
+      return Math.max(0.0, distanceDegrees(circle.getCenter(), b) - circle.getRadius());
+    if (b instanceof Circle circle)
+      return Math.max(0.0, distanceDegrees(a, circle.getCenter()) - circle.getRadius());
+    if (a instanceof Point p1 && b instanceof Point p2)
+      return haversineDegrees(p1.getX(), p1.getY(), p2.getX(), p2.getY());
+    if (a.relate(b).intersects())
+      return 0.0;
+
+    final JtsShapeFactory shapeFactory = SPATIAL_CONTEXT.getShapeFactory();
+    final Geometry ga = shapeFactory.getGeometryFrom(a);
+    final Geometry gb = shapeFactory.getGeometryFrom(b);
+    double min = Double.MAX_VALUE;
+    for (int shift = -360; shift <= 360; shift += 360) {
+      final Geometry moved = shift == 0 ? gb : AffineTransformation.translationInstance(shift, 0).transform(gb);
+      final Coordinate[] closest = DistanceOp.nearestPoints(ga, moved);
+      min = Math.min(min, haversineDegrees(closest[0].x, closest[0].y, closest[1].x - shift, closest[1].y));
+    }
+    return min;
+  }
+
+  /** The central angle between two lon/lat points, in degrees, by the haversine formula. */
+  public static double haversineDegrees(final double lon1, final double lat1, final double lon2, final double lat2) {
+    return Math.toDegrees(haversineRadians(lon1, lat1, lon2, lat2));
+  }
+
+  /** The central angle between two lon/lat points, in radians, by the haversine formula. */
+  public static double haversineRadians(final double lon1, final double lat1, final double lon2, final double lat2) {
+    final double deltaLat = Math.toRadians(lat2 - lat1);
+    final double deltaLon = Math.toRadians(lon2 - lon1);
+    final double h = Math.pow(Math.sin(deltaLat / 2), 2)
+        + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.pow(Math.sin(deltaLon / 2), 2);
+    return 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
   }
 
   /**

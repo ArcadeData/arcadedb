@@ -23,8 +23,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -33,7 +33,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -122,9 +121,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
     // Materialize each source as an ordered list of (rid, score). Score may be NaN when the source
     // does not provide one; that's fine for RRF but rejected later for DBSF/LINEAR.
+    // The records the source rows already carry (the output of `vector.neighbors`, a plain SELECT, ...), so the result rows
+    // are built on them instead of loading every fused RID again (issue #10170)
+    final HashMap<RID, Document> carried = new HashMap<>();
     final List<List<RidScore>> sources = new ArrayList<>(sourceCount);
     for (int i = 0; i < sourceCount; i++)
-      sources.add(materializeSource(NAME, params[i], i));
+      sources.add(materializeSource(NAME, params[i], i, carried));
 
     final HashMap<RID, Float> fused = new HashMap<>();
     switch (strategy) {
@@ -141,7 +143,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       ranked.add(new RidScore(e.getKey(), e.getValue()));
     ranked.sort((a, b) -> Float.compare(b.score(), a.score()));
 
-    // Single pass: lookupByRID once per RID, applying groupBy and limit on the fly. Doing this
+    // Single pass: one record per RID - the one a source row carried, else lookupByRID - applying groupBy and limit on the fly. Doing this
     // in two passes (one to filter by group, one to serialize) would double the record I/O for
     // large result sets.
     //
@@ -160,24 +162,21 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       if (result.size() >= targetSize)
         break;
 
-      final Document record;
-      try {
-        record = (Document) db.lookupByRID(rs.rid(), true);
-      } catch (final RecordNotFoundException ex) {
+      // A carried record is read as the transaction sees it now: a source row may hold it as it was before a write of the same
+      // transaction (issue #10217). Only the winners are checked, the losers of the fusion never are. A null current state
+      // means the transaction deleted the record: the load below finds nothing and the candidate is skipped
+      final Document held = carried.get(rs.rid());
+      final Document current = held != null ? currentState(db, held) : null;
+      final Document record = current != null ? current : candidateRecord(db, null, rs.rid());
+      if (record == null)
         continue;
-      }
 
       if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
         continue;
 
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", record);
-      for (final String prop : record.getPropertyNames())
-        entry.put(prop, record.get(prop));
-      entry.put("@rid", record.getIdentity());
-      entry.put("@type", record.getTypeName());
-      entry.put("score", rs.score);
-      result.add(entry);
+      // The row carries the loaded record, so a consumer such as `vector.rerank` reuses it instead of loading it again,
+      // and reads the record's properties on demand instead of copying all of them (issue #10129).
+      result.add(new ScoredRecordRow(record, "score", rs.score));
     }
     return result;
   }
@@ -218,7 +217,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
    * shaped output of plain sub-SELECT queries.
    */
   @SuppressWarnings("unchecked")
-  private static List<RidScore> materializeSource(final String functionName, final Object src, final int sourceIdx) {
+  private static List<RidScore> materializeSource(final String functionName, final Object src, final int sourceIdx,
+      final Map<RID, Document> carried) {
     if (src == null)
       return Collections.emptyList();
     if (!(src instanceof Iterable<?> iter))
@@ -226,14 +226,36 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
           functionName + " source[" + sourceIdx + "] must be a list of rows, got: " + src.getClass().getSimpleName());
 
     final ArrayList<RidScore> out = new ArrayList<>();
+    if (src instanceof IndexCursor cursor) {
+      // `SEARCH_INDEX(...)` passed directly as a source is an index cursor over bare records: the score of each match
+      // is the cursor's, not the row's (issue #10129). Without it DBSF and LINEAR refused a full-text leg written so.
+      while (cursor.hasNext()) {
+        final Identifiable next = cursor.next();
+        // Only the RID is kept: a cursor streams its matches, and holding the record of every one of them until the fusion
+        // has picked the few it returns would keep the whole match set in memory. The winners are loaded after the fusion
+        if (next != null)
+          out.add(new RidScore(next.getIdentity(), cursor.getFloatScore()));
+      }
+      return out;
+    }
     for (final Object row : iter) {
       final RID rid = extractRid(row);
       if (rid == null)
         continue;
       final float score = extractScore(row);
       out.add(new RidScore(rid, score));
+      rememberCarried(row, rid, carried);
     }
     return out;
+  }
+
+  /** Keeps the record {@code row} carries for {@code rid}, the first one seen when several sources carry it. */
+  private static void rememberCarried(final Object row, final RID rid, final Map<RID, Document> carried) {
+    if (carried.containsKey(rid))
+      return;
+    final Document record = heldRecord(row, rid);
+    if (record != null)
+      carried.put(rid, record);
   }
 
   private static RID extractRid(final Object row) {

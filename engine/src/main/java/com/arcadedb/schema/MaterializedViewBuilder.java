@@ -20,18 +20,15 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.sql.parser.FromClause;
-import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.SelectStatement;
-import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -249,16 +246,19 @@ public class MaterializedViewBuilder {
     if (schema.existsMaterializedView(name)) {
       if (ifNotExists)
         return schema.getMaterializedView(name);
-      throw new SchemaException("Materialized view '" + name + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.MATERIALIZED_VIEW, "Materialized view '" + name + "' already exists");
     }
 
     // Check if a type with this name already exists (backing type would conflict)
     if (schema.existsType(name))
-      throw new SchemaException("Cannot create materialized view '" + name +
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Cannot create materialized view '" + name +
           "': a type with the same name already exists");
 
-    // Parse the query to validate syntax and extract source types
-    final List<String> sourceTypeNames = extractSourceTypes(databaseInternal, query);
+    // Parse the query to validate syntax and extract every type it reads (issue #10205)
+    final MaterializedViewSources sources = MaterializedViewSources.of(databaseInternal, query);
+    if (refreshMode == MaterializedViewRefreshMode.INCREMENTAL)
+      sources.checkIncremental(name);
+    final List<String> sourceTypeNames = sources.typeNames();
 
     // Validate source types exist
     for (final String srcType : sourceTypeNames)
@@ -328,16 +328,24 @@ public class MaterializedViewBuilder {
     });
   }
 
+  /**
+   * Registers the view's listener on the polymorphic registry of every source type, the one triggers use too: a record of a
+   * subtype fires it, including a subtype created after the view, the way {@code SELECT FROM <source>} returns that record
+   * (issue #10205). Registered once per view: a second registration of the same view is a no-op.
+   */
   static void registerListeners(final LocalSchema schema, final MaterializedViewImpl view,
       final List<String> sourceTypeNames) {
+    if (view.getChangeListener() != null)
+      return;
     final MaterializedViewChangeListener listener =
         new MaterializedViewChangeListener((DatabaseInternal) schema.getDatabase(), view);
     view.setChangeListener(listener);
+    schema.polymorphicListenerRegistered();
     for (final String srcType : sourceTypeNames) {
-      final DocumentType type = schema.getType(srcType);
-      type.getEvents().registerListener((AfterRecordCreateListener) listener);
-      type.getEvents().registerListener((AfterRecordUpdateListener) listener);
-      type.getEvents().registerListener((AfterRecordDeleteListener) listener);
+      final RecordEventsRegistry events = ((LocalDocumentType) schema.getType(srcType)).getTriggerEvents();
+      events.registerListener((AfterRecordCreateListener) listener);
+      events.registerListener((AfterRecordUpdateListener) listener);
+      events.registerListener((AfterRecordDeleteListener) listener);
     }
   }
 
@@ -348,25 +356,12 @@ public class MaterializedViewBuilder {
     for (final String srcType : view.getSourceTypeNames()) {
       if (!schema.existsType(srcType))
         continue;
-      final DocumentType type = schema.getType(srcType);
-      type.getEvents().unregisterListener((AfterRecordCreateListener) listener);
-      type.getEvents().unregisterListener((AfterRecordUpdateListener) listener);
-      type.getEvents().unregisterListener((AfterRecordDeleteListener) listener);
+      final RecordEventsRegistry events = ((LocalDocumentType) schema.getType(srcType)).getTriggerEvents();
+      events.unregisterListener((AfterRecordCreateListener) listener);
+      events.unregisterListener((AfterRecordUpdateListener) listener);
+      events.unregisterListener((AfterRecordDeleteListener) listener);
     }
     view.setChangeListener(null);
-  }
-
-  private static List<String> extractSourceTypes(final DatabaseInternal database, final String sql) {
-    final List<String> types = new ArrayList<>();
-    final Statement parsed = database.getStatementCache().get(sql);
-    if (parsed instanceof SelectStatement select) {
-      final FromClause from = select.getTarget();
-      if (from != null) {
-        final FromItem item = from.getItem();
-        if (item != null && item.getIdentifier() != null)
-          types.add(item.getIdentifier().getStringValue());
-      }
-    }
-    return types;
+    schema.polymorphicListenerUnregistered();
   }
 }

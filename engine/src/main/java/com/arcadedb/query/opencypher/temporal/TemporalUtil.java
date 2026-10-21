@@ -48,8 +48,10 @@ import java.util.regex.Pattern;
  */
 public final class TemporalUtil {
 
+  // An offset follows the digits of a time and is not followed by more digits: a signed year of a date ('-0001-12-31',
+  // '+10000-01-01') is not one, and used to be rewritten into '-00:01-12-31', which no parser read (issue #10199)
   private static final Pattern COMPACT_OFFSET = Pattern.compile(
-      "([+-])(\\d{2})(\\d{2})(?!:)");
+      "(?<=\\d)([+-])(\\d{2})(\\d{2})(?![:\\d])");
 
   private TemporalUtil() {
   }
@@ -99,12 +101,24 @@ public final class TemporalUtil {
   }
 
   /**
-   * Parse a timezone offset string like "+01:00", "+0100", "Z".
+   * Parse the timezone of a TIME: an offset like "+01:00", "+0100" or "Z", or a named zone ("UTC", "Asia/Tokyo"), which
+   * stands for the offset the zone has now, as Neo4j reads it: a time has no date to resolve a daylight saving rule
+   * against. A named zone used to be refused with a {@code DateTimeException} (issue #10199).
    */
   public static ZoneOffset parseOffset(final String str) {
     if ("Z".equalsIgnoreCase(str))
       return ZoneOffset.UTC;
-    return ZoneOffset.of(str);
+    try {
+      return ZoneOffset.of(str);
+    } catch (final DateTimeException e) {
+      final ZoneId zone;
+      try {
+        zone = ZoneId.of(str);
+      } catch (final DateTimeException notAZone) {
+        throw e;
+      }
+      return zone.getRules().getOffset(Instant.now());
+    }
   }
 
   /**
@@ -201,19 +215,8 @@ public final class TemporalUtil {
     // Time-only types have no date component → return PT0S
     if (isTimeOnly(from) || isTimeOnly(to))
       return new CypherDuration(0, 0, 0, 0);
-    final LocalDateTime fromDT = resolveDateTime(from, to);
-    final LocalDateTime toDT = resolveDateTime(to, from);
-    long totalMonths = fromDT.toLocalDate().until(toDT.toLocalDate()).toTotalMonths();
-    // Adjust for time-of-day: if we overestimate months, the remainder would have wrong sign
-    if (totalMonths != 0) {
-      final LocalDateTime afterMonths = fromDT.plusMonths(totalMonths);
-      final Duration remainder = Duration.between(afterMonths, toDT);
-      if (totalMonths > 0 && remainder.isNegative())
-        totalMonths--;
-      else if (totalMonths < 0 && !remainder.isNegative() && !remainder.isZero())
-        totalMonths++;
-    }
-    return new CypherDuration(totalMonths, 0, 0, 0);
+    final Temporal[] pair = dateBearingPair(from, to);
+    return new CypherDuration(pair[0].until(pair[1], ChronoUnit.MONTHS), 0, 0, 0);
   }
 
   /**
@@ -225,19 +228,8 @@ public final class TemporalUtil {
     // Time-only types have no date component → return PT0S
     if (isTimeOnly(from) || isTimeOnly(to))
       return new CypherDuration(0, 0, 0, 0);
-    final LocalDateTime fromDT = resolveDateTime(from, to);
-    final LocalDateTime toDT = resolveDateTime(to, from);
-    long totalDays = ChronoUnit.DAYS.between(fromDT.toLocalDate(), toDT.toLocalDate());
-    // Adjust for time-of-day: if we overestimate days, the remainder would have wrong sign
-    if (totalDays != 0) {
-      final LocalDateTime afterDays = fromDT.plusDays(totalDays);
-      final Duration remainder = Duration.between(afterDays, toDT);
-      if (totalDays > 0 && remainder.isNegative())
-        totalDays--;
-      else if (totalDays < 0 && !remainder.isNegative() && !remainder.isZero())
-        totalDays++;
-    }
-    return new CypherDuration(0, totalDays, 0, 0);
+    final Temporal[] pair = dateBearingPair(from, to);
+    return new CypherDuration(0, pair[0].until(pair[1], ChronoUnit.DAYS), 0, 0);
   }
 
   /**
@@ -315,21 +307,56 @@ public final class TemporalUtil {
       return new CypherDuration(0, 0, timeDur.getSeconds(), timeDur.getNano());
     }
 
-    // Both have date components: compute full duration
-    final LocalDateTime fromDT = resolveDateTime(from, to);
-    final LocalDateTime toDT = resolveDateTime(to, from);
-
-    // Split exactly as Neo4j does: whole months first, then whole days after them, then the clock remainder, each unit
-    // truncated towards zero on the full date-time. Every component therefore carries the same sign, and
-    // from.plusMonths(m).plusDays(d).plusSeconds(s) - the order ArithmeticExpression applies a duration in - lands
-    // exactly on `to`. Borrowing from a Period with a fixed month length did not, for any month that was not 30 days
-    // long (issue #8386).
-    final long months = ChronoUnit.MONTHS.between(fromDT, toDT);
-    final LocalDateTime afterMonths = fromDT.plusMonths(months);
-    final long days = ChronoUnit.DAYS.between(afterMonths, toDT);
-    final Duration clockDuration = Duration.between(afterMonths.plusDays(days), toDT);
+    // Both have date components: compute full duration. Split exactly as Neo4j does: whole months first, then whole days
+    // after them, then the clock remainder, each unit truncated towards zero on the full date-time. Every component
+    // therefore carries the same sign, and from.plusMonths(m).plusDays(d).plusSeconds(s) - the order ArithmeticExpression
+    // applies a duration in - lands exactly on `to`. Borrowing from a Period with a fixed month length did not, for any
+    // month that was not 30 days long (issue #8386). On zoned operands the months and days are the local calendar's
+    // (see dateBearingPair, issue #10198)
+    final Temporal[] pair = dateBearingPair(from, to);
+    final Temporal toDT = pair[1];
+    final long months = pair[0].until(toDT, ChronoUnit.MONTHS);
+    final Temporal afterMonths = pair[0].plus(months, ChronoUnit.MONTHS);
+    final long days = afterMonths.until(toDT, ChronoUnit.DAYS);
+    final Duration clockDuration = Duration.ofNanos(afterMonths.plus(days, ChronoUnit.DAYS).until(toDT, ChronoUnit.NANOS));
 
     return new CypherDuration(months, days, clockDuration.getSeconds(), clockDuration.getNano());
+  }
+
+  /**
+   * {@code base} with the date and time fields {@code map} gives in place of its own, all resolved together: applied one at
+   * a time, {@code withYear(2023)} on February 29 clamped the day to the 28th before {@code withMonth(3)} saw it, so
+   * {@code {year: 2023, month: 3}} answered March 28 instead of March 29. A millisecond, microsecond or nanosecond
+   * replaces the whole fraction of second (see {@link #computeNanos(Map, int)}).
+   */
+  public static LocalDateTime withFieldOverrides(final LocalDateTime base, final Map<String, Object> map) {
+    final Object year = map.get("year");
+    final Object month = map.get("month");
+    final Object day = map.get("day");
+    final Object hour = map.get("hour");
+    final Object minute = map.get("minute");
+    final Object second = map.get("second");
+    final LocalDate date = year == null && month == null && day == null ?
+        base.toLocalDate() :
+        LocalDate.of(year != null ? toIntField("year", year) : base.getYear(), month != null ? toIntField("month", month) : base.getMonthValue(),
+            day != null ? toIntField("day", day) : base.getDayOfMonth());
+    final LocalTime time = LocalTime.of(hour != null ? toIntField("hour", hour) : base.getHour(),
+        minute != null ? toIntField("minute", minute) : base.getMinute(), second != null ? toIntField("second", second) : base.getSecond(),
+        computeNanos(map, base.getNano()));
+    return LocalDateTime.of(date, time);
+  }
+
+  /**
+   * The fraction of second of a temporal CONSTRUCTED from a map, which may name a base value ({@code time:},
+   * {@code datetime:}) to take the fields it does not give from: the map's millisecond, microsecond and nanosecond
+   * fields, when it has any, are the whole fraction, and the base's is {@code defaultNanos}, kept only when it has none.
+   * {@code localtime({time: localtime('12:30:45.123456789'), nanosecond: 5})} is {@code 12:30:45.000000005}, as in Neo4j:
+   * the base's milliseconds and microseconds used to survive a nanosecond given on its own (issue #10199).
+   *
+   * @see #computeNanos(Map, int, boolean)
+   */
+  public static int computeNanos(final Map<String, Object> map, final int defaultNanos) {
+    return computeNanos(map, defaultNanos, false);
   }
 
   /**
@@ -341,29 +368,33 @@ public final class TemporalUtil {
    * 0..999 when millisecond is given (else 0..999_999), nanosecond in 0..999 when a coarser component is given (else up
    * to 999_999 or 999_999_999). A component is read as a long, so a value past the int range is refused rather than
    * wrapped into a plausible fraction of a second (issue #8571).
+   *
+   * @param keepCoarserUnits true for the adjustment map of a {@code truncate()}, which keeps the portions of
+   *                         {@code defaultNanos} coarser than the fields it gives: {@code truncate('millisecond', t,
+   *                         {nanosecond: 2})} keeps the milliseconds the truncation left. False for a constructor, see
+   *                         {@link #computeNanos(Map, int)}
    */
-  public static int computeNanos(final Map<String, Object> map, final int defaultNanos) {
+  public static int computeNanos(final Map<String, Object> map, final int defaultNanos, final boolean keepCoarserUnits) {
     final Object ms = map.get("millisecond");
     final Object us = map.get("microsecond");
     final Object ns = map.get("nanosecond");
     if (ms == null && us == null && ns == null)
       return defaultNanos;
 
-    // Preserve unspecified higher-order portions from defaultNanos.
-    // E.g. truncate('millisecond', t, {nanosecond: 2}) should keep the millisecond portion.
+    final int keptNanos = keepCoarserUnits ? defaultNanos : 0;
     long nanos = 0;
     if (ms != null)
       nanos += subSecondField("Millisecond", ms, 1_000L) * 1_000_000L;
     else
-      nanos += (defaultNanos / 1_000_000) * 1_000_000L;
+      nanos += (keptNanos / 1_000_000) * 1_000_000L;
     if (us != null)
       nanos += subSecondField("Microsecond", us, ms != null ? 1_000L : 1_000_000L) * 1_000L;
     else
-      nanos += ((defaultNanos % 1_000_000) / 1_000) * 1_000L;
+      nanos += ((keptNanos % 1_000_000) / 1_000) * 1_000L;
     if (ns != null)
       nanos += subSecondField("Nanosecond", ns, us != null ? 1_000L : ms != null ? 1_000_000L : 1_000_000_000L);
     else
-      nanos += defaultNanos % 1_000;
+      nanos += keptNanos % 1_000;
     if (nanos >= 1_000_000_000L)
       // Only reachable when a portion preserved from defaultNanos is combined with a finer field whose own range is
       // wider because the coarser one was not given, e.g. a preserved millisecond plus a bare microsecond: 999999
@@ -527,6 +558,11 @@ public final class TemporalUtil {
     // A supported arcadedb.dateTimeImplementation / dateImplementation: an instant like java.util.Date (issue #9647)
     if (value instanceof Calendar calendar)
       return new CypherDateTime(calendar.toInstant().atZone(ZoneOffset.UTC));
+    // A duration a driver or the Java API binds as a parameter
+    if (value instanceof Duration duration)
+      return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
+    if (value instanceof Period period)
+      return new CypherDuration(period.toTotalMonths(), period.getDays(), 0, 0);
 
     return value;
   }
@@ -727,6 +763,9 @@ public final class TemporalUtil {
       // Under arcadedb.dateTimeImplementation=java.util.Calendar: the zone it carries is the schema's, not a chosen one
       if (value instanceof Calendar calendar)
         return CypherDateTime.ofStored(calendar.toInstant().atZone(ZoneOffset.UTC));
+      // A DATETIME column holds an instant: against a zoned datetime it compares as one (issue #10200)
+      if (value instanceof LocalDateTime ldt)
+        return CypherLocalDateTime.ofStored(ldt);
       final Object coerced = fromCoreJavaType(value);
       if (coerced instanceof CypherTemporalValue)
         return coerced;
@@ -778,25 +817,19 @@ public final class TemporalUtil {
   }
 
   /**
-   * Resolve a temporal value to a LocalDateTime, using the other value's timezone if needed.
-   * When one arg is a CypherDateTime (zoned) and the other is not, the non-zoned value
-   * is interpreted in the zoned value's timezone, then both are converted to UTC.
+   * The two date-bearing operands of {@code duration.between()}, {@code inMonths()} and {@code inDays()} as the
+   * {@code java.time} values whose {@code until()} answers as Neo4j does: when either operand carries a zone, both are
+   * {@link ZonedDateTime}s, a zone-less one read in that zone (the first operand's, when both have one). A zoned
+   * {@code until()} counts months and days on the local calendar of the first operand's zone and the rest in elapsed time,
+   * so the day across a daylight saving change is {@code P1D}, not {@code PT23H}. Both used to be converted to UTC first,
+   * which counted every unit in elapsed time (issue #10198). Without a zone, both are {@link LocalDateTime}s.
    */
-  private static LocalDateTime resolveDateTime(final CypherTemporalValue val, final CypherTemporalValue other) {
-    if (val instanceof CypherDateTime dt) {
-      // If both are zoned, convert to UTC for accurate comparison
-      if (other instanceof CypherDateTime)
-        return dt.getValue().withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
-      // If only this one is zoned, convert to UTC
-      return dt.getValue().withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
-    }
-    if (other instanceof CypherDateTime otherDT) {
-      // Non-zoned value paired with a zoned value: interpret in that timezone, then convert to UTC
-      final ZoneId zone = otherDT.getValue().getZone();
-      final LocalDateTime localDT = extractDateTime(val);
-      return localDT.atZone(zone).withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
-    }
-    return extractDateTime(val);
+  private static Temporal[] dateBearingPair(final CypherTemporalValue from, final CypherTemporalValue to) {
+    final ZoneId zone = from instanceof CypherDateTime f ? f.getValue().getZone() :
+        to instanceof CypherDateTime t ? t.getValue().getZone() : null;
+    if (zone == null)
+      return new Temporal[] { extractDateTime(from), extractDateTime(to) };
+    return new Temporal[] { toZonedDateTime(from, zone, null), toZonedDateTime(to, zone, null) };
   }
 
   /**

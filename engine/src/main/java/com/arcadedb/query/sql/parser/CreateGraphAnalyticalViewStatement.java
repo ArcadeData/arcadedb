@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.olap.GraphAnalyticalViewBuilder;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
@@ -67,7 +68,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
         result.add(r);
         return result;
       }
-      throw new CommandExecutionException("Graph Analytical View '" + viewName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW,
+          "Graph Analytical View '" + viewName + "' already exists");
     }
 
     final String[] vtArray = toStringArray(vertexTypes);

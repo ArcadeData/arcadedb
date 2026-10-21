@@ -63,13 +63,17 @@ public class TextJaroWinklerDistance extends AbstractTextFunction {
     if (str1.isEmpty() || str2.isEmpty())
       return 0.0;
 
+    // characters, not UTF-16 units: a character outside the BMP is one position of the window, one match, one prefix character
+    final int[] chars1 = codePointsOf(str1);
+    final int[] chars2 = codePointsOf(str2);
+
     // Calculate Jaro similarity
-    final double jaroSim = jaroSimilarity(str1, str2);
+    final double jaroSim = jaroSimilarity(chars1, chars2);
 
     // Calculate common prefix length (up to 4 chars)
     int prefixLen = 0;
-    final int maxPrefix = Math.min(WINKLER_MAX_PREFIX, Math.min(str1.length(), str2.length()));
-    for (int i = 0; i < maxPrefix && str1.charAt(i) == str2.charAt(i); i++) {
+    final int maxPrefix = Math.min(WINKLER_MAX_PREFIX, Math.min(chars1.length, chars2.length));
+    for (int i = 0; i < maxPrefix && chars1[i] == chars2[i]; i++) {
       prefixLen++;
     }
 
@@ -77,9 +81,9 @@ public class TextJaroWinklerDistance extends AbstractTextFunction {
     return jaroSim + (prefixLen * WINKLER_PREFIX_WEIGHT * (1.0 - jaroSim));
   }
 
-  private double jaroSimilarity(final String s1, final String s2) {
-    final int len1 = s1.length();
-    final int len2 = s2.length();
+  private double jaroSimilarity(final int[] s1, final int[] s2) {
+    final int len1 = s1.length;
+    final int len2 = s2.length;
 
     // Matching window
     final int matchWindow = Math.max(0, Math.max(len1, len2) / 2 - 1);
@@ -96,7 +100,7 @@ public class TextJaroWinklerDistance extends AbstractTextFunction {
       final int end = Math.min(i + matchWindow + 1, len2);
 
       for (int j = start; j < end; j++) {
-        if (s2Matches[j] || s1.charAt(i) != s2.charAt(j))
+        if (s2Matches[j] || s1[i] != s2[j])
           continue;
         s1Matches[i] = true;
         s2Matches[j] = true;
@@ -115,7 +119,7 @@ public class TextJaroWinklerDistance extends AbstractTextFunction {
         continue;
       while (!s2Matches[k])
         k++;
-      if (s1.charAt(i) != s2.charAt(k))
+      if (s1[i] != s2[k])
         transpositions++;
       k++;
     }

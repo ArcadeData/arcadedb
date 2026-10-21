@@ -226,17 +226,38 @@ This ensures proper class loading for frameworks that use the thread context cla
 
 ### HTTP Endpoint Registration
 
-Plugins can register custom HTTP endpoints:
+Plugins can register custom HTTP endpoints. Implement `registerAPI(HttpServer, PluginRoutes)` and declare each route
+with its HTTP method:
 
 ```java
 @Override
-public void registerAPI(HttpServer httpServer, PathHandler routes) {
-    routes.addExactPath("/api/myplugin", exchange -> {
-        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-        exchange.getResponseSender().send("{\"status\":\"ok\"}");
-    });
+public void registerAPI(HttpServer httpServer, PluginRoutes routes) {
+    routes
+        .get("/api/myplugin", exchange -> {
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+            exchange.getResponseSender().send("{\"status\":\"ok\"}");
+        })
+        // A path parameter is matched as a prefix, up to the slash before it
+        .prefix(Methods.DELETE, "/api/myplugin/items/", new DeleteItemHandler());
 }
 ```
+
+Any method a route does not declare is answered `405 Method Not Allowed` with an `Allow` header, before the handler
+runs.
+
+The older `registerAPI(HttpServer, PathHandler)` overload is deprecated and will be removed in a future release. The
+server still calls it, so a plugin built against it keeps working, but it logs a warning for every plugin that
+implements it, and a route added to that `PathHandler` with `addExactPath`/`addPrefixPath` matches on the path alone:
+it answers every method, `GET` included, and the server logs a second warning naming the route at startup. Implement
+one overload, not both: the server calls both.
+
+`HEAD` and `OPTIONS` are methods like any other: a route declared only with `get(...)` answers `HEAD` with 405, as the
+core routes do, and the server answers no CORS preflight on plugin routes. Declare them explicitly
+(`.exact(Methods.HEAD, path, handler)`) for a route that a probe reaches with `HEAD`.
+
+A protocol with its own error envelope can replace the default 405 JSON body for one path with
+`onMethodNotAllowed(path, rejection)`, called after that path is declared on the same `PluginRoutes` instance. The
+rejection runs with the 405 status and the `Allow` header already set, and only writes the body.
 
 ## Troubleshooting
 

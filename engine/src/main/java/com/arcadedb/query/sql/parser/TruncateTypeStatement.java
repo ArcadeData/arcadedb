@@ -29,13 +29,17 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.io.IOException;
 import java.util.*;
 
 /**
@@ -68,6 +72,11 @@ public class TruncateTypeStatement extends DDLStatement {
     if (typez == null) {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
+
+    // A TIMESERIES TYPE OWNS NO RECORD BUCKET: THE TRUNCATE BELOW REPORTED SUCCESS AND KEPT EVERY SAMPLE (issue #10336). ITS SAMPLES
+    // ARE REMOVED BY ITS ENGINE, OUTSIDE ANY TRANSACTION (issue #10342)
+    if (typez instanceof LocalTimeSeriesType tsType)
+      return truncateTimeSeries(context, tsType);
 
     // TRUNCATE deletes what scanType() finds, and scanType() reads the type's buckets directly - it never goes
     // through the planner, so the walk that issue #7477 gave SELECT and DELETE does not reach it. A lightweight
@@ -248,6 +257,39 @@ public class TruncateTypeStatement extends DDLStatement {
     result.setProperty("transactional", transactional);
     rs.add(result);
 
+    return rs;
+  }
+
+  /**
+   * {@code TRUNCATE TYPE} on a TIMESERIES type (issue #10342): removes every sample of every shard, the mutable pages and the sealed
+   * blocks, replicated under HA as a compaction is. The type, its columns and its settings stay.
+   * <p>
+   * The result carries {@code transactional = false} as the one of a record type does when it ran outside a transaction, and for a
+   * stronger reason: the samples are not part of any transaction (the append of {@code INSERT} is not either, issue #7410), so a
+   * {@code ROLLBACK} does not bring them back. {@code count} is the number of samples removed.
+   */
+  private ResultSet truncateTimeSeries(final CommandContext context, final LocalTimeSeriesType tsType) {
+    final long deleted;
+    try {
+      deleted = tsType.requireEngine(SecurityDatabaseUser.ACCESS.DELETE_RECORD).truncate();
+    } catch (final IOException e) {
+      throw new CommandExecutionException("Error truncating the TIMESERIES type '" + tsType.getName() + "': some of the samples may "
+          + "already be deleted, and running the statement again deletes the rest", e);
+    }
+
+    // the engine told the continuous aggregates over the type that every sample is gone (issue #10428); refresh them as an INSERT does.
+    // A truncate that failed part way threw above and refreshes nothing: the range is recorded all the same, and the next refresh
+    // (the next INSERT triggers one) recomputes it
+    if (deleted > 0L)
+      ContinuousAggregateRefresher.refreshAggregatesOver(context.getDatabase(), tsType.getName());
+
+    final ResultInternal result = new ResultInternal(context.getDatabase());
+    result.setProperty("operation", "truncate type");
+    result.setProperty("typeName", typeName.getStringValue());
+    result.setProperty("transactional", false);
+    result.setProperty("count", deleted);
+    final InternalResultSet rs = new InternalResultSet();
+    rs.add(result);
     return rs;
   }
 

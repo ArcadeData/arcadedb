@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -69,9 +70,16 @@ public class WALFile extends LockContext {
   private volatile FileLock         lock;
   private volatile boolean          active            = true;
   private volatile boolean          open;
+  // Writes appended without the flush their commit asked for, owed by a group commit (see markUnsynced)
+  private volatile boolean          unsynced;
+  // AtomicBoolean: a pass takes the request with ONE getAndSet, so a request raised meanwhile belongs either to this pass or
+  // to the next, never lost between a read and a separate clear
+  private final    AtomicBoolean    syncMetaData      = new AtomicBoolean();
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
+  // #10234: WHEN THIS FILE WAS OPENED OR LAST WRITTEN, SO THE HOUSEKEEPING CAN RELEASE A FILE NOBODY WRITES ANY MORE
+  private volatile long             lastWriteTime     = System.currentTimeMillis();
   // #8139: THROTTLES THE REOPEN DIAGNOSTIC, WHICH A RECOVERY SCAN ON AN INTERRUPTED THREAD HITS ONCE PER READ
   private final    ChannelReopenLog reopenLog         = new ChannelReopenLog();
 
@@ -279,7 +287,65 @@ public class WALFile extends LockContext {
     }
   }
 
+  /**
+   * Records that a transaction was appended to this file without the flush its commit asks for, which a group commit owes
+   * it ({@link TransactionManager#awaitWALDurable(long)}). Only ever raised by that path.
+   */
+  void markUnsynced(final boolean metaData) {
+    // the metadata request is raised BEFORE the pending flag: see syncIfUnsynced for why that order makes lowering it safe
+    if (metaData)
+      syncMetaData.set(true);
+    unsynced = true;
+  }
+
+  /**
+   * Flushes the writes {@link #markUnsynced} recorded, if any. Both flags are lowered BEFORE the flush, the pending one first:
+   * a write marked after either was lowered raises it again for the next pass, and one marked before is covered by this
+   * flush, with its metadata when it asked for it (it raised the metadata request before the pending flag that this pass
+   * lowered). So nothing is lost, at worst flushed twice, and a file stops paying full flushes once its writes stop asking.
+   */
+  void syncIfUnsynced() throws IOException {
+    if (!unsynced)
+      return;
+    unsynced = false;
+    final boolean metaData = syncMetaData.getAndSet(false);
+    if (!open) {
+      // close() leaves the flags raised only when its own flush of them failed: these writes are NOT durable, and reporting
+      // the file flushed would let the pass acknowledge them
+      markUnsynced(metaData);
+      throw new IOException("WAL file '" + filePath + "' was closed with writes that could not be flushed");
+    }
+    try {
+      force(metaData);
+    } catch (final IOException | RuntimeException e) {
+      // still owed, with the metadata flush it asked for
+      markUnsynced(metaData);
+      throw e;
+    }
+  }
+
   public synchronized void close() throws IOException {
+    // A group commit may still owe this file's last writes a flush: a closed file is never flushed again. A failed flush
+    // still closes the file below, and reaches the caller after it
+    // The flags are lowered only AFTER this flush completes, unlike a group-commit pass: a pass running meanwhile then either
+    // still sees them and flushes again (harmless), or sees them lowered only once the writes are on disk - never "nothing
+    // owed" while this flush is still running. No lock is shared with the pass: its flush may reopen the channel, which takes
+    // this file's monitor, held here
+    IOException syncFailure = null;
+    if (unsynced && open && channel != null && channel.isOpen())
+      try {
+        force(syncMetaData.get());
+        unsynced = false;
+        syncMetaData.set(false);
+      } catch (final IOException e) {
+        syncFailure = e;
+      }
+    closeFile();
+    if (syncFailure != null)
+      throw syncFailure;
+  }
+
+  private void closeFile() throws IOException {
     this.open = false;
     if (lock != null)
       try {
@@ -399,6 +465,8 @@ public class WALFile extends LockContext {
     if (!active || !open)
       return false;
 
+    // #10234: A WRITE IN PROGRESS IS NOT IDLE, HOWEVER LONG ITS FSYNC TAKES: THE HOUSEKEEPING DOES NOT PICK THIS FILE TO RELEASE
+    lastWriteTime = System.currentTimeMillis();
     try {
       callable.call();
     } catch (final RuntimeException e) {
@@ -721,6 +789,7 @@ public class WALFile extends LockContext {
     }
 
     statsBytesWritten += buffer.size();
+    lastWriteTime = System.currentTimeMillis();
 
     // This instance's own channel, exactly as the channel.force() calls these replaced: the `file`
     // parameter is this same object at the only call site (TransactionManager.tryWriteTransactionToWALFile
@@ -735,6 +804,11 @@ public class WALFile extends LockContext {
 
   public void notifyPageFlushed() {
     pagesToFlush.decrementAndGet();
+  }
+
+  /** When this file was opened or last written, in epoch milliseconds (issue #10234). */
+  long getLastWriteTime() {
+    return lastWriteTime;
   }
 
   public long getSize() throws IOException {

@@ -22,7 +22,9 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -43,6 +45,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.UserAlreadyExistsException;
 import com.arcadedb.server.security.credential.CredentialsValidator;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
@@ -67,6 +70,126 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * two that can drift (issue #7304).
    */
   private final ServerControlPlane   controlPlane;
+
+  /**
+   * The classified refusals of {@link #toStatus}. {@code toStatus} walks the cause chain one frame at a time from the
+   * head and answers the first frame an arm classifies, so the order of the arms only decides between arms that classify
+   * the SAME frame: a subtype before its supertype.
+   * <p>
+   * A table rather than a ladder of {@code instanceof} tests, because a ladder is what produced #10158: #10089 taught ONE
+   * arm to look along the chain the engine wraps a failure in, and the other eleven still read the head frame, so one
+   * wrapper turned "that name is taken" or "the quorum is momentarily unreachable" into {@code INTERNAL}. An arm added
+   * here is walked the same way as every other, and {@code Issue10158GrpcWrappedRefusalStatusTest} fails until it has a
+   * case of its own.
+   */
+  static final RefusalArm[] REFUSAL_ARMS = {
+      // Raised by this class itself; the authorization refusal is checked before the authentication one because it is
+      // the more specific outcome, not because of any inheritance between the two
+      RefusalArm.own(AdminAuthorizationException.class, Status.Code.PERMISSION_DENIED),
+      // A restore/import URL this server refuses to fetch. Before the plain SecurityException arm because it is a
+      // subtype of it, and because it is emphatically not an authentication failure: the caller is authenticated, and
+      // re-sending credentials will not make the URL acceptable. PERMISSION_DENIED says that; UNAUTHENTICATED would send
+      // the caller to fix the wrong thing (issue #7308)
+      RefusalArm.own(ServerControlPlane.RestoreImportUrlNotAllowedException.class, Status.Code.PERMISSION_DENIED),
+      RefusalArm.generic(SecurityException.class, Status.Code.UNAUTHENTICATED),
+      // ServerSecurityException does NOT extend java.lang.SecurityException, so it reaches here rather than the arm
+      // above. Authentication failures never do - authenticate() converts those to a plain SecurityException - so what
+      // is left is a security policy refusing the operation's arguments, such as the shared credentials validator
+      // rejecting a short password on createUser. The HTTP control plane answers that 403
+      // (AbstractServerHttpHandler.isSecurityFailure treats the two exception types alike), and PERMISSION_DENIED is the
+      // status that says the same thing
+      RefusalArm.own(ServerSecurityException.class, Status.Code.PERMISSION_DENIED),
+      // The operation named a user, group or token that does not exist. HTTP answers these 404, and NOT_FOUND is the
+      // status that says the same thing (issue #7309)
+      RefusalArm.own(ServerControlPlane.NotFoundException.class, Status.Code.NOT_FOUND),
+      // A token name already issued: HTTP's 409 on this transport, and distinct from INVALID_ARGUMENT because the request
+      // is well formed - it is the identity that is taken. A user or database name already taken is the same conflict
+      // (issues #10073, #10074), and not a ServerSecurityException nor a malformed argument. DatabaseAlreadyExistsException
+      // extends IllegalArgumentException, so it must stay above that arm; the restore routes raise a plain
+      // IllegalArgumentException for a taken target and keep INVALID_ARGUMENT below (issue #7395). Named by a trailer of their
+      // own, NAME_TAKEN_KEY, which is what the Java client reads as a taken name on every admin RPC (#10075, #10154, #10143):
+      // the signal used to be the ABSENCE of a class-name trailer, which no other arm could then ever send. Still no
+      // class-name trailer, because a client that predates NAME_TAKEN_KEY reads a trailer-less ALREADY_EXISTS as a taken
+      // name, while a class it does not know would send it back to the duplicate-key reading
+      RefusalArm.own(ServerControlPlane.AlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(UserAlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      RefusalArm.own(DatabaseAlreadyExistsException.class, Status.Code.ALREADY_EXISTS)
+          .naming(GrpcErrorMapper.NAME_TAKEN_KEY),
+      // A backup, restore or import already running on the same database is HTTP's 409 on the other transport: the
+      // request is well formed and authorized, and retrying once the other operation finishes is the fix. The engine's
+      // base type, so RestoreBackup, RestoreDatabase and ImportDatabase get the same status TriggerBackup already got
+      // (issue #7384 - BackupInProgressException and ServerControlPlane.OperationInProgressException both extend it).
+      // ExecuteCommand, which is where a SQL 'BACKUP DATABASE' refused by the same slot surfaces, is on the other
+      // service and maps it to the same ABORTED through GrpcErrorMapper (issue #7443)
+      RefusalArm.own(DatabaseOperationInProgressException.class, Status.Code.ABORTED),
+      // A rejected argument must not read as a server fault: an empty database name, an unparseable setting value or a
+      // backup file name outside the backup directory are all the caller's to fix
+      RefusalArm.generic(IllegalArgumentException.class, Status.Code.INVALID_ARGUMENT),
+      // The operation cannot run in this server's configuration at all - HA not enabled, connect cluster unsupported -
+      // rather than having been attempted and failed. Only that subtype: a plain CommandExecutionException from here
+      // means the operation ran and failed (a backup archive that could not be deleted), which is INTERNAL, not a
+      // precondition the caller can satisfy
+      RefusalArm.own(ServerControlPlane.OperationNotAvailableException.class, Status.Code.FAILED_PRECONDITION),
+      // A transient failure the caller fixes by sending the same request again - most concretely
+      // QuorumNotReachedException out of any admin operation that has to commit a Raft entry. The HTTP control plane
+      // answers every NeedRetryException 503 (AbstractServerHttpHandler), and UNAVAILABLE is the status that says the
+      // same thing here; without this arm it reached the catch-all and came out INTERNAL, which tells a client the
+      // server broke rather than to retry (issue #7532, absorbing #7550). LAST of the named arms because it is a
+      // supertype: ServerIsNotTheLeaderException extends it and is answered before this table, with the redirect
+      // trailers it needs. Named in the class-name trailer (issue #10143): a status-only UNAVAILABLE is what a lost
+      // connection looks like, so the client reads it on a write as an outcome that may already have been applied and
+      // must not be retried - the opposite of this answer, which is that nothing was applied and sending it again is the fix
+      RefusalArm.generic(NeedRetryException.class, Status.Code.UNAVAILABLE).naming(GrpcErrorMapper.EXCEPTION_CLASS_KEY) };
+
+  /**
+   * One classified refusal of {@link #toStatus}: a failure of {@code type}, found anywhere along the cause chain, is
+   * answered {@code code}. Its description is the refusal's own sentence, except for a {@code broad} type found under a
+   * wrapper in production mode, whose text is concealed like the catch-all's.
+   * <p>
+   * {@code broad} marks the types that are not ArcadeDB's own: a JDK {@link IllegalArgumentException} or
+   * {@link SecurityException}, or a {@link NeedRetryException} out of the replication layer, says nothing about who wrote
+   * its message. Raised as the head frame by this service or the control plane, it is a sentence about the request; buried
+   * under a wrapper, it can come from any library on the way and carry a path or an internal. The STATUS is kept either
+   * way, because the status is what the client acts on (issue #10158).
+   * <p>
+   * {@code trailer}, when not {@code null}, is the trailer the class name of the classified frame is sent in: the arms whose
+   * TYPE the client has to act on, and not only their status (issue #10143). {@code null} sends no trailer, and the client
+   * maps the status code alone.
+   */
+  record RefusalArm(Class<? extends Throwable> type, Status.Code code, boolean broad, Metadata.Key<String> trailer) {
+    /** An ArcadeDB-authored refusal: its sentence is about the request at any depth. */
+    static RefusalArm own(final Class<? extends Throwable> type, final Status.Code code) {
+      return new RefusalArm(type, code, false, null);
+    }
+
+    /** A JDK or replication-layer type, whose text is concealed in production when it is found under a wrapper. */
+    static RefusalArm generic(final Class<? extends Throwable> type, final Status.Code code) {
+      return new RefusalArm(type, code, true, null);
+    }
+
+    /** This arm, sending the class name of the frame it classified in {@code key}. */
+    RefusalArm naming(final Metadata.Key<String> key) {
+      return new RefusalArm(type, code, broad, key);
+    }
+
+    /**
+     * The trailers this arm answers {@code frame} with, or {@code null} when it sends none. The class name is sent in
+     * production mode too, as {@code GrpcErrorMapper} sends it on every data-plane answer: it is the TYPE the client acts
+     * on, not free-form text, which is what production mode conceals. Only an ArcadeDB class is named as itself; a
+     * subtype from any other package (a {@code broad} arm can classify one) is named by the arm's own type, which is all
+     * the client needs to act on and says nothing about what is installed on the server.
+     */
+    Metadata trailersFor(final Throwable frame) {
+      if (trailer == null)
+        return null;
+      final String frameClass = frame.getClass().getName();
+      final Metadata trailers = new Metadata();
+      trailers.put(trailer, frameClass.startsWith("com.arcadedb.") ? frameClass : type.getName());
+      return trailers;
+    }
+  }
 
   public ArcadeDbGrpcAdminService(final ArcadeDBServer server, CredentialsValidator credentialsValidator) {
 
@@ -965,9 +1088,22 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // returning normally so the join stands: respond() catches it and toStatus() passes a StatusException
       // through unchanged, so this is the transport choosing the status for a result it was handed.
       if (result.hasFailedSeeds())
-        throw Status.UNAVAILABLE.withDescription(result.errorMessage() + " " + result.detailMessage()).asException();
+        throw seedFailureStatus(result);
       return ConnectClusterResponse.newBuilder().build();
     });
+  }
+
+  /**
+   * The answer to a join that succeeded with a security document left unseeded: {@code UNAVAILABLE}, named as a
+   * {@link NeedRetryException} in the class-name trailer (issue #10143). Without the trailer the status is
+   * indistinguishable from a lost connection, which the client reads on a write as "may already have been applied, do not
+   * retry" - the opposite of this answer, whose fix is to re-run the idempotent call.
+   */
+  // @VisibleForTesting
+  static StatusException seedFailureStatus(final ServerControlPlane.ConnectClusterResult result) {
+    final Metadata trailers = new Metadata();
+    trailers.put(GrpcErrorMapper.EXCEPTION_CLASS_KEY, NeedRetryException.class.getName());
+    return Status.UNAVAILABLE.withDescription(result.errorMessage() + " " + result.detailMessage()).asException(trailers);
   }
 
   /**
@@ -1155,8 +1291,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
   /**
    * Maps a handler failure to the status the client receives. A {@link StatusException} raised by the body (the
-   * NOT_FOUND of {@code getDatabaseInfo}) is sent as it is; the authorization exception is checked before the
-   * authentication one because it is the more specific outcome, not because of any inheritance between the two.
+   * NOT_FOUND of {@code getDatabaseInfo}) is sent as it is. Every classified failure is looked for along the whole cause
+   * chain, never with an {@code instanceof} on the head frame: the engine and the control plane wrap what they raise (a
+   * commit failure, a listener, the reflective backup call), and a wrapper must not change the answer (issue #10158). The
+   * sentence sent is the one of the refusal that was found, not the wrapper's.
    * <p>
    * Package-private rather than private so the arms that answer a REFUSAL - where the status is the whole
    * contract with the client, not a detail of it - can be pinned without standing up a gRPC server.
@@ -1165,74 +1303,33 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   StatusException toStatus(final String operation, final Exception e) {
     if (e instanceof StatusException se)
       return se;
-    // A leader-only operation refused on a follower. Routed through the shared mapper so the answer carries the
-    // LeaderRedirectProtocol trailers (issue #6183) and a client can redirect itself, rather than reading prose:
-    // gRPC has no equivalent of the HTTP handler's forwardToLeaderIfReplica, which proxies the request body to
-    // the leader, so naming the leader is how this transport reproduces that gate.
-    // Found along the cause chain, as the mapper does: the engine wraps what it raises (issue #10089)
-    if (ServerIsNotTheLeaderException.refusalIn(e) != null) {
+    // Two verdicts the shared mapper owns, because they need trailers this ladder does not build. A leader-only operation
+    // refused on a follower is routed there so the answer carries the LeaderRedirectProtocol trailers (issue #6183) and a
+    // client can redirect itself, rather than reading prose: gRPC has no equivalent of the HTTP handler's
+    // forwardToLeaderIfReplica, which proxies the request body to the leader, so naming the leader is how this transport
+    // reproduces that gate. Found along the cause chain, as the mapper does: the engine wraps what it raises (issue
+    // #10089). And a statement stopped on request is CANCELLED and named as a QueryTerminatedException whatever else the
+    // chain carries (issue #9689): decided before the table, whose NeedRetryException arm would otherwise answer the
+    // conflict its rollback ran into as a retryable UNAVAILABLE
+    if (ServerIsNotTheLeaderException.refusalIn(e) != null || ErrorCategory.of(e) == ErrorCategory.TERMINATED) {
       final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }
-    if (e instanceof AdminAuthorizationException)
-      return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
-    // A restore/import URL this server refuses to fetch. Checked before the plain SecurityException
-    // arm below because it is a subtype of it, and because it is emphatically not an authentication
-    // failure: the caller is authenticated, and re-sending credentials will not make the URL
-    // acceptable. PERMISSION_DENIED says that; UNAUTHENTICATED would send the caller to fix the wrong
-    // thing (issue #7308).
-    if (e instanceof ServerControlPlane.RestoreImportUrlNotAllowedException)
-      return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
-    if (e instanceof SecurityException)
-      return Status.UNAUTHENTICATED.withDescription(e.getMessage()).asException();
-    // ServerSecurityException does NOT extend java.lang.SecurityException, so it reaches here rather
-    // than the arm above. Authentication failures never do - authenticate() converts those to a plain
-    // SecurityException - so what is left is a security policy refusing the operation's arguments,
-    // such as the shared credentials validator rejecting a short password on createUser. The HTTP
-    // control plane answers that 403 (AbstractServerHttpHandler.isSecurityFailure treats the two
-    // exception types alike), and PERMISSION_DENIED is the status that says the same thing.
-    if (e instanceof ServerSecurityException)
-      return Status.PERMISSION_DENIED.withDescription(e.getMessage()).asException();
-    // The operation named a user, group or token that does not exist. HTTP answers these 404, and
-    // NOT_FOUND is the status that says the same thing (issue #7309).
-    if (e instanceof ServerControlPlane.NotFoundException)
-      return Status.NOT_FOUND.withDescription(e.getMessage()).asException();
-    // A token name already issued: HTTP's 409 on this transport, and distinct from INVALID_ARGUMENT
-    // because the request is well formed - it is the identity that is taken.
-    // A user or database name already taken is the same conflict (issues #10073, #10074), and not a ServerSecurityException
-    // nor a malformed argument. The restore routes raise a plain IllegalArgumentException for a taken target and keep
-    // INVALID_ARGUMENT below (issue #7395).
-    if (e instanceof ServerControlPlane.AlreadyExistsException || e instanceof UserAlreadyExistsException
-        || e instanceof DatabaseAlreadyExistsException)
-      return Status.ALREADY_EXISTS.withDescription(e.getMessage()).asException();
-    // A backup, restore or import already running on the same database is HTTP's 409 on the other
-    // transport: the request is well formed and authorized, and retrying once the other operation
-    // finishes is the fix. The engine's base type, so RestoreBackup, RestoreDatabase and ImportDatabase
-    // get the same status TriggerBackup already got (issue #7384 - BackupInProgressException and
-    // ServerControlPlane.OperationInProgressException both extend it). ExecuteCommand, which is where a SQL
-    // 'BACKUP DATABASE' refused by the same slot surfaces, is on the other service and maps it to the same
-    // ABORTED through GrpcErrorMapper (issue #7443).
-    if (e instanceof DatabaseOperationInProgressException)
-      return Status.ABORTED.withDescription(e.getMessage()).asException();
-    // A rejected argument must not read as a server fault: an empty database name, an unparseable
-    // setting value or a backup file name outside the backup directory are all the caller's to fix.
-    if (e instanceof IllegalArgumentException)
-      return Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asException();
-    // The operation cannot run in this server's configuration at all - HA not enabled, connect
-    // cluster unsupported - rather than having been attempted and failed. Only that subtype: a plain
-    // CommandExecutionException from here means the operation ran and failed (a backup archive that
-    // could not be deleted), which is INTERNAL, not a precondition the caller can satisfy.
-    if (e instanceof ServerControlPlane.OperationNotAvailableException)
-      return Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException();
-    // A transient failure the caller fixes by sending the same request again - most concretely
-    // QuorumNotReachedException out of any admin operation that has to commit a Raft entry. The HTTP control
-    // plane answers every NeedRetryException 503 (AbstractServerHttpHandler), and UNAVAILABLE is the status
-    // that says the same thing here; without this arm it reached the catch-all below and came out INTERNAL,
-    // which tells a client the server broke rather than to retry (issue #7532, absorbing #7550). LAST of the
-    // named arms because it is a supertype: ServerIsNotTheLeaderException extends it and is answered further
-    // up with the redirect trailers it needs.
-    if (e instanceof NeedRetryException)
-      return Status.UNAVAILABLE.withDescription(e.getMessage()).asException();
+    // The chain is walked one frame at a time from the head, and the FIRST frame an arm classifies decides. So a wrapper -
+    // a frame no arm classifies, put on by the engine or the control plane - never changes the answer (issue #10158), and a
+    // failure raised as itself keeps the answer it always had whatever its cause carries, as the HTTP control plane
+    // answers a typed exception: a "Cannot create database" IllegalArgumentException stays INVALID_ARGUMENT even when its
+    // cause is a QuorumNotReachedException. A broad type found under a wrapper carries text nobody here wrote, which
+    // production mode conceals like the catch-all's, while the status still says what the client is to do
+    Throwable frame = e;
+    for (int depth = 0; frame != null && depth < CauseChain.MAX_DEPTH; frame = frame.getCause(), depth++)
+      for (final RefusalArm arm : REFUSAL_ARMS)
+        if (arm.type().isInstance(frame)) {
+          final boolean conceal = arm.broad() && depth > 0 && concealErrors();
+          return Status.fromCode(arm.code())
+              .withDescription(conceal ? GrpcErrorMapper.concealableDescription(this, operation, frame, conceal) : frame.getMessage())
+              .asException(arm.trailersFor(frame));
+        }
     // THE CATCH-ALL: AN UNEXPECTED FAULT, WHOSE MESSAGE IS FREE-FORM ENGINE TEXT AND CAN CARRY FILE PATHS, SCHEMA
     // NAMES AND INTERNALS. THAT IS PRECISELY WHAT PRODUCTION MODE CONCEALS IN THE HTTP BODY'S 'detail' FIELD, AND
     // THIS SURFACE USED TO EMIT IT WHATEVER THE MODE SAID (ISSUE #7472). THE ARMS ABOVE ARE NOT CONCEALED: EACH IS
@@ -1334,7 +1431,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * {@code Status.PERMISSION_DENIED} (the caller is authenticated but not authorized), distinct from
    * the {@code UNAUTHENTICATED} used for authentication failures.
    */
-  private static final class AdminAuthorizationException extends RuntimeException {
+  static final class AdminAuthorizationException extends RuntimeException {
     AdminAuthorizationException(final String message) {
       super(message);
     }

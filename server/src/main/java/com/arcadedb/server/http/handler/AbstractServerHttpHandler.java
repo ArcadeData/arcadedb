@@ -101,6 +101,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -130,6 +131,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * here.
    */
   private static final int    MAX_PRESIZED_REQUEST_BODY     = 1024 * 1024;
+  // The longest parser verdict told to a client or logged for a body that did not parse (issue #10395)
+  private static final int    MAX_PARSE_FAILURE_LENGTH      = 200;
+  // The parser's own verdict, "End of input at line 1 column 13": a few words, then where it stopped. Anchored at the start and
+  // without a colon or a quote in the words, so "Not a JSON Object: <the body>" never matches, whatever the body holds. The
+  // " path $.name" the parser appends is left out: it names a member of the body
+  private static final Pattern PARSE_POSITION               = Pattern.compile("^[A-Za-z .()']+ at line \\d+ column \\d+");
 
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
@@ -825,7 +832,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 // something other than user:password already is. Keeping it out of the catch below is what lets
                 // that one log its cause: everything still reaching it is then an internal fault rather than a
                 // string an anonymous caller chose, so its stack trace cannot be used to flood the log (#7247).
-                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+                // 401 and not 403 (issue #10109): the request carries no valid credentials, it is not refused one.
+                sendErrorResponse(exchange, 401, "Basic authentication error", null, null);
                 return;
               }
 
@@ -835,14 +843,27 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               // check (issue #7783).
               final int colonPos = authPairClear.indexOf(':');
               if (colonPos < 0) {
-                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+                sendErrorResponse(exchange, 401, "Basic authentication error", null, null);
                 return;
               }
 
-              user = authenticate(authPairClear.substring(0, colonPos), authPairClear.substring(colonPos + 1));
+              try {
+                user = authenticate(authPairClear.substring(0, colonPos), authPairClear.substring(colonPos + 1));
+              } catch (final ServerSecurityException e) {
+                // A wrong password, an unknown user or a principal locked out after too many failures: the request
+                // lacks valid credentials, which RFC 9110 15.5.2 answers 401, as the bearer and API-token branches
+                // above already do (issue #10109). Left to propagate, the exception reached classifyError's security
+                // arm and came out as the 403 an AUTHENTICATED caller gets for an operation it is not allowed, so a
+                // client could not tell the two apart. The exception class stays in the body because the Java client
+                // rebuilds its SecurityException from it, not from the status. No WWW-Authenticate challenge: a
+                // browser answers one on an XHR with its native login dialog, over Studio's own login form.
+                LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Authentication failed: %s", e.getMessage());
+                sendErrorResponse(exchange, 401, "Authentication failed", e, null);
+                return;
+              }
 
             } else {
-              sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
+              sendErrorResponse(exchange, 401, "Authentication not supported", null, null);
               return;
             }
 
@@ -866,6 +887,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       JSONObject payload = null;
       JSONArray payloadAsArray = null;
       String payloadAsString = null;
+      String malformedPayload = null;
       if (mustExecuteOnWorkerThread()) {
         payloadAsString = parseRequestPayload(exchange);
         // The body can only be read once from the exchange, so keep the raw text available to handlers whose
@@ -885,7 +907,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             } else
               payload = new JSONObject(trimmedPayload);
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
+            malformedPayload = describeParseFailure(e);
+            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", malformedPayload);
           }
         }
       }
@@ -971,7 +994,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       final ExecutionResponse response;
-      if (payloadAsArray != null && !acceptsArrayPayload())
+      if (malformedPayload != null && refusesMalformedPayload())
+        // A body that was sent and could not be parsed is not "no body": a handler given a null payload for it would run as if
+        // the client had sent nothing (a begin with the database default, a security seed with defaults) or dereference it
+        // (issue #10395). Refused once here, naming the parse error, so no handler has to remember to tell the two apart
+        response = new ExecutionResponse(400, error2json("Invalid JSON payload",
+            "The request body must be a valid JSON object: " + malformedPayload, null, null, null));
+      else if (payloadAsArray != null && !acceptsArrayPayload())
         // A top-level JSON array reached a route that only understands a JSON object: answer with an explicit
         // client error instead of running the handler with a null payload, which surfaced as a misleading
         // "field is null" message (or worse as a silent no-op) with no hint that the body shape was wrong.
@@ -1266,6 +1295,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DatabaseAlreadyExistsException databaseExists = firstOf(e, cause, DatabaseAlreadyExistsException.class);
     if (databaseExists != null)
       return new ErrorClassification(409, "Database already exists", databaseExists, null, ErrorLogKind.USER);
+
+    // 409 Conflict: a schema object name is taken - a type, a property, an index, a bucket, a view, a function (issue #10153).
+    // The same conflict as the two arms above, and it was a 500 ("Cannot execute command", or "Internal error" for the
+    // SchemaException ones) logged SEVERE with a stack trace: a retry policy keyed on 5xx re-sent a CREATE TYPE that can only be
+    // refused again. Before the CommandExecutionException arm and the generic 500, which it would otherwise reach. The label
+    // names the kind for production mode, where 'detail' is concealed; exceptionArgs carries it for the client to rebuild.
+    final AlreadyExistsException schemaObjectExists = firstOf(e, cause, AlreadyExistsException.class);
+    if (schemaObjectExists != null)
+      return new ErrorClassification(409, schemaObjectExists.getLabel(), schemaObjectExists,
+          schemaObjectExists.getKind() != null ? schemaObjectExists.getKind().name() : null, ErrorLogKind.USER);
 
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
@@ -2539,6 +2578,38 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   protected boolean requiresJsonPayload() {
     return true;
+  }
+
+  /**
+   * Returns true (the default) when the shared pipeline answers HTTP 400 to a request body that could not be parsed as JSON,
+   * naming the parse error, instead of invoking {@link #execute(HttpServerExchange, ServerSecurityUser, JSONObject)} with a null
+   * payload that is indistinguishable from "no body was sent" (issue #10395). Blank bodies are no body and are never refused.
+   * <p>
+   * A handler whose protocol has an error of its own for an unparseable body overrides this to false and reads the raw text
+   * from {@link #RAW_PAYLOAD}: the MCP endpoint answers JSON-RPC {@code -32700} over HTTP 200, never a transport error.
+   */
+  protected boolean refusesMalformedPayload() {
+    return true;
+  }
+
+  /**
+   * What a client is told of a body that did not parse, and what the log keeps: the first line of the innermost cause when it is the
+   * parser's own verdict with its position ("End of input at line 1 column 13"), capped. Never the message of the wrapper the JSON
+   * classes throw: it repeats the whole body, which can be megabytes and can hold a password. And never a message without a
+   * position either: "Not a JSON Object: &lt;the body&gt;", what a scalar body raises, quotes it (issue #10395).
+   */
+  static String describeParseFailure(final Throwable failure) {
+    Throwable cause = failure;
+    while (cause.getCause() != null && cause.getCause() != cause)
+      cause = cause.getCause();
+
+    final String message = cause.getMessage();
+    final Matcher position = message != null ? PARSE_POSITION.matcher(message) : null;
+    if (position == null || !position.find())
+      return "the body is not a JSON object";
+
+    final String verdict = position.group();
+    return verdict.length() > MAX_PARSE_FAILURE_LENGTH ? verdict.substring(0, MAX_PARSE_FAILURE_LENGTH) + "..." : verdict;
   }
 
   /**

@@ -62,8 +62,15 @@ public class TextRandom extends AbstractTextFunction {
     final ThreadLocalRandom random = ThreadLocalRandom.current();
     final StringBuilder result = new StringBuilder(length);
 
-    for (int i = 0; i < length; i++) {
-      result.append(charSet.charAt(random.nextInt(charSet.length())));
+    // The characters of the set are code points (issue #10484): drawing a UTF-16 unit out of a set holding an emoji handed back
+    // half of it. The set is walked only when it holds a surrogate, so the default and any BMP set keep the constant-time draw.
+    if (charSet.codePointCount(0, charSet.length()) == charSet.length()) {
+      for (int i = 0; i < length; i++)
+        result.append(charSet.charAt(random.nextInt(charSet.length())));
+    } else {
+      final int[] codePoints = charSet.codePoints().toArray();
+      for (int i = 0; i < length; i++)
+        result.appendCodePoint(codePoints[random.nextInt(codePoints.length)]);
     }
 
     return result.toString();

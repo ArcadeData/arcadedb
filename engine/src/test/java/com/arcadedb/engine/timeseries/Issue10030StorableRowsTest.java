@@ -48,7 +48,7 @@ class Issue10030StorableRowsTest extends TestHelper {
     final Object[][] raw = { { "7", 1, 1.5 }, { "8", "2", 2.5 } };
     final Set<String> unreadable = new LinkedHashSet<>();
 
-    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, new long[] { 10, 20 }, 2, false,
+    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, null, new long[] { 10, 20 }, 2, false,
         (row, column, def) -> raw[row][column], unreadable);
 
     assertThat(rows.size()).isEqualTo(2);
@@ -67,7 +67,7 @@ class Issue10030StorableRowsTest extends TestHelper {
     final Object[][] raw = { { "7", 1, 1.0 }, { "8", 1e12, 2.0 }, { "9", 3, 3.0 } };
     final Set<String> unreadable = new LinkedHashSet<>();
 
-    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, new long[] { 10, 20, 30 }, 3,
+    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, null, new long[] { 10, 20, 30 }, 3,
         false, (row, column, def) -> raw[row][column], unreadable);
 
     assertThat(rows.size()).isEqualTo(2);
@@ -86,7 +86,7 @@ class Issue10030StorableRowsTest extends TestHelper {
     final Object[][] raw = { { "not-a-number", "also-not", 1.0 } };
     final Set<String> unreadable = new LinkedHashSet<>();
 
-    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, new long[] { 10 }, 1, false,
+    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, null, new long[] { 10 }, 1, false,
         (row, column, def) -> {
           reads.incrementAndGet();
           return raw[row][column];
@@ -103,7 +103,7 @@ class Issue10030StorableRowsTest extends TestHelper {
     final AtomicInteger tagReads = new AtomicInteger();
     final Set<String> unreadable = new LinkedHashSet<>();
 
-    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, new long[] { 10, 20, 30 }, 3, true,
+    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, null, new long[] { 10, 20, 30 }, 3, true,
         (row, column, def) -> {
           if (def.getRole() == ColumnDefinition.ColumnRole.TAG) {
             tagReads.incrementAndGet();
@@ -123,7 +123,7 @@ class Issue10030StorableRowsTest extends TestHelper {
     final AtomicInteger fieldReads = new AtomicInteger();
     final Set<String> unreadable = new LinkedHashSet<>();
 
-    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, new long[] { 10, 20 }, 2, true,
+    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, null, new long[] { 10, 20 }, 2, true,
         (row, column, def) -> {
           if (def.getRole() == ColumnDefinition.ColumnRole.TAG)
             return "not-a-number";
@@ -148,7 +148,7 @@ class Issue10030StorableRowsTest extends TestHelper {
 
     // A distinct reason per row: the column is the same, so the message must differ through the measurement name
     for (int i = 0; i < count; i++)
-      TimeSeriesStorableRows.convert(database, "m" + i, columns, new long[] { i }, 1, false, (row, column, def) -> "x", unreadable);
+      TimeSeriesStorableRows.convert(database, "m" + i, columns, null, new long[] { i }, 1, false, (row, column, def) -> "x", unreadable);
 
     assertThat(unreadable).hasSize(TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES);
   }
@@ -157,7 +157,7 @@ class Issue10030StorableRowsTest extends TestHelper {
   void aNullValueIsStoredAsAbsentAndRefusesNothing() {
     final Set<String> unreadable = new LinkedHashSet<>();
 
-    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, new long[] { 10 }, 1, false,
+    final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, "m", COLUMNS, null, new long[] { 10 }, 1, false,
         (row, column, def) -> null, unreadable);
 
     assertThat(rows.size()).isEqualTo(1);

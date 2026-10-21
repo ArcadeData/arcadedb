@@ -18,14 +18,17 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
@@ -57,6 +60,10 @@ final class GrpcClientErrorMapper {
       Metadata.ASCII_STRING_MARSHALLER);
   static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
       Metadata.ASCII_STRING_MARSHALLER);
+  static final Metadata.Key<String> ALREADY_EXISTS_KIND_KEY = Metadata.Key.of("arcadedb-already-exists-kind",
+      Metadata.ASCII_STRING_MARSHALLER);
+  static final Metadata.Key<String> NAME_TAKEN_KEY       = Metadata.Key.of("arcadedb-name-taken",
+      Metadata.ASCII_STRING_MARSHALLER);
 
   private static final int MAX_CAUSE_DEPTH = 32;
 
@@ -73,7 +80,7 @@ final class GrpcClientErrorMapper {
 
     final String exceptionClass = trailers != null ? trailers.get(EXCEPTION_CLASS_KEY) : null;
     if (exceptionClass != null) {
-      final RuntimeException reconstructed = reconstructFromClassName(exceptionClass, msg, trailers);
+      final RuntimeException reconstructed = reconstructFromClassName(exceptionClass, status.getCode(), msg, trailers);
       if (reconstructed != null)
         return reconstructed;
     }
@@ -163,10 +170,13 @@ final class GrpcClientErrorMapper {
 
   /**
    * Whether an admin RPC failed because the name it creates is taken: a user, an API token or a database (issue #10075).
-   * The server answers all three {@code ALREADY_EXISTS} with no exception-class trailer, which {@link #toException} reads as
-   * the data plane's duplicate-key answer, so the admin calls ask this first. Only the trailer-less shape is a taken name:
-   * an {@code ALREADY_EXISTS} that names its exception (a duplicate key, or any typed conflict a later server sends) keeps
-   * the type that trailer names.
+   * The server names all three in the {@link #NAME_TAKEN_KEY} trailer (issue #10143) and with no exception-class trailer,
+   * which {@link #toException} would read as the data plane's duplicate-key answer, so the admin calls ask this first.
+   * <p>
+   * The name-taken trailer is the signal. A trailer-less {@code ALREADY_EXISTS} is still read as a taken name too, but only
+   * because a server that predates that trailer answers one exactly so; it is not a rule the server keeps, since the admin
+   * service does send class-name trailers on other arms. An {@code ALREADY_EXISTS} that names its exception (a duplicate
+   * key, or any typed conflict a later server sends) keeps the type that trailer names.
    */
   static boolean isNameTaken(final Throwable e) {
     if (Status.fromThrowable(e).getCode() != Status.Code.ALREADY_EXISTS)
@@ -174,8 +184,27 @@ final class GrpcClientErrorMapper {
     final Metadata trailers = Status.trailersFromThrowable(e);
     if (trailers == null)
       return true;
+    if (trailers.get(NAME_TAKEN_KEY) != null)
+      return true;
     final String exceptionClass = trailers.get(EXCEPTION_CLASS_KEY);
     return exceptionClass == null || exceptionClass.isEmpty();
+  }
+
+  /**
+   * The mapping of a failed ADMIN RPC (issue #10154): {@link #isNameTaken} first, then {@link #toAutoCommitWriteException} for an
+   * RPC that changes server state or {@link #toException} for a read. The one place {@code RemoteGrpcServer} turns an admin
+   * failure into an exception, unary and streaming alike: the taken-name check used to be repeated at two of its three catches,
+   * and the streaming one - {@code importDatabase}, which creates a database - read a taken name as a duplicate key naming an
+   * index that does not exist. Not folded into {@link #toException}: on the data plane a trailer-less {@code ALREADY_EXISTS} is
+   * a duplicate key from a server that predates the class-name trailer, and stays one.
+   *
+   * @param operation the RPC name, for the message only
+   * @param write     whether the RPC changes server state, so a lost answer is an unknown outcome rather than a retryable one
+   */
+  static RuntimeException toAdminException(final Throwable e, final String operation, final boolean write) {
+    if (isNameTaken(e))
+      return toNameTakenException(e);
+    return write ? toAutoCommitWriteException(e, operation) : toException(e);
   }
 
   /**
@@ -210,7 +239,10 @@ final class GrpcClientErrorMapper {
 
   /**
    * Whether {@code e} is a status-only {@code UNAVAILABLE} that may have been raised after the server received the
-   * request. A class-name trailer means the server answered, so it did not apply anything it was not reporting; a
+   * request. A class-name trailer means the server answered, so it did not apply anything it was not reporting - which
+   * holds only because every {@code UNAVAILABLE} the server authors carries one: the data plane through
+   * {@code GrpcErrorMapper}, the admin service on its {@code NeedRetryException} arm and its connect-cluster answer
+   * (issue #10143, pinned by {@code Issue10143AdminStatusRoundTripTest}); a
    * failure to connect means the request never left this client. Everything else - a reset, a GOAWAY, a channel
    * shut down mid-call - can follow a request the server already applied.
    * <p>
@@ -253,9 +285,13 @@ final class GrpcClientErrorMapper {
     return status.getDescription() != null ? status.getDescription() : status.getCode().name();
   }
 
-  private static RuntimeException reconstructFromClassName(final String exceptionClass, final String msg,
+  private static RuntimeException reconstructFromClassName(final String exceptionClass, final Status.Code code, final String msg,
       final Metadata trailers) {
     return switch (exceptionClass) {
+      // A taken schema object name (issue #10153). The server names it as a SchemaException so a client that predates the type
+      // still rebuilds a SchemaException rather than reading ALREADY_EXISTS as a duplicate key; the status tells the two apart
+      case "com.arcadedb.exception.AlreadyExistsException", "com.arcadedb.exception.TypeAlreadyExistsException" ->
+          new AlreadyExistsException(alreadyExistsKind(trailers), msg);
       case "com.arcadedb.exception.DuplicatedKeyException" ->
           new DuplicatedKeyException(dupIndex(trailers, msg), dupKeys(trailers, msg), null);
       case "com.arcadedb.exception.ConcurrentModificationException" -> new ConcurrentModificationException(msg);
@@ -271,7 +307,12 @@ final class GrpcClientErrorMapper {
       // both classify to the same NOT_FOUND status server-side (issue #7123's ErrorCategory), so without
       // this exact-type reconstruction a schema error was indistinguishable from - and, worse, silently
       // reconstructed AS - a RecordNotFoundException by the legacy status-code fallback below.
-      case "com.arcadedb.exception.SchemaException" -> new SchemaException(msg);
+      case "com.arcadedb.exception.SchemaException" -> code == Status.Code.ALREADY_EXISTS ?
+          new AlreadyExistsException(alreadyExistsKind(trailers), msg) :
+          new SchemaException(msg);
+      // A listener refused the write (issues #10085, #10161): a refusal of the request, typed so it is not read as a fault
+      case "com.arcadedb.exception.RecordVetoedException" -> new RecordVetoedException(msg);
+      case "com.arcadedb.exception.ValidationException" -> new ValidationException(msg);
       // Unknown class: let the caller fall back to status-code mapping.
       default -> null;
     };
@@ -292,6 +333,11 @@ final class GrpcClientErrorMapper {
       return null;
     final String grpcAddress = trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS);
     return grpcAddress != null ? grpcAddress : trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS);
+  }
+
+  /** The kind of schema object holding a taken name, or {@code null} when the server did not say (or named one this client lacks). */
+  private static AlreadyExistsException.Kind alreadyExistsKind(final Metadata trailers) {
+    return trailers != null ? AlreadyExistsException.Kind.fromName(trailers.get(ALREADY_EXISTS_KIND_KEY)) : null;
   }
 
   /**

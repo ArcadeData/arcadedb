@@ -1329,9 +1329,13 @@ function updateMCPConnectionInfo() {
 
 function copyMCPConfig(elementId) {
   var text = $("#" + elementId).text();
-  navigator.clipboard.writeText(text).then(function () {
-    globalNotify("Copied", "MCP configuration copied to clipboard", "success");
-  });
+  copyTextToClipboard(text)
+    .then(function () {
+      globalNotify("Copied", "MCP configuration copied to clipboard", "success");
+    })
+    .catch(function () {
+      globalNotify("Error", "Failed to copy to clipboard", "danger");
+    });
 }
 
 document.addEventListener("DOMContentLoaded", function (event) {
@@ -1386,8 +1390,6 @@ function copyInstanceId(button) {
     icon.removeClass("fa-copy").addClass("fa-check");
     setTimeout(function () { icon.removeClass("fa-check").addClass("fa-copy"); }, 1500);
   };
-  if (navigator.clipboard && navigator.clipboard.writeText)
-    navigator.clipboard.writeText(id).then(done, function () { window.prompt("Instance ID", id); });
-  else
-    window.prompt("Instance ID", id);
+  // last resort is a prompt, not a toast: the id is a value the user may want to copy by hand
+  copyTextToClipboard(id).then(done, function () { window.prompt("Instance ID", id); });
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.function.cypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -89,7 +90,8 @@ public class CypherFunctionLibraryDefinition implements FunctionLibraryDefinitio
   @Override
   public FunctionLibraryDefinition<CypherFunctionDefinition> registerFunction(final CypherFunctionDefinition function) {
     if (functions.putIfAbsent(function.getName(), function) != null)
-      throw new IllegalArgumentException("Function '" + function.getName() + "' already defined in library '" + name + "'");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION,
+          "Function '" + function.getName() + "' already defined in library '" + name + "'");
     return this;
   }
 

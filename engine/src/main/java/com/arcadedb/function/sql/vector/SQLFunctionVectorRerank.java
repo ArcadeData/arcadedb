@@ -23,12 +23,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.PriorityQueue;
 
 /**
  * Declarative multi-stage retrieval (Qdrant-style "prefetch + rerank"). Takes a stage-1
@@ -50,14 +51,27 @@ import java.util.LinkedHashMap;
  *       'embedding',       -- full-precision property to read off each record
  *       100))
  * </pre>
- * Records that disappeared between stage 1 and rerank (deleted, schema removed) are silently
- * dropped - the stage-1 candidate list is taken at face value but each row gets re-validated
- * here, so a transient inconsistency cannot crash the query.
+ * A candidate row that already carries its loaded record (a {@code record} key, a {@code Result} wrapping the
+ * element, or the record itself, as the rows of {@code vector.fuse} and {@code vector.neighbors} do) is scored on
+ * that record; only a row carrying just a RID is loaded here. Such a RID whose record disappeared between stage 1
+ * and rerank (deleted, schema removed) is silently dropped, so a transient inconsistency cannot crash the query.
+ * <p>
+ * Only the best {@code k} candidates are kept while scanning, and output rows are built for those alone, so the
+ * cost beyond reading each candidate's embedding does not grow with the candidate count (issue #10129).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.rerank";
+
+  /**
+   * Ascending order of preference: lower score first and, among equal scores, the later candidate first.
+   */
+  private static final Comparator<Scored> EVICTION_ORDER = (a, b) -> {
+    final int byScore = Float.compare(a.score(), b.score());
+    return byScore != 0 ? byScore : Integer.compare(b.sequence(), a.sequence());
+  };
+  private static final Comparator<Scored> RANK_ORDER     = EVICTION_ORDER.reversed();
 
   public SQLFunctionVectorRerank() {
     super(NAME);
@@ -87,18 +101,22 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
           + (source == null ? "null" : source.getClass().getSimpleName()));
 
     final BasicDatabase db = context.getDatabase();
-    final ArrayList<Scored> rescored = new ArrayList<>();
+    // Only the best k candidates are kept while scanning: a min-heap whose root is the candidate to evict next (lowest
+    // score, and among equal scores the one seen last), so the survivors and their order are those of a stable sort of
+    // every candidate by descending score, without sorting them all (issue #10129).
+    final PriorityQueue<Scored> best = new PriorityQueue<>(Math.min(k, 1024) + 1, EVICTION_ORDER);
     final int expectedDim = queryVector.length;
+    int sequence = 0;
     for (final Object row : iter) {
       final RID rid = extractRidFromRow(row);
       if (rid == null)
         continue;
-      final Document rec;
-      try {
-        rec = (Document) db.lookupByRID(rid, true);
-      } catch (final RecordNotFoundException e) {
+      // A row that already carries its loaded record (the output of `vector.fuse`, `vector.neighbors`, a plain
+      // SELECT) is scored on that record: loading it again is the second load issue #10129 is about. A RID of an
+      // internal record (an edge segment, ...) has no properties to score: skipped like a missing one
+      final Document rec = candidateRecord(db, row, rid);
+      if (rec == null)
         continue;
-      }
       final Object raw = rec.get(embeddingProperty);
       if (raw == null)
         continue;
@@ -113,27 +131,20 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
             + " has embedding dimension " + candVec.length + ", expected " + expectedDim
             + " (matching the query vector)");
 
-      final float similarity = VectorUtils.cosineSimilarity(queryVector, candVec);
-      // The {@code rid} is recoverable from {@code rec.getIdentity()} so it does not need to be
-      // stored on the Scored record - dropping it keeps the data class minimal.
-      rescored.add(new Scored(rec, similarity));
+      final Scored candidate = new Scored(rec, VectorUtils.cosineSimilarity(queryVector, candVec), sequence++);
+      if (best.size() < k)
+        best.add(candidate);
+      else if (EVICTION_ORDER.compare(candidate, best.peek()) > 0) {
+        best.poll();
+        best.add(candidate);
+      }
     }
 
-    rescored.sort((a, b) -> Float.compare(b.score(), a.score()));
-
-    final int targetSize = Math.min(k, rescored.size());
-    final ArrayList<Object> out = new ArrayList<>(targetSize);
-    for (int i = 0; i < targetSize; i++) {
-      final Scored s = rescored.get(i);
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", s.record());
-      for (final String prop : s.record().getPropertyNames())
-        entry.put(prop, s.record().get(prop));
-      entry.put("@rid", s.record().getIdentity());
-      entry.put("@type", s.record().getTypeName());
-      entry.put("score", s.score());
-      out.add(entry);
-    }
+    final Scored[] ranked = best.toArray(new Scored[0]);
+    Arrays.sort(ranked, RANK_ORDER);
+    final ArrayList<Object> out = new ArrayList<>(ranked.length);
+    for (final Scored s : ranked)
+      out.add(new ScoredRecordRow(s.record(), "score", s.score()));
     return out;
   }
 
@@ -141,5 +152,5 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     return NAME + "(<source>, <queryVector>, <embeddingProperty>, <k>)";
   }
 
-  private record Scored(Document record, float score) {}
+  private record Scored(Document record, float score, int sequence) {}
 }

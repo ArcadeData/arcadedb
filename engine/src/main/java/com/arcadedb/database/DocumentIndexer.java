@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexKeyEquality;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 public class DocumentIndexer {
   private final LocalDatabase database;
@@ -103,6 +105,14 @@ public class DocumentIndexer {
   }
 
   /**
+   * Takes out of ONE index the entries {@link #addToIndex} puts for {@code record}: the keys it derives are the same, so what
+   * a build added for a record is exactly what this removes (issue #10490).
+   */
+  public void removeFromIndex(final Index entry, final RID rid, final Document record) {
+    forEachIndexKey(entry, record, keyValues -> entry.remove(keyValues, rid));
+  }
+
+  /**
    * Expands a document into the same logical keys used by normal index maintenance without mutating the index.
    */
   public void forEachIndexKey(final Index entry, final Document record, final Consumer<Object[]> keyConsumer) {
@@ -113,16 +123,18 @@ public class DocumentIndexer {
     final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNamesArray);
     final KeyExpansion expansion = classify(expansions);
     final int expansionIndex = lastExpansionIndex(expansions);
-    if (countListExpansions(expansions) > 1) {
-      if (isFullText(entry))
-        // Full-text combined index over several BY ITEM properties (issue #5181): a full-text index is an inverted per-field
-        // index, not a compound key, so each BY ITEM property is indexed as the UNION of its own list items (the lists may be
-        // different and of different lengths). No element-wise zip and no shared-root requirement.
-        forEachFullTextByItemKey(record, propertyNamesArray, expansions, keyConsumer);
-      else
-        // Multiple BY ITEM properties sharing the same root list - one compound entry per list element (issue #5181)
-        forEachMultiListItemKey(record, propertyNamesArray, expansions, keyConsumer);
-    } else if (expansion == KeyExpansion.NONE) {
+    if (isFullText(entry) && expansion != KeyExpansion.NONE)
+      // Full-text index over BY ITEM / BY KEY / BY VALUE properties (issues #5181, #10209): a full-text index is an inverted
+      // per-field index, not a compound key, so each expanded property is indexed as the UNION of its own elements (the lists
+      // may be different and of different lengths), ONE key per document. No element-wise zip and no shared-root requirement.
+      // UPGRADE: a single-property BM25 index built before #10209 put every item on its own, so the postings of a record not
+      // written since carry per-item term frequencies and lengths. They are found and removed exactly as before, and the corpus
+      // counters repair themselves, but only a full REBUILD INDEX (not statsOnly) rewrites those per-posting stats.
+      keyConsumer.accept(buildFullTextExpandedKey(record, propertyNamesArray, expansions));
+    else if (countListExpansions(expansions) > 1)
+      // Multiple BY ITEM properties sharing the same root list - one compound entry per list element (issue #5181)
+      forEachMultiListItemKey(record, propertyNamesArray, expansions, keyConsumer);
+    else if (expansion == KeyExpansion.NONE) {
       // Standard indexing - single entry per document
       final Object[] keyValues = new Object[keyNames.size()];
       for (int i = 0; i < keyValues.length; ++i)
@@ -307,49 +319,46 @@ public class DocumentIndexer {
   }
 
   /**
-   * Indexes a document for a FULL_TEXT index with several {@code BY ITEM} properties (issue #5181), e.g.
-   * {@code (title, keywords BY ITEM, `synonyms.name` BY ITEM, `creators.name` BY ITEM)}. A full-text index is an inverted per-field
-   * index (each property position is tokenized independently), so this produces ONE key per document where every {@code BY ITEM}
-   * position carries the union of that property's own list items and every plain position carries its scalar value. Unlike the
-   * compound path, the {@code BY ITEM} properties may reference different lists of different lengths.
-   */
-  private void forEachFullTextByItemKey(final Document record, final String[] propertyNames,
-      final KeyExpansion[] expansions, final Consumer<Object[]> keyConsumer) {
-    final Object[] keyValues = buildFullTextByItemKey(record, propertyNames, expansions);
-    if (!isAllEmpty(keyValues))
-      keyConsumer.accept(keyValues);
-  }
-
-  /**
-   * Updates a FULL_TEXT combined {@code BY ITEM} index (issue #5181): rebuilds the per-field key from the original and modified
-   * record and, when they differ, removes the old tokens and adds the new ones in one shot (the full-text index tokenizes each
-   * field position, so a single remove/put covers every item of every list).
+   * Updates a FULL_TEXT index over {@code BY ITEM} / {@code BY KEY} / {@code BY VALUE} properties (issues #5181, #10209): rebuilds
+   * the per-field key from the original and modified record and, when they differ, removes the old tokens and adds the new ones
+   * in one shot (the full-text index tokenizes each field position, so a single remove/put covers every element of every
+   * collection).
+   * <p>
+   * The record's key is never diffed element by element: what the index stores is the ANALYZED tokens, and several elements can
+   * analyze to the same token ({@code beta} and {@code BETA}). Removing the element {@code BETA} alone would remove the posting
+   * {@code beta} the surviving element {@code beta} still needs, and the record would vanish from the index (issue #10209).
+   * <p>
+   * An empty key (null or empty collections) is still removed and put: no posting comes of it, but a BM25 index counts the
+   * document in its corpus counters on put, exactly as it counts a document whose scalar value is null, so the record count the
+   * drift check compares against and the count the writers keep stay the same population.
    *
    * @return {@code true} if the index was changed.
    */
-  private boolean updateFullTextByItemInIndex(final Index index, final RID rid, final Document originalRecord,
+  private boolean updateFullTextExpandedInIndex(final Index index, final RID rid, final Document originalRecord,
       final Document modifiedRecord, final String[] propertyNames, final KeyExpansion[] expansions) {
-    final Object[] oldKey = buildFullTextByItemKey(originalRecord, propertyNames, expansions);
-    final Object[] newKey = buildFullTextByItemKey(modifiedRecord, propertyNames, expansions);
+    final Object[] oldKey = buildFullTextExpandedKey(originalRecord, propertyNames, expansions);
+    final Object[] newKey = buildFullTextExpandedKey(modifiedRecord, propertyNames, expansions);
     if (sameKeyTuple(oldKey, newKey))
       return false;
-    if (!isAllEmpty(oldKey))
-      index.remove(oldKey, rid);
-    if (!isAllEmpty(newKey))
-      index.put(newKey, new RID[] { rid });
+    index.remove(oldKey, rid);
+    index.put(newKey, new RID[] { rid });
     return true;
   }
 
   /**
    * Builds the single full-text key for a document: each {@code BY ITEM} position holds the list (union) of the values extracted
-   * from that property's own root list, every other position holds its scalar value.
+   * from that property's own root list, each {@code BY KEY} / {@code BY VALUE} position the distinct keys or values of its map,
+   * every other position its scalar value.
    */
-  private Object[] buildFullTextByItemKey(final Document record, final String[] propertyNames, final KeyExpansion[] expansions) {
+  private Object[] buildFullTextExpandedKey(final Document record, final String[] propertyNames, final KeyExpansion[] expansions) {
     final Object[] keyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; ++i)
-      keyValues[i] = expansions[i] == KeyExpansion.LIST_ITEM
-          ? collectListItemValues(record, propertyNames[i])
-          : getPropertyValue(record, propertyNames[i]);
+      keyValues[i] = switch (expansions[i]) {
+        case LIST_ITEM -> collectListItemValues(record, propertyNames[i]);
+        // mapElements() answers a collection of its own, never the map's live view: no copy needed
+        case MAP_KEY, MAP_VALUE -> mapElements(record, propertyNames[i], expansions[i]);
+        case NONE -> getPropertyValue(record, propertyNames[i]);
+      };
     return keyValues;
   }
 
@@ -374,18 +383,6 @@ public class DocumentIndexer {
         values.add(value);
     }
     return values;
-  }
-
-  /** @return {@code true} when every key position is null or an empty collection (nothing to index). */
-  private static boolean isAllEmpty(final Object[] keyValues) {
-    for (final Object value : keyValues) {
-      if (value instanceof Collection<?> collection) {
-        if (!collection.isEmpty())
-          return false;
-      } else if (value != null)
-        return false;
-    }
-    return true;
   }
 
   /**
@@ -564,6 +561,71 @@ public class DocumentIndexer {
   }
 
   /**
+   * Records, as the state a later update of the record inside this transaction diffs against, what the indexes hold for
+   * {@code pending} once {@code built} has been built over its pending state (issue #10490).
+   * <p>
+   * An update diffs against {@link TransactionContext#getLastIndexedSnapshot} when there is one and against the committed
+   * buffer otherwise, and neither knows that an index created after the record was written has been brought up to its
+   * pending state: the next update would remove and add from the committed (or the creation) values, and the entry queued for
+   * the intermediate value would stay in the index for good. The snapshot built here takes the values of the properties
+   * {@code built} indexes from {@code pending}, and those of every other index from the diff source it had, an earlier snapshot
+   * or the buffer, since the reconciliation did not touch them. Nothing is recorded for a record the transaction did not
+   * write: its buffer is its pending state.
+   */
+  public void snapshotAfterBuild(final TransactionContext tx, final Document pending, final IndexInternal built) {
+    final RID rid = pending.getIdentity();
+    if (rid == null || tx.getWrittenRecord(rid) == null)
+      return;
+
+    final List<IndexInternal> indexes = getInvolvedIndexes(pending);
+    if (indexes == null || indexes.isEmpty())
+      return;
+
+    Document baseline = tx.getLastIndexedSnapshot(rid);
+    if (baseline == null)
+      try {
+        baseline = database.getOriginalDocument(pending);
+      } catch (final IllegalStateException e) {
+        // No buffer to read: the other indexes are given the pending values, the best state left to describe them. Benign: with
+        // no earlier snapshot, no index was changed by the writes that came before, so the pending values of their properties
+        // are the ones they already hold
+        LogManager.instance().log(this, Level.FINE, "No original buffer for record %s: the indexes other than '%s' are described by "
+            + "its pending values in the snapshot of the next update", rid, built.getName());
+        baseline = pending;
+      }
+
+    final Map<String, Object> values = new LinkedHashMap<>();
+    for (final IndexInternal index : indexes) {
+      final Document source = index == built ? pending : baseline;
+      final List<String> keyNames = index.getPropertyNames();
+      final String[] propertyNames = new String[keyNames.size()];
+      final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNames);
+
+      for (int i = 0; i < propertyNames.length; ++i) {
+        // the same keys updateDocument() stores: the root of a list read per item, the map as a whole, the value otherwise
+        final String key;
+        final Object value;
+        if (expansions[i] == KeyExpansion.LIST_ITEM) {
+          final int dot = propertyNames[i].indexOf('.');
+          key = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+          value = source.get(key);
+        } else if (expansions[i] == KeyExpansion.MAP_KEY || expansions[i] == KeyExpansion.MAP_VALUE) {
+          key = propertyNames[i];
+          value = source.get(key);
+        } else {
+          key = propertyNames[i];
+          value = getPropertyValue(source, key);
+        }
+        // One value per property name: the built index wins over the others for a property they share. They cannot disagree in
+        // practice, an index that existed was brought to the pending state by the update that changed it (and left a snapshot)
+        if (!values.containsKey(key) || index == built)
+          values.put(key, copyForSnapshot(value));
+      }
+    }
+    tx.setLastIndexedSnapshot(rid, new DetachedDocument(pending, values));
+  }
+
+  /**
    * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
    * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
    * retroactively change the snapshot and hide an index delta.
@@ -651,14 +713,13 @@ public class DocumentIndexer {
       indexPropertyNames[indexPos] = propertyNamesArray;
       indexExpansions[indexPos] = expansions;
 
-      if (countListExpansions(expansions) > 1) {
-        if (isFullText(index))
-          // Full-text combined BY ITEM index (issue #5181): diff the per-field item unions.
-          anyIndexModified |= updateFullTextByItemInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
-        else
-          // Multi-BY ITEM index: diff the compound tuples produced from the shared list (issue #5181)
-          anyIndexModified |= updateMultiListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
-      } else if (expansion == KeyExpansion.NONE) {
+      if (isFullText(index) && expansion != KeyExpansion.NONE)
+        // Full-text index over expanded properties (issues #5181, #10209): replace the per-field element unions as a whole
+        anyIndexModified |= updateFullTextExpandedInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
+      else if (countListExpansions(expansions) > 1)
+        // Multi-BY ITEM index: diff the compound tuples produced from the shared list (issue #5181)
+        anyIndexModified |= updateMultiListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
+      else if (expansion == KeyExpansion.NONE) {
         // Standard update logic (existing code)
         final Object[] oldKeyValues = new Object[keyNames.size()];
         final Object[] newKeyValues = new Object[keyNames.size()];
@@ -757,17 +818,15 @@ public class DocumentIndexer {
         final KeyExpansion expansion = classify(expansions);
         final int expansionIndex = lastExpansionIndex(expansions);
 
-        if (countListExpansions(expansions) > 1) {
-          if (isFullText(index)) {
-            // Remove the per-field item unions of a full-text combined BY ITEM index (issue #5181)
-            final Object[] keyValues = buildFullTextByItemKey(record, propertyNamesArray, expansions);
-            if (!isAllEmpty(keyValues))
-              index.remove(keyValues, record.getIdentity());
-          } else
-            // Delete all entries of a multi-BY ITEM compound index (issue #5181)
-            for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNamesArray, expansions))
-              index.remove(keyValues, record.getIdentity());
-        } else if (expansion == KeyExpansion.NONE) {
+        if (isFullText(index) && expansion != KeyExpansion.NONE)
+          // Remove the per-field element unions of a full-text index over expanded properties (issues #5181, #10209), the one
+          // key the record was put with
+          index.remove(buildFullTextExpandedKey(record, propertyNamesArray, expansions), record.getIdentity());
+        else if (countListExpansions(expansions) > 1)
+          // Delete all entries of a multi-BY ITEM compound index (issue #5181)
+          for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNamesArray, expansions))
+            index.remove(keyValues, record.getIdentity());
+        else if (expansion == KeyExpansion.NONE) {
           // Standard deletion
           final Object[] keyValues = new Object[keyNames.size()];
           for (int i = 0; i < keyNames.size(); ++i) {

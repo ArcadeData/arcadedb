@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.Components;
@@ -27,9 +28,11 @@ import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import io.swagger.v3.oas.models.parameters.RequestBody;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -201,6 +204,47 @@ class CoreApiSpecTest {
   }
 
   @Test
+  void beginDeclaresTheOptionalIsolationLevelBody() {
+    // Issue #10295: PostBeginHandler reads 'isolationLevel' from an optional JSON body, so a client generated from the
+    // spec could not open a transaction at a chosen isolation level while the spec declared no body at all
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+    final RequestBody body = post.getRequestBody();
+
+    assertThat(body).as("begin accepts an optional JSON body").isNotNull();
+    assertThat(body.getRequired()).as("a begin with no body opens a transaction at the default isolation").isFalse();
+    assertThat(body.getContent().get("application/json").getSchema().get$ref())
+        .isEqualTo("#/components/schemas/BeginRequest");
+
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("BeginRequest");
+    assertThat(schema).as("the BeginRequest component is registered").isNotNull();
+    assertThat(schema.getRequired()).as("isolationLevel is optional").isNullOrEmpty();
+
+    final Schema<?> isolationLevel = schema.getProperties().get("isolationLevel");
+    assertThat(isolationLevel).isNotNull();
+    assertThat(isolationLevel.getType()).isEqualTo("string");
+    assertThat(isolationLevel.getEnum().stream().map(String::valueOf).toList())
+        .as("the accepted values are exactly the engine enum the handler resolves the value against")
+        .containsExactlyElementsOf(Arrays.stream(Database.TRANSACTION_ISOLATION_LEVEL.values()).map(Enum::name).toList());
+  }
+
+  @Test
+  void beginDocumentsThatAnUnknownIsolationLevelAnswers400() {
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+
+    assertThat(post.getResponses().get("400").getDescription()).contains("isolationLevel");
+  }
+
+  @Test
+  void commitAndRollbackDoNotDeclareARequestBody() {
+    // The 400 wording and the body are begin's own: commit and rollback share createTransactionResponses()
+    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+      assertThat(post.getRequestBody()).as(path).isNull();
+      assertThat(post.getResponses().get("400").getDescription()).as(path).doesNotContain("isolationLevel");
+    }
+  }
+
+  @Test
   void beginDeclaresTheSessionIdRequestHeaderAsOptional() {
     final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
     final Parameter header = post.getParameters().stream()
@@ -311,9 +355,60 @@ class CoreApiSpecTest {
     }
   }
 
+  /**
+   * Issue #10164: a commit naming a session the server does not hold answers 404, so its contract must say so - on the
+   * header a client sets and on the 404 it receives - and must not call it a no-op the way rollback's does.
+   */
   @Test
-  void commitAndRollbackWarnThatALostOrStaleSessionIdIsASilentNoOp() {
-    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+  void commitDeclaresThatAStaleSessionIdAnswers404() {
+    final Operation post = openAPI.getPaths().get("/api/v1/commit/{database}").getPost();
+    final Parameter header = post.getParameters().stream()
+        .filter(p -> "arcadedb-session-id".equals(p.getName()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no session header declared on commit"));
+
+    assertThat(header.getDescription()).contains("404").doesNotContain("no-op");
+    assertThat(post.getResponses().get("404").getDescription())
+        .contains("Remote transaction session not found or expired")
+        .contains("nothing was committed");
+    assertThat(openAPI.getPaths().get("/api/v1/rollback/{database}").getPost().getResponses().get("404").getDescription())
+        .as("rollback still answers 204 for a stale id: its 404 is a missing database only")
+        .isEqualTo("Database not found");
+  }
+
+  /** Issue #10164: 'terminate query', 'terminate queries tag' and 'terminate transaction' read 'wait' from the payload. */
+  @Test
+  void commandRequestDeclaresTheTerminateWait() {
+    final Schema<?> wait = (Schema<?>) openAPI.getComponents().getSchemas().get("CommandRequest").getProperties().get("wait");
+
+    assertThat(wait).as("CommandRequest.wait").isNotNull();
+    assertThat(wait.getType()).isEqualTo("integer");
+    assertThat(wait.getDescription()).contains("terminate transaction").contains("5000").contains("10000");
+  }
+
+  /** Issue #10164: POST /api/v1/server declared QueryResponse for every command, so the running-work answers were undescribed. */
+  @Test
+  void serverCommandDescribesTheRunningWorkAnswers() {
+    final Operation post = openAPI.getPaths().get("/api/v1/server").getPost();
+    assertThat(post.getResponses().get("200").getContent().get("application/json").getSchema().get$ref())
+        .isEqualTo("#/components/schemas/ServerCommandResponse");
+
+    final Map<String, Schema> schemas = openAPI.getComponents().getSchemas();
+    final Schema<?> result = (Schema<?>) schemas.get("ServerCommandResponse").getProperties().get("result");
+    assertThat(result.getAnyOf().stream().map(branch -> branch.get$ref() != null ? branch.get$ref()
+        : branch.getItems() != null && branch.getItems().get$ref() != null ? branch.getItems().get$ref() : String.valueOf(branch.getType())))
+        .contains("#/components/schemas/RunningQuery", "#/components/schemas/TransactionSession",
+            "#/components/schemas/TerminationStatus");
+
+    assertThat(schemas.get("RunningQuery").getProperties()).containsKeys("id", "text", "elapsedMs", "terminating", "sessionId", "tag");
+    assertThat(schemas.get("TransactionSession").getProperties()).containsKeys("id", "user", "idleMs", "busy", "runningQueries");
+    final Schema<?> status = (Schema<?>) schemas.get("TerminationStatus").getProperties().get("status");
+    assertThat(status.getEnum().stream().map(String::valueOf)).containsExactlyInAnyOrder("terminated", "completed", "terminating", "not found");
+  }
+
+  @Test
+  void rollbackWarnsThatALostOrStaleSessionIdIsASilentNoOp() {
+    for (final String path : List.of("/api/v1/rollback/{database}")) {
       final Operation post = openAPI.getPaths().get(path).getPost();
       final Parameter header = post.getParameters().stream()
           .filter(p -> "arcadedb-session-id".equals(p.getName()))

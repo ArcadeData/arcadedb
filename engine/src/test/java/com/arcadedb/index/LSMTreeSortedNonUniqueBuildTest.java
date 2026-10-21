@@ -23,10 +23,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -38,8 +40,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
+  @AfterEach
+  void clearEntriesPerRunLimit() {
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(0);
+  }
+
   @Test
   void buildsExternalRunsAcrossBucketsAndSupportsReopenAndMutation() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final Path spillParent = Path.of(getDatabasePath()).resolve("sorted-spill");
     final DocumentType type = database.getSchema().buildDocumentType().withName("SortedExternal").withTotalBuckets(3).create();
     type.createProperty("lookupKey", Type.STRING);
@@ -79,6 +88,8 @@ class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
 
   @Test
   void preservesListExpansionAndCollapsesRepeatedRidKeys() {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final DocumentType type = database.getSchema().buildDocumentType().withName("SortedList").withTotalBuckets(2).create();
     type.createProperty("tags", Type.LIST);
 
@@ -102,6 +113,8 @@ class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
 
   @Test
   void buildsOneHighCardinalityKeyAcrossRunsBucketsAndRidChunks() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final DocumentType type = database.getSchema().buildDocumentType().withName("SortedHighCardinality")
         .withTotalBuckets(3).create();
     type.createProperty("lookupKey", Type.STRING);
@@ -131,6 +144,8 @@ class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
 
   @Test
   void preservesCompositeCollationAndNullSkippingAcrossSpillRuns() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final DocumentType type = database.getSchema().buildDocumentType().withName("SortedComposite")
         .withTotalBuckets(2).create();
     type.createProperty("groupName", Type.STRING);
@@ -271,6 +286,8 @@ class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
 
   @Test
   void cleansSchemaAndSpillFilesAfterLateScanFailure() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final Path spillParent = Path.of(getDatabasePath()).resolve("failed-spill");
     final DocumentType type = database.getSchema().buildDocumentType().withName("SortedFailure").withTotalBuckets(2).create();
     type.createProperty("lookupKey", Type.INTEGER);

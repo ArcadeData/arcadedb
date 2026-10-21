@@ -19,9 +19,11 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
@@ -284,6 +286,78 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (row instanceof Identifiable id)
       return id.getIdentity();
     return null;
+  }
+
+  /**
+   * The record a candidate row already carries, as the current transaction sees it now, or null when the row carries none for
+   * {@code rid} or the transaction has deleted it since. Reusing it spares the reranker functions a lookup of every candidate the
+   * upstream stage has just loaded (issues #10129, #10170); see {@link #heldRecord} for what a row can carry and
+   * {@link #currentState} for why the carried object is not answered as it is.
+   * <p>
+   * A null answer for a deleted record sends the caller to {@link #candidateRecord}'s load, which finds nothing and drops the
+   * candidate: the rare case pays one failed lookup so that the common one stays a pair of hash probes.
+   */
+  protected static Document carriedRecord(final BasicDatabase db, final Object row, final RID rid) {
+    final Document held = heldRecord(row, rid);
+    return held != null ? currentState(db, held) : null;
+  }
+
+  /**
+   * The record object a candidate row holds for {@code rid}, or null when it holds none: the record of a {@link ScoredRecordRow}
+   * (the output of {@code vector.neighbors}, {@code vector.fuse}, ...), a bare {@link Document}, the {@code record} entry of a map
+   * row, or the element of a {@link Result}. The identity check keeps a user property that happens to be called {@code record}
+   * from being taken for it.
+   */
+  protected static Document heldRecord(final Object row, final RID rid) {
+    final Object carried;
+    if (row instanceof ScoreOverrideRow override)
+      // the output of `vector.boost` / `vector.discover` carries what the row it re-scored carried
+      return heldRecord(override.getSource(), rid);
+    if (row instanceof ScoredRecordRow scored)
+      carried = scored.getRecord();
+    else if (row instanceof Document document)
+      carried = document;
+    else if (row instanceof Map<?, ?> map)
+      carried = map.get("record");
+    else if (row instanceof Result result)
+      carried = result.isElement() ? result.getElement().get() : result.getProperty("record");
+    else
+      carried = null;
+    return carried instanceof Document document && rid.equals(document.getIdentity()) ? document : null;
+  }
+
+  /**
+   * {@code held} as the current transaction sees it: null when the transaction deleted it, the transaction's own copy when it
+   * wrote it, else {@code held} itself. A row can come from a variable or a sub-query evaluated BEFORE a write of the same
+   * transaction, and then holds the record as it was: a deleted record came back in the result and an updated one with its
+   * old values, where loading by RID answered the current state (issue #10217). Two hash probes of the transaction, no load.
+   */
+  protected static Document currentState(final BasicDatabase db, final Document held) {
+    // Without a transaction there is no own write to see. Every database a SQL function runs on is a DatabaseInternal (the
+    // engine evaluates server-side); the type test only guards the cast
+    if (!(db instanceof DatabaseInternal database) || !database.isTransactionActive())
+      return held;
+    final TransactionContext tx = database.getTransaction();
+    final RID rid = held.getIdentity();
+    if (tx.isDeletedInTransaction(rid))
+      return null;
+    // A RID that held a document holds a document: the written copy is never another kind of record
+    return tx.getWrittenRecord(rid) instanceof Document written ? written : held;
+  }
+
+  /**
+   * The record of a candidate row: the one it carries ({@link #carriedRecord}), else the one {@code rid} loads. Null when the
+   * record is gone, or is not a document (an internal record such as an edge segment has no properties to read).
+   */
+  protected static Document candidateRecord(final BasicDatabase db, final Object row, final RID rid) {
+    final Document carried = carriedRecord(db, row, rid);
+    if (carried != null)
+      return carried;
+    try {
+      return db.lookupByRID(rid, true) instanceof Document document ? document : null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
   }
 
   /**

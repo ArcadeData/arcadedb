@@ -89,6 +89,8 @@ public class ArcadeGraph implements Graph, Closeable {
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction      transaction;
   protected final      BasicDatabase               database;
+  // SET ON THE FIRST ELEMENT REMOVED THROUGH THIS GRAPH, NEVER RESET (ISSUE #10196): SEE hasRemovedElements()
+  private volatile     boolean                     elementsRemoved;
   private final        boolean                     sharedDatabase;
   protected final      BaseConfiguration           configuration  = new BaseConfiguration();
   private final static Iterator<Vertex>            EMPTY_VERTICES = Collections.emptyIterator();
@@ -331,8 +333,9 @@ public class ArcadeGraph implements Graph, Closeable {
     } else
       bucketName = null;
 
+    // getOrCreate: two traversals adding the first vertex of a label concurrently both end with the type (issue #10145)
     if (!this.database.getSchema().existsType(typeName))
-      this.database.getSchema().createVertexType(typeName);
+      this.database.getSchema().getOrCreateVertexType(typeName);
     else if (!(this.database.getSchema().getType(typeName) instanceof VertexType))
       throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex");
 
@@ -635,7 +638,13 @@ public class ArcadeGraph implements Graph, Closeable {
     return configuration;
   }
 
+  /** Whether an element was ever removed through this graph: until then no element read asks the transaction (issue #10196). */
+  boolean hasRemovedElements() {
+    return elementsRemoved;
+  }
+
   protected void deleteElement(final ArcadeElement element) {
+    elementsRemoved = true;
     // A LIGHTWEIGHT EDGE HAS NO RECORD TO DELETE: IT IS REMOVED FROM THE TWO VERTICES THAT LIST IT (#9142)
     if (element.getBaseElement() instanceof LightEdge edge)
       edge.delete();

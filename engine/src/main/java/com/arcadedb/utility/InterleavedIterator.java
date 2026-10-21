@@ -94,6 +94,8 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
   private       boolean       widening;
   /** The source that produced the entry the last {@link #next()} returned, or null before the first one. */
   private       Iterator<T>   lastSource;
+  /** True while the entry the last {@link #next()} returned has not been removed yet (#10377). */
+  private       boolean       removable;
 
   /**
    * Takes ownership of the given array (it is not copied): the caller must not touch it afterwards. The sources
@@ -185,6 +187,7 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     final Iterator<T> source = active[pending];
     final T value = source.next();
     lastSource = source;
+    removable = true;
     pending = -1;
     ++browsed;
 
@@ -229,6 +232,7 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     turn = 0;
     pending = -1;
     lastSource = null;
+    removable = false;
     browsed = 0L;
     armWidening();
   }
@@ -240,6 +244,22 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
    */
   public Iterator<T> getLastSource() {
     return lastSource;
+  }
+
+  /**
+   * Removes the entry the last {@link #next()} returned from the source that produced it (#10377): the striped super-node
+   * edge list serves its read walks through this class, and refusing here made an adjacency entry impossible to prune once
+   * its vertex was promoted. A source that cannot remove still refuses, with its own exception.
+   *
+   * @throws IllegalStateException when {@link #next()} has not returned an entry since the last removal
+   */
+  @Override
+  public void remove() {
+    if (!removable)
+      throw new IllegalStateException("No entry to remove: next() has not been called since the last remove()");
+    lastSource.remove();
+    // lastSource itself stays: getLastSource() is still asked about the entry the last next() returned
+    removable = false;
   }
 
   /**

@@ -122,7 +122,8 @@ public class MergeRelationship implements CypherProcedure {
     // Ensure edge type exists
     if (!database.getSchema().existsType(relType)) {
       Labels.requireUsableRelationshipTypeName(relType);
-      database.getSchema().createEdgeType(relType);
+      // getOrCreate: two merges introducing the same relationship type concurrently both end with it (issue #10145)
+      database.getSchema().getOrCreateEdgeType(relType);
     }
 
     // The vertex instances the row carries were loaded before the rows ahead of it applied their merges, and

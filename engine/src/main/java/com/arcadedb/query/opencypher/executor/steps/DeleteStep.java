@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -106,15 +105,6 @@ public class DeleteStep extends AbstractExecutionStep {
   private final Set<RID> pendingVertices = new LinkedHashSet<>();
 
   /**
-   * True while the transaction this step opened itself (no outer one) is kept open across rows, because a vertex is
-   * pending: the rows deleting its relationships and the final check are one unit, so a vertex still connected at the
-   * end rolls them all back instead of leaving the relationships deleted (#8997). Rows processed before the first pending
-   * vertex are committed one by one, as before. Every exit from {@code fetchMore} while this is true either commits at the
-   * end of the statement or leaves the rollback to {@code close()}.
-   */
-  private boolean holdingTransaction = false;
-
-  /**
    * When true, the whole upstream row set is read to completion before the first DELETE is applied.
    * Needed when the MATCH feeding this DELETE can let a later row observe what an earlier row's DELETE
    * already removed, which happens in two independent shapes:
@@ -178,13 +168,7 @@ public class DeleteStep extends AbstractExecutionStep {
         }
 
         // Fetch more results
-        try {
-          fetchMore(nRecords);
-        } catch (final RuntimeException e) {
-          // a failure from the upstream (or a row) must not leave the step's own transaction open
-          abortHeldTransaction();
-          throw e;
-        }
+        fetchMore(nRecords);
         return bufferIndex < buffer.size();
       }
 
@@ -364,13 +348,9 @@ public class DeleteStep extends AbstractExecutionStep {
     final List<DeferredDeleteTarget> deferredBatch =
         (List<DeferredDeleteTarget>) context.getVariable(DEFERRED_DELETE_BATCH_VAR);
 
-    // the transaction kept open by an earlier row of this statement is this step's own, not an outer one
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive() && !holdingTransaction;
-
+    // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190): a vertex
+    // still connected once every row is processed rolls back the deletes of the rows before it with the rest (#8997)
     try {
-      if (deferredBatch == null && !context.getDatabase().isTransactionActive())
-        context.getDatabase().begin();
-
       // Collect all delete targets first, then delete edges before vertices
       // to avoid "DeleteConnectedNode" errors when multiple targets share nodes
       final List<Object> allEdges;
@@ -406,17 +386,7 @@ public class DeleteStep extends AbstractExecutionStep {
         deleteObject(edge);
       for (final Object other : allOther)
         deleteObject(other);
-
-      if (!wasInTransaction) {
-        // a pending vertex keeps the transaction open until the statement ends
-        holdingTransaction = !pendingVertices.isEmpty();
-        if (!holdingTransaction)
-          context.getDatabase().commit();
-      }
-    } catch (final Exception e) {
-      if (deferredBatch == null && !wasInTransaction && context.getDatabase().isTransactionActive())
-        context.getDatabase().rollback();
-      holdingTransaction = false;
+    } catch (final RuntimeException e) {
       pendingVertices.clear();
       throw e;
     }
@@ -755,34 +725,20 @@ public class DeleteStep extends AbstractExecutionStep {
     final List<RID> pending = new ArrayList<>(pendingVertices);
     pendingVertices.clear();
 
-    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
-    final boolean wasInTransaction = database.isTransactionActive() && !holdingTransaction;
-    try {
-      if (!database.isTransactionActive())
-        database.begin();
-      for (final RID rid : pending) {
-        final Vertex current;
-        try {
-          current = rid.asVertex();
-        } catch (final RecordNotFoundException e) {
-          // already deleted
-          continue;
-        }
-        // records equal by RID (see BaseRecord.equals), so a freshly loaded vertex matches the ones stored earlier
-        if (deleted.contains(current))
-          continue;
-        deleted.add(current);
-        deleteVertex(current, false);
-        deleted.vertexDeleted(current);
+    for (final RID rid : pending) {
+      final Vertex current;
+      try {
+        current = rid.asVertex();
+      } catch (final RecordNotFoundException e) {
+        // already deleted
+        continue;
       }
-      if (!wasInTransaction)
-        database.commit();
-      holdingTransaction = false;
-    } catch (final RuntimeException e) {
-      if (!wasInTransaction && database.isTransactionActive())
-        database.rollback();
-      holdingTransaction = false;
-      throw e;
+      // records equal by RID (see BaseRecord.equals), so a freshly loaded vertex matches the ones stored earlier
+      if (deleted.contains(current))
+        continue;
+      deleted.add(current);
+      deleteVertex(current, false);
+      deleted.vertexDeleted(current);
     }
   }
 
@@ -859,22 +815,6 @@ public class DeleteStep extends AbstractExecutionStep {
     context.getStatistics().incRelationshipsDeleted();
   }
 
-  /**
-   * Rolls back the transaction this step kept open for a pending vertex. A consumer that stops pulling before the last
-   * row (a LIMIT downstream over more rows than one batch) never reaches the final check, so the statement did not
-   * complete: the rows already applied from the first pending vertex onwards are rolled back with it, and the statistics
-   * counters still show them.
-   */
-  private void abortHeldTransaction() {
-    if (!holdingTransaction)
-      return;
-    holdingTransaction = false;
-    pendingVertices.clear();
-    final Database database = context.getDatabase();
-    if (database.isTransactionActive())
-      database.rollback();
-  }
-
   private void releaseHeap() {
     if (heapLimit != null)
       heapLimit.release();
@@ -882,7 +822,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    abortHeldTransaction();
+    pendingVertices.clear();
     releaseHeap();
     super.close();
   }

@@ -35,15 +35,13 @@ import java.util.Map;
 public class SegmentedLRUCache<K, V> {
   private static final int PROTECTED_PERCENT = 80;
 
-  private final int                 capacity;
-  private final int                 protectedCapacity;
+  private int                       capacity;
+  private int                       protectedCapacity;
   private final LinkedHashMap<K, V> probation;
   private final LinkedHashMap<K, V> protectedSegment;
 
   public SegmentedLRUCache(final int capacity) {
-    this.capacity = Math.max(0, capacity);
-    // a single slot cannot be split into two segments: it stays a plain probation slot
-    this.protectedCapacity = this.capacity < 2 ? 0 : Math.max(1, this.capacity * PROTECTED_PERCENT / 100);
+    setCapacity(capacity);
     this.probation = new LinkedHashMap<>(Math.max(16, (int) ((this.capacity - protectedCapacity) / 0.75) + 1), 0.75f, true);
     this.protectedSegment = new LinkedHashMap<>(Math.max(16, (int) (protectedCapacity / 0.75) + 1), 0.75f, true);
   }
@@ -103,5 +101,21 @@ public class SegmentedLRUCache<K, V> {
   public void clear() {
     probation.clear();
     protectedSegment.clear();
+  }
+
+  /**
+   * Empties the cache and bounds it to {@code capacity} from now on (issue #10155): the capacity is a database setting that can
+   * change while the database is open. Not thread safe, like the rest of this class: call it under the lock the other accesses
+   * take.
+   */
+  public void resize(final int capacity) {
+    clear();
+    setCapacity(capacity);
+  }
+
+  private void setCapacity(final int capacity) {
+    this.capacity = Math.max(0, capacity);
+    // a single slot cannot be split into two segments: it stays a plain probation slot
+    this.protectedCapacity = this.capacity < 2 ? 0 : Math.max(1, this.capacity * PROTECTED_PERCENT / 100);
   }
 }

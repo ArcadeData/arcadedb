@@ -53,6 +53,10 @@ public class CypherDuration implements CypherTemporalValue {
   private static final long     MILLIS_PER_SECOND = 1_000L;
   private static final long     MICROS_PER_SECOND = 1_000_000L;
   private static final long     NANOS_PER_SECOND  = 1_000_000_000L;
+  // The average Gregorian month, 365.2425 / 12 days: exactly 2,629,746 seconds
+  private static final long       AVERAGE_SECONDS_PER_MONTH = 2_629_746L;
+  private static final BigInteger SECONDS_PER_DAY           = BigInteger.valueOf(86_400L);
+  private static final BigInteger NANOS_PER_SECOND_BIG      = BigInteger.valueOf(NANOS_PER_SECOND);
   private static final String[] WHOLE_UNIT_KEYS = { "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds" };
 
   private final long months;
@@ -429,34 +433,45 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   public CypherDuration multiply(final double factor) {
-    if (factor == Math.rint(factor) && Math.abs(factor) < 0x1p62) {
+    if (factor == Math.rint(factor) && Math.abs(factor) < 0x1p62)
       // Integral factor: exact in long arithmetic, so "* 1" is the identity whatever the magnitude
-      final long f = (long) factor;
-      try {
-        return new CypherDuration(Math.multiplyExact(months, f), Math.multiplyExact(days, f), Math.multiplyExact(seconds, f),
-            Math.multiplyExact((long) nanosAdjustment, f));
-      } catch (final ArithmeticException e) {
-        throw overflow("multiply by " + factor, this);
-      }
-    }
+      return multiply((long) factor);
     return scale(decimalOf(factor), BigDecimal.ONE);
   }
 
+  /**
+   * Multiplies by an INTEGER operand exactly. The operand used to reach {@link #multiply(double)} as a double, which holds
+   * no integer past 2^53, so {@code duration('PT0.000000001S') * 9223372036854775807} multiplied by 2^63 (issue #10198).
+   */
+  public CypherDuration multiply(final long factor) {
+    try {
+      return new CypherDuration(Math.multiplyExact(months, factor), Math.multiplyExact(days, factor),
+          Math.multiplyExact(seconds, factor), Math.multiplyExact((long) nanosAdjustment, factor));
+    } catch (final ArithmeticException e) {
+      // The nanosecond product alone can overflow where the whole result fits: one nanosecond times Long.MAX_VALUE
+      return scale(BigDecimal.valueOf(factor), BigDecimal.ONE);
+    }
+  }
+
   public CypherDuration divide(final double divisor) {
+    if (divisor == Math.rint(divisor) && Math.abs(divisor) < 0x1p62)
+      return divide((long) divisor);
+    return scale(BigDecimal.ONE, decimalOf(divisor));
+  }
+
+  /** Divides by an INTEGER operand exactly, for the same reason {@link #multiply(long)} exists (issue #10198). */
+  public CypherDuration divide(final long divisor) {
     if (divisor == 0)
       // A raw java.lang.ArithmeticException reached the wire layers as an unrecognised throwable and became a 500;
       // dividing a duration by zero is the caller's mistake, same as 1/0 (issue #5602).
       throw new ArithmeticErrorException("Cannot divide duration by zero");
     if (divisor == 1)
       return this;
-    if (divisor == Math.rint(divisor) && Math.abs(divisor) < 0x1p62) {
-      // Integral divisor that divides every component evenly: exact in long arithmetic, no BigDecimal garbage. -1 is left to
-      // scale(), which raises on Long.MIN_VALUE / -1 instead of wrapping
-      final long d = (long) divisor;
-      if (d != -1 && months % d == 0 && days % d == 0 && seconds % d == 0 && nanosAdjustment % d == 0)
-        return new CypherDuration(months / d, days / d, seconds / d, nanosAdjustment / d);
-    }
-    return scale(BigDecimal.ONE, decimalOf(divisor));
+    // A divisor that divides every component evenly: exact in long arithmetic, no BigInteger garbage. -1 is left to scale(),
+    // which raises on Long.MIN_VALUE / -1 instead of wrapping
+    if (divisor != -1 && months % divisor == 0 && days % divisor == 0 && seconds % divisor == 0 && nanosAdjustment % divisor == 0)
+      return new CypherDuration(months / divisor, days / divisor, seconds / divisor, nanosAdjustment / divisor);
+    return scale(BigDecimal.ONE, BigDecimal.valueOf(divisor));
   }
 
   private static BigDecimal decimalOf(final double value) {
@@ -466,45 +481,51 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   /**
-   * Scales every component by {@code numerator / denominator} in exact decimal arithmetic. A fractional month carries to
-   * days (1 month = 365.2425/12 days) and a fractional day to seconds, as Neo4j does; the carry of the month remainder,
-   * which is below one month, goes through a double as it always did. The previous implementation did everything in
-   * {@code double}, which saturated at {@code Long.MAX_VALUE} past the long range and lost nanoseconds past 2^53
-   * (issue #9338); an unrepresentable result now raises an arithmetic error.
+   * Scales every component by {@code numerator / denominator}. A fractional month carries to days at the average month
+   * of {@value #AVERAGE_SECONDS_PER_MONTH} seconds (365.2425 / 12 days) and a fractional day to seconds, as Neo4j does.
    * <p>
-   * An inexact quotient is truncated toward zero (1 day / 3 is one nanosecond short of 8 hours), as the double based cascade
-   * always did, whereas {@link #parse} rounds the digits past the nanosecond half away from zero: text is a decimal the user
-   * wrote, a quotient is a value the engine computed.
+   * The ratio is held as a fraction of two integers and every carry is kept as an integer multiple of {@code 1/q}, so the
+   * one rounding the whole computation makes is the last one, to the nanosecond, truncated toward zero as Neo4j truncates.
+   * Each intermediate carry used to be cut at 40 decimal digits first, and the cut, multiplied by the nanoseconds of a day,
+   * cost a nanosecond: {@code duration('P1D') / 24} was {@code PT59M59.999999999S} (issue #10198). A double based cascade
+   * saturates past the long range and loses nanoseconds past 2^53 (issue #9338); this raises on an unrepresentable result.
+   * <p>
+   * A floating point operand is read as the shortest decimal that represents it, so {@code * 0.1} scales by one tenth.
+   * Neo4j computes the same cascade in double precision, and where its answer and this one differ it is by the binary
+   * rounding error of that cascade ({@code duration('P1M') / 100} is {@code PT7H18M17.459999999S} there).
    */
   private CypherDuration scale(final BigDecimal numerator, final BigDecimal denominator) {
     try {
-      final BigDecimal newMonths = scaled(months, numerator, denominator);
-      final BigInteger wholeMonths = newMonths.toBigInteger();
-      final double monthRemainder = newMonths.subtract(new BigDecimal(wholeMonths)).doubleValue();
+      // numerator / denominator as p / q, q > 0: a decimal is unscaled * 10^-scale
+      BigInteger p = numerator.unscaledValue();
+      BigInteger q = denominator.unscaledValue();
+      final int scaleShift = denominator.scale() - numerator.scale();
+      if (scaleShift > 0)
+        p = p.multiply(BigInteger.TEN.pow(scaleShift));
+      else if (scaleShift < 0)
+        q = q.multiply(BigInteger.TEN.pow(-scaleShift));
+      if (q.signum() < 0) {
+        p = p.negate();
+        q = q.negate();
+      }
 
-      final BigDecimal newDays = scaled(days, numerator, denominator).add(BigDecimal.valueOf(monthRemainder * (365.2425 / 12)));
-      final BigInteger wholeDays = newDays.toBigInteger();
-      final BigDecimal dayRemainder = newDays.subtract(new BigDecimal(wholeDays));
+      // BigInteger.divide truncates toward zero and the remainder takes the dividend's sign: every carry keeps the sign of
+      // the component it comes from, as Neo4j's cascade does
+      final BigInteger[] monthsAndRest = BigInteger.valueOf(months).multiply(p).divideAndRemainder(q);
+      // In units of 1/q second
+      final BigInteger daySeconds = BigInteger.valueOf(days).multiply(p).multiply(SECONDS_PER_DAY)
+          .add(monthsAndRest[1].multiply(BigInteger.valueOf(AVERAGE_SECONDS_PER_MONTH)));
+      final BigInteger[] daysAndRest = daySeconds.divideAndRemainder(q.multiply(SECONDS_PER_DAY));
+      // In units of 1/q nanosecond
+      final BigInteger clockNanos = BigInteger.valueOf(seconds).multiply(NANOS_PER_SECOND_BIG).add(BigInteger.valueOf(nanosAdjustment))
+          .multiply(p).add(daysAndRest[1].multiply(NANOS_PER_SECOND_BIG));
+      final BigInteger[] secondsAndNanos = clockNanos.divide(q).divideAndRemainder(NANOS_PER_SECOND_BIG);
 
-      final BigDecimal clockNanos = scaled(BigInteger.valueOf(seconds).multiply(BigInteger.valueOf(1_000_000_000L))
-          .add(BigInteger.valueOf(nanosAdjustment)), numerator, denominator)
-          .add(dayRemainder.multiply(BigDecimal.valueOf(86400_000_000_000L)));
-      final BigInteger[] secondsAndNanos = clockNanos.toBigInteger().divideAndRemainder(BigInteger.valueOf(1_000_000_000L));
-
-      return new CypherDuration(wholeMonths.longValueExact(), wholeDays.longValueExact(), secondsAndNanos[0].longValueExact(),
-          secondsAndNanos[1].longValueExact());
+      return new CypherDuration(monthsAndRest[0].longValueExact(), daysAndRest[0].longValueExact(),
+          secondsAndNanos[0].longValueExact(), secondsAndNanos[1].longValueExact());
     } catch (final ArithmeticException e) {
       throw overflow("scale by " + numerator + "/" + denominator, this);
     }
-  }
-
-  private static BigDecimal scaled(final long value, final BigDecimal numerator, final BigDecimal denominator) {
-    return scaled(BigInteger.valueOf(value), numerator, denominator);
-  }
-
-  private static BigDecimal scaled(final BigInteger value, final BigDecimal numerator, final BigDecimal denominator) {
-    final BigDecimal product = new BigDecimal(value).multiply(numerator);
-    return BigDecimal.ONE.equals(denominator) ? product : product.divide(denominator, 40, RoundingMode.DOWN);
   }
 
   @Override
@@ -543,20 +564,52 @@ public class CypherDuration implements CypherTemporalValue {
     }
   }
 
+  /**
+   * The Cypher ORDER of durations, which {@code ORDER BY}, {@code min()} and {@code max()} use: by average length - a
+   * month counts {@value #AVERAGE_SECONDS_PER_MONTH} seconds and a day 86,400 - then, between two durations of the same
+   * average length, by months and then by days, so {@code PT24H} sorts before {@code P1D} and {@code PT720H} before
+   * {@code P30D} before {@code P1M}. This is Neo4j's order. It used to be component by component, which put {@code P31D}
+   * before {@code P1M} and {@code PT25H} before {@code P1D} (issue #10200).
+   * <p>
+   * An order is all it is: durations are not COMPARABLE in Cypher, so {@code <} and {@code >} on two of them answer null,
+   * and only {@code =} and {@code <>} compare them, component by component ({@code P1D <> PT24H}).
+   */
   @Override
   public int compareTo(final CypherTemporalValue other) {
     if (other instanceof CypherDuration d) {
-      // Per Cypher spec, durations compare component-by-component (months, days, seconds, nanos).
-      // They do NOT normalize across components (e.g. 24h != 1 day).
-      int cmp = Long.compare(months, d.months);
-      if (cmp != 0) return cmp;
+      int cmp = compareAverageLength(d);
+      if (cmp != 0)
+        return cmp;
+      cmp = Long.compare(months, d.months);
+      if (cmp != 0)
+        return cmp;
       cmp = Long.compare(days, d.days);
-      if (cmp != 0) return cmp;
-      cmp = Long.compare(seconds, d.seconds);
-      if (cmp != 0) return cmp;
-      return Integer.compare(nanosAdjustment, d.nanosAdjustment);
+      if (cmp != 0)
+        return cmp;
+      // Same months, days and average length: the clock part is the same too
+      return 0;
     }
     throw new IllegalArgumentException("Cannot compare Duration with " + other.getClass().getSimpleName());
+  }
+
+  private int compareAverageLength(final CypherDuration d) {
+    try {
+      final long thisSeconds = Math.addExact(Math.addExact(Math.multiplyExact(months, AVERAGE_SECONDS_PER_MONTH),
+          Math.multiplyExact(days, 86_400L)), seconds);
+      final long otherSeconds = Math.addExact(Math.addExact(Math.multiplyExact(d.months, AVERAGE_SECONDS_PER_MONTH),
+          Math.multiplyExact(d.days, 86_400L)), d.seconds);
+      final int cmp = Long.compare(thisSeconds, otherSeconds);
+      return cmp != 0 ? cmp : Integer.compare(nanosAdjustment, d.nanosAdjustment);
+    } catch (final ArithmeticException e) {
+      // Past ~3.5 billion years of months: exact, off the common path
+      final int cmp = averageLengthSeconds().compareTo(d.averageLengthSeconds());
+      return cmp != 0 ? cmp : Integer.compare(nanosAdjustment, d.nanosAdjustment);
+    }
+  }
+
+  private BigInteger averageLengthSeconds() {
+    return BigInteger.valueOf(months).multiply(BigInteger.valueOf(AVERAGE_SECONDS_PER_MONTH))
+        .add(BigInteger.valueOf(days).multiply(SECONDS_PER_DAY)).add(BigInteger.valueOf(seconds));
   }
 
   @Override

@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.AfterRecordCreateListener;
@@ -36,6 +37,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
@@ -44,14 +46,17 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.IntHashSet;
 
 import java.lang.ref.SoftReference;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -59,8 +64,11 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -180,6 +188,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     NOT_BUILT, BUILDING, READY, STALE
   }
 
+  /**
+   * How a view follows the commits to the types it covers.
+   * <ul>
+   *   <li>{@code OFF}: a relevant commit marks the view STALE.</li>
+   *   <li>{@code SYNCHRONOUS}: each commit's change is merged into the overlay by the committing thread, before its
+   *   commit returns.</li>
+   *   <li>{@code ASYNCHRONOUS}: each commit's change is merged into the overlay off the committing thread (issue
+   *   #10189). Until it is, the view reports STALE, which a view allowed to serve stale keeps serving on the previous
+   *   snapshot.</li>
+   * </ul>
+   * In both incremental modes the overlay is compacted into a fresh CSR in the background past the compaction threshold,
+   * while the view keeps serving.
+   */
   public enum UpdateMode {
     OFF, SYNCHRONOUS, ASYNCHRONOUS
   }
@@ -225,10 +246,26 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // The concrete edge types the scan materialized: a type that leaves the filter later (its super-type changed) keeps
     // the edges the scan counted as covered, so it never counts as proven empty
     final Set<String>                    scannedEdgeTypes;
+    // The view's uncovered-edge write counter as the scan that produced this snapshot started, whatever the scan met, and the
+    // buckets of the edges of a type the view did not materialize that the scan met (issue #10214): what proves that an edge
+    // type which joins the filter later - attached to a listed type - holds no edge the CSR lacks. -1 and null when nobody
+    // knows (a CSR restored from disk)
+    final long                           uncoveredWritesMark;
+    final IntHashSet                     uncoveredEdgeBuckets;
     // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
     final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
+    // The entries the reads that did not take a neighbour view of this snapshot visited per node instead, by the key of the view
+    // (issue #10471): the view that was never built is built once they add up to what it costs, see neighborViewForVisits(). Like
+    // the views, it lives and dies with the snapshot: a commit replaces the snapshot and the reads start from nothing
+    final Map<String, LongAdder> neighborViewDemand = new ConcurrentHashMap<>();
+    // Every edge type this snapshot answers for, as the array the views are asked with (see slicesOf): built on first use. Two
+    // threads may both build it; either array is right
+    volatile String[] allEdgeTypeSlices;
+    // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
+    // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
+    volatile SoftReference<GraphTraversalProvider> denseIds;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
@@ -237,7 +274,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd, overlay, buildTimestamp, buildDurationMs,
-          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null);
+          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null);
     }
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
@@ -246,9 +283,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
-        final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes) {
+        final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
+        final IntHashSet uncoveredEdgeBuckets) {
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
+      this.uncoveredWritesMark = uncoveredWritesMark;
+      this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
@@ -268,7 +308,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
           newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
-          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes);
+          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes, uncoveredWritesMark,
+          uncoveredEdgeBuckets);
     }
 
   }
@@ -287,13 +328,59 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // does not list, null when one of them is not a LocalBucket and so cannot be proven empty. Asked once per vertex by the
   // SQL traversal functions, so the type list is not walked on every call; one immutable holder behind one reference, so
   // a reader never pairs a version with another thread's buckets
-  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets) {
+  private record VertexCoverage(long schemaVersion, LocalBucket[] unlistedBuckets, DocumentType[] joinedTypes) {
   }
 
   private volatile VertexCoverage allVertexTypesCovered;
+  // Whether the view holds each vertex type its filter covers without listing it by name - a sub-type of a listed type -
+  // for one base CSR and one schema version (issue #10208). Such a type was scanned, or joined the family after the scan:
+  // created then, it was empty and the overlay has held its vertices since, while an existing type attached to a listed
+  // one brings vertices no scan read
+  private record JoinedVertexTypes(NodeIdMapping scannedWith, long schemaVersion, ConcurrentMap<String, Boolean> verdicts) {
+  }
+
+  private volatile JoinedVertexTypes joinedVertexTypes;
+  // coversVertexType(null)'s answer for the joined types, for one base CSR and one schema version: asked per vertex by the
+  // SQL traversal functions, so one read instead of a lookup per sub-type. Both verdicts are fixed for that pair
+  private record JoinedCoverage(NodeIdMapping scannedWith, long schemaVersion, boolean allHeld) {
+  }
+
+  private volatile JoinedCoverage joinedCoverage;
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
+  // Per edge type the view does not materialize, what its writes left (issue #10214). One entry per such edge type ever
+  // written, never removed: bounded by the schema
+  private final ConcurrentMap<String, UncoveredEdgeType> uncoveredEdgeTypes = new ConcurrentHashMap<>();
+  // Distinct per view instance, as two views can register the commit callback of the same transaction
+  private final String                                   uncoveredCommitKeyPrefix =
+      "gav-uncovered-" + Integer.toHexString(System.identityHashCode(this)) + "-";
+
+  /**
+   * An edge type the view does not materialize that was written: the value of uncoveredEdgeWrites its latest edge moved it to - a
+   * type attached to a listed one since a scan holds edges that scan did not read when it was written past the scan's mark - and,
+   * built once, the key and the callback its commits register, so an edge written allocates nothing.
+   */
+  private final class UncoveredEdgeType {
+    private final AtomicLong lastWrite = new AtomicLong(-1L);
+    private final String     commitKey;
+    private final Runnable   onCommit;
+
+    private UncoveredEdgeType(final String name) {
+      this.commitKey = uncoveredCommitKeyPrefix + name;
+      this.onCommit = () -> noteUncoveredEdgeWrite(this);
+    }
+  }
+  // Whether the base CSR holds every edge type the filter covers without listing it - a sub-type of a listed edge type - for
+  // one base CSR and one schema version (issue #10214)
+  private record JoinedEdgeCoverage(Map<String, CSRAdjacencyIndex> scannedWith, long schemaVersion, boolean allHeld) {
+  }
+
+  private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
+  // The edge types that existed when the listeners were armed (issue #10214). A transaction already open then may have created
+  // edges of one of them that no listener heard, and committed after any scan since: only a scan that materialized such a type
+  // proves the CSR holds it. A type created later has every edge heard
+  private volatile Set<String>                      edgeTypesWhenArmed = Set.of();
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -343,9 +430,44 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private volatile int           compactionThreshold = DEFAULT_COMPACTION_THRESHOLD;
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
-  private volatile boolean       asyncRebuildNeeded;  // true when a commit arrived during an async rebuild
-  // SYNCHRONOUS only: the graph changed in a way no build dispatched since has scanned and no delta can bring in - a
-  // GraphBatch load that ended, or lightweight edges a build could not reconcile (issue #9572)
+  // SYNCHRONOUS and ASYNCHRONOUS: the committed changes reach the view in the order their transactions committed (issue #10249)
+  private final CommitOrderGate  commitOrder = new CommitOrderGate(this::commitOrderMaxWaitMs);
+  // ASYNCHRONOUS only (issue #10189): the committed changes waiting to be merged off the committing threads, in commit
+  // callback order, and how many of them were committed and are not merged yet. The count is raised before the change is
+  // queued, so a reader that sees it at zero sees every change committed before it looked merged
+  private final ConcurrentLinkedQueue<QueuedDelta> asyncDeltas      = new ConcurrentLinkedQueue<>();
+  private final AtomicInteger                     asyncDeltaLag    = new AtomicInteger();
+  private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
+  // Set by the first commit that finds the queue full, cleared by the merge task that drops the queue for a rebuild
+  private final AtomicBoolean                     asyncQueueOverflowed = new AtomicBoolean();
+  // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
+  // compaction swap or a build publication never waits behind a long backlog
+  private static final int                        ASYNC_MERGE_BATCH = 64;
+  // Past this many changes waiting, the queue is dropped for a rebuild. Only lowered by setMaxQueuedAsyncDeltasForTest()
+  private volatile int                            maxQueuedAsyncDeltas = MAX_PENDING_DELTAS;
+  // Bumped by every publication of a full build or a restore, before the build's watch is cleared: a queued change that
+  // was not buffered in a watch, and whose commit callback saw an older count, committed before that build's scan
+  // started, so the base it would be merged into already holds it (issue #10189). Written only under this instance's
+  // monitor, which is what makes the ++ safe; read without it
+  private volatile long                           baseReplacements;
+
+  CommitOrderGate getCommitOrder() {
+    return commitOrder;
+  }
+
+  private long commitOrderMaxWaitMs() {
+    return database.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_COMMIT_ORDER_MAX_WAIT);
+  }
+
+  /**
+   * A committed change waiting for the asynchronous merge, with the base it was buffered against (see {@link #applyDelta})
+   * and, for one buffered against none, the {@link #baseReplacements} its commit callback saw.
+   */
+  private record QueuedDelta(TxDelta delta, Map<String, CSRAdjacencyIndex> bufferedAgainst, long baseReplacementsSeen) {
+  }
+
+  // SYNCHRONOUS and ASYNCHRONOUS: the graph changed in a way no build dispatched since has scanned and no delta can bring
+  // in - a GraphBatch load that ended, or lightweight edges a build could not reconcile (issue #9572)
   private volatile boolean       followUpRebuildPending;
   // true when an edge property update (which cannot be represented in the overlay) was buffered
   // during a compaction rebuild and needs a follow-up rebuild to become visible. See issue #4513.
@@ -635,20 +757,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Publishes the CSR a full build produced, reconciled with every commit its scan raced with (issue #8378). Must be
    * called under this instance's monitor, which is what orders it against the commit callbacks.
    * <ul>
-   *   <li>SYNCHRONOUS: the deltas buffered while the scan ran are re-applied on the new base, each edge change
-   *   deduplicated against what the scan actually read (see {@link BuildWatch}). The watch stays bound to the new
+   *   <li>SYNCHRONOUS and ASYNCHRONOUS: the deltas buffered while the scan ran are re-applied on the new base, each edge
+   *   change deduplicated against what the scan actually read (see {@link BuildWatch}). The watch stays bound to the new
    *   base, because a delta committed during the scan may still be delivered after this point.</li>
    *   <li>OFF: a relevant commit during the scan publishes the view STALE, which is what the same commit does to a
    *   built view.</li>
-   *   <li>ASYNCHRONOUS: nothing to do here - a relevant commit dispatches its own rebuild from its callback.</li>
    * </ul>
    * More buffered deltas than {@link #MAX_PENDING_DELTAS} publish the view STALE rather than reconcile it.
    */
   private void publishBuild(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
       final String[] builtVertexTypes, final String[] builtEdgeTypes, final BuildWatch watch) {
+    // Before the watch is cleared: a commit callback that finds no watch then sees this publication counted
+    ++baseReplacements;
     final List<TxDelta> buffered = watch.close();
     if (buildWatch == watch)
       buildWatch = null;
+    // A change still queued for the asynchronous merge is in this scan, which started after it committed, or it was
+    // buffered in this watch and is re-applied below (issue #10189)
+    discardQueuedAsyncDeltas();
 
     Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, builtVertexTypes, builtEdgeTypes, propertyFilter,
         edgePropertyFilter);
@@ -661,18 +787,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           "GraphAnalyticalView '%s': more than %d transactions committed while its CSR was being built; marking it STALE",
           name, MAX_PENDING_DELTAS);
       newStatus = Status.STALE;
-    } else if (updateMode == UpdateMode.SYNCHRONOUS) {
+    } else if (updateMode != UpdateMode.OFF) {
       if (watch.hasWatchedSources()) {
         watch.bindTo(result.getCsrPerType());
         baseWatch = watch;
       }
       if (!buffered.isEmpty()) {
-        DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-        for (final TxDelta d : buffered)
-          overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch, result.getCsrPerType());
-        edgePropertiesDirty = overlay.isEdgePropertiesDirty();
-        if (overlay.hasChanges())
-          fresh = fresh.withOverlay(overlay);
+        try {
+          DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+          for (final TxDelta d : buffered)
+            overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch, result.getCsrPerType());
+          edgePropertiesDirty = overlay.isEdgePropertiesDirty();
+          if (overlay.hasChanges())
+            fresh = fresh.withOverlay(overlay);
+        } catch (final RuntimeException e) {
+          // A change that cannot be replayed must not fail the build, which would leave a first build NOT_BUILT with nothing to
+          // retry it: the scan is published STALE, and the rebuild that follows reads the change from the graph (issue #10338). Only a
+          // RuntimeException: an Error is left to fail the build, as before
+          LogManager.instance().log(this, Level.WARNING,
+              "GraphAnalyticalView '%s': cannot replay the changes committed during the build, rebuilding", e, name);
+          followUpRebuildPending = true;
+          edgePropertiesDirty = false;
+        }
       }
       // The scan cannot tell duplicated lightweight copies apart, so the reconciliation of the pairs it raced on is
       // checked against the graph: a view that disagrees is not published READY, it rebuilds (issue #9572)
@@ -681,13 +817,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             "GraphAnalyticalView '%s': lightweight edges changed during the build could not be reconciled, rebuilding", name);
         followUpRebuildPending = true;
       }
-    } else if (updateMode == UpdateMode.OFF && watch.hadRelevantCommit())
+      // A commit reported with no delta, by the listener of the mode the view had before a switch, is in no buffer
+      if (watch.hadRelevantCommit())
+        followUpRebuildPending = true;
+    } else if (watch.hadRelevantCommit())
       newStatus = Status.STALE;
     // A bulk load that ended during the scan is only partly in it, and in no delta, and lightweight edges the
     // reconciliation got wrong are in no delta either: the rebuild they asked for follows
-    if (updateMode == UpdateMode.SYNCHRONOUS && followUpRebuildPending)
+    if (updateMode != UpdateMode.OFF && followUpRebuildPending)
       newStatus = Status.STALE;
-    final boolean rebuildNeeded = updateMode == UpdateMode.ASYNCHRONOUS && watch.hadRelevantCommit();
 
     this.snapshot = fresh;
     this.status = newStatus;
@@ -701,9 +839,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       forced.forceEdgePropertyRebuild = true;
       applyDelta(forced);
     }
-    // An ASYNCHRONOUS view raced by a relevant commit rebuilds now, rather than from the commit callback mid-scan
-    if (rebuildNeeded)
-      onRelevantCommit();
   }
 
   /**
@@ -855,6 +990,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * other being a real query, via {@link #checkBuilt()} — that dispatches it: an explicit status wait is
    * a legitimate signal that the caller wants the view actually resolved, not just optimistically READY.
    *
+   * An {@code ASYNCHRONOUS} view also waits for the commits not merged yet (issue #10189).
+   *
    * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
   public boolean awaitReady(final long timeout, final TimeUnit unit) {
@@ -862,20 +999,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     try {
       while (true) {
-        // Snapshot the three fields under the monitor: onRelevantCommit() resets
-        // asyncRebuildNeeded=false and flips status=BUILDING in separate volatile
-        // writes, so an unsynchronized reader can observe status=READY together
-        // with asyncRebuildNeeded=false and return early on a stale snapshot.
         final Status currentStatus;
-        final boolean rebuildPending;
         final CountDownLatch latch;
         synchronized (this) {
           currentStatus = status;
-          rebuildPending = asyncRebuildNeeded;
           latch = readyLatch;
+          if (currentStatus == Status.READY) {
+            if (!hasUnmergedAsyncChanges())
+              return true;
+            // Shut down: what is still queued is never merged
+            if (shutDown)
+              return false;
+            // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
+            final long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0)
+              return false;
+            TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
+            continue;
+          }
         }
-        if (currentStatus == Status.READY && !rebuildPending)
-          return true;
         // STALE, or NOT_BUILT after a failed build or a shutdown: nothing is on the way, and the latch of the build that
         // ended is already counted down, so waiting on it again would spin until the timeout (issue #8403)
         if (currentStatus != Status.READY && currentStatus != Status.BUILDING)
@@ -923,11 +1065,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     shutdown(true);
   }
 
+  /**
+   * Takes this view out of service for good because a type it names was renamed (issue #10368): its snapshot and every
+   * structure built with it are keyed by the old name, so the view does not carry the rename itself, the view built from the
+   * renamed definition replaces it. Runs inside the schema session that publishes the rename, under the database write lock,
+   * so it does not wait for a build in flight - which may need that lock to finish - as {@link #shutdown()} does: that build
+   * finds the view shut down and publishes nothing. Its persisted CSR and contraction orders are deleted, they name the old
+   * types.
+   */
+  void retireForTypeRename() {
+    shutdown(false, false);
+    if (name != null) {
+      GraphAnalyticalViewCSRPersistence.delete(database, name);
+      for (final ContractionHierarchy hierarchy : contractionHierarchies)
+        CCHOrderPersistence.delete(hierarchy.orderFile());
+    }
+  }
+
   private void shutdown(final boolean persistCsr) {
+    shutdown(persistCsr, true);
+  }
+
+  private void shutdown(final boolean persistCsr, final boolean awaitTasks) {
     // a hierarchy being prepared stops at its next check instead of holding the wait below
     for (final ContractionHierarchy hierarchy : contractionHierarchies)
       hierarchy.close();
-    awaitInFlightTasks(shutdownAwaitMs);
+    if (awaitTasks)
+      awaitInFlightTasks(shutdownAwaitMs);
     synchronized (this) {
       // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
       // view that is gone (issue #8403). Nor may the view keep saying BUILDING: that build will never publish it
@@ -938,10 +1102,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
       // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.
+      // A change still queued (its merge task outlived the wait above) goes into the overlay first: the snapshot then
+      // carries changes and is not persisted, rather than persisted without them under a certificate the next open rejects.
+      // A view dropped has nothing to persist, and its queue is only discarded
       if (persistCsr) {
+        mergeQueuedAsyncDeltas();
         persistCsrIfPossible();
         persistContractionOrdersIfPossible();
       }
+      discardQueuedAsyncDeltas();
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
@@ -1031,10 +1200,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long version = database.getSchema().getEmbedded().getVersion();
       VertexCoverage cached = allVertexTypesCovered;
       if (cached == null || cached.schemaVersion() != version) {
-        cached = new VertexCoverage(version, unlistedVertexBuckets());
+        cached = new VertexCoverage(version, unlistedVertexBuckets(), joinedVertexTypes());
         allVertexTypesCovered = cached;
       }
       if (cached.unlistedBuckets() == null)
+        return false;
+      if (cached.joinedTypes().length > 0 && !holdsAllJoinedVertexTypes(cached.joinedTypes(), version))
         return false;
       // An unlisted vertex type breaks coverage only once it holds a vertex: no walk can reach a type that has none. The
       // common case is an abstract parent whose records all live in listed sub-types (LSQB's Message over Post and
@@ -1046,16 +1217,184 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           return false;
       return true;
     }
-    if (vertexTypes == null)
-      return true; // we include all vertex types
-    return containsType(vertexTypes, typeName);
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return true; // we include all vertex types, or this one is listed
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    return type != null && coversVertexTypeByFilter(type) && holdsJoinedVertexType(type);
   }
 
-  /** The own buckets of the vertex types this view does not list, or null when one of them is not a {@link LocalBucket}. */
+  /**
+   * Whether a vertex of {@code typeName} that is being written is one the view is built over: the type is listed, or sits under
+   * a listed one (issue #10208). It is what the commit listeners route the vertex by, and it is decided by the schema alone,
+   * like {@link #coversEdgeType}.
+   * <p>
+   * Not by {@link #coversVertexType}, which also asks whether the base CSR HOLDS the type's vertices. A listener that routed by
+   * that lost the vertex of a type attached to a listed one after the scan (issue #10491): the type held committed vertices the
+   * scan never read, so the answer was no, the listener dropped the vertex, and the rebuild that answer dispatches - from inside
+   * the writing transaction - scanned before it committed and read the vertex from nowhere, while the delta that would have
+   * carried it had never been collected. Routed by the filter, the vertex reaches the overlay and the rebuild's watch like any
+   * other, and whether the view is SERVED for the type stays {@link #coversVertexType}'s call.
+   */
+  boolean routesVertexType(final String typeName) {
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return true;
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    return type != null && coversVertexTypeByFilter(type);
+  }
+
+  /**
+   * The view meets a vertex type the first time one of its vertices is written, and takes its verdict on the type then:
+   * whether the base CSR holds it (issue #10208). Taken at that moment because it is what tells a type created after the scan
+   * (empty, every vertex heard since) from one attached to the family with vertices the scan never read, which no later question
+   * can: by then both hold vertices. A type listed by name, or outside the family, has no verdict to take. Decided once per base
+   * CSR and schema version, so a repeat write to the type costs a map lookup.
+   */
+  void meetWrittenVertexType(final String typeName) {
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return;
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    if (type != null && coversVertexTypeByFilter(type))
+      holdsJoinedVertexType(type);
+  }
+
+  private boolean holdsAllJoinedVertexTypes(final DocumentType[] joinedTypes, final long version) {
+    final Snapshot snap = snapshot;
+    if (snap == null)
+      return true;
+    final JoinedCoverage cached = joinedCoverage;
+    if (cached != null && cached.scannedWith() == snap.nodeMapping && cached.schemaVersion() == version)
+      return cached.allHeld();
+    boolean allHeld = true;
+    for (final DocumentType joined : joinedTypes)
+      if (!holdsJoinedVertexType(joined)) {
+        allHeld = false;
+        break;
+      }
+    joinedCoverage = new JoinedCoverage(snap.nodeMapping, version, allHeld);
+    return allHeld;
+  }
+
+  /** The vertex types the filter covers without listing them by name: the sub-types of the listed ones. */
+  private DocumentType[] joinedVertexTypes() {
+    final List<DocumentType> joined = new ArrayList<>();
+    for (final DocumentType dt : database.getSchema().getTypes())
+      if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()) && coversVertexTypeByFilter(dt))
+        joined.add(dt);
+    return joined.toArray(new DocumentType[0]);
+  }
+
+  /**
+   * Whether the base CSR, with its overlay, holds the vertices of {@code type}, a sub-type of a listed type (issue #10208).
+   * It does when its scan read the type, or when the type had no committed vertex the first time the view met it after
+   * the scan: it was created since, and its vertices reached the overlay one commit at a time. An existing type attached
+   * to a listed one since the scan holds vertices the view never read: the view does not claim it, and rebuilds (OFF:
+   * turns STALE) to take it in. Decided once per base CSR, and carried over a schema change for the types still covered.
+   */
+  private boolean holdsJoinedVertexType(final DocumentType type) {
+    final Snapshot snap = snapshot;
+    // No CSR yet: the build in flight scans the family as it is when it starts, and its watch takes in what commits since
+    if (snap == null)
+      return true;
+    final long version = database.getSchema().getEmbedded().getVersion();
+    JoinedVertexTypes joined = joinedVertexTypes;
+    if (joined == null || joined.scannedWith() != snap.nodeMapping || joined.schemaVersion() != version) {
+      final ConcurrentMap<String, Boolean> verdicts = new ConcurrentHashMap<>();
+      if (joined != null && joined.scannedWith() == snap.nodeMapping)
+        // A schema change carries the verdicts over for the types still in the family: a type detached and attached again
+        // is asked again, with whatever vertices it holds by then
+        for (final Map.Entry<String, Boolean> verdict : joined.verdicts().entrySet()) {
+          final DocumentType still = database.getSchema().getTypeOrNull(verdict.getKey());
+          if (still != null && coversVertexTypeByFilter(still))
+            verdicts.put(verdict.getKey(), verdict.getValue());
+        }
+      joined = new JoinedVertexTypes(snap.nodeMapping, version, verdicts);
+      joinedVertexTypes = joined;
+    }
+    final String name = type.getName();
+    final Boolean known = joined.verdicts().get(name);
+    if (known != null)
+      return known;
+
+    final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
+    if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
+      dispatchJoinedTypeRebuild(true, name);
+    return holds;
+  }
+
+  private static boolean isScanned(final NodeIdMapping mapping, final String typeName) {
+    for (int i = 0; i < mapping.getNumBuckets(); i++)
+      if (typeName.equals(mapping.getBucketTypeName(i)))
+        return true;
+    return false;
+  }
+
+  private static boolean hasNoCommittedRecord(final DocumentType type) {
+    for (final Bucket bucket : type.getBuckets(false))
+      if (!(bucket instanceof LocalBucket localBucket) || !isCommittedEmpty(localBucket))
+        return false;
+    return true;
+  }
+
+  /**
+   * Hands {@link #onTypeJoinedWithRecords} to the build executor: the coverage check that found the type is asked on the query
+   * path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type is already not
+   * claimed.
+   *
+   * @param vertexType whether the type is a vertex type, or an edge type
+   */
+  private void dispatchJoinedTypeRebuild(final boolean vertexType, final String typeName) {
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          if (!shutDown)
+            onTypeJoinedWithRecords(vertexType, typeName);
+        } finally {
+          taskCompleted();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Shutting down: nothing left to rebuild
+      taskCompleted();
+    }
+  }
+
+  /**
+   * A type holding records no scan read joined the listed family: see {@link #holdsJoinedVertexType} and
+   * {@link #holdsJoinedEdgeTypes}.
+   */
+  private synchronized void onTypeJoinedWithRecords(final boolean vertexType, final String typeName) {
+    LogManager.instance().log(this, Level.INFO,
+        "GraphAnalyticalView '%s': %s type '%s' joined the view's types with records its CSR does not hold; %s", name,
+        vertexType ? "vertex" : "edge",
+        typeName, updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
+    if (updateMode == UpdateMode.OFF) {
+      status = Status.STALE;
+      return;
+    }
+    followUpRebuildPending = true;
+    rebuildAfterPublication();
+  }
+
+  /**
+   * Whether the vertex types this view was built with hold {@code type}: it is listed, or one of its super-types is, because
+   * a type brings its sub-types along, as it does on the record path and as an edge type does in the view (issue #10208).
+   */
+  private boolean coversVertexTypeByFilter(final DocumentType type) {
+    if (vertexTypes == null || containsType(vertexTypes, type.getName()))
+      return true;
+    for (final String listed : vertexTypes)
+      if (type.instanceOf(listed))
+        return true;
+    return false;
+  }
+
+  /** The own buckets of the vertex types this view does not hold, or null when one of them is not a {@link LocalBucket}. */
   private LocalBucket[] unlistedVertexBuckets() {
     final List<LocalBucket> unlisted = new ArrayList<>();
     for (final DocumentType dt : database.getSchema().getTypes())
-      if (dt instanceof VertexType && !containsType(vertexTypes, dt.getName()))
+      if (dt instanceof VertexType && !coversVertexTypeByFilter(dt))
         for (final Bucket bucket : dt.getBuckets(false)) {
           if (!(bucket instanceof LocalBucket localBucket))
             return null;
@@ -1109,6 +1448,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * such as {@link ContractionHierarchy#find} is.
    */
   public boolean coversEveryEdge() {
+    if (!holdsJoinedEdgeTypes())
+      return false;
     if (coversEdgeType(null))
       return true;
     final Snapshot snap = snapshot;
@@ -1123,9 +1464,88 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return true;
   }
 
-  /** An edge of a type this view does not materialize was written (issue #9915): see {@link #coversEveryEdge()}. */
-  void onUncoveredEdgeWritten() {
-    uncoveredEdgeWrites.incrementAndGet();
+  /**
+   * An edge of {@code edgeTypeName}, a type this view does not materialize, was written (issue #9915): see
+   * {@link #coversEveryEdge()} and, for the type joining the filter later, {@link #holdsJoinedEdgeTypes()} (issue #10214).
+   */
+  void onUncoveredEdgeWritten(final String edgeTypeName) {
+    if (edgeTypeName == null) {
+      uncoveredEdgeWrites.incrementAndGet();
+      return;
+    }
+    UncoveredEdgeType type = uncoveredEdgeTypes.get(edgeTypeName);
+    if (type == null)
+      type = uncoveredEdgeTypes.computeIfAbsent(edgeTypeName, UncoveredEdgeType::new);
+    noteUncoveredEdgeWrite(type);
+    // TOLD AT THE CREATION, BUT A SCAN CANNOT READ THE EDGE BEFORE ITS COMMIT: ONE CREATED BEFORE A SCAN SAMPLED ITS MARK AND
+    // COMMITTED AFTER IS NOT IN THAT SCAN, SO THE COMMIT MOVES THE COUNTER AGAIN, PAST THE MARK. ONCE PER TYPE AND TRANSACTION
+    if (database instanceof DatabaseInternal internal) {
+      final TransactionContext tx = internal.getTransactionIfExists();
+      if (tx != null && tx.isActive())
+        tx.addAfterCommitCallbackIfAbsent(type.commitKey, type.onCommit);
+    }
+  }
+
+  private void noteUncoveredEdgeWrite(final UncoveredEdgeType type) {
+    type.lastWrite.accumulateAndGet(uncoveredEdgeWrites.incrementAndGet(), Math::max);
+  }
+
+  /**
+   * Whether the base CSR, with its overlay, holds the edges of every edge type the filter covers without listing it: a sub-type
+   * of a listed type (issue #10214). One created after the scan was empty then, and the overlay has held its edges since. An
+   * existing type attached to a listed one since the scan brings edges no scan read, and a hop on the listed type, which reads
+   * its sub-types' slices, would miss them: the view is not served until it has rebuilt (OFF: it turns STALE).
+   * <p>
+   * {@link #coversEdgeType} cannot give this answer: it is the schema-only check the cached query plans rely on and the one the
+   * listeners route a written edge to the overlay by, while this one depends on the edges written. So it is asked where the view
+   * is served - {@link #isReady()} - and by {@link #coversEveryEdge()}. Decided once per base CSR and schema version; the decision
+   * that finds a type unheld dispatches its rebuild, which makes this the one side effect of {@link #isReady()} besides the deferred
+   * restore.
+   */
+  private boolean holdsJoinedEdgeTypes() {
+    if (edgeTypes == null)
+      // EVERY EDGE TYPE IS MATERIALIZED: NONE CAN JOIN
+      return true;
+    final Snapshot snap = snapshot;
+    // No CSR yet: the build in flight scans the family as it is when it starts, and its watch takes in what commits since
+    if (snap == null)
+      return true;
+    final long version = database.getSchema().getEmbedded().getVersion();
+    final JoinedEdgeCoverage cached = joinedEdgeCoverage.get();
+    if (cached != null && cached.scannedWith() == snap.csrPerType && cached.schemaVersion() == version)
+      return cached.allHeld();
+
+    String unheld = null;
+    for (final DocumentType dt : database.getSchema().getTypes())
+      if (dt instanceof EdgeType && !containsType(edgeTypes, dt.getName()) && coversEdgeTypeByFilter(dt) && !holdsJoinedEdgeType(dt,
+          snap)) {
+        unheld = dt.getName();
+        break;
+      }
+    // Two threads missing the cache at once compute the same verdict; only the one that publishes it dispatches the rebuild
+    if (joinedEdgeCoverage.compareAndSet(cached, new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null)) && unheld != null)
+      dispatchJoinedTypeRebuild(false, unheld);
+    return unheld == null;
+  }
+
+  /**
+   * Whether the CSR holds the edges of {@code type}, a sub-type of a listed edge type: the scan materialized it, or the type was
+   * created after the listeners were armed - so every edge of it was heard - and is proven to hold no edge the CSR lacks: the scan
+   * met none of its buckets among the edges it did not materialize, and none was written while the type was not covered since the
+   * scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record, and a transaction still open
+   * holds edges no count shows yet.
+   */
+  private boolean holdsJoinedEdgeType(final DocumentType type, final Snapshot snap) {
+    final String name = type.getName();
+    if (snap.csrPerType.containsKey(name) || (snap.scannedEdgeTypes != null && snap.scannedEdgeTypes.contains(name)))
+      return true;
+    if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null || edgeTypesWhenArmed.contains(name))
+      return false;
+    for (final int bucketId : type.getBucketIds(false))
+      if (snap.uncoveredEdgeBuckets.contains(bucketId))
+        return false;
+    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
+    return written == null || written.lastWrite.get() <= snap.uncoveredWritesMark;
   }
 
   /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
@@ -1156,6 +1576,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @return {@code requested} itself when none of its types has a sub-type to add, else a new array with each type
    * followed by the sub-types it brought, without duplicates. Callers must not modify the result.
    */
+  @Override
   public String[] resolveEdgeTypes(final String... requested) {
     if (requested == null || requested.length == 0)
       return requested;
@@ -1253,14 +1674,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
-    return getVertices(nodeId, direction, edgeTypes);
+    return getVertices(checkBuilt(), nodeId, direction, edgeTypes);
   }
 
   @Override
   public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+    getDegrees(checkBuilt(), degrees, direction, edgeType);
+  }
+
+  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
     final String[] resolved = expandEdgeType(edgeType);
     if (resolved.length == 1) {
-      degreesOfSlice(degrees, direction, resolved[0]);
+      degreesOfSlice(snap, degrees, direction, resolved[0]);
       return;
     }
 
@@ -1268,15 +1693,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     Arrays.fill(degrees, 0);
     final int[] slice = new int[degrees.length];
     for (final String concrete : resolved) {
-      degreesOfSlice(slice, direction, concrete);
+      degreesOfSlice(snap, slice, direction, concrete);
       for (int v = 0; v < degrees.length; v++)
         degrees[v] += slice[v];
     }
   }
 
   /** The degrees of ONE concrete slice and its overlay, with no type expansion. */
-  private void degreesOfSlice(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    final Snapshot snap = checkBuilt();
+  private static void degreesOfSlice(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction,
+      final String edgeType) {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     final DeltaOverlay ov = snap.overlay;
     final int n = Math.min(degrees.length, snap.nodeMapping.size());
@@ -1303,29 +1728,63 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
-    // Apply overlay deltas if active
+    // Apply overlay deltas if active: to the nodes it changes, rather than one lookup per node of the graph (issue #10411)
     if (ov != null) {
-      for (int v = 0; v < degrees.length; v++) {
-        if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-          degrees[v] += ov.getAddedOutNeighbors(v, edgeType).length;
-          degrees[v] -= ov.countDeletedOutEdges(v, edgeType);
-        }
-        if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-          degrees[v] += ov.getAddedInNeighbors(v, edgeType).length;
-          degrees[v] -= ov.countDeletedInEdges(v, edgeType);
-        }
-      }
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+        applyOverlayDegrees(ov, degrees, edgeType, true);
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        applyOverlayDegrees(ov, degrees, edgeType, false);
     }
+  }
+
+  private static void applyOverlayDegrees(final DeltaOverlay ov, final int[] degrees, final String edgeType,
+      final boolean outgoing) {
+    final BitSet changed = new BitSet();
+    ov.markChangedNodes(edgeType, outgoing, changed);
+    for (int v = changed.nextSetBit(0); v >= 0 && v < degrees.length; v = changed.nextSetBit(v + 1))
+      degrees[v] += outgoing ?
+          ov.getAddedOutNeighbors(v, edgeType).length - ov.countDeletedOutEdges(v, edgeType) :
+          ov.getAddedInNeighbors(v, edgeType).length - ov.countDeletedInEdges(v, edgeType);
   }
 
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return getNeighborView(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    return neighborViewBuildCost(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return neighborViewOfSliceBuildCost(checkBuilt(), direction, edgeType);
+  }
+
+  @Override
+  public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
+    return neighborViewForVisits(checkBuilt(), expectedVisits, direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return neighborViewOfSliceForVisits(checkBuilt(), expectedVisits, direction, edgeType);
+  }
+
+  @Override
+  public double getMeanDegree(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    return meanDegree(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
+  private NeighborView getNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
-    // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
+    // The overlay changes the topology: the view is the base with the overlay applied, built once per snapshot (issue #10411)
     if (hasActiveOverlay(snap))
-      return null;
+      return overlayNeighborView(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
 
     final int n = snap.nodeMapping.size();
 
@@ -1376,14 +1835,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   private static NeighborView cachedMergedNeighborView(final Snapshot snap, final Vertex.DIRECTION direction,
       final String[] edgeTypes, final Collection<CSRAdjacencyIndex> indices, final int n) {
-    final String key;
+    return cachedNeighborView(snap, neighborViewKey(direction, edgeTypes), () -> buildMergedNeighborView(indices, n, direction));
+  }
+
+  /** The key a neighbour view of {@code direction} over {@code edgeTypes} (null or empty: every type) is cached under. */
+  private static String neighborViewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      key = direction + "|*";
-    else {
-      final String[] sorted = edgeTypes.clone();
-      Arrays.sort(sorted);
-      key = direction + "|" + String.join("\u0000", sorted);
-    }
+      return direction + "|*";
+    final String[] sorted = edgeTypes.clone();
+    Arrays.sort(sorted);
+    return direction + "|" + String.join("\u0000", sorted);
+  }
+
+  private static NeighborView cachedNeighborView(final Snapshot snap, final String key, final Supplier<NeighborView> builder) {
     // compute() so concurrent callers share one build of a large merge instead of each sorting the whole adjacency, and
     // so a reference the GC cleared is replaced rather than left behind
     final NeighborView[] result = new NeighborView[1];
@@ -1393,10 +1857,269 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result[0] = hit;
         return cached;
       }
-      result[0] = buildMergedNeighborView(indices, n, direction);
+      result[0] = builder.get();
       return new SoftReference<>(result[0]);
     });
     return result[0];
+  }
+
+  /**
+   * The neighbour view of a snapshot that carries an overlay (issue #10411): the adjacency every per-node read answers -
+   * {@link #getNeighborsFromCSR}'s arithmetic, the base CSR less the overlay's deletions plus its additions, sorted - packed for
+   * the whole id space, the vertices only the overlay holds included. Answering null instead sent every whole-graph reader
+   * down the per-node path for as long as the overlay lived, one array per node and one overlay lookup per node and type,
+   * which a single committed edge made a quarter slower for up to {@link #DEFAULT_COMPACTION_THRESHOLD} changes.
+   * <p>
+   * Built once per snapshot and kept with it, like the merged views of the base: a snapshot never changes, and a commit merged
+   * into the overlay publishes a new one. A node the overlay does not change copies its base slice; only the changed ones are
+   * merged. One edge type in one direction the overlay does not touch, with no vertex added, is the base CSR itself.
+   */
+  private static NeighborView overlayNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices,
+      final String key) {
+    final DeltaOverlay ov = snap.overlay;
+    final int n = ov.getNodeIdUpperBound();
+    final CSRAdjacencyIndex unchanged = unchangedBaseCsr(snap, direction, slices);
+    if (unchanged != null)
+      return buildNeighborViewFromCSR(unchanged, n, direction);
+    return cachedNeighborView(snap, key, () -> {
+      final List<NeighborView> parts = new ArrayList<>(slices.length * 2);
+      for (final String slice : slices) {
+        if (direction != Vertex.DIRECTION.IN)
+          addOverlaySlice(snap, slice, true, n, parts);
+        if (direction != Vertex.DIRECTION.OUT)
+          addOverlaySlice(snap, slice, false, n, parts);
+      }
+      if (parts.isEmpty())
+        return new NeighborView(n, new int[n + 1], EMPTY_INT);
+      return parts.size() == 1 ? parts.getFirst() : mergeNeighborViews(parts, n);
+    });
+  }
+
+  /**
+   * The base CSR of the one slice a view of {@code direction} reads when the overlay changes none of it and adds no vertex: the
+   * view is then the CSR's own arrays, built from nothing. Null in every other case.
+   */
+  private static CSRAdjacencyIndex unchangedBaseCsr(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices) {
+    final DeltaOverlay ov = snap.overlay;
+    if (slices.length != 1 || direction == Vertex.DIRECTION.BOTH || ov.getNodeIdUpperBound() != snap.nodeMapping.size())
+      return null;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slices[0]);
+    if (csr == null)
+      return null;
+    return ov.changesNodes(slices[0], direction == Vertex.DIRECTION.OUT) ? null : csr;
+  }
+
+  /**
+   * What {@link #getNeighborView(Snapshot, Vertex.DIRECTION, String...)} would have to write for this snapshot (issue #10471):
+   * nothing when the view is the base CSR's own arrays or was built before, and otherwise one offset per node plus every entry of
+   * the adjacency it packs, which is what a build copies whatever the read that asked for it. Without an overlay the views are
+   * the CSR's arrays, or a merge kept for the life of the base, which no commit invalidates.
+   */
+  private long neighborViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    if (!hasActiveOverlay(snap))
+      return 0L;
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+    return overlayViewBuildCost(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
+  }
+
+  /** {@link #neighborViewBuildCost} of the slice of {@code edgeType} alone, see {@link #getNeighborViewOfSlice}. */
+  private static long neighborViewOfSliceBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String edgeType) {
+    if (!hasActiveOverlay(snap))
+      return 0L;
+    final String[] slice = { edgeType };
+    return overlayViewBuildCost(snap, direction, slice, neighborViewKey(direction, slice));
+  }
+
+  /**
+   * The edge types a view reads: the resolved ones, every type of the snapshot when none were asked for. The array of every type
+   * is made once per snapshot, which never changes: a read with no edge type is a hot path and must not allocate one per call.
+   * The caller reads it and does not change it.
+   */
+  private static String[] slicesOf(final Snapshot snap, final String[] edgeTypes) {
+    if (edgeTypes != null && edgeTypes.length > 0)
+      return edgeTypes;
+    String[] all = snap.allEdgeTypeSlices;
+    if (all == null) {
+      all = allEdgeTypes(snap).toArray(new String[0]);
+      snap.allEdgeTypeSlices = all;
+    }
+    return all;
+  }
+
+  private static long overlayViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices,
+      final String key) {
+    if (unchangedBaseCsr(snap, direction, slices) != null)
+      return 0L;
+    final SoftReference<NeighborView> cached = snap.mergedNeighborViews.get(key);
+    if (cached != null && cached.get() != null)
+      return 0L;
+    return (long) snap.overlay.getNodeIdUpperBound() + adjacencyEntries(snap, direction, slices);
+  }
+
+  /**
+   * Whether a read that visits {@code expectedVisits} entries of this snapshot per node, if it gets no view, should have one built
+   * (issue #10471). A view packs the adjacency of the whole graph, and the snapshot of a view with an overlay is replaced by every
+   * commit, so it is a cost of the snapshot, not of one read. Renting or buying: the reads that went without a view are added up
+   * for the snapshot, and the view is built by the read that brings the sum to what the build costs. A single read that visits as
+   * much as the build writes (a whole-graph count) builds it at once; point reads, thousands of them between two commits, build it
+   * when they have spent as much as it costs and never when the next commit comes first. Whatever the reads, the work wasted on
+   * per-node reads or on a view nobody read again is bounded by the cost of the view.
+   */
+  private static boolean neighborViewPaysFor(final Snapshot snap, final long requestedVisits, final Vertex.DIRECTION direction,
+      final String[] slices, final String key) {
+    // an estimate is not negative: a caller that overflowed one must not take away what the other reads spent
+    final long expectedVisits = Math.max(0L, requestedVisits);
+    final long cost = overlayViewBuildCost(snap, direction, slices, key);
+    if (cost == 0L || expectedVisits >= cost)
+      return true;
+
+    // A view that costs something although one was built for this key was given back under memory pressure (it is held softly):
+    // what the reads spent on it is gone with it, and they earn it again, instead of the first small read after the eviction
+    // finding the demand already spent and rebuilding the whole view for itself, which is what this accounting exists to prevent
+    // (the cost is not zero here, so an entry for the key is a reference that was cleared: a held view would have made it zero)
+    final SoftReference<NeighborView> evicted = snap.mergedNeighborViews.get(key);
+    final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
+    if (evicted != null && snap.mergedNeighborViews.remove(key, evicted))
+      demand.reset();
+
+    // The add and the sum are not one atomic step, on purpose: readers racing at the threshold may overshoot it by a read or ask for
+    // the view together, and the build is one per snapshot and key whoever asks (cachedNeighborView), so the race costs at most the
+    // few reads that could have been served by it. The sum stays below twice the cost: the read that reaches the cost builds the
+    // view, and a read that finds it built returns above without adding
+    demand.add(expectedVisits);
+    return demand.sum() >= cost;
+  }
+
+  private NeighborView neighborViewForVisits(final Snapshot snap, final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
+    if (hasActiveOverlay(snap)) {
+      final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+      if (!neighborViewPaysFor(snap, expectedVisits, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes)))
+        return null;
+    }
+    return getNeighborView(snap, direction, requestedEdgeTypes);
+  }
+
+  private static NeighborView neighborViewOfSliceForVisits(final Snapshot snap, final long expectedVisits,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    if (hasActiveOverlay(snap)) {
+      final String[] slice = { edgeType };
+      if (!neighborViewPaysFor(snap, expectedVisits, direction, slice, neighborViewKey(direction, slice)))
+        return null;
+    }
+    return getNeighborViewOfSlice(snap, direction, edgeType);
+  }
+
+  /** The entries of the base adjacency of {@code slices} in {@code direction}: both lists of an edge for {@code BOTH}. */
+  private static long adjacencyEntries(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices) {
+    long entries = 0L;
+    for (final String slice : slices) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+      if (csr != null)
+        entries += csr.getEdgeCount();
+    }
+    return direction == Vertex.DIRECTION.BOTH ? entries * 2 : entries;
+  }
+
+  private double meanDegree(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    final String[] slices = slicesOf(snap, resolveEdgeTypes(requestedEdgeTypes));
+    return (double) adjacencyEntries(snap, direction, slices) / Math.max(1, nodeCountOf(snap));
+  }
+
+  /**
+   * The adjacency of one edge type in one direction with the overlay applied, for every node below {@code n}; nothing when
+   * neither the base nor the overlay holds an edge of it.
+   */
+  private static void addOverlaySlice(final Snapshot snap, final String slice, final boolean outgoing, final int n,
+      final List<NeighborView> parts) {
+    final DeltaOverlay ov = snap.overlay;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+    final BitSet changed = new BitSet();
+    ov.markChangedNodes(slice, outgoing, changed);
+    if (csr == null && changed.isEmpty())
+      return;
+
+    final int baseNodes = csr != null ? Math.min(snap.nodeMapping.size(), n) : 0;
+    final int[] baseNeighbors = csr == null ? null : outgoing ? csr.getForwardNeighbors() : csr.getBackwardNeighbors();
+
+    // The changed nodes' adjacency, in id order: few next to the nodes the overlay leaves alone
+    final int[][] changedAdjacency = new int[changed.cardinality()][];
+    int c = 0;
+    for (int v = changed.nextSetBit(0); v >= 0 && v < n; v = changed.nextSetBit(v + 1))
+      changedAdjacency[c++] = overlaySliceOf(ov, csr, baseNeighbors, v < baseNodes, v, slice, outgoing);
+
+    final int[] offsets = new int[n + 1];
+    c = 0;
+    for (int v = 0; v < n; v++) {
+      final int degree;
+      if (changed.get(v))
+        degree = changedAdjacency[c++].length;
+      else if (v < baseNodes)
+        degree = outgoing ? csr.outDegree(v) : csr.inDegree(v);
+      else
+        degree = 0;
+      offsets[v + 1] = offsets[v] + degree;
+    }
+
+    final int[] neighbors = new int[offsets[n]];
+    c = 0;
+    for (int v = 0; v < n; v++) {
+      final int[] source;
+      final int from;
+      if (changed.get(v)) {
+        source = changedAdjacency[c++];
+        from = 0;
+      } else if (v < baseNodes) {
+        source = baseNeighbors;
+        from = outgoing ? csr.outOffset(v) : csr.inOffset(v);
+      } else
+        continue;
+      System.arraycopy(source, from, neighbors, offsets[v], offsets[v + 1] - offsets[v]);
+    }
+    parts.add(new NeighborView(n, offsets, neighbors));
+  }
+
+  /** One node's adjacency of one slice and direction with the overlay applied, the way {@link #getNeighborsFromCSR} reads it. */
+  private static int[] overlaySliceOf(final DeltaOverlay ov, final CSRAdjacencyIndex csr, final int[] baseNeighbors,
+      final boolean inBase, final int nodeId, final String slice, final boolean outgoing) {
+    int[] base = EMPTY_INT;
+    if (inBase) {
+      final int start = outgoing ? csr.outOffset(nodeId) : csr.inOffset(nodeId);
+      final int end = outgoing ? csr.outOffsetEnd(nodeId) : csr.inOffsetEnd(nodeId);
+      if (start < end)
+        base = copyBaseExcludingDeleted(baseNeighbors, start, end, ov, slice, nodeId, outgoing);
+    }
+    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, slice, outgoing);
+    if (added == null || added.nodeIds().length == 0)
+      return base;
+    final int[] result = Arrays.copyOf(base, base.length + added.nodeIds().length);
+    System.arraycopy(added.nodeIds(), 0, result, base.length, added.nodeIds().length);
+    Arrays.sort(result);
+    return result;
+  }
+
+  /** {@link #buildMergedNeighborView} over views rather than CSRs: each node's ranges concatenated and sorted. */
+  private static NeighborView mergeNeighborViews(final List<NeighborView> parts, final int n) {
+    final int[] offsets = new int[n + 1];
+    for (int v = 0; v < n; v++) {
+      int degree = 0;
+      for (final NeighborView part : parts)
+        degree += part.degree(v);
+      offsets[v + 1] = offsets[v] + degree;
+    }
+    final int[] neighbors = new int[offsets[n]];
+    for (int v = 0; v < n; v++) {
+      int pos = offsets[v];
+      for (final NeighborView part : parts) {
+        final int from = part.offset(v);
+        final int length = part.offsetEnd(v) - from;
+        System.arraycopy(part.neighbors(), from, neighbors, pos, length);
+        pos += length;
+      }
+      if (offsets[v + 1] - offsets[v] > 1)
+        Arrays.sort(neighbors, offsets[v], offsets[v + 1]);
+    }
+    return new NeighborView(n, offsets, neighbors);
   }
 
   private static NeighborView buildNeighborViewFromCSR(final CSRAdjacencyIndex csr, final int n,
@@ -1472,32 +2195,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns the dense node ID for a given RID, or -1 if not in the view.
    */
   public int getNodeId(final RID rid) {
-    final Snapshot snap = checkBuilt();
-    final DeltaOverlay ov = snap.overlay;
-    if (ov != null)
-      return ov.resolveNodeId(rid, snap.nodeMapping);
-    return snap.nodeMapping.getGlobalId(rid);
+    return nodeIdOf(checkBuilt(), rid);
   }
 
   /**
    * Returns the RID for a given dense node ID.
    */
   public RID getRID(final int nodeId) {
-    final Snapshot snap = checkBuilt();
-    if (nodeId >= snap.nodeMapping.size()) {
-      final DeltaOverlay ov = snap.overlay;
-      if (ov != null)
-        return ov.getOverflowRID(nodeId);
-      return null;
-    }
-    return snap.nodeMapping.getRID(database, nodeId);
+    return ridOf(checkBuilt(), nodeId);
   }
 
   @Override
   public int getBucketId(final int nodeId) {
+    return nodeId < 0 ? -1 : bucketIdOf(checkBuilt(), nodeId);
+  }
+
+  private static int bucketIdOf(final Snapshot snap, final int nodeId) {
     if (nodeId < 0)
       return -1;
-    final Snapshot snap = checkBuilt();
     if (nodeId >= snap.nodeMapping.size()) {
       final DeltaOverlay ov = snap.overlay;
       final RID rid = ov != null ? ov.getOverflowRID(nodeId) : null;
@@ -1547,7 +2262,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Vertex.countEdges(DIRECTION, String...)}.
    */
   public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return countEdges(checkBuilt(), nodeId, direction, requestedEdgeTypes);
+  }
+
+  private long countEdges(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     long total = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
@@ -1567,7 +2286,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public long countAllEdges(final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return countAllEdges(checkBuilt(), requestedEdgeTypes);
+  }
+
+  private long countAllEdges(final Snapshot snap, final String... requestedEdgeTypes) {
     if (hasActiveOverlay(snap))
       return -1;
 
@@ -1614,7 +2336,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Vertex.getVertices(DIRECTION, String...)}.
    */
   public int[] getVertices(final int nodeId, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return getVertices(checkBuilt(), nodeId, direction, requestedEdgeTypes);
+  }
+
+  private int[] getVertices(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     if (edgeTypes != null && edgeTypes.length == 1) {
@@ -1666,6 +2392,49 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return result;
   }
 
+  /** The slice of {@code edgeType} alone, overlay included, with no type expansion (issue #10213). */
+  @Override
+  public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborIdsOfSlice(checkBuilt(), nodeId, direction, edgeType);
+  }
+
+  private int[] getNeighborIdsOfSlice(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    if (csr == null && snap.overlay == null)
+      return EMPTY_INT;
+    return getNeighborsFromCSR(snap, csr, nodeId, direction, edgeType);
+  }
+
+  /** The relationships of {@code edgeType} alone joining the pair, with no type expansion (issue #10213). */
+  @Override
+  public long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return countBetweenForType(checkBuilt(), nodeA, nodeB, direction, edgeType);
+  }
+
+  /** The zero-copy view of the slice of {@code edgeType} alone, with no type expansion (issue #10213). */
+  @Override
+  public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborViewOfSlice(checkBuilt(), direction, edgeType);
+  }
+
+  private static NeighborView getNeighborViewOfSlice(final Snapshot snap, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    // The overlay changes the topology: the slice with the overlay applied, built once per snapshot (issue #10411)
+    if (hasActiveOverlay(snap)) {
+      final String[] slice = { edgeType };
+      return overlayNeighborView(snap, direction, slice, neighborViewKey(direction, slice));
+    }
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    if (csr == null)
+      return null;
+    final int n = snap.nodeMapping.size();
+    if (direction == Vertex.DIRECTION.BOTH)
+      return cachedMergedNeighborView(snap, direction, new String[] { edgeType }, List.of(csr), n);
+    return buildNeighborViewFromCSR(csr, n, direction);
+  }
+
   // --- Vectorized scan ---
 
   /**
@@ -1687,7 +2456,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return isConnectedTo(checkBuilt(), nodeA, nodeB, direction, requestedEdgeTypes);
+  }
+
+  private boolean isConnectedTo(final Snapshot snap, final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String edgeType : edgeTypes)
@@ -1717,7 +2490,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   @Override
   public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
       final String... requestedEdgeTypes) {
-    final Snapshot snap = checkBuilt();
+    return countEdgesBetween(checkBuilt(), nodeA, nodeB, direction, requestedEdgeTypes);
+  }
+
+  private long countEdgesBetween(final Snapshot snap, final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     long total = 0;
     final Iterable<String> types = edgeTypes != null && edgeTypes.length > 0 ?
@@ -1750,7 +2527,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public double getMeanEdgesPerConnectedPair(final String edgeType) {
-    final Snapshot snap = checkBuilt();
+    return getMeanEdgesPerConnectedPair(checkBuilt(), edgeType);
+  }
+
+  private double getMeanEdgesPerConnectedPair(final Snapshot snap, final String edgeType) {
     if (snap.overlay != null)
       return MULTIPLICITY_UNKNOWN;
     // A type answers for its sub-types too, whose slices this measures one at a time: say unknown rather than guess
@@ -1810,7 +2590,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Mirrors {@code Document.get(String)}.
    */
   public Object getProperty(final int nodeId, final String propertyName) {
-    final Snapshot snap = checkBuilt();
+    return getProperty(checkBuilt(), nodeId, propertyName);
+  }
+
+  private static Object getProperty(final Snapshot snap, final int nodeId, final String propertyName) {
     // Check overlay first (overrides and overflow nodes)
     final DeltaOverlay ov = snap.overlay;
     if (ov != null) {
@@ -1876,6 +2659,271 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** The snapshot being served, or null before the first build; unlike {@link #captureSnapshot()} it never waits. */
   Snapshot currentSnapshot() {
     return snapshot;
+  }
+
+  /**
+   * This view fixed at the snapshot it serves now: {@link #captureSnapshot()} for a caller outside this package, a query or
+   * an algorithm, behind the provider SPI. Every answer it gives belongs to that one snapshot, its overlay included, however
+   * many commits are merged and however many times the view is rebuilt meanwhile (issue #10350). Costs one object: the
+   * snapshot is immutable, and pinning only keeps it reachable for as long as the caller holds the result - a long algorithm
+   * keeps a superseded base in memory until it ends. A query takes one per statement, shared by its operators, through
+   * {@link GraphViewPins} (issue #10415).
+   */
+  @Override
+  public Pinned pinned() {
+    return new Pinned(this, checkBuilt());
+  }
+
+  /**
+   * A {@link GraphAnalyticalView} fixed at one snapshot, see {@link #pinned()}. It reads, and nothing else: building,
+   * dropping and the status of the view are the view's own. What does not depend on the snapshot - the types the view
+   * covers, how a type expands into the slices of its sub-types - is asked of the view.
+   */
+  public static final class Pinned implements GraphTraversalProvider {
+    private final GraphAnalyticalView view;
+    private final Snapshot            snap;
+
+    private Pinned(final GraphAnalyticalView view, final Snapshot snap) {
+      this.view = view;
+      this.snap = snap;
+    }
+
+    /** The snapshot itself, for a kernel of this package that reads its arrays directly. */
+    Snapshot snapshot() {
+      return snap;
+    }
+
+    /**
+     * This snapshot's ids renumbered onto a gapless range: the one {@code builder} makes, built once per snapshot and shared by
+     * every query that reads it, so the renumbering and the neighbour views it translates are not rebuilt per query (issue
+     * #10411).
+     */
+    public GraphTraversalProvider denseIds(final Supplier<GraphTraversalProvider> builder) {
+      final SoftReference<GraphTraversalProvider> cached = snap.denseIds;
+      GraphTraversalProvider dense = cached != null ? cached.get() : null;
+      if (dense == null) {
+        dense = builder.get();
+        snap.denseIds = new SoftReference<>(dense);
+      }
+      return dense;
+    }
+
+    @Override
+    public Pinned pinned() {
+      return this;
+    }
+
+    /** The CSR of one concrete edge type in this snapshot, or null when it holds none. */
+    public CSRAdjacencyIndex getCSRIndex(final String edgeType) {
+      return snap.csrPerType.get(edgeType);
+    }
+
+    /** The node mapping of this snapshot's base, which the ids past it extend while an overlay holds new vertices. */
+    public NodeIdMapping getNodeMapping() {
+      return snap.nodeMapping;
+    }
+
+    /** The edge types this snapshot answers for, the ones only its overlay holds included. */
+    public Set<String> getEdgeTypes() {
+      return edgeTypesOf(snap);
+    }
+
+    @Override
+    public int getNodeCount() {
+      return nodeCountOf(snap);
+    }
+
+    @Override
+    public int getNodeIdUpperBound() {
+      return nodeIdUpperBoundOf(snap);
+    }
+
+    @Override
+    public boolean isNodeLive(final int nodeId) {
+      return view.isNodeLive(snap, nodeId);
+    }
+
+    @Override
+    public boolean hasPendingChanges() {
+      return hasActiveOverlay(snap);
+    }
+
+    /** Always: a snapshot that was served once answers for as long as it is pinned, whatever the view does meanwhile. */
+    @Override
+    public boolean isReady() {
+      return true;
+    }
+
+    /** Never: a pinned snapshot is already in memory, there is nothing left to restore. */
+    @Override
+    public boolean isRestoring() {
+      return false;
+    }
+
+    /**
+     * Whether the view this snapshot was pinned from is behind the graph NOW: a status of the view, not of the pinned data,
+     * which is as current as it was when pinned. No consumer acts on it once it holds a pin.
+     */
+    @Override
+    public boolean isStale() {
+      return view.isStale();
+    }
+
+    @Override
+    public String getName() {
+      return view.getName();
+    }
+
+    @Override
+    public boolean coversVertexType(final String typeName) {
+      return view.coversVertexType(typeName);
+    }
+
+    @Override
+    public boolean coversEdgeType(final String edgeTypeName) {
+      return view.coversEdgeType(edgeTypeName);
+    }
+
+    @Override
+    public int getNodeId(final RID rid) {
+      return view.nodeIdOf(snap, rid);
+    }
+
+    @Override
+    public RID getRID(final int nodeId) {
+      return view.ridOf(snap, nodeId);
+    }
+
+    @Override
+    public int getBucketId(final int nodeId) {
+      return bucketIdOf(snap, nodeId);
+    }
+
+    @Override
+    public Object getNodeIdSpace() {
+      return snap.nodeMapping;
+    }
+
+    @Override
+    public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.getVertices(snap, nodeId, direction, edgeTypes);
+    }
+
+    @Override
+    public String[] resolveEdgeTypes(final String... edgeTypes) {
+      return view.resolveEdgeTypes(edgeTypes);
+    }
+
+    @Override
+    public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+      return view.getNeighborIdsOfSlice(snap, nodeId, direction, edgeType);
+    }
+
+    @Override
+    public long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+        final String edgeType) {
+      return view.countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
+    }
+
+    @Override
+    public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+      return GraphAnalyticalView.getNeighborViewOfSlice(snap, direction, edgeType);
+    }
+
+    @Override
+    public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.countEdges(snap, nodeId, direction, edgeTypes);
+    }
+
+    @Override
+    public long countAllEdges(final String... edgeTypes) {
+      return view.countAllEdges(snap, edgeTypes);
+    }
+
+    @Override
+    public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.isConnectedTo(snap, nodeA, nodeB, direction, edgeTypes);
+    }
+
+    @Override
+    public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.countEdgesBetween(snap, nodeA, nodeB, direction, edgeTypes);
+    }
+
+    @Override
+    public Object getProperty(final int nodeId, final String propertyName) {
+      return GraphAnalyticalView.getProperty(snap, nodeId, propertyName);
+    }
+
+    @Override
+    public double getMeanEdgesPerConnectedPair(final String edgeType) {
+      return view.getMeanEdgesPerConnectedPair(snap, edgeType);
+    }
+
+    @Override
+    public String[] getMaterializedEdgeTypes() {
+      return materializedEdgeTypesOf(snap);
+    }
+
+    @Override
+    public boolean hasEdgeProperties() {
+      return GraphAnalyticalView.hasEdgeProperties(snap);
+    }
+
+    @Override
+    public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
+      return view.hasEdgeProperty(snap, edgeType, propertyName);
+    }
+
+    @Override
+    public NodeEdgeWeights edgeWeightsForSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType,
+        final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint) {
+      return view.edgeWeightsForSlice(snap, nodeId, direction, edgeType, propertyName, defaultWeight, edgeCheckpoint);
+    }
+
+    @Override
+    public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.getNeighborView(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.neighborViewBuildCost(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+      return GraphAnalyticalView.neighborViewOfSliceBuildCost(snap, direction, edgeType);
+    }
+
+    @Override
+    public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.neighborViewForVisits(snap, expectedVisits, direction, edgeTypes);
+    }
+
+    @Override
+    public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+        final String edgeType) {
+      return GraphAnalyticalView.neighborViewOfSliceForVisits(snap, expectedVisits, direction, edgeType);
+    }
+
+    @Override
+    public double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.meanDegree(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+      view.getDegrees(snap, degrees, direction, edgeType);
+    }
+
+    @Override
+    public String toString() {
+      return "Pinned(" + view.getName() + ")";
+    }
   }
 
   /** {@link #getNodeId(RID)} asked of a captured snapshot. */
@@ -2191,7 +3239,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public Set<String> getEdgeTypes() {
-    final Snapshot snap = checkBuilt();
+    return edgeTypesOf(checkBuilt());
+  }
+
+  private static Set<String> edgeTypesOf(final Snapshot snap) {
     final Collection<String> all = allEdgeTypes(snap);
     return Collections.unmodifiableSet(all instanceof Set<String> set ? set : new LinkedHashSet<>(all));
   }
@@ -2202,7 +3253,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   public int getNodeCount() {
-    final Snapshot snap = checkBuilt();
+    return nodeCountOf(checkBuilt());
+  }
+
+  private static int nodeCountOf(final Snapshot snap) {
     final DeltaOverlay ov = snap.overlay;
     if (ov != null)
       return ov.getTotalNodeCount();
@@ -2216,7 +3270,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public int getNodeIdUpperBound() {
-    final Snapshot snap = checkBuilt();
+    return nodeIdUpperBoundOf(checkBuilt());
+  }
+
+  private static int nodeIdUpperBoundOf(final Snapshot snap) {
     final DeltaOverlay ov = snap.overlay;
     if (ov != null)
       return ov.getNodeIdUpperBound();
@@ -2232,13 +3289,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public boolean isNodeLive(final int nodeId) {
-    if (nodeId < 0)
-      return false;
-    final Snapshot snap = checkBuilt();
-    final DeltaOverlay ov = snap.overlay;
-    if (ov == null)
-      return nodeId < snap.nodeMapping.size();
-    return nodeId < ov.getNodeIdUpperBound() && !ov.isDeleted(nodeId);
+    return nodeId >= 0 && isNodeLive(checkBuilt(), nodeId);
   }
 
   /**
@@ -2276,8 +3327,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return name;
   }
 
+  /**
+   * The view's status. An {@code ASYNCHRONOUS} view whose snapshot is READY but behind a commit not merged yet reports
+   * STALE (issue #10189).
+   */
   public Status getStatus() {
-    return status;
+    final Status s = status;
+    return s == Status.READY && hasUnmergedAsyncChanges() ? Status.STALE : s;
+  }
+
+  /** Whether a committed change is not in the view yet: queued for the merge, or dropped by an overflow for a rebuild. */
+  private boolean hasUnmergedAsyncChanges() {
+    return asyncDeltaLag.get() > 0 || asyncQueueOverflowed.get();
   }
 
   /**
@@ -2355,10 +3416,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isReady() {
     triggerDeferredDiskRestoreIfPending();
-    final Status s = status;
-    if (s == Status.READY)
-      return true;
-    return s == Status.STALE && isUseWhenStale();
+    final Status s = getStatus();
+    if (s != Status.READY && (s != Status.STALE || !isUseWhenStale()))
+      return false;
+    // AN EDGE TYPE ATTACHED TO A LISTED ONE SINCE THE SCAN BRINGS EDGES THE CSR DOES NOT HAVE: NOT SERVED, EVEN STALE (#10214)
+    return holdsJoinedEdgeTypes();
   }
 
   /**
@@ -2373,7 +3435,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public boolean isStale() {
-    return status == Status.STALE;
+    return getStatus() == Status.STALE;
   }
 
   /**
@@ -2426,6 +3488,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // where no listener is active and a committing tx's delta is lost.
     final DeltaCollector oldCollector = this.deltaCollector;
     this.updateMode = newMode;
+    // Leaving ASYNCHRONOUS: what it queued is merged now, so a SYNCHRONOUS view has no stale window to begin with. On the
+    // caller's thread, under the monitor: the backlog is bounded by the queue's cap, and a mode switch is a rare admin call
+    mergeQueuedAsyncDeltas();
     if (snapshot != null || buildWatch != null)
       registerChangeListeners();
     if (oldCollector != null)
@@ -2450,7 +3515,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public String[] getMaterializedEdgeTypes() {
-    final Snapshot snap = this.snapshot;
+    return materializedEdgeTypesOf(this.snapshot);
+  }
+
+  private static String[] materializedEdgeTypesOf(final Snapshot snap) {
     return snap == null ? null : allEdgeTypes(snap).toArray(new String[0]);
   }
 
@@ -2480,14 +3548,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public boolean hasEdgeProperties() {
-    final Snapshot snap = this.snapshot;
+    return hasEdgeProperties(this.snapshot);
+  }
+
+  private static boolean hasEdgeProperties(final Snapshot snap) {
     return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty()
         && !hasStaleEdgeColumns(snap);
   }
 
   @Override
   public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
-    final Snapshot snap = this.snapshot;
+    return hasEdgeProperty(this.snapshot, edgeType, propertyName);
+  }
+
+  private boolean hasEdgeProperty(final Snapshot snap, final String edgeType, final String propertyName) {
     if (snap == null || snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
       return false;
     // The columns are per slice: a type with sub-types spans several, which a caller cannot be handed as one
@@ -2532,8 +3606,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // BOTH has no adjacency slice of its own to be aligned with; edgeWeightsOf() splits it before calling here.
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
       return null;
+    return edgeWeightsForSlice(checkBuilt(), nodeId, direction, edgeType, propertyName, defaultWeight, edgeCheckpoint);
+  }
 
-    final Snapshot snap = checkBuilt();
+  private NodeEdgeWeights edgeWeightsForSlice(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType, final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint) {
+    // BOTH has no adjacency slice of its own to be aligned with; edgeWeightsOf() splits it before calling here.
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      return null;
     // Per slice, like hasEdgeProperty(): a type with sub-types cannot be served as one, the caller reads the records
     if (expandEdgeType(edgeType).length > 1)
       return null;
@@ -2825,7 +3905,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public Map<String, Object> getStats() {
     final Map<String, Object> stats = new HashMap<>();
     stats.put("name", name);
-    stats.put("status", status.name());
+    stats.put("status", getStatus().name());
     stats.put("updateMode", updateMode.name());
 
     final Snapshot snap = this.snapshot;
@@ -2932,7 +4012,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result.getEdgeColumnStores(), result.getBwdToFwd(),
         null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
         builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter, result.getUncoveredEdgeFreeAsOf(),
-        result.getScannedEdgeTypes());
+        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets());
   }
 
   /**
@@ -2995,7 +4075,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // covers - the header must match what was actually scanned, or a later reopen could restore a snapshot that
       // silently under-covers what the view claims to (#6583 review).
       GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
-          snap.edgePropertyFilter, snap);
+          snap.edgePropertyFilter, snap, snap.scannedEdgeTypes != null ? snap.scannedEdgeTypes.toArray(new String[0]) : null,
+          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null);
     } catch (final OutOfMemoryError | Exception e) {
       // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
       // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
@@ -3268,7 +4349,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Snapshot restored;
     try {
       restored = GraphAnalyticalViewCSRPersistence.load(database, name, vertexTypes, edgeTypes, propertyFilter,
-          edgePropertyFilter, currentTxId);
+          edgePropertyFilter, currentTxId, uncoveredEdgeWrites.get());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to load persisted CSR from disk", e, name);
       return false;
@@ -3295,8 +4376,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return true;
     }
 
+    ++baseReplacements;
     this.snapshot = restored;
     baseWatch = null;
+    // The restored CSR is as of the last commit: a change still queued is in it
+    discardQueuedAsyncDeltas();
     this.status = Status.READY;
     notifyContractionHierarchies();
     this.notifyAll();
@@ -3331,6 +4415,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private void registerChangeListeners() {
+    // A MODE SWITCH ARMS THE NEW COLLECTOR BEFORE IT DROPS THE OLD ONE: NO GAP, SO THE TYPES OF THE FIRST ARMING STILL HOLD
+    final boolean firstArming = deltaCollector == null;
     deltaCollector = new DeltaCollector(this);
     database.getEvents().registerListener((AfterRecordCreateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordUpdateListener) deltaCollector);
@@ -3338,6 +4424,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // A lightweight edge has no record, so its creation reaches no record listener, and GraphBatch writes edges in
     // bulk without record events (issue #9572)
     ((DatabaseInternal) database).getGraphEngine().registerEdgeWriteListener(deltaCollector);
+    if (firstArming) {
+      // READ AFTER THE LISTENERS ARE ARMED: A TYPE CREATED IN BETWEEN IS COUNTED AS EXISTING, WHICH IS THE SAFE SIDE
+      final Set<String> edgeTypeNames = new HashSet<>();
+      for (final DocumentType dt : database.getSchema().getTypes())
+        if (dt instanceof EdgeType)
+          edgeTypeNames.add(dt.getName());
+      edgeTypesWhenArmed = edgeTypeNames;
+    }
   }
 
   private void unregisterChangeListeners() {
@@ -3357,12 +4451,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * A {@code GraphBatch} wrote edges of a covered type in bulk, with no record event to report them one by one (issue
-   * #9572). {@code OFF} and {@code ASYNCHRONOUS} react as to any relevant commit. {@code SYNCHRONOUS} cannot reconcile
-   * edges it holds no delta for, so it rebuilds; while it does, the view is not READY and queries take the ordinary
+   * #9572). {@code OFF} reacts as to any relevant commit. {@code SYNCHRONOUS} and {@code ASYNCHRONOUS} cannot reconcile
+   * edges they hold no delta for, so they rebuild; while they do, the view is not READY and queries take the ordinary
    * path, so none is answered without the load.
    */
   void onEdgesWrittenInBulk() {
-    if (updateMode != UpdateMode.SYNCHRONOUS) {
+    if (updateMode == UpdateMode.OFF) {
       onRelevantCommitCallback();
       return;
     }
@@ -3488,104 +4582,31 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Called by the DeltaCollector (ASYNCHRONOUS/OFF mode) after a committed transaction affected
-   * covered vertex/edge types. ASYNCHRONOUS triggers an async rebuild, OFF marks the view as STALE.
-   */
-  /**
-   * Entry point of the ASYNCHRONOUS/OFF commit callback. While a full build is in flight the commit only marks the
-   * build's watch, for the build to publish STALE (OFF) or rebuild (ASYNCHRONOUS) - without taking this instance's
-   * monitor, and without dispatching a second scan beside the one in flight (issue #8378).
+   * Entry point of the OFF commit callback, which reports that a commit touched the covered types without collecting what
+   * it changed. While a full build is in flight the commit only marks the build's watch, for the build to publish STALE -
+   * without taking this instance's monitor, and without dispatching a second scan beside the one in flight (issue #8378).
    */
   void onRelevantCommitCallback() {
     final BuildWatch watch = buildWatch;
-    if (watch != null && updateMode != UpdateMode.SYNCHRONOUS && watch.markRelevantCommit())
+    if (watch != null && watch.markRelevantCommit())
       return;
     onRelevantCommit();
   }
 
+  /**
+   * A commit touched the covered types and its change was not collected: the view no longer matches the graph. An OFF view
+   * stays STALE until it is rebuilt. An incremental view reaches here only from a listener of the mode it had before a
+   * switch, and rebuilds, since it has no delta to merge.
+   */
   synchronized void onRelevantCommit() {
-    if (updateMode == UpdateMode.ASYNCHRONOUS) {
-      if (!compacting.compareAndSet(false, true)) {
-        // A rebuild is already in progress — flag that another one is needed once it finishes.
-        asyncRebuildNeeded = true;
-        return;
-      }
-      asyncRebuildNeeded = false;
-      // See the `generation` field javadoc (issue #6636): captured at dispatch time so a later-dispatched
-      // build (e.g. a direct build()/buildAsync() call racing this rebuild) correctly supersedes it.
-      final long myGeneration = ++generation;
-      final CountDownLatch latch = new CountDownLatch(1);
-      this.readyLatch = latch;
-      this.status = Status.BUILDING;
-      inFlightTasks.incrementAndGet();
-      try {
-        getExecutor().execute(() -> {
-          BUILD_PERMITS.acquireUninterruptibly();
-          try {
-            final long asOfTransactionId = currentLastTransactionId();
-            database.begin();
-            try {
-              final long buildStart = System.currentTimeMillis();
-              final CSRBuilder builder = newCSRBuilder();
-              final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
-              final long durationMs = System.currentTimeMillis() - buildStart;
-              // Synchronized swap: check that the mode hasn't changed to SYNCHRONOUS during rebuild.
-              // If it did, applyDelta() may have enriched the current snapshot with overlay deltas
-              // that would be lost by an unconditional swap. Also check generation: a direct build()/
-              // buildAsync() dispatched after this rebuild started must win even if this one finishes
-              // last (issue #6636).
-              synchronized (GraphAnalyticalView.this) {
-                if (updateMode == UpdateMode.ASYNCHRONOUS && myGeneration == generation) {
-                  this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
-                  this.status = Status.READY;
-                  baseWatch = null;
-                  notifyContractionHierarchies();
-                } else
-                  LogManager.instance().log(this, Level.INFO,
-                      "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild, or superseded by a newer build/restore)", name, updateMode);
-              }
-
-            } finally {
-              if (database.isTransactionActive())
-                database.rollback();
-            }
-          } catch (final Exception e) {
-            synchronized (GraphAnalyticalView.this) {
-              if (myGeneration == generation) {
-                this.buildError = e;
-                this.status = Status.STALE;
-              }
-            }
-            if (isBenignShutdownError(e))
-              LogManager.instance().log(this, Level.FINE,
-                  "Async rebuild of GraphAnalyticalView '%s' aborted because the database is closing", name);
-            else
-              LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
-          } finally {
-            // #4956: drop this worker's DatabaseContext entry (see buildAsync)
-            DatabaseContext.INSTANCE.removeCurrentThreadContexts();
-            BUILD_PERMITS.release();
-            compacting.set(false);
-            latch.countDown();
-            taskCompleted();
-            // Volatile read outside the monitor is intentional: visibility is guaranteed by the
-            // volatile flag, and onRelevantCommit() will acquire the lock when it executes.
-            if (asyncRebuildNeeded)
-              onRelevantCommit();
-          }
-        });
-      } catch (final RejectedExecutionException e) {
-        this.status = Status.STALE;
-        compacting.set(false);
-        latch.countDown();
-        taskCompleted();
-        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async rebuild rejected (executor shut down)", name);
-      }
-    } else {
-      // A build in flight would publish READY over this: it publishes STALE instead (issue #8378)
-      final BuildWatch watch = buildWatch;
-      if (watch == null || !watch.markRelevantCommit())
-        this.status = Status.STALE;
+    // A build in flight would publish READY over this: it publishes STALE instead (issue #8378)
+    final BuildWatch watch = buildWatch;
+    if (watch != null && watch.markRelevantCommit())
+      return;
+    this.status = Status.STALE;
+    if (updateMode != UpdateMode.OFF) {
+      followUpRebuildPending = true;
+      rebuildAfterPublication();
     }
   }
 
@@ -3614,15 +4635,181 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * instance's monitor only for the merge itself: no build scans while holding it, blocking or not (issue #8403).
    */
   void onCommittedDelta(final TxDelta delta) {
-    final BuildWatch watch = buildWatch;
-    // The base being served when the delta was buffered: it takes the delta only if still served when merged
-    final Snapshot served = snapshot;
-    if (watch != null && watch.offer(delta)) {
-      if (served != null)
-        applyDelta(delta, served.csrPerType);
+    try {
+      final BuildWatch watch = buildWatch;
+      // The base being served when the delta was buffered: it takes the delta only if still served when merged
+      final Snapshot served = snapshot;
+      if (watch != null && watch.offer(delta)) {
+        if (served != null)
+          mergeCommittedDelta(delta, served.csrPerType);
+        return;
+      }
+      mergeCommittedDelta(delta, null);
+    } catch (final RuntimeException e) {
+      rebuildForUnmergedDelta(e);
+    }
+  }
+
+  /**
+   * A committed change the overlay could not take is not in the view, and the commit gate that called it would only log it and
+   * go on: the view would answer from a graph that never existed until the database is reopened (issue #10338). It rebuilds
+   * instead, as the asynchronous merge does for a change it cannot merge, and is STALE until that lands.
+   * <p>
+   * Only a {@link RuntimeException} is a change that cannot be merged: an {@link Error} (out of memory, say) is a JVM that cannot go
+   * on, and is left to propagate. A failure that repeats costs one rebuild per failing commit, no more than one at a time since
+   * builds coalesce, and each rebuild reads the graph fresh.
+   */
+  private synchronized void rebuildForUnmergedDelta(final RuntimeException e) {
+    // A view that is closing has nothing to rebuild, nor a failure worth a stack trace
+    if (shutDown)
+      return;
+    LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
+    // A build in flight publishes its own status: it reads the flag once it has published, and the scan it starts then is after this commit
+    if (buildWatch == null)
+      status = Status.STALE;
+    followUpRebuildPending = true;
+    rebuildAfterPublication();
+  }
+
+  /** Merges a committed delta now (SYNCHRONOUS), or queues it for the merge off the committing thread (ASYNCHRONOUS). */
+  private void mergeCommittedDelta(final TxDelta delta, final Map<String, CSRAdjacencyIndex> bufferedAgainst) {
+    if (updateMode != UpdateMode.ASYNCHRONOUS) {
+      applyDelta(delta, bufferedAgainst);
       return;
     }
-    applyDelta(delta, (Map<String, CSRAdjacencyIndex>) null);
+    // Counted before it is queued: from here on the view reports STALE, so the committing thread's next query does not
+    // read a snapshot without its own change, unless the view is allowed to serve stale (issue #10189)
+    if (asyncDeltaLag.incrementAndGet() > maxQueuedAsyncDeltas) {
+      // The merge cannot keep up: this change is left to the rebuild the merge task starts, whose scan reads it. Never
+      // waits for the monitor, which the merge holds. The flag is raised before the change stops being counted: the view
+      // reports STALE while either says a change is not in it, so it never reads READY without this one
+      final boolean first = !asyncQueueOverflowed.getAndSet(true);
+      asyncDeltaLag.decrementAndGet();
+      if (first)
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphAnalyticalView '%s': more than %d committed changes waiting to be merged; rebuilding", name, maxQueuedAsyncDeltas);
+      scheduleAsyncMerge();
+      return;
+    }
+    try {
+      // Read after onCommittedDelta() read the build watch, so a build whose watch was not open then is counted only if it
+      // publishes later: its scan started after this commit, and holds it
+      asyncDeltas.add(new QueuedDelta(delta, bufferedAgainst, baseReplacements));
+    } catch (final RuntimeException | Error e) {
+      asyncDeltaLag.decrementAndGet();
+      throw e;
+    }
+    scheduleAsyncMerge();
+  }
+
+  /**
+   * More committed changes were waiting than the queue holds (see {@link #MAX_PENDING_DELTAS}): holding them all would grow
+   * without bound. They are dropped for a rebuild, which reads them from the graph, as a build watch that overflows does.
+   * Run by the merge task under this instance's monitor, once per queue-full however many commits found it full.
+   */
+  private void rebuildForOverflowedQueue() {
+    // STALE before the flag goes down, so no reader sees READY between the two
+    status = Status.STALE;
+    followUpRebuildPending = true;
+    discardQueuedAsyncDeltas();
+    asyncQueueOverflowed.set(false);
+    // A commit that overflowed after the discard is in the scan of this rebuild, which starts after it
+    rebuildAfterPublication();
+  }
+
+  /**
+   * Dispatches the merge of the queued deltas to the build executor, unless one is already queued: one task merges whatever
+   * has accumulated, so a stream of small commits costs one task per batch rather than one per commit. It needs no build
+   * permit, unlike a scan: a merge is as cheap as the change it merges.
+   */
+  private void scheduleAsyncMerge() {
+    if (!asyncMergeQueued.compareAndSet(false, true))
+      return;
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          // One batch per hold of the monitor, until the queue is empty
+          while (!shutDown && mergeQueuedAsyncDeltas(ASYNC_MERGE_BATCH))
+            Thread.yield();
+        } finally {
+          asyncMergeQueued.set(false);
+          taskCompleted();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          // A delta queued, or an overflow raised, after the last poll found the merge still queued: the next task takes it
+          if ((!asyncDeltas.isEmpty() || asyncQueueOverflowed.get()) && !shutDown)
+            scheduleAsyncMerge();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      asyncMergeQueued.set(false);
+      taskCompleted();
+      // Shutting down: the lag stays above zero, so the view keeps reporting STALE, which is what it is, and awaitReady()
+      // waits to its timeout; shutdown() discards the queue
+      LogManager.instance().log(this, Level.FINE, "GraphAnalyticalView '%s': merge of the committed changes rejected (executor shut down)",
+          name);
+    }
+  }
+
+  /** Merges every queued delta, under this instance's monitor. */
+  private void mergeQueuedAsyncDeltas() {
+    mergeQueuedAsyncDeltas(Integer.MAX_VALUE);
+  }
+
+  /**
+   * Merges up to {@code max} queued deltas into the overlay, in the order they were queued, exactly as the SYNCHRONOUS
+   * callback merges one (issue #10189), and wakes the callers of {@link #awaitReady} once none is left. A delta that cannot
+   * be merged leaves the view STALE and rebuilds it: it is not in the overlay, and dropping it would serve a graph that
+   * never existed.
+   *
+   * @return whether deltas are left in the queue
+   */
+  private synchronized boolean mergeQueuedAsyncDeltas(final int max) {
+    if (asyncQueueOverflowed.get()) {
+      rebuildForOverflowedQueue();
+      return false;
+    }
+    boolean failed = false;
+    QueuedDelta queued;
+    for (int merged = 0; merged < max && (queued = asyncDeltas.poll()) != null; ++merged) {
+      try {
+        // Runs on a GAV worker, as the compaction's own applyDelta() does: the merge works on RIDs and the view's
+        // mappings and reads no record. A full build or a restore that published since the commit holds it already
+        if (queued.bufferedAgainst() == null && queued.baseReplacementsSeen() != baseReplacements)
+          continue;
+        applyDelta(queued.delta(), queued.bufferedAgainst());
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': cannot merge a committed change, rebuilding", e, name);
+        // Before the lag drops below: the view never reads READY without the change
+        status = Status.STALE;
+        failed = true;
+      } finally {
+        asyncDeltaLag.decrementAndGet();
+      }
+    }
+    if (failed) {
+      followUpRebuildPending = true;
+      status = Status.STALE;
+      // Inside a compaction swap too: the rebuild dispatched here bumps the generation, so the swap that called this
+      // discards its own result rather than publish a base without the change
+      rebuildAfterPublication();
+    }
+    // The waiters of awaitReady() are woken by the batch that empties the queue, and by any status change a failure or an
+    // overflow makes (the rebuild's dispatch, discardQueuedAsyncDeltas()): not by every batch
+    final boolean more = !asyncDeltas.isEmpty();
+    if (!more)
+      notifyAll();
+    return more;
+  }
+
+  /**
+   * Drops the queued deltas, when the base they would be merged into is replaced by one that already holds them. Under this
+   * instance's monitor, which the merge holds while it polls, so no delta is half merged.
+   */
+  private synchronized void discardQueuedAsyncDeltas() {
+    while (asyncDeltas.poll() != null)
+      asyncDeltaLag.decrementAndGet();
+    notifyAll();
   }
 
   private synchronized void applyDelta(final TxDelta delta, final Map<String, CSRAdjacencyIndex> bufferedAgainst) {
@@ -3677,8 +4864,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // A full build in flight replaces this base anyway, re-reading the columns and re-applying every delta it
     // buffered (the dirty edge properties included, see publishBuild()): a compaction beside it would scan the graph
-    // a second time, and supersede the build whose caller is waiting for it (issue #8403)
-    if (buildWatch != null)
+    // a second time, and supersede the build whose caller is waiting for it (issue #8403). Nor does a view that is shut
+    // down compact: shutdown() merges what was still queued (issue #10189) after it stopped waiting for its tasks
+    if (buildWatch != null || shutDown)
       return;
 
     if (forceRebuild || (compactionThreshold > 0
@@ -3720,6 +4908,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
               // Synchronized swap: capture buffered deltas and re-apply against the new mapping
               synchronized (GraphAnalyticalView.this) {
+                // A change committed before the swap and still queued for the asynchronous merge joins the buffered ones
+                // now (issue #10189): merged after the swap, it would be applied to the fresh base unchecked against the
+                // scan, which may already hold it
+                mergeQueuedAsyncDeltas();
                 final List<TxDelta> buffered = pendingDeltas;
                 pendingDeltas = null;
 
@@ -4287,6 +5479,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   static void acquireAllBuildPermitsForTest() {
     BUILD_PERMITS.acquireUninterruptibly(MAX_CONCURRENT_BUILDS);
+  }
+
+  /** Test-only hook: lowers the number of committed changes an ASYNCHRONOUS view queues before it rebuilds instead. */
+  void setMaxQueuedAsyncDeltasForTest(final int max) {
+    this.maxQueuedAsyncDeltas = max;
   }
 
   /** Test-only hook: releases the permits taken by {@link #acquireAllBuildPermitsForTest()}. */

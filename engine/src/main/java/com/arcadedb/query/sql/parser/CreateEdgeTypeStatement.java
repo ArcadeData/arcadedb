@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeBuilder;
 
@@ -71,11 +71,17 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
+  protected boolean createsAnIndex() {
+    return unique;
+  }
+
+  @Override
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
-    // A lightweight edge has no record, so it cannot honour a MANDATORY or default-valued property of a super type (#9846)
-    if (lightweight)
-      for (final DocumentType superclass : superclasses)
-        LocalEdgeType.checkCanBeLightweight(typeName, superclass);
+    // The refusals of every type (a TIMESERIES super type, issue #10394) and the one only a LIGHTWEIGHT edge has: it has no record,
+    // so it cannot honour a MANDATORY or default-valued property of a super type (#9846)
+    for (final DocumentType superclass : superclasses)
+      if (superclass instanceof LocalDocumentType local)
+        LocalDocumentType.checkSuperTypeOfNewType(typeName, local, lightweight);
   }
 
   private TypeBuilder<EdgeType> applyFlags(final TypeBuilder<EdgeType> builder) {

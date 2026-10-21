@@ -165,10 +165,59 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * This provider fixed at the graph it serves now, for a caller that asks it several questions whose answers have to
+   * belong together: which IDs are live, then the RID of each, then their neighbours. Asked one at a time, each question
+   * is answered by whatever the provider serves at that moment, and a rebuild in between numbers the nodes afresh, so the
+   * later answers read the earlier IDs as other records - the RID of one past the new end comes back null - without
+   * failing (issue #10350).
+   * <p>
+   * A provider pinned this way answers every question from the same graph however long the caller takes, the changes
+   * committed since included or not, all together. The default is the provider itself, for one whose answers never change
+   * numbering underneath a caller.
+   */
+  default GraphTraversalProvider pinned() {
+    return this;
+  }
+
+  /**
    * Returns neighbor dense node IDs for a given node, direction, and edge types.
    * This is the primary acceleration method — O(1) array access vs O(n) linked list traversal.
    */
   int[] getNeighborIds(int nodeId, Vertex.DIRECTION direction, String... edgeTypes);
+
+  /**
+   * The concrete edge types a request for {@code edgeTypes} reads, one SLICE each: a type answers for its sub-types, so a
+   * provider that keeps one slice per concrete type answers {@code K} with {@code KC EXTENDS K} from both. Every type of
+   * the result is answered by the {@code ...OfSlice} methods with exactly its own edges (issue #10213). The default is the
+   * request itself, for a provider that does not answer a type with its sub-types' edges.
+   *
+   * @return the requested types, each followed by the sub-types it brings, without duplicates. Callers must not modify it
+   */
+  default String[] resolveEdgeTypes(final String... edgeTypes) {
+    return edgeTypes;
+  }
+
+  /**
+   * {@link #getNeighborIds} along ONE concrete edge type, sub-types left out: the slice a relationship is read from, which
+   * is what names it when two hops of a pattern must not bind the same one (issue #10213).
+   *
+   * @param direction {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}
+   * @param edgeType  a type {@link #resolveEdgeTypes} answers with
+   */
+  default int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborIds(nodeId, direction, edgeType);
+  }
+
+  /** {@link #countEdgesBetween} along ONE concrete edge type, sub-types left out: see {@link #getNeighborIdsOfSlice}. */
+  default long countEdgesBetweenInSlice(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return countEdgesBetween(nodeA, nodeB, direction, edgeType);
+  }
+
+  /** {@link #getNeighborView} of ONE concrete edge type, sub-types left out: see {@link #getNeighborIdsOfSlice}. */
+  default NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborView(direction, edgeType);
+  }
 
   /**
    * Returns the edge count for a node, direction, and edge types.
@@ -488,6 +537,55 @@ public interface GraphTraversalProvider {
    */
   default NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
     return null;
+  }
+
+  /**
+   * How many adjacency entries {@link #getNeighborView} would have to write to answer, that no earlier call has already written
+   * for the snapshot this provider reads: {@code 0} when the view is the provider's own arrays or was built before, and the size
+   * of the whole adjacency otherwise. A view is packed for every node whatever the read that asks for it, so a read that visits
+   * a handful of nodes pays for the whole graph (issue #10471); {@link #getNeighborViewForVisits} compares the two.
+   * <p>
+   * The default is {@code 0}: a provider that has nothing to build, or whose views are not worth costing, is always asked.
+   */
+  default long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return 0L;
+  }
+
+  /** {@link #getNeighborViewBuildCost} of ONE concrete edge type, sub-types left out: see {@link #getNeighborViewOfSlice}. */
+  default long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return getNeighborViewBuildCost(direction, edgeType);
+  }
+
+  /**
+   * The mean number of adjacency entries a node has in {@code direction} over {@code edgeTypes}, or {@code -1} when the provider
+   * does not know. What a read multiplies by the nodes it starts from to estimate the entries it will visit. A mean says nothing of
+   * a hub: a read that starts from few nodes counts their entries itself ({@link #countEdges}) for its first hop, and only the
+   * hops after it are estimated by the mean.
+   */
+  default double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return -1.0;
+  }
+
+  /**
+   * {@link #getNeighborView} for a read that will visit about {@code expectedVisits} adjacency entries: the view, unless building
+   * it costs more than the read itself ({@link #getNeighborViewBuildCost}), in which case {@code null} and the caller reads per
+   * node, as it does when the provider has no view at all. A view that is ready is always returned, whatever the read: it costs
+   * nothing.
+   * <p>
+   * A snapshot that changes with every commit gives a view no second reader, so a point lookup that asked for the view of the
+   * whole graph would build it for itself alone, once per commit. This default compares one read with the build; a provider whose
+   * snapshots are shared by many reads (a Graph Analytical View) adds the reads up instead, so that the view is built once they
+   * have paid for it between them.
+   */
+  default NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    return getNeighborViewBuildCost(direction, edgeTypes) > expectedVisits ? null : getNeighborView(direction, edgeTypes);
+  }
+
+  /** {@link #getNeighborViewForVisits} of ONE concrete edge type, sub-types left out: see {@link #getNeighborViewOfSlice}. */
+  default NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return getNeighborViewOfSliceBuildCost(direction, edgeType) > expectedVisits ? null : getNeighborViewOfSlice(direction, edgeType);
   }
 
   /**

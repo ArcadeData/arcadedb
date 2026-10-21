@@ -225,7 +225,7 @@ reach "no shared libraries needed" by different build modes (see
 | Arch | Build mode | Dockerfile | Base image |
 |---|---|---|---|
 | linux/amd64 | fully static (musl) | `native/src/main/docker/Dockerfile.native.scratch` | `FROM scratch` |
-| linux/arm64 | mostly static (glibc) | `native/src/main/docker/Dockerfile.native.distroless` | `FROM gcr.io/distroless/base-debian12:nonroot` |
+| linux/arm64 | mostly static (glibc) | `native/src/main/docker/Dockerfile.native.distroless` | `FROM gcr.io/distroless/base-debian12` |
 
 Both Dockerfiles `COPY` in the binary, `config/` (staged from `package/src/main/config`), and expose
 the same port/volume surface as the JVM image's Dockerfile, scoped to the modules the native build
@@ -240,10 +240,13 @@ A few things differ from the JVM Docker image because neither base has a shell:
   both `ENTRYPOINT`s are exec-form arrays that invoke the binary directly. Extra `-D` flags must be
   passed as trailing arguments to `docker run` instead of via `-e ARCADEDB_SETTINGS=...` - see
   [Running the container](#running-the-container) below.
-- **User model differs per base.** `scratch` has no `/etc/passwd` and no `adduser`, so that image
-  runs as UID 0 unless the caller overrides it with `docker run --user <uid>:<gid>`. The distroless
-  `:nonroot` tag bakes in a `nonroot:nonroot` (65532:65532) user, so the arm64 image already runs
-  non-root by default with no override needed.
+- **Same user as the JVM image.** Both native images run as UID/GID `1000:1000`, the UID/GID of the
+  JVM image's `arcadedb` user, and every directory under `/home/arcadedb` (`config` included) is owned
+  by `1000:1000`. A volume written by any of the three images can therefore be mounted by the others
+  as a plain image swap. Neither base needs an `/etc/passwd` entry for it: `USER 1000:1000` is
+  numeric, and `scratch` has no `/etc/passwd` at all. The arm64 image ran as distroless's `nonroot`
+  (65532) before #10319, and the amd64 image as root: volumes written by those images need a
+  one-time `chown -R 1000:1000` (see [Running the container](#running-the-container)).
 - **CA trust bundle.** `scratch` has no trust store of any kind, which breaks outbound HTTPS (import,
   replication, MCP-client code paths) unless one is supplied; the scratch Dockerfile `COPY`s in a
   `ca-certificates.crt` bundle for that. The distroless base already bundles glibc, libssl, and a CA
@@ -318,21 +321,39 @@ deliberately is not a publishable `arcadedata/arcadedb` name.
 ## Running the container
 
 ```bash
+mkdir -p databases && sudo chown 1000:1000 databases   # only for a bind mount, see below
 docker run --rm -p 2480:2480 -p 5432:5432 \
-  --user 1000:1000 \
   -v "$(pwd)/databases:/home/arcadedb/databases" \
+  -v arcadedb-config:/home/arcadedb/config \
   arcadedata/arcadedb:<version>-native \
   -Darcadedb.server.rootPassword=PlayWithData123!
 ```
 
-- `--user 1000:1000` is only meaningful (and only necessary) for the `linux/amd64` (`scratch`)
-  image; the `linux/arm64` (distroless) image already runs as its baked-in non-root UID by default.
-  Whatever UID you choose should own the host-side `databases` bind mount (or `chown` the directory
-  to match).
+- Both images (`linux/amd64` and `linux/arm64`) run as `1000:1000` by default, the same UID/GID as
+  the JVM image, so no `--user` is needed. Anonymous and named volumes (`config`, `databases`,
+  `backups`, `replication`, `log`) start owned by `1000:1000` and are writable out of the box.
+- `--rm` deletes the container's anonymous volumes with it. The server writes the users, groups and
+  API tokens created at runtime (`server-users.jsonl`, `server-groups.json`, `server-api-tokens.json`)
+  to `config`, so the example mounts a **named volume** there: it survives `--rm` and, unlike a bind
+  mount of an empty directory, is seeded with the image's default config files on first use.
+  `backups`, `replication` and `log` stay anonymous in the example and are deleted with the
+  container: mount a named volume on `backups` too if you take backups inside the container.
+- A **bind mount** keeps the ownership of the host directory, so it must be writable by UID 1000
+  (`chown 1000:1000` it, as above). This applies to every bind-mounted path, not only `databases`:
+  a bind-mounted `config` or `log` the server cannot write fails the start with an
+  `AccessDeniedException`.
+- To run as another UID, pass `--user <uid>:<gid>` and give that UID ownership of every volume and
+  bind mount the server writes - including `config` and `log`, which a fresh anonymous volume
+  initializes as owned by `1000:1000`.
+- **Upgrading from an image before #10319:** the arm64 image used to run as `nonroot` (65532) and
+  the amd64 image as root, so volumes they wrote are owned by those UIDs. Re-own them once before
+  starting the new image, e.g. `docker run --rm --user 0 -v <volume>:/data busybox chown -R 1000:1000 /data`
+  for each volume. The same command is what makes those volumes usable by the JVM image.
 - Map whichever wire-protocol ports you actually enabled in addition to `2480` - `5432` (Postgres),
   `6379` (Redis), `27017` (MongoDB), `7687` (Bolt), `50051` (gRPC).
-- Both `ENTRYPOINT`s already bake in two runtime defaults ahead of any arguments you pass:
-  `-Dorg.jline.terminal.dumb=true` (the server runs non-interactively in a container, so it avoids
+- Both `ENTRYPOINT`s already bake in three runtime defaults ahead of any arguments you pass:
+  `-Duser.home=/home/arcadedb` (UID 1000 has no `/etc/passwd` entry to look the home directory up
+  from), `-Dorg.jline.terminal.dumb=true` (the server runs non-interactively in a container, so it avoids
   JLine's JNI-backed interactive terminal provider) and
   `-Djava.util.logging.config.file=/home/arcadedb/config/arcadedb-log.properties` (JUL logging
   configuration, matching the JVM image's setup).

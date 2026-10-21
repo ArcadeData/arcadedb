@@ -33,6 +33,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -50,8 +51,10 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.WriteReport;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
@@ -65,6 +68,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -574,6 +578,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // The RPC's registry entry, published on the gRPC thread by GrpcAdmissionInterceptor: the statement runs on the
     // transaction's thread, so the entry goes with it there, where its checks and its commits read it (issue #9689)
     final RunningQuery runningQuery = RunningQuery.current();
+    // The RPC's admission slot, taken on the gRPC thread by GrpcAdmissionInterceptor: the statement runs on the
+    // transaction's thread, so the slot goes with it there, where a forward to the leader or a wait on an explicit lock
+    // gives it back (issue #10140). Left behind, those releases read an empty thread and hold the slot for the whole wait
+    final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -584,9 +592,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
         ProtocolContext.set(GRPC_PROTOCOL);
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
+        final QueryAdmissionGate.Adoption adoption = admission.adopt();
         try {
           return task.call();
         } finally {
+          adoption.close();
           if (binding != null)
             binding.close();
           if (runningQuery != null && runningQuery.isTerminated())
@@ -1234,7 +1244,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /** The refusal of a write that has to answer a record, which a listener's veto leaves without one (issue #10085). */
   private static RecordVetoedException vetoed(final String typeName) {
-    return new RecordVetoedException("Cannot write a record of type '" + typeName + "': a listener vetoed it");
+    return RecordVetoedException.ofCreate(typeName);
   }
 
   /** The same for an edge, which names the vertices it would have connected. */
@@ -1570,8 +1580,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       final var el = db.lookupByRID(new RID(ridStr), false);
-      el.delete();
+      // what the engine answered, which el.delete() throws away: a delete a before-delete listener vetoed was replied as
+      // deleted, so the client counted it and returned normally (issue #10230)
+      final boolean deleted = ((DatabaseInternal) db).deleteRecordReportingVeto(el);
 
+      // committed even after a veto: the vetoed delete left nothing in the transaction, so the commit writes nothing
       if (beganHere) {
         if (hasTx && req.getTransaction().getRollback())
           db.rollback();
@@ -1579,7 +1592,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.commit();
       }
 
-      return DeleteRecordResponse.newBuilder().setSuccess(true).setDeleted(true).build();
+      // Both false for a vetoed delete, as for a vetoed update: the clients read either as "the record was deleted"
+      return DeleteRecordResponse.newBuilder().setSuccess(deleted).setDeleted(deleted).build();
     } catch (Exception e) {
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
@@ -1807,17 +1821,34 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Maps the wire-protocol {@link TransactionIsolation} to the engine {@link Database.TRANSACTION_ISOLATION_LEVEL}.
-   * ArcadeDB only supports READ_COMMITTED and REPEATABLE_READ, so weaker/stronger levels collapse to the closest match.
-   * Unset (proto default, old clients) maps to READ_COMMITTED to preserve the previous behavior.
+   * Maps the wire-protocol {@link TransactionIsolation} of a begin request to the engine
+   * {@link Database.TRANSACTION_ISOLATION_LEVEL}, or REFUSES it (issue #10386). The engine provides READ_COMMITTED and
+   * REPEATABLE_READ. READ_UNCOMMITTED is accepted and runs at READ_COMMITTED, a STRONGER level than asked for: it is the proto
+   * default, so every client that leaves the field unset sends it. SERIALIZABLE is refused, and so is a value this server does
+   * not know (a newer client's constant, which the generated code reads as UNRECOGNIZED): either would otherwise begin at a
+   * weaker level than the caller asked for, the one failure a client cannot detect. HTTP, SQL, openCypher and Postgres refuse
+   * the same way, with the same words. The level the transaction really runs at is reported back in
+   * {@code BeginTransactionResponse.effective_isolation} (issue #10322).
+   *
+   * @throws IllegalArgumentException when the engine cannot provide the requested level
    */
-  private static Database.TRANSACTION_ISOLATION_LEVEL mapIsolationLevel(final TransactionIsolation isolation) {
-    if (isolation == null)
-      return Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private static Database.TRANSACTION_ISOLATION_LEVEL mapIsolationLevel(final BeginTransactionRequest request) {
+    final TransactionIsolation isolation = request.getIsolation();
     return switch (isolation) {
-      case REPEATABLE_READ, SERIALIZABLE -> Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
-      default -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+      case READ_UNCOMMITTED, READ_COMMITTED -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+      case REPEATABLE_READ -> Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+      case SERIALIZABLE -> throw IsolationLevels.refusal("'" + isolation.name() + "'");
+      case UNRECOGNIZED -> throw IsolationLevels.refusal("'" + request.getIsolationValue() + "'");
     };
+  }
+
+  /**
+   * The wire-protocol value of the level an engine transaction runs at. The engine provides only these two levels.
+   */
+  private static TransactionIsolation toWireIsolation(final Database.TRANSACTION_ISOLATION_LEVEL level) {
+    return level == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ ?
+        TransactionIsolation.REPEATABLE_READ :
+        TransactionIsolation.READ_COMMITTED;
   }
 
   @Override
@@ -1842,6 +1873,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
+
+      // Honor the isolation level requested by the client (defaults to READ_COMMITTED). This is required so that
+      // REPEATABLE_READ transactions track the version of the records they read and a write-write conflict raises a
+      // ConcurrentModificationException on commit, exactly as on HTTP (issue #4533). A level the engine cannot provide is
+      // refused here, once the caller is known to be allowed in and before a transaction slot or a thread is taken for it
+      // (issue #10386): it is a mistake of the caller, so it is answered as one and not logged as a server error.
+      final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel;
+      try {
+        isolationLevel = mapIsolationLevel(request);
+      } catch (final IllegalArgumentException e) {
+        responseObserver.onError(Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asException());
+        return;
+      }
 
       LogManager.instance().log(this, Level.FINE, """
               beginTransaction(): resolved database instance dbName=%s class=%s \
@@ -1878,11 +1922,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.FINE, """
           beginTransaction(): calling database.begin() on dedicated thread \
           for txId=%s""", transactionId);
-
-      // Honor the isolation level requested by the client (defaults to READ_COMMITTED). This is required so that
-      // REPEATABLE_READ transactions track the version of the records they read and a write-write conflict raises a
-      // ConcurrentModificationException on commit, exactly as on HTTP (issue #4533).
-      final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = mapIsolationLevel(request.getIsolation());
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
@@ -1948,8 +1987,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .log(this, Level.FINE, "beginTransaction(): started txId=%s for db=%s activeTxCount(after)=%s", transactionId,
               database != null ? database.getName() : "<null>", activeTransactions.size());
 
+      // Issue #10322: report the level the transaction REALLY runs at, read from the engine transaction rather than
+      // recomputed from the request, so a mapped (or a future, differently-mapped) request can never be mis-reported.
+      // Fully qualified because this class imports the gRPC-generated TransactionContext of the same simple name.
+      final com.arcadedb.database.TransactionContext engineTx = startedTxCtx.engineTransaction;
+      final TransactionIsolation effectiveIsolation = toWireIsolation(
+          engineTx != null ? engineTx.getIsolationLevel() : isolationLevel);
       final BeginTransactionResponse response = BeginTransactionResponse.newBuilder().setTransactionId(transactionId)
-          .setTimestamp(System.currentTimeMillis()).build();
+          .setTimestamp(System.currentTimeMillis()).setEffectiveIsolation(effectiveIsolation).build();
 
       responseObserver.onNext(response);
       responded = true;
@@ -2031,6 +2076,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           commitTransaction(): committing txId=%s on db=%s (on dedicated \
           thread)""", txId, txCtx.db.getName());
 
+      // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
+      // submitToActiveTransaction
+      final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
         // A statement of this transaction was terminated while this commit waited behind it: what it wrote was rolled
@@ -2040,7 +2088,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               "Transaction " + txId + " was ended: a statement running in it was terminated, and everything it wrote rolled back");
         // A client request, on a thread no listener callback runs on (issue #8363): see submitToActiveTransaction.
         ProtocolContext.set(GRPC_PROTOCOL);
-        try {
+        try (final QueryAdmissionGate.Adoption ignored = admission.adopt()) {
           txCtx.db.commit();
         } finally {
           ProtocolContext.clear();
@@ -3271,9 +3319,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * {@link #insertError} puts the address beside it), and {@code COMMIT_FAILED} otherwise. Shared by the mid-stream onNext
    * failure path (Issue #4806) and the deferred whole-stream commit path (Issue #4198) so the two stay
    * in sync.
+   * <p>
+   * The duplicated key is found along the cause chain, like the leader refusal, because a commit failure reaches here
+   * as the engine wrapped it (issue #10158). The contract rejection is not: it is the stream's OWN refusal, raised as
+   * itself, and an {@link IllegalArgumentException} buried under a commit failure is that commit failing.
    */
-  private static String commitErrorCode(final Exception e) {
-    if (e instanceof DuplicatedKeyException)
+  // @VisibleForTesting
+  static String commitErrorCode(final Exception e) {
+    if (CauseChain.contains(e, DuplicatedKeyException.class))
       return "CONFLICT";
     if (ServerIsNotTheLeaderException.redirectIn(e) != null)
       return "NOT_LEADER";
@@ -6104,9 +6157,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // ServerSecurityException does NOT extend java.lang.SecurityException (see GrpcErrorMapper), so it needs
     // its own arm here; everything else - including IllegalArgumentException, which ErrorCategory's
     // VALIDATION category already maps to INVALID_ARGUMENT - falls through to the same classification
-    // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL.
-    if (e instanceof ServerSecurityException)
-      return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
+    // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL. Found along the cause chain:
+    // ErrorCategory reads a ServerSecurityException as a SERVER fault, so this arm is all that stands between a
+    // wrapped refusal and an INTERNAL that tells the client the server broke (issue #10158). Not for a search stopped on
+    // request, which the mapper answers CANCELLED whatever else its chain carries, as the admin service does (issue #9689)
+    final ServerSecurityException refusal =
+        ErrorCategory.of(e) != ErrorCategory.TERMINATED ? CauseChain.find(e, ServerSecurityException.class) : null;
+    if (refusal != null)
+      return Status.PERMISSION_DENIED.withDescription(operation + ": " + refusal.getMessage()).asException();
     // THE MAPPER CONCEALS ENGINE TEXT - A SCHEMA NAME, A FILE PATH, AN INDEX - IN PRODUCTION LIKE EVERY OTHER FREE-FORM
     // DESCRIPTION, AND LOGS IT. THE ARM ABOVE IS NOT CONCEALED: A SECURITY REFUSAL IS A SENTENCE THIS SERVER WROTE
     // ABOUT THE REQUEST, WHICH IS WHAT MAKES IT ACTIONABLE (PR #7755 REVIEW)

@@ -32,6 +32,7 @@ import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -150,6 +151,7 @@ import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
+import com.arcadedb.query.opencypher.executor.steps.TriangleCountOp;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
@@ -375,6 +377,7 @@ public class CypherExecutionPlan {
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -508,6 +511,16 @@ public class CypherExecutionPlan {
       context.setIncomingEdgeLookup(outerContext.getIncomingEdgeLookup());
   }
 
+  /**
+   * Makes a nested plan read the graph views through the pins of the statement it is part of, and a top-level plan open that
+   * statement's scope (issue #10415): every operator of the statement, the nested plans' included, then reads one snapshot of
+   * each view however many times it is rebuilt meanwhile.
+   */
+  private static void inheritGraphViewPins(final BasicCommandContext context, final CommandContext outerContext) {
+    final GraphViewPins pins = outerContext != null ? outerContext.getGraphViewPins() : null;
+    context.setGraphViewPins(pins != null ? pins : new GraphViewPins());
+  }
+
   private boolean canUseOptimizedPhysicalPlan() {
     return physicalPlan != null && physicalPlan.getRootOperator() != null
         && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
@@ -589,6 +602,7 @@ public class CypherExecutionPlan {
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -698,6 +712,7 @@ public class CypherExecutionPlan {
     setupFunctionResolver(context);
     inheritCommandDeadline(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
     if (countStep == null)
@@ -840,6 +855,7 @@ public class CypherExecutionPlan {
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
+    inheritGraphViewPins(context, outerContext);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
@@ -1147,47 +1163,46 @@ public class CypherExecutionPlan {
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
     context.setProfiling(true);
+    context.openGraphViewPins();
 
     final InternalResultSet results = new InternalResultSet();
-    String errorMessage = null;
     AbstractExecutionStep rootStep = null;
     boolean countPushedDown = false;
 
-    try {
-      if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
-        final UnionStep unionStep =
-            new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
-        try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
+    // A failure ends the statement here, as it ends the statement PROFILE wraps: it reaches the caller, so the transaction
+    // around the statement rolls back what was written before it. It used to be caught into the profile text, which
+    // answered a failed write with no rows and no error and let its writes commit (issue #10252); Neo4j's PROFILE fails too
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+      final UnionStep unionStep =
+          new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+      try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
+        while (resultSet.hasNext())
+          results.add(resultSet.next());
+      }
+    } else {
+      // FAST PATH: Count-push-down (same logic as execute())
+      rootStep = tryCountPushDown(context, false);
+      countPushedDown = rootStep != null;
+
+      if (rootStep == null) {
+        if (canUseOptimizedPhysicalPlan()) {
+          rootStep = buildExecutionStepsWithOptimizer(context);
+        } else
+          rootStep = buildExecutionSteps(context);
+      }
+
+      if (rootStep != null) {
+        try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
           while (resultSet.hasNext())
             results.add(resultSet.next());
         }
-      } else {
-        // FAST PATH: Count-push-down (same logic as execute())
-        rootStep = tryCountPushDown(context, false);
-        countPushedDown = rootStep != null;
-
-        if (rootStep == null) {
-          if (canUseOptimizedPhysicalPlan()) {
-            rootStep = buildExecutionStepsWithOptimizer(context);
-          } else
-            rootStep = buildExecutionSteps(context);
-        }
-
-        if (rootStep != null) {
-          try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
-            while (resultSet.hasNext())
-              results.add(resultSet.next());
-          }
-        }
       }
-    } catch (final Exception e) {
-      errorMessage = e.getMessage();
     }
 
     final long endTime = System.nanoTime();
     final long rowCount = results.countEntries();
 
-    results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount, errorMessage));
+    results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount));
     // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
     // mirroring execute()'s write path so a profiled write still reports its counters. Read-only
     // statements never attach a statistics accumulator, matching execute()'s read path.
@@ -1204,11 +1219,9 @@ public class CypherExecutionPlan {
    *
    * @param elapsedNanos wall clock of the run being described
    * @param rowCount     rows the run produced - for the streaming path, rows the caller actually pulled
-   * @param errorMessage the failure that ended the run, or {@code null}
    */
   private OpenCypherExplainExecutionPlan buildProfilePlan(final CommandContext context,
-      final AbstractExecutionStep rootStep, final boolean countPushedDown, final long elapsedNanos, final long rowCount,
-      final String errorMessage) {
+      final AbstractExecutionStep rootStep, final boolean countPushedDown, final long elapsedNanos, final long rowCount) {
     final StringBuilder profileOutput = new StringBuilder();
     profileOutput.append("OpenCypher Query Profile\n");
     profileOutput.append("========================\n\n");
@@ -1216,9 +1229,6 @@ public class CypherExecutionPlan {
       profileOutput.append("CSR-accelerated via Graph Analytical View\n");
     profileOutput.append(String.format(Locale.ROOT, "Execution Time: %.3f ms\n", elapsedNanos / 1_000_000.0));
     profileOutput.append(String.format(Locale.ROOT, "Rows Returned: %d\n", rowCount));
-
-    if (errorMessage != null)
-      profileOutput.append(String.format(Locale.ROOT, "\nError: %s\n", errorMessage));
 
     // Collect execution steps for structured plan data
     final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
@@ -1316,7 +1326,7 @@ public class CypherExecutionPlan {
       //
       // Reading the clock rather than stopping it: a caller that inspects progress mid-stream and asks again at
       // the end must get the elapsed of the whole run the second time, not the reading frozen by the first ask.
-      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount, null));
+      return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount));
     }
 
     /** The run's elapsed: final once the run has ended, and how long it has been going otherwise. */
@@ -4949,8 +4959,9 @@ public class CypherExecutionPlan {
 
     final List<String> types = relationship.getTypes();
     final String[] edgeTypes = types != null && !types.isEmpty() ? types.toArray(new String[0]) : null;
-    // Several views can hold the edge types: take the first one that holds both endpoints, not the first one
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(database,
+    // Several views can hold the edge types: take the first one that holds both endpoints, not the first one. Pinned for the
+    // statement: the step maps, walks and maps back in one snapshot (issue #10415)
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderAllowingPartialVertexCoverage(context,
         candidate -> coveredVertexBuckets(candidate, source.getFirstLabel()) != null && (target.hasLabels()
             ? coveredVertexBuckets(candidate, target.getFirstLabel()) != null : candidate.coversVertexType(null)),
         edgeTypes);
@@ -7015,6 +7026,8 @@ public class CypherExecutionPlan {
         op = tryDetectStarCountStar(context);
       if (op == null && !inlineProperties)
         op = tryDetectTriangleCountStar();
+      if (op == null && !inlineProperties)
+        op = tryDetectSingleTriangleCountStar();
       if (op == null)
         op = tryDetectPairJoinCountStar(context);
     }
@@ -7874,7 +7887,7 @@ public class CypherExecutionPlan {
           // the operator intersects the undirected adjacency, so only an undirected hop is its pattern: a written
           // direction is a constraint it cannot check (#9387)
           if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
-              || !rel.hasTypes() || rel.getTypes().size() != 1 || rel.hasProperties() || rel.getDirection() != Direction.BOTH) {
+              || !rel.hasTypes() || rel.getTypes().size() != 1 || rel.hasProperties() || rel.hasWhereExpression() || rel.getDirection() != Direction.BOTH) {
             valid = false;
             break;
           }
@@ -8036,6 +8049,151 @@ public class CypherExecutionPlan {
     chainLabels[0] = personLabel;
 
     return new PartitionedTriangleOp(partitionEdgeTypes, partitionDirections, cycleEdgeType, chainLabels);
+  }
+
+  /**
+   * Detects a triangle written as one MATCH, with no WHERE or with one that orders the three variables strictly on one
+   * property (issue #10255):
+   * <pre>
+   *   MATCH (a:Person)-[:KNOWS]-(b:Person)-[:KNOWS]-(c:Person)-[:KNOWS]-(a) WHERE a.id &lt; b.id AND b.id &lt; c.id
+   *   RETURN count(*)
+   * </pre>
+   * The three hops are undirected, anonymous and of one type, and the three variables carry one label or none, so the
+   * pattern is symmetric in its variables and {@link TriangleCountOp} can count each triangle once and weigh it by the
+   * bindings it stands for. The WHERE is taken only when it is nothing but {@code <} and {@code >} comparisons of one
+   * property between two of the variables, joined by AND, that order all three in exactly one way.
+   *
+   * @return the operator, or null when the statement is not that shape
+   */
+  private CountOp tryDetectSingleTriangleCountStar() {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
+    if (matchClause.isOptional() || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    // the parser writes a MATCH's WHERE on the clause: a statement carrying one as well would have one of them ignored
+    if (matchClause.hasWhereClause() && statement.getWhereClause() != null)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    if (pathPattern.getRelationshipCount() != 3 || pathPattern.hasPathVariable())
+      return null;
+
+    // (a)-(b)-(c)-(a): the walk closes on its first variable, and the two in between are two other vertices
+    final String[] variables = new String[3];
+    for (int i = 0; i < 3; i++)
+      variables[i] = pathPattern.getNode(i).getVariable();
+    final String closing = pathPattern.getNode(3).getVariable();
+    if (variables[0] == null || variables[0].isEmpty() || !variables[0].equals(closing))
+      return null;
+    for (int i = 1; i < 3; i++)
+      if (variables[i] != null && !variables[i].isEmpty() && (variables[i].equals(variables[0])
+          || (i == 2 && variables[i].equals(variables[1]))))
+        return null;
+
+    String edgeType = null;
+    for (int i = 0; i < 3; i++) {
+      final RelationshipPattern rel = pathPattern.getRelationship(i);
+      // the operator intersects the undirected adjacency, so only an undirected hop is its pattern (#9387)
+      if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty()) || !rel.hasTypes()
+          || rel.getTypes().size() != 1 || rel.hasProperties() || rel.hasWhereExpression() || rel.getDirection() != Direction.BOTH)
+        return null;
+      if (edgeType == null)
+        edgeType = rel.getTypes().getFirst();
+      else if (!edgeType.equals(rel.getTypes().getFirst()))
+        return null;
+    }
+
+    // One label for the three positions, or none: the operator binds any vertex of a triangle to any variable
+    String label = null;
+    boolean labelled = false;
+    for (int i = 0; i <= 3; i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      if (!hasPushDownRepresentableLabel(node) || node.hasProperties() || node.hasDynamicLabels())
+        return null;
+      if (!node.hasLabels())
+        continue;
+      if (labelled && !label.equals(node.getLabels().getFirst()))
+        return null;
+      label = node.getLabels().getFirst();
+      labelled = true;
+    }
+    // the closing node repeats the first, so its label counts for that variable: every other position must carry it too
+    if (labelled)
+      for (int i = 0; i < 3; i++)
+        if (!pathPattern.getNode(i).hasLabels() && !(i == 0 && pathPattern.getNode(3).hasLabels()))
+          return null;
+
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
+    if (whereClause == null)
+      return new TriangleCountOp(edgeType, label);
+    if (whereClause.getConditionExpression() == null || variables[1] == null || variables[2] == null)
+      return null;
+
+    final List<ComparisonExpression> comparisons = new ArrayList<>();
+    if (!collectConjuncts(whereClause.getConditionExpression(), comparisons))
+      return null;
+    final int count = comparisons.size();
+    final int[] left = new int[count];
+    final int[] right = new int[count];
+    // less[x][y]: the WHERE asks x.p < y.p
+    final boolean[][] less = new boolean[3][3];
+    String property = null;
+    for (int c = 0; c < count; c++) {
+      final ComparisonExpression comparison = comparisons.get(c);
+      if (!(comparison.getLeft() instanceof PropertyAccessExpression l) || !(comparison.getRight() instanceof PropertyAccessExpression r))
+        return null;
+      if (property == null)
+        property = l.getPropertyName();
+      if (!property.equals(l.getPropertyName()) || !property.equals(r.getPropertyName()))
+        return null;
+      left[c] = indexOf(variables, l.getVariableName());
+      right[c] = indexOf(variables, r.getVariableName());
+      if (left[c] < 0 || right[c] < 0 || left[c] == right[c])
+        return null;
+      switch (comparison.getOperator()) {
+      case LESS_THAN -> less[left[c]][right[c]] = true;
+      case GREATER_THAN -> less[right[c]][left[c]] = true;
+      default -> {
+        return null;
+      }
+      }
+    }
+
+    // exactly one order of the three variables, x < y < z, has to agree with every comparison and be implied by them
+    int[] order = null;
+    for (final int[] candidate : new int[][] { { 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 }, { 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 } }) {
+      if (!less[candidate[0]][candidate[1]] || !less[candidate[1]][candidate[2]])
+        continue;
+      if (less[candidate[1]][candidate[0]] || less[candidate[2]][candidate[1]] || less[candidate[2]][candidate[0]])
+        continue;
+      if (order != null)
+        return null;
+      order = candidate;
+    }
+    if (order == null)
+      return null;
+
+    return new TriangleCountOp(edgeType, label, property,
+        new String[] { variables[order[0]], variables[order[1]], variables[order[2]] },
+        comparisons.toArray(new ComparisonExpression[0]), left, right);
+  }
+
+  /** Collects the comparisons of a condition that is nothing but comparisons joined by AND; false when it is anything else. */
+  private static boolean collectConjuncts(final BooleanExpression condition, final List<ComparisonExpression> comparisons) {
+    if (condition instanceof LogicalExpression logical)
+      return logical.getOperator() == LogicalExpression.Operator.AND && logical.getRight() != null
+          && collectConjuncts(logical.getLeft(), comparisons) && collectConjuncts(logical.getRight(), comparisons);
+    if (!(condition instanceof ComparisonExpression comparison))
+      return false;
+    comparisons.add(comparison);
+    return true;
+  }
+
+  private static int indexOf(final String[] variables, final String variable) {
+    for (int i = 0; i < variables.length; i++)
+      if (variables[i] != null && variables[i].equals(variable))
+        return i;
+    return -1;
   }
 
   /**

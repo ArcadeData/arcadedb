@@ -33,6 +33,7 @@ import java.util.Set;
 import java.util.Spliterator;
 import java.util.stream.StreamSupport;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -123,22 +124,44 @@ class Issue5588PrimitiveLocationIndexTest {
     final VectorLocationIndex index = new VectorLocationIndex();
     final long base = 1_000_000L;
     final RID rid = new RID(7, 42);
-    final int id = index.addVector(false, base, rid);
+    // Generation 0 of the writer below (n = 0: compacted, offset base). The readers hold every generation to "compacted
+    // iff (offset - base) is even", so a seed that breaks the rule is reported as a torn read by whichever reader runs
+    // before the writer's first update (#10165)
+    final int id = index.addVector(true, base, rid);
 
     final AtomicBoolean stop = new AtomicBoolean();
     final AtomicReference<String> failure = new AtomicReference<>();
     final AtomicLong reads = new AtomicLong();
+    final int readerCount = 4;
+    // The writer starts only once every reader has read the seeded generation, so the seed is checked against the
+    // invariant on every run instead of whenever a loaded machine happens to schedule a reader first (#10165)
+    final CountDownLatch seedRead = new CountDownLatch(readerCount);
 
     final Thread writer = new Thread(() -> {
+      try {
+        // A hang detector, not a latency bound: a reader that never got to its first read must fail the test, not park the writer
+        if (!seedRead.await(30, TimeUnit.SECONDS)) {
+          failure.compareAndSet(null, "a reader never read the seeded generation");
+          return;
+        }
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
       for (long n = 0; !stop.get(); n++)
         index.addOrUpdate(id, n % 2 == 0, base + n, rid, false);
     }, "issue5588-writer");
 
     final List<Thread> readers = new ArrayList<>();
-    for (int r = 0; r < 4; r++)
+    for (int r = 0; r < readerCount; r++)
       readers.add(new Thread(() -> {
+        boolean first = true;
         while (!stop.get()) {
           final long packed = index.getOffsetAndFlag(id);
+          if (first) {
+            first = false;
+            seedRead.countDown();
+          }
           if (packed == VectorLocationIndex.ABSENT) {
             failure.compareAndSet(null, "the id was retired by an update that did not change its RID");
             return;
@@ -158,11 +181,14 @@ class Issue5588PrimitiveLocationIndexTest {
     readers.forEach(Thread::start);
     Thread.sleep(500);
     stop.set(true);
-    writer.join(30_000);
+    // Longer than the writer's own wait for the seed read, so a writer that gave up has already said so when this returns
+    writer.join(60_000);
     for (final Thread reader : readers)
       reader.join(30_000);
 
     assertThat(failure.get()).isNull();
+    assertThat(writer.isAlive()).as("the writer must have terminated").isFalse();
+    assertThat(readers).allSatisfy(reader -> assertThat(reader.isAlive()).as(reader.getName()).isFalse());
     assertThat(reads.get()).as("the readers must really have observed the id being rewritten").isGreaterThan(1000);
   }
 

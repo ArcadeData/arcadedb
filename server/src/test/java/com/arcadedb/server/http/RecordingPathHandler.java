@@ -20,6 +20,8 @@ package com.arcadedb.server.http;
 
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
+import io.undertow.util.HttpString;
+import io.undertow.util.Methods;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -57,8 +59,64 @@ public class RecordingPathHandler extends PathHandler {
     return new LinkedHashSet<>(registered.keySet());
   }
 
-  /** Every registered route's handler, keyed by the path it was registered at, in registration order. */
+  /**
+   * Every registered route's handler, keyed by the path it was registered at, in registration order. A path declared
+   * through {@link PluginRoutes} is reported by the plugin handler behind its method restriction when every declared
+   * method shares one handler (issue #10157), so a question asked of the handlers keeps reaching them. A path whose
+   * methods have different handlers is reported by its {@link PluginRoutes.MethodRestrictedHandler}.
+   */
   public synchronized Map<String, HttpHandler> getRegisteredHandlers() {
-    return new LinkedHashMap<>(registered);
+    final Map<String, HttpHandler> handlers = new LinkedHashMap<>();
+    for (final Map.Entry<String, HttpHandler> entry : registered.entrySet())
+      handlers.put(entry.getKey(), unwrap(entry.getValue()));
+    return handlers;
+  }
+
+  /**
+   * The {@code "METHOD path"} of every operation the registered routes answer, the method dimension of the anti-drift
+   * check (issue #10157). A path declared through {@link PluginRoutes} contributes one entry per declared method. A
+   * handler added with {@code addExactPath}/{@code addPrefixPath} directly answers every method, and contributes
+   * {@code "* path"}, which no declared operation can match.
+   */
+  public synchronized Set<String> getRegisteredOperations() {
+    final Set<String> operations = new LinkedHashSet<>();
+    for (final Map.Entry<String, HttpHandler> entry : registered.entrySet()) {
+      if (entry.getValue() instanceof PluginRoutes.MethodRestrictedHandler restricted)
+        for (final String method : restricted.getAllowedMethods())
+          operations.add(method + " " + entry.getKey());
+      else
+        operations.add("* " + entry.getKey());
+    }
+    return operations;
+  }
+
+  /**
+   * The paths a plugin declared {@code GET} on that do not answer {@code HEAD} (issue #10384): RFC 9110 requires a server
+   * that supports GET on a resource to support HEAD on it, and container healthchecks such as {@code wget --spider} send it.
+   * {@link PluginRoutes} derives HEAD from the GET entry, so this is empty for every plugin that registers through it, and
+   * the plugin conformance tests assert it. A handler added to the raw {@code PathHandler} answers every method and is
+   * never listed.
+   */
+  public synchronized Set<String> getGetRoutesNotAnsweringHead() {
+    final Set<String> missing = new LinkedHashSet<>();
+    for (final Map.Entry<String, HttpHandler> entry : registered.entrySet())
+      if (entry.getValue() instanceof PluginRoutes.MethodRestrictedHandler restricted
+          && restricted.getHandler(Methods.GET) != null && restricted.getHandler(Methods.HEAD) == null)
+        missing.add(entry.getKey());
+    return missing;
+  }
+
+  private static HttpHandler unwrap(final HttpHandler handler) {
+    if (!(handler instanceof PluginRoutes.MethodRestrictedHandler restricted))
+      return handler;
+    HttpHandler shared = null;
+    for (final String method : restricted.getAllowedMethods()) {
+      final HttpHandler candidate = restricted.getHandler(new HttpString(method));
+      if (shared == null)
+        shared = candidate;
+      else if (shared != candidate)
+        return handler;
+    }
+    return shared != null ? shared : handler;
   }
 }

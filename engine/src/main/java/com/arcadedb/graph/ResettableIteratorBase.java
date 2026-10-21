@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -39,6 +40,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         int              neighborBucketId = -1;
   private         long             neighborPosition = -1;
   private         boolean          neighborFiltered = false;
+  // THE ONE NEIGHBOUR WHOSE ENTRIES ARE SKIPPED, SEE excludeNeighborVertex()
+  private         int              excludedBucketId = -1;
+  private         long             excludedPosition = -1;
   private         ChainCycleGuard  cycleGuard;
   // THE ENTRY THE LAST next() RETURNED, SEE entryReturned()
   private         EdgeSegment      returnedContainer;
@@ -59,7 +63,32 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       throw new IllegalArgumentException("Edge chunk is null");
     this.database = database;
     this.initialContainer = current;
-    this.currentContainer = current;
+    this.currentContainer = walkable(current);
+  }
+
+  /**
+   * The segment a walk reads: the segment itself, or a PRIVATE COPY of it when the transaction has written it (issue #10308).
+   * <p>
+   * A segment the transaction wrote is the transaction's own cached instance, and a lookup hands that very instance to the walk.
+   * Whatever the transaction does to the list afterwards then happens under the walk's position: an edge removed from the segment
+   * moves the entries behind it back, so every second entry is never reached, and an edge added moves them forward, so some are
+   * reached twice. A segment the transaction has not written is not at risk: its first write goes to a copy of the page, and the
+   * walk goes on reading the version it started on.
+   * <p>
+   * Nothing walked a list while writing to it as long as the Gremlin neighbor expansion read the whole list up front; now the walk
+   * is lazy and a traversal can drop what it walks.
+   * <p>
+   * The identity test relies on {@code lookupByRID} answering the transaction's cached instance for a record it has written, which
+   * is what {@code getWrittenRecord} holds. The price is one copy of the segment, bounded by its size, per walk that reaches a
+   * segment the transaction wrote. And the walk no longer sees an edge the transaction adds to that segment after it reached it: it
+   * reads the list as it stood when it got there.
+   */
+  private static EdgeSegment walkable(final EdgeSegment segment) {
+    final RID rid = segment != null ? segment.getIdentity() : null;
+    if (rid == null)
+      return segment;
+    final TransactionContext tx = ((DatabaseInternal) segment.getDatabase()).getTransactionIfExists();
+    return tx != null && tx.getWrittenRecord(rid) == segment ? segment.copy() : segment;
   }
 
   final void setCensusSource(final EdgeLinkedList list) {
@@ -89,15 +118,29 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     this.neighborPosition = neighbor != null ? neighbor.getPosition() : -1;
   }
 
+  /**
+   * Skips the entries whose neighbour vertex is the given one: the opposite of {@link #setNeighborVertexFilter}, decided on
+   * the same inline pointer and so before the edge record is touched.
+   *
+   * @param neighbor the neighbour vertex whose entries are skipped, or {@code null} to skip none
+   */
+  final void excludeNeighborVertex(final RID neighbor) {
+    this.excludedBucketId = neighbor != null ? neighbor.getBucketId() : -1;
+    this.excludedPosition = neighbor != null ? neighbor.getPosition() : -1;
+  }
+
   /** Tells whether the entry just read out of the segment survives the neighbour filter. */
   protected final boolean matchesNeighborFilter(final RID neighbor) {
+    if (excludedBucketId > -1 && neighbor != null && neighbor.getBucketId() == excludedBucketId
+        && neighbor.getPosition() == excludedPosition)
+      return false;
     return !neighborFiltered
         || (neighbor != null && neighbor.getBucketId() == neighborBucketId && neighbor.getPosition() == neighborPosition);
   }
 
   @Override
   public void reset() {
-    this.currentContainer = initialContainer;
+    this.currentContainer = walkable(initialContainer);
     cycleGuard = null;
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
     browsed = 0;
@@ -165,7 +208,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
 
     final EdgeSegment container = returnedContainer;
     final DatabaseInternal database = (DatabaseInternal) container.getDatabase();
-    final int usedBefore = container.getUsed();
+    // THE TRANSACTION'S COPY, NOT THE WALKED ONE: A SEGMENT THE TRANSACTION HAD WRITTEN IS WALKED AS A PRIVATE COPY (see walkable())
+    final int usedBefore = ((EdgeSegment) database.lookupByRID(container.getIdentity(), true)).getUsed();
 
     if (!deleteEdgeOfEntry(database, listOwner, listDirection)) {
       // VETOED BY A BEFORE-DELETE LISTENER: NOTHING WAS DELETED, SO THE ENTRY STAYS, AS WITH edge.delete()
@@ -209,7 +253,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private void unlinkReturnedEntry(final EdgeSegment target) {
     final EdgeSegment container = returnedContainer;
     target.removeEntry(returnedBegin, returnedEnd);
-    ((DatabaseInternal) target.getDatabase()).updateRecord(target);
+    // NOT AN APPEND: THE PAGE MUST LEAVE THE EDGE-APPEND MERGE, OR A REBASE ON A CONCURRENT COMMIT REPLAYS THIS
+    // TRANSACTION'S APPENDS TO THE SEGMENT AND DROPS THE REMOVAL, WHILE THE EDGE RECORD STAYS DELETED (#10375)
+    EdgeLinkedList.updateRewrittenSegment((DatabaseInternal) target.getDatabase(), target);
     returnedContainer = null;
 
     // A hasNext() PEEK MAY HAVE MOVED THE CURSOR TO AN OLDER SEGMENT ALREADY: THEN NO POSITION IT HOLDS IS IN THIS ONE,
@@ -243,7 +289,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       final RID vertex = segment.getRID(position);
       if (returnedEdge.equals(edge) && returnedVertex.equals(vertex)) {
         segment.removeEntry(begin, position.get());
-        ((DatabaseInternal) segment.getDatabase()).updateRecord(segment);
+        // THE LISTENER THAT SENT THE REMOVAL HERE MAY HAVE APPENDED TO THIS VERY SEGMENT: SEE unlinkReturnedEntry (#10375)
+        EdgeLinkedList.updateRewrittenSegment((DatabaseInternal) segment.getDatabase(), segment);
         return;
       }
     }
@@ -321,7 +368,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     final RID currentIdentity = currentContainer.getIdentity();
     if (cycleGuard == null)
       cycleGuard = new ChainCycleGuard(initialContainer.getIdentity());
-    currentContainer = currentContainer.getPrevious();
+    currentContainer = walkable(currentContainer.getPrevious());
     if (currentContainer != null) {
       final RID previousIdentity = currentContainer.getIdentity();
       // THE CHUNK'S "previous" POINTER NAMES ITSELF, OR THE CHAIN CLOSES ON A CHUNK ALREADY WALKED: STOP INSTEAD OF LOOPING FOREVER

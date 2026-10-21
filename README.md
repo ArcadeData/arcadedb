@@ -48,7 +48,8 @@
 
 <div align="center">
 <table>
-  <tr><th>Scheduled suite</th><th>Runs</th><th>Status</th></tr>
+  <tr><th>Test suite</th><th>Runs</th><th>Status</th></tr>
+  <tr><td>Java CI - test</td><td>every push to main</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-test.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-test.yml/badge.svg?branch=main" alt="Java CI - test"></a></td></tr>
   <tr><td>HA integration (Raft, embedded)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-integration-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-integration-tests.yml/badge.svg?branch=main" alt="HA integration (Raft, embedded)"></a></td></tr>
   <tr><td>HA resilience (Docker, fault injection)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml/badge.svg?branch=main" alt="HA resilience (Docker, fault injection)"></a></td></tr>
   <tr><td>HA chaos (randomized faults, 60 min)</td><td>weekly</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-chaos-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-chaos-tests.yml/badge.svg?branch=main" alt="HA chaos (randomized faults, 60 min)"></a></td></tr>
@@ -404,4 +405,10 @@ The ArcadeDB Team
 
 ## Stargazers over time
 
-[![Stargazers over time](https://starchart.cc/ArcadeData/arcadedb.svg?variant=adaptive)](https://starchart.cc/ArcadeData/arcadedb)
+<a href="https://www.star-history.com/#arcadedata/arcadedb&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=arcadedata/arcadedb&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=arcadedata/arcadedb&type=Date" />
+    <img alt="Stargazers over time" src="https://api.star-history.com/svg?repos=arcadedata/arcadedb&type=Date" />
+  </picture>
+</a>

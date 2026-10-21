@@ -29,6 +29,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
@@ -111,7 +112,9 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     final List<Double> edgeWeights = new ArrayList<>();
     final Vertex.DIRECTION dir = GraphEngine.parseDirection(direction);
 
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db);
+    // Pinned: a node id read for one vertex and the RIDs of its neighbours have to be of the same numbering (issue #10350), the
+    // statement's pin when it has one (issue #10415)
+    final GraphTraversalProvider provider = GraphViewPins.pin(context, GraphTraversalProviderRegistry.findProvider(db));
     // The columnar path is taken per node and only when edgeWeightsOf() can answer - i.e. when the provider can
     // serve THIS property for every type it holds. Assembling the neighbourhood by hand was wrong in two ways
     // (issue #6301): the neighbour list is merged and sorted across types while the values are served per type,

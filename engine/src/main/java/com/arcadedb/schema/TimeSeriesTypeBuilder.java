@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.parser.Identifier;
 
@@ -492,7 +493,7 @@ public class TimeSeriesTypeBuilder {
     final DatabaseInternal databaseInternal = (DatabaseInternal) database;
     final LocalSchema schema = (LocalSchema) databaseInternal.getSchema();
     if (schema.existsType(typeName))
-      throw new SchemaException("Type '" + typeName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type '" + typeName + "' already exists");
 
     final LocalTimeSeriesType type = new LocalTimeSeriesType(schema, typeName);
     type.setTimestampColumn(timestampColumn);

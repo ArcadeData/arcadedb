@@ -217,7 +217,7 @@ function exportSettings() {
   $("#popupClipboard").off("click").on("click", async function() {
     const text = $("#exportContent").val() || $("#exportContent").text();
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       $("#popup").modal("hide");
     } catch (err) {
       console.error("Failed to copy to clipboard:", err);

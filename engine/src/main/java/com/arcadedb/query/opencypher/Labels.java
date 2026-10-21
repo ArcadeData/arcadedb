@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -571,8 +572,12 @@ public final class Labels {
       final String label = labels.get(0);
       // A type name that names an edge or document type is not a label: labels and relationship types are separate
       // namespaces in Cypher, so such a pattern matches no node rather than yielding records that are not vertices.
-      if (!(schema.getTypeOrNull(label) instanceof VertexType))
+      final DocumentType type = schema.getTypeOrNull(label);
+      if (!(type instanceof VertexType)) {
+        // ...except a time-series type, whose samples a query asking for them would silently never see (issue #10440)
+        requireNotTimeSeriesType(type, "label");
         return Collections.emptyIterator();
+      }
       return database.iterateType(label, true);
     }
 
@@ -582,6 +587,24 @@ public final class Labels {
     if (types.size() == 1)
       return database.iterateType(types.get(0).getName(), false);
     return new ChainedTypeIterator(database, types);
+  }
+
+  /**
+   * Refuses a node label or relationship type that names a TIMESERIES type (issue #10440). Time-series samples are
+   * stored in their own engine, not as records of the type's buckets, and they are neither vertices nor edges, so a
+   * pattern naming the type can match nothing. Answering that as zero rows reads as "there is no data", while SQL
+   * over the same type returns the samples, so the pattern is an error instead.
+   *
+   * @param type the type the name resolves to, or {@code null} when it names none
+   * @param kind {@code "label"} or {@code "relationship type"}, for the message
+   *
+   * @throws CommandSemanticException when {@code type} is a time-series type
+   */
+  public static void requireNotTimeSeriesType(final DocumentType type, final String kind) {
+    if (type instanceof TimeSeriesType)
+      throw new CommandSemanticException("Cypher cannot match the " + kind + " '" + type.getName() + "', a TIMESERIES type: "
+          + "time-series samples are neither nodes nor relationships. Query it with SQL (SELECT FROM `" + type.getName()
+          + "`) or PromQL instead");
   }
 
   /**
@@ -827,28 +850,18 @@ public final class Labels {
       schema.getOrCreateVertexType(label);
     }
 
-    if (!schema.existsType(compositeTypeName)) {
-      // Create composite type extending all labels
-      // Use the builder to add multiple supertypes
-      var builder = schema.buildVertexType()
-          .withName(compositeTypeName);
-
-      // Add each unique label as a supertype
-      for (final String label : uniqueLabels) {
+    // IF NOT EXISTS, whatever the schema looked like a moment ago: a type a statement needs implicitly is ensured, so another
+    // writer creating the same composite concurrently is never an error for either of them (issue #10145). The builder
+    // answers every case under the schema lock: missing (created extending every label), already complete (returned), and
+    // created by hand without inheritance (the missing super types linked, issue #3266). The lookup below only spares a label
+    // the existing type already inherits, directly or through another label, from being linked a second time (the builder
+    // knows direct super types only); it decides nothing, so a type created right after it is still answered by the builder
+    final DocumentType existing = schema.existsType(compositeTypeName) ? schema.getType(compositeTypeName) : null;
+    var builder = schema.buildVertexType().withName(compositeTypeName).withIgnoreIfExists(true);
+    for (final String label : uniqueLabels)
+      if (existing == null || !existing.instanceOf(label))
         builder = builder.withSuperType(label);
-      }
-
-      builder.create();
-    } else {
-      // Composite type already exists - ensure it has correct supertypes
-      // This handles the case where the type was created manually without inheritance
-      final var existingType = schema.getType(compositeTypeName);
-      for (final String label : uniqueLabels) {
-        if (!existingType.instanceOf(label)) {
-          existingType.addSuperType(label);
-        }
-      }
-    }
+    builder.create();
 
     return compositeTypeName;
   }

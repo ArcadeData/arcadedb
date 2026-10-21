@@ -152,8 +152,8 @@ class Issue8979NullComparisonsThreeValuedTest extends TestHelper {
     assertThat(new GtOperator().isUnknownOnNull()).isTrue();
     assertThat(new GeOperator().isUnknownOnNull()).isTrue();
     assertThat(new NullSafeEqualsCompareOperator().isUnknownOnNull()).isFalse();
-    assertThat(new LikeOperator().isUnknownOnNull()).isFalse();
-    assertThat(new ILikeOperator().isUnknownOnNull()).isFalse();
+    assertThat(new LikeOperator().isUnknownOnNull()).isTrue(); // #10186
+    assertThat(new ILikeOperator().isUnknownOnNull()).isTrue(); // #10186
     assertThat(new InOperator().isUnknownOnNull()).isFalse();
     assertThat(new ContainsKeyOperator().isUnknownOnNull()).isFalse();
     assertThat(new ContainsValueOperator().isUnknownOnNull()).isFalse();

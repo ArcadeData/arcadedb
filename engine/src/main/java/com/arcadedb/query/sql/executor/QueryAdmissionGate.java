@@ -158,13 +158,85 @@ public final class QueryAdmissionGate {
    * a slot of this server for as long as the leader takes. It also keeps the wait from closing a cycle where the servers
    * share one JVM, and so one gate: the follower holding the last slot while the leader waits for it. The tickets of the
    * request still close normally, and give nothing back a second time. A query the thread starts afterwards takes a slot of
-   * its own. Does nothing when the thread holds no slot.
+   * its own. Does nothing when the thread holds no slot: a request whose statement runs on another thread than the one that
+   * was admitted carries its slot there first ({@link #handOff()}).
+   *
+   * @return whether a slot was given back
    */
-  public void releaseCurrentSlot() {
+  public boolean releaseCurrentSlot() {
     final Slot held = currentSlot.get();
     if (held != null && held.released.compareAndSet(false, true)) {
       currentSlot.remove();
       release();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Captures, on the thread that was admitted, the slot it holds, so the request can carry it to the thread its statement
+   * really runs on (issue #10140): {@link #releaseCurrentSlot()} reads the slot of the CURRENT thread, so a request that
+   * takes its slot on one thread and runs its statement on another - a gRPC call inside a client-managed transaction,
+   * whose statements run on the transaction's own thread - would otherwise give nothing back when the statement waits on
+   * the leader or on an explicit lock. Returns a hand-off that carries nothing when the thread holds no slot, or one that
+   * was already given back.
+   */
+  public Handoff handOff() {
+    final Slot held = currentSlot.get();
+    return held != null && !held.released.get() ? new Handoff(this, held) : Handoff.NONE;
+  }
+
+  /**
+   * A slot on its way from the thread that took it to the thread that runs the request's statement. {@link #adopt()} on
+   * that thread publishes it there for the time of the statement, so {@link #releaseCurrentSlot()} finds it and a query the
+   * statement starts shares it.
+   */
+  public static final class Handoff {
+    private static final Handoff NONE = new Handoff(null, null);
+
+    private final QueryAdmissionGate gate;
+    private final Slot               slot;
+
+    private Handoff(final QueryAdmissionGate gate, final Slot slot) {
+      this.gate = gate;
+      this.slot = slot;
+    }
+
+    /**
+     * Publishes the carried slot on the current thread until the returned adoption is closed, which puts back whatever the
+     * thread held before. Publishes nothing when the slot was given back meanwhile: a closed ticket or a release on the
+     * other thread.
+     */
+    public Adoption adopt() {
+      if (slot == null || slot.released.get())
+        return Adoption.NONE;
+      final Slot previous = gate.currentSlot.get();
+      gate.currentSlot.set(slot);
+      return new Adoption(gate, previous);
+    }
+  }
+
+  /** A carried slot published on the current thread, see {@link Handoff#adopt()}. Close it on the thread that adopted it. */
+  public static final class Adoption implements AutoCloseable {
+    private static final Adoption NONE = new Adoption(null, null);
+
+    private final QueryAdmissionGate gate;
+    private final Slot               previous;
+
+    private Adoption(final QueryAdmissionGate gate, final Slot previous) {
+      this.gate = gate;
+      this.previous = previous;
+    }
+
+    /** Puts back what the thread held before the adoption. The slot itself stays with the tickets that hold it. */
+    @Override
+    public void close() {
+      if (gate == null)
+        return;
+      if (previous == null)
+        gate.currentSlot.remove();
+      else
+        gate.currentSlot.set(previous);
     }
   }
 

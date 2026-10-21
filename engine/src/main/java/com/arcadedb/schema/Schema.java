@@ -564,15 +564,18 @@ public interface Schema {
      * Whether a build of this index type may run INSIDE a transaction opened by whoever is writing, which is what
      * lets it index the records that transaction has written and not yet committed (issue #6324, item 1).
      * <p>
-     * True for every index whose build stages its entries on the transaction and whose reads go back through it -
-     * {@code LSM_TREE} and everything layered on it. False for the vector families: their build writes a graph, and
-     * for sparse its segments, as files of their own, and their SEARCH path reads those files through the page cache
-     * rather than through the transaction, so entries left uncommitted are written but not findable. Building them in
-     * a transaction of their own keeps that path whole, at the cost this issue is about - a vector index created in
-     * the same transaction as its inserts still needs those writes committed first - which is the lesser of the two.
+     * True for every family: each build stages its entries on the transaction it runs in, as a live write does, and
+     * the commit replay applies them. The vector families were excluded until issue #10438, and their nested-transaction
+     * build committed an empty index whenever the writes it should cover were still pending.
+     * <p>
+     * A shared build cannot commit in chunks, so every entry stays queued until the caller commits. For a vector index
+     * over a large bucket that is one heavy entry per record held in memory, which is why a build shares the caller's
+     * transaction only when that transaction has written to the buckets the build scans (issue #10450, see
+     * {@code IndexBuilder#buildSharesCallerTransaction}): a caller that wrote only elsewhere gets the chunked build of a
+     * transaction of its own. Kept as a predicate so a future family that cannot share has one place to say so.
      */
     public boolean buildCanShareCallerTransaction() {
-      return this != LSM_VECTOR && this != LSM_SPARSE_VECTOR;
+      return true;
     }
 
     /**

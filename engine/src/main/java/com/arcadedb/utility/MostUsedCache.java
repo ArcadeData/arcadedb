@@ -39,13 +39,13 @@ import java.util.logging.Level;
 public class MostUsedCache<K, V> extends AbstractMap<K, V> {
   private static final float RETENTION_RATIO = 0.75f; // Keep 75% most used
 
-  private final int maxSize;
-  private final int targetSizeAfterEviction;
+  private int maxSize;
+  private int targetSizeAfterEviction;
   private final HashMap<K, CacheEntry<V>> cache;
 
   public MostUsedCache(final int maxSize) {
     this.maxSize = maxSize;
-    this.targetSizeAfterEviction = Math.max(1, (int) (maxSize * RETENTION_RATIO));
+    this.targetSizeAfterEviction = targetSizeAfterEviction(maxSize);
     this.cache = maxSize > 0 ? new HashMap<>((int) (maxSize / 0.75f) + 1) : new HashMap<>();
   }
 
@@ -88,6 +88,25 @@ public class MostUsedCache<K, V> extends AbstractMap<K, V> {
   @Override
   public void clear() {
     cache.clear();
+  }
+
+  /**
+   * Empties the cache and bounds it to {@code maxSize} entries from now on (issue #10155). Less than 1 means unlimited. Not thread
+   * safe, like the rest of this class: call it under the lock the other accesses take.
+   */
+  public void resize(final int maxSize) {
+    cache.clear();
+    this.maxSize = maxSize;
+    this.targetSizeAfterEviction = targetSizeAfterEviction(maxSize);
+  }
+
+  /**
+   * How many entries an eviction keeps: {@link #RETENTION_RATIO} of {@code maxSize}, at least one, and always fewer than
+   * {@code maxSize}, since the entry being added comes on top of them. Keeping one out of a maximum of one let a cache of one
+   * hold two (issue #10155).
+   */
+  private static int targetSizeAfterEviction(final int maxSize) {
+    return Math.max(0, Math.min(maxSize - 1, Math.max(1, (int) (maxSize * RETENTION_RATIO))));
   }
 
   @Override

@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -32,6 +33,7 @@ import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -346,7 +348,7 @@ public class OrderByStep extends AbstractExecutionStep {
        * Compares two values for sorting.
        * In Cypher, null is considered the largest value: nulls sort last in ASC, first in DESC.
        * NaN sorts between null and all other values.
-       * Type ordering: Map < Node < Relationship < List < Path < String < Boolean < Number < Temporal
+       * Type ordering: Map < Node < Relationship < List < Path < Temporal < String < Boolean < Number
        */
       @SuppressWarnings({"unchecked", "rawtypes"})
       private int compareValues(final Object v1, final Object v2) {
@@ -366,10 +368,11 @@ public class OrderByStep extends AbstractExecutionStep {
         if (nan1) return 1;
         if (nan2) return -1;
 
-        // Compare lists element-by-element
-        if (v1 instanceof List && v2 instanceof List) {
-          final List<?> l1 = (List<?>) v1;
-          final List<?> l2 = (List<?>) v2;
+        // Compare lists element-by-element. An array that is not a BINARY value is a sequence, ordered like the list of its elements
+        // (issue #10380)
+        if ((v1 instanceof List || MultiValue.isSequenceArray(v1)) && (v2 instanceof List || MultiValue.isSequenceArray(v2))) {
+          final List<?> l1 = MultiValue.getMultiValueAsList(v1);
+          final List<?> l2 = MultiValue.getMultiValueAsList(v2);
           final int minSize = Math.min(l1.size(), l2.size());
           for (int i = 0; i < minSize; i++) {
             final int cmp = compareValues(l1.get(i), l2.get(i));
@@ -382,19 +385,23 @@ public class OrderByStep extends AbstractExecutionStep {
         if (v1 instanceof Boolean && v2 instanceof Boolean)
           return Boolean.compare((Boolean) v1, (Boolean) v2);
 
-        // Compare temporal values
-        if (v1 instanceof CypherTemporalValue && v2 instanceof CypherTemporalValue) {
-          try {
-            return ((CypherTemporalValue) v1).compareTo((CypherTemporalValue) v2);
-          } catch (final IllegalArgumentException e) {
-            // Different temporal types — fall through to type rank
-          }
+        // Temporal values of one type compare by value, of two types by the rank of the type: DATETIME < LOCAL DATETIME < DATE
+        // < TIME < LOCAL TIME < DURATION, never by content across types (issue #10200)
+        if (v1 instanceof CypherTemporalValue t1 && v2 instanceof CypherTemporalValue t2) {
+          final int rank1 = CypherFunctionHelper.temporalTypeRank(t1);
+          final int rank2 = CypherFunctionHelper.temporalTypeRank(t2);
+          return rank1 != rank2 ? Integer.compare(rank1, rank2) : t1.compareTo(t2);
         }
 
         // Strings sort by code point, the order an index holds them in, which lets a plan read them from one in place of
         // this sort (issue #8422)
         if (v1 instanceof String s1 && v2 instanceof String s2)
           return BinaryComparator.compareStrings(s1, s2);
+
+        // BINARY values sort by their bytes, unsigned, as SQL and the index order them. A byte[] is not Comparable, and its
+        // toString() is the identity of the array, which changes with every load of the record (issue #10195)
+        if (v1 instanceof byte[] b1 && v2 instanceof byte[] b2)
+          return BinaryComparator.compareBytes(b1, b2);
 
         // Same-type Comparable comparison
         if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {
@@ -416,6 +423,11 @@ public class OrderByStep extends AbstractExecutionStep {
         if (rank1 != rank2)
           return Integer.compare(rank1, rank2);
 
+        // One temporal type, one side a native java.time / java.util.Date value: compared as Cypher values, as min() and max()
+        // compare them, rather than through a Comparable that cannot take the other class
+        if (CypherFunctionHelper.isTemporalTypeRank(rank1))
+          return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(v1)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(v2));
+
         // Same rank, try Comparable
         if (v1 instanceof Comparable && v2 instanceof Comparable) {
           try {
@@ -428,17 +440,13 @@ public class OrderByStep extends AbstractExecutionStep {
         return v1.toString().compareTo(v2.toString());
       }
 
+      /**
+       * The Cypher order of types, shared with min() and max() through {@link CypherFunctionHelper#cypherTypeRank(Object)} so
+       * the two cannot drift apart. A value Cypher has no type for sorts after every other one.
+       */
       private int typeRank(final Object v) {
-        if (v instanceof Map) return 0;
-        if (v instanceof Vertex) return 1;
-        if (v instanceof Edge) return 2;
-        if (v instanceof List) return 3;
-        if (v instanceof TraversalPath) return 4;
-        if (v instanceof String) return 5;
-        if (v instanceof Boolean) return 6;
-        if (v instanceof Number) return 7;
-        if (v instanceof CypherTemporalValue) return 8;
-        return 9; // other types
+        final int rank = CypherFunctionHelper.cypherTypeRank(v);
+        return rank == CypherFunctionHelper.TYPE_RANK_PATH_OR_OTHER && !(v instanceof TraversalPath) ? Integer.MAX_VALUE : rank;
       }
 
       @Override

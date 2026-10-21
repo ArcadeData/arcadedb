@@ -215,20 +215,13 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     final ArrayList<Object> out = new ArrayList<>(Math.min(k, rescored.size()));
     for (int i = 0; i < rescored.size() && out.size() < k; i++) {
       // Override the upstream "distance"/"score" with the discovery score so a downstream
-      // {@code vector.fuse} or `ORDER BY score` sees the right signal. Always rebuild into a
-      // fresh map: mutating the caller-supplied map in place would let one round of discover
-      // poison the next (e.g. inside a LET / subquery the same row dict gets reused with the
-      // previous round's score still attached). Building a copy is cheap and the safer default.
-      final Object row = rescored.get(i).row();
-      if (row instanceof Map<?, ?> mm) {
-        final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
-        for (final var e : mm.entrySet())
-          rebuilt.put(String.valueOf(e.getKey()), e.getValue());
-        rebuilt.put("score", rescored.get(i).score());
-        out.add(rebuilt);
-      } else {
-        out.add(row);
-      }
+      // {@code vector.fuse} or `ORDER BY score` sees the right signal. Never in place: mutating
+      // the caller-supplied map would let one round of discover poison the next (e.g. inside a
+      // LET / subquery the same row dict gets reused with the previous round's score still
+      // attached). Nor by copying every property of the row: the override reads the upstream
+      // row on demand, and keeps the record it carries for a downstream reranker (issue #10170).
+      // Only map rows reach this point (the loop above skips the rest)
+      out.add(new ScoreOverrideRow(rescored.get(i).row(), "score", rescored.get(i).score()));
     }
     return out;
   }
@@ -241,27 +234,40 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
   }
 
   /**
-   * Reads a candidate's embedding for the per-pair margin scoring step. Tries the projected row
-   * first (zero IO when the upstream call included the property in its output) and falls back
-   * to {@code db.lookupByRID} when it is absent (the realistic case when {@code vector.neighbors}
-   * is composed without an explicit projection of the embedding column). Returns {@code null}
-   * when the record is gone, the property is missing on disk too, the value cannot be coerced
-   * to {@code float[]}, or the dimension does not match the expected width.
+   * A candidate's property: off the record the row carries, as the transaction sees it now (the row may hold the record as it
+   * was before a write of the same transaction, issue #10217; deleted since, null), else off the projected row, else off the
+   * record its RID loads. Only a row carrying just a RID pays the load (issue #10170).
+   */
+  private static Object readCandidateProperty(final BasicDatabase db, final RID rid, final Map<?, ?> row,
+      final String propertyName) {
+    final Document held = heldRecord(row, rid);
+    if (held != null) {
+      final Document current = currentState(db, held);
+      if (current == null)
+        return null;
+      // A row that carries its record reads the property off itself (a projection may rename or omit it) and never pays a
+      // load, as before #10217; only a record the transaction rewrote since is read directly
+      return current == held ? row.get(propertyName) : current.get(propertyName);
+    }
+    final Object projected = row.get(propertyName);
+    if (projected != null)
+      return projected;
+    final Document loaded = candidateRecord(db, row, rid);
+    return loaded != null ? loaded.get(propertyName) : null;
+  }
+
+  /**
+   * Reads a candidate's embedding for the per-pair margin scoring step, through {@link #readCandidateProperty}: zero IO when the
+   * row carries its record or the upstream call projected the property, a {@code db.lookupByRID} otherwise (the realistic case
+   * when {@code vector.neighbors} is composed without an explicit projection of the embedding column). Returns {@code null}
+   * when the record is gone, the property is missing on disk too, the value cannot be coerced to {@code float[]}, or the
+   * dimension does not match the expected width.
    */
   private float[] readCandidateEmbedding(final BasicDatabase db, final RID rid, final Map<?, ?> row,
       final String propertyName, final int expectedDim) {
-    Object raw = row.get(propertyName);
-    if (raw == null) {
-      // Fast path missed (the embedding is not in the projected row); fall back to the record.
-      try {
-        final Document rec = (Document) db.lookupByRID(rid, true);
-        raw = rec.get(propertyName);
-      } catch (final RecordNotFoundException ignored) {
-        return null;
-      }
-      if (raw == null)
-        return null;
-    }
+    final Object raw = readCandidateProperty(db, rid, row, propertyName);
+    if (raw == null)
+      return null;
     final float[] v;
     try {
       v = toFloatArray(raw);

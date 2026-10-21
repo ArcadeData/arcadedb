@@ -18,7 +18,6 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -95,7 +94,9 @@ public class WithStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
-      private final Set<List<Object>> seenResults = withClause.isDistinct() ? new HashSet<>() : null;
+      private final Set<GroupKeyValues> seenResults = withClause.isDistinct() ? new HashSet<>() : null;
+      // THE KEYS OF CONSECUTIVE ROWS: A VALUE THE ROW BEFORE HELD AS WELL IS NOT CANONICALIZED AND HASHED AGAIN (ISSUE #10254)
+      private GroupKeyValues.Builder distinctKeys;
       private final OperationHeapLimit distinctLimit = withClause.isDistinct() ? distinctHeapLimit(context, "WITH DISTINCT") : null;
       private int skipped = 0;
       private int returned = 0;
@@ -220,10 +221,12 @@ public class WithStep extends AbstractExecutionStep {
               // (issue #6541).
               final List<String> names = new TreeSet<>(projectedResult.getPropertyNames()).stream()
                   .filter(name -> !InternalVariables.isInternal(name)).toList();
-              final List<Object> resultKey = DistinctNumericKey.buildKey(names, projectedResult::getProperty);
+              if (distinctKeys == null)
+                distinctKeys = new GroupKeyValues.Builder(names.size() * 2);
+              final GroupKeyValues resultKey = distinctKeys.build(names, projectedResult::getProperty);
               if (!seenResults.add(resultKey))
                 continue;
-              distinctLimit.add(seenResults.size(), resultKey, HeapEstimator.HASH_ENTRY_BYTES);
+              distinctLimit.add(seenResults.size(), resultKey.canonicalValues(), HeapEstimator.HASH_ENTRY_BYTES);
             }
 
             // Apply SKIP (only when not deferred to downstream)
@@ -263,6 +266,7 @@ public class WithStep extends AbstractExecutionStep {
         finished = true;
         if (seenResults != null) {
           seenResults.clear();
+          distinctKeys = null;
           distinctLimit.release();
         }
       }

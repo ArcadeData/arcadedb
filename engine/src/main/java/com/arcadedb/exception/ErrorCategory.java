@@ -54,6 +54,14 @@ public enum ErrorCategory {
   DUPLICATED_KEY,
 
   /**
+   * The caller asked to create, or rename onto, a schema object name that is already taken - a type, a property, an index, a
+   * bucket, a view, a function (issue #10153). The caller's to resolve and never retryable, and the opposite of {@link #SCHEMA}:
+   * there the name is missing, here it is held. Decided before {@link #SCHEMA} because {@link AlreadyExistsException} extends
+   * {@link SchemaException}.
+   */
+  ALREADY_EXISTS,
+
+  /**
    * The record the caller addressed does not exist.
    */
   NOT_FOUND,
@@ -101,6 +109,39 @@ public enum ErrorCategory {
    * Anything else: the server, not the caller, is at fault.
    */
   SERVER;
+
+  /**
+   * The classification as one ordered table: the FIRST rule whose type is found anywhere along the chain decides, so the
+   * order of the rows IS the precedence documented on {@link #of}. A table rather than a ladder of tests so that
+   * {@link #of} and {@link #classifiedCause} read the same rows.
+   */
+  private static final Rule[] RULES = {
+      // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
+      // the rollback ran into - a statement stopped on request must never be reported as something a client retries
+      new Rule(QueryTerminatedException.class, TERMINATED),
+      new Rule(NeedRetryException.class, RETRY),
+      new Rule(DatabaseIsReopeningException.class, RETRY),
+      new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
+      new Rule(QueryHeapBudgetExceededException.class, RETRY),
+      new Rule(QueryAdmissionException.class, RETRY),
+      new Rule(ArithmeticErrorException.class, ARITHMETIC),
+      new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
+      // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
+      new Rule(AlreadyExistsException.class, ALREADY_EXISTS),
+      new Rule(RecordNotFoundException.class, NOT_FOUND),
+      new Rule(SchemaException.class, SCHEMA),
+      new Rule(SecurityException.class, SECURITY),
+      new Rule(CommandParsingException.class, PARSING),
+      new Rule(FullTextQueryParseException.class, PARSING),
+      new Rule(ValidationException.class, VALIDATION),
+      new Rule(QueryNotIdempotentException.class, VALIDATION),
+      new Rule(InvalidPropertyTypeException.class, VALIDATION),
+      new Rule(IllegalArgumentException.class, VALIDATION),
+      new Rule(TimeoutException.class, TIMEOUT) };
+
+  /** A type that, found anywhere along a cause chain, decides the chain's category. */
+  private record Rule(Class<? extends Throwable> type, ErrorCategory category) {
+  }
 
   /**
    * The category of {@code error}, or {@link #SERVER} when nothing in its cause chain is recognised.
@@ -162,36 +203,28 @@ public enum ErrorCategory {
    * nothing worth reclaiming - they run only on a failure path, and each is capped by {@link CauseChain}.
    */
   public static ErrorCategory of(final Throwable error) {
-    // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
-    // the rollback ran into - a statement stopped on request must never be reported as something a client retries
-    if (CauseChain.contains(error, QueryTerminatedException.class))
-      return TERMINATED;
-    if (CauseChain.contains(error, NeedRetryException.class) //
-        || CauseChain.contains(error, DatabaseIsReopeningException.class) //
-        || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class) //
-        || CauseChain.contains(error, QueryHeapBudgetExceededException.class) //
-        || CauseChain.contains(error, QueryAdmissionException.class))
-      return RETRY;
-    if (CauseChain.contains(error, ArithmeticErrorException.class))
-      return ARITHMETIC;
-    if (CauseChain.contains(error, DuplicatedKeyException.class))
-      return DUPLICATED_KEY;
-    if (CauseChain.contains(error, RecordNotFoundException.class))
-      return NOT_FOUND;
-    if (CauseChain.contains(error, SchemaException.class))
-      return SCHEMA;
-    if (CauseChain.contains(error, SecurityException.class))
-      return SECURITY;
-    if (CauseChain.contains(error, CommandParsingException.class) //
-        || CauseChain.contains(error, FullTextQueryParseException.class))
-      return PARSING;
-    if (CauseChain.contains(error, ValidationException.class) //
-        || CauseChain.contains(error, QueryNotIdempotentException.class) //
-        || CauseChain.contains(error, InvalidPropertyTypeException.class) //
-        || CauseChain.contains(error, IllegalArgumentException.class))
-      return VALIDATION;
-    if (CauseChain.contains(error, TimeoutException.class))
-      return TIMEOUT;
+    for (final Rule rule : RULES)
+      if (CauseChain.contains(error, rule.type()))
+        return rule.category();
     return SERVER;
+  }
+
+  /**
+   * The throwable in {@code error}'s cause chain that decided {@link #of}, or {@code null} when the chain is a
+   * {@link #SERVER} fault (issue #10158). A transport that names the failure to its client - the gRPC
+   * {@code arcadedb-exception-class} trailer a driver rebuilds the engine's type from - names THIS one, not the
+   * outermost wrapper: a {@link SchemaException} under a {@link CommandExecutionException}, named by the wrapper, is
+   * rebuilt from its status code alone, which reads {@code NOT_FOUND} as a missing RECORD.
+   * <p>
+   * The same walk as {@link #of} over the same rules, so the two cannot disagree: {@code of(classifiedCause(e))} is
+   * always {@code of(e)}.
+   */
+  public static Throwable classifiedCause(final Throwable error) {
+    for (final Rule rule : RULES) {
+      final Throwable found = CauseChain.find(error, rule.type());
+      if (found != null)
+        return found;
+    }
+    return null;
   }
 }

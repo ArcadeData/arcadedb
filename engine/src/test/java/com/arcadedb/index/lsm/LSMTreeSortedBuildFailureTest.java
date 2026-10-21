@@ -25,6 +25,7 @@ import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -38,8 +39,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LSMTreeSortedBuildFailureTest extends TestHelper {
+  @AfterEach
+  void clearEntriesPerRunLimit() {
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(0);
+  }
+
   @Test
   void removesPartialRunAndSchemaEntriesAfterSpillWriteFailure() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final Path spillParent = Path.of(getDatabasePath()).resolve("spill-failure");
     createRecords("SpillFailure", 1, 1_000);
 
@@ -71,6 +79,8 @@ class LSMTreeSortedBuildFailureTest extends TestHelper {
 
   @Test
   void removesGenerationOutputsAfterMaterializedMergeFailure() throws Exception {
+    // The runs are sized by what their entries retain (issue #10267): the cap makes this small table spill as the budget used to
+    LSMTreeIndexBulkLoader.setEntriesPerRunTestLimit(341);
     final Path spillParent = Path.of(getDatabasePath()).resolve("merge-failure");
     createRecords("MergeFailure", 1, 1_000);
 
@@ -127,6 +137,9 @@ class LSMTreeSortedBuildFailureTest extends TestHelper {
           .withUnique(false)
           .create())
           .isInstanceOf(IndexException.class)
+          // The reason is in the MESSAGE the caller reads, not only two levels down the cause chain (issue #10382)
+          .hasMessageContaining("Cannot build sorted index")
+          .hasMessageContaining("injected failure after first attachment")
           .hasStackTraceContaining("injected failure after first attachment");
     } finally {
       LSMTreeIndexBulkLoader.setBuildTestHook(null);

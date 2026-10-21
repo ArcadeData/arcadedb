@@ -29,6 +29,7 @@ import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -54,6 +55,9 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
 
   @Override
   public Iterator<Vertex> vertices(final Direction direction) {
+    // A REMOVED EDGE LEADS NOWHERE, AS IN TINKERGRAPH (#10196)
+    if (isRemoved())
+      return Collections.emptyIterator();
     switch (direction) {
     case IN:
       return new IterableObject<>(new ArcadeVertex(graph, baseElement.getInVertex()));
@@ -72,6 +76,7 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
     ElementHelper.validateProperty(key, value);
     ArcadeProperty.validateValue(value);
     this.graph.tx().readWrite();
+    checkNotRemoved();
 
     final MutableEdge mutableElement = baseElement.modify();
     // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
@@ -88,6 +93,8 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
 
   @Override
   public <V> Property<V> property(final String key) {
+    if (isRemoved())
+      return Property.empty();
     final V value = (V) baseElement.get(key);
     if (value != null)
       return new ArcadeProperty<>(this, key, value);
@@ -96,6 +103,8 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
 
   @Override
   public <V> Iterator<Property<V>> properties(final String... propertyKeys) {
+    if (isRemoved())
+      return Collections.emptyIterator();
     final List<ArcadeProperty> props;
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Set<String> propNames = baseElement.getPropertyNames();
