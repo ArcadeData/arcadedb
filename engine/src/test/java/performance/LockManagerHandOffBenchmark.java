@@ -64,10 +64,15 @@ class LockManagerHandOffBenchmark {
 
     System.out.printf(Locale.ENGLISH, "%n%-32s %7s %8s %12s %12s %10s %10s %10s %8s%n", "shape", "threads", "spin us", "ops/s",
         "cpu us/op", "p50 us", "p99 us", "max us", "timeouts");
+    // The spin values rotate from one combination to the next, so drift over the run (heat, other load) does not always
+    // favour the same one; the rows print in the order they ran
+    int combination = 0;
     for (final Shape shape : shapes)
-      for (final long threads : threadCounts)
-        for (final long spin : spins)
-          run(shape, (int) threads, TimeUnit.MICROSECONDS.toNanos(spin), seconds);
+      for (final long threads : threadCounts) {
+        for (int s = 0; s < spins.length; s++)
+          run(shape, (int) threads, TimeUnit.MICROSECONDS.toNanos(spins[(s + combination) % spins.length]), seconds);
+        ++combination;
+      }
   }
 
   private static void run(final Shape shape, final int threads, final long spinNanos, final long seconds) throws Exception {

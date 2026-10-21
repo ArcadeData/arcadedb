@@ -71,6 +71,7 @@ class CommitLockConvoyBenchmark {
         "failed");
 
     final Object previousSpin = GlobalConfiguration.COMMIT_LOCK_SPIN.getValue();
+    int combination = 0;
     try {
       for (final long types : typeCounts)
         for (final long walFlush : walFlushes)
@@ -79,9 +80,13 @@ class CommitLockConvoyBenchmark {
             if (group && walFlush == 0)
               // group commit only changes anything with a WAL flush
               continue;
-            for (final long threads : threadCounts)
-              for (final long spin : spins)
-                run((int) types, (int) walFlush, group, spin, (int) threads, seconds);
+            for (final long threads : threadCounts) {
+              // the spin values rotate from one combination to the next, so drift over the run does not always favour
+              // the same one; the rows print in the order they ran
+              for (int s = 0; s < spins.length; s++)
+                run((int) types, (int) walFlush, group, spins[(s + combination) % spins.length], (int) threads, seconds);
+              ++combination;
+            }
           }
     } finally {
       GlobalConfiguration.COMMIT_LOCK_SPIN.setValue(previousSpin);
