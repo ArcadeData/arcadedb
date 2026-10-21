@@ -9473,7 +9473,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * allow-list pre-filter plan are then answered exactly too, so every row of the answer is on one scale. Which plan an
    * allow-list takes therefore depends on this argument: re-ranked, it is the exact plan, gated by
    * {@code VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY}; PQ scores alone, the PQ-scaled one, gated by the lower
-   * {@code VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY}. Tune the two knobs separately.
+   * {@code VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY}. Tune the two knobs separately. The pre-filter plan scores
+   * every allow-listed vector exactly, so {@code rerankOversample} only sizes the candidates of the graph walk; the plan
+   * itself has no candidates to widen.
    *
    * @param efSearch        the beam, in candidates, when it is larger than {@code k * rerankOversample}; zero or negative
    *                        for none

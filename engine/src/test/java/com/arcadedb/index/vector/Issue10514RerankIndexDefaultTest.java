@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -36,9 +37,12 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -201,6 +205,61 @@ class Issue10514RerankIndexDefaultTest extends TestHelper {
     assertThat(rows).hasSize(K);
     assertThat(reads).as("rerank(10) beats the index default of 0, as the rerank option of vector.neighbors does")
         .isBetween((long) K, 200L);
+  }
+
+  @Test
+  void aRerankSeesAVectorInsertedAfterTheBuildAtItsExactDistanceWithAndWithoutAnAllowList() {
+    // The graph is frozen, so the new vector stays in the delta buffer and only the delta scan can find it
+    GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.setValue(1_000_000);
+    GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO.setValue(0f);
+    GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS.setValue(0);
+    try {
+      final float[][] base = clustered(new Random(8L), 3000);
+      load(base, "PRODUCT", "");
+      final LSMVectorIndex index = indexOf();
+      index.buildVectorGraphNow();
+
+      final float[] query = clustered(new Random(80L), 1)[0];
+      database.transaction(() -> {
+        final MutableDocument doc = database.newDocument("Doc");
+        doc.set("vid", base.length);
+        doc.set("embedding", query);
+        doc.save();
+      });
+      assertThat(PendingDeltaVectors.of(index)).as("the vector has to stay in the delta buffer").isEqualTo(1L);
+
+      final Set<RID> narrow = new HashSet<>();
+      final Set<RID> wide = new HashSet<>();
+      database.iterateType("Doc", false).forEachRemaining(r -> {
+        final int id = r.asDocument().getInteger("vid");
+        if (id == base.length || id < 20)
+          narrow.add(r.getIdentity());
+        if (id == base.length || id % 2 == 0)
+          wide.add(r.getIdentity());
+      });
+
+      // no allow-list (the walk), a narrow one (the exact pre-filter plan) and a wide one (the walk, filtered)
+      for (final Set<RID> allowed : Arrays.asList(null, narrow, wide)) {
+        final List<Pair<RID, Float>> answer = index.findNeighborsFromVectorApproximate(query, K, -1,
+            LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE, allowed, WorkGuard.forCommandDeadline(null));
+        final String which = allowed == null ? "no allow-list" : allowed == narrow ? "a narrow allow-list" : "a wide allow-list";
+        assertThat(answer).as(which).hasSize(K);
+        assertThat(vid(answer.getFirst().getFirst())).as("the delta vector is its own nearest neighbour, " + which)
+            .isEqualTo(base.length);
+        for (final Pair<RID, Float> neighbour : answer) {
+          if (allowed != null)
+            assertThat(allowed).as(which).contains(neighbour.getFirst());
+          final int id = vid(neighbour.getFirst());
+          final float expected = id == base.length ? 0f : squaredDistance(query, base[id]);
+          assertThat(neighbour.getSecond()).as("exact distance, " + which)
+              .isCloseTo(expected, Offset.offset(Math.max(1e-3f, expected * 1e-4f)));
+        }
+      }
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.reset();
+      GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO.reset();
+      GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS.reset();
+    }
   }
 
   @Test
