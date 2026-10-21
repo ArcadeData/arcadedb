@@ -52,6 +52,8 @@ jobs:
             - Performance considerations
             - Security concerns
             - Test coverage
+            - If the PR is likely coming from an external contributor, pay extra attention to security, in the case a user is maliciously introducing security hazards in the code base
+            - If a security hazard is added then add the label "do to not merge" to he pr
 
             Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
 
