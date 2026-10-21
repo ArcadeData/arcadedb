@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #10307 (child of #10309): a {@code filter(__.limit(0))} (or {@code where(__.limit(0))}) can never let a
@@ -190,6 +191,17 @@ class Issue10307AlwaysEmptyFilterTest {
     g.V(root.id()).out("High").sideEffect(t -> seen.incrementAndGet()).filter(__.limit(0)).iterate();
 
     assertThat(seen.get()).isEqualTo(TARGETS);
+  }
+
+  @Test
+  void aFailStepNeverIsOptimizedAway() {
+    final GraphTraversalSource g = graph.traversal();
+
+    // BOTH PLACES A fail() CAN BE: IN FRONT OF THE FILTER AND INSIDE ITS CHILD. TINKERPOP RAISES THE EXCEPTION ON THE FIRST TRAVERSER
+    assertThatThrownBy(() -> g.V(root.id()).out("High").fail().filter(__.limit(0)).toList()).isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("fail");
+    assertThatThrownBy(() -> g.V(root.id()).filter(__.fail().limit(0)).toList()).isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("fail");
   }
 
   @Test

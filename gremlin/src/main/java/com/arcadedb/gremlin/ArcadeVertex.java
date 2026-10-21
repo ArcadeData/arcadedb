@@ -316,14 +316,25 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     @Override
     public boolean hasNext() {
-      while (next == null) {
-        if (isRemoved() || !hasMore())
+      while (true) {
+        if (isRemoved()) {
+          // THE VERTEX WENT: ITS EDGES WENT WITH IT, THE ELEMENT A hasNext() ALREADY PULLED INCLUDED
+          next = null;
+          return false;
+        }
+        if (next != null) {
+          // PULLED BY AN EARLIER hasNext(): AN ELEMENT REMOVED SINCE IS NOT HANDED OUT, AS ONE REMOVED BEFORE IT WAS PULLED IS NOT
+          if (next instanceof ArcadeElement<?> element && element.isRemoved())
+            next = null;
+          else
+            return true;
+        }
+        if (!hasMore())
           return false;
         if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
           ArcadeGraph.checkNotTerminated();
         next = wrapNextEntry();
       }
-      return true;
     }
 
     private boolean hasMore() {

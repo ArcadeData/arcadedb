@@ -211,6 +211,33 @@ class Issue10308LazyNeighborExpansionTest {
   }
 
   @Test
+  void anElementRemovedAfterItWasPulledAheadIsNotHandedOut() {
+    final ArcadeVertex vertex = (ArcadeVertex) graph.vertices(root.id()).next();
+    final GraphTraversalSource g = graph.traversal();
+    final List<Object> expected = new ArrayList<>();
+    g.V(root.id()).out("High").forEachRemaining(v -> expected.add(v.id()));
+
+    final Iterator<Vertex> neighbors = vertex.vertices(Direction.OUT, "High");
+    // PULLS THE FIRST NEIGHBOR AHEAD, WHICH IS THEN REMOVED BEFORE ANYONE ASKS FOR IT
+    assertThat(neighbors.hasNext()).isTrue();
+    g.V(expected.get(0)).drop().iterate();
+
+    assertThat(neighbors.next().id()).isEqualTo(expected.get(1));
+  }
+
+  @Test
+  void aVertexRemovedAfterItsFirstNeighborWasPulledAheadHasNoMore() {
+    final ArcadeVertex vertex = (ArcadeVertex) graph.vertices(root.id()).next();
+    final GraphTraversalSource g = graph.traversal();
+
+    final Iterator<Vertex> neighbors = vertex.vertices(Direction.OUT, "High");
+    assertThat(neighbors.hasNext()).isTrue();
+    g.V(root.id()).drop().iterate();
+
+    assertThat(neighbors.hasNext()).isFalse();
+  }
+
+  @Test
   void dropWhileWalkingTheNeighborsDeletesEveryOne() {
     final GraphTraversalSource g = graph.traversal();
 

@@ -47,6 +47,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.filter.WhereTraversal
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CallStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.FailStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
@@ -300,8 +301,9 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
    */
   private static boolean hasNoEffect(final Iterable<? extends Step> steps) {
     for (final Step<?, ?> step : steps) {
+      // A FailStep IS AN EFFECT TOO: IT ENDS THE TRAVERSAL WITH AN EXCEPTION THE REWRITE WOULD NEVER LET IT RAISE
       if (step instanceof Mutating || step instanceof SideEffectCapable || step instanceof ReadWriting || step instanceof LambdaHolder
-          || step instanceof CallStep)
+          || step instanceof CallStep || step instanceof FailStep)
         return false;
 
       if (!step.getClass().getName().startsWith(TINKERPOP_STEP_PACKAGE) && !ARCADE_READ_ONLY_STEPS.contains(step.getClass()))
