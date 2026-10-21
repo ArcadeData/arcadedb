@@ -486,7 +486,9 @@ public class TransactionManager {
     // A transaction that does not queue its WAL record must not reach the WAL before a group commit's record it may have read:
     // recovery would find its page versions with the previous one missing, and stop there. A commit that flushes its own WAL
     // waits for the queued records to be written and flushed, one that does not flush them at least writes them first - in
-    // both cases BEFORE this append, so a failure here leaves no WAL record of this transaction behind
+    // both cases BEFORE this append, so a failure here leaves no WAL record of this transaction behind. The caller still holds
+    // its file locks, so with group commits pending this commit pays for writing their records (not for flushing them, with
+    // txWalFlush 0): the price of mixing commits that flush the WAL with commits that do not on the same database
     final long pending = getPendingWALSyncTicket();
     if (pending > 0)
       try {
@@ -561,17 +563,25 @@ public class TransactionManager {
           if (injector != null)
             injector.beforeWrite(write.txId);
           writeTransactionToWAL(write.pages, write.sync, write.txId, write.buffer, true);
-        } catch (final IOException | RuntimeException e) {
-          synchronized (deferredWALWrites) {
-            for (int j = writes.length - 1; j >= i; j--)
-              deferredWALWrites.addFirst(writes[j]);
-          }
-          throw e instanceof IOException io ? io : new IOException("Cannot write transaction " + write.txId + " to the WAL", e);
+        } catch (final IOException e) {
+          requeueDeferredWALWrites(writes, i);
+          throw e;
+        } catch (final RuntimeException e) {
+          requeueDeferredWALWrites(writes, i);
+          throw new IOException("Cannot write transaction " + write.txId + " to the WAL", e);
         }
       }
       return target;
     } finally {
       deferredWALWriteLock.unlock();
+    }
+  }
+
+  /** Puts back the records from {@code from} on, at the head of the queue and in their order, for the next pass. */
+  private void requeueDeferredWALWrites(final DeferredWALWrite[] writes, final int from) {
+    synchronized (deferredWALWrites) {
+      for (int j = writes.length - 1; j >= from; j--)
+        deferredWALWrites.addFirst(writes[j]);
     }
   }
 
@@ -2310,7 +2320,11 @@ public class TransactionManager {
     return "TransactionManager for database '" + database.getName() + "':" + fileIdsLockManager;
   }
 
-  /** A group commit's WAL record, queued until a flush pass writes it (see {@link #queueTransactionToWAL}). */
+  /**
+   * A group commit's WAL record, queued until a flush pass writes it (see {@link #queueTransactionToWAL}). The bytes written
+   * are {@code buffer}, serialized under the commit's file locks, so a later change to the pages cannot alter the record:
+   * {@code pages} is only used to attach each page to the WAL file the record lands in, for the ack of its flush.
+   */
   private record DeferredWALWrite(List<MutablePage> pages, WALFile.FlushType sync, long txId, Binary buffer) {
   }
 
@@ -2320,6 +2334,7 @@ public class TransactionManager {
 
     /** Runs before each queued WAL record a group-commit pass writes. */
     default void beforeWrite(final long txId) throws IOException {
+      // no fault by default: a test overrides it to fail the write of a given transaction
     }
   }
 }

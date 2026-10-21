@@ -84,11 +84,11 @@ public class Profiler {
   // #10509: the group commit (commits that shared a WAL flush, and the flushes) and the commit file locks (releases and their
   // hold time, hand-offs to a waiting commit and their time). Monotonic, the times in microseconds: their rates divide into
   // the average hold and hand-off, which is what a queue of commits on one type grows on
-  private static final int STAT_WAL_GROUP_COMMITS          = 21;
-  private static final int STAT_WAL_GROUP_COMMIT_SYNCS     = 22;
-  private static final int STAT_COMMIT_LOCK_HOLDS          = 23;
-  private static final int STAT_COMMIT_LOCK_HOLD_MICROS    = 24;
-  private static final int STAT_COMMIT_LOCK_HAND_OFFS      = 25;
+  private static final int STAT_WAL_GROUP_COMMITS = 21;
+  private static final int STAT_WAL_GROUP_COMMIT_SYNCS = 22;
+  private static final int STAT_COMMIT_LOCK_HOLDS = 23;
+  private static final int STAT_COMMIT_LOCK_HOLD_MICROS = 24;
+  private static final int STAT_COMMIT_LOCK_HAND_OFFS = 25;
   private static final int STAT_COMMIT_LOCK_HAND_OFF_MICROS = 26;
   private static final int MONOTONIC_STATS        = 27;
   private static final int STAT_WAL_TOTAL_FILES   = 27;
