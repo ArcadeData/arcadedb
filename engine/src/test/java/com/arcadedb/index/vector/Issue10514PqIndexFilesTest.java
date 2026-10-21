@@ -52,7 +52,7 @@ class Issue10514PqIndexFilesTest extends TestHelper {
   private static final int VECTORS    = 3000;
 
   @Test
-  void aProductGraphIsWrittenWithTheFusedPqFeatureAndTheFileIsLargerForIt() throws Exception {
+  void aProductGraphFileIsAboutAsLargeAsTheGraphFileWithoutQuantization() {
     createIndex("DocNone", "");
     createIndex("DocPq", "\"quantization\": \"PRODUCT\", ");
     insert("DocNone", VECTORS);
@@ -64,40 +64,30 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     pq.buildVectorGraphNow();
     assertThat(pq.isPQSearchAvailable()).as("the scenario needs a trained codebook").isTrue();
 
-    try (final OnDiskGraphIndex graph = pq.getGraphFile().loadGraph()) {
-      assertThat(graph.getFeatureSet()).contains(FeatureId.FUSED_PQ);
-    }
-    assertThat(pq.getGraphFile().getLastWrittenGraphBytes())
-        .as("the codes of every neighbour are stored in every node (none=%d, product=%d bytes)",
-            none.getGraphFile().getLastWrittenGraphBytes(), pq.getGraphFile().getLastWrittenGraphBytes())
-        .isGreaterThan(none.getGraphFile().getLastWrittenGraphBytes() * 2);
+    final long noneBytes = none.getGraphFile().getLastWrittenGraphBytes();
+    final long pqBytes = pq.getGraphFile().getLastWrittenGraphBytes();
+    assertThat(noneBytes).isGreaterThan(0L);
+    assertThat(pqBytes)
+        .as("the PQ codes live in the .vecpq file; the graph file must not repeat them (none=%d, product=%d bytes)",
+            noneBytes, pqBytes)
+        .isLessThan((long) (noneBytes * 1.3));
   }
 
   @Test
-  void aGraphFileWrittenWithoutTheFusedPqFeatureStillOpensAndAnswers() throws Exception {
-    // FusedPQ needs 256 clusters, so this index has a trained codebook and a graph file without the feature, as every
-    // PRODUCT index written between the March 2026 release that switched the reader off and this one
-    createIndex("DocPq", "\"quantization\": \"PRODUCT\", \"pqClusters\": 32, ");
+  void aProductGraphIsWrittenWithoutTheFusedPqFeature() throws Exception {
+    createIndex("DocPq", "\"quantization\": \"PRODUCT\", ");
     insert("DocPq", VECTORS);
-    createIndex("DocNone", "");
-    insert("DocNone", VECTORS);
-    for (final String type : new String[] { "DocPq", "DocNone" }) {
-      indexOf(type).buildVectorGraphNow();
-      try (final OnDiskGraphIndex graph = indexOf(type).getGraphFile().loadGraph()) {
-        assertThat(graph.getFeatureSet()).doesNotContain(FeatureId.FUSED_PQ);
-        assertThat(graph.getIdUpperBound()).isEqualTo(VECTORS);
-      }
-    }
-    assertThat(indexOf("DocPq").isPQSearchAvailable()).isTrue();
+    final LSMVectorIndex index = indexOf("DocPq");
+    index.buildVectorGraphNow();
+    assertThat(index.isPQSearchAvailable()).isTrue();
 
-    database.close();
-    database = factory.open();
-    assertThat(indexOf("DocPq").findNeighborsFromVector(embedding(7), 10)).hasSize(10);
-    assertThat(indexOf("DocNone").findNeighborsFromVector(embedding(7), 10)).hasSize(10);
+    try (final OnDiskGraphIndex graph = index.getGraphFile().loadGraph()) {
+      assertThat(graph.getFeatureSet()).doesNotContain(FeatureId.FUSED_PQ);
+    }
   }
 
   @Test
-  void anIndexWrittenWithTheFusedPqFeatureStillOpensAndAnswers() throws Exception {
+  void anIndexWrittenWithTheFusedPqFeatureByAnOlderReleaseIsSearchedThroughItWithoutTopUps() throws Exception {
     createIndex("DocPq", "\"quantization\": \"PRODUCT\", ");
     insert("DocPq", VECTORS);
     final LSMVectorIndex index = indexOf("DocPq");
@@ -110,7 +100,7 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     assertThat(pqVectors).isNotNull();
     assertThat(graph).isNotNull();
 
-    // Rewrite the graph file with the FusedPQ feature, as every release did before #10514 and this one does again.
+    // Rewrite the graph file the way releases before #10516 wrote it: with the FusedPQ feature, whatever the index option says.
     final LSMVectorIndexGraphFile graphFile = index.getGraphFile();
     database.transaction(() -> graphFile.writeGraph(graph, new ListRandomAccessVectorValues(List.<VectorFloat<?>>of(), DIMENSIONS),
         0, null, pq, pqVectors, true));
@@ -119,12 +109,95 @@ class Issue10514PqIndexFilesTest extends TestHelper {
       assertThat(old.getIdUpperBound()).isEqualTo(VECTORS);
     }
 
-    // A fresh session opens the old file and searches it.
+    // A fresh session opens the old file and searches it through the fused codes: the walk finds its k results by itself
     database.close();
     database = factory.open();
     final LSMVectorIndex reopened = indexOf("DocPq");
-    final float[] query = embedding(7);
-    assertThat(reopened.findNeighborsFromVector(query, 10)).hasSize(10);
+    final long scansBefore = reopened.metrics.getBruteForceScans();
+    for (int q = 0; q < 20; q++)
+      assertThat(reopened.findNeighborsFromVector(embedding(7 + q), 10)).hasSize(10);
+    assertThat(reopened.metrics.getBruteForceScans() - scansBefore).as("brute-force top-ups of a short walk").isZero();
+  }
+
+  @Test
+  void withTheFusedPqOptionOnTheGraphFileHasTheFeature() throws Exception {
+    createIndex("DocPq", "\"quantization\": \"PRODUCT\", \"fusedPQ\": true, ");
+    createIndex("DocNone", "");
+    insert("DocPq", VECTORS);
+    insert("DocNone", VECTORS);
+    indexOf("DocPq").buildVectorGraphNow();
+    indexOf("DocNone").buildVectorGraphNow();
+
+    try (final OnDiskGraphIndex graph = indexOf("DocPq").getGraphFile().loadGraph()) {
+      assertThat(graph.getFeatureSet()).contains(FeatureId.FUSED_PQ);
+    }
+    assertThat(indexOf("DocPq").getGraphFile().getLastWrittenGraphBytes())
+        .isGreaterThan(indexOf("DocNone").getGraphFile().getLastWrittenGraphBytes() * 2);
+  }
+
+  @Test
+  void anIndexCreatedOverExistingRowsWithTheFusedPqOptionKeepsTheFeatureAcrossAReopen() throws Exception {
+    // CREATE INDEX over rows that exist runs build(), which persists the graph in a second pass of its own
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE DocPq");
+      database.command("sql", "CREATE PROPERTY DocPq.embedding ARRAY_OF_FLOATS");
+    });
+    insert("DocPq", VECTORS);
+    database.transaction(() -> database.command("sql", "CREATE INDEX ON DocPq (embedding) LSM_VECTOR METADATA { \"dimensions\": "
+        + DIMENSIONS + ", \"similarity\": \"EUCLIDEAN\", \"quantization\": \"PRODUCT\", \"fusedPQ\": true, "
+        + "\"storeVectorsInGraph\": false, \"addHierarchy\": false }"));
+
+    database.close();
+    database = factory.open();
+    final LSMVectorIndex index = indexOf("DocPq");
+    final long scansBefore = index.metrics.getBruteForceScans();
+    for (int q = 0; q < 20; q++)
+      assertThat(index.findNeighborsFromVector(embedding(7 + q), 10)).hasSize(10);
+    assertThat(index.metrics.getBruteForceScans() - scansBefore).as("brute-force top-ups of a short walk").isZero();
+    try (final OnDiskGraphIndex graph = index.getGraphFile().loadGraph()) {
+      assertThat(graph.getFeatureSet()).contains(FeatureId.FUSED_PQ);
+    }
+  }
+
+  @Test
+  void anIndexRebuiltOverExistingRowsWithTheFusedPqOptionKeepsTheFeatureAcrossAReopen() throws Exception {
+    // CREATE INDEX over rows that exist runs build(), which persists the graph in a second pass of its own
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE DocPq");
+      database.command("sql", "CREATE PROPERTY DocPq.embedding ARRAY_OF_FLOATS");
+    });
+    insert("DocPq", VECTORS);
+    database.transaction(() -> database.command("sql", "CREATE INDEX ON DocPq (embedding) LSM_VECTOR METADATA { \"dimensions\": "
+        + DIMENSIONS + ", \"similarity\": \"EUCLIDEAN\", \"quantization\": \"PRODUCT\", \"fusedPQ\": true, "
+        + "\"storeVectorsInGraph\": false, \"addHierarchy\": false }"));
+
+    database.close();
+    database = factory.open();
+    database.command("sql", "REBUILD INDEX `DocPq[embedding]`");
+    database.close();
+    database = factory.open();
+    final LSMVectorIndex index = indexOf("DocPq");
+    final long scansBefore = index.metrics.getBruteForceScans();
+    for (int q = 0; q < 20; q++)
+      assertThat(index.findNeighborsFromVector(embedding(7 + q), 10)).hasSize(10);
+    assertThat(index.metrics.getBruteForceScans() - scansBefore).as("brute-force top-ups of a short walk").isZero();
+    try (final OnDiskGraphIndex graph = index.getGraphFile().loadGraph()) {
+      assertThat(graph.getFeatureSet()).contains(FeatureId.FUSED_PQ);
+    }
+  }
+
+  @Test
+  void aGraphFileWithoutTheFusedPqFeatureOfAnIndexWithoutThe256ClustersStillOpensAndAnswers() throws Exception {
+    // FusedPQ needs 256 clusters: even with the option on, this index has a trained codebook and a graph file without it
+    createIndex("DocPq", "\"quantization\": \"PRODUCT\", \"pqClusters\": 32, \"fusedPQ\": true, ");
+    insert("DocPq", VECTORS);
+    indexOf("DocPq").buildVectorGraphNow();
+    try (final OnDiskGraphIndex graph = indexOf("DocPq").getGraphFile().loadGraph()) {
+      assertThat(graph.getFeatureSet()).doesNotContain(FeatureId.FUSED_PQ);
+    }
+    database.close();
+    database = factory.open();
+    assertThat(indexOf("DocPq").findNeighborsFromVector(embedding(7), 10)).hasSize(10);
   }
 
   @Test

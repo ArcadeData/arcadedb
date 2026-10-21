@@ -8150,13 +8150,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour
    * list, in <b>that view</b>, while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the
-   * view of the searcher, as jvector's {@code FusedPQ.approximateScoreFunctionFor} documents. The reader that was switched
+   * view of the searcher, as jvector's {@code FusedPQ.approximateScoreFunctionFor} documents. Any graph file that has the feature is read through it, whatever the {@code fusedPQ} option says, so files written
+   * by releases that wrote it keep working. The reader that was switched
    * off for returning one result passed {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no
    * neighbours of the entry node and stopped there (issue #10514).
    */
   private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
       final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
-    if (LSMVectorIndexGraphFile.FUSED_PQ_READER_ENABLED && graph instanceof OnDiskGraphIndex diskGraph
+    if (graph instanceof OnDiskGraphIndex diskGraph
         && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
       final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
       return new DefaultSearchScoreProvider(
@@ -10949,6 +10950,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("pqClusters", metadata.pqClusters);
     json.put("pqCenterGlobally", metadata.pqCenterGlobally);
     json.put("pqTrainingLimit", metadata.pqTrainingLimit);
+    json.put("fusedPQ", metadata.fusedPQ);
 
     return json;
   }

@@ -332,6 +332,15 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
+  /**
+   * Stores the PQ codes of the neighbours inline in every node of the graph file (jvector's FusedPQ), PRODUCT only. Off by
+   * default: it makes the graph file several times larger (issue #10514).
+   */
+  public TypeLSMVectorIndexBuilder withFusedPQ(final boolean fusedPQ) {
+    vectorMetadata().fusedPQ = fusedPQ;
+    return this;
+  }
+
   @Override
   public TypeLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     // Same guard as the full-text and bucket-level vector builders: a raw cast here would raise the very

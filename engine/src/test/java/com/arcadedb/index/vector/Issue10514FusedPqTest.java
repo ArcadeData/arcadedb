@@ -49,8 +49,8 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #10514: a PRODUCT index walks its graph on the PQ codes fused into the nodes of the graph file (jvector's
- * {@code FusedPQ}) and re-ranks what it finds on the stored vectors.
+ * Issue #10514: a PRODUCT index with the {@code fusedPQ} option walks its graph on the PQ codes fused into the nodes of the
+ * graph file (jvector's {@code FusedPQ}) and re-ranks what it finds on the stored vectors.
  * <p>
  * The reader of that feature was switched off in March 2026 because the search returned a single result. The fused score
  * function leaves the packed codes and the neighbour list of a node in the graph view it was given, and the walk reads the
@@ -217,7 +217,7 @@ class Issue10514FusedPqTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Doc.vid INTEGER");
       database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
       database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
-          + ", \"similarity\": \"EUCLIDEAN\", \"quantization\": \"PRODUCT\", \"storeVectorsInGraph\": false, "
+          + ", \"similarity\": \"EUCLIDEAN\", \"quantization\": \"PRODUCT\", \"fusedPQ\": true, \"storeVectorsInGraph\": false, "
           + "\"addHierarchy\": false }");
     });
     database.transaction(() -> {
