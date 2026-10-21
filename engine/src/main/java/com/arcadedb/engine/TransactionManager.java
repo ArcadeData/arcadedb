@@ -593,7 +593,9 @@ public class TransactionManager {
       } catch (final IOException | RuntimeException e) {
         // still owed (syncIfUnsynced raised the file's flags again, metadata request included): a later pass must not move
         // walDurableSequence past these writes without flushing them. The files after this one in the snapshot are still in
-        // the set, since a file leaves it only right before its own flush
+        // the set, since a file leaves it only right before its own flush. A later pass that succeeds does make them durable
+        // and moves past them: safe, because the commit whose wait failed has fenced the database by then, so nothing new
+        // commits on top and the failed commit itself was reported as failed
         unsyncedWALFiles.add(file);
         throw e;
       }

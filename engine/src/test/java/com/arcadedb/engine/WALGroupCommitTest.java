@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -253,6 +254,64 @@ class WALGroupCommitTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         assertThat(database.lookupByKey(TYPE, "id", "0-" + i).hasNext()).isTrue();
     });
+  }
+
+  /**
+   * The WAL rule: a page of a group commit reaches its data file only after the shared flush of its WAL completed. The flush is
+   * slowed down so the background page flush gets to the page while it is still running; every page write of this database
+   * must then come after a completed flush. Removing the wait in {@code PageManager.flushPage} makes it fail.
+   */
+  @Test
+  void aPageReachesItsDataFileOnlyAfterItsWALIsFlushed() throws Exception {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    final long syncsBefore = stat("groupCommitSyncs");
+    final List<Long> syncsAtPageWrite = Collections.synchronizedList(new ArrayList<>());
+    transactionManager.walSyncFaultInjector = file -> {
+      try {
+        Thread.sleep(300);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+    PageManager.setPageWriteFaultInjector(pageId -> {
+      if (database.getName().equals(pageId.getDatabase().getName()))
+        syncsAtPageWrite.add(stat("groupCommitSyncs") - syncsBefore);
+    });
+    try {
+      runInThreads(1, 1);
+      PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database);
+    } finally {
+      PageManager.setPageWriteFaultInjector(null);
+      transactionManager.walSyncFaultInjector = null;
+    }
+
+    assertThat(syncsAtPageWrite).isNotEmpty().allMatch(completedFlushes -> completedFlushes >= 1);
+  }
+
+  /** A thread with the synchronous page flush never defers: its pages would reach their data files inside the commit. */
+  @Test
+  void aSynchronousPageFlushNeverDefers() throws Exception {
+    final long commitsBefore = stat("groupCommits");
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread worker = new Thread(() -> {
+      try {
+        database.begin();
+        ((DatabaseInternal) database).getTransaction().setAsyncFlush(false);
+        database.rollback();
+        for (int i = 0; i < 10; i++) {
+          final int item = i;
+          database.transaction(() -> database.newDocument(TYPE).set("id", "sync-" + item).save());
+        }
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    });
+    worker.start();
+    worker.join();
+
+    assertThat(failure.get()).isNull();
+    assertThat(stat("groupCommits")).isEqualTo(commitsBefore);
+    assertThat(database.countType(TYPE, false)).isEqualTo(10);
   }
 
   @Test
