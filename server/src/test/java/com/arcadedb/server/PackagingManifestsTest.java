@@ -365,6 +365,20 @@ class PackagingManifestsTest {
   }
 
   @Test
+  void everyShippedConfigFileIsSeededIntoAMovedConfigDirectoryOrExcludedForAReason() {
+    // Issue #10536: a server whose configuration directory was moved (a Kubernetes volume claim starts empty) copies the
+    // shipped defaults into it at startup. A file added under package/src/main/config has to be placed on one side.
+    // The JVM loads logging through -Djava.util.logging.config.file, never from the configuration directory, so a copy
+    // there would be a file the operator edits to no effect.
+    final Set<String> notSeeded = Set.of("arcadedb-log.properties", "arcadedb-log-all.properties");
+    for (final String file : configFiles())
+      assertThat(ConfigDirectorySeeder.SEEDED_FILES.contains(file) || notSeeded.contains(file))
+          .as("%s/%s is neither seeded into a moved configuration directory nor excluded", CONFIG_DIR, file).isTrue();
+    assertThat(configFiles()).as("the seeder names a file the distribution does not ship")
+        .containsAll(ConfigDirectorySeeder.SEEDED_FILES);
+  }
+
+  @Test
   void shippedJsonConfigTemplatesParseTheWayTheServerReadsThem() {
     // server-groups.json is read as one document, server-users.jsonl as one object per line: a template
     // that does not parse makes the server log a SEVERE and fall back to its defaults on every boot.
