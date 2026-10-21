@@ -80,7 +80,9 @@ import java.util.function.Function;
  * <b>Temporals:</b> a temporal canonicalizes to the {@code java.time} value {@code =} reads it as, see
  * {@link TemporalUtil#distinctKey(Object)}, so a stored DATETIME ({@code LocalDateTime}) and the {@code datetime()} of the same instant,
  * which {@code =} reports equal, share a key although {@code LocalDateTime.equals(ZonedDateTime)} is false for every pair (issue
- * #10526). A collection that is no list, a {@code Set} reaching a query as a parameter, canonicalizes to the list of its elements.
+ * #10526). A collection that is no list, a {@code Set} reaching a query as a parameter, canonicalizes to the list of its elements in
+ * the order it iterates: {@code =} compares collections element by element in that order, so two sets holding the same elements in a
+ * different order are two values to {@code =} and two keys here, and a {@code LinkedHashSet} or an immutable set keeps one order.
  * <p>
  * Other values pass through unchanged.
  */

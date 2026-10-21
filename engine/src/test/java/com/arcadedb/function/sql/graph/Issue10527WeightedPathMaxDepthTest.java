@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -247,6 +248,61 @@ class Issue10527WeightedPathMaxDepthTest extends TestHelper {
         database.command("sql", "DELETE FROM E");
         database.command("sql", "DELETE FROM V");
       });
+    }
+  }
+
+  /**
+   * A grid of 625 vertices with a road in each of the four directions and random weights, where the cheap routes wind and the short
+   * ones are dear: the search under a bound that cuts the cheap routes keeps several labels per vertex. It must still finish, and
+   * answer what the layered reference answers. The timeout is a hang detector, not a latency bound.
+   */
+  @Test
+  @Timeout(120)
+  void aBoundedSearchOverALargerGraphFinishesAndAnswersTheReference() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("E");
+    final int side = 25;
+    final int vertices = side * side;
+    final double[][] weight = new double[vertices][vertices];
+    for (final double[] row : weight)
+      Arrays.fill(row, Double.POSITIVE_INFINITY);
+    final Random random = new Random(1052725L);
+
+    final RID[] rids = new RID[vertices];
+    database.transaction(() -> {
+      for (int i = 0; i < vertices; i++)
+        rids[i] = database.newVertex("V").set("nm", "g" + i).save().getIdentity();
+      for (int row = 0; row < side; row++)
+        for (int column = 0; column < side; column++) {
+          final int from = row * side + column;
+          final int[] neighbours = { column + 1 < side ? from + 1 : -1, column > 0 ? from - 1 : -1, row + 1 < side ? from + side : -1,
+              row > 0 ? from - side : -1 };
+          for (final int to : neighbours)
+            if (to >= 0) {
+              weight[from][to] = 1 + random.nextInt(9);
+              rids[from].asVertex().newEdge("E", rids[to].asVertex()).set("w", weight[from][to]).save();
+            }
+        }
+    });
+
+    final int s = 0;
+    final int t = vertices - 1;
+    // the corner to the opposite corner is 48 edges at the least: below that nothing fits, past it the bound starts to bind on cost
+    for (final int maxDepth : new int[] { 47, 48, 50, 56, 70 }) {
+      final double expected = cheapestWithin(weight, s, t, maxDepth);
+      for (final String function : FUNCTIONS) {
+        source = rids[s];
+        target = rids[t];
+        final List<RID> answer = path(function, maxDepth, null);
+        final String what = function + " maxDepth " + maxDepth;
+        if (expected == Double.POSITIVE_INFINITY) {
+          assertThat(answer).as(what).isEmpty();
+        } else {
+          assertThat(answer).as(what).isNotEmpty();
+          assertThat(answer.size() - 1).as(what + " edges").isLessThanOrEqualTo(maxDepth);
+          assertThat(cost(answer)).as(what + " cost").isEqualTo(expected);
+        }
+      }
     }
   }
 

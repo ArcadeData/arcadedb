@@ -108,6 +108,8 @@ class CypherDistinctTemporalKeyIssue10526Test extends TestHelper {
     final Map<String, Object> parameters = Map.of("a", new LinkedHashSet<>(List.of(1, 2, 3)), "b", new LinkedHashSet<>(List.of(3, 2, 1)));
     final boolean equal = Boolean.TRUE.equals(scalar("RETURN $a = $b AS v", parameters));
 
+    // = compares element by element in iteration order, so [1, 2, 3] and [3, 2, 1] differ; pinned, so a change of that rule shows here
+    assertThat(equal).isFalse();
     assertThat(scalar("UNWIND [$a, $b] AS x RETURN count(DISTINCT x) AS v", parameters)).isEqualTo(equal ? 1L : 2L);
     assertThat(scalar("UNWIND [$a, $b] AS x WITH x AS g, count(*) AS c RETURN count(*) AS v", parameters)).isEqualTo(equal ? 1L : 2L);
 

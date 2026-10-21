@@ -642,6 +642,7 @@ public final class TemporalUtil {
       case CypherDate date -> date.getValue();
       case CypherLocalTime time -> time.getValue();
       case CypherTime time -> time.getValue();
+      // the one wrapper left, the duration: its equals / hashCode compare its months, days, seconds and nanoseconds, as = does
       case CypherTemporalValue other -> other;
       case ZonedDateTime zoned -> zoned;
       case OffsetDateTime offset -> offset.toZonedDateTime();
