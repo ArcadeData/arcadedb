@@ -574,12 +574,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             }, false, maxAttempts, null, null);
 
-            // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the
-            // pages that transaction has modified first, the committed ones underneath. That is what lets it see
-            // records the caller has written and not yet committed - `INSERT INTO V SET id = 7;
-            // CREATE INDEX ON V (id)` in one transaction used to end with the record present and NO entry for it, in
-            // neither the scan nor the index - and it makes the entries commit, or roll back, with the records they
-            // describe.
+            // The BUILD then indexes the COMMITTED records in a transaction of its own and queues on the caller's
+            // transaction only what the caller itself created, updated or deleted in the bucket (issue #10490, see
+            // IndexBuilder#buildCreatedIndex). A scan that read the caller's transaction saw the records the caller has
+            // written and not yet committed - `INSERT INTO V SET id = 7; CREATE INDEX ON V (id)` in one transaction used
+            // to end with the record present and NO entry for it, in neither the scan nor the index - but it queued the
+            // committed records' entries there too, and a rollback of the caller took them all away. Now the entries of
+            // the pending records commit, or roll back, with the records they describe and the committed ones are not
+            // the caller's to roll back.
             database.transaction(() -> buildCreatedIndex(indexes[finalIdx], true), true, maxAttempts, null, null);
           }
 

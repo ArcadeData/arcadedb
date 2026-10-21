@@ -65,6 +65,10 @@ public class JSONObject implements Map<String, Object> {
    * be reflected back through an exception. See {@link #describe(JsonElement)} and {@link #truncate(String)}.
    */
   static final        int               MAX_ERROR_VALUE_LENGTH = 64;
+  // The days a date can be from 1970 and still be a count of epoch milliseconds that fits a long (about +-292 million years)
+  private static final long             MILLIS_PER_DAY         = 86_400_000L;
+  private static final long             MAX_EPOCH_DAY          = Long.MAX_VALUE / MILLIS_PER_DAY;
+  private static final long             MIN_EPOCH_DAY          = Long.MIN_VALUE / MILLIS_PER_DAY;
   private final       JsonObject        object;
   private             String            dateFormatAsString     = null;
   private             DateTimeFormatter dateFormat             = null;
@@ -178,7 +182,7 @@ public class JSONObject implements Map<String, Object> {
     case LocalDate localDate -> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP: a DATE is a calendar day, anchored at UTC midnight so the number never depends on the JVM time zone (#9037)
-        object.addProperty(name, localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
+        object.add(name, localDateToElement(localDate));
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
@@ -884,7 +888,7 @@ public class JSONObject implements Map<String, Object> {
       case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
       case Date date -> new JsonPrimitive(date.getTime());
       case Calendar calendar -> new JsonPrimitive(calendar.getTimeInMillis());
-      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
+      case LocalDate localDate -> localDateToElement(localDate);
       case TemporalAccessor temporalAccessor -> {
         final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
         yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
@@ -893,6 +897,18 @@ public class JSONObject implements Map<String, Object> {
       case Class<?> clazz -> new JsonPrimitive(clazz.getName());
       default -> new JsonPrimitive(object.toString());
     };
+  }
+
+  /**
+   * A date as the epoch milliseconds of its UTC midnight, as every temporal is written. A {@code long} of milliseconds ends at about
+   * 292 million years from 1970, and {@code toEpochMilli()} throws past it, which failed the whole record on the way out (issue
+   * #10483); a date out there is written as its ISO-8601 text instead, the way a temporal with no timestamp already is.
+   */
+  private static JsonElement localDateToElement(final LocalDate localDate) {
+    final long epochDay = localDate.toEpochDay();
+    if (epochDay > MAX_EPOCH_DAY || epochDay < MIN_EPOCH_DAY)
+      return new JsonPrimitive(localDate.toString());
+    return new JsonPrimitive(epochDay * MILLIS_PER_DAY);
   }
 
   private JsonElement getElement(final String name) {

@@ -570,17 +570,46 @@ public abstract class IndexBuilder<T extends Index> {
    * inside {@code recordFileChanges}.
    */
   protected void buildCreatedIndex(final Index index, final boolean sharesCallerTransaction) {
-    buildCreatedIndex(index, batchSize, sharesCallerTransaction, callback);
+    buildCreatedIndex(database, index, batchSize, sharesCallerTransaction, callback);
   }
 
-  /** @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above. */
-  static void buildCreatedIndex(final Index index, final int batchSize, final boolean sharesCallerTransaction,
-      final Index.BuildIndexCallback callback) {
+  /**
+   * @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above.
+   * <p>
+   * A build that shares the caller's transaction is NOT one scan inside it (issue #10490). That scan reads the caller's
+   * pending pages first and the committed ones underneath, so it queued an entry for every record, the committed ones
+   * included, on a transaction the caller may then roll back, and the index - whose component is committed on its own -
+   * was left with the schema entry and no entries. It is two steps instead:
+   * <ol>
+   *   <li>the COMMITTED state is indexed with the caller's transaction set aside, in a transaction of its own that commits
+   *   in chunks like any build that shares nothing, so those entries survive whatever the caller does;</li>
+   *   <li>what the caller itself created, updated or deleted in the bucket is queued on the caller's transaction by
+   *   {@link IndexBuildCallerChanges}, so it commits, or rolls back, with the records it describes.</li>
+   * </ol>
+   * No writer can slip in between the two: every caller runs inside the schema's write lock ({@code recordFileChanges}), which
+   * no other transaction commits under, and the index is registered on its type before the first step, so what the caller writes
+   * afterwards is indexed live. The second step reads the committed version of the caller's writes a chunk at a time. A
+   * failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
+   * {@code TypeIndexBuilder#create} and {@code BucketIndexBuilder}, the guard around the super-type propagation), the same
+   * as a failure anywhere in a build.
+   */
+  static void buildCreatedIndex(final DatabaseInternal database, final Index index, final int batchSize,
+      final boolean sharesCallerTransaction, final Index.BuildIndexCallback callback) {
     final IndexInternal internal = (IndexInternal) index;
     if (!internal.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
         IndexInternal.INDEX_STATUS.AVAILABLE))
       throw new IndexException("Cannot build the index '" + index.getName() + "' because it is not available");
-    internal.build(batchSize, sharesCallerTransaction, callback);
+
+    if (!sharesCallerTransaction) {
+      internal.build(batchSize, false, callback);
+      return;
+    }
+
+    final long[] committedRecords = new long[1];
+    try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
+      database.transaction(() -> committedRecords[0] = internal.build(batchSize, false, callback), false, 1, null, null);
+    }
+    IndexBuildCallerChanges.apply(database, internal, callback, committedRecords[0]);
   }
 
   /**

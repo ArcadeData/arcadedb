@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
@@ -47,7 +48,9 @@ import java.io.IOException;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -62,6 +65,16 @@ public class RedisNetworkExecutor extends Thread {
   /** Commands whose arguments are opaque bytes (issue #9057); see the argument loop in the command dispatch. */
   private static final Set<String> BINARY_SAFE_COMMANDS = Set.of("SET", "ECHO", "PING");
 
+  /**
+   * Commands that skip the query admission gate and the list of running statements: the ones that touch no data, and the
+   * ones on keys held in memory (database global variables or the connection's own map), which never reach a record, an
+   * index or the query engine. A command that may read or write records (the H* family) is not here. The criterion for adding
+   * one: it finishes in a bounded, small amount of work without the engine, so it can neither be worth listing nor need a
+   * terminate. Anything that can touch a record, an index, a query or a lock must stay gated.
+   */
+  private static final Set<String> UNGATED_COMMANDS = Set.of("PING", "SELECT", "GET", "SET", "GETDEL", "EXISTS", "INCR",
+      "INCRBY", "INCRBYFLOAT", "DECR", "DECRBY");
+
   private final    ArcadeDBServer      server;
   private final    ChannelBinaryServer channel;
   private volatile boolean             shutdown         = false;
@@ -69,9 +82,17 @@ public class RedisNetworkExecutor extends Thread {
   private final    StringBuilder       value            = new StringBuilder();
   private final    byte[]              buffer           = new byte[32 * 1024];
   private          int                 bytesRead        = 0;
+  /** Replies written to the channel's buffer and not flushed yet, see {@link #queueReply}. */
+  private          boolean             repliesPending   = false;
+  private          byte[]              pendingReplies   = new byte[INITIAL_PENDING_REPLY_BYTES];
+  private          int                 pendingReplyLength = 0;
+  // bytes the batch being built has queued, to give a grown buffer back once batches stop needing it (see flushReplies)
+  private          int                 batchReplyBytes  = 0;
+  private final    byte[]              tokenBytes       = new byte[MAX_TOKEN_LENGTH];
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
   private          ServerSecurityUser  authenticatedUser    = null;
+  private          RunningQuery.Client runningQueryClient   = null;
   /**
    * The listener's permit for a connection that has not authenticated yet, handed back the moment it does -
    * or when it goes away without ever doing so (issue #6412).
@@ -92,6 +113,13 @@ public class RedisNetworkExecutor extends Thread {
   // and holds the thread before parseLength()/maxBulkLength/maxMultiBulkLength ever get a value to check,
   // since those only fire once a token has actually been parsed (issue #5895 review, round 6).
   private static final int MAX_TOKEN_LENGTH = 64;
+
+  /**
+   * Bound of the buffer the replies of a batch are encoded into before they leave together: a larger reply is encoded into
+   * its own array, and the buffer is written out when it would overflow, so one large value does not stay pinned.
+   */
+  private static final int MAX_PENDING_REPLY_BYTES = 256 * 1024;
+  private static final int INITIAL_PENDING_REPLY_BYTES = 16 * 1024;
 
   /**
    * Holds the resolved key and database from key resolution.
@@ -177,7 +205,8 @@ public class RedisNetworkExecutor extends Thread {
         try {
           executeCommand(parseNext());
 
-          replyToClient(value);
+          // Queued, not flushed: the replies of a pipelined batch leave together, when the next read would block (see fill())
+          queueReply(value);
 
         } catch (final EOFException | SocketException e) {
           LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
@@ -205,7 +234,10 @@ public class RedisNetworkExecutor extends Thread {
           }
           close();
         } catch (final IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
+          // The stream position, or the replies queued for the client, can no longer be trusted: a write that failed half way
+          // dropped replies the client is waiting for, so going on would leave it waiting forever. Close instead
+          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request or sending replies, closing connection", e);
+          close();
         }
       }
     } finally {
@@ -217,14 +249,69 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   public void replyToClient(final StringBuilder response) throws IOException {
-    LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
+    queueReply(response);
+    flushReplies();
+  }
 
-    final byte[] buffer = RedisBinaryCodec.encode(response);
+  /**
+   * Writes a reply to the channel's buffer without flushing it. A client that pipelines sends many commands in one write, and
+   * flushing each reply on its own cost one system call per command: at 16 commands per batch that was most of the time a
+   * command took. The replies go out when the input runs dry ({@link #fill()}), which is exactly when the client is waiting
+   * for them, and in the order the commands arrived. Those are the only flush points with {@link #replyToClient}: a new code
+   * path that can block after queuing a reply (other than by reading) must flush first, or the client waits for nothing.
+   */
+  private void queueReply(final StringBuilder response) throws IOException {
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
-    channel.outStream.write(buffer);
-    channel.flush();
+    final int chars = response.length();
+    // Encoded straight into the connection's output buffer when every char is ASCII, the common case; the channel's own
+    // buffer holds 8KB, so writing through it flushed every second 4KB reply and undid the batching for larger values
+    if (chars <= MAX_PENDING_REPLY_BYTES) {
+      if (pendingReplyLength + chars > pendingReplies.length) {
+        if (pendingReplyLength + chars > MAX_PENDING_REPLY_BYTES)
+          writePendingReplies();
+        if (pendingReplyLength + chars > pendingReplies.length)
+          pendingReplies = Arrays.copyOf(pendingReplies,
+              Math.min(MAX_PENDING_REPLY_BYTES, Math.max(pendingReplyLength + chars, pendingReplies.length * 2)));
+      }
+      final int length = RedisBinaryCodec.encodeAscii(response, pendingReplies, pendingReplyLength);
+      if (length >= 0)
+        pendingReplyLength += length;
+      else
+        writeReplyBytes(RedisBinaryCodec.encode(response));
+    } else
+      writeReplyBytes(RedisBinaryCodec.encode(response));
 
+    batchReplyBytes += chars;
+    repliesPending = true;
     response.setLength(0);
+  }
+
+  /** A reply that does not go through the output buffer: what the buffer holds goes first, to keep the order. */
+  private void writeReplyBytes(final byte[] reply) throws IOException {
+    writePendingReplies();
+    channel.outStream.write(reply);
+  }
+
+  private void writePendingReplies() throws IOException {
+    if (pendingReplyLength > 0) {
+      channel.outStream.write(pendingReplies, 0, pendingReplyLength);
+      pendingReplyLength = 0;
+    }
+  }
+
+  private void flushReplies() throws IOException {
+    if (repliesPending) {
+      repliesPending = false;
+      writePendingReplies();
+      channel.flush();
+      // A buffer one large batch grew is given back when a batch uses less than a quarter of it, so an idle connection does
+      // not keep up to MAX_PENDING_REPLY_BYTES; a connection that keeps sending large batches keeps it, without reallocating
+      if (pendingReplies.length > INITIAL_PENDING_REPLY_BYTES && batchReplyBytes < pendingReplies.length / 4)
+        pendingReplies = new byte[INITIAL_PENDING_REPLY_BYTES];
+      batchReplyBytes = 0;
+    }
   }
 
   public void close() {
@@ -243,7 +330,7 @@ public class RedisNetworkExecutor extends Thread {
       preAuthTicket.release();
   }
 
-  private void executeCommand(final Object command) {
+  private void executeCommand(final Object command) throws IOException {
     value.setLength(0);
 
     if (command instanceof List) {
@@ -296,6 +383,11 @@ public class RedisNetworkExecutor extends Thread {
       // Redis is traced like the other protocols (protocol=redis comes from ProtocolContext, set in
       // run()). No query language applies to a native Redis command, so language is null. No-op
       // unless the tracing plugin is active.
+      // A command that may wait (for the admission gate, a lock, the disk) must not hold back the replies queued before it:
+      // the client may be waiting for those already
+      if (!UNGATED_COMMANDS.contains(cmdString))
+        flushReplies();
+
       QueryAdmissionGate.Ticket admission = null;
       RunningQuery runningQuery = null;
       try (final QueryTracer.Span span = QueryTracer.Holder.begin(
@@ -336,13 +428,16 @@ public class RedisNetworkExecutor extends Thread {
         RedisCommandArity.checkWire(cmdString, list.size());
 
         // Waits for the query admission gate (issue #9518) like the requests of every other protocol. PING and SELECT touch no
-        // data and must stay answerable on a server busy with queries
-        if (!"PING".equals(cmdString) && !"SELECT".equals(cmdString)) {
+        // data and must stay answerable on a server busy with queries. Neither do the commands on keys held in memory: each
+        // is one map access, done before a listing could show it or a terminate reach it, and holding them behind the gate
+        // cost more than the command itself - with more connections than slots, every one of them parked and woke up on
+        // the gate's lock, three quarters of the time a GET took under 50 clients
+        if (!UNGATED_COMMANDS.contains(cmdString)) {
           admission = QueryAdmissionGate.getInstance().admit();
           // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate, over the same window as the slot
           // (issue #9689). The command line is put together only if somebody lists it
           runningQuery = server.getRunningQueries().register(selectedDatabaseName, authenticatedUser.getName(), "redis", null, null,
-              RunningQuery.Client.of(getName(), channel.socket.getRemoteSocketAddress()));
+              runningQueryClient());
           runningQuery.setStatement("redis", () -> describe(list));
         }
 
@@ -436,6 +531,13 @@ public class RedisNetworkExecutor extends Thread {
 
     } else
       LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+  }
+
+  /** Who this connection is, for the listing of running statements: the same for every command, so built once. */
+  private RunningQuery.Client runningQueryClient() {
+    if (runningQueryClient == null)
+      runningQueryClient = RunningQuery.Client.of(getName(), channel.socket.getRemoteSocketAddress());
+    return runningQueryClient;
   }
 
   /** The command line as a client would type it, for the listing of running statements (issue #9689). */
@@ -1038,7 +1140,27 @@ public class RedisNetworkExecutor extends Thread {
       throw RedisException.withKind("NOPERM", "this user has no permissions to access the database '" + databaseName + "'");
 
     final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
-    DatabaseContext.INSTANCE.init(database).setCurrentUser(authenticatedUser.getDatabaseUser(database));
+    final SecurityDatabaseUser user = authenticatedUser.getDatabaseUser(database);
+
+    if (Thread.currentThread() != this) {
+      // not on the connection's own thread: the shortcut below would bind another thread's context
+      DatabaseContext.INSTANCE.init(database).setCurrentUser(user);
+      return database;
+    }
+
+    // This thread serves this connection alone (RedisNetworkListener starts one RedisNetworkExecutor, a Thread, per accepted
+    // socket; a pooled model would have to drop this shortcut), so the context the previous command bound is still the thread's: when it
+    // holds just the idle transaction of this very database instance, re-binding the user is all init() would do that
+    // matters. init() rolls that transaction back and builds a new one, which was one command in ten's worth of time
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.transactions.size() == 1) {
+      final TransactionContext idle = context.transactions.getFirst();
+      if (!idle.isActive() && idle.getDatabase() == database.getWrappedDatabaseInstance()) {
+        context.setCurrentUser(user);
+        return database;
+      }
+    }
+    DatabaseContext.INSTANCE.init(database).setCurrentUser(user);
     return database;
   }
 
@@ -1189,10 +1311,10 @@ public class RedisNetworkExecutor extends Thread {
       return parseValueUntilLF();
     else if (b == ':')
       // INTEGER
-      return parseLength(parseValueUntilLF(), "integer");
+      return parseIntUntilLF("integer");
     else if (b == '$') {
       // BULK STRING
-      final int size = parseLength(parseValueUntilLF(), "bulk length");
+      final int size = parseIntUntilLF("bulk length");
       if (size < 0)
         // RESP2 null bulk string ($-1): the header IS the complete, self-terminated token - unlike a
         // present bulk string, there is no trailing CRLF to skip (issue #5911). Mirrors the null/empty
@@ -1211,7 +1333,7 @@ public class RedisNetworkExecutor extends Thread {
       return value;
     } else if (b == '*') {
       // ARRAY
-      final int arraySize = parseLength(parseValueUntilLF(), "multibulk length");
+      final int arraySize = parseIntUntilLF("multibulk length");
       if (arraySize <= 0)
         // RESP2 null array (*-1) or an explicit empty array (*0): nothing to read.
         return new ArrayList<>();
@@ -1244,6 +1366,34 @@ public class RedisNetworkExecutor extends Thread {
     }
   }
 
+  /**
+   * Reads a RESP length or integer token up to its CRLF and parses it without building a String: a command carries one per
+   * argument plus one for the array, so this ran {@code StringBuilder}, {@code toString()} and {@code parseInt} several
+   * times per command. The limits and the answers are those of {@link #parseValueUntilLF()} followed by
+   * {@link #parseLength}: anything but an optional sign and up to 9 digits goes through {@code Integer.parseInt}, so a
+   * malformed or out-of-range token is refused exactly as before, naming its text.
+   */
+  private int parseIntUntilLF(final String what) throws IOException {
+    final int length = readTokenUntilLF();
+    int i = 0;
+    final boolean negative = length > 0 && tokenBytes[0] == '-';
+    if (length > 0 && (negative || tokenBytes[0] == '+'))
+      i = 1;
+    // up to 9 digits cannot overflow an int
+    if (i < length && length - i <= 9) {
+      int result = 0;
+      for (; i < length; i++) {
+        final int digit = tokenBytes[i] - '0';
+        if (digit < 0 || digit > 9)
+          break;
+        result = result * 10 + digit;
+      }
+      if (i == length)
+        return negative ? -result : result;
+    }
+    return parseLength(new String(tokenBytes, 0, length, StandardCharsets.ISO_8859_1), what);
+  }
+
   private void skipLF() throws IOException {
     final byte b = readNext();
     if (b == '\r') {
@@ -1258,20 +1408,27 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private String parseValueUntilLF() throws IOException {
-    value.setLength(0);
+    return new String(tokenBytes, 0, readTokenUntilLF(), StandardCharsets.ISO_8859_1);
+  }
 
+  /**
+   * Reads a RESP token up to its CRLF into {@link #tokenBytes} and returns its length: the one reader of simple strings and of
+   * length/integer tokens, so the {@link #MAX_TOKEN_LENGTH} bound and the handling of a stray byte after CR cannot drift
+   * apart between them.
+   */
+  private int readTokenUntilLF() throws IOException {
+    int length = 0;
     boolean slashR = false;
-
     while (!shutdown) {
       final byte b = readNext();
-
       if (!slashR) {
         if (b == '\r')
           slashR = true;
         else {
-          if (value.length() >= MAX_TOKEN_LENGTH)
-            throw new RedisProtocolLimitException("Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
-          value.append((char) b);
+          if (length >= MAX_TOKEN_LENGTH)
+            throw new RedisProtocolLimitException(
+                "Protocol error: token exceeds the maximum allowed length (" + MAX_TOKEN_LENGTH + ") without a terminating CRLF");
+          tokenBytes[length++] = b;
         }
       } else {
         if (b == '\n')
@@ -1282,8 +1439,7 @@ public class RedisNetworkExecutor extends Thread {
               found '%s' after /r""", (char) b);
       }
     }
-
-    return value.toString();
+    return length;
   }
 
   private void respondValue(final Object v, final boolean forceString) {
@@ -1326,33 +1482,39 @@ public class RedisNetworkExecutor extends Thread {
   private String parseChars(final int size) throws IOException {
     final byte[] bytes = new byte[size];
     int read = 0;
-    for (; read < size && !shutdown; ++read)
-      bytes[read] = readNext();
+    // copied a buffer at a time rather than a byte at a time: a 100-byte value used to be 100 calls
+    while (read < size && !shutdown) {
+      if (posInBuffer >= bytesRead)
+        fill();
+      final int chunk = Math.min(size - read, bytesRead - posInBuffer);
+      System.arraycopy(buffer, posInBuffer, bytes, read, chunk);
+      posInBuffer += chunk;
+      read += chunk;
+    }
 
     return RedisBinaryCodec.decode(bytes, read);
   }
 
   private byte readNext() throws IOException {
-    if (posInBuffer < bytesRead)
-      return buffer[posInBuffer++];
+    if (posInBuffer >= bytesRead)
+      fill();
+    return buffer[posInBuffer++];
+  }
+
+  /**
+   * Reads the next bytes the client sent, waiting for them. The replies queued so far are flushed first: the client may be
+   * waiting for them before it sends anything more, so a read must never block with replies still held back.
+   */
+  private void fill() throws IOException {
+    flushReplies();
 
     posInBuffer = 0;
-
     do {
       bytesRead = channel.inStream.read(buffer);
-
-//      String debug = "";
-//      for (int i = 0; i < bytesRead; ++i) {
-//        debug += (char) buffer[i];
-//      }
-//      LogManager.instance().log(this, Level.INFO, "Redis wrapper: Read '%s'...", debug);
-
     } while (bytesRead == 0);
 
     if (bytesRead == -1)
       throw new EOFException();
-
-    return buffer[posInBuffer++];
   }
 
   /**

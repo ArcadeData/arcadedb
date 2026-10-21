@@ -58,6 +58,6 @@ public class ReplaceFunction implements StatelessFunction {
     final String replacement = CypherFunctionHelper.requireStringArgument(args[2], getName());
     if (source == null || search == null || replacement == null)
       return null;
-    return source.replace(search, replacement);
+    return CypherFunctionHelper.replaceLiteral(source, search, replacement);
   }
 }

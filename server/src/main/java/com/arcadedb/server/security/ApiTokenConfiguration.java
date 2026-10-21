@@ -235,10 +235,11 @@ public class ApiTokenConfiguration {
      * the next tick re-reads the file once and publishes the same, now hashed, token set.
      */
     @Override
-    protected void publish(final LoadedTokens loaded, final boolean isFallback) {
+    protected boolean publish(final LoadedTokens loaded, final boolean isFallback) {
       tokens = loaded.tokens();
       if (loaded.migrated())
         save();
+      return true;
     }
 
     /**
