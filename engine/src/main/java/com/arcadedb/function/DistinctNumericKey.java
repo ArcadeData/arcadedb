@@ -21,6 +21,7 @@ package com.arcadedb.function;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.LightEdgeRID;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
@@ -76,6 +77,11 @@ import java.util.function.Function;
  * the price of the shared key: a {@code DISTINCT} or {@code GROUP BY} over long vectors pays it, and a key made of the primitive array
  * itself would not share a key with the equal list or with the array of another number type, as {@code =} says they are.
  * <p>
+ * <b>Temporals:</b> a temporal canonicalizes to the {@code java.time} value {@code =} reads it as, see
+ * {@link TemporalUtil#distinctKey(Object)}, so a stored DATETIME ({@code LocalDateTime}) and the {@code datetime()} of the same instant,
+ * which {@code =} reports equal, share a key although {@code LocalDateTime.equals(ZonedDateTime)} is false for every pair (issue
+ * #10526). A collection that is no list, a {@code Set} reaching a query as a parameter, canonicalizes to the list of its elements.
+ * <p>
  * Other values pass through unchanged.
  */
 public final class DistinctNumericKey {
@@ -92,7 +98,7 @@ public final class DistinctNumericKey {
    */
   public static boolean needsKey(final Object value) {
     return value instanceof Number || value instanceof Identifiable || value instanceof Collection || value instanceof Map
-        || value != null && value.getClass().isArray();
+        || value != null && value.getClass().isArray() || TemporalUtil.isTemporalValue(value);
   }
 
   /**
@@ -103,6 +109,10 @@ public final class DistinctNumericKey {
    * ({@link Identifiable}) are returned unchanged.
    */
   public static Object canonicalize(final Object value) {
+    // The commonest group key, and none of the kinds below
+    if (value instanceof String)
+      return value;
+
     if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
       return ((Number) value).longValue();
 
@@ -137,6 +147,14 @@ public final class DistinctNumericKey {
       }
       return key != null ? key : value;
     }
+    // A collection that is no list - a Set a parameter or a function can hand over - is read as a sequence by =, which says it equals
+    // the list of the same elements, and is the list of its canonicalized elements here for the same reason (issue #10526)
+    if (value instanceof Collection<?> collection && !(value instanceof List)) {
+      final List<Object> key = new ArrayList<>(collection.size());
+      for (final Object element : collection)
+        key.add(canonicalize(element));
+      return key;
+    }
     if (value instanceof Map<?, ?> map) {
       Map<Object, Object> key = null;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
@@ -154,7 +172,9 @@ public final class DistinctNumericKey {
     if (value != null && value.getClass().isArray())
       return canonicalizeSequence(value);
 
-    return value;
+    // Temporals last: they are the rarest group key, and what they cost is paid by the values that reach here
+    final Object temporal = TemporalUtil.distinctKey(value);
+    return temporal != null ? temporal : value;
   }
 
   /** The canonical form of a number held as a double, see the numeric rule of the class. */
