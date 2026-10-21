@@ -74,6 +74,9 @@ public class PostgresTypeCatalog {
    */
   static final int DEFAULT_COLLATION_OID = 100;
 
+  /** The OID PostgreSQL fixes for the {@code pg_catalog} schema, which is the namespace of every type this protocol produces. */
+  static final int PG_CATALOG_OID = 11;
+
   /** {@code SELECT <projection> FROM [pg_catalog.]pg_type [alias] [WHERE <filter>]} and nothing more. */
   private static final Pattern QUERY = Pattern.compile(
       "^SELECT\\s+(.+?)\\s+FROM\\s+(?:PG_CATALOG\\s*\\.\\s*)?PG_TYPE(?:\\s+(?:AS\\s+)?[A-Za-z_][A-Za-z0-9_$]*)?"
@@ -309,7 +312,7 @@ public class PostgresTypeCatalog {
       case "typsend" -> ioFunction(type, "send");
       case "typnotnull" -> Boolean.FALSE;
       case "typbasetype" -> 0;         // not a domain, so no base type
-      case "typnamespace" -> 11;       // pg_catalog, whose OID is fixed at 11 in PostgreSQL
+      case "typnamespace" -> PG_CATALOG_OID;
       case "typrelid" -> 0;            // not a composite, so no backing relation
       case "typowner" -> PostgresCatalog.OWNER_OID; // the bootstrap superuser owns every built-in type
       case "typbyval" -> type.size > 0 && type.size <= 8;

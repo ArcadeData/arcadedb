@@ -173,12 +173,37 @@ public final class IncomingEdgeLookup {
     final MultiIterator<Vertex> result = new MultiIterator<>();
     if (direction == Vertex.DIRECTION.BOTH)
       result.addIterator(vertex.getVertices(Vertex.DIRECTION.OUT, edgeTypes).iterator());
+    addIncomingVertices(result, vertex, edgeTypes, involved);
+    return result;
+  }
+
+  /**
+   * The incoming half of {@link #getVertices}: what it answers besides the stored outgoing list of an undirected hop, which the caller
+   * reads itself. A walk that wants to ask, entry by entry, whether the edge an adjacency entry names still has its record cannot do it
+   * on vertices the stored list answered (they carry no edge RID); it reads that list by its entries and takes the rest from here
+   * (issue #10463). Nothing for {@link Vertex.DIRECTION#OUT}, and what the vertex API answers for the incoming side when no
+   * unidirectional type is involved.
+   */
+  public static Iterator<Vertex> getIncomingVertices(final CommandContext context, final Vertex vertex,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    if (direction == Vertex.DIRECTION.OUT)
+      return Collections.emptyIterator();
+    final Involved involved = involved(context, vertex, direction, edgeTypes);
+    if (involved == null)
+      return vertex.getVertices(Vertex.DIRECTION.IN, edgeTypes).iterator();
+
+    final MultiIterator<Vertex> result = new MultiIterator<>();
+    addIncomingVertices(result, vertex, edgeTypes, involved);
+    return result;
+  }
+
+  private static void addIncomingVertices(final MultiIterator<Vertex> result, final Vertex vertex, final String[] edgeTypes,
+      final Involved involved) {
     if (involved.closure.anyBidirectional)
       result.addIterator(new SourceVertices(
           new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(), involved.schema)));
     for (final Snapshot snapshot : involved.snapshots)
       result.addIterator(snapshot.sourcesOf(vertex.getIdentity()));
-    return result;
   }
 
   /**

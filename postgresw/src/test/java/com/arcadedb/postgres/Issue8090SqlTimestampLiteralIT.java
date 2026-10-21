@@ -27,8 +27,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.Calendar;
 import java.util.Properties;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,6 +52,8 @@ class Issue8090SqlTimestampLiteralIT extends PostgresWireProtocolTestBase {
 
   private static final String LITERAL  = "2024-02-29 13:45:10.123456";
   private static final Timestamp EXPECTED = Timestamp.valueOf(LocalDateTime.of(2024, 2, 29, 13, 45, 10, 123_456_000));
+  /** The instant the literal names, as the engine reads a text with no offset: a UTC wall clock. */
+  private static final Instant LITERAL_INSTANT = LocalDateTime.of(2024, 2, 29, 13, 45, 10, 123_456_000).toInstant(ZoneOffset.UTC);
 
   @Test
   void aSqlTimestampLiteralInTheStatementTextIsStoredRatherThanEmptied() throws Exception {
@@ -74,9 +80,11 @@ class Issue8090SqlTimestampLiteralIT extends PostgresWireProtocolTestBase {
       }
 
       // The bound route normalises the separator before the engine sees it, so it was never broken. It is here to
-      // pin that the repaired literal route answers the SAME instant rather than merely a non-null one.
+      // pin that the repaired literal route answers the SAME instant rather than merely a non-null one. The literal has no offset,
+      // so it is the UTC wall clock; the parameter is bound as the same instant in UTC, whatever the zone of the JVM running this
+      // (the driver writes the offset of the calendar it is given, and the engine stores the UTC wall clock of an offset, #10489)
       try (final PreparedStatement insert = connection.prepareStatement("INSERT INTO Ts8090 SET id = 3, ts = ?")) {
-        insert.setTimestamp(1, EXPECTED);
+        insert.setTimestamp(1, Timestamp.from(LITERAL_INSTANT), Calendar.getInstance(TimeZone.getTimeZone(ZoneOffset.UTC)));
         insert.execute();
       }
 

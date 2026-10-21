@@ -135,28 +135,17 @@ public class PostgresCatalog {
   private static final String PG_CATALOG_SCHEMA = "pg_catalog";
 
   /**
-   * The relations a driver joins to {@code pg_type} to find out what a type is: where it lives, what it is an array or a
-   * composite of, what its values are. {@code pg_range} and {@code pg_enum} are among them though they are not modelled.
-   */
-  private static final Set<String> TYPE_RESOLUTION_RELATIONS = Set.of("pg_type", "pg_namespace", "pg_class", "pg_attribute",
-      "pg_range", "pg_enum");
-
-  /** The aggregates that make a type lookup a query whose one row an empty answer would lose (see isTypeResolutionProbe). */
-  private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or", "string_agg",
-      "array_agg");
-
-  /**
    * The relations a statement reads by joining their rows (issue #10473), because it reads one of them twice or because their
    * rows are not the ones of a table or a column. A statement naming any of them is answered by {@link #resolveJoined}; a type
    * the user called one of these names is theirs, as it is for every relation this catalog does not model.
    */
   private static final Set<String> JOINED_RELATIONS = Set.of("pg_index", "pg_indexes", "pg_constraint", "pg_inherits", "pg_policy",
-      "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace",
+      "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum",
       "information_schema.table_constraints", "information_schema.key_column_usage");
 
   /** The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema. */
   private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
-      "pg_publication_rel", "pg_publication_namespace");
+      "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum");
 
   /**
    * A catalog query that would spend more work than this server gives one statement - a client regular expression
@@ -362,6 +351,11 @@ public class PostgresCatalog {
         "pubtruncate", "pubviaroot");
     relation("pg_publication_rel", null, "oid", "prpubid", "prrelid", "prqual", "prattrs");
     relation("pg_publication_namespace", null, "oid", "pnpubid", "pnnspid");
+    // The types a driver asks about besides the built-in ones: a range of another type, and an enumeration with its labels. The types
+    // this protocol produces are none of them, so these have no rows, which is what a driver loading every type up front joins them for.
+    relation("pg_range", null, "rngtypid", "rngsubtype", "rngmultitypid", "rngcollation", "rngsubopc", "rngcanonical",
+        "rngsubdiff");
+    relation("pg_enum", null, "oid", "enumtypid", "enumsortorder", "enumlabel");
   }
 
   private PostgresCatalog() {
@@ -624,7 +618,7 @@ public class PostgresCatalog {
 
     if (shadowedByUserType(from, context))
       return null;
-    if (readsJoinedRelation(from))
+    if (readsJoinedRelation(statement, from, nested))
       return resolveJoined(statement, from, context, outer);
 
     final Map<String, Collection<String>> columnsByRelation = new LinkedHashMap<>();
@@ -651,9 +645,14 @@ public class PostgresCatalog {
     } else {
       Family family = null;
       for (final FromEntry entry : from) {
+        if (entry.function != null)
+          // A table function is read only by the join path (readsJoinedRelation), which did not take this statement: it reads a
+          // relation this catalog does not model, so it is a catalog query that cannot be answered only when it names one
+          return namesAnEmulatedRelation(tokens) ? DECLINED : null;
+
         if (entry.derived != null)
-          // A derived table joined to something else: more than one level of query planning, which is past
-          // what a catalog emulation should be pretending to do.
+          // A derived table joined to something else is read by the join path (readsJoinedRelation); what is left here is one
+          // that path did not take, which is past what a catalog emulation should be pretending to do.
           return DECLINED;
 
         if (!RELATIONS.containsKey(entry.relation)) {
@@ -773,15 +772,38 @@ public class PostgresCatalog {
     return false;
   }
 
-  /** Whether the statement reads a relation by joining it, and every relation it reads is one this catalog models. */
-  private static boolean readsJoinedRelation(final List<FromEntry> from) {
+  /**
+   * Whether the statement is answered by joining the rows of its FROM entries ({@link #resolveJoined}), and every relation it reads
+   * is one this catalog models. It is, when it reads:
+   * <ul>
+   * <li>a relation of {@link #JOINED_RELATIONS};</li>
+   * <li>a table function ({@code generate_series}, {@code unnest}), or a derived table that is joined to something else or has an
+   * alias list for its columns - the shapes a driver's type lookup is written with (issue #10495);</li>
+   * <li>one relation through two aliases that are not the right side of an outer join, which the one-row-per-entity model cannot
+   * represent: {@code pg_type t JOIN pg_type arr ON arr.oid = t.typarray}.</li>
+   * </ul>
+   * The last two are the statements the other path declines, so what that path answers is answered as it was. A statement that
+   * reads no emulated relation at all is the join path's only when {@code nested}: a derived table or a sub-select of a catalog
+   * query, whose rows come from a table function.
+   */
+  private static boolean readsJoinedRelation(final Statement statement, final List<FromEntry> from, final boolean nested) {
     boolean joined = false;
+    boolean modelled = false;
     for (final FromEntry entry : from) {
-      if (entry.derived != null || !RELATIONS.containsKey(entry.relation))
+      if (entry.function != null)
+        joined = true;
+      else if (entry.derived != null)
+        joined |= from.size() > 1 || entry.columnAliases != null;
+      else if (!RELATIONS.containsKey(entry.relation))
         return false;
-      joined |= JOINED_RELATIONS.contains(entry.relation);
+      else {
+        modelled = true;
+        joined |= JOINED_RELATIONS.contains(entry.relation);
+      }
     }
-    return joined;
+    if (!joined)
+      joined = secondAliasesRead(statement, from) == null;
+    return joined && (modelled || nested);
   }
 
   /**
@@ -798,18 +820,29 @@ public class PostgresCatalog {
       final RowResolver outer) {
     final int size = from.size();
 
+    // What each entry reads, built once: the rows of a relation, or of a derived table or a table function
+    final JoinedEntry[] entries = new JoinedEntry[size];
+    for (int i = 0; i < size; i++) {
+      entries[i] = joinedEntry(from.get(i), from, context, outer);
+      if (entries[i] == null)
+        return DECLINED;
+    }
+
     final Map<String, Collection<String>> columnsByRelation = new LinkedHashMap<>();
     // the rows of a type the catalog only has a fixed set of are a real subset a filter selects, see resolveNested
     boolean tolerant = true;
     boolean neverHasRows = false;
-    for (final FromEntry entry : from) {
-      columnsByRelation.put(entry.relation, RELATIONS.get(entry.relation));
-      tolerant &= FAMILIES.get(entry.relation) != Family.TYPES;
-      neverHasRows |= NEVER_HAVE_ROWS.contains(entry.relation) && entry.join != Join.LEFT;
+    for (int i = 0; i < size; i++) {
+      final FromEntry entry = from.get(i);
+      columnsByRelation.put(entry.relation, entries[i].columns());
+      if (entry.derived == null && entry.function == null) {
+        tolerant &= FAMILIES.get(entry.relation) != Family.TYPES;
+        neverHasRows |= NEVER_HAVE_ROWS.contains(entry.relation) && entry.join != Join.LEFT;
+      }
     }
 
     final Projection projection = parseProjection(statement.projection, from, columnsByRelation);
-    if (projection == null)
+    if (projection == null || readsMergedColumns(statement, from))
       return DECLINED;
 
     // The key each entry's columns are kept under in a row, so that two entries naming one relation read two rows
@@ -821,22 +854,27 @@ public class PostgresCatalog {
     // The entry an unqualified name belongs to: the first with such a column, as the resolver reads it
     final Map<String, Integer> owners = new HashMap<>();
     for (int i = 0; i < size; i++)
-      for (final String column : RELATIONS.get(from.get(i).relation))
+      for (final String column : entries[i].columns())
         owners.putIfAbsent(column.toLowerCase(Locale.ENGLISH), i);
 
     final List<PostgresCatalogExpression> where = new ArrayList<>();
     if (!readConjuncts(statement.where, where, tolerant))
       return DECLINED;
     final List<List<PostgresCatalogExpression>> matching = new ArrayList<>(size);
-    for (final FromEntry entry : from) {
+    for (int i = 0; i < size; i++) {
+      final FromEntry entry = from.get(i);
       final List<PostgresCatalogExpression> own = new ArrayList<>();
       matching.add(own);
       if (entry.join == Join.RIGHT || entry.join == Join.FULL)
         return DECLINED;
-      if (entry.on == null)
+      // USING (c) is the equality of the column with the first earlier entry that has it, written as an ON condition
+      final List<PostgresCatalogToken> condition = entry.using != null ? usingCondition(i, from, entries) : entry.on;
+      if (entry.using != null && condition == null)
+        return DECLINED;
+      if (condition == null)
         continue;
       // an inner join's condition filters like the WHERE clause; an outer join's decides what its entry matches
-      if (!readConjuncts(entry.on, entry.join == Join.LEFT ? own : where, tolerant))
+      if (!readConjuncts(condition, entry.join == Join.LEFT ? own : where, tolerant))
         return DECLINED;
     }
 
@@ -856,8 +894,7 @@ public class PostgresCatalog {
       final List<PostgresCatalogJoin.Access> accesses = new ArrayList<>();
       for (final PostgresCatalogExpression condition : candidates)
         accessesOf(condition, i, from, owners, accesses);
-      sources[i] = new PostgresCatalogJoin.Source(context.joinRows(entry.relation), nullRow(entry.relation), outerJoin,
-          matching.get(i), accesses);
+      sources[i] = new PostgresCatalogJoin.Source(entries[i].rows(), entries[i].nullRow(), outerJoin, matching.get(i), accesses);
     }
 
     final PostgresCatalogJoin.Evaluator evaluator = (expression, bound, nulled) -> {
@@ -886,6 +923,228 @@ public class PostgresCatalog {
     }
 
     return finish(statement, projection, surviving, from, context, columnsByRelation, tolerant, outer, neverHasRows);
+  }
+
+  /**
+   * What a join reads from one FROM entry.
+   *
+   * @param columns the names of its columns, in the order a {@code *} lists them
+   * @param rows    the rows it can be bound to, one map of its columns each
+   * @param nullRow what it reads when an outer join matched nothing: the same columns, all NULL
+   */
+  private record JoinedEntry(Collection<String> columns, List<Map<String, Object>> rows, Map<String, Object> nullRow) {
+  }
+
+  /** The rows of a FROM entry: those of the relation, the answer of the derived table, or the rows the table function produces. */
+  private static JoinedEntry joinedEntry(final FromEntry entry, final List<FromEntry> from, final Context context,
+      final RowResolver outer) {
+    if (entry.function != null)
+      return tableFunction(entry, from, context, outer);
+    if (entry.derived != null)
+      return derivedTable(entry, context, outer);
+    return new JoinedEntry(RELATIONS.get(entry.relation), context.joinRows(entry.relation), nullRow(entry.relation));
+  }
+
+  /**
+   * A derived table joined to other entries: the inner SELECT is the catalog query and its answer is the relation, its columns named
+   * as the alias list says, else as the SELECT announces them. It is read whole, once, and sees no earlier entry of the FROM clause
+   * (that would be a LATERAL join); the statement around it is the one it may be correlated to.
+   *
+   * @return null when the statement cannot be answered: the inner SELECT could not be, the derived table has no alias (PostgreSQL
+   * demands one), or the alias list names more columns than it has
+   */
+  private static JoinedEntry derivedTable(final FromEntry entry, final Context context, final RowResolver outer) {
+    if (entry.alias == null)
+      return null;
+    final Answer inner = resolveStatement(entry.derived, context, outer, true);
+    if (inner == null || inner.rows == null)
+      return null;
+
+    final List<String> announced = new ArrayList<>(inner.columns.keySet());
+    final List<String> names = new ArrayList<>(announced);
+    if (entry.columnAliases != null) {
+      if (entry.columnAliases.size() > names.size())
+        return null;
+      for (int i = 0; i < entry.columnAliases.size(); i++)
+        names.set(i, entry.columnAliases.get(i));
+    }
+
+    final List<Map<String, Object>> rows = new ArrayList<>(inner.rows.size());
+    for (final Map<String, Object> innerRow : inner.rows) {
+      final Map<String, Object> row = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+      for (int i = 0; i < names.size(); i++)
+        row.put(names.get(i), innerRow.get(announced.get(i)));
+      rows.add(row);
+    }
+    return new JoinedEntry(names, rows, nullColumns(names));
+  }
+
+  /**
+   * A table function in FROM: {@code generate_series(start, stop [, step])} over integers and {@code unnest(array)}, each a relation
+   * of one column, named by the alias list ({@code AS s(r)}), else after the alias, else after the function, as PostgreSQL names it.
+   * The arguments are evaluated once, with no earlier entry of the FROM clause in sight (an implicit LATERAL join is not read); an
+   * argument this catalog cannot evaluate, a function it does not know, and a series PostgreSQL itself refuses (a step of zero)
+   * decline the statement. A series is charged to the work budget before it is built, so that a statement cannot ask for a billion
+   * rows.
+   *
+   * @return null when the statement cannot be answered
+   */
+  private static JoinedEntry tableFunction(final FromEntry entry, final List<FromEntry> from, final Context context,
+      final RowResolver outer) {
+    final List<List<PostgresCatalogToken>> argumentTokens = splitTopLevel(entry.functionArguments);
+    if (argumentTokens == null)
+      return null;
+
+    final RowResolver resolver = new RowResolver(new Row(), null, from, context, outer);
+    final List<Object> arguments = new ArrayList<>(argumentTokens.size());
+    for (final List<PostgresCatalogToken> tokens : argumentTokens) {
+      final PostgresCatalogExpression expression = tokens.isEmpty() ? null : PostgresCatalogExpression.parse(tokens);
+      if (expression == null)
+        return null;
+      final Object value = expression.evaluate(resolver);
+      if (value == PostgresCatalogExpression.UNKNOWN)
+        return null;
+      arguments.add(value);
+    }
+
+    final List<Object> elements = switch (entry.function) {
+      case "generate_series" -> generateSeries(arguments, context);
+      case "unnest" -> arguments.size() == 1 ? unnest(arguments.get(0)) : null;
+      default -> null;
+    };
+    if (elements == null)
+      return null;
+
+    if (entry.columnAliases != null && entry.columnAliases.size() != 1)
+      return null;
+    final String column = entry.columnAliases != null ? entry.columnAliases.get(0) : entry.alias;
+    final List<Map<String, Object>> rows = new ArrayList<>(elements.size());
+    for (final Object element : elements) {
+      final Map<String, Object> row = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+      row.put(column, element);
+      rows.add(row);
+    }
+    return new JoinedEntry(List.of(column), rows, nullColumns(List.of(column)));
+  }
+
+  /**
+   * {@code generate_series} over integers: the values from {@code start} to {@code stop} by {@code step} (1 by default), none when
+   * the step does not lead from one to the other, and none for a NULL argument, as the function is strict.
+   *
+   * @return null for what PostgreSQL refuses (a step of zero) or this catalog does not read (a value that is no integer)
+   */
+  private static List<Object> generateSeries(final List<Object> arguments, final Context context) {
+    if (arguments.size() < 2 || arguments.size() > 3)
+      return null;
+    for (final Object argument : arguments)
+      if (argument != null && !(argument instanceof Long || argument instanceof Integer || argument instanceof Short
+          || argument instanceof Byte))
+        return null;
+    if (arguments.contains(null))
+      return new ArrayList<>();
+
+    final long start = ((Number) arguments.get(0)).longValue();
+    final long stop = ((Number) arguments.get(1)).longValue();
+    final long step = arguments.size() == 3 ? ((Number) arguments.get(2)).longValue() : 1L;
+    // a step of zero is an error in PostgreSQL; the one of the smallest long has no absolute value to divide the distance by
+    if (step == 0L || step == Long.MIN_VALUE)
+      return null;
+    if (step > 0L ? start > stop : start < stop)
+      return new ArrayList<>();
+
+    // how many values: charged before they are built, and an overflow of the distance is more than any budget
+    long count;
+    try {
+      count = Math.addExact(Math.subtractExact(step > 0L ? stop : start, step > 0L ? start : stop) / Math.abs(step), 1L);
+    } catch (final ArithmeticException e) {
+      count = Long.MAX_VALUE;
+    }
+    context.charge((int) Math.min(count, Integer.MAX_VALUE));
+
+    final List<Object> values = new ArrayList<>((int) count);
+    long value = start;
+    for (long i = 0; i < count; i++) {
+      values.add(value);
+      value += step;
+    }
+    return values;
+  }
+
+  /** {@code unnest(array)}: the elements of an array, none for a NULL one; null when the argument is no array this catalog reads. */
+  private static List<Object> unnest(final Object array) {
+    if (array == null)
+      return new ArrayList<>();
+    return array instanceof List<?> list ? new ArrayList<>(list) : null;
+  }
+
+  private static Map<String, Object> nullColumns(final Collection<String> names) {
+    final Map<String, Object> columns = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    for (final String name : names)
+      columns.put(name, null);
+    return columns;
+  }
+
+  /**
+   * The condition {@code USING (a, b)} stands for, as the tokens of an ON clause: each column of the entry equals the same column of
+   * the first earlier entry that has it.
+   *
+   * @return null when the entry or every earlier one lacks a column it names, which PostgreSQL refuses
+   */
+  private static List<PostgresCatalogToken> usingCondition(final int index, final List<FromEntry> from,
+      final JoinedEntry[] entries) {
+    final List<PostgresCatalogToken> condition = new ArrayList<>();
+    for (final String column : from.get(index).using) {
+      if (!hasColumn(entries[index].columns(), column))
+        return null;
+      int left = -1;
+      for (int i = 0; i < index && left < 0; i++)
+        if (hasColumn(entries[i].columns(), column))
+          left = i;
+      if (left < 0)
+        return null;
+
+      if (!condition.isEmpty())
+        condition.add(PostgresCatalogToken.keyword("AND"));
+      addQualifiedColumn(condition, from.get(left), column);
+      condition.add(PostgresCatalogToken.symbol("="));
+      addQualifiedColumn(condition, from.get(index), column);
+    }
+    return condition;
+  }
+
+  private static void addQualifiedColumn(final List<PostgresCatalogToken> into, final FromEntry entry, final String column) {
+    // the name a column reference resolves the entry by: its alias, else its relation without the schema
+    final String qualifier = entry.alias != null ? entry.alias : entry.relation.substring(entry.relation.lastIndexOf('.') + 1);
+    into.add(PostgresCatalogToken.keyword(qualifier));
+    into.add(PostgresCatalogToken.symbol("."));
+    into.add(PostgresCatalogToken.keyword(column));
+  }
+
+  private static boolean hasColumn(final Collection<String> columns, final String name) {
+    for (final String column : columns)
+      if (column.equalsIgnoreCase(name))
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether the statement lists the columns of an entry joined with USING by a {@code *}: PostgreSQL merges the columns USING names
+   * into one, and this catalog lists the entries' own, so what such a list would answer is not what the client asked.
+   */
+  private static boolean readsMergedColumns(final Statement statement, final List<FromEntry> from) {
+    boolean merged = false;
+    for (final FromEntry entry : from)
+      merged |= entry.using != null;
+    if (!merged)
+      return false;
+
+    final List<List<PostgresCatalogToken>> items = splitTopLevel(statement.projection);
+    if (items == null)
+      return true;
+    for (final List<PostgresCatalogToken> item : items)
+      if (!item.isEmpty() && item.get(item.size() - 1).isSymbol("*") && (item.size() == 1 || item.size() == 3))
+        return true;
+    return false;
   }
 
   /** The index of the last FROM entry a condition reads, which is the level it can be evaluated at; the last entry when unknown. */
@@ -1102,38 +1361,6 @@ public class PostgresCatalog {
       if (!RELATIONS.containsKey(relation))
         return relation;
     return null;
-  }
-
-  /**
-   * Whether the query is a <b>type-resolution probe</b>: it reads {@code pg_type}, nothing outside
-   * {@link #TYPE_RESOLUTION_RELATIONS}, and no aggregate. This is the one place a declined catalog query keeps the empty answer
-   * instead of being refused (issue #10371), a deliberate compatibility shim and not a default.
-   * <p>
-   * What a probe asks is "which type is this name, or this OID?", at the moment a driver meets one it does not know: pgjdbc
-   * sends seven such lookups, with a derived table over {@code generate_series}, a second alias of {@code pg_type} and a
-   * correlated sub-select in them, shapes this catalog cannot evaluate. This server's {@code pg_type} is the closed set of types
-   * it can produce, which a driver already knows, so "no such type" is an answer the driver is built to handle - it falls back
-   * to the text form - where an error would fail {@code DatabaseMetaData.getTypeInfo()} and every call that meets a new OID. A
-   * count over the same relations is not a probe: an empty answer to it loses the one row PostgreSQL always sends.
-   * <p>
-   * The rule errs toward refusing, so a driver release that adds an aggregate or another relation to its type lookup would turn
-   * the call into an error rather than a wrong answer; {@code Issue10371UnmodelledRelationTest} pins the shapes of today's
-   * pgjdbc lookups and fails first.
-   */
-  public static boolean isTypeResolutionProbe(final String query) {
-    final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
-    if (tokens == null)
-      return false;
-
-    final Set<String> relations = catalogRelationsRead(tokens);
-    if (!relations.contains("pg_type") || !TYPE_RESOLUTION_RELATIONS.containsAll(relations))
-      return false;
-
-    for (int i = 0; i + 1 < tokens.size(); i++)
-      if (tokens.get(i).type == PostgresCatalogToken.Type.IDENTIFIER && tokens.get(i + 1).isSymbol("(")
-          && AGGREGATES.contains(tokens.get(i).text.toLowerCase(Locale.ENGLISH)))
-        return false;
-    return true;
   }
 
   /**
@@ -1670,6 +1897,8 @@ public class PostgresCatalog {
   private static List<Map<String, Object>> buildJoinRows(final String relation, final Context context) {
     return switch (relation) {
       case "pg_am" -> accessMethodRows();
+      case "pg_namespace" -> namespaceRows(context);
+      case "pg_range", "pg_enum" -> List.of();
       case "pg_index" -> indexRows(context);
       case "pg_indexes" -> indexListRows(context);
       case "pg_constraint" -> constraintRows(context);
@@ -1732,6 +1961,17 @@ public class PostgresCatalog {
       }
     }
     return rows;
+  }
+
+  /**
+   * {@code pg_namespace} as a join reads it: the catalog the types this protocol produces live in, which {@code pg_type.typnamespace}
+   * names, and the database's own schema. The other statements read the one row of the schema; a join reads the schemas a type can
+   * be in, so that {@code t.typnamespace = n.oid} finds the schema of every type a driver looks up (issue #10495).
+   */
+  private static List<Map<String, Object>> namespaceRows(final Context context) {
+    return List.of(
+        completeMap("pg_namespace", "oid", PostgresTypeCatalog.PG_CATALOG_OID, "nspname", PG_CATALOG_SCHEMA, "nspowner", OWNER_OID),
+        completeMap("pg_namespace", "oid", SCHEMA_OID, "nspname", context.schema(), "nspowner", OWNER_OID));
   }
 
   /** {@code pg_am}: the heap every type is stored in, and the families of index. */
@@ -2660,7 +2900,7 @@ public class PostgresCatalog {
       return switch (name) {
         case "current_schema", "current_database", "current_catalog" -> context.schema();
         case "current_user", "session_user", "user", "current_role" -> context.userName();
-        case "current_schemas" -> List.of(context.schema());
+        case "current_schemas" -> currentSchemas(arguments, context);
         case "version" -> "PostgreSQL " + PostgresNetworkExecutor.PG_SERVER_VERSION;
         case "pg_get_userbyid" -> context.userName();
         // Everything this catalog produces is visible to the connection that asked: there is one schema and
@@ -2688,6 +2928,21 @@ public class PostgresCatalog {
         case "pg_get_constraintdef" -> constraintDefinition(arguments);
         default -> PostgresCatalogExpression.UNKNOWN;
       };
+    }
+
+    /**
+     * {@code current_schemas(include_implicit)}: the schemas on the search path, which is the database's own and, when the argument
+     * is true, the catalog every connection searches first: the types this protocol produces live there, and a driver asks whether
+     * their schema is on the path to decide if it must qualify their names (pgjdbc's {@code n.nspname = ANY(current_schemas(true))}).
+     * NULL for a NULL argument, as the function is strict.
+     */
+    private static Object currentSchemas(final List<Object> arguments, final Context context) {
+      if (arguments.size() != 1 || arguments.get(0) == PostgresCatalogExpression.UNKNOWN)
+        return PostgresCatalogExpression.UNKNOWN;
+      if (arguments.get(0) == null)
+        return null;
+      return PostgresCatalogExpression.truth(arguments.get(0)) ? List.of(PG_CATALOG_SCHEMA, context.schema()) :
+          List.of(context.schema());
     }
 
     /**

@@ -76,7 +76,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     try {
       date = params.length > 0 && params[0] != null ?
           DateUtils.parse(value.toString(), params[0].toString()) :
-          DateUtils.parseDateTimeAsUtc(context.getDatabase(), value.toString());
+          DateUtils.parseDateTime(context.getDatabase(), value.toString());
     } catch (final DateTimeParseException e) {
       return null;
     }
