@@ -2031,8 +2031,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void appendSamples(final String typeName, final TimeSeriesRowSource source) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
     final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-    // THE CONSTRAINTS THE TYPE DECLARES HOLD FOR A PRIMITIVE SOURCE TOO (issue #10381)
-    TimeSeriesStorableRows.requireConstraints(database, tsType, source);
+    // A PRIMITIVE SOURCE IS HELD TO WHAT THE COLUMNS CAN STORE AND TO THE CONSTRAINTS THE TYPE DECLARES TOO: A TEXT OVER THE LIMIT
+    // FAILED INSIDE THE WORKER WITH THE WHOLE BATCH, UNSEEN (issues #10381, #10487)
+    TimeSeriesStorableRows.requireStorable(database, tsType, source);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);

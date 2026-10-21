@@ -22,10 +22,6 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-
 /**
  * Cypher split() function - splits a string by a delimiter.
  * Returns null if either string or delimiter is null (Cypher behavior).
@@ -62,51 +58,9 @@ public class CypherSplitFunction implements StatelessFunction {
     if (str == null || delimiter == null)
       return null;
 
-    // An empty delimiter splits the string into its individual characters (Neo4j/Memgraph semantics).
-    // Java's String.split("", -1) appends a spurious trailing empty string, so handle this case explicitly.
-    if (delimiter.isEmpty()) {
-      if (str.isEmpty())
-        return List.of("");
-      final List<String> characters = new ArrayList<>(str.length());
-      str.codePoints().forEach(cp -> characters.add(new String(Character.toChars(cp))));
-      return characters;
-    }
-
-    // The delimiter is a literal, so it is found with indexOf. String.split(Pattern.quote(delimiter), -1) compiled a
-    // regex on every call, once per row: a quoted pattern never takes String.split's fast path, not even for a
-    // one-character delimiter. The pieces are the ones that call returns - every occurrence, left to right and not
-    // overlapping, with the empty leading, inner and trailing pieces kept.
-    // indexOf compares UTF-16 units, the regex compares code points: an occurrence that starts or ends inside a
-    // surrogate pair of the string, which only a delimiter with a lone surrogate at that end can produce, is not one.
-    final boolean startsWithLowSurrogate = Character.isLowSurrogate(delimiter.charAt(0));
-    final boolean endsWithHighSurrogate = Character.isHighSurrogate(delimiter.charAt(delimiter.length() - 1));
-    final List<String> pieces = new ArrayList<>();
-    int from = 0;
-    int at = str.indexOf(delimiter);
-    while (at >= 0) {
-      final int end = at + delimiter.length();
-      if (splitsSurrogatePair(str, at, end, startsWithLowSurrogate, endsWithHighSurrogate)) {
-        at = str.indexOf(delimiter, at + 1);
-        continue;
-      }
-      pieces.add(str.substring(from, at));
-      from = end;
-      at = str.indexOf(delimiter, from);
-    }
-    pieces.add(str.substring(from));
-    return Collections.unmodifiableList(pieces);
-  }
-
-  /**
-   * Whether the occurrence {@code [at, end)} of the delimiter would fall inside a UTF-16 surrogate pair of {@code
-   * str}. A delimiter starting with a lone low surrogate can only do this at {@code at}, by matching the low half of
-   * a pair whose high half sits right before it; a delimiter ending with a lone high surrogate can only do this at
-   * {@code end}, by matching the high half of a pair whose low half sits right after it. Every character strictly
-   * between {@code at} and {@code end} belongs to the delimiter match itself, so no third case exists.
-   */
-  private static boolean splitsSurrogatePair(final String str, final int at, final int end, final boolean startsWithLowSurrogate,
-      final boolean endsWithHighSurrogate) {
-    return startsWithLowSurrogate && at > 0 && Character.isHighSurrogate(str.charAt(at - 1))
-        || endsWithHighSurrogate && end < str.length() && Character.isLowSurrogate(str.charAt(end));
+    // The one split of the engine, shared with the SQL split() method and function and with text.split() (issue #10485): an empty
+    // delimiter splits into characters (Neo4j/Memgraph semantics), any other is a literal found with indexOf rather than a regex
+    // compiled on every call, the empty pieces are kept, and a surrogate pair is never cut.
+    return CypherFunctionHelper.splitLiteral(str, delimiter);
   }
 }

@@ -29,6 +29,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteMutableVertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -83,7 +84,11 @@ class RemoteDateIT {
 
       database.begin();
       try (ResultSet resultSet = database.command("sql",  "INSERT INTO Order SET vstart = ?", vstart)) {
-        assertThat(resultSet.next().toJSON().getLong("vstart")).isEqualTo(DateUtils.dateTimeToTimestamp(vstart, ChronoUnit.MICROS));
+        // Issue #10486: a number in a record's JSON is epoch MILLISECONDS for every precision, so a DATETIME_MICROS column, which
+        // milliseconds would truncate, is written as the text of the value with all its digits, which fromJSON() reads back whole
+        final JSONObject json = resultSet.next().toJSON();
+        assertThat(json.getString("vstart")).isEqualTo(DateUtils.format(vstart, "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"));
+        assertThat(database.newDocument("Order").fromJSON(json).get("vstart")).isEqualTo(vstart);
       }
       try (ResultSet resultSet = database.query("sql", "select from Order")) {
         Result result = resultSet.next();
@@ -155,6 +160,55 @@ class RemoteDateIT {
         // Issue #4601: the DATE value must not be silently dropped.
         assertThat(result.<Object>getProperty("dateValue")).isNotNull();
         assertThat(result.<Object>getProperty("dateValue").toString()).startsWith("2026-06-12");
+      }
+    } finally {
+      arcadeDBServer.stop();
+    }
+  }
+
+  /**
+   * Issue #10486: the remote client sends a record as its {@code toJSON()}, which wrote a DATETIME_SECOND, DATETIME_MICROS and
+   * DATETIME_NANOS property as a count in the column's own unit while the server reads a number as epoch milliseconds, so a 2020
+   * timestamp was stored in 1970, in the year 51972 or in the year 50004715.
+   */
+  @Test
+  void dateTimePrecisionsWrittenThroughTheRemoteClient() {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+
+    final ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
+    arcadeDBServer.start();
+
+    try {
+      final Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
+      database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("TestPrecisions");
+        type.createProperty("millis", Type.DATETIME);
+        type.createProperty("seconds", Type.DATETIME_SECOND);
+        type.createProperty("micros", Type.DATETIME_MICROS);
+        type.createProperty("nanos", Type.DATETIME_NANOS);
+      });
+
+      final LocalDateTime millis = LocalDateTime.of(2020, 1, 2, 3, 4, 5, 123_000_000);
+      final LocalDateTime seconds = LocalDateTime.of(2020, 1, 2, 3, 4, 5);
+      final LocalDateTime micros = LocalDateTime.of(2020, 1, 2, 3, 4, 5, 123_456_000);
+      final LocalDateTime nanos = LocalDateTime.of(2020, 1, 2, 3, 4, 5, 123_456_789);
+
+      final int httpPort = arcadeDBServer.getHttpServer().getPort();
+      final RemoteDatabase remote = new RemoteDatabase("localhost", httpPort, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
+
+      remote.transaction(() -> remote.newDocument("TestPrecisions").set("millis", millis).set("seconds", seconds).set("micros", micros)
+          .set("nanos", nanos).save());
+
+      try (final ResultSet resultSet = database.query("sql", "select from TestPrecisions")) {
+        final Result stored = resultSet.next();
+        assertThat(stored.<Object>getProperty("millis")).isEqualTo(millis);
+        assertThat(stored.<Object>getProperty("seconds")).isEqualTo(seconds);
+        assertThat(stored.<Object>getProperty("micros")).isEqualTo(micros);
+        assertThat(stored.<Object>getProperty("nanos")).isEqualTo(nanos);
       }
     } finally {
       arcadeDBServer.stop();

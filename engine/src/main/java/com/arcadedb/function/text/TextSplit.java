@@ -18,10 +18,8 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.Arrays;
-import java.util.regex.Pattern;
 
 /**
  * text.split(string, delimiter) - Split string into list.
@@ -55,12 +53,9 @@ public class TextSplit extends AbstractTextFunction {
     if (str == null)
       return null;
 
+    // A missing or empty delimiter splits into individual characters. The one split of the engine (issue #10485), shared with
+    // the SQL method and the openCypher function: a pair is a character, never cut, and the empty pieces are kept
     final String delimiter = asString(args[1]);
-    if (delimiter == null || delimiter.isEmpty()) {
-      // Split into individual characters
-      return Arrays.asList(str.split(""));
-    }
-
-    return Arrays.asList(str.split(Pattern.quote(delimiter)));
+    return CypherFunctionHelper.splitLiteral(str, delimiter == null ? "" : delimiter);
   }
 }

@@ -90,17 +90,48 @@ public class TrimFunction implements StatelessFunction {
     throw FunctionArity.mismatch(getName(), "1 or 3 arguments", args.length);
   }
 
-  static String stripLeading(final String source, final String trimChars) {
+  /**
+   * Strips from the start of {@code source} every character found in {@code trimChars}. A character is a code point (issue
+   * #10484): a trim set holding U+1F600 does not match the high surrogate of U+1F601 nor the low surrogate of U+1F200, and the loop
+   * never stops between the two halves of a pair, so a lone surrogate is never returned for a whole character.
+   */
+  public static String stripLeading(final String source, final String trimChars) {
+    final int size = source.length();
     int start = 0;
-    while (start < source.length() && trimChars.indexOf(source.charAt(start)) >= 0)
-      start++;
-    return source.substring(start);
+    while (start < size) {
+      final int codePoint = source.codePointAt(start);
+      if (!containsCodePoint(trimChars, codePoint))
+        break;
+      start += Character.charCount(codePoint);
+    }
+    return start == 0 ? source : source.substring(start);
   }
 
-  static String stripTrailing(final String source, final String trimChars) {
+  /** {@link #stripLeading} from the end of {@code source}. */
+  public static String stripTrailing(final String source, final String trimChars) {
     int end = source.length();
-    while (end > 0 && trimChars.indexOf(source.charAt(end - 1)) >= 0)
-      end--;
-    return source.substring(0, end);
+    while (end > 0) {
+      final int codePoint = source.codePointBefore(end);
+      if (!containsCodePoint(trimChars, codePoint))
+        break;
+      end -= Character.charCount(codePoint);
+    }
+    return end == source.length() ? source : source.substring(0, end);
+  }
+
+  /**
+   * Whether {@code set} holds the character {@code codePoint}. A lone surrogate is a character of its own, so it matches a lone
+   * surrogate of the set and never half of a pair in it, which {@code String.indexOf(int)} would match.
+   */
+  private static boolean containsCodePoint(final String set, final int codePoint) {
+    if (codePoint < Character.MIN_SURROGATE || codePoint > Character.MAX_SURROGATE)
+      return set.indexOf(codePoint) >= 0;
+    for (int i = 0; i < set.length(); ) {
+      final int member = set.codePointAt(i);
+      if (member == codePoint)
+        return true;
+      i += Character.charCount(member);
+    }
+    return false;
   }
 }

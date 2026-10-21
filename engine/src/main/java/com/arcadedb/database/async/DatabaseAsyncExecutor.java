@@ -384,9 +384,11 @@ public interface DatabaseAsyncExecutor {
    * {@link com.arcadedb.engine.timeseries.TimeSeriesBatch} per call, which is what makes this path allocate
    * nothing per sample.
    * <p>
-   * A source holds values its columns can store by construction, so nothing is converted; the constraints the type declares
-   * (MANDATORY, NOTNULL, MIN, MAX, REGEXP) are checked against every row <b>before this method returns</b> (issue #10381), and a
-   * type that declares none pays no read of the source. A refused row refuses the whole source: nothing is appended.
+   * A source is not converted - its numeric and boolean cells are the ones the typed setters wrote - but it is held, <b>before this
+   * method returns</b>, to what its columns can store and to the constraints the type declares: a TAG or STRING text over the
+   * {@link com.arcadedb.engine.timeseries.TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes a row can hold (issue #10487, which failed
+   * inside the worker with the whole batch) and the constraints MANDATORY, NOTNULL, MIN, MAX and REGEXP (issue #10381). A type with
+   * no text column and no constraint pays no read of the source. A refused row refuses the whole source: nothing is appended.
    *
    * @param typeName The name of the TimeSeries type
    * @param source   The samples to append, owned by the executor until the task has run

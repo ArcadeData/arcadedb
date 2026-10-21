@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.text.TrimFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -71,7 +72,7 @@ public class CypherTrimFunction implements StatelessFunction {
         return null;
       if (trimChar.isEmpty())
         return source.strip();
-      return stripLeading(stripTrailing(source, trimChar), trimChar);
+      return TrimFunction.stripLeading(TrimFunction.stripTrailing(source, trimChar), trimChar);
     }
 
     if (args.length == 3) {
@@ -95,26 +96,12 @@ public class CypherTrimFunction implements StatelessFunction {
       }
 
       return switch (mode) {
-        case "LEADING" -> stripLeading(source, trimChar);
-        case "TRAILING" -> stripTrailing(source, trimChar);
-        default -> stripLeading(stripTrailing(source, trimChar), trimChar);
+        case "LEADING" -> TrimFunction.stripLeading(source, trimChar);
+        case "TRAILING" -> TrimFunction.stripTrailing(source, trimChar);
+        default -> TrimFunction.stripLeading(TrimFunction.stripTrailing(source, trimChar), trimChar);
       };
     }
 
     throw new CommandExecutionException("trim() and btrim() require 1, 2, or 3 arguments");
-  }
-
-  private static String stripLeading(final String source, final String trimChars) {
-    int start = 0;
-    while (start < source.length() && trimChars.indexOf(source.charAt(start)) >= 0)
-      start++;
-    return source.substring(start);
-  }
-
-  private static String stripTrailing(final String source, final String trimChars) {
-    int end = source.length();
-    while (end > 0 && trimChars.indexOf(source.charAt(end - 1)) >= 0)
-      end--;
-    return source.substring(0, end);
   }
 }
