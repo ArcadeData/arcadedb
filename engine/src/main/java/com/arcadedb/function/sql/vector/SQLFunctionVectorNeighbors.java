@@ -32,6 +32,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -49,13 +50,18 @@ import java.util.Set;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
+ * <p>
+ * The {@code rerank} option (issue #10514) is the number of candidates per requested neighbour that a PRODUCT index walks on
+ * its PQ codes and then scores again on the stored vectors; {@code 0} returns the PQ scores. It applies to PRODUCT indexes
+ * only, and is ignored for {@code groupBy} searches and for the other quantizations.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.neighbors";
 
-  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "where", "groupBy", "groupSize", "maxDistance");
+  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "where", "groupBy", "groupSize", "maxDistance",
+      "rerank");
 
   // Hard cap on the candidate pool the index is asked to materialize when grouping is enabled.
   // Prevents memory exhaustion on pathological combinations of `k` and `groupSize` (e.g. k=1000,
@@ -89,8 +95,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     // Optional 4th parameter. Either:
     //   - a number: efSearch (backward-compatible positional form)
-    //   - a map: options {efSearch, filter, where, groupBy, groupSize, maxDistance}
+    //   - a map: options {efSearch, filter, where, groupBy, groupSize, maxDistance, rerank}
     int efSearch = -1;
+    int rerank = -1;
     Set<RID> allowedRIDs = null;
     String groupBy = null;
     int groupSize = 1;
@@ -100,6 +107,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (params[3] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         efSearch = opts.getInt("efSearch", -1);
+        // `rerank` is the number of candidates per requested neighbour that a PRODUCT index scores again on the stored vectors
+        // after walking its graph on the PQ codes (issue #10514): absent is the default of the index, 0 keeps the PQ scores
+        rerank = opts.getInt("rerank", -1);
+        if (opts.get("rerank") != null && rerank < 0)
+          throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + rerank);
         // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of
         // listing every RID in scope up front as a `filter` subquery has to (issue #10169)
         allowedRIDs = RecordPredicateRidSet.of(opts.get("where"), parseRidFilter(opts.getList("filter"), NAME, context), NAME,
@@ -136,7 +148,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       // Assume it's just an index name
       final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
       if (directIndex instanceof TypeIndex typeIndex) {
-        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
+        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
       }
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a vector index (found: " + (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
@@ -168,12 +180,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // results consistent with the WHERE.
     allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
-    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
+    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
   }
 
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,
-      final int limit, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
-      final float maxDistance, final CommandContext context) {
+      final int limit, final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy,
+      final int groupSize, final float maxDistance, final CommandContext context) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0) {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -199,7 +211,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       return new ArrayList<>(0);
 
     // Search across all matching vector indexes and merge results
-    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
   }
 
   /**
@@ -229,7 +241,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * it positional for now to minimise the blast radius of the maxDistance / Tier 4 follow-ups.
    */
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
-      final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
       final float maxDistance, final CommandContext context) {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
@@ -258,11 +270,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // The grouped top-up reads the stale RIDs of a pass, not their count, so the pass's counter is a scratch one
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(limit, groupSize, MAX_FETCH_CANDIDATES,
-          (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch,
+          (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch, rerank,
               allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, guard, new int[1], staleRids, null));
 
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, allowedRIDs,
+        (fetchK, staleSkipped, saturated) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, rerank, allowedRIDs,
             null, groupSize, groupSize, maxDistance, context, guard, staleSkipped, null, saturated));
   }
 
@@ -275,8 +287,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * the top-up can tell a candidate deleted since the last pass from one it already met (issue #10002).
    */
   private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int fetchGroupSize,
-      final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
+      final int fetchK, final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy,
+      final int fetchGroupSize, final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
       final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
 
     final BasicDatabase db = context.getDatabase();
@@ -295,7 +307,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
       if (groupBy == null)
-        neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs, guard);
+        // A PRODUCT index walks its graph on the PQ codes and scores only the best candidates on the stored vectors, as BINARY
+        // does (issue #10514); `rerank` absent is the rerankOversample of the index
+        neighbors = lsmIndex.findNeighbors(queryVector, fetchK, efSearch, rerank, allowedRIDs, guard);
       else
         neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, fetchK, fetchGroupSize, efSearch, allowedRIDs,
             groupKeyResolver, guard);
@@ -447,6 +461,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public String getSyntax() {
     return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | "
         + "{ efSearch: <int>, filter: [<rid>, ...], where: { <property>: <value>, ... } | '<condition>', groupBy: <field>, "
-        + "groupSize: <int>, maxDistance: <float> }])";
+        + "groupSize: <int>, maxDistance: <float>, rerank: <int> }]); rerank: PRODUCT indexes only, "
+        + "ignored with groupBy and for other quantizations";
   }
 }

@@ -20,6 +20,7 @@ package com.arcadedb.query.select;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 
 import java.util.List;
 
@@ -43,6 +44,30 @@ public class SelectVectorBuilder {
 
   public SelectVectorBuilder approximate(final boolean approximate) {
     select.vectorApproximate = approximate;
+    return this;
+  }
+
+  /**
+   * Re-ranks the PQ search of a PRODUCT index on the stored vectors, with
+   * {@link LSMVectorIndex#DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} candidates per requested neighbour, and returns exact
+   * distances (issue #10514). It applies with {@link #approximate(boolean)} set and without it, where it overrides the index's
+   * {@code rerankOversample}; the cost is one record read per candidate.
+   */
+  public SelectVectorBuilder rerank() {
+    return rerank(LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE);
+  }
+
+  /**
+   * @param oversample candidates per requested neighbour to re-rank exactly on the stored vectors; {@code 0} returns the PQ
+   *                   scores as they are. When never called, {@code approximate(true)} returns the PQ scores and the exact
+   *                   search takes the index's {@code rerankOversample}
+   *
+   * @see #rerank()
+   */
+  public SelectVectorBuilder rerank(final int oversample) {
+    if (oversample < 0)
+      throw new IllegalArgumentException("oversample must be >= 0, got " + oversample);
+    select.vectorRerankOversample = oversample;
     return this;
   }
 

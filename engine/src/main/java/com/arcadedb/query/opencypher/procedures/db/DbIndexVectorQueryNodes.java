@@ -138,7 +138,9 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, -1, null, guard);
+      // The search vector.neighbors takes by default: a PRODUCT index walks on its PQ codes and re-ranks as its rerankOversample
+      // says (issue #10514), any other quantization walks exactly
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, -1, -1, null, guard);
       allNeighbors.addAll(neighbors);
       if (neighbors.size() >= fetchK)
         saturated[0] = true;

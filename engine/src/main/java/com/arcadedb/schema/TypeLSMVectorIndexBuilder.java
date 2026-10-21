@@ -20,9 +20,13 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+
+import java.util.logging.Level;
 
 /**
  * Builder class for lsm vector indexes.
@@ -330,6 +334,36 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   public TypeLSMVectorIndexBuilder withPQTrainingLimit(final int pqTrainingLimit) {
     vectorMetadata().setPQTrainingLimit(pqTrainingLimit);
     return this;
+  }
+
+  /**
+   * Stores the PQ codes of the neighbours inline in every node of the graph file (jvector's FusedPQ), PRODUCT only. Off by
+   * default: it makes the graph file several times larger (issue #10514).
+   */
+  public TypeLSMVectorIndexBuilder withFusedPQ(final boolean fusedPQ) {
+    vectorMetadata().fusedPQ = fusedPQ;
+    return this;
+  }
+
+  /**
+   * Sets the candidates per requested neighbour that a search of a PRODUCT index re-ranks on the stored vectors when the
+   * query does not say (issue #10514). The default is {@code LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE};
+   * 0 returns the PQ scores alone, without reading a stored vector.
+   */
+  public TypeLSMVectorIndexBuilder withRerankOversample(final int rerankOversample) {
+    vectorMetadata().setRerankOversample(rerankOversample);
+    return this;
+  }
+
+  @Override
+  public TypeIndex create() {
+    final LSMVectorIndexMetadata vectorMetadata = vectorMetadata();
+    // Said once, here, not once per bucket index; the statement is not refused, since existing DDL may already carry both settings (issue #10514)
+    if (vectorMetadata.fusedPQ && vectorMetadata.pqClusters != 256)
+      LogManager.instance().log(this, Level.WARNING,
+          "Index on '%s': fusedPQ is ignored because pqClusters is %d; FusedPQ needs 256 clusters, so the graph file is written without it",
+          vectorMetadata.typeName, vectorMetadata.pqClusters);
+    return super.create();
   }
 
   @Override
