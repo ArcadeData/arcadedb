@@ -159,7 +159,7 @@ class LockManagerSpinHandOffTest {
 
   /**
    * A resource held, on average, for longer than the spin budget makes its head waiters park at once: the hold time of
-   * the first owner (8 times the budget, so the moving average exceeds it) turns the spin off for the waiter that queues
+   * the first owner, a few times the budget, seeds the moving average and turns the spin off for the waiter that queues
    * after it. The first waiter, which queued before any history, spins and runs out, once.
    */
   @Test
@@ -183,8 +183,9 @@ class LockManagerSpinHandOffTest {
     b.start();
     awaitQueued("r", 1);
     awaitParked(b);
-    // Hold for well over 8 x the budget: one sample moves the average by 1/8 of it
-    Thread.sleep(TimeUnit.NANOSECONDS.toMillis(spin) * 8 + 200);
+    // Hold for a few times the budget, well under 8 x: the first sample seeds the average, where a 1/8 step from 0 would
+    // leave it under the budget and let c spin
+    Thread.sleep(TimeUnit.NANOSECONDS.toMillis(spin) * 2);
     lockManager.unlock("r", "holder");
     awaitOwner("r", "b");
 

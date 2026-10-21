@@ -138,7 +138,8 @@ public class LockManager<RESOURCE, REQUESTER> {
    * For the spin: {@code removed} is volatile so a spinning head sees a {@link #close} without the monitor;
    * {@code runningSinceNanos} is written by the owner itself, outside the monitor, once it runs (the unlock may come
    * from another thread, hence volatile); {@code averageHoldNanos}, guarded by the monitor, is the moving average of the
-   * hold time. A node lives only while its resource is held, so a new node has no history (average 0: the head spins).
+   * hold time, seeded by its first sample ({@code holdSampled}). A node lives only while its resource is held, so a new
+   * node has no history: until its first release, its head waiter spins.
    * The hold is tracked with the spin off too, for {@link #statsSnapshot()}.
    */
   private static final class ResourceLock<R> {
@@ -148,6 +149,7 @@ public class LockManager<RESOURCE, REQUESTER> {
     volatile boolean            removed;
     volatile long               runningSinceNanos;
     long                        averageHoldNanos;
+    boolean                     holdSampled;
   }
 
   /**
@@ -248,7 +250,7 @@ public class LockManager<RESOURCE, REQUESTER> {
           spin = spinNanos > 0 && rl.averageHoldNanos <= spinNanos && rl.queue.peekFirst() == waiter;
         }
 
-        if (spin && spinUntilGranted(rl, waiter, timeout > 0 ? deadlineNanos : 0L)) {
+        if (spin && spinUntilGranted(rl, waiter, timeout > 0, deadlineNanos)) {
           // Granted while spinning. 'granted' was read before 'removed', the order of the checks above: a close() that
           // lands after both reads is no different from one landing right after this method returned YES
           if (rl.removed)
@@ -278,11 +280,13 @@ public class LockManager<RESOURCE, REQUESTER> {
 
   /**
    * Spins until the waiter is handed the resource, the resource is closed, the spin budget or the caller's deadline
-   * ({@code deadlineNanos}, 0 = none) runs out, or the thread is interrupted. Returns true only when handed the resource.
+   * ({@code deadlineNanos}, only when {@code hasDeadline}) runs out, or the thread is interrupted. Returns true only when
+   * handed the resource.
    */
-  private boolean spinUntilGranted(final ResourceLock<REQUESTER> rl, final Waiter<REQUESTER> waiter, final long deadlineNanos) {
+  private boolean spinUntilGranted(final ResourceLock<REQUESTER> rl, final Waiter<REQUESTER> waiter, final boolean hasDeadline,
+      final long deadlineNanos) {
     long spinEnd = System.nanoTime() + spinNanos;
-    if (deadlineNanos != 0L && deadlineNanos - spinEnd < 0)
+    if (hasDeadline && deadlineNanos - spinEnd < 0)
       spinEnd = deadlineNanos;
 
     waiter.spinning = true;
@@ -334,9 +338,16 @@ public class LockManager<RESOURCE, REQUESTER> {
         throw new LockException(
             "Cannot unlock resource '" + resource + "' because owner '" + rl.owner + "' <> requester '" + requester + "'");
 
-      // Moving average of the hold time, which decides whether the head waiters spin
+      // Moving average of the hold time, which decides whether the head waiters spin. The first sample seeds it: a 1/8
+      // weight from 0 would let the heads of a resource held across an fsync spin through its first several hand-offs
       final long now = System.nanoTime();
-      rl.averageHoldNanos += (now - rl.runningSinceNanos - rl.averageHoldNanos) >> HOLD_AVERAGE_SHIFT;
+      final long held = now - rl.runningSinceNanos;
+      if (rl.holdSampled)
+        rl.averageHoldNanos += (held - rl.averageHoldNanos) >> HOLD_AVERAGE_SHIFT;
+      else {
+        rl.averageHoldNanos = held;
+        rl.holdSampled = true;
+      }
 
       // Hand off to the oldest waiter. The queue holds only live waiters (a waiter that gives up removes
       // itself under this same monitor), so the head is always a valid grantee.
