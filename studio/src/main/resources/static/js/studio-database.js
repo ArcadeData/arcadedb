@@ -1054,7 +1054,7 @@ function dropType(typeName) {
 
   globalConfirm(
     "Drop type",
-    "Are you sure you want to drop the type '" + escapeHtml(typeName) + "'?<br>WARNING: The operation cannot be undone.",
+    "Are you sure you want to drop the type<br><b>" + escapeHtml(typeName) + "</b>?<br>WARNING: The operation cannot be undone.",
     "warning",
     function () {
       globalPrompt(

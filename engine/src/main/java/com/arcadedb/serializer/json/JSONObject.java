@@ -135,31 +135,20 @@ public class JSONObject implements Map<String, Object> {
     if (name == null)
       throw new IllegalArgumentException("Property name is null");
 
-    if (value == null) {
-      object.add(name, NULL);
-    } else if (value instanceof JsonNull) {
-      object.add(name, NULL);
-    } else if (value instanceof JsonElement jsonElement) {
-      object.add(name, jsonElement);
-    } else if (value instanceof String string) {
-      put(name, string);
-    } else if (value instanceof Number number) {
-      put(name, number); // HANDLE CONVERSION OF NaN/INF
-    } else if (value instanceof Boolean bool) {
-      put(name, bool);
-    } else if (value instanceof Character character) {
-      put(name, character);
-    } else if (value instanceof JSONObject nObject) {
-      object.add(name, nObject.getInternal());
-    } else if (value instanceof JSONArray array) {
-      put(name, array.getInternal());
-    } else if (value instanceof Document doc) {
-      object.add(name, doc.toJSON(false).getInternal());
-    } else if (value instanceof String[] string1s) {
-      object.add(name, new JSONArray(string1s).getInternal());
-    } else if (value instanceof Object[] objects) {
-      object.add(name, new JSONArray(objects).getInternal());
-    } else if (value instanceof Iterable<?> iterable) {
+    switch (value) {
+    case null -> object.add(name, NULL);
+    case JsonNull jsonNull -> object.add(name, NULL);
+    case JsonElement jsonElement -> object.add(name, jsonElement);
+    case String string -> put(name, string);
+    case Number number -> put(name, number); // HANDLE CONVERSION OF NaN/INF
+    case Boolean bool -> put(name, bool);
+    case Character character -> put(name, character);
+    case JSONObject nObject -> object.add(name, nObject.getInternal());
+    case JSONArray array -> put(name, array.getInternal());
+    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
+    case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
+    case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
+    case Iterable<?> iterable -> {
       // RETRY UP TO 10 TIMES IN CASE OF CONCURRENT UPDATE
       for (int i = 0; i < 10; i++) {
         final JSONArray array = new JSONArray();
@@ -172,9 +161,9 @@ public class JSONObject implements Map<String, Object> {
           // RETRY
         }
       }
-    } else if (value instanceof Enum<?> enumValue) {
-      object.addProperty(name, enumValue.name());
-    } else if (value instanceof Date date) {
+    }
+    case Enum<?> enumValue -> object.addProperty(name, enumValue.name());
+    case Date date -> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name, date.getTime());
@@ -220,7 +209,7 @@ public class JSONObject implements Map<String, Object> {
     case Object o when o.getClass().isArray() -> object.add(name, primitiveArrayToElement(o));
     default ->
       // GENERIC CASE: TRANSFORM IT TO STRING
-      object.addProperty(name, value.toString());
+        object.addProperty(name, value.toString());
     }
     return this;
   }
@@ -839,31 +828,38 @@ public class JSONObject implements Map<String, Object> {
   private static JsonElement primitiveArrayToElement(final Object array) {
     // TYPED LOOPS FOR THE COMMON CASES (EMBEDDINGS, BINARY): NO REFLECTION AND NO TYPE SWITCH PER ELEMENT
     final JsonArray result;
-    if (array instanceof float[] floats) {
+    switch (array) {
+    case float[] floats -> {
       result = new JsonArray(floats.length);
       for (final float f : floats)
         result.add(Float.isFinite(f) ? new JsonPrimitive(f) : JsonNull.INSTANCE);
-    } else if (array instanceof double[] doubles) {
+    }
+    case double[] doubles -> {
       result = new JsonArray(doubles.length);
       for (final double d : doubles)
         result.add(Double.isFinite(d) ? new JsonPrimitive(d) : JsonNull.INSTANCE);
-    } else if (array instanceof int[] ints) {
+    }
+    case int[] ints -> {
       result = new JsonArray(ints.length);
       for (final int i : ints)
         result.add(i);
-    } else if (array instanceof long[] longs) {
+    }
+    case long[] longs -> {
       result = new JsonArray(longs.length);
       for (final long l : longs)
         result.add(l);
-    } else if (array instanceof byte[] bytes) {
+    }
+    case byte[] bytes -> {
       result = new JsonArray(bytes.length);
       for (final byte b : bytes)
         result.add(b);
-    } else {
+    }
+    default -> {
       final int length = Array.getLength(array);
       result = new JsonArray(length);
       for (int i = 0; i < length; i++)
         result.add(objectToElement(Array.get(array, i)));
+    }
     }
     return result;
   }

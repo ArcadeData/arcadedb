@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -169,35 +168,6 @@ public class InExpression implements BooleanExpression {
       return null;
 
     return Boolean.FALSE;
-  }
-
-  /** The declared STRING property the left operand reads, when it is a property access on a record; otherwise null. */
-  private Property declaredStringProperty(final Result result) {
-    if (!(expression instanceof PropertyAccessExpression access) || result == null)
-      return null;
-    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
-    return record != null ? InlineProperties.declaredStringProperty(record, access.getPropertyName()) : null;
-  }
-
-  /**
-   * The long a text is the canonical spelling of ({@code "12"}, not {@code "012"}, {@code "+12"} or {@code "-0"}), as the text an
-   * integer is stored as; or the text itself, which no long equals, when it is not one. The stored text of an integer is
-   * {@code Long.toString} because {@code Type.convert} to {@code String} is {@code toString()} for a number: this inverts it.
-   */
-  private static Object canonicalLong(final String text) {
-    // Only digits after an optional sign are parsed, so an ordinary text never costs a thrown exception
-    final int start = text.startsWith("-") ? 1 : 0;
-    if (start == text.length() || text.length() - start > 19)
-      return text;
-    for (int i = start; i < text.length(); i++)
-      if (text.charAt(i) < '0' || text.charAt(i) > '9')
-        return text;
-    try {
-      final long parsed = Long.parseLong(text);
-      return Long.toString(parsed).equals(text) ? parsed : text;
-    } catch (final NumberFormatException e) {
-      return text;
-    }
   }
 
   /**

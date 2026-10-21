@@ -39,6 +39,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -130,14 +131,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
-    if (arg == null)
-      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-    if (arg instanceof Vertex)
-      return (Vertex) arg;
-    if (arg instanceof Document && arg instanceof Vertex)
-      return (Vertex) arg;
-    throw new IllegalArgumentException(
-        getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
+    return switch (arg) {
+      case null -> throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+      case Vertex vertex -> vertex;
+      case Document doc when doc instanceof Vertex v -> v;
+      default -> throw new IllegalArgumentException(
+          getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
+    };
   }
 
   protected String extractString(final Object arg, final String paramName) {

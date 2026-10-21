@@ -88,6 +88,7 @@ function globalPrompt(title, bodyHtml, confirmText, callback) {
   body.innerHTML = bodyHtml || '';
 
   var confirmed = false;
+  var inputValues = {};
   footer.innerHTML =
     '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>' +
     '<button type="button" class="btn btn-primary" id="globalModalConfirmBtn">' + (confirmText || 'OK') + '</button>';
@@ -97,6 +98,10 @@ function globalPrompt(title, bodyHtml, confirmText, callback) {
   var confirmBtn = document.getElementById('globalModalConfirmBtn');
   function onConfirm() {
     confirmed = true;
+    // Capture input values before hiding the modal
+    var inputs = body.querySelectorAll('input, textarea');
+    for (var i = 0; i < inputs.length; i++)
+      if (inputs[i].id) inputValues[inputs[i].id] = inputs[i].value;
     modal.hide();
   }
   confirmBtn.addEventListener('click', onConfirm);
@@ -104,7 +109,7 @@ function globalPrompt(title, bodyHtml, confirmText, callback) {
   function onHidden() {
     el.removeEventListener('hidden.bs.modal', onHidden);
     confirmBtn.removeEventListener('click', onConfirm);
-    if (confirmed && callback) callback();
+    if (confirmed && callback) callback(inputValues);
   }
   el.addEventListener('hidden.bs.modal', onHidden);
 

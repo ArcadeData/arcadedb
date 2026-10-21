@@ -273,7 +273,7 @@ public class Projection extends SimpleNode {
   }
 
   public boolean isExpand() {
-    return items != null && items.size() == 1 && items.get(0).isExpand();
+    return items != null && items.size() == 1 && items.getFirst().isExpand();
   }
 
   public void validate() {
@@ -288,7 +288,7 @@ public class Projection extends SimpleNode {
   public Projection getExpandContent() {
     final Projection result = new Projection();
     result.setItems(new ArrayList<>());
-    result.getItems().add(this.getItems().get(0).getExpandContent());
+    result.getItems().add(this.getItems().getFirst().getExpandContent());
     return result;
   }
 

@@ -195,7 +195,7 @@ public class ExpressionEvaluator {
     final ComparisonExpression comp = expression.getComparison();
     final Object leftValue = evaluate(comp.getLeft(), result, context);
     final Object rightValue = evaluate(comp.getRight(), result, context);
-    return comp.evaluateWithValues(leftValue, rightValue, result);
+    return comp.evaluateWithValues(leftValue, rightValue, result, context);
   }
 
   private Object evaluateBooleanWrapper(final BooleanWrapperExpression expression,
@@ -204,7 +204,7 @@ public class ExpressionEvaluator {
     if (boolExpr instanceof ComparisonExpression comp) {
       final Object leftValue = evaluate(comp.getLeft(), result, context);
       final Object rightValue = evaluate(comp.getRight(), result, context);
-      return comp.evaluateWithValues(leftValue, rightValue, result);
+      return comp.evaluateWithValues(leftValue, rightValue, result, context);
     }
     return expression.evaluate(result, context);
   }

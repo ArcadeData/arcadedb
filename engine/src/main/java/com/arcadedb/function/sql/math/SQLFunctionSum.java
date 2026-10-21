@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
@@ -29,8 +30,11 @@ import com.arcadedb.schema.Type;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionSum extends SQLFunctionRunningSumAbstract {
+public class SQLFunctionSum extends SQLAggregatedFunction {
   public static final String NAME = "sum";
+
+  // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
+  private final NumericSum sum = new NumericSum();
 
   public SQLFunctionSum() {
     super(NAME);
@@ -54,8 +58,17 @@ public class SQLFunctionSum extends SQLFunctionRunningSumAbstract {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      aggregate(self, params[0], context);
-      return getSum();
+      if (params[0] instanceof Number number)
+        sum(number);
+      else if (MultiValue.isMultiValue(params[0]))
+        for (final Object n : MultiValue.getMultiValueIterable(params[0]))
+          sum(requireNumericOrNull(n));
+      else
+        // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
+        // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
+        // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
+        sum(requireNumericOrNull(params[0]));
+      return sum.get();
     }
 
     // MULTI-ARG IS A PER-ROW COMPUTATION: SUM THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE
@@ -69,14 +82,21 @@ public class SQLFunctionSum extends SQLFunctionRunningSumAbstract {
     return rowSum;
   }
 
-  @Override
-  public void aggregate(final Object self, final Object value, final CommandContext context) {
-    accumulate(value);
+  protected void sum(final Number value) {
+    if (value != null)
+      sum.add(value);
   }
 
+  /**
+   * The per-row call of the aggregation: the cross-row form adds the value without boxing the running total that
+   * {@link #execute} would return (#9496).
+   */
   @Override
-  protected void accept(final Number value) {
-    addToSum(value);
+  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
+    if (params.length == 1 && params[0] instanceof Number number)
+      sum.add(number);
+    else
+      execute(self, null, null, params, context);
   }
 
   public String getSyntax() {
@@ -90,13 +110,13 @@ public class SQLFunctionSum extends SQLFunctionRunningSumAbstract {
 
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
-    addToSum((SQLFunctionSum) other);
+    sum(((SQLFunctionSum) other).sum.get());
   }
 
   @Override
   public Object getResult() {
     // SQL: SUM over an empty group or an all-NULL group is NULL, not 0 (issue #9351). Same answer as avg/min/max and
     // as the time-series push-down.
-    return getSum();
+    return sum.get();
   }
 }

@@ -268,7 +268,7 @@ public class FullTextSearch {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty())
       return new TempIndexCursor(List.of());
-    if (!bucketIndexes.get(0).isBM25())
+    if (!bucketIndexes.getFirst().isBM25())
       throw new IllegalArgumentException("searchSimple requires a BM25 full-text index");
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
@@ -286,7 +286,7 @@ public class FullTextSearch {
       final LinkedHashMap<String, Float> unionScoringTokens = new LinkedHashMap<>();
       final Map<Object[], Map<String, Float>> tokensByProperty = new IdentityHashMap<>();
       for (final Object[] propertyKey : perProperty) {
-        final Map<String, Float> propertyTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(propertyKey);
+        final Map<String, Float> propertyTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey);
         tokensByProperty.put(propertyKey, propertyTokens);
         for (final Map.Entry<String, Float> token : propertyTokens.entrySet())
           unionScoringTokens.merge(token.getKey(), token.getValue(), Math::max);
@@ -301,7 +301,7 @@ public class FullTextSearch {
           keys, effectiveLimit);
     }
 
-    final Map<String, Float> scoringTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(keys);
+    final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, scoringTokens, guard));
 
@@ -337,7 +337,7 @@ public class FullTextSearch {
    */
   public static JSONObject explainScoring(final TypeIndex typeIndex, final String queryText, final List<String> restrictedFields) {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
-    if (bucketIndexes.isEmpty() || !bucketIndexes.get(0).isBM25())
+    if (bucketIndexes.isEmpty() || !bucketIndexes.getFirst().isBM25())
       return null;
 
     final Map<String, Float> allTokens = collectScoringTokens(bucketIndexes, queryText, restrictedFields,
@@ -412,7 +412,7 @@ public class FullTextSearch {
 
   private static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Long> documentFrequencies) {
-    final LSMTreeFullTextIndex first = bucketIndexes.get(0);
+    final LSMTreeFullTextIndex first = bucketIndexes.getFirst();
     first.ensureTypeWideBM25Counters();
 
     // Both counters are clamped to the neutral values BM25 uses when no statistics are available. A type whose indexed

@@ -61,12 +61,12 @@ class CypherDropNamedConstraintTest extends TestHelper {
   @Test
   void dropNamedNotNullConstraintClearsTheMandatoryFlag() {
     command("CREATE CONSTRAINT cname FOR (n:T134) REQUIRE n.v IS NOT NULL");
-    assertThat(property("T134", "v").isMandatory()).isTrue();
+    assertThat(mandatory("T134", "v")).isTrue();
 
     final QueryStatistics stats = stats("DROP CONSTRAINT cname");
 
     assertThat(stats.getConstraintsRemoved()).isEqualTo(1);
-    assertThat(property("T134", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T134", "v")).isFalse();
     database.transaction(() -> database.newVertex("T134").save());
   }
 
@@ -74,13 +74,13 @@ class CypherDropNamedConstraintTest extends TestHelper {
   void dropNamedNodeKeyConstraintRemovesIndexAndMandatoryFlag() {
     command("CREATE CONSTRAINT cname FOR (n:T473) REQUIRE n.v IS NODE KEY");
     assertThat(uniqueIndexOn("T473", "v")).isTrue();
-    assertThat(property("T473", "v").isMandatory()).isTrue();
+    assertThat(mandatory("T473", "v")).isTrue();
 
     final QueryStatistics stats = stats("DROP CONSTRAINT cname");
 
     assertThat(stats.getConstraintsRemoved()).isEqualTo(1);
     assertThat(uniqueIndexOn("T473", "v")).isFalse();
-    assertThat(property("T473", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T473", "v")).isFalse();
   }
 
   @Test
@@ -146,11 +146,11 @@ class CypherDropNamedConstraintTest extends TestHelper {
 
     command("DROP CONSTRAINT nn");
     // the NODE KEY still requires the property
-    assertThat(property("T5", "v").isMandatory()).isTrue();
+    assertThat(mandatory("T5", "v")).isTrue();
     assertThat(uniqueIndexOn("T5", "v")).isTrue();
 
     command("DROP CONSTRAINT key");
-    assertThat(property("T5", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T5", "v")).isFalse();
     assertThat(uniqueIndexOn("T5", "v")).isFalse();
   }
 
@@ -161,11 +161,11 @@ class CypherDropNamedConstraintTest extends TestHelper {
 
     command("DROP CONSTRAINT u");
     assertThat(uniqueIndexOn("T6", "v")).isTrue();
-    assertThat(property("T6", "v").isMandatory()).isTrue();
+    assertThat(mandatory("T6", "v")).isTrue();
 
     command("DROP CONSTRAINT k");
     assertThat(uniqueIndexOn("T6", "v")).isFalse();
-    assertThat(property("T6", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T6", "v")).isFalse();
   }
 
   @Test
@@ -182,7 +182,7 @@ class CypherDropNamedConstraintTest extends TestHelper {
     // the unique index was already there, so the IF NOT EXISTS was a no-op that claimed no name
     assertThat(stats("DROP CONSTRAINT u IF EXISTS").getConstraintsRemoved()).isZero();
 
-    assertThat(property("T7", "v").isMandatory()).isTrue();
+    assertThat(mandatory("T7", "v")).isTrue();
     assertThat(uniqueIndexOn("T7", "w")).isTrue();
   }
 
@@ -194,7 +194,7 @@ class CypherDropNamedConstraintTest extends TestHelper {
 
     command("DROP CONSTRAINT cname");
     assertThat(uniqueIndexOn("T8", "v")).isFalse();
-    assertThat(property("T8", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T8", "v")).isFalse();
   }
 
   @Test
@@ -204,13 +204,13 @@ class CypherDropNamedConstraintTest extends TestHelper {
 
     command("DROP CONSTRAINT u");
     assertThat(uniqueIndexOn("T10", "a", "b")).isTrue();
-    assertThat(property("T10", "a").isMandatory()).isTrue();
-    assertThat(property("T10", "b").isMandatory()).isTrue();
+    assertThat(mandatory("T10", "a")).isTrue();
+    assertThat(mandatory("T10", "b")).isTrue();
 
     command("DROP CONSTRAINT k");
     assertThat(uniqueIndexOn("T10", "a", "b")).isFalse();
-    assertThat(property("T10", "a").isMandatory()).isFalse();
-    assertThat(property("T10", "b").isMandatory()).isFalse();
+    assertThat(mandatory("T10", "a")).isFalse();
+    assertThat(mandatory("T10", "b")).isFalse();
   }
 
   @Test
@@ -230,19 +230,20 @@ class CypherDropNamedConstraintTest extends TestHelper {
     database.command("sql", "DROP INDEX `" + indexName + "`");
 
     assertThat(stats("DROP CONSTRAINT cname").getConstraintsRemoved()).isEqualTo(1);
-    assertThat(property("T13", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T13", "v")).isFalse();
   }
 
   /**
-   * Pins the current behavior of a named IS TYPED constraint: the name is dropped, the declared type stays (#9706).
+   * A named IS TYPED constraint that declared the property lifts the type restriction when dropped (#9706): the property is
+   * undeclared again.
    */
   @Test
-  void dropNamedTypedConstraintKeepsTheDeclaredType() {
+  void dropNamedTypedConstraintLiftsTheDeclaredType() {
     command("CREATE CONSTRAINT t FOR (n:T14) REQUIRE n.v IS TYPED INTEGER");
     assertThat(property("T14", "v").getType()).isEqualTo(Type.LONG);
 
     assertThat(stats("DROP CONSTRAINT t").getConstraintsRemoved()).isEqualTo(1);
-    assertThat(property("T14", "v").getType()).isEqualTo(Type.LONG);
+    assertThat(database.getSchema().getType("T14").getPropertyIfExists("v")).isNull();
     assertThatThrownBy(() -> command("DROP CONSTRAINT t")).rootCause().isInstanceOf(SchemaException.class);
   }
 
@@ -255,7 +256,7 @@ class CypherDropNamedConstraintTest extends TestHelper {
 
     // nothing was created under that name, so there is nothing to drop and the flag stays
     assertThatThrownBy(() -> command("DROP CONSTRAINT nn")).rootCause().isInstanceOf(SchemaException.class);
-    assertThat(property("T15", "v").isMandatory()).isTrue();
+    assertThat(mandatory("T15", "v")).isTrue();
   }
 
   @Test
@@ -265,7 +266,7 @@ class CypherDropNamedConstraintTest extends TestHelper {
     database.getSchema().getType("T16").setCustomValue("cypher.constraint.b", "not json {");
 
     command("DROP CONSTRAINT a");
-    assertThat(property("T16", "v").isMandatory()).isFalse();
+    assertThat(mandatory("T16", "v")).isFalse();
 
     // the unreadable one can still be dropped by name; it owns nothing it can be trusted to undo
     command("DROP CONSTRAINT b");
@@ -303,6 +304,12 @@ class CypherDropNamedConstraintTest extends TestHelper {
     final Property p = database.getSchema().getType(typeName).getPropertyIfExists(propertyName);
     assertThat(p).isNotNull();
     return p;
+  }
+
+  /** Whether the property is declared MANDATORY; a property a drop left undeclared is not. */
+  private boolean mandatory(final String typeName, final String propertyName) {
+    final Property p = database.getSchema().getType(typeName).getPropertyIfExists(propertyName);
+    return p != null && p.isMandatory();
   }
 
   private boolean uniqueIndexOn(final String typeName, final String... propertyNames) {

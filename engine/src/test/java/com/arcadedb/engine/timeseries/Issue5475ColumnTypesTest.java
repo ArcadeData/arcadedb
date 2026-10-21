@@ -114,12 +114,12 @@ class Issue5475ColumnTypesTest extends TestHelper {
       final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType(typeName)).getEngine();
       engine.appendSamples(new long[] { BASE_TS }, new Object[] { value });
 
-      final Object mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0)[1];
+      final Object mutable = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst()[1];
       assertThat(mutable).as("%s from the mutable layer", declared).isInstanceOf(expected).isEqualTo(value);
 
       engine.compactAll();
 
-      final Object sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).get(0)[1];
+      final Object sealed = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).getFirst()[1];
       assertThat(sealed).as("%s from the sealed layer", declared).isInstanceOf(expected).isEqualTo(value);
     }
   }

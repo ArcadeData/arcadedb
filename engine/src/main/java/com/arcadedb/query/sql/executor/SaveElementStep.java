@@ -40,7 +40,6 @@ import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
 import java.time.Instant;

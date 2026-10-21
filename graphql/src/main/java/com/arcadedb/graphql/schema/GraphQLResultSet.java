@@ -229,7 +229,7 @@ public class GraphQLResultSet implements ResultSet {
       }
       return mapProjections(current, projections, type);
     } finally {
-      expansionPath.remove(expansionPath.size() - 1);
+      expansionPath.removeLast();
     }
   }
 
@@ -576,13 +576,14 @@ public class GraphQLResultSet implements ResultSet {
             subResults.add(item);
           }
           projectionValue = subResults;
-        } else {
+        }
+        case null, default -> {
           continue;
         }
-      } else if (projectionType != null) {
-        if (projectionValue instanceof Map m) {
-          projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
         }
+      } else if (projectionType != null) {
+        switch (projectionValue) {
+        case Map m -> projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
         // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
         // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
         case EmbeddedDocument emb -> projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
@@ -602,8 +603,10 @@ public class GraphQLResultSet implements ResultSet {
             subResults.add(item);
           }
           projectionValue = subResults;
-        } else {
+        }
+        case null, default -> {
           continue;
+        }
         }
       }
 

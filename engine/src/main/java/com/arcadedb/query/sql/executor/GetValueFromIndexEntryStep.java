@@ -414,6 +414,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         }
 
         while (!finished) {
+          // Every pass loads a record. The entries a chunk read ahead (pendingEntries) or a re-read found do not come through
+          // the index step's own check, so a terminated statement or one past its deadline is stopped here (#9893)
+          guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (rereadCandidates != null) {
@@ -625,7 +628,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     RID rid;
     while ((rid = rereadCandidates.pollFirst()) != null) {
-      guard.checkPeriodically(rereadCandidates.size());
+      // a record load each, I/O: checked on every one (#9893)
+      guard.check();
       final Result row = toResult(rid, context, false);
       if (noCommitSince(database, rereadSequence)) {
         if (row != null)
@@ -840,11 +844,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final PageManager pageManager = database.getPageManager();
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
-    // Each attempt reads and loads the whole lookup again: a statement terminated or past its deadline stops between them,
-    // and before the last one, which would hold every commit back while it runs (issue #9893)
-    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     try {
       for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
+        // a statement cancelled or past its deadline stops between attempts (#9893)
         guard.check();
         if ((pageManager.getPublicationSequence() & 1) != 0)
           // a commit is publishing: wait for it to let go of the lock instead of spending an attempt inside its window
@@ -859,6 +861,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       }
       LogManager.instance().log(this, Level.FINE, "Point lookup on index '%s' overlapped a commit %d times, reading it under the publication lock",
           null, indexStep.indexName, MAX_RECONCILE_ATTEMPTS);
+      // and not once the lock is held: every commit would wait for a statement that is going to fail anyway
       guard.check();
       final ArrayDeque<Result> rows = (ArrayDeque<Result>) pageManager.executeInLock(() -> {
         restartLookup(database, indexStep);
@@ -895,7 +898,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         continue;
       if (value instanceof RID rid)
         readBucketIds.add(rid.getBucketId());
-      guard.checkPeriodically(rows.size());
+      // a record load each, I/O: checked on every one, or a termination waits for the whole chunk (#9893)
+      guard.check();
       final Result row = toResult(value, context);
       if (row != null)
         rows.add(row);
@@ -942,9 +946,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       final WorkGuard guard) {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final PageManager pageManager = database.getPageManager();
-    // Every attempt reads the key and loads its records again, so a statement terminated or past its deadline is stopped
-    // between attempts, inside each one, and before the last, which runs under the publication lock (issue #9893)
-    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
       guard.check();
       final long before = pageManager.getPublicationSequence();
@@ -953,27 +954,24 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         pageManager.executeInLock(() -> null);
         continue;
       }
-      final List<Result> found = loadKeyAgain(database, indexStep, key, missing, served, context, guard);
+      final List<Result> found = loadEntryAgain(database, indexStep, key, missing, context, guard);
       if (pageManager.getPublicationSequence() == before)
         return found;
     }
     guard.check();
-    return (List<Result>) pageManager.executeInLock(() -> loadKeyAgain(database, indexStep, key, missing, served, context, guard));
+    return (List<Result>) pageManager.executeInLock(() -> loadEntryAgain(database, indexStep, key, missing, context, guard));
   }
 
-  private List<Result> loadKeyAgain(final DatabaseInternal database, final FetchFromIndexStep indexStep, final Object key,
-      final RID missing, final Set<RID> served, final CommandContext context, final WorkGuard guard) {
+  private List<Result> loadEntryAgain(final DatabaseInternal database, final FetchFromIndexStep indexStep, final Object key,
+      final RID missing, final CommandContext context, final WorkGuard guard) {
     // The streaming path does not note the buckets it reads (a set insert per row): the entry that needs reconciling names one
     readBucketIds.add(missing.getBucketId());
     unpinRepeatableReadPages(database, indexStep);
-    final List<Result> found = new ArrayList<>(2);
-    final List<RID> fresh = served == NOT_TRACKED ? null : indexStep.lookupKeyAgain(key, guard);
-    final List<RID> candidates = fresh != null ? fresh : List.of(missing);
-    for (final RID rid : candidates) {
-      if ((served != null && served != NOT_TRACKED && served.contains(rid)) || !passesBucketFilter(rid))
+    final List<Result> found = new ArrayList<>(1);
+    final List<RID> fresh = indexStep.isIndexUnique() ? indexStep.lookupKeyAgain(key, guard) : null;
+    for (final RID rid : fresh != null ? fresh : List.of(missing)) {
+      if (!passesBucketFilter(rid))
         continue;
-      // a record load each: as costly as a row, and checked like one
-      guard.check();
       final Result row = toResult(rid, context, false);
       if (row != null)
         found.add(row);

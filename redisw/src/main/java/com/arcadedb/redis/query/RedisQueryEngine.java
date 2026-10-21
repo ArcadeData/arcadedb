@@ -118,7 +118,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<String> parts = parseCommand(query);
       if (parts.isEmpty())
         return analyzed(true, CollectionUtils.singletonSet(OperationType.READ));
-      final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
+      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
       return analyzed(isIdempotentCommand(cmd), detectRedisOperationTypes(cmd));
     }
 
@@ -131,7 +131,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<String> parts = parseCommand(trimmed);
       if (parts.isEmpty())
         continue;
-      final String cmd = parts.get(0).toUpperCase(Locale.ENGLISH);
+      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
       idempotent &= isIdempotentCommand(cmd);
       ops.addAll(detectRedisOperationTypes(cmd));
     }

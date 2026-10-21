@@ -4172,7 +4172,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final String leader = raft != null ? raft.getLeaderForRefusal() : null;
     // Holds on this node until leadership moves: a local retry would only repeat it (issue #9995)
     return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-        leader != null ? leader : "");
+        leader != null ? leader : "", true);
   }
 
   /**

@@ -3492,10 +3492,9 @@ public class LocalSchema implements Schema {
         final LocalDocumentType type;
 
         final String kind = (String) schemaType.get("type");
-        if ("v".equals(kind)) {
-          type = new LocalVertexType(this, typeName);
-        } else if ("e".equals(kind)) {
-          type = new LocalEdgeType(this, typeName,
+        type = switch (kind) {
+          case "v" -> new LocalVertexType(this, typeName);
+          case "e" -> new LocalEdgeType(this, typeName,
               !schemaType.has("bidirectional") || schemaType.getBoolean("bidirectional"),
               schemaType.getBoolean("lightweight", false), schemaType.getBoolean("unique", false));
           case "d" -> new LocalDocumentType(this, typeName);
@@ -3509,23 +3508,8 @@ public class LocalSchema implements Schema {
               openTimeSeriesEngine(tsType);
             yield tsType;
           }
-          // Schedule automatic retention/downsampling if policies are defined. Kept OUTSIDE the try above and
-          // behind its own catch: this can only run once the engine is actually available, and a scheduling
-          // failure (the executor rejecting the task, e.g. mid-shutdown) is unrelated to whether the engine
-          // itself works - it must not be mistaken for one and must not escape to the outer catch in this
-          // method, which would abort every type the load has not reached yet for a reason that has nothing to
-          // do with any of them.
-          if (tsType.isEngineAvailable()) {
-            try {
-              getTimeSeriesMaintenanceScheduler().schedule(database, tsType);
-            } catch (final RejectedExecutionException e) {
-              LogManager.instance().log(this, Level.WARNING,
-                  "Could not schedule automatic TimeSeries maintenance for type '%s': %s", e, typeName, e.getMessage());
-            }
-          }
-          type = tsType;
-        } else
-          throw new ConfigurationException("Type '" + kind + "' is not supported");
+          case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");
+        };
 
         graph.put(typeName, type);
 

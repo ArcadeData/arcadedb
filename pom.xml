@@ -83,10 +83,11 @@
         <maven-versions-plugin.version>2.21.0</maven-versions-plugin.version>
         <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
         <maven-shade-plugin.version>3.6.2</maven-shade-plugin.version>
+        <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
         <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
-        <maven-central-publishing-plugin.version>0.12.0</maven-central-publishing-plugin.version>
+        <maven-central-publishing-plugin.version>0.10.0</maven-central-publishing-plugin.version>
         <license-maven-plugin.version>5.1.2</license-maven-plugin.version>
         <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
@@ -463,19 +464,6 @@
                             </excludes>
                         </licenseSet>
                     </licenseSets>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.sonatype.central</groupId>
-                <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>${maven-central-publishing-plugin.version}</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <publishingServerId>central</publishingServerId>
-                    <autoPublish>true</autoPublish>
-                    <excludeArtifacts>
-                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-e2e-ha,arcadedb-gremlin-it,arcadedb-gremlin-consumer-it,arcadedb-load-tests
-                    </excludeArtifacts>
                 </configuration>
             </plugin>
             <!-- #5651: this configuration only takes effect when the goal is invoked by its bare

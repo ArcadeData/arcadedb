@@ -490,18 +490,4 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     if (verdict.continues)
       nextFrontier.add(neighbor);
   }
-
-  /**
-   * The configuration map of a procedure that takes one: absent or null is the empty map APOC defaults it to, and
-   * anything else is refused - a string passed where the map goes used to be dropped silently, so the call walked the
-   * whole graph unfiltered.
-   */
-  @SuppressWarnings("unchecked")
-  protected Map<String, Object> extractConfig(final Object arg) {
-    if (arg == null)
-      return Map.of();
-    if (arg instanceof Map)
-      return (Map<String, Object>) arg;
-    throw new IllegalArgumentException(getName() + "(): config must be a map, got " + arg.getClass().getSimpleName());
-  }
 }

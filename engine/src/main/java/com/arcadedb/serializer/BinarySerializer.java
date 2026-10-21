@@ -1346,13 +1346,6 @@ public class BinarySerializer {
 
     header.putUnsignedNumber(validCount);
 
-    // Issue #9814: an EXTERNAL property INHERITED from a super type externalizes like one declared on the type itself - the
-    // subtype owns paired buckets for exactly that, and REBUILD TYPE moves its values there. Resolved through the super types
-    // only for a type that has an EXTERNAL property at all (hasExternalProperties() is polymorphic: it counts the super types'
-    // too, so a subtype that declares nothing itself is covered), so every other write keeps its single own-map lookup.
-    final boolean inheritedExternalPossible = !readOnly && documentType instanceof LocalDocumentType localType
-        && localType.hasExternalProperties();
-
     for (int i = 0; i < validCount; i++) {
       final String propertyName = validNames[i];
       Object value = validValues[i];

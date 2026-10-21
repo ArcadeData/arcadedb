@@ -77,7 +77,7 @@ public class MergeNode implements CypherProcedure {
   /**
    * Two, not three: APOC declares {@code onCreateProps} with a default, so a call that omits it is a call this
    * procedure has to accept (issue #8102), exactly as {@code refactor.mergeNodes} had to for its own trailing
-   * {@code config} (issue #7427). {@link #argOrDefault} supplies the absent map in its place.
+   * {@code config} (issue #7427). {@link #optionalMapArg} supplies the absent map in its place.
    */
   @Override
   public int getMinArgs() {
@@ -112,8 +112,8 @@ public class MergeNode implements CypherProcedure {
     // Extract arguments
     final List<String> labels = extractLabels(args[0]);
     final Map<String, Object> matchProps = extractMap(args[1], "matchProps");
-    final Map<String, Object> createProps = extractMap(argOrDefault(args, 2, Map.of()), "createProps");
-    final Map<String, Object> onMatchProps = extractMap(argOrDefault(args, 3, Map.of()), "onMatchProps");
+    final Map<String, Object> createProps = optionalMapArg(args, 2, "createProps");
+    final Map<String, Object> onMatchProps = optionalMapArg(args, 3, "onMatchProps");
 
     if (labels.isEmpty()) {
       throw new IllegalArgumentException(getName() + "(): at least one label is required");

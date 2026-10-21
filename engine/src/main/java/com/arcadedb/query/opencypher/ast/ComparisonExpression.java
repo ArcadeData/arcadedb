@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
@@ -121,7 +120,7 @@ public class ComparisonExpression implements BooleanExpression {
       rightValue = right.evaluate(result, context);
     }
 
-    return evaluateWithValues(leftValue, rightValue, result);
+    return evaluateWithValues(leftValue, rightValue, result, context);
   }
 
   /**
@@ -131,6 +130,11 @@ public class ComparisonExpression implements BooleanExpression {
    * property read is (#9701).
    */
   public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result) {
+    return evaluateWithValues(leftValue, rightValue, result, null);
+  }
+
+  public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result,
+      final CommandContext context) {
     final Object plain = compareValuesTernary(leftValue, rightValue);
 
     // A declaration defines the text form of its values: a property declared STRING holds the text of what was written into

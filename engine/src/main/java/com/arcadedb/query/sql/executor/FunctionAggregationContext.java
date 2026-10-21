@@ -90,10 +90,18 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
 
   @Override
   public void apply(final Result next, final CommandContext context) {
-    if (params.size() == 1) {
-      applyValue(params.getFirst().execute(next, context), next, context);
+    applyEvaluated(next, evaluateArguments(next, context), context);
+  }
+
+  /**
+   * {@link #apply} for a row whose arguments the caller evaluated already: the aggregation of a GROUP BY reads them off
+   * the projection that computed them (#9496). DISTINCT and the heap charge of a function that keeps every value apply as
+   * in {@link #apply}. Neither keeps {@code paramValues}, and a built-in aggregate does not either, so a caller feeding a
+   * built-in aggregate may pass the same array for every row.
+   */
+  public void applyEvaluated(final Result next, final Object[] paramValues, final CommandContext context) {
+    if (seen != null && !firstTimeSeen(paramValues))
       return;
-    }
 
     applyArguments(next, paramValues, context);
     // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
@@ -115,43 +123,6 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   /** Whether the function is fed every distinct value of the arguments once: {@code count(DISTINCT x)}. */
   public boolean isDistinct() {
     return seen != null;
-  }
-
-  /**
-   * Feeds one row to a single-argument aggregation whose argument the caller evaluated already: the aggregation of a
-   * GROUP BY reads it off the projection that computed it instead of evaluating it again (issue #9496). No array, no
-   * list: the function gets the value through {@link SQLAggregatedFunction#aggregate}.
-   */
-  public void applyValue(final Object value, final Result next, final CommandContext context) {
-    if (seen != null && !remember(normalizeForKey(value)))
-      return;
-
-    if (aggregateFunction instanceof SQLAggregatedFunction function)
-      function.aggregate(next, value, context);
-    else
-      aggregateFunction.execute(next, null, null, new Object[] { value }, context);
-    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
-    if (heapLimit != null && seen == null)
-      heapLimit.chargeElement(value, 0);
-  }
-
-  /**
-   * Feeds one row to the aggregation, with the values of its arguments evaluated already. The function may keep
-   * {@code paramValues}: the caller passes an array of its own for every row.
-   */
-  public void applyValues(final Object[] paramValues, final Result next, final CommandContext context) {
-    if (paramValues.length == 1) {
-      applyValue(paramValues[0], next, context);
-      return;
-    }
-
-    if (seen != null && !firstTimeSeen(paramValues))
-      return;
-
-    aggregateFunction.execute(next, null, null, paramValues, context);
-    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
-    if (heapLimit != null && seen == null)
-      heapLimit.chargeElement(paramValues.length == 1 ? paramValues[0] : new ArrayList<>(Arrays.asList(paramValues)), 0);
   }
 
   /**
@@ -187,14 +158,17 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
    * one value. A NULL is one more value, seen once.
    */
   private boolean firstTimeSeen(final Object[] paramValues) {
-    final Object[] key = new Object[paramValues.length];
-    for (int i = 0; i < key.length; i++)
-      key[i] = normalizeForKey(paramValues[i]);
-    return remember(Arrays.asList(key));
-  }
+    final Object element;
+    if (paramValues.length == 1) {
+      // the common count(DISTINCT x): no array, no wrapping list
+      element = normalizeForKey(paramValues[0]);
+    } else {
+      final Object[] key = new Object[paramValues.length];
+      for (int i = 0; i < key.length; i++)
+        key[i] = normalizeForKey(paramValues[i]);
+      element = Arrays.asList(key);
+    }
 
-  /** Whether the normalized {@code element} is seen for the first time, remembering it if it is. */
-  private boolean remember(final Object element) {
     if (!seen.add(element))
       return false;
 

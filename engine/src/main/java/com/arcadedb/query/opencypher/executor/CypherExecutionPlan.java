@@ -7005,7 +7005,7 @@ public class CypherExecutionPlan {
     // The edge count reads totals rather than walking from an anchor, so it has nothing to seed from a bound name
     CountOp op = correlation.isCorrelated() ? null : tryDetectEdgeCountStar(context.getDatabase());
     if (op == null)
-      op = tryDetectChainCountStar(context.getDatabase(), correlation);
+      op = tryDetectChainCountStar(context.getDatabase(), correlation, context);
     // Only the chain operator can start its walk from an anchor the outer row bound. The star, triangle, pair-join
     // and anti-join ones all derive their anchor set from a label, so a correlated body is left to the ordinary
     // pipeline rather than answered over every vertex carrying that label (issue #5758).
@@ -7241,11 +7241,12 @@ public class CypherExecutionPlan {
     return !node.hasLabels() && !node.hasProperties() && !node.hasDynamicLabels() && !node.hasWhereExpression();
   }
 
-  private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation) {
+  private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation,
+      final CommandContext context) {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    return tryDetectChainCountStar(db, correlation, statement.getMatchClauses().get(0));
+    return tryDetectChainCountStar(db, correlation, context, statement.getMatchClauses().get(0));
   }
 
   /**
@@ -7304,7 +7305,8 @@ public class CypherExecutionPlan {
   }
 
   /** The chain over one MATCH clause: the statement's own, or its patterns joined into one chain (issue #9599). */
-  private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation, final MatchClause matchClause) {
+  private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation, final CommandContext context,
+      final MatchClause matchClause) {
     if (matchClause.isOptional())
       return null;
 

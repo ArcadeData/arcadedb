@@ -79,8 +79,8 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
 
     // Both roles of every type must appear: a renderer that silently dropped a role would still parse.
     for (final Type type : STORABLE_TYPES) {
-      assertThat(statements.get(0)).contains("`tag_" + type.name() + "` " + type.name());
-      assertThat(statements.get(0)).contains("`field_" + type.name() + "` " + type.name());
+      assertThat(statements.getFirst()).contains("`tag_" + type.name() + "` " + type.name());
+      assertThat(statements.getFirst()).contains("`field_" + type.name() + "` " + type.name());
     }
   }
 
@@ -138,11 +138,11 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
         .toSQL();
 
     assertThat(statements).hasSize(1);
-    assertThat(statements.get(0))
+    assertThat(statements.getFirst())
         .startsWith("CREATE TIMESERIES TYPE `Tiered`")
         .endsWith(" DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS")
         .doesNotContain("ALTER");
-    assertParses(statements.get(0));
+    assertParses(statements.getFirst());
   }
 
   @Test
@@ -178,7 +178,7 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
 
   private String retentionClauseOf(final long retentionMs) {
     final String sql = builder("Retention" + retentionMs).withField("value", Type.DOUBLE).withRetention(retentionMs)
-        .toSQL().get(0);
+        .toSQL().getFirst();
     assertParses(sql);
     return sql.substring(sql.indexOf("RETENTION "));
   }
@@ -212,7 +212,7 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
         .withColumn(new ColumnDefinition("value", Type.DOUBLE, role, defaultCodec)).toSQL();
 
     assertThat(statements).hasSize(1);
-    assertParses(statements.get(0));
+    assertParses(statements.getFirst());
   }
 
   @Test
@@ -224,7 +224,7 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
 
   @Test
   void aBuilderThatDeclaresNoPrecisionRendersNoPrecisionClause() {
-    final String sql = builder("NoPrecision").withField("value", Type.DOUBLE).toSQL().get(0);
+    final String sql = builder("NoPrecision").withField("value", Type.DOUBLE).toSQL().getFirst();
     assertThat(sql).doesNotContain("PRECISION");
     assertParses(sql);
 
@@ -278,7 +278,7 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE V");
 
     final String injected = "Injected`; DROP TYPE `V";
-    final String sql = builder(injected).withField("value", Type.DOUBLE).toSQL().get(0);
+    final String sql = builder(injected).withField("value", Type.DOUBLE).toSQL().getFirst();
     assertParses(sql);
 
     database.command("sql", sql);
@@ -290,7 +290,7 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
   @Test
   void identifiersAreQuotedSoAKeywordNameStillParses() {
     final String sql = database.getSchema().buildTimeSeriesType().withName("select").withTimestamp("order")
-        .withField("limit", Type.DOUBLE).toSQL().get(0);
+        .withField("limit", Type.DOUBLE).toSQL().getFirst();
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `select` TIMESTAMP `order` FIELDS (`limit` DOUBLE)");
     assertParses(sql);
@@ -342,7 +342,7 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
     assertThat(created.getCompactionBucketIntervalMs()).isZero();
 
     final String sql = builder("ZeroDurationsSQL").withField("v", Type.DOUBLE)
-        .withRetention(0L).withCompactionBucketInterval(0L).toSQL().get(0);
+        .withRetention(0L).withCompactionBucketInterval(0L).toSQL().getFirst();
     assertThat(sql).doesNotContain("RETENTION").doesNotContain("COMPACTION_INTERVAL");
     assertParses(sql);
   }

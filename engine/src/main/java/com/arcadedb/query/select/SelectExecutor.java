@@ -429,7 +429,7 @@ public class SelectExecutor {
     else if (select.fromType != null)
       iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
-      iterator = select.database.iterateBucket(select.fromBuckets.get(0).getName());
+      iterator = select.database.iterateBucket(select.fromBuckets.getFirst().getName());
     else {
       final MultiIterator<? extends Identifiable> multiIterator = new MultiIterator<>();
       for (Bucket b : select.fromBuckets)
@@ -675,7 +675,7 @@ public class SelectExecutor {
     }
 
     final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
-        && select.orderBy.get(0).getFirst().equals(trailingProperty) && !SelectExecutionPlanner.holdsFoldedKeys(bestIndex);
+        && select.orderBy.getFirst().getFirst().equals(trailingProperty) && !SelectExecutionPlanner.holdsFoldedKeys(bestIndex);
 
     // A KEY SHORTER THAN THE INDEX'S FULL ARITY IS A PREFIX, NOT AN EXACT KEY: get() PERFORMS A SINGLE POSITIONAL
     // LOOKUP AND ONLY RETURNS EVERY MATCH WHEN THE KEY'S ARITY MATCHES THE INDEX'S OWN EXACTLY, SO A PREFIX MUST GO
@@ -868,7 +868,7 @@ public class SelectExecutor {
       return true;
     if (leaf == null || select.orderBy.size() != 1 || SelectExecutionPlanner.holdsFoldedKeys(leaf.index))
       return false;
-    final Pair<String, Boolean> orderBy = select.orderBy.get(0);
+    final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
     // UNCHECKED CAST IS SAFE: leaf CAME FROM soleExactLeaf(), WHICH ONLY EVER RETURNS A NODE WHOSE node.index IS
     // NON-null - AND isTheNodeFullyIndexed() ONLY EVER SETS node.index AFTER THIS EXACT SAME CAST ON node.left
     // ALREADY SUCCEEDED

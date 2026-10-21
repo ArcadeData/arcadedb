@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,7 +31,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.StringJoiner;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -302,10 +302,10 @@ class Issue10025PathFilterSyntaxTest {
     final List<String> paths = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
       while (rs.hasNext()) {
-        final Map<?, ?> path = (Map<?, ?>) rs.next().getProperty("path");
+        final TraversalPath path = rs.next().getProperty("path");
         final StringJoiner names = new StringJoiner(",");
-        for (final Object node : (List<?>) path.get("nodes"))
-          names.add(((Vertex) node).getString("name"));
+        for (final Vertex node : path.getVertices())
+          names.add(node.getString("name"));
         paths.add(names.toString());
       }
     }

@@ -199,6 +199,27 @@ public class AlterDatabaseStatement extends DDLStatement {
   }
 
   /**
+   * Stores the setting and applies its effect on this database. A side effect that fails puts the previous value back, so
+   * the configuration never names a setting this database is not running with. Runs inside
+   * {@link #changeSetting(DatabaseInternal, String, Runnable)}, under the lock the apply of a replicated change holds, so
+   * the value read back here is the one this change replaces (issue #9919).
+   */
+  private void putInForce(final DatabaseInternal db, final GlobalConfiguration cfg, final Object value,
+      final Class<?> resolvedClass) {
+    final Object previousValue = db.getConfiguration().hasValue(cfg.getKey()) ?
+        db.getConfiguration().getValue(cfg.getKey(), null) :
+        null;
+    db.getConfiguration().setValue(cfg, value);
+    try {
+      applyDatabaseSideEffect(db, cfg, resolvedClass);
+    } catch (final RuntimeException | Error e) {
+      if (db.getEmbedded() instanceof LocalDatabase local)
+        local.restoreSetting(cfg.getKey(), previousValue);
+      throw e;
+    }
+  }
+
+  /**
    * Stores a setting through {@code change}, capturing the value it replaced in the same step for the apply of a
    * replicated configuration change (issue #9919), see {@link LocalDatabase#changeSetting(String, Runnable)}. Every
    * database a statement runs against is a {@link LocalDatabase} or wraps one, which

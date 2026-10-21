@@ -161,13 +161,13 @@ class Issue9645TypedConstraintTypeDependentAttributesTest extends TestHelper {
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:W) REQUIRE n.d IS :: LOCAL DATETIME").close();
 
     final Property p = database.getSchema().getType("W").getProperty("d");
-    assertThat(p.getType()).isEqualTo(Type.DATETIME);
+    assertThat(p.getType()).isEqualTo(Type.DATETIME_NANOS);
     assertThat(p.getMin()).isEqualTo("2020-01-01");
     assertThat(p.getDefaultValue()).isNotNull();
 
     // the carried default gives the value the same default declared directly on a DATETIME gives
     database.command("sql", "CREATE VERTEX TYPE W2");
-    database.command("sql", "CREATE PROPERTY W2.d DATETIME (default '2021-06-01')");
+    database.command("sql", "CREATE PROPERTY W2.d DATETIME_NANOS (default '2021-06-01')");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO W SET other = 1").close();
       database.command("sql", "INSERT INTO W2 SET other = 1").close();

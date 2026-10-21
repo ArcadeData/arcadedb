@@ -86,7 +86,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final Map<String, Object> config = extractConfig(args[1]);
+    final Map<String, Object> config = optionalMapArg(args, 1, "config");
 
     final int minLevel = extractInt(config, "minLevel", 0);
     final int maxLevel = extractMaxLevel(config);

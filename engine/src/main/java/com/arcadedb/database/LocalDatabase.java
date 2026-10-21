@@ -3983,6 +3983,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (mode == ComponentFile.MODE.READ_WRITE)
           deleteOrphanSnapshotShadows();
 
+        // #8849: AN INDEX-COMPACTION TEMPORARY NEVER OUTLIVES THE PROCESS THAT BUILT IT, SO ONE FOUND AT OPEN IS AN
+        // ORPHAN. ONLY A READ_WRITE OPEN DELETES IT: THAT IS THE ONE THAT NOW HOLDS THE EXCLUSIVE LOCK ON database.lck
+        if (mode == ComponentFile.MODE.READ_WRITE)
+          deleteOrphanCompactionTemporaries();
+
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
         else

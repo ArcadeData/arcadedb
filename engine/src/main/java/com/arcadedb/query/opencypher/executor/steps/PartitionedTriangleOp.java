@@ -601,6 +601,12 @@ public final class PartitionedTriangleOp implements CountOp {
     }
   }
 
+  /** Whether {@code n}, reached by hop {@code h} of the chain, carries the label the pattern asks for there, if any. */
+  private boolean passesHopLabel(final Database db, final RID n, final int h) {
+    return nodeLabels == null || nodeLabels[h + 1] == null
+        || typeCarriesLabel(db.getSchema().getTypeByBucketId(n.getBucketId()), nodeLabels[h + 1]);
+  }
+
   /** The partitions of {@code v}, or null when its chain ends before reaching any. */
   private Partitions partitionsOf(final Database db, final Vertex v) {
     RID[] rids = { v.getIdentity() };
@@ -610,18 +616,33 @@ public final class PartitionedTriangleOp implements CountOp {
         // fast path: one vertex to expand, and when it has one neighbour that neighbour inherits its weight as it is
         final Vertex from = h == 0 ? v : db.lookupByRID(rids[0], true).asVertex();
         final Iterator<RID> neighbors = from.getConnectedVertexRIDs(partitionDirections[h], partitionEdgeTypes[h]).iterator();
-        if (!neighbors.hasNext())
+        RID first = null;
+        while (first == null && neighbors.hasNext()) {
+          final RID candidate = neighbors.next();
+          if (passesHopLabel(db, candidate, h))
+            first = candidate;
+        }
+        if (first == null)
           return null;
-        final RID first = neighbors.next();
-        if (!neighbors.hasNext()) {
+        RID second = null;
+        while (second == null && neighbors.hasNext()) {
+          final RID candidate = neighbors.next();
+          if (passesHopLabel(db, candidate, h))
+            second = candidate;
+        }
+        if (second == null) {
           rids = new RID[] { first };
           continue;
         }
         // several neighbours: every path is a match of its own, so a neighbour reached twice weighs twice
         final HashMap<RID, Long> next = new HashMap<>();
-        next.put(first, weights[0]);
-        while (neighbors.hasNext())
-          next.merge(neighbors.next(), weights[0], Long::sum);
+        next.merge(first, weights[0], Long::sum);
+        next.merge(second, weights[0], Long::sum);
+        while (neighbors.hasNext()) {
+          final RID n = neighbors.next();
+          if (passesHopLabel(db, n, h))
+            next.merge(n, weights[0], Long::sum);
+        }
         final int size = next.size();
         rids = new RID[size];
         weights = new long[size];
@@ -636,7 +657,8 @@ public final class PartitionedTriangleOp implements CountOp {
       final HashMap<RID, Long> next = new HashMap<>();
       for (int i = 0; i < rids.length; i++)
         for (final RID n : db.lookupByRID(rids[i], true).asVertex().getConnectedVertexRIDs(partitionDirections[h], partitionEdgeTypes[h]))
-          next.merge(n, weights[i], Long::sum);
+          if (passesHopLabel(db, n, h))
+            next.merge(n, weights[i], Long::sum);
       if (next.isEmpty())
         return null;
       final int size = next.size();

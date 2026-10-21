@@ -226,12 +226,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
-   * Looks the key of an entry this step returned up again, for {@link GetValueFromIndexEntryStep} to reconcile an entry
-   * whose record it could not load (#9369). Null when the key cannot be looked up as it is, in which case the caller keeps
-   * the entry dropped.
-   * <p>
-   * A key can hold any number of entries, so the walk checks {@code guard} as it goes, and a statement that was terminated
-   * or ran past its deadline is not reported as a failed re-read: its exception ends the statement (issue #9893).
+   * Looks the key of an entry this step returned up again, for {@link GetValueFromIndexEntryStep} to reconcile the entries
+   * whose record it could not serve (#9369, #9902). Null when the key cannot be looked up as it is, in which case the caller
+   * keeps those entries dropped. A cancelled statement or one past its deadline stops here, with the guard's exception (#9893):
+   * that is not a key that could not be read.
    */
   List<RID> lookupKeyAgain(final Object key, final WorkGuard guard) {
     if (index == null)
@@ -255,7 +253,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
       return rids;
     } catch (final TimeoutException | QueryTerminatedException e) {
-      // The statement is over, not the re-read: a fallback to the entry would carry on the work it was told to stop
       throw e;
     } catch (final RuntimeException e) {
       // The caller keeps the entries it has; say why a re-read was not possible rather than losing the cause
@@ -445,7 +442,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
           return;
         }
-        cursor = nextCursors.remove(0);
+        cursor = nextCursors.removeFirst();
       }
       try {
         while (cursor.hasNext()) {
@@ -875,7 +872,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
 
     if (nextCursors.size() > 0) {
-      cursor = nextCursors.remove(0);
+      cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
   }
@@ -1114,7 +1111,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       return true;
     if (!(condition instanceof AndBlock andBlock) || andBlock.getSubBlocks().isEmpty())
       return false;
-    final BooleanExpression last = andBlock.getSubBlocks().get(andBlock.getSubBlocks().size() - 1);
+    final BooleanExpression last = andBlock.getSubBlocks().getLast();
     if (last instanceof BetweenCondition)
       return true;
     if (!(last instanceof BinaryCondition binary))
@@ -1247,7 +1244,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
-    final Expression nextElementInKey = key.getExpressions().get(0);
+    final Expression nextElementInKey = key.getExpressions().getFirst();
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
     // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
@@ -1264,7 +1261,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // sitting in a later slot - on every one of `value`'s elements, which made this loop quadratic in the
       // element count (#6640: a 15,000-value IN() on an indexed property took ~10s here alone).
       final PCollection tail = key.copy();
-      tail.getExpressions().remove(0);
+      tail.getExpressions().removeFirst();
       for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
         final PCollection newHead = new PCollection();
         for (final Expression exp : head.getExpressions())

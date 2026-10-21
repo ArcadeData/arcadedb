@@ -632,43 +632,28 @@ public enum PostgresType {
       return PostgresType.BYTEA;
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
-      // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
-      // Byte element, and there is no int2[] entry to pair with a narrower answer. Only the primitive byte[]
-      // means BINARY (handled above); a Byte[] is an array of small integers.
-      if (val instanceof short[])
-        return PostgresType.ARRAY_INT;
-      else if (val instanceof Short[])
-        return PostgresType.ARRAY_INT;
-      else if (val instanceof Byte[])
-        return PostgresType.ARRAY_INT;
-      else if (val instanceof int[])
-        return PostgresType.ARRAY_INT;
-      else if (val instanceof Integer[])
-        return PostgresType.ARRAY_INT;
-      else if (val instanceof long[])
-        return PostgresType.ARRAY_LONG;
-      else if (val instanceof Long[])
-        return PostgresType.ARRAY_LONG;
-      else if (val instanceof double[])
-        return PostgresType.ARRAY_DOUBLE;
-      else if (val instanceof Double[])
-        return PostgresType.ARRAY_DOUBLE;
-      else if (val instanceof float[])
-        return PostgresType.ARRAY_REAL;
-      else if (val instanceof Float[])
-        return PostgresType.ARRAY_REAL;
-      else if (val instanceof boolean[])
-        return PostgresType.ARRAY_BOOLEAN;
-      else if (val instanceof Boolean[])
-        return PostgresType.ARRAY_BOOLEAN;
-      else if (val instanceof char[])
-        return PostgresType.ARRAY_CHAR;
-      else if (val instanceof Character[])
-        return PostgresType.ARRAY_CHAR;
-      else if (val instanceof String[])
-        return PostgresType.ARRAY_TEXT;
-      else
-        throw new IllegalStateException("Unexpected value: " + val);
+      return switch (val) {
+        // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
+        // Byte element, and there is no int2[] entry to pair with a narrower answer. Only the primitive byte[]
+        // means BINARY (handled above); a Byte[] is an array of small integers.
+        case short[] shorts -> PostgresType.ARRAY_INT;
+        case Short[] shorts -> PostgresType.ARRAY_INT;
+        case Byte[] bytes -> PostgresType.ARRAY_INT;
+        case int[] ints -> PostgresType.ARRAY_INT;
+        case Integer[] ints -> PostgresType.ARRAY_INT;
+        case long[] longs -> PostgresType.ARRAY_LONG;
+        case Long[] longs -> PostgresType.ARRAY_LONG;
+        case double[] doubles -> PostgresType.ARRAY_DOUBLE;
+        case Double[] doubles -> PostgresType.ARRAY_DOUBLE;
+        case float[] floats -> PostgresType.ARRAY_REAL;
+        case Float[] floats -> PostgresType.ARRAY_REAL;
+        case boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
+        case Boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
+        case char[] chars -> PostgresType.ARRAY_CHAR;
+        case Character[] chars -> PostgresType.ARRAY_CHAR;
+        case String[] strings -> PostgresType.ARRAY_TEXT;
+        default -> throw new IllegalStateException("Unexpected value: " + val);
+      };
     } else if (val instanceof Date) {
       return PostgresType.DATE;
     } else if (val instanceof LocalDate) {
