@@ -257,6 +257,29 @@ class StatementSavepointTest extends TestHelper {
   }
 
   @Test
+  void anAfterDeleteListenerSeesTheCountWithTheDeleteApplied() {
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+      database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
+      database.command("sql", "INSERT INTO T SET id = 3, k = 3").close();
+    });
+    final List<Long> seen = new ArrayList<>();
+    database.getSchema().getType("T").getEvents().registerListener((AfterRecordDeleteListener) record -> {
+      seen.add(database.countType("T", false));
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T")) {
+        seen.add(rs.next().<Number>getProperty("c").longValue());
+      }
+    });
+
+    database.begin();
+    database.command("sql", "DELETE FROM T WHERE id = 1").close();
+    database.commit();
+
+    assertThat(seen).as("countType() and count(*) from inside the listener, with the record already deleted").containsExactly(2L, 2L);
+    assertThat(countStar()).isEqualTo(2L);
+  }
+
+  @Test
   void aDeleteWhoseAfterListenerFailsAndCannotBeTakenBackRefusesTheCommit() {
     database.transaction(() -> {
       database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();

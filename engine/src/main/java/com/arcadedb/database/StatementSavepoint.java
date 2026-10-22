@@ -25,8 +25,8 @@ import com.arcadedb.engine.PageUndoLog;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
 
@@ -80,14 +80,14 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
 
   private final TransactionContext tx;
 
-  private boolean active;
-  private boolean rolledBack;
-  private String  unrestorable;
-  private boolean readQueuedRecord;
+  private boolean   active;
+  private boolean   rolledBack;
+  private String    unrestorable;
+  private boolean   readQueuedRecord;
   private Throwable nestedFailure;
-  private long    beginSequence;
-  private long    epoch;
-  private int     limit;
+  private long      beginSequence;
+  private long      epoch;
+  private int       limit;
 
   // The marks of the append-only structures, taken when the statement begins
   private long    completedRecordWrites;
@@ -118,11 +118,11 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private final List<Record> obtained = new ArrayList<>();
   // The records an earlier statement queued for an update and this one read: the object IS the only copy of that update, so what the
   // record held before the statement is kept, to be installed back in place if the statement fails
-  private RidHashSet           snapshotted;
-  private final List<Record>          pendingRecords   = new ArrayList<>();
-  private final List<Binary>          pendingSnapshots = new ArrayList<>();
-  private       boolean[]             pendingDirty     = new boolean[8];
-  private       boolean[]             pendingAssigned  = new boolean[8];
+  private       RidHashSet   snapshotted;
+  private final List<Record> pendingRecords   = new ArrayList<>();
+  private final List<Binary> pendingSnapshots = new ArrayList<>();
+  private       boolean[]    pendingDirty     = new boolean[8];
+  private       boolean[]    pendingAssigned  = new boolean[8];
 
   private PageUndoLog[] logs = new PageUndoLog[8];
   private int           logCount;
