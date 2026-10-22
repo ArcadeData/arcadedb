@@ -170,6 +170,14 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
         || tx.getScannedBucketsCount() != scannedBucketsCount;
   }
 
+  /**
+   * Whether the statement changed the transaction itself (its pages, the records it holds, its index entries), as opposed to objects
+   * the caller holds: what a statement that could not be taken back leaves behind in what the commit publishes.
+   */
+  boolean hasChangedTransaction() {
+    return size > 0 || logCount > 0 || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0;
+  }
+
   /** Whether {@link #rollback()} took the statement back. */
   public boolean isRolledBack() {
     return rolledBack;

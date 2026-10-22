@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.TransactionException;
@@ -232,6 +233,49 @@ class StatementSavepointTest extends TestHelper {
       database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
           GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
     }
+  }
+
+  @Test
+  void aDeleteWhoseAfterListenerFailsIsTakenBack() {
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+      database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
+    });
+    database.getSchema().getType("T").getEvents().registerListener((AfterRecordDeleteListener) record -> {
+      throw new IllegalStateException("cascade failed");
+    });
+
+    database.begin();
+    assertThatThrownBy(() -> database.command("sql", "DELETE FROM T WHERE id = 1").close()).hasStackTraceContaining("cascade failed");
+    // THE DELETE WAS APPLIED BEFORE ITS LISTENER FAILED, AND IS GIVEN BACK
+    assertThat(ids()).containsExactly(1L, 2L);
+    database.commit();
+    assertThat(ids()).containsExactly(1L, 2L);
+  }
+
+  @Test
+  void aDeleteWhoseAfterListenerFailsAndCannotBeTakenBackRefusesTheCommit() {
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+      database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
+    });
+    database.getSchema().getType("T").getEvents().registerListener((AfterRecordDeleteListener) record -> {
+      throw new IllegalStateException("cascade failed");
+    });
+
+    // THE JOURNAL HOLDS ONE ENTRY: THE DELETE CHANGES MORE THAN THAT, SO IT CANNOT BE GIVEN BACK
+    database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES, 1);
+    try {
+      database.begin();
+      assertThatThrownBy(() -> database.command("sql", "DELETE FROM T WHERE id = 1").close()).hasStackTraceContaining("cascade failed");
+      // THE LISTENER FAILED AFTER THE ROW WAS DELETED, BEFORE THE DELETE WAS COUNTED AS COMPLETED: A COMMIT WOULD PUBLISH IT
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+      database.rollback();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
+          GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
+    }
+    assertThat(ids()).containsExactly(1L, 2L);
   }
 
   @Test

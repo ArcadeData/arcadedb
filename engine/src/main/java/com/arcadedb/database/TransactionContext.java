@@ -721,10 +721,14 @@ public class TransactionContext implements Transaction {
    */
   public void refuseCommitIfWrittenSince(final long writesBefore, final Throwable cause, final String notTakenBackBecause) {
     if (completedRecordWrites != writesBefore)
-      setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName() + "), and "
-          + (notTakenBackBecause != null ?
-          "could not be taken back: " + notTakenBackBecause :
-          "the transaction has no savepoint to take it back to"));
+      refuseCommit(cause, notTakenBackBecause);
+  }
+
+  private void refuseCommit(final Throwable cause, final String notTakenBackBecause) {
+    setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName() + "), and "
+        + (notTakenBackBecause != null ?
+        "could not be taken back: " + notTakenBackBecause :
+        "the transaction has no savepoint to take it back to"));
   }
 
   /**
@@ -809,8 +813,10 @@ public class TransactionContext implements Transaction {
     // Taken back even when it wrote no record: it may have changed the object the transaction queued for an earlier update
     if (savepoint != null && savepoint.hasChanges() && rollbackStatement(savepoint))
       return;
-    if (completedRecordWrites != writesBefore)
-      refuseCommitIfWrittenSince(writesBefore, cause, savepoint != null ? savepoint.getUnrestorableReason() : null);
+    // A write is counted when it completes, after the listeners that run once it is applied: a listener that fails leaves the write in
+    // the transaction and uncounted, which the savepoint sees (and the counter does not) when it could not give it back
+    if (completedRecordWrites != writesBefore || (savepoint != null && savepoint.hasChangedTransaction()))
+      refuseCommit(cause, savepoint != null ? savepoint.getUnrestorableReason() : null);
   }
 
   /**
