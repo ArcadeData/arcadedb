@@ -468,7 +468,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     //
     // NOT ATOMIC, and deliberately so. The drop is its own committed schema change - LocalSchema.dropIndex wraps itself
     // in recordFileChanges, and so does the build below - so the two cannot be rolled back as one. The window is
-    // covered for a FAILING build (restoreReplacedIndex in the catch arms below) but not for a process that dies inside
+    // covered for a FAILING build (restoreReplacedIndex, inside the schema session since issue #10569, or in the catch arms
+    // below when the session could not do it) but not for a process that dies inside
     // it: the type then reopens with no index on those properties and has to be given one again. Making it atomic means
     // holding a schema transaction across a full index build, which is the wrong trade for a DDL statement that already
     // rebuilds every entry. Narrowing it further would mean building the new index alongside the old one, which
@@ -509,9 +510,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final boolean[] deferralHeld = new boolean[1];
     // Whether the clean-up of a failed build already ran inside the schema session, and with what outcome (issue #10506)
     final Boolean[] cleanedInSession = new Boolean[1];
+    // The refusal of a replacing build that put the replaced index back inside the schema session (issue #10569)
+    final Throwable[] refusedWithReplacedRestored = new Throwable[1];
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
-      schema.recordFileChanges(cleaningUpOnFailure(schema, indexes, cleanedInSession, () -> {
+      schema.recordFileChanges(restoringReplacedIndexOnFailure(type, replaced, cleanedInSession, deferralHeld, sortedBuild,
+          refusedWithReplacedRestored, cleaningUpOnFailure(schema, indexes, cleanedInSession, () -> {
         // ASKED AGAIN UNDER THE LOCK. The lookup at the top runs before it, so concurrent creators of the same index all
         // found nothing there and then built one each, one after the other: the type ended up with one sub-index per
         // creator on every bucket, all fed by every write (issue #9741). Every build runs inside this write lock, so an
@@ -619,7 +623,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
 
         return null;
-      }), sortedBuild);
+      })), sortedBuild);
+      // The build was refused and the session ended with the replaced index already back (issue #10569): the failure goes out
+      // through the arms below, which find nothing left to clean up or to restore
+      if (refusedWithReplacedRestored[0] != null)
+        throw refusedWithReplacedRestored[0];
       final long recordFileChangesNanos = System.nanoTime() - recordFileChangesStarted;
 
       long cleanupNanos = 0L;
@@ -1120,8 +1128,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * callback ends: a batch committed before the refusal is buffered with pages in the new index files, and when those files are
    * still on disk at that moment the leader quarantines its database and resyncs it, for a CREATE INDEX that only had to cost the
    * caller an error. Dropped in here, each drop cancels the create the session recorded and the buffered pages name files that
-   * are gone, so the session finds nothing left behind. The index a replacing build dropped is not put back here: that is a
-   * change of its own, made by a build of its own once the session is over (see {@link #restoreReplacedIndex}).
+   * are gone, so the session finds nothing left behind. The index a replacing build dropped is put back by the frame around
+   * this one, {@link #restoringReplacedIndexOnFailure}, once the clean-up here has run.
    *
    * @param cleanedInSession set to the outcome of the clean-up when the build failed, left null when it did not
    */
@@ -1133,6 +1141,41 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       } catch (final Throwable failure) {
         cleanedInSession[0] = cleanupIndexes(schema, indexes, failure);
         throw failure;
+      }
+    };
+  }
+
+  /**
+   * The schema session of a REPLACING build that is refused, ending with the replaced index built again inside it (issue
+   * #10569). The replacement dropped that index inside the session, a change every other node does not have: ended by the
+   * failure, a replicated session finds the drop unpublished and quarantines its database, for a CREATE INDEX that only had to
+   * cost the caller an error. Restored in here, after {@code build} has cleaned up what it created, the session returns
+   * normally and publishes the net state - the replaced files removed, the restored ones added - and the refusal is handed
+   * over through {@code refusal} to be raised once the session is over.
+   * <p>
+   * Left to the restore after the session, as before, when the clean-up of the failed build did not complete (its files are
+   * still there, and publishing them is not the answer) and for the sorted build, which never runs on a replicated database
+   * and writes outside any transaction.
+   */
+  private Callable<Object> restoringReplacedIndexOnFailure(final LocalDocumentType type, final ReplacedIndexDefinition[] replaced,
+      final Boolean[] cleanedInSession, final boolean[] deferralHeld, final boolean sortedBuild, final Throwable[] refusal,
+      final Callable<Object> build) {
+    return () -> {
+      try {
+        return build.call();
+      } catch (final Throwable failure) {
+        if (replaced[0] == null || sortedBuild || !Boolean.TRUE.equals(cleanedInSession[0]))
+          throw failure;
+
+        // Given back before the restore, which builds an index on the same properties and must see every commit checked
+        if (deferralHeld[0]) {
+          type.resumeUniqueCheck(metadata.propertyNames);
+          deferralHeld[0] = false;
+        }
+        restoreReplacedIndex(replaced[0], failure);
+        replaced[0] = null;
+        refusal[0] = failure;
+        return null;
       }
     };
   }
