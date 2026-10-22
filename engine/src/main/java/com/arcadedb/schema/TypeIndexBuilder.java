@@ -498,6 +498,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // Held across the whole build rather than only across the scan: the registration is what the window is measured
     // from, and it happens inside recordFileChanges. Reentrant, so the nested quiescence of any builder reached from
     // here simply rides on this one.
+    //
+    // The async workers are the one writer this can park. A client thread's transaction, or an outer frame of the caller's own
+    // stack, that wrote before the registration and commits after the build is out of its reach, and is not left to it: that
+    // transaction makes up its own entries at its commit (issue #10588, LocalSchema#reconcileIndexesRegisteredSince).
     // Registered from here to the end of the build: the index is visible to the planners bucket by bucket while it is
     // populated, and until it is complete it must not answer a query (issue #9331)
     type.beginIndexConstruction(metadata.propertyNames);

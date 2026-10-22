@@ -460,6 +460,15 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // Throwing here would surface a confusing "is not valid" error for an idempotent operation.
       return;
 
+    // issue #10589: reached from the Java API as well as from LocalSchema#dropIndex, so the files of every sub-index are probed here
+    // too, before the first one is dropped - a refusal from the Nth left the N-1 before it dropped and saved
+    type.getSchema().getEmbedded().executeDroppingFiles("drop the index '" + getName() + "'", getFileIds(), () -> {
+      dropSubIndexes();
+      return null;
+    });
+  }
+
+  private void dropSubIndexes() {
     dropping = true;
     final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
     try {

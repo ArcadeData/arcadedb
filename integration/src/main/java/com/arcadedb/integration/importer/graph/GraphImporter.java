@@ -1898,7 +1898,10 @@ public class GraphImporter implements AutoCloseable {
           ? DateUtils.getFormatter(pd.datetimeFormat)
           : DEFAULT_DATETIME_FMT;
       try {
-        return LocalDateTime.parse(v, fmt);
+        // The instant a text with an offset or a zone names is stored as the UTC wall clock, as on every other write path
+        // (issues #10498, #10596): parsing straight into a LocalDateTime took the local fields and dropped the offset the pattern
+        // had read
+        return DateUtils.parseDateTimeWithFormat(v, fmt, null);
       } catch (final DateTimeParseException e) {
         throw badValue(pd, "a datetime", "one", e);
       }

@@ -491,7 +491,9 @@ public abstract class IndexBuilder<T extends Index> {
    * Only the innermost transaction is asked, the one a shared build would join. An OUTER transaction's writes are out
    * of reach of either answer: a nested transaction does not see its outer transaction's uncommitted pages, so neither
    * a build that joins the innermost transaction nor one in a transaction of its own would index them. That was the
-   * case before issue #10450 too, and narrowing the test to the scanned buckets does not change it. A record's content
+   * case before issue #10450 too, and narrowing the test to the scanned buckets does not change it. Those writes are not lost:
+   * the outer transaction makes up the entries of the new index at its own commit (issue #10588,
+   * {@link LocalSchema#reconcileIndexesRegisteredSince}), as a transaction of another session does. A record's content
    * can also live in the paired external-property bucket of its own bucket, so that one counts as written to as well.
    * <p>
    * Timing is the whole trap: inside the component-creation transaction there is ALWAYS one open, it is EMPTY, and the
@@ -588,8 +590,10 @@ public abstract class IndexBuilder<T extends Index> {
    * </ol>
    * No writer can slip in between the two: every caller runs inside the schema's write lock ({@code recordFileChanges}), which
    * no other transaction commits under, and the index is registered on its type before the first step, so what the caller writes
-   * afterwards is indexed live. The second step reads the committed version of the caller's writes a chunk at a time. A
-   * failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
+   * afterwards is indexed live. A transaction of another session, or an outer frame of the caller's own stack, that wrote before
+   * the registration is not covered by either step, and does not need to be: it began before the registration, so it queues the
+   * entries it owes the index when it commits (issue #10588, {@link LocalSchema#reconcileIndexesRegisteredSince}). The second step
+   * reads the committed version of the caller's writes a chunk at a time. A failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
    * {@code TypeIndexBuilder#create} and {@code BucketIndexBuilder}, the guard around the super-type propagation), the same
    * as a failure anywhere in a build.
    */

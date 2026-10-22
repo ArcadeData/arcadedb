@@ -554,9 +554,7 @@ public class LocalDocumentType implements DocumentType {
       if (orphan != null)
         fileIds.addAll(orphan.getFileIds());
     }
-    schema.requireFilesCanBeDeleted("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds);
-
-    ((DatabaseInternal) schema.getDatabase()).executeLockingFiles(fileIds, () -> {
+    schema.executeDroppingFiles("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds, () -> {
       dropping[0] = true;
       for (final String indexName : orphans)
         schema.dropIndex(indexName);
@@ -2767,9 +2765,7 @@ public class LocalDocumentType implements DocumentType {
       for (final IndexInternal subIndex : idx.getIndexesOnBuckets())
         if (subIndex.getAssociatedBucketId() == bucket.getFileId())
           subIndexFiles.addAll(subIndex.getFileIds());
-    schema.requireFilesCanBeDeleted("remove the bucket '" + bucket.getName() + "' from the type '" + name + "'", subIndexFiles);
-
-    ((DatabaseInternal) schema.getDatabase()).executeLockingFiles(subIndexFiles, () -> {
+    schema.executeDroppingFiles("remove the bucket '" + bucket.getName() + "' from the type '" + name + "'", subIndexFiles, () -> {
       detachBucketAndDropItsSubIndexes(bucket);
       return null;
     });

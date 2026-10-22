@@ -47,6 +47,7 @@ import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalQueries;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
@@ -1241,8 +1242,58 @@ public class DateUtils {
     return null;
   }
 
-  public static Object parse(final String text, final String format) {
-    return LocalDateTime.parse(text, getFormatter(format));
+  /**
+   * Reads a text with the pattern the CALLER named, under the one rule of {@link #parseDateTime(Database, String)}: when the text
+   * names an instant - the pattern read an offset ({@code XXX}, {@code Z}, {@code O}) or a zone ({@code VV}, {@code z}) out of it -
+   * the instant is stored as the UTC wall clock, whatever the pattern is and whoever named it (issue #10596). Reading the text with
+   * {@code LocalDateTime.parse(text, formatter)} takes the LOCAL fields of the parse and discards the offset the pattern just read,
+   * which stored the same instant as 03:04:05 from {@code asDateTime('...XXX')} and as 01:04:05 from the schema's own pattern.
+   * <p>
+   * A text that names no zone has no instant to convert: it keeps its wall clock, as one without a pattern does, unless the caller
+   * says where it was written ({@code zoneOfZoneLessText}): {@code date(value, format, timezone)} reads it there, and the instant
+   * is stored as the UTC wall clock of that.
+   *
+   * @param zoneOfZoneLessText where a text that names no zone was written, or {@code null} for the wall clock as it is
+   *
+   * @throws DateTimeParseException when the text does not match the pattern, or does not hold a date
+   */
+  public static LocalDateTime parseDateTimeWithFormat(final String text, final String format, final ZoneId zoneOfZoneLessText) {
+    return parseDateTimeWithFormat(text, getFormatter(format), zoneOfZoneLessText);
+  }
+
+  /** As {@link #parseDateTimeWithFormat(String, String, ZoneId)} for a formatter the caller already holds. */
+  public static LocalDateTime parseDateTimeWithFormat(final String text, final DateTimeFormatter formatter,
+      final ZoneId zoneOfZoneLessText) {
+    return formatter.parse(text, parsed -> {
+      if (parsed.query(TemporalQueries.zone()) != null)
+        return dropZone(ZonedDateTime.from(parsed), OffsetPolicy.CONVERT_TO_UTC);
+
+      final LocalDateTime local = LocalDateTime.from(parsed);
+      return zoneOfZoneLessText != null ? dropZone(local.atZone(zoneOfZoneLessText), OffsetPolicy.CONVERT_TO_UTC) : local;
+    });
+  }
+
+  /**
+   * {@link #parseDateTimeWithFormat} with the offset of an offset-bearing text DROPPED rather than converted, for the callers whose
+   * target has no zone to keep, a {@code LocalDate}: the day written is the day meant. See {@link #parseDateTimeKeepingWallClock}.
+   */
+  public static LocalDateTime parseDateTimeKeepingWallClockWithFormat(final String text, final String format) {
+    return getFormatter(format).parse(text, LocalDateTime::from);
+  }
+
+  /**
+   * Reads a text with a pattern into a {@link ZonedDateTime} that keeps the zone or offset the text names, and is anchored to
+   * {@code zoneOfZoneLessText} when it names none. For the callers that answer an epoch or the fields of a moment rather than a
+   * stored {@code DATETIME}: they need the instant, which {@code LocalDateTime.parse(text, formatter)} lost with the offset
+   * (issue #10596).
+   *
+   * @throws DateTimeParseException when the text does not match the pattern, or does not hold a date
+   */
+  public static ZonedDateTime parseZonedDateTimeWithFormat(final String text, final DateTimeFormatter formatter,
+      final ZoneId zoneOfZoneLessText) {
+    return formatter.parse(text, parsed -> parsed.query(TemporalQueries.zone()) != null ?
+        ZonedDateTime.from(parsed) :
+        LocalDateTime.from(parsed).atZone(zoneOfZoneLessText));
   }
 
   public static DateTimeFormatter getFormatter(final String format) {

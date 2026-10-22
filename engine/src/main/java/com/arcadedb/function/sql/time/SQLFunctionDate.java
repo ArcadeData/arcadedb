@@ -83,8 +83,8 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
           // INSERT accepts - including the SQL timestamp with a fractional second. This used to guess the pattern
           // from the string's LENGTH and answer null for anything that matched neither, which is how
           // date('2024-02-29 13:45:10.123456') became an empty result (issue #8090). The `timezone` option keeps
-          // the effect it had here before: none, since neither this chain nor a zone-less pattern reads a zone out
-          // of the text - it applies to a pattern that carries zone fields, which is the explicit-format path below.
+          // the effect it had here before: none, since this chain reads no zone out of a text that names none - it is
+          // the zone such a text was written in on the explicit-format path below (issue #10596).
           // It is still CHECKED, though. Before this chain existed, a length-matched string went through
           // formatterFor(), so an unknown zone id was reported as a client error even on this path; an id that
           // cannot exist is a mistake in the call whether or not this branch has anything to apply it to, and
@@ -93,7 +93,9 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
 
           date = DateUtils.parseDateTime(context.getDatabase(), dateAsString);
         } else
-          date = LocalDateTime.parse(dateAsString, formatterFor(format, timezone, context));
+          // The same rule as the chain above, for the pattern the caller named (issue #10596): a text that names an offset or a
+          // zone is stored as the instant it names, and `timezone` is where a text that names none was written
+          date = DateUtils.parseDateTimeWithFormat(dateAsString, formatterFor(format), timezone == null ? null : zoneOf(timezone));
       } catch (final DateTimeParseException e) {
         // THE VALUE DOES NOT MATCH THE FORMAT: NOT AN ERROR, THE DOCUMENTED ANSWER IS NULL. THE ARGUMENTS THEMSELVES
         // BEING WRONG IS A DIFFERENT STORY AND IS RAISED BY formatterFor() BELOW.
@@ -106,29 +108,19 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
   }
 
   /**
-   * Builds the formatter for the requested pattern and zone. A malformed pattern ({@code IllegalArgumentException}
-   * out of {@code appendPattern}) and an unknown zone id ({@code ZoneRulesException}, a {@link DateTimeException} but
-   * NOT a {@link DateTimeParseException}) both escaped the caller's catch and surfaced as raw JDK exceptions - an
+   * Builds the formatter for the requested pattern. A malformed pattern ({@code IllegalArgumentException} out of
+   * {@code appendPattern}) and an unknown zone id ({@code ZoneRulesException}, a {@link DateTimeException} but NOT a
+   * {@link DateTimeParseException}, see {@link #zoneOf}) both escaped the caller's catch and surfaced as raw JDK exceptions - an
    * HTTP 500 for what is a mistake in the call (issue #6388). They are raised here as a typed client error instead,
    * deliberately NOT folded into the {@code return null} above: a value that does not match its format is an
    * ordinary miss, a format that cannot exist is a query to fix.
    */
-  private static DateTimeFormatter formatterFor(final String format, final String timezone, final CommandContext context) {
-    final DateTimeFormatter formatter;
+  private static DateTimeFormatter formatterFor(final String format) {
     try {
-      formatter = DateUtils.getFormatter(format);
+      return DateUtils.getFormatter(format);
     } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException(NAME + "() received an invalid date format '" + format + "': " + e.getMessage(), e);
     }
-
-    return formatter.withZone(zoneFor(timezone, context));
-  }
-
-  /**
-   * Resolves the zone the call named, falling back to the schema's.
-   */
-  private static ZoneId zoneFor(final String timezone, final CommandContext context) {
-    return timezone == null ? context.getDatabase().getSchema().getZoneId() : zoneOf(timezone);
   }
 
   /**

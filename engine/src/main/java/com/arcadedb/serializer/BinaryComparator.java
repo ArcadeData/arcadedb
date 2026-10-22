@@ -35,9 +35,11 @@ import java.time.ZonedDateTime;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiPredicate;
 
 import static com.arcadedb.utility.CollectionUtils.arrayToList;
 
@@ -617,40 +619,52 @@ public class BinaryComparator {
       return d.equals(d1) || (d == 0.0d && d1 == 0.0d);
     else if (a instanceof Float f && b instanceof Float f1)
       return f.equals(f1) || (f == 0.0f && f1 == 0.0f);
+    else if (a instanceof Date date && b instanceof Date date1 && !a.getClass().equals(b.getClass()))
+      // one instant, from whichever side: java.sql.Timestamp.equals(Date) is false for a Date that is no Timestamp where
+      // Date.equals(Timestamp) is true, so a Timestamp parameter on the left of "=" missed the very value it matched on the right
+      // (issue #10595). Two values of one class keep their own equals(), which compares a Timestamp's nanoseconds too. The class is
+      // not named: java.sql is not a module every runtime image of the engine carries
+      return date.getTime() == date1.getTime();
     else if (a instanceof OffsetDateTime && b instanceof ZonedDateTime || a instanceof ZonedDateTime && b instanceof OffsetDateTime)
       // the zoned datetime an OffsetDateTime is stored and indexed as, so the filter answers what the index does (issue #9648)
       return zonedOf(a).equals(zonedOf(b));
     else if (a instanceof List<?> list && b instanceof List<?> list1)
-      return listsEqual(list, list1);
+      return listsEqual(list, list1, BinaryComparator::equals);
     else if (a instanceof Map<?, ?> map && b instanceof Map<?, ?> map1)
-      return mapsEqual(map, map1);
+      return mapsEqual(map, map1, BinaryComparator::equals);
     return a.equals(b);
   }
 
   /**
-   * Two lists are equal when they have the same size and their elements are equal pairwise in order, each pair under the rule of
-   * {@link #equals(Object, Object)}: a list of {@code Long} and the same list of {@code Integer} are one value, as the scalars
-   * are (issue #10448).
+   * Two lists are equal when they have the same size and their elements are equal pairwise in order, each pair under
+   * {@code elementEquals}. {@link #equals(Object, Object)} passes itself: a list of {@code Long} and the same list of
+   * {@code Integer} are one value, as the scalars are (issue #10448). SQL {@code =} passes its own scalar rule, so that two values
+   * it reports equal are equal as elements too - the same instant as a {@code Date} and as a {@code LocalDateTime} (issue
+   * #10595) - instead of this class keeping a second equality that has to be kept in step with it.
+   *
+   * @param elementEquals the rule for a pair of elements, either of which can be {@code null}
    */
-  private static boolean listsEqual(final List<?> a, final List<?> b) {
+  public static boolean listsEqual(final List<?> a, final List<?> b, final BiPredicate<Object, Object> elementEquals) {
     if (a.size() != b.size())
       return false;
     final Iterator<?> it = a.iterator();
     final Iterator<?> it1 = b.iterator();
     while (it.hasNext() && it1.hasNext())
-      if (!equals(it.next(), it1.next()))
+      if (!elementEquals.test(it.next(), it1.next()))
         return false;
     return !it.hasNext() && !it1.hasNext();
   }
 
   /**
-   * Two maps are equal when they hold the same keys and the values of each key are equal under the rule of
-   * {@link #equals(Object, Object)}, so a value of {@code Long} 1 and one of {@code Integer} 1 are one value (issue #10448). The
-   * keys are matched by the map itself, that is by {@code equals()}/{@code hashCode()}: a map keyed by {@code Long} 1 is not one
-   * keyed by {@code Integer} 1, as a document's MAP property is keyed by String. A key mapped to {@code null} is a key, as in
-   * {@link Map#equals}.
+   * Two maps are equal when they hold the same keys and the values of each key are equal under {@code elementEquals}, so a value
+   * of {@code Long} 1 and one of {@code Integer} 1 are one value (issue #10448) - and, under SQL {@code =}, so are the two
+   * representations of one instant (issue #10595). The keys are matched by the map itself, that is by
+   * {@code equals()}/{@code hashCode()}: a map keyed by {@code Long} 1 is not one keyed by {@code Integer} 1, as a document's MAP
+   * property is keyed by String. A key mapped to {@code null} is a key, as in {@link Map#equals}.
+   *
+   * @param elementEquals the rule for a pair of values, either of which can be {@code null}
    */
-  private static boolean mapsEqual(final Map<?, ?> a, final Map<?, ?> b) {
+  public static boolean mapsEqual(final Map<?, ?> a, final Map<?, ?> b, final BiPredicate<Object, Object> elementEquals) {
     if (a.size() != b.size())
       return false;
     for (final Map.Entry<?, ?> entry : a.entrySet()) {
@@ -665,7 +679,7 @@ public class BinaryComparator {
         // a failure of the comparison of the values below is not taken for a missing key
         return false;
       }
-      if (!equals(entry.getValue(), other))
+      if (!elementEquals.test(entry.getValue(), other))
         return false;
     }
     return true;

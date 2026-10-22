@@ -19,8 +19,8 @@
 package com.arcadedb.function.date;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.DateUtils;
 
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -63,8 +63,9 @@ public class DateParse extends AbstractDateFunction {
 
     try {
       final DateTimeFormatter formatter = getFormatter(format);
-      final LocalDateTime localDateTime = LocalDateTime.parse(dateStr, formatter);
-      final ZonedDateTime zonedDateTime = localDateTime.atZone(ZoneId.systemDefault());
+      // The instant the text names when it names a zone or an offset, the one of the JVM's zone when it names none (issue #10596):
+      // the offset the pattern had just read used to be discarded, and the wall clock anchored to the JVM's zone instead
+      final ZonedDateTime zonedDateTime = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, ZoneId.systemDefault());
       final long millis = zonedDateTime.toInstant().toEpochMilli();
 
       // Convert to requested unit

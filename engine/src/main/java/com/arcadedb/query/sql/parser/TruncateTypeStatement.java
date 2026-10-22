@@ -468,8 +468,13 @@ public class TruncateTypeStatement extends DDLStatement {
     // Capture index definitions BEFORE truncating records: the drop below is a committed schema change and the
     // definitions are all that is left to rebuild from.
     final List<IndexDefinition> indexDefs = collectIndexDefinitions(typez, polymorphic);
+
+    // One statement: the indexes go together or not at all (issue #10589). Dropped one after the other, a refusal from the second
+    // came after the first was gone, and the truncate was refused with its indexes half dropped
+    final List<String> indexNames = new ArrayList<>(indexDefs.size());
     for (final IndexDefinition def : indexDefs)
-      schema.dropIndex(def.name);
+      indexNames.add(def.name);
+    schema.getEmbedded().dropIndexes(indexNames);
 
     final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 
