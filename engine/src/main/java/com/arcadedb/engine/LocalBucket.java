@@ -4422,6 +4422,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               slotTx.poisonSlotRebasePage(fileId, pageId);
 
             if (pointerEnlargement > 0) {
+              // Declared under no coverage span: the poison above already keeps every merge off this page, shift
+              // included, so unlike the chunk-head enlargement below there is no replay to reproduce it.
               shiftFollowingRecordsRight(page, recordCountInPage, recordPositionInPage + slotFootprint, pageOccupiedInBytes,
                       pointerEnlargement);
               updatePageStatistics(page, freeTailInPage, -pointerEnlargement);
