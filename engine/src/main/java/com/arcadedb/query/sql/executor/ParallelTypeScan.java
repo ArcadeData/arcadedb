@@ -167,7 +167,7 @@ final class ParallelTypeScan {
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
-    if (!isAllowed(db))
+    if (!isAllowed(context))
       return null;
 
     final List<Unit> units = planUnits(db, bucketSteps);
@@ -215,6 +215,15 @@ final class ParallelTypeScan {
     final long unitsWanted = (long) ParallelScanProducerPool.getInstance().getMaxParallelism() * UNITS_PER_WORKER;
     return (int) Math.min(Integer.MAX_VALUE,
         Math.max((long) pagesPerUnit * ENTRIES_PER_UNIT_PAGE, (entries + unitsWanted - 1) / unitsWanted));
+  }
+
+  /**
+   * {@link #isAllowed(DatabaseInternal)} for the command {@code context} belongs to, which also stays sequential when it runs
+   * under a row of an enclosing statement (a correlated subquery, a per-row LET): its workers would read that row, held by
+   * another thread, concurrently (issue #10609).
+   */
+  static boolean isAllowed(final CommandContext context) {
+    return isAllowed(context.getDatabase()) && !context.isUnderEnclosingRow();
   }
 
   static boolean isAllowed(final DatabaseInternal db) {

@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.Collections;
 import java.util.List;
@@ -78,8 +79,15 @@ public class FunctionOptions {
     final Object v = options.get(key);
     if (v == null)
       return defaultValue;
-    if (v instanceof Number n)
-      return n.intValue();
+    if (v instanceof Number n) {
+      // intValue() would read 2.5 as 2 and 3000000000 as a negative int: a number that is not an int is refused instead
+      try {
+        return NumberUtils.toIntWhole(n);
+      } catch (final ArithmeticException e) {
+        throw new CommandSQLParsingException(
+            "Option '" + key + "' for function '" + functionName + "' must be an integer, got: " + v);
+      }
+    }
     try {
       return Integer.parseInt(v.toString());
     } catch (final NumberFormatException e) {
@@ -92,8 +100,14 @@ public class FunctionOptions {
     final Object v = options.get(key);
     if (v == null)
       return defaultValue;
-    if (v instanceof Number n)
-      return n.longValue();
+    if (v instanceof Number n) {
+      try {
+        return NumberUtils.toLongWhole(n);
+      } catch (final ArithmeticException e) {
+        throw new CommandSQLParsingException(
+            "Option '" + key + "' for function '" + functionName + "' must be a long, got: " + v);
+      }
+    }
     try {
       return Long.parseLong(v.toString());
     } catch (final NumberFormatException e) {

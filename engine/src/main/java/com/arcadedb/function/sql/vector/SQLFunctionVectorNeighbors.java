@@ -89,8 +89,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (key instanceof List<?> list)
       key = list.toArray();
 
-    final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
-    if (limit <= 0)
+    final int limit = parseNeighborCount(params[2]);
+    if (limit == 0)
       return new ArrayList<>(0);
 
     // Optional 4th parameter. Either:
@@ -130,10 +130,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         maxDistance = (float) opts.getDouble("maxDistance", Double.POSITIVE_INFINITY);
         if (Float.isNaN(maxDistance))
           throw new CommandSQLParsingException(NAME + " maxDistance must be a number, not NaN");
-      } else if (params[3] instanceof Number n) {
-        efSearch = n.intValue();
       } else {
-        efSearch = Integer.parseInt(params[3].toString());
+        efSearch = parseInteger(params[3], "efSearch");
       }
     }
 

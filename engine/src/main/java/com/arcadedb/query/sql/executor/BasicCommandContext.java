@@ -90,6 +90,13 @@ public class BasicCommandContext implements CommandContext {
    * that has no entry published. See {@link #getRunningQuery()}.
    */
   private            RunningQuery         runningQuery            = RunningQuery.current();
+  /**
+   * The budget published with {@link CommandTimeoutOverride} on the thread that builds the context, captured at construction for
+   * the same reason as {@link #runningQuery}: the budget is resolved lazily, and a root context can be resolved first by a
+   * parallel worker, on a thread that publishes none, which then resolved "no timeout" for the whole command (issue #10609).
+   * {@code -1} for none. Only a root context reads it: a derived one takes its parent's.
+   */
+  private final      long                 forwardedTimeout        = CommandTimeoutOverride.get();
 
   @Override
   public Object getVariablePath(final String name) {
@@ -305,7 +312,7 @@ public class BasicCommandContext implements CommandContext {
       else
         // The budget a peer forwarded this request with takes the place of this node's own setting, so the node that
         // forwarded it and this one enforce the same number (issue #8313).
-        commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase());
+        commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase(), forwardedTimeout);
     }
     return commandTimeout;
   }
@@ -524,6 +531,14 @@ public class BasicCommandContext implements CommandContext {
     if (query != null)
       return query;
     return parent != null ? parent.getRunningQuery() : null;
+  }
+
+  @Override
+  public boolean isUnderEnclosingRow() {
+    for (CommandContext ancestor = parent; ancestor != null; ancestor = ancestor.getParent())
+      if (ancestor instanceof BasicCommandContext basic && basic.variables != null && basic.variables.get("current") != null)
+        return true;
+    return false;
   }
 
   /** Binds this context to the registry entry of a statement, for a context built apart from the statement's tree. */

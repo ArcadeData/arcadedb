@@ -98,11 +98,13 @@ public class MutablePage extends BasePage implements TrackableContent {
   // writer says otherwise, and a forgotten declaration costs the proof it was always paying, never a skipped one.
   private              boolean packedWriteInProgress      = false;
   private              boolean unpackedWrite              = false;
-  // Summary of the record table of a hole-free page (see rememberPackedScan): the slot count and the highest record
-  // offset the last scan (or the last plain append) saw. Valid until a write touches [0, packedScanEnd) of the page.
-  private              int     packedScanEnd              = -1;
-  private              int     packedScanRecords          = 0;
-  private              int     packedScanLastPosition     = 0;
+  // Summary of the record table of the page (see rememberSlotScan): the slot count, the highest record offset, and how far the
+  // search for a slot to reuse got (every slot below it is live, or a hole this transaction deleted and may not reuse). Valid
+  // until a write touches [0, slotScanEnd) of the page.
+  private              int     slotScanEnd              = -1;
+  private              int     slotScanRecords          = 0;
+  private              int     slotScanLastPosition     = 0;
+  private              int     slotScanFirstFree        = 0;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -136,9 +138,10 @@ public class MutablePage extends BasePage implements TrackableContent {
     private       boolean freeSpaceClaimIsExact;
     private       boolean packedWriteInProgress;
     private       boolean unpackedWrite;
-    private       int     packedScanEnd;
-    private       int     packedScanRecords;
-    private       int     packedScanLastPosition;
+    private       int     slotScanEnd;
+    private       int     slotScanRecords;
+    private       int     slotScanLastPosition;
+    private       int     slotScanFirstFree;
   }
 
   static {
@@ -187,9 +190,10 @@ public class MutablePage extends BasePage implements TrackableContent {
     target.freeSpaceClaimIsExact = freeSpaceClaimIsExact;
     target.packedWriteInProgress = packedWriteInProgress;
     target.unpackedWrite = unpackedWrite;
-    target.packedScanEnd = packedScanEnd;
-    target.packedScanRecords = packedScanRecords;
-    target.packedScanLastPosition = packedScanLastPosition;
+    target.slotScanEnd = slotScanEnd;
+    target.slotScanRecords = slotScanRecords;
+    target.slotScanLastPosition = slotScanLastPosition;
+    target.slotScanFirstFree = slotScanFirstFree;
   }
 
   /** Gives the page back the bookkeeping {@link #captureState} saved. The bytes are the log's to restore. */
@@ -203,9 +207,10 @@ public class MutablePage extends BasePage implements TrackableContent {
     freeSpaceClaimIsExact = source.freeSpaceClaimIsExact;
     packedWriteInProgress = source.packedWriteInProgress;
     unpackedWrite = source.unpackedWrite;
-    packedScanEnd = source.packedScanEnd;
-    packedScanRecords = source.packedScanRecords;
-    packedScanLastPosition = source.packedScanLastPosition;
+    slotScanEnd = source.slotScanEnd;
+    slotScanRecords = source.slotScanRecords;
+    slotScanLastPosition = source.slotScanLastPosition;
+    slotScanFirstFree = source.slotScanFirstFree;
   }
 
   void setUndoLog(final PageUndoLog undoLog) {
@@ -278,32 +283,49 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   /**
-   * Remembers that the record table of this page holds {@code recordCount} slots, none of them a hole, and that the
-   * highest record offset among them is {@code lastRecordPosition}. A bucket insert walks the whole record table to
-   * find a free slot and the end of the content, which costs time proportional to the records on the page for EVERY
-   * insert; a page this transaction keeps appending to can answer from this summary instead. The summary is dropped
-   * by the next write to the page header or to the record-table slots below {@code recordCount}: every mutation of a
-   * page passes {@link #updateModifiedRange}, the same invariant the hole-free shortcut of #9483 stands on. Writes to
-   * record content do not touch it, and need not: it holds offsets only, and the caller re-reads the size of the last
-   * record on every use.
+   * Remembers that the record table of this page holds {@code recordCount} slots, that the highest record offset among
+   * the live ones is {@code lastRecordPosition} (-1 for none), and that the first slot a new record may take is
+   * {@code firstFreeSlot}: every slot below it is live, or a hole this transaction deleted, which it may not reuse. A
+   * bucket insert walks the whole record table to find a free slot and the end of the content, which costs time
+   * proportional to the slots on the page for EVERY insert; a page this transaction keeps inserting into can answer from
+   * this summary instead, picking the search for a hole up where the last insert left it (#10612), so the slots of a page
+   * are read once per transaction however many records it takes. The summary is dropped by the next write to the page
+   * header or to the record-table slots below {@code recordCount}: every mutation of a page passes
+   * {@link #updateModifiedRange}, the same invariant the hole-free shortcut of #9483 stands on. Writes to record content
+   * do not touch it, and need not: it holds offsets only, and the caller re-reads the size of the last record on every
+   * use.
    *
-   * @param tableEnd content-relative offset one past the last record-table slot the summary covers
+   * @param firstFreeSlot the first slot a new record may take, {@code recordCount} when it has to be appended
+   * @param tableEnd      content-relative offset one past the last record-table slot the summary covers
    */
-  void rememberPackedScan(final int recordCount, final int lastRecordPosition, final int tableEnd) {
-    this.packedScanRecords = recordCount;
-    this.packedScanLastPosition = lastRecordPosition;
-    this.packedScanEnd = PAGE_HEADER_SIZE + tableEnd;
+  void rememberSlotScan(final int recordCount, final int lastRecordPosition, final int firstFreeSlot, final int tableEnd) {
+    this.slotScanRecords = recordCount;
+    this.slotScanLastPosition = lastRecordPosition;
+    this.slotScanFirstFree = firstFreeSlot;
+    this.slotScanEnd = PAGE_HEADER_SIZE + tableEnd;
   }
 
   /**
-   * @return true when {@link #rememberPackedScan} still describes the page and the page holds exactly {@code recordCount} slots
+   * @return true when {@link #rememberSlotScan} still describes the page and the page holds exactly {@code recordCount} slots
    */
-  boolean hasPackedScan(final int recordCount) {
-    return packedScanEnd >= 0 && packedScanRecords == recordCount;
+  boolean hasSlotScan(final int recordCount) {
+    return slotScanEnd >= 0 && slotScanRecords == recordCount;
   }
 
-  int getPackedScanLastPosition() {
-    return packedScanLastPosition;
+  int getSlotScanLastPosition() {
+    return slotScanLastPosition;
+  }
+
+  int getSlotScanFirstFreeSlot() {
+    return slotScanFirstFree;
+  }
+
+  /**
+   * The search for a slot to reuse went on to {@code firstFreeSlot} without any write: the slots it passed are live, or holes
+   * this transaction deleted. Not a mutation of the page, so the summary stays valid.
+   */
+  void advanceSlotScan(final int firstFreeSlot) {
+    this.slotScanFirstFree = firstFreeSlot;
   }
 
   public TrackableBinary getTrackable() {
@@ -317,7 +339,7 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public void clearContent() {
-    packedScanEnd = -1;
+    slotScanEnd = -1;
     content.clear();
   }
 
@@ -577,8 +599,8 @@ public class MutablePage extends BasePage implements TrackableContent {
     if (undoLog != null)
       undoLog.beforeWrite(start, end);
 
-    if (start < packedScanEnd)
-      packedScanEnd = -1;
+    if (start < slotScanEnd)
+      slotScanEnd = -1;
     // Whatever the current writer did NOT declare can no longer re-derive this page (issue #5596).
     uncoveredMechanisms |= COVERAGE_ALL_MERGES & ~declaredCoverage;
     // Every mutation of a page MUST pass through here (the WAL ships only what is tracked), which is the invariant the

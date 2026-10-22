@@ -484,7 +484,7 @@ public class SelectExecutionPlanner {
     // What follows depends on the thread, the transaction and the size of the type at planning time, not on the statement alone: a plan
     // either way must not be reused by an execution for which the answer differs
     planDependsOnInputParameters = true;
-    if (!ParallelTypeScan.isAllowed(context.getDatabase()))
+    if (!ParallelTypeScan.isAllowed(context))
       return;
     // A small type is not scanned in parallel at run time, so the GROUP BY would only block where the DISTINCT streams
     final String typeName = info.target.getItem().getIdentifier().getStringValue();

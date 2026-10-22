@@ -98,7 +98,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       throw new CommandSQLParsingException(
           "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
 
-    final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
+    final int k = parseNeighborCount(params[3]);
 
     Set<RID> allowedRIDs = null;
     String groupBy = null;
