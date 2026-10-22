@@ -1569,6 +1569,9 @@ public class ArcadeDBServer {
    * <p>
    * Lock-free: three reads of concurrent sets, no {@link #getDatabasesLock()}, because the caller is a command's hot path and the lock
    * is held across the whole close, swap and reopen of a snapshot install. The answer is a sample, as {@link #existsDatabase} is.
+   * A caller asks {@link #existsDatabase} FIRST and this second: every hold goes up before the registry entry it replaces leaves
+   * (a close command in {@code removeDatabase}, a restore reservation and a drop before they start), so a name that is gone from the
+   * registry is already held.
    */
   public boolean isDatabaseHeld(final String databaseName) {
     return closedByCommand.contains(databaseName) || restoringDatabaseNames.contains(databaseName)
@@ -1905,11 +1908,14 @@ public class ArcadeDBServer {
   private void removeDatabase(final String databaseName, final boolean keepClosedByCommandMark) {
     final ServerDatabase removed;
     synchronized (databasesLock) {
-      removed = databases.remove(databaseName);
-      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      // The mark goes up BEFORE the entry leaves the registry: isDatabaseHeld() is read without this lock, after existsDatabase(), and a
+      // reader that finds the entry gone then finds the mark. In the other order there was an instant where a database a close command
+      // is closing was neither registered nor held (issue #10553)
       if (keepClosedByCommandMark)
         closedByCommand.add(databaseName);
-      else
+      removed = databases.remove(databaseName);
+      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      if (!keepClosedByCommandMark)
         closedByCommand.remove(databaseName);
     }
 
