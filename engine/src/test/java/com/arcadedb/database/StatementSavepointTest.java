@@ -252,10 +252,19 @@ class StatementSavepointTest extends TestHelper {
 
     database.begin();
     assertThatThrownBy(() -> database.command("sql", "DELETE FROM T WHERE id = 1").close()).hasStackTraceContaining("cascade failed");
-    // THE DELETE WAS APPLIED BEFORE ITS LISTENER FAILED, AND IS GIVEN BACK
+    // THE DELETE WAS APPLIED BEFORE ITS LISTENER FAILED, AND IS GIVEN BACK, THE COUNTS OF THE BUCKET WITH IT
     assertThat(ids()).containsExactly(1L, 2L);
+    assertThat(countStar()).isEqualTo(2L);
+    assertThat(database.countType("T", false)).isEqualTo(2L);
     database.commit();
     assertThat(ids()).containsExactly(1L, 2L);
+    assertThat(countStar()).isEqualTo(2L);
+
+    // WHAT THE BUCKET COUNTER PERSISTED IS THE SAME
+    reopenDatabase();
+    assertThat(countStar()).isEqualTo(2L);
+    assertThat(database.countType("T", false)).isEqualTo(2L);
+    assertDatabaseIsConsistent();
   }
 
   @Test

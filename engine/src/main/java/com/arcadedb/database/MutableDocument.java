@@ -637,9 +637,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * be reloaded from: the object IS the only copy of what the earlier statements did to the record. The snapshot is what
    * {@code serializeForRead} rendered before the statement could change it, installed the way a reload installs the buffer it read.
    *
-   * @param snapshot           the content of the record before the statement
-   * @param dirtyBefore        whether the record was dirty then
-   * @param assignedBefore     whether a property had been assigned or removed then
+   * @param snapshot       the content of the record before the statement
+   * @param dirtyBefore    whether the record was dirty then
+   * @param assignedBefore whether a property had been assigned or removed then
    */
   void restoreContent(final Binary snapshot, final boolean dirtyBefore, final boolean assignedBefore) {
     map = null;
