@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -502,9 +503,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     type.beginIndexConstruction(metadata.propertyNames);
     // Whether this build still holds the deferral: set under the write lock below, given back under it once the final pass has run
     final boolean[] deferralHeld = new boolean[1];
+    // Whether the clean-up of a failed build already ran inside the schema session, and with what outcome (issue #10506)
+    final Boolean[] cleanedInSession = new Boolean[1];
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
-      schema.recordFileChanges(() -> {
+      schema.recordFileChanges(cleaningUpOnFailure(schema, indexes, cleanedInSession, () -> {
         // ASKED AGAIN UNDER THE LOCK. The lookup at the top runs before it, so concurrent creators of the same index all
         // found nothing there and then built one each, one after the other: the type ended up with one sub-index per
         // creator on every bucket, all fed by every write (issue #9741). Every build runs inside this write lock, so an
@@ -612,7 +615,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
 
         return null;
-      }, sortedBuild);
+      }), sortedBuild);
       final long recordFileChangesNanos = System.nanoTime() - recordFileChangesStarted;
 
       long cleanupNanos = 0L;
@@ -638,13 +641,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       } else
         created = null;
     } catch (final NeedRetryException e) {
-      if (cleanupIndexes(schema, indexes, e)
+      if (cleanedUp(cleanedInSession[0], schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
       restoreReplacedIndex(replaced[0], e);
       throw e;
     } catch (final Throwable e) {
-      if (cleanupIndexes(schema, indexes, e)
+      if (cleanedUp(cleanedInSession[0], schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
       restoreReplacedIndex(replaced[0], e);
@@ -1105,6 +1108,39 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (!((IndexInternal) index).setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
           IndexInternal.INDEX_STATUS.AVAILABLE))
         throw new IndexException("Cannot publish sorted index bucket '" + index.getName() + "'");
+  }
+
+  /**
+   * The build callback of the schema session, taking the indexes of a failed build away BEFORE the failure leaves the session
+   * (issue #10506). A replicated session decides whether it left a change on this node only by what is still there when its
+   * callback ends: a batch committed before the refusal is buffered with pages in the new index files, and when those files are
+   * still on disk at that moment the leader quarantines its database and resyncs it, for a CREATE INDEX that only had to cost the
+   * caller an error. Dropped in here, each drop cancels the create the session recorded and the buffered pages name files that
+   * are gone, so the session finds nothing left behind. The index a replacing build dropped is not put back here: that is a
+   * change of its own, made by a build of its own once the session is over (see {@link #restoreReplacedIndex}).
+   *
+   * @param cleanedInSession set to the outcome of the clean-up when the build failed, left null when it did not
+   */
+  private Callable<Object> cleaningUpOnFailure(final LocalSchema schema, final Index[] indexes, final Boolean[] cleanedInSession,
+      final Callable<Object> build) {
+    return () -> {
+      try {
+        return build.call();
+      } catch (final Throwable failure) {
+        cleanedInSession[0] = cleanupIndexes(schema, indexes, failure);
+        throw failure;
+      }
+    };
+  }
+
+  /**
+   * Whether the indexes of a failed build are gone: answered by the clean-up the schema session already ran when that one
+   * succeeded (issue #10506), otherwise by running it now - for a failure that never reached the session's callback, or a
+   * clean-up that failed inside it, this is the last chance to drop them.
+   */
+  private boolean cleanedUp(final Boolean cleanedInSession, final LocalSchema schema, final Index[] indexes,
+      final Throwable originalError) {
+    return Boolean.TRUE.equals(cleanedInSession) || cleanupIndexes(schema, indexes, originalError);
   }
 
   private boolean cleanupIndexes(final LocalSchema schema, final Index[] indexes, final Throwable originalError) {

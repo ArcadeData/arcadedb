@@ -3111,9 +3111,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *   <li>a failure AFTER the callback returned - the final entry refused, too large to split, the broker gone: always,
    *       since the callback's change is complete here and the final entry is the only thing that publishes it;</li>
    *   <li>a failure of the callback itself: only when a commit it made is still sitting unshipped in the buffer with a
-   *       page in a file this node still has. A callback that failed before committing anything, or whose engine code
-   *       dropped what it had built (a failed index build drops its index), left nothing behind, and quarantining it
-   *       would turn every refused DDL into a resync.</li>
+   *       page in a file this node still has, or when it dropped a file the session did not create (issue #10506: a
+   *       replacing index build drops the index it replaces before it fails, and every other node still holds that
+   *       file). A callback that failed before committing anything, or whose engine code dropped what it had built (a
+   *       failed index build drops its index, inside the session), left nothing behind, and quarantining it would turn
+   *       every refused DDL into a resync.</li>
    * </ul>
    */
   private Throwable unpublishedSchemaChange(final SchemaInstalmentState state, final Throwable sessionFailure,
@@ -3124,9 +3126,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return state.refusal;
     if (sessionFailure == null || state.indeterminate || isIndeterminatePublishFailure(sessionFailure))
       return null;
-    if (callbackReturned || bufferedWalTouchesFilesStillHere())
+    if (callbackReturned || bufferedWalTouchesFilesStillHere() || droppedAFileFromBeforeTheSession())
       return sessionFailure;
     return null;
+  }
+
+  /**
+   * Whether the failed session dropped a file it did not create (issue #10506): the file is gone here and still on every
+   * other node. The file manager cancels the recorded create of a file the session dropped again, so a DROP still in the
+   * recorded changes names a file that existed before the session started. Asked on the failure path only.
+   */
+  private boolean droppedAFileFromBeforeTheSession() {
+    final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
+    if (changes != null)
+      for (final FileManager.FileChange change : changes)
+        if (!change.create)
+          return true;
+    return false;
   }
 
   /**
