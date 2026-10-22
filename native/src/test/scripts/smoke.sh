@@ -67,6 +67,10 @@ trap cleanup EXIT
 # harmless on a run that does not enable the OTLP metrics or tracing plugin: nothing reads them.
 start_otlp_sink "$WORK"
 
+# An empty <root>/config, the layout of a volume mounted over /home/arcadedb/config (a Kubernetes PersistentVolumeClaim
+# or emptyDir, issue #10554): the server has to seed it from the defaults bundled in the binary, the only copy it sees.
+mkdir -p "$WORK/config"
+
 echo "[smoke] launching: $EXE $*"
 # Root every server-generated path (security config, groups, logs, databases) under the
 # disposable $WORK directory instead of the caller's current directory: the server otherwise
@@ -86,5 +90,20 @@ SRV_PID=$!
 HOST="$HOST" HTTP="$HTTP" PG="$PG" DB_USER="$DB_USER" PASS="$PASS" \
   SRV_PID="$SRV_PID" SERVER_LOG="$WORK/server.log" OTLP_SINK_DIR="$OTLP_SINK_DIR" \
   "$SCRIPT_DIR/exercise.sh"
+
+# Issue #10554: the bundled defaults are reachable inside the image. gremlin-server.yaml is written by nothing but the
+# seed, and the groups in force are the shipped ones, readonly group included.
+for f in server-groups.json gremlin-server.yaml gremlin-server.groovy gremlin-server.properties; do
+  if [ ! -s "$WORK/config/$f" ]; then
+    echo "[smoke] FAIL: the empty configuration directory was not seeded with the bundled $f"
+    cat "$WORK/server.log"
+    exit 1
+  fi
+done
+if ! grep -q '"readonly"' "$WORK/config/server-groups.json"; then
+  echo "[smoke] FAIL: the seeded server-groups.json has no readonly group"
+  exit 1
+fi
+echo "[smoke] bundled configuration defaults seeded"
 
 echo "[smoke] PASS"

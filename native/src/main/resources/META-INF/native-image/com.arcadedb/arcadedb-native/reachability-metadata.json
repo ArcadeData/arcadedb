@@ -4983,6 +4983,9 @@
       "glob": "com/arcadedb/arcadedb.properties"
     },
     {
+      "glob": "com/arcadedb/server/config/defaults/*"
+    },
+    {
       "glob": "io/undertow/version.properties"
     },
     {
