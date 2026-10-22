@@ -19,9 +19,9 @@
 package com.arcadedb.function.date;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.DateUtils;
 
 import java.time.DateTimeException;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -86,8 +86,10 @@ public class DateFields extends AbstractDateFunction {
     }
 
     final DateTimeFormatter formatter = getFormatter(format);
-    final LocalDateTime localDateTime = LocalDateTime.parse(dateStr, formatter);
-    final ZonedDateTime dateTime = localDateTime.atZone(zoneId);
+    // A text that names an offset or a zone is the instant it names (issue #10596): its own offset when no zone is asked for, the
+    // zone asked for otherwise. One that names none is read in `zoneId`, as it always was
+    final ZonedDateTime parsed = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, zoneId);
+    final ZonedDateTime dateTime = timezoneStr != null ? parsed.withZoneSameInstant(zoneId) : parsed;
 
     final Map<String, Object> fields = new HashMap<>();
     fields.put("year", (long) dateTime.getYear());

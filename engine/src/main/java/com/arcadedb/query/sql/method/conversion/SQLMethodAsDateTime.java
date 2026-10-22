@@ -57,16 +57,17 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     else if (value instanceof Number number)
       return DateUtils.getDate(value, dateTimeImpl);
 
-    // With an explicit format the caller has said exactly how to read the string, so that pattern alone applies.
+    // With an explicit format the caller has said exactly how to read the string, so that pattern alone decides WHAT is read.
     // Without one, the shared chain applies - the same one the write path uses - so `asDatetime()` accepts every
     // spelling an INSERT accepts, including the SQL timestamp with a fractional second (issue #8090), instead of
     // only the schema's single dateTimeFormat pattern.
     //
-    // ...AsUtc, the SAME overload Type.convert uses for a DATETIME, so reading a literal answers what writing it would
-    // have stored. The rebasing overload would make an offset-bearing literal read back shifted by the database's
-    // zone here while an INSERT of that same literal stored the UTC wall clock - one string, two answers, from two
-    // entry points that share this chain. date() takes the same overload for the same reason; asDate() keeps the
-    // wall clock, as a DATE does: the day written is the day meant.
+    // Either way the instant an offset-bearing text names is stored as the UTC wall clock, the SAME rule Type.convert applies
+    // to a DATETIME, so reading a literal answers what writing it would have stored. The rebasing overload would make an
+    // offset-bearing literal read back shifted by the database's zone here while an INSERT of that same literal stored the
+    // UTC wall clock - one string, two answers, from two entry points that share this chain. A named pattern is no exception
+    // (issue #10596): the same pattern converted when the schema applied it and did not when the caller named it. date() takes
+    // the same rule for the same reason; asDate() keeps the wall clock, as a DATE does: the day written is the day meant.
     //
     // A value that matches nothing answers null, as this method's contract has always promised and as the sibling
     // date() function already does. That is the READ side of the split issue #8090 drew: a write must refuse a
@@ -75,7 +76,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     final Object date;
     try {
       date = params.length > 0 && params[0] != null ?
-          DateUtils.parse(value.toString(), params[0].toString()) :
+          DateUtils.parseDateTimeWithFormat(value.toString(), params[0].toString(), null) :
           DateUtils.parseDateTime(context.getDatabase(), value.toString());
     } catch (final DateTimeParseException e) {
       return null;

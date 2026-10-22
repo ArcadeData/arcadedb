@@ -284,7 +284,7 @@ class DateUtilsTest {
     Locale.setDefault(Locale.Category.FORMAT, Locale.ITALIAN);
     try {
       assertThat(DateUtils.format(dateTime, pattern)).isEqualTo("04 March 2026 Wednesday");
-      assertThat(DateUtils.parse("04 March 2026 Wednesday", pattern)).isEqualTo(dateTime);
+      assertThat(DateUtils.parseDateTimeWithFormat("04 March 2026 Wednesday", pattern, null)).isEqualTo(dateTime);
     } finally {
       Locale.setDefault(Locale.Category.FORMAT, saved);
     }
