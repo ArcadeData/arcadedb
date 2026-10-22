@@ -841,7 +841,10 @@ public final class GraphAlgorithms {
   /**
    * {@link #shortestPathAll(GraphAnalyticalView.Pinned, int, Vertex.DIRECTION, String...)} that stops expanding at
    * {@code maxDepth}: a node further than that from the source is reported unreachable (-1), and the search never reads
-   * its edges (issue #10539).
+   * its edges (issue #10539). The answer is dense, one entry per node of the view: a caller that only needs the nodes
+   * reached should call {@link #breadthFirst} instead, which allocates by what it reaches.
+   *
+   * @see #breadthFirst
    */
   public static int[] shortestPathAll(final GraphAnalyticalView.Pinned view, final int source, final int maxDepth,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
@@ -973,7 +976,7 @@ public final class GraphAlgorithms {
     long[] frontierBitmap = null;
 
     // The result doubles as the frontier: the nodes of the level being expanded are order[frontierStart .. frontierEnd),
-    // and the level they discover is appended behind them
+    // and the level they discover is appended behind them. n >= 1 here (source is a valid node), so the array holds it
     int[] order = new int[Math.min(n, BFS_INITIAL_CAPACITY)];
     order[0] = source;
     int size = 1;
