@@ -4,9 +4,7 @@
 # diagnosis was wrong and is corrected here so nobody chases it again: the scan COMPLETES ("Execution successful!",
 # 633 dependencies uploaded). It fails on `Failed checks: [security]`, i.e. Meterian's own composite security score
 # of 0 against a minimum of 90, driven by real advisories in the transitive graph - CVE-2026-33186 (critical) in
-# google.golang.org/grpc pulled in by e2e-go, plus ~40 npm and Java findings. The uv lockfile error in
-# bindings/python is logged but non-fatal (that directory is `[tool.uv] managed = false` on purpose, so `uv lock`
-# refuses); --exclude-folders stops it being probed at all.
+# google.golang.org/grpc pulled in by e2e-go, plus ~40 npm and Java findings.
 #
 # The score is a property of the whole transitive graph and no individual pull request can move it, so gating every
 # push on it produced a permanent red X that taught reviewers to ignore red - the actual cost. The security findings
@@ -59,7 +57,7 @@ jobs:
         uses: MeterianHQ/meterian-github-action@9603528ad7eb3e76e7181d8d721bba25665a403d # v1.0.18
         with:
           cli_args: >-
-            --exclude-folders=**/bindings/python,**/e2e-go
+            --exclude-folders=**/e2e-go
             --report-console=nocolor
             --report-sarif=report.sarif
           oss: true

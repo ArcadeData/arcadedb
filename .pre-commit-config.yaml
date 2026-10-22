@@ -20,7 +20,7 @@ repos:
       - id: check-yaml
         args:
           - --allow-multiple-documents
-        exclude: ^(k8s/|bindings/python/mkdocs\.yml$)
+        exclude: ^k8s/
       - id: check-json
       - id: check-xml
   # native-image.yml's publishing steps run only on a published release, so a shell bug in one of
@@ -34,32 +34,6 @@ repos:
     hooks:
       - id: actionlint
         files: ^\.github/workflows/.*\.ya?ml$
-  - repo: https://github.com/psf/black
-    rev: 26.10.1
-    hooks:
-      - id: black
-        language_version: python3
-        files: ^bindings/python/.*\.py$
-  - repo: https://github.com/pycqa/isort
-    rev: 9.0.2
-    hooks:
-      - id: isort
-        args: ["--profile", "black"]
-        files: ^bindings/python/.*\.py$
-  - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.16.0
-    hooks:
-      - id: pretty-format-yaml
-        args:
-          - --autofix
-          - --indent=2
-        files: ^bindings/python/.*\.ya?ml$
-  - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.14.1-1
-    hooks:
-      - id: shfmt
-        args: ["-i", "4", "-ci", "-sr", "-w"]
-        files: ^bindings/python/.*\.sh$
   - repo: https://github.com/rbubley/mirrors-prettier
     rev: v3.9.10
     hooks:

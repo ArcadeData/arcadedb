@@ -52,11 +52,7 @@ DELIBERATE_PATHS='/grpc/src/generated/	the gRPC stubs generated into the source 
 src/**/*.egg-info/	the Python packaging metadata, written next to the package
 src/**/__pycache__/	the Python bytecode cache
 src/main/resources/static/dist/	the vendor libraries webpack copies into Studio
-src/main/resources/static/swagger-ui/	the Swagger UI webpack copies into Studio
-src/arcadedb_embedded/jre/	the JRE bindings/python/scripts/build-native.sh bundles
-src/arcadedb_embedded/jars/	the jars bindings/python/scripts/build-native.sh bundles
-src/arcadedb_embedded/_version.py	the version module bindings/python/scripts/write_version.py writes
-bindings/python/src/arcadedb_embedded/_version.py	the version module bindings/python/scripts/write_version.py writes'
+src/main/resources/static/swagger-ui/	the Swagger UI webpack copies into Studio'
 
 probes="$(mktemp)"
 trap 'rm -f "$probes"' EXIT
