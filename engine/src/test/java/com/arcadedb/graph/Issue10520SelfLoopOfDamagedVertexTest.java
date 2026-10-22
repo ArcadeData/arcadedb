@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -156,6 +157,48 @@ class Issue10520SelfLoopOfDamagedVertexTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.existsRecord(vertex)).isFalse());
     assertThat(events).as("the IN walk deletes the lightweight self-loop the OUT walk never saw").isEqualTo(1);
+  }
+
+  /**
+   * The same accounting on a promoted super-node, whose removal walk is one iterator per stripe chain sharing one record of the
+   * deleted self-loops: every self-loop listed on both sides is deleted once, and the one listed on the IN side only is still
+   * deleted.
+   */
+  @Test
+  void aPromotedSuperNodeDeletesEachSelfLoopOnce() {
+    final int savedThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(256);
+    try {
+      createSchema();
+      final int loops = 600;
+      final RID[] first = createVertexWithSelfLoop("E");
+      final RID vertex = first[0];
+      database.transaction(() -> {
+        final MutableVertex v = vertex.asVertex().modify();
+        for (int i = 1; i < loops; i++)
+          v.newEdge("E", v);
+      });
+      database.transaction(() -> {
+        final VertexInternal v = (VertexInternal) vertex.asVertex();
+        final GraphEngine engine = ((DatabaseInternal) database).getGraphEngine();
+        // the precondition: without promotion this would walk the plain chain again and prove nothing
+        assertThat(engine.getEdgeHeadChunk(v, Vertex.DIRECTION.OUT)).isInstanceOf(StripedEdgeList.class);
+        assertThat(engine.getEdgeHeadChunk(v, Vertex.DIRECTION.IN)).isInstanceOf(StripedEdgeList.class);
+      });
+
+      removeOutgoingEntry(vertex, first[1]);
+
+      final long events = deleteCountingEdgeEvents(vertex, "E");
+
+      database.transaction(() -> {
+        assertThat(database.existsRecord(vertex)).isFalse();
+        assertThat(database.countType("E", false)).isZero();
+      });
+      assertThat(events).as("each self-loop is deleted, and reported, exactly once").isEqualTo(loops);
+      assertIntegrityClean();
+    } finally {
+      GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
+    }
   }
 
   private void createSchema() {
