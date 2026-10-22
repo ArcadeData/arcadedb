@@ -98,6 +98,11 @@ public class MutablePage extends BasePage implements TrackableContent {
   // writer says otherwise, and a forgotten declaration costs the proof it was always paying, never a skipped one.
   private              boolean packedWriteInProgress      = false;
   private              boolean unpackedWrite              = false;
+  // Summary of the record table of a hole-free page (see rememberPackedScan): the slot count and the highest record
+  // offset the last scan (or the last plain append) saw. Valid until a write touches [0, packedScanEnd) of the page.
+  private              int     packedScanEnd              = -1;
+  private              int     packedScanRecords          = 0;
+  private              int     packedScanLastPosition     = 0;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -194,6 +199,35 @@ public class MutablePage extends BasePage implements TrackableContent {
     return freeSpaceClaimIsExact;
   }
 
+  /**
+   * Remembers that the record table of this page holds {@code recordCount} slots, none of them a hole, and that the
+   * highest record offset among them is {@code lastRecordPosition}. A bucket insert walks the whole record table to
+   * find a free slot and the end of the content, which costs time proportional to the records on the page for EVERY
+   * insert; a page this transaction keeps appending to can answer from this summary instead. The summary is dropped
+   * by the next write to the page header or to the record-table slots below {@code recordCount}: every mutation of a
+   * page passes {@link #updateModifiedRange}, the same invariant the hole-free shortcut of #9483 stands on. Writes to
+   * record content do not touch it, and need not: it holds offsets only, and the caller re-reads the size of the last
+   * record on every use.
+   *
+   * @param tableEnd content-relative offset one past the last record-table slot the summary covers
+   */
+  void rememberPackedScan(final int recordCount, final int lastRecordPosition, final int tableEnd) {
+    this.packedScanRecords = recordCount;
+    this.packedScanLastPosition = lastRecordPosition;
+    this.packedScanEnd = PAGE_HEADER_SIZE + tableEnd;
+  }
+
+  /**
+   * @return true when {@link #rememberPackedScan} still describes the page and the page holds exactly {@code recordCount} slots
+   */
+  boolean hasPackedScan(final int recordCount) {
+    return packedScanEnd >= 0 && packedScanRecords == recordCount;
+  }
+
+  int getPackedScanLastPosition() {
+    return packedScanLastPosition;
+  }
+
   public TrackableBinary getTrackable() {
     final ByteBuffer buffer = content.getByteBuffer();
     buffer.position(PAGE_HEADER_SIZE);
@@ -205,6 +239,7 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public void clearContent() {
+    packedScanEnd = -1;
     content.clear();
   }
 
@@ -460,6 +495,8 @@ public class MutablePage extends BasePage implements TrackableContent {
       throw new IllegalArgumentException(
           "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
 
+    if (start < packedScanEnd)
+      packedScanEnd = -1;
     // Whatever the current writer did NOT declare can no longer re-derive this page (issue #5596).
     uncoveredMechanisms |= COVERAGE_ALL_MERGES & ~declaredCoverage;
     // Every mutation of a page MUST pass through here (the WAL ships only what is tracked), which is the invariant the
