@@ -326,6 +326,16 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
+  // #10588: TransactionManager.getIndexRegistrationSequence() when this transaction began. An index bound to a type after it owes
+  // this transaction's writes to the buckets it covers an entry each, made up at the commit
+  private       long                                 indexRegistrationSequenceAtBegin;
+  // #10588: the indexes an index build already queued this transaction's writes for, which the commit must not queue again
+  private       Set<String>                          indexesReconciled;
+  // #10588: for each bucket this transaction has written to, how many indexes had been bound to a type since it began when it first
+  // wrote there. An index bound after that write owes the write an entry; one bound before it does not. lastNotedBucket spares the
+  // lookup for a run of writes into one bucket, the common case
+  private       IntIntHashMap                        bucketFirstWriteRegistrations;
+  private       int                                  lastNotedBucket = -1;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
@@ -442,6 +452,9 @@ public class TransactionContext implements Transaction {
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
+    indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
+    bucketFirstWriteRegistrations = null;
+    lastNotedBucket = -1;
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
@@ -634,6 +647,8 @@ public class TransactionContext implements Transaction {
    * need this; internal records such as edge segments are never re-saved by user code.
    */
   public void registerNewRecord(final Record record) {
+    if (record.getIdentity() != null)
+      noteBucketWritten(record.getIdentity().getBucketId());
     newRecords.add(record);
     if (newRecordRIDs != null)
       newRecordRIDs.add(record.getIdentity());
@@ -1529,6 +1544,8 @@ public class TransactionContext implements Transaction {
     // what it was written for (#4959): a delete by a genuinely CONCURRENT transaction, which no local state shows.
     if (deletedRecordsInTx.contains(rid))
       return false;
+
+    noteBucketWritten(rid.getBucketId());
 
     // #8610: modify() reloaded this record because a concurrent transaction committed a change to it after this
     // transaction read it; assigning properties now would write values computed from the older read over that change. A
@@ -2926,6 +2943,9 @@ public class TransactionContext implements Transaction {
           + "began (" + begunUnderWriteRefusal + "). Retry it");
     }
 
+    // Issue #10588: while the transaction is still BEGUN, the one state an index queues an entry instead of writing it
+    reconcileIndexesRegisteredSinceBegin();
+
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
     // Without this, concurrent updateRecordNoLock calls could both load the same page
@@ -3728,6 +3748,9 @@ public class TransactionContext implements Transaction {
     unidirectionalEdgeTargets = null;
     unidirectionalScanEpoch = -1L;
     scannedBuckets = null;
+    indexesReconciled = null;
+    bucketFirstWriteRegistrations = null;
+    lastNotedBucket = -1;
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
     // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
@@ -3976,6 +3999,97 @@ public class TransactionContext implements Transaction {
     });
   }
 
+  /**
+   * Records that the entries of the index for what this transaction wrote were queued on it by an index build that joined the
+   * transaction (issue #10588), so its commit does not queue them a second time: the pass is one read of the committed and the
+   * pending version of every record written to the bucket.
+   */
+  public void indexReconciled(final String indexName) {
+    if (indexesReconciled == null)
+      indexesReconciled = new HashSet<>();
+    indexesReconciled.add(indexName);
+  }
+
+  /**
+   * Remembers, the first time this transaction writes to a bucket, how many indexes have been bound to a type since it began
+   * (issue #10588). Called by every write to a bucket: a create, an update and a delete. The common case, one more write into the
+   * bucket the previous one went to, costs one compare.
+   */
+  private void noteBucketWritten(final int bucketId) {
+    if (bucketId == lastNotedBucket)
+      return;
+    lastNotedBucket = bucketId;
+    if (bucketFirstWriteRegistrations == null)
+      bucketFirstWriteRegistrations = new IntIntHashMap();
+    if (!bucketFirstWriteRegistrations.containsKey(bucketId))
+      bucketFirstWriteRegistrations.put(bucketId,
+          (int) (database.getTransactionManager().getIndexRegistrationSequence() - indexRegistrationSequenceAtBegin));
+  }
+
+  /**
+   * Whether this transaction wrote to the bucket before the index bound at {@code registrationSequence} was bound to its type: what
+   * it wrote then has no entry in that index, and is owed one (issue #10588). A bucket first written after the registration has its
+   * entries queued as they are written.
+   */
+  public boolean wroteToBucketBefore(final int bucketId, final long registrationSequence) {
+    if (bucketFirstWriteRegistrations == null)
+      return false;
+    final int registrationsBeforeFirstWrite = bucketFirstWriteRegistrations.get(bucketId, -1);
+    return registrationsBeforeFirstWrite >= 0 && indexRegistrationSequenceAtBegin + registrationsBeforeFirstWrite < registrationSequence;
+  }
+
+  /** Whether {@link #indexReconciled} was called for the index since this transaction began. */
+  public boolean isIndexReconciled(final String indexName) {
+    return indexesReconciled != null && indexesReconciled.contains(indexName);
+  }
+
+  /**
+   * Whether this transaction has queued an entry for the index with the given component files: it wrote to the bucket after the
+   * index was bound to its type (issue #10588). Costs one pass over the indexes the transaction queued entries for, so it is meant
+   * for the commit of a transaction an index was created under, not for a hot path.
+   */
+  public boolean hasQueuedIndexEntriesIn(final List<Integer> indexFileIds) {
+    return !indexChanges.isEmpty() && indexChanges.hasEntriesInFiles(indexFileIds);
+  }
+
+  /**
+   * Queues the entries this transaction owes the indexes bound to their type after it began (issue #10588).
+   * <p>
+   * An index build scans the committed state, so the records this transaction wrote and has not committed are invisible to it
+   * whoever holds the transaction - another session, or an outer frame of the builder's own stack - and the transaction queued no
+   * entry for the index when it saved them, because there was no index to queue it for. Left alone, the commit publishes records
+   * the index does not know: they are invisible to every index-backed query, and a UNIQUE index accepts a duplicate of their key.
+   * <p>
+   * Asked here, by the thread that owns the transaction, because nothing else may read its pages, and while the database read lock
+   * is held, which a schema change excludes: the set of indexes cannot change under the question. Costs one volatile read for a
+   * transaction no index was bound under, which is nearly all of them.
+   * <p>
+   * Runs while the status is still {@code BEGUN}: an index queues an entry on the transaction only in that state, and writes it at
+   * once in any other. A failure rolls the transaction back, as one in the commit itself does.
+   */
+  private void reconcileIndexesRegisteredSinceBegin() {
+    if (database.getTransactionManager().getIndexRegistrationSequence() == indexRegistrationSequenceAtBegin)
+      return;
+
+    if (database.getTransactionIfExists() != this) {
+      // The entries are queued on the transaction on top of the thread's stack, through the indexer: queueing them for this one
+      // from underneath another would put them in the wrong transaction
+      LogManager.instance().log(this, Level.WARNING,
+          "A transaction that began before an index was created is committing underneath another one: its records are not indexed by the new index");
+      return;
+    }
+
+    try {
+      database.getSchema().getEmbedded().reconcileIndexesRegisteredSince(this, indexRegistrationSequenceAtBegin);
+    } catch (final DuplicatedKeyException | NeedRetryException | TransactionException e) {
+      rollback();
+      throw e;
+    } catch (final Exception e) {
+      rollback();
+      throw new TransactionException("Transaction error on commit", e);
+    }
+  }
+
   private IntHashSet lockFilesFromChanges() {
     final IntHashSet modifiedFiles = new IntHashSet(modifiedPages.size() + 16);
 
@@ -4205,6 +4319,7 @@ public class TransactionContext implements Transaction {
    * @param rid The RID that was deleted
    */
   public void addDeletedRecord(final RID rid) {
+    noteBucketWritten(rid.getBucketId());
     if (deletedRecordsInTx.add(rid) && statement != null)
       statement.deletedAdded(rid);
     forgetSnapshotChunkChain(rid);

@@ -99,6 +99,10 @@ public class TransactionManager {
   // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
   private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
+  // Sequence of the bucket indexes bound to their type, and the number each of them took (#10588): what a transaction that began
+  // before an index existed asks at its commit to know which indexes it owes entries to
+  private final AtomicLong                   indexRegistrationSequence = new AtomicLong();
+  private final Map<String, Long>            indexRegisteredAt   = new ConcurrentHashMap<>();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
@@ -196,6 +200,41 @@ public class TransactionManager {
     final long sequence = unidirectionalEdgeSequence.incrementAndGet();
     // merge(max): with an explicit lock list two commits can reach here out of order
     targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.merge(bucketId, sequence, Math::max));
+  }
+
+  /**
+   * The sequence a transaction takes when it begins, to know at its commit whether an index was bound to its type since (issue
+   * #10588). A volatile read, so it is one compare on the commit path.
+   */
+  public long getIndexRegistrationSequence() {
+    return indexRegistrationSequence.get();
+  }
+
+  /**
+   * Called once a bucket index is bound to its type and so staged by every write that follows, under the schema's write lock. AFTER
+   * the binding and not before: a transaction that began between the two would otherwise hold the new sequence, save its record
+   * without the index there to queue an entry, and never learn at its commit that it owes one.
+   * <p>
+   * Every transaction that began before this call and writes to the index's bucket is owed an entry for it at its commit, because
+   * the build scans the committed state and could not see what it had written (see
+   * {@code LocalSchema#reconcileIndexesRegisteredSince}).
+   */
+  public void indexRegistered(final String indexName) {
+    indexRegisteredAt.put(indexName, indexRegistrationSequence.incrementAndGet());
+  }
+
+  /** Called when an index is dropped, so the registrations do not outlive the indexes they describe. */
+  public void indexUnregistered(final String indexName) {
+    indexRegisteredAt.remove(indexName);
+  }
+
+  /** The indexes bound to their type after {@code sequence} was taken, and still there, with the sequence each took. */
+  public Map<String, Long> getIndexesRegisteredSince(final long sequence) {
+    final Map<String, Long> registered = new HashMap<>();
+    for (final Map.Entry<String, Long> entry : indexRegisteredAt.entrySet())
+      if (entry.getValue() > sequence)
+        registered.put(entry.getKey(), entry.getValue());
+    return registered;
   }
 
   public TransactionManager(final DatabaseInternal database) {

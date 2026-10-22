@@ -28,6 +28,7 @@ import com.arcadedb.utility.DateUtils;
 
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,17 +50,32 @@ public class QueryOperatorEquals {
     if (right instanceof Calendar calendar)
       right = calendar.getTime();
 
+    // The same for a subclass of java.util.Date (java.sql.Timestamp, java.sql.Date) against a value of another class: it is no
+    // conversion target either, so a Timestamp on the left of "=" was never equal to the same instant as a LocalDateTime or a
+    // Date that the same value on the right matched, and the answer depended on the side the parameter stood on (issue #10595).
+    // A pair of one class is left alone: a Timestamp keeps its nanoseconds against another Timestamp
+    if (left instanceof Date date && !date.getClass().equals(Date.class) && !date.getClass().equals(right.getClass()))
+      left = new Date(date.getTime());
+    if (right instanceof Date date && !date.getClass().equals(Date.class) && !date.getClass().equals(left.getClass()))
+      right = new Date(date.getTime());
+
+    // Two lists or two maps - of one implementation or of two (a stored ArrayList against an immutable List.of() parameter) - are
+    // compared as they are, not converted into one another first, and element by element under THIS rule: two values "=" reports
+    // equal are equal as elements of a list or a map too (issues #10448, #10595). The comparator's own element rule knows numbers,
+    // BigDecimal scale and one temporal pair, and nothing else: the instant of a stored LocalDateTime was not equal to the same
+    // instant as a java.util.Date, an Instant, a Calendar or a Timestamp inside a list, and "<>" answered the row. This arm stands
+    // before the same-class one for that reason: two ArrayLists are a same-class pair
+    if (left instanceof List<?> list && right instanceof List<?> list1)
+      return BinaryComparator.listsEqual(list, list1, QueryOperatorEquals::elementsEqual);
+    if (left instanceof Map<?, ?> map && right instanceof Map<?, ?> map1)
+      return BinaryComparator.mapsEqual(map, map1, QueryOperatorEquals::elementsEqual);
+
     if (left.getClass().equals(right.getClass()))
       // SAME TYPE, NO CONVERSION
       return BinaryComparator.equals(left, right);
 
     // EmbeddedDocument has null identity; the Identifiable branch below would misroute it as a sub-query result.
     if (left instanceof EmbeddedDocument && right instanceof EmbeddedDocument)
-      return BinaryComparator.equals(left, right);
-
-    // Two lists or two maps of different implementations (a stored ArrayList against an immutable List.of() parameter) are compared
-    // as they are, not converted into one another first: the elements follow the numeric rule of "=" (issue #10448)
-    if ((left instanceof List && right instanceof List) || (left instanceof Map && right instanceof Map))
       return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {
@@ -112,6 +128,13 @@ public class QueryOperatorEquals {
     } catch (final Exception ignore) {
       return false;
     }
+  }
+
+  /** A pair of elements of two lists or maps: {@code =} itself, except that {@code null} is equal to {@code null} as it is in a list. */
+  private static boolean elementsEqual(final Object left, final Object right) {
+    if (left == null || right == null)
+      return left == right;
+    return equals(left, right);
   }
 
   // "=" semantics, tried both ways like the list form of IN (the other side is converted to the class of the column, or the column to

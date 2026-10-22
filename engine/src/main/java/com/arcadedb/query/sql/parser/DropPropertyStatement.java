@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -78,8 +79,14 @@ public class DropPropertyStatement extends DDLStatement {
     final List<TypeIndex> indexes = sourceClass.getIndexesByProperties(propertyName.getStringValue());
     if (!indexes.isEmpty()) {
       if (force) {
+        // One statement: the indexes go together or not at all (issue #10589), not one after the other with a refusal from the second
+        // coming after the first was gone
+        final List<String> indexNames = new ArrayList<>(indexes.size());
+        for (final Index index : indexes)
+          indexNames.add(index.getName());
+        database.getSchema().getEmbedded().dropIndexes(indexNames);
+
         for (final Index index : indexes) {
-          database.getSchema().dropIndex(index.getName());
           final ResultInternal result = new ResultInternal(database);
           result.setProperty("operation", "cascade drop index");
           result.setProperty("indexName", index.getName());

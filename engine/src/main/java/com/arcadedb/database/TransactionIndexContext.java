@@ -661,6 +661,26 @@ public class TransactionIndexContext {
     return winners;
   }
 
+  /**
+   * Whether an entry is queued for an index with a component file among {@code indexFileIds} (issue #10588). Exactly that index's
+   * entries: {@link #addFilesToLock} adds the files of the siblings of a UNIQUE index too, for the cross-bucket check, so it cannot
+   * tell the entries of one sub-index from those of the next.
+   */
+  public boolean hasEntriesInFiles(final Collection<Integer> indexFileIds) {
+    final List<String> indexNames = new ArrayList<>(indexEntries.size() + unorderedEntries.size());
+    indexNames.addAll(indexEntries.keySet());
+    indexNames.addAll(unorderedEntries.keySet());
+
+    for (final String indexName : indexNames) {
+      if (!laneIndexStillExists(indexName))
+        continue;
+      for (final int fileId : resolveIndex(indexName).getFileIds())
+        if (indexFileIds.contains(fileId))
+          return true;
+    }
+    return false;
+  }
+
   public void addFilesToLock(final IntHashSet modifiedFiles) {
     final Schema schema = database.getSchema();
 
