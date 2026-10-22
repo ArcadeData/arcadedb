@@ -68,6 +68,31 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   // groupSize=1000 would otherwise request 5,000,000 candidates). Shared with the stale top-up of every k-NN entry point.
   private static final int MAX_FETCH_CANDIDATES = VectorUtils.MAX_FETCH_CANDIDATES;
 
+  /**
+   * Reads the {@code rerank} option: absent (or null) is -1, the default of the index; otherwise a whole number >= 0. A value that is not
+   * whole ({@code 2.5}), not a number, or outside the {@code int} range is refused instead of being truncated to another count.
+   */
+  private static int parseRerank(final Object value) {
+    if (value == null)
+      return -1;
+    final double asDouble;
+    if (value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte)
+      asDouble = ((Number) value).longValue();
+    else if (value instanceof Number n)
+      asDouble = n.doubleValue();
+    else
+      try {
+        asDouble = Integer.parseInt(value.toString().trim());
+      } catch (final NumberFormatException e) {
+        throw new CommandSQLParsingException(NAME + " rerank must be an integer >= 0, got " + value);
+      }
+    if (Double.isNaN(asDouble) || Double.isInfinite(asDouble) || asDouble != Math.rint(asDouble) || asDouble > Integer.MAX_VALUE)
+      throw new CommandSQLParsingException(NAME + " rerank must be an integer >= 0, got " + value);
+    if (asDouble < 0)
+      throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + value);
+    return (int) asDouble;
+  }
+
   public SQLFunctionVectorNeighbors() {
     super(NAME);
   }
@@ -109,9 +134,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         efSearch = opts.getInt("efSearch", -1);
         // `rerank` is the number of candidates per requested neighbour that a PRODUCT index scores again on the stored vectors
         // after walking its graph on the PQ codes (issue #10514): absent is the default of the index, 0 keeps the PQ scores
-        rerank = opts.getInt("rerank", -1);
-        if (opts.get("rerank") != null && rerank < 0)
-          throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + rerank);
+        rerank = parseRerank(opts.get("rerank"));
         // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of
         // listing every RID in scope up front as a `filter` subquery has to (issue #10169)
         allowedRIDs = RecordPredicateRidSet.of(opts.get("where"), parseRidFilter(opts.getList("filter"), NAME, context), NAME,

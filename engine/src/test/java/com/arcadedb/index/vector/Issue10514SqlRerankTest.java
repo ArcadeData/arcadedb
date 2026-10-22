@@ -159,6 +159,34 @@ class Issue10514SqlRerankTest extends TestHelper {
         .hasMessageContaining("rerank");
   }
 
+  // Issue #10568: `rerank: 2.5` was read with getInt and silently truncated to 2
+  @Test
+  void aRerankThatIsNotAWholeNumberIsRefused() {
+    final float[][] base = clustered(new Random(6L), 500);
+    load(base, "PRODUCT");
+    for (final Object bad : new Object[] { 2.5, 2.5f, 0.1, Double.NaN, Double.POSITIVE_INFINITY, "2.5", "abc", 3_000_000_000L })
+      assertThatThrownBy(() -> sql(base[0], Map.of("rerank", bad))).as("rerank %s", bad)
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("vector.neighbors rerank must be an integer >= 0, got " + bad);
+    assertThatThrownBy(() -> sql(base[0], Map.of("rerank", -2.0))).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("rerank must be >= 0");
+  }
+
+  @Test
+  void aRerankThatIsAWholeNumberStillWorks() {
+    final float[][] base = clustered(new Random(7L), 500);
+    load(base, "PRODUCT");
+    final List<Result> reference = sql(base[0], Map.of("rerank", 2));
+    assertThat(reference).hasSize(K);
+    for (final Object whole : new Object[] { 2L, (short) 2, 2.0, 2.0f, "2" }) {
+      final List<Result> rows = sql(base[0], Map.of("rerank", whole));
+      assertThat(rows).as("rerank %s", whole).hasSameSizeAs(reference);
+      for (int i = 0; i < rows.size(); i++)
+        assertThat((int) rows.get(i).getProperty("vid")).isEqualTo((int) reference.get(i).getProperty("vid"));
+    }
+    assertThat(sql(base[0], Map.of("rerank", 0))).hasSize(K);
+  }
+
   @Test
   void otherQuantizationsKeepTheirExactWalkAndIgnoreRerank() {
     final float[][] base = clustered(new Random(5L), 3000);
