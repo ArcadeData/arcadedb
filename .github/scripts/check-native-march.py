@@ -54,7 +54,12 @@ from pathlib import Path
 PROPERTY = "native.march"
 
 # The os.arch values a JVM reports on the platforms native-image.yml and the local scripts build on.
-# Linux and Windows report amd64, macOS reports x86_64, for the same architecture.
+# Linux and Windows report amd64, macOS reports x86_64, for the same architecture. An arch outside
+# this table falls back to the pom's native.march default and is not checked here.
+#
+# These patterns only reject a baseline of the wrong family; they deliberately accept a RAISED one
+# such as x86-64-v4 (AVX-512) or armv8.4-a. Raising the baseline drops CPUs, so it is the docs check
+# in main() that catches it: the new value is not in docs/native-image.md until someone says so.
 ARCHES = {
     "amd64": re.compile(r"^(compatibility|x86-64(-v[1-4])?)$"),
     "x86_64": re.compile(r"^(compatibility|x86-64(-v[1-4])?)$"),

@@ -116,7 +116,8 @@ while [ $# -gt 0 ]; do
     --builder-memory=*) BUILDER_MEMORY="${1#*=}"; shift ;;
     --builder-parallelism)   BUILDER_PARALLELISM="${2:-}"; shift 2 ;;
     --builder-parallelism=*) BUILDER_PARALLELISM="${1#*=}"; shift ;;
-    --march)            MARCH="${2:-}"; shift 2 ;;
+    --march)            [ $# -ge 2 ] || fail "--march requires a value (e.g. compatibility)"
+                        MARCH="$2"; shift 2 ;;
     --march=*)          MARCH="${1#*=}"; shift ;;
     --allow-low-memory) ALLOW_LOW_MEMORY=1; shift ;;
     --rebuild-builder)  REBUILD_BUILDER=1; shift ;;
