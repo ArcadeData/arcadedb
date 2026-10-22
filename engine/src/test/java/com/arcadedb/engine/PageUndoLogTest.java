@@ -211,6 +211,29 @@ class PageUndoLogTest extends TestHelper {
   }
 
   @Test
+  void theSummaryOfTheRecordTableOfAPageComesBackWithItsBytes() {
+    final MutablePage page = newPage(new Random(7));
+    final PageUndoLog log = new PageUndoLog();
+
+    // THE PAGE IS KNOWN TO HOLD THREE SLOTS, NONE A HOLE
+    page.rememberPackedScan(3, 200, 50);
+    assertThat(page.hasPackedScan(3)).isTrue();
+
+    // A STATEMENT APPENDS: ITS WRITE TO THE RECORD TABLE DROPS THE SUMMARY, AND IT IS REMEMBERED AGAIN FOR ONE SLOT MORE
+    log.begin(page, null);
+    page.writeInt(10, 7);
+    page.rememberPackedScan(4, 999, 60);
+    assertThat(page.hasPackedScan(4)).isTrue();
+    log.restore();
+    log.end();
+
+    // THE BYTES ARE THOSE OF THREE SLOTS AGAIN, AND SO IS WHAT THE PAGE REMEMBERS OF THEM
+    assertThat(page.hasPackedScan(3)).isTrue();
+    assertThat(page.getPackedScanLastPosition()).isEqualTo(200);
+    assertThat(page.hasPackedScan(4)).isFalse();
+  }
+
+  @Test
   void aLogThatRanOutOfBudgetRefusesToRestoreInsteadOfRestoringHalfAPage() {
     final MutablePage page = newPage(new Random(5));
     final PageUndoLog log = new PageUndoLog();

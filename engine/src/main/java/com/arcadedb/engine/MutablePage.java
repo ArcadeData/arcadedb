@@ -136,6 +136,9 @@ public class MutablePage extends BasePage implements TrackableContent {
     private       boolean freeSpaceClaimIsExact;
     private       boolean packedWriteInProgress;
     private       boolean unpackedWrite;
+    private       int     packedScanEnd;
+    private       int     packedScanRecords;
+    private       int     packedScanLastPosition;
   }
 
   static {
@@ -184,6 +187,9 @@ public class MutablePage extends BasePage implements TrackableContent {
     target.freeSpaceClaimIsExact = freeSpaceClaimIsExact;
     target.packedWriteInProgress = packedWriteInProgress;
     target.unpackedWrite = unpackedWrite;
+    target.packedScanEnd = packedScanEnd;
+    target.packedScanRecords = packedScanRecords;
+    target.packedScanLastPosition = packedScanLastPosition;
   }
 
   /** Gives the page back the bookkeeping {@link #captureState} saved. The bytes are the log's to restore. */
@@ -197,6 +203,9 @@ public class MutablePage extends BasePage implements TrackableContent {
     freeSpaceClaimIsExact = source.freeSpaceClaimIsExact;
     packedWriteInProgress = source.packedWriteInProgress;
     unpackedWrite = source.unpackedWrite;
+    packedScanEnd = source.packedScanEnd;
+    packedScanRecords = source.packedScanRecords;
+    packedScanLastPosition = source.packedScanLastPosition;
   }
 
   void setUndoLog(final PageUndoLog undoLog) {
