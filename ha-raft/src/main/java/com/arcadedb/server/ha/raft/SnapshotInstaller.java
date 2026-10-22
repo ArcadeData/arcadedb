@@ -143,19 +143,6 @@ public final class SnapshotInstaller {
    */
   private static final Set<String> SNAPSHOT_MACHINERY_DIRS = Set.of(SNAPSHOT_NEW_DIR, SNAPSHOT_BACKUP_DIR, SNAPSHOT_ORPHANS_DIR);
 
-  /**
-   * Every entry the install keeps in a database directory, by exact name and sorted, for the instructions an operator reads when a
-   * restore could not finish. Never "whatever starts with .snapshot": a bucket may legally be named that way (issue #9446).
-   * <p>
-   * A method and not a constant on purpose: {@code SnapshotManagerTest} and {@code Issue9446SnapshotPrefixedBucketTest} treat every
-   * static String of this class whose value starts with ".snapshot" as one more entry the install writes into a database directory.
-   */
-  private static String machineryEntryNames() {
-    final Set<String> names = new TreeSet<>(SNAPSHOT_MACHINERY_FILES);
-    names.addAll(SNAPSHOT_MACHINERY_DIRS);
-    return String.join(", ", names);
-  }
-
   /** Whether {@code name} is one of the files the snapshot install keeps in a database directory, see {@link #SNAPSHOT_MACHINERY_FILES}. */
   static boolean isSnapshotMachineryFileName(final String name) {
     return SNAPSHOT_MACHINERY_FILES.contains(name);
@@ -1181,13 +1168,13 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
-          + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
-          + "(1) stop the node; (2) keep .snapshot-backup untouched until step 4 has completed, it is the only intact "
-          + "copy; (3) in the database directory delete only the entries that are not one of the installer's own ("
-          + machineryEntryNames() + ") and did not come from .snapshot-backup: the entries the failed "
-          + "restore already moved out of it are in the database directory now and must stay; (4) move the contents "
-          + "of .snapshot-backup into the database directory (schema.json last); (5) delete the installer's own "
-          + "entries listed in step 3");
+          + "resolve the underlying problem (typically a full or read-only volume) and restart the node: startup "
+          + "recovery resumes the recorded swap phase and completes the restore from .snapshot-backup by itself, "
+          + "after which a new install can run. Until then delete nothing by hand, neither in .snapshot-backup nor in "
+          + "the database directory: the database directory can hold originals the failed install never moved into "
+          + "the backup, entries the failed restore already moved back and files of the failed snapshot, and a name "
+          + "does not tell which. If the node cannot complete it, copy the database directory and .snapshot-backup "
+          + "aside before touching either");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");

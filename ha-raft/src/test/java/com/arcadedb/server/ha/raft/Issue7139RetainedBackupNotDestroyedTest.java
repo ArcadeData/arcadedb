@@ -164,8 +164,10 @@ class Issue7139RetainedBackupNotDestroyedTest {
         serverThatCannotDownload(databasesDir)))
         .isInstanceOf(IOException.class)
         .hasMessageContaining("only intact copy")
-        // the operator is told the installer's own entries by exact name: a bucket may legally start with ".snapshot" (#9446)
-        .hasMessageContaining(".snapshot-new, .snapshot-orphans, .snapshot-pending")
+        // the operator is sent to the restart-time recovery and told to delete nothing by hand: a live entry absent from the backup
+        // can be an original the failed install never moved into it, and a name does not tell (#10426)
+        .hasMessageContaining("restart the node")
+        .hasMessageContaining("delete nothing by hand")
         .hasMessageNotContaining("start with '.snapshot'");
 
     assertThat(backup).as("the last copy of the database must survive a refused install").exists();
