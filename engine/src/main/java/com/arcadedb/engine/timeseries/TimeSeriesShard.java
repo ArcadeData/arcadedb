@@ -28,7 +28,10 @@ import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.ContinuousAggregate;
+import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.io.File;
 import java.io.IOException;
@@ -347,7 +350,8 @@ public class TimeSeriesShard implements AutoCloseable {
    * freshly-cleared page (see issue #4458). In standalone mode the lock is held through commit as
    * before, since there is no recording-session deadlock.
    * <p>
-   * The source is read once per retry attempt and never retained.
+   * The source is read once per retry attempt, and its timestamps once more after the commit when the type has a continuous
+   * aggregate (issue #10502). It is never retained.
    */
   public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
@@ -355,6 +359,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // getWrappedDatabaseInstance() returns the same instance.
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
 
+    boolean committed = false;
     appendLock.lock();
     try {
       for (int attempt = 3; attempt > 0; attempt--) {
@@ -381,7 +386,8 @@ public class TimeSeriesShard implements AutoCloseable {
           }
           try {
             tx.commit();
-            return; // success
+            committed = true;
+            break; // success
           } catch (final ConcurrentModificationException e) {
             // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
             // Roll back and retry on the freshly-cleared page. Usually a no-op - commit1stPhase has already
@@ -406,6 +412,57 @@ public class TimeSeriesShard implements AutoCloseable {
     } finally {
       appendLock.unlock();
     }
+
+    // After the commit and outside the append lock: the schema save it may do must not hold up the other appends of this shard
+    if (committed)
+      invalidateContinuousAggregatesBehindWatermark(source);
+  }
+
+  /**
+   * Tells the continuous aggregates over this type that the samples just appended are behind their watermark, when some are (issue
+   * #10502): the incremental refresh reads only the samples at or after the watermark, so those would never reach their buckets. The
+   * next refresh recomputes the buckets they are in, and the record is saved with the schema so a restart does not forget it.
+   * <p>
+   * Every way samples are appended goes through {@link #appendSamples(TimeSeriesRowSource)} (SQL {@code INSERT}, the engine API, the
+   * async API, the line protocol and the other ingest gateways), which is why it is checked here. The timestamps are read only when
+   * the type has an aggregate, and the schema is saved only when a record changed: a stream of late samples saves it once per bucket
+   * reached, see {@link ContinuousAggregateImpl#invalidateLateSamples}. Retention and compaction remove or move samples without an
+   * append and record nothing: an aggregate outlives the raw samples it summarized.
+   */
+  private void invalidateContinuousAggregatesBehindWatermark(final TimeSeriesRowSource source) {
+    final int size = source.size();
+    if (size == 0)
+      return;
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final ContinuousAggregate[] aggregates = schema.getContinuousAggregates();
+    if (aggregates.length == 0)
+      return;
+
+    long minTs = Long.MAX_VALUE;
+    long maxTs = Long.MIN_VALUE;
+    boolean scanned = false;
+    boolean changed = false;
+    for (final ContinuousAggregate aggregate : aggregates) {
+      // by the engine and not by name: the engine keeps the name its type was created with, an aggregate follows a rename (#10096)
+      if (!(aggregate instanceof ContinuousAggregateImpl impl)
+          || !(schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType)
+          || sourceType.getEngine() == null || sourceType.getEngine().getShard(shardIndex) != this)
+        continue;
+      if (!scanned) {
+        for (int row = 0; row < size; row++) {
+          final long ts = source.getTimestamp(row);
+          if (ts < minTs)
+            minTs = ts;
+          if (ts > maxTs)
+            maxTs = ts;
+        }
+        scanned = true;
+      }
+      if (impl.invalidateLateSamples(minTs, maxTs))
+        changed = true;
+    }
+    if (changed)
+      schema.saveConfiguration();
   }
 
   /**

@@ -62,8 +62,8 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    */
   private volatile boolean                needsCleanRebuild;
   /**
-   * The time range samples of the source type were removed from since the buckets of the aggregate were last computed, or
-   * {@code null} when none were (issue #10428). The refresh only recomputes the bucket open at the watermark and the newer ones, so
+   * The time range samples of the source type were removed from (issue #10428), or appended to behind the watermark (issue #10502),
+   * since the buckets of the aggregate were last computed, or {@code null} when none were. The refresh only recomputes the bucket open at the watermark and the newer ones, so
    * the buckets behind the watermark keep what they held when they were computed; this is what tells it which of them no longer
    * match the source. One range, the hull of every delete since: recomputing a bucket the delete did not reach gives the rows it
    * already had, so a wider range costs time and never correctness.
@@ -259,9 +259,9 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   }
 
   /**
-   * Samples with a timestamp in {@code [fromTs, toTs]} were removed from the source type (issue #10428). The bounds are the ones of
-   * the delete, not bucket boundaries: the refresh finds the buckets they reach in the backing type, which holds every bucket start
-   * the grid of the aggregate produced, whatever origin or offset the {@code ts.timeBucket()} of its query gives it.
+   * Samples with a timestamp in {@code [fromTs, toTs]} were removed from the source type (issue #10428), or appended to it behind the
+   * watermark (issue #10502). The bounds need not be bucket boundaries: the refresh finds the buckets they reach on the grid the
+   * watermark is a start of.
    */
   public record Invalidation(long fromTs, long toTs) {
     Invalidation merge(final Invalidation other) {
@@ -285,6 +285,44 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
       return added.merge(current);
     });
     return widened[0];
+  }
+
+  /**
+   * Records the samples an append has just committed with timestamps in {@code [minTs, maxTs]}, when some of them are behind the
+   * watermark (issue #10502): the incremental refresh reads only the samples at or after the watermark, so those would never reach
+   * their buckets. Called once the append has committed, never before: a refresh that read the source before the commit and cleared
+   * the record would lose the samples. The caller persists the schema when the answer is {@code true}.
+   * <p>
+   * The range recorded is widened to whole buckets on the grid the watermark is a start of, and clipped to before the watermark (the
+   * samples at or after it are read by the refresh anyway). A bucket is recomputed whole whatever part of it the range covers, so
+   * the widening costs nothing, and it makes the later samples of a bucket already recorded change nothing the schema holds: a
+   * stream of late samples saves the schema once per bucket it reaches, not once per batch.
+   *
+   * @return {@code false} when no sample is behind the watermark, or the buckets were already recorded
+   */
+  public boolean invalidateLateSamples(final long minTs, final long maxTs) {
+    final Watermark current = watermark;
+    // never refreshed: the first refresh reads every sample
+    if (!current.set() || minTs >= current.timestamp() || minTs > maxTs)
+      return false;
+    final long watermarkTs = current.timestamp();
+    final long lastLate = Math.min(maxTs, watermarkTs - 1);
+    if (bucketIntervalMs <= 0)
+      return invalidate(minTs, lastLate);
+    // the start of a bucket of the grid at or before the watermark is at most watermarkTs - bucketIntervalMs, so no overflow
+    return invalidate(bucketStart(minTs, watermarkTs, bucketIntervalMs),
+        Math.min(bucketStart(lastLate, watermarkTs, bucketIntervalMs) + (bucketIntervalMs - 1), watermarkTs - 1));
+  }
+
+  /**
+   * The start of the bucket {@code ts} is in, on the grid of buckets {@code interval} wide that {@code anchor} (a bucket start, the
+   * watermark) is on. {@code ts.timeBucket()} takes fixed units only and refuses a time zone whose offset changes, so every bucket is
+   * {@code interval} wide and the grid is known from any one of its starts, whatever origin, offset or zone the query gives it.
+   * {@link Long#MIN_VALUE} when the start is before the first representable instant.
+   */
+  static long bucketStart(final long ts, final long anchor, final long interval) {
+    final long offset = Math.floorMod(Math.floorMod(ts, interval) - Math.floorMod(anchor, interval), interval);
+    return ts < Long.MIN_VALUE + offset ? Long.MIN_VALUE : ts - offset;
   }
 
   /** The range recorded by {@link #invalidate}, or {@code null} when the buckets of the aggregate all match the source. */
