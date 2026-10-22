@@ -17,9 +17,3 @@ paths:
   .github/workflows/studio-security-audit.yml:
     ignore:
       - 'shellcheck reported issue in this script: SC(2016|2162):'
-  .github/workflows/test-python-bindings.yml:
-    ignore:
-      - 'shellcheck reported issue in this script: SC(2001|2010|2012|2086|2129):'
-  .github/workflows/test-python-examples.yml:
-    ignore:
-      - 'shellcheck reported issue in this script: SC(2010|2012|2086|2129|2188):'

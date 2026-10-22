@@ -5,15 +5,9 @@ on:
   pull_request:
     branches:
       - main
-    # Skip if only Python bindings change
-    paths-ignore:
-      - 'bindings/python/**'
   push:
     branches:
       - main
-    # Skip if only Python bindings change
-    paths-ignore:
-      - 'bindings/python/**'
 
 permissions:
   contents: read
