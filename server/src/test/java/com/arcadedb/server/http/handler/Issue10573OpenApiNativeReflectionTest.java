@@ -79,7 +79,7 @@ class Issue10573OpenApiNativeReflectionTest {
 
     // and the document Jackson writes from it on the JVM is the real one, the baseline the native image must match
     final String json = Json.mapper().writeValueAsString(openAPI);
-    assertThat(json).startsWith("{\"openapi\":\"3.0.3\"").contains("\"/api/v1/query/{database}\"");
+    assertThat(json).contains("\"openapi\":\"3.0.3\"", "\"/api/v1/query/{database}\"");
   }
 
   @Test

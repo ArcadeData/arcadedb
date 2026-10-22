@@ -56,10 +56,10 @@ public final class OpenApiModelReflectionFeature implements Feature {
 
   @Override
   public void beforeAnalysis(final BeforeAnalysisAccess access) {
-    access.registerSubtypeReachabilityHandler((a, type) -> {
-      if (isOpenApiType(type.getName()))
-        register(type);
-    }, Object.class);
+    // The model and mix-in classes share no supertype of their own (Schema, PathItem, Paths extends LinkedHashMap, the
+    // mix-ins are plain abstract classes), so the handler watches every reachable type and keeps those of the two
+    // packages: a prefix test per type, at build time only
+    access.registerSubtypeReachabilityHandler((a, type) -> registerIfOpenApiType(type), Object.class);
   }
 
   static boolean isOpenApiType(final String className) {
@@ -74,6 +74,11 @@ public final class OpenApiModelReflectionFeature implements Feature {
       return;
 
     RuntimeReflection.register(type);
+    // Two kinds of registration, both needed. registerAll* lets the member QUERIES Jackson runs
+    // (getDeclaredMethods(), getDeclaredFields(), getMethods(), ...) answer in full rather than with only the registered
+    // members; register(members) makes the members INVOCABLE, since Jackson then calls the getters and constructors it
+    // found. A query registration alone returns members that fail when invoked; an invocation registration alone misses
+    // whatever was not listed
     RuntimeReflection.registerAllDeclaredConstructors(type);
     RuntimeReflection.registerAllDeclaredMethods(type);
     RuntimeReflection.registerAllDeclaredFields(type);
@@ -91,21 +96,34 @@ public final class OpenApiModelReflectionFeature implements Feature {
   }
 
   /**
-   * Registers the classes an annotation names as a value, such as {@code @JsonSerialize(using = PathsSerializer.class)}:
-   * Jackson instantiates them by reflection, and nothing else in the image may make them reachable.
+   * Registers the classes an annotation names as a value, such as {@code @JsonSerialize(using = PathsSerializer.class)}
+   * or a {@code Class[]} such as {@code @JsonSubTypes}' types: Jackson instantiates or introspects them by reflection, and
+   * nothing else in the image may make them reachable.
    */
   private void registerAnnotationReferencedClasses(final AnnotatedElement element) {
     for (final Annotation annotation : element.getDeclaredAnnotations())
       for (final Method attribute : annotation.annotationType().getDeclaredMethods()) {
-        if (attribute.getParameterCount() != 0 || attribute.getReturnType() != Class.class)
+        final Class<?> attributeType = attribute.getReturnType();
+        if (attribute.getParameterCount() != 0 || (attributeType != Class.class && attributeType != Class[].class))
           continue;
+        final Object value;
         try {
-          final Class<?> referenced = (Class<?>) attribute.invoke(annotation);
-          if (referenced != null && isOpenApiType(referenced.getName()))
-            register(referenced);
-        } catch (final ReflectiveOperationException | RuntimeException e) {
-          // an attribute that cannot be read names nothing to register
+          value = attribute.invoke(annotation);
+        } catch (final ReflectiveOperationException e) {
+          // An annotation type this class cannot access: the build must not hide it, since what it names stays unregistered
+          throw new IllegalStateException("Cannot read " + annotation.annotationType().getName() + "." + attribute.getName()
+              + " on " + element + " to register the classes it names for reflection", e);
         }
+        if (value instanceof Class<?> referenced)
+          registerIfOpenApiType(referenced);
+        else if (value instanceof Class<?>[] referencedClasses)
+          for (final Class<?> referenced : referencedClasses)
+            registerIfOpenApiType(referenced);
       }
+  }
+
+  private void registerIfOpenApiType(final Class<?> type) {
+    if (isOpenApiType(type.getName()))
+      register(type);
   }
 }
