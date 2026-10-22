@@ -45,7 +45,10 @@ class FullTextIndexMetadataLengthSignatureTest {
   @Test
   void theSignatureNamesTheIndexAnalyzerAndTheLengthRule() {
     final FullTextIndexMetadata metadata = metadata();
-    assertThat(metadata.getLengthSignature()).isEqualTo(FullTextIndexMetadata.DEFAULT_ANALYZER + "#" + FullTextIndexMetadata.LENGTH_MEASURE_VERSION);
+    // NO INDEX HAS BOUND THE RULE: THE ANALYZER IS NAMED, THE RULE IS NOT KNOWN
+    assertThat(metadata.getLengthSignature()).isEqualTo(FullTextIndexMetadata.DEFAULT_ANALYZER + "#-");
+    metadata.bindLengthRule("rule-a");
+    assertThat(metadata.getLengthSignature()).isEqualTo(FullTextIndexMetadata.DEFAULT_ANALYZER + "#rule-a");
 
     // ONLY THE ANALYZER THAT MEASURES A LENGTH TAKES PART: THE QUERY ANALYZER AND THE PER-FIELD ONES DO NOT
     metadata.setQueryAnalyzerClass(KEYWORD_ANALYZER);
@@ -86,13 +89,18 @@ class FullTextIndexMetadataLengthSignatureTest {
   @Test
   void anotherLengthRuleThanTheOneThatMeasuredIsFound() {
     final FullTextIndexMetadata metadata = metadata();
+    metadata.bindLengthRule("rule-a");
     metadata.setCounters(5, 15);
     final JSONObject definition = metadata.writeToJSON(new JSONObject());
 
-    // THE COUNTERS WERE MEASURED BY A RULE THAT COUNTED TOKENS DIFFERENTLY
-    definition.put("ft_lengthSignature", definition.getString("ft_lengthSignature").replaceAll("#\\d+$", "#0"));
+    // THE INDEX THAT LOADS THE DEFINITION COUNTS TOKENS BY ANOTHER RULE THAN THE ONE THAT MEASURED THE COUNTERS
+    final FullTextIndexMetadata sameRule = restored(definition);
+    sameRule.bindLengthRule("rule-a");
+    assertThat(sameRule.isMeasuredWithAnotherAnalyzer()).isFalse();
 
-    assertThat(restored(definition).isMeasuredWithAnotherAnalyzer()).isTrue();
+    final FullTextIndexMetadata anotherRule = restored(definition);
+    anotherRule.bindLengthRule("rule-b");
+    assertThat(anotherRule.isMeasuredWithAnotherAnalyzer()).isTrue();
   }
 
   @Test
@@ -106,7 +114,10 @@ class FullTextIndexMetadataLengthSignatureTest {
     final FullTextIndexMetadata restored = restored(definition);
 
     assertThat(restored.isMeasuredWithAnotherAnalyzer()).isFalse();
-    // THE NEXT SAVE RECORDS THE ANALYZER THE INDEX HAS NOW
+    // A METADATA NO INDEX HAS BOUND THE RULE TO CANNOT SAY WHAT IT WOULD MEASURE WITH: IT RECORDS NOTHING, AND THE COUNTERS STAY TRUSTED
+    assertThat(restored.writeToJSON(new JSONObject()).has("ft_lengthSignature")).isFalse();
+    // THE NEXT SAVE OF THE INDEX THAT OWNS THE ANALYZER RECORDS WHAT THE INDEX HAS NOW
+    restored.bindLengthRule("rule-a");
     assertThat(restored.writeToJSON(new JSONObject()).getString("ft_lengthSignature")).isEqualTo(restored.getLengthSignature());
   }
 
@@ -148,7 +159,7 @@ class FullTextIndexMetadataLengthSignatureTest {
     follower.setCounters(5, 15);
 
     final JSONObject leader = new JSONObject().put("ft_countersValid", true).put("ft_countersEpoch", 1L).put("ft_totalDocs", 7L)
-        .put("ft_sumDocLength", 7L).put("ft_lengthSignature", KEYWORD_ANALYZER + "#" + FullTextIndexMetadata.LENGTH_MEASURE_VERSION);
+        .put("ft_sumDocLength", 7L).put("ft_lengthSignature", KEYWORD_ANALYZER + "#-");
     assertThat(follower.adoptPersistedCounters(leader)).isTrue();
     // THE FOLLOWER ANALYZES WITH THE STANDARD ANALYZER, THE LEADER MEASURED WITH THE KEYWORD ONE
     assertThat(follower.isMeasuredWithAnotherAnalyzer()).isTrue();

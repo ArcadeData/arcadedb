@@ -135,6 +135,19 @@ public class BinaryTypes {
     };
   }
 
+  /**
+   * What a {@link Result} coming from a query is stored as: the record it wraps - {@link #TYPE_RID} when it has an identity,
+   * {@link #TYPE_EMBEDDED} when it is an element nobody has saved - or, for a row that is not a record, its map
+   * ({@link #TYPE_MAP}). It is the single definition of that rule: {@link #getTypeFromValue} picks the label from it and
+   * {@code BinarySerializer.serializeValue} hands the same value to the label's branch, so a branch always receives the
+   * thing it expects and a new label cannot forget to unwrap (issues #10264, #10607).
+   *
+   * @return a {@link Document} for an element, the row's map otherwise
+   */
+  public static Object unwrapResult(final Result result) {
+    return result.isElement() ? result.getElement().get() : result.toMap();
+  }
+
   public static byte getTypeFromValue(final Object value, final Property propertyType) {
     final byte type;
 
@@ -209,13 +222,9 @@ public class BinaryTypes {
     else if (value instanceof Document document)
       type = document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
     else if (value instanceof Result result) {
-      // COMING FROM A QUERY
-      if (result.isElement()) {
-        final Document document = result.getElement().get();
-        type = document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
-      } else
-        // SERIALIZE THE RESULT AS A MAP
-        type = TYPE_MAP;
+      // COMING FROM A QUERY: THE LABEL IS THE ONE OF WHAT unwrapResult() HANDS TO THE SERIALIZER, SO THE TWO CANNOT DISAGREE
+      final Object unwrapped = unwrapResult(result);
+      type = unwrapped instanceof Document document ? document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED : TYPE_MAP;
     } else if (value.getClass().isArray()) {
       // DECIDE THE BINARY TYPE FROM THE ARRAY'S DECLARED COMPONENT TYPE, NOT FROM ITS FIRST ELEMENT: SNIFFING THE
       // FIRST ELEMENT MADE AN EMPTY PRIMITIVE ARRAY (WHOSE "FIRST ELEMENT" IS null) FALL BACK TO TYPE_LIST, SO THE

@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONObject;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -184,12 +185,12 @@ class Issue10397Bm25AnalyzerDriftTest extends TestHelper {
   }
 
   /**
-   * Pins the rule that counts the tokens of a document to its version. If this fails because the rule changed (what a null
-   * value, an empty text or a token counts for), bump {@code FullTextIndexMetadata.LENGTH_MEASURE_VERSION} with the new numbers:
-   * the counters persisted by the old rule are then rescanned instead of trusted.
+   * Pins what the rule that counts the tokens of a document gives for a fixture, and that the signature the counters are saved
+   * with is the one derived from the analyzer and the rule themselves ({@link FullTextLengthSignature}, issue #10606). There is no
+   * version to bump when the rule changes: the signature follows, and the counters persisted by the old rule are rescanned.
    */
   @Test
-  void theRuleThatCountsTheTokensIsPinnedToItsVersion() {
+  void theRuleThatCountsTheTokensIsPinnedToItsDerivedSignature() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
       database.command("sql", "CREATE PROPERTY Doc.content STRING");
@@ -204,7 +205,10 @@ class Issue10397Bm25AnalyzerDriftTest extends TestHelper {
     });
 
     assertThat(metadata().getCountersPair()).as("documents and tokens: a null value is a document of no token").containsExactly(4L, 8L);
-    assertThat(FullTextIndexMetadata.LENGTH_MEASURE_VERSION).as("the version of the rule these numbers are of").isEqualTo(1);
+    try (final StandardAnalyzer analyzer = new StandardAnalyzer()) {
+      assertThat(metadata().getLengthSignature()).as("derived from what the analyzer and the rule do, not from a number")
+          .isEqualTo(FullTextIndexMetadata.DEFAULT_ANALYZER + "#" + FullTextLengthSignature.of(analyzer));
+    }
   }
 
   private Map<String, Object> describe() {
