@@ -652,6 +652,894 @@
       ]
     },
     {
+      "type": "com.arcadedb.query.sql.antlr.StatementExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.antlr.SubqueryExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Alias",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlignDatabaseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterBucketStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterDatabaseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterGraphAnalyticalViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterMaterializedViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterPropertyStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterTimeSeriesTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AlterTypeStatement$Item",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.AndBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArrayConcatExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArrayConcatExpressionElement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArrayLiteralExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArrayNumberSelector",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArrayRangeSelector",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArraySelector",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ArraySingleValuesSelector",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BackupDatabaseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BaseExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BaseIdentifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Batch",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BeginStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BetweenCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BinaryCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BooleanExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BooleanExpression$1",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BooleanExpression$2",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BooleanExpression$3",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BothPathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BothPathItemOpt",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BreakStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Bucket",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BucketIdentifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.BucketList",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CaseAlternative",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CaseExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CheckDatabaseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CommitStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CompactIndexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CompactTimeSeriesTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CompareOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ConditionBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ConsoleStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsAllCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsAnyCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsKeyOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsTextCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsValueCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ContainsValueOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateBucketStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateContinuousAggregateStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateDocumentTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateEdgeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateEdgeTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateGraphAnalyticalViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateIndexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateIndexStatement$Property",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateMaterializedViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreatePropertyAttributeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreatePropertyStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateTimeSeriesTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateTimeSeriesTypeStatement$ColumnDef",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateTriggerStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateTypeAbstractStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateVertexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateVertexStatementEmpty",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateVertexStatementEmptyNoTarget",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateVertexStatementNoTarget",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.CreateVertexTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DDLStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DefineFunctionStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DeleteFunctionStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DeleteStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropBucketStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropContinuousAggregateStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropGraphAnalyticalViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropIndexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropMaterializedViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropPropertyStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropTriggerStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.DropTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.EqualsCompareOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ExplainStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ExportDatabaseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Expression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ExpressionStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FieldMatchPathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FindReferencesStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FirstLevelExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FloatingPoint",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ForEachBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FromClause",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FromItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FunctionCall",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.GeOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.GroupBy",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.GtOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ILikeOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Identifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IfNotExists",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IfStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ImportDatabaseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InPathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InPathItemOpt",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IndexIdentifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IndexMatchCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InputParameter",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InsertBody",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InsertSetExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InsertStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.InstanceofCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IsDefinedCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IsNotDefinedCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IsNotNullCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.IsNullCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Json",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.JsonArray",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.JsonItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LeOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LetClause",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LetItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LetStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LevelZeroIdentifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LikeOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Limit",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LockStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.LtOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchFilter",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchFilterItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchPathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchPathItemFirst",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MatchesCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MathExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MethodCall",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Modifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MoveVertexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MultiMatchPathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.MultiMatchPathItemArrows",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NamedParameter",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NeOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NearOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NeqOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NestedProjection",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NestedProjectionItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NotBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.NullSafeEqualsCompareOperator",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.OrBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.OrderBy",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.OrderByItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.OutPathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.OutPathItemOpt",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.PCollection",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.PInteger",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.PNumber",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.PString",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ParenthesisBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ParenthesisExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Parse",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ParseCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ParseExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ParseScript",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Pattern",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.PositionalParameter",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ProfileStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Projection",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ProjectionItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.QueryStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RebuildGraphAnalyticalViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RebuildIndexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RebuildTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RecordAttribute",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RefreshContinuousAggregateStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RefreshMaterializedViewStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ResourcePathItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RestoreDocumentStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RestoreEdgeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RestoreVertexStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Retry",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ReturnStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Rid",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RightBinaryCondition",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.RollbackStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SchemaIdentifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SelectStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SelectWithoutTargetStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SetGlobalStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SimpleExecStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SimpleNode",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Skip",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SleepStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Statement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.StatementInternal",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.StatementSemicolon",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.SuffixIdentifier",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Timeout",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.TraverseProjectionItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.TraverseStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.TruncateBucketStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.TruncateRecordStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.TruncateTypeStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Unwind",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdateAddItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdateIncrementItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdateItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdateOperations",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdatePutItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdateRemoveItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.UpdateStatement",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Url",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.ValueExpression",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.Wait",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.WhereClause",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.WhileBlock",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.WithinOperator",
+      "allDeclaredFields": true
+    },
+    {
       "type": "com.arcadedb.redis.RedisProtocolPlugin"
     },
     {

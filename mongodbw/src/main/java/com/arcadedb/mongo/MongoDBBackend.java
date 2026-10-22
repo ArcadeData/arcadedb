@@ -43,7 +43,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * The ArcadeDB side of the bundled mongo-java-server. Every call the library's Netty handler makes with a client's request
@@ -73,6 +75,22 @@ public class MongoDBBackend extends AbstractMongoBackend {
   // SASL PLAIN (RFC 4616) separates [authzid] NUL authcid NUL passwd with the NUL character.
   private static final String SASL_PLAIN_SEPARATOR  = "\u0000";
 
+  private static final String ADMIN_DATABASE = "admin";
+
+  /**
+   * Answered by {@code AbstractMongoBackend.handleCommand} itself, before it resolves any database, on whatever database
+   * the client names. Lower case.
+   */
+  private static final Set<String> NO_DATABASE_COMMANDS = Set.of("whatsmyuri", "ismaster", "buildinfo", "ping", "serverstatus");
+
+  /**
+   * The admin commands a driver or shell sends while it connects, before it authenticates: answered from constants or not
+   * at all, reading no database and no cursor. Lower case.
+   */
+  private static final Set<String> ADMIN_HANDSHAKE_COMMANDS = Set.of("hello", "getlasterror", "endsessions",
+      "connectionstatus", "hostinfo", "getcmdlineopts", "getfreemonitoringstatus", "getlog", "replsetgetstatus",
+      "getparameter", "atlasversion");
+
   private final ArcadeDBServer        server;
   private final MongoDBProtocolPlugin plugin;
 
@@ -101,12 +119,20 @@ public class MongoDBBackend extends AbstractMongoBackend {
     }
   }
 
-  /** An OP_QUERY on a collection: the library hands it to the database's {@code handleQuery}, past every command. */
+  /**
+   * An OP_QUERY on a collection: the library hands it to the database's {@code handleQuery}, past every command, so it is
+   * authorized here exactly as a command on that database is. Whatever the database is called: the library resolves (and
+   * opens) it by name, so an {@code admin}, {@code local} or {@code $}-prefixed name is no exemption on this door.
+   */
   @Override
   public QueryResult handleQuery(final MongoQuery query) {
     final String enclosing = tagAsMongo();
     try {
-      return super.handleQuery(query);
+      final Channel channel = query.getChannel();
+      final String databaseName = query.getDatabaseName();
+      final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Query on '" + query.getFullCollectionName() + "'");
+      return runAuthorized(channel, databaseName, user, true, () -> "query " + query.getFullCollectionName() + " " + query.getQuery(),
+          () -> super.handleQuery(query));
     } finally {
       restoreProtocol(enclosing);
     }
@@ -145,69 +171,103 @@ public class MongoDBBackend extends AbstractMongoBackend {
       // A single round-trip is enough for PLAIN, so a saslContinue is unexpected: treat it as a failed conversation.
       throw new MongoServerError(AUTHENTICATION_FAILED, "AuthenticationFailed", "Authentication conversation already completed");
 
-    // Commands that address a real (user) database read or write stored data: they require an
-    // authenticated principal that is authorized for that database, and the principal is bound into the
-    // engine so per-type ACLs enforce - mirroring the Postgres and BOLT transports (GHSA-fq9c-x968-g278).
-    // Handshake/diagnostic commands (hello, isMaster, ping, ...) target a virtual admin database and are
-    // let through so drivers can complete the connection handshake before authenticating.
-    if (isUserDatabase(databaseName)) {
-      ServerSecurityUser user = authenticatedUsers.get(channel);
-      if (user == null)
-        throw new MongoServerError(UNAUTHORIZED, "Unauthorized", "Command '" + command + "' requires authentication");
+    // The handshake and diagnostic commands the library answers itself, without resolving any database: let through so
+    // drivers can complete the connection handshake before authenticating.
+    final String normalizedCommand = command.toLowerCase(Locale.ENGLISH);
+    if (NO_DATABASE_COMMANDS.contains(normalizedCommand))
+      return super.handleCommand(channel, databaseName, command, query);
 
-      try {
-        // The live principal: a user deleted, re-passworded or stripped of a grant since the SASL login must not keep
-        // the access it had when it authenticated.
-        final ServerSecurityUser current = server.getSecurity().revalidate(user);
-        if (current != user) {
-          user = current;
-          authenticatedUsers.put(channel, current);
-        }
-      } catch (final ServerSecurityException e) {
-        authenticatedUsers.remove(channel);
-        throw new MongoServerError(UNAUTHORIZED, "Unauthorized", "Command '" + command + "' requires authentication");
-      }
-
-      if (!user.canAccessToDatabase(databaseName))
-        throw new MongoServerError(UNAUTHORIZED, "Unauthorized",
-            "User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
-
-      return handleAuthorizedCommand(channel, databaseName, command, query, user);
+    // Commands that address a database read or write stored data: they require an authenticated principal that is
+    // authorized for that database, and the principal is bound into the engine so per-type ACLs enforce - mirroring the
+    // Postgres and BOLT transports. Every name but the virtual admin one is such a database: the library resolves (and
+    // opens) "local" or "config" by name exactly like any other, so a database called that is no exemption.
+    if (!isAdminDatabase(databaseName)) {
+      final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Command '" + command + "'");
+      // A cursor continuation is not admitted: it only serves the rows its find already read, and refusing it would break a
+      // cursor the client cannot resume
+      final boolean admit = !"getmore".equals(normalizedCommand) && !"killcursors".equals(normalizedCommand);
+      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> super.handleCommand(channel,
+          databaseName, command, query));
     }
 
+    // The virtual admin database: the handshake commands stay public, anything else (listDatabases, renameCollection,
+    // getMore, killCursors, dropDatabase...) touches the server's databases or another client's cursors and needs a login
+    if (!ADMIN_HANDSHAKE_COMMANDS.contains(normalizedCommand)) {
+      final ServerSecurityUser user = authenticated(channel, "Command '" + command + "'");
+      // these two resolve the database the library is told about, which for the admin namespace is one named "admin"
+      if (("dropdatabase".equals(normalizedCommand) || "getmore".equals(normalizedCommand)) && !user.canAccessToDatabase(
+          databaseName))
+        throw notAuthorizedOn(user, databaseName);
+    }
     return super.handleCommand(channel, databaseName, command, query);
   }
 
   /**
-   * Binds the authenticated principal into {@link DatabaseContext} for the target database so the engine's
-   * per-database and per-type ACLs enforce while the command executes, then clears it. The MongoDB backend
-   * processes each connection's commands synchronously on its Netty channel thread, so the binding is
-   * confined to the current command.
+   * The principal authenticated on {@code channel}, revalidated against the live security configuration, and authorized for
+   * {@code databaseName}.
+   *
+   * @throws MongoServerError {@code Unauthorized} when the connection has not authenticated, when its user no longer
+   *                          validates, or when the user has no grant on the database
    */
-  private Document handleAuthorizedCommand(final Channel channel, final String databaseName, final String command,
-      final Document query, final ServerSecurityUser user) {
+  private ServerSecurityUser authorizeOnDatabase(final Channel channel, final String databaseName, final String what) {
+    final ServerSecurityUser user = authenticated(channel, what);
+    if (!user.canAccessToDatabase(databaseName))
+      throw notAuthorizedOn(user, databaseName);
+    return user;
+  }
+
+  /**
+   * The principal authenticated on {@code channel}, revalidated: a user deleted, re-passworded or stripped of a grant since
+   * the SASL login must not keep the access it had when it authenticated.
+   */
+  private ServerSecurityUser authenticated(final Channel channel, final String what) {
+    final ServerSecurityUser user = authenticatedUsers.get(channel);
+    if (user == null)
+      throw new MongoServerError(UNAUTHORIZED, "Unauthorized", what + " requires authentication");
+
+    try {
+      final ServerSecurityUser current = server.getSecurity().revalidate(user);
+      if (current != user)
+        authenticatedUsers.put(channel, current);
+      return current;
+    } catch (final ServerSecurityException e) {
+      authenticatedUsers.remove(channel);
+      throw new MongoServerError(UNAUTHORIZED, "Unauthorized", what + " requires authentication");
+    }
+  }
+
+  private static MongoServerError notAuthorizedOn(final ServerSecurityUser user, final String databaseName) {
+    return new MongoServerError(UNAUTHORIZED, "Unauthorized",
+        "User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+  }
+
+  /**
+   * Runs {@code work} for an authorized principal: through the query admission gate when {@code admit}, listed as a running
+   * query, and with the principal bound into {@link DatabaseContext} for the target database so the engine's per-database and
+   * per-type ACLs enforce, then cleared. The MongoDB backend processes each connection's requests synchronously on its Netty
+   * channel thread, so the binding is confined to the current request.
+   */
+  private <T> T runAuthorized(final Channel channel, final String databaseName, final ServerSecurityUser user,
+      final boolean admit, final Supplier<String> statement, final Supplier<T> work) {
     // The query admission gate (issue #9518), WITHOUT waiting: this runs on the Netty channel thread, which also serves the
-    // other connections assigned to it, so it must never park. A command that cannot start at once is refused with a code
-    // the drivers retry. A cursor continuation is not gated: it only serves the rows its find already read, and refusing
-    // it would break a cursor the client cannot resume
+    // other connections assigned to it, so it must never park. A request that cannot start at once is refused with a code
+    // the drivers retry
     final QueryAdmissionGate.Ticket admission;
     try {
-      admission = "getMore".equalsIgnoreCase(command) || "killCursors".equalsIgnoreCase(command) ?
-          null :
-          QueryAdmissionGate.getInstance().admit(0);
+      admission = admit ? QueryAdmissionGate.getInstance().admit(0) : null;
     } catch (final QueryAdmissionException e) {
       throw new MongoServerError(EXCEEDED_TIME_LIMIT, "ExceededTimeLimit", e.getMessage());
     }
 
     // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate (issue #9689), over the same window as the
-    // slot. The command document is described only if somebody lists it
-    final RunningQuery runningQuery = admission != null ? registerRunningQuery(channel, databaseName, command, query, user) : null;
+    // slot. The request is described only if somebody lists it
+    final RunningQuery runningQuery = admission != null ? registerRunningQuery(channel, databaseName, statement, user) : null;
     try {
       final DatabaseInternal database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
       ctx.setCurrentUser(user.getDatabaseUser(database));
       try {
-        return super.handleCommand(channel, databaseName, command, query);
+        return work.get();
       } finally {
         ctx.setCurrentUser(null);
       }
@@ -223,13 +283,13 @@ public class MongoDBBackend extends AbstractMongoBackend {
     }
   }
 
-  private RunningQuery registerRunningQuery(final Channel channel, final String databaseName, final String command,
-      final Document query, final ServerSecurityUser user) {
+  private RunningQuery registerRunningQuery(final Channel channel, final String databaseName, final Supplier<String> statement,
+      final ServerSecurityUser user) {
     final RunningQuery runningQuery = server.getRunningQueries().register(databaseName, user.getName(), "mongodb", null, null,
         RunningQuery.Client.of(channel.id().asShortText(), channel.remoteAddress()));
-    // Read on the listing thread while the command runs: a document the backend changes meanwhile can at worst fail the
+    // Read on the listing thread while the request runs: a document the backend changes meanwhile can at worst fail the
     // read, which RunningQuery.getText() turns into an entry listed without its text
-    runningQuery.setStatement("mongo", () -> command + " " + query.toString());
+    runningQuery.setStatement("mongo", statement);
     return runningQuery;
   }
 
@@ -264,14 +324,12 @@ public class MongoDBBackend extends AbstractMongoBackend {
   }
 
   /**
-   * A user (real) database is anything that is not one of MongoDB's virtual administrative databases.
-   * Only these carry stored data, so only these require authorization and principal binding.
+   * The virtual administrative namespace the library answers its admin commands on: {@code admin} exactly, as the library
+   * compares it, or an authentication source such as {@code $external}. Any other name is resolved (and opened) as a database
+   * by the library, so it requires authorization and principal binding.
    */
-  private static boolean isUserDatabase(final String databaseName) {
-    if (databaseName == null || databaseName.isEmpty() || databaseName.startsWith("$"))
-      return false;
-    final String normalized = databaseName.toLowerCase(Locale.ENGLISH);
-    return !"admin".equals(normalized) && !"local".equals(normalized) && !"config".equals(normalized);
+  private static boolean isAdminDatabase(final String databaseName) {
+    return databaseName == null || databaseName.isEmpty() || databaseName.startsWith("$") || ADMIN_DATABASE.equals(databaseName);
   }
 
   /**
