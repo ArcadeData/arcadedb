@@ -692,6 +692,34 @@ class StatementSavepointTest extends TestHelper {
   }
 
   @Test
+  void aWriteStatementRunsToItsEndInsideTheCallWhetherOrNotItsResultIsRead() {
+    // The savepoint ends when the call returns: a write that waited for its result to be read would fail after it
+    database.command("sql", "CREATE VERTEX TYPE Person").close();
+    database.begin();
+
+    database.command("sql", "INSERT INTO T (id, k) VALUES (1, 1), (2, 2), (3, 3)");
+    assertThat(ids()).containsExactly(1L, 2L, 3L);
+
+    database.command("sql", "UPDATE T SET k = k + 10");
+    assertThat(idByUniqueK(11)).isEqualTo(1L);
+    assertThat(idByUniqueK(13)).isEqualTo(3L);
+
+    database.command("sql", "DELETE FROM T WHERE id = 2");
+    assertThat(ids()).containsExactly(1L, 3L);
+
+    database.command("opencypher", "UNWIND [1, 2, 3] AS i CREATE (:Person {n: i})");
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Person")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(3L);
+    }
+
+    database.command("opencypher", "MATCH (p:Person) SET p.seen = true");
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Person WHERE seen = true")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(3L);
+    }
+    database.rollback();
+  }
+
+  @Test
   void aStatementRunByAnotherIsTakenBackWithIt() {
     database.command("sql", "CREATE DOCUMENT TYPE Log").close();
     database.command("sql", "CREATE PROPERTY Log.n INTEGER").close();
