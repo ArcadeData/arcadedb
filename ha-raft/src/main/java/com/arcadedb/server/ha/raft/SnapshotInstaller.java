@@ -146,9 +146,10 @@ public final class SnapshotInstaller {
   /**
    * Every entry the install keeps in a database directory, by exact name and sorted, for the instructions an operator reads when a
    * restore could not finish. Never "whatever starts with .snapshot": a bucket may legally be named that way (issue #9446).
+   * <p>
+   * A method and not a constant on purpose: {@code SnapshotManagerTest} and {@code Issue9446SnapshotPrefixedBucketTest} treat every
+   * static String of this class whose value starts with ".snapshot" as one more entry the install writes into a database directory.
    */
-  private static final String SNAPSHOT_MACHINERY_ENTRY_NAMES = machineryEntryNames();
-
   private static String machineryEntryNames() {
     final Set<String> names = new TreeSet<>(SNAPSHOT_MACHINERY_FILES);
     names.addAll(SNAPSHOT_MACHINERY_DIRS);
@@ -1183,7 +1184,7 @@ public final class SnapshotInstaller {
           + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
           + "(1) stop the node; (2) keep .snapshot-backup untouched until step 4 has completed, it is the only intact "
           + "copy; (3) in the database directory delete only the entries that are not one of the installer's own ("
-          + SNAPSHOT_MACHINERY_ENTRY_NAMES + ") and did not come from .snapshot-backup: the entries the failed "
+          + machineryEntryNames() + ") and did not come from .snapshot-backup: the entries the failed "
           + "restore already moved out of it are in the database directory now and must stay; (4) move the contents "
           + "of .snapshot-backup into the database directory (schema.json last); (5) delete the installer's own "
           + "entries listed in step 3");
