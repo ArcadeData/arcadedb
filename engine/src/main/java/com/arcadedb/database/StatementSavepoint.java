@@ -83,6 +83,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private boolean active;
   private boolean rolledBack;
   private String  unrestorable;
+  private boolean queuedRecordNotKept;
   private Throwable nestedFailure;
   private long    beginSequence;
   private long    epoch;
@@ -135,6 +136,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     this.active = true;
     this.rolledBack = false;
     this.unrestorable = null;
+    this.queuedRecordNotKept = false;
     this.nestedFailure = null;
     this.limit = limit;
     this.grainBudget = limit;
@@ -167,15 +169,15 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   boolean hasChanges() {
     return size > 0 || logCount > 0 || !pendingRecords.isEmpty() || !obtained.isEmpty()
         || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0 || tx.getUnidirectionalScanEpoch() != scanEpoch
-        || tx.getScannedBucketsCount() != scannedBucketsCount;
+        || tx.getScannedBucketsCount() != scannedBucketsCount || queuedRecordNotKept;
   }
 
   /**
-   * Whether the statement changed the transaction itself (its pages, the records it holds, its index entries), as opposed to objects
-   * the caller holds: what a statement that could not be taken back leaves behind in what the commit publishes.
+   * Whether the statement was handed the object an earlier statement queued for the commit and could not keep a copy of it to put back:
+   * it may have changed the object before it failed, with nothing journaled, and the commit would store what it left there.
    */
-  boolean hasChangedTransaction() {
-    return size > 0 || logCount > 0 || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0;
+  boolean isQueuedRecordNotKept() {
+    return queuedRecordNotKept;
   }
 
   /** Whether {@link #rollback()} took the statement back. */
@@ -265,8 +267,10 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   void updatedPut(final RID rid, final Record previous, final Record record) {
     if (queuedInStatement == null)
       queuedInStatement = new RidHashSet(64);
-    if (queuedInStatement.add(rid) && previous != null && previous == record && (snapshotted == null || !snapshotted.contains(rid)))
+    if (queuedInStatement.add(rid) && previous != null && previous == record && (snapshotted == null || !snapshotted.contains(rid))) {
       markUnrestorable("the statement changed again the record " + rid + ", updated by an earlier statement of the transaction");
+      queuedRecordNotKept = true;
+    }
     add(OP_UPDATED, rid, previous, null, 0, 0);
   }
 
@@ -313,10 +317,12 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       // kind has no way to be put back
       markUnrestorable("the statement read the record " + rid + ", updated by an earlier statement of the transaction, and its content "
           + "cannot be kept");
+      queuedRecordNotKept = true;
       return;
     }
     if (pendingRecords.size() >= limit) {
       markUnrestorable("the statement read more than " + limit + " records updated by earlier statements of the transaction");
+      queuedRecordNotKept = true;
       return;
     }
     try {
@@ -337,6 +343,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       pendingRecords.add(record);
     } catch (final RuntimeException e) {
       markUnrestorable("the record " + rid + ", updated by an earlier statement of the transaction, cannot be kept (" + e.getMessage() + ")");
+      queuedRecordNotKept = true;
     }
   }
 
@@ -585,6 +592,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     queuedInStatement = null;
     snapshotted = null;
     scannedBuckets = null;
+    queuedRecordNotKept = false;
     obtained.clear();
     pendingRecords.clear();
     pendingSnapshots.clear();

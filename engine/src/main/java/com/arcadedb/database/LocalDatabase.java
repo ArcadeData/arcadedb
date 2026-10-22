@@ -2166,11 +2166,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       success = true;
       stats.deleteRecord.incrementAndGet();
 
-      // INVOKE EVENT CALLBACKS
-      events.onAfterDelete(record);
-      if (record instanceof Document document)
-        ((LocalDocumentType) document.getType()).fireAfterDelete(record);
-
+      // COUNTED BEFORE THE LISTENERS THAT RUN ONCE THE DELETE IS APPLIED, as a create and an update are: a listener that fails leaves a
+      // delete in the transaction, and the guard of a failed statement (issues #10194, #10346) has to see it
       final TransactionContext transaction = getTransaction();
       transaction.countCompletedRecordWrite();
       if (DeferredExistenceChecks.anyScopeArmed())
@@ -2180,6 +2177,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // subtract. Folding a -1 anyway drifts the cached counter behind count(*), and the drift is persisted in
         // statistics.json, so it survives a reopen.
         transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
+
+      // INVOKE EVENT CALLBACKS
+      events.onAfterDelete(record);
+      if (record instanceof Document document)
+        ((LocalDocumentType) document.getType()).fireAfterDelete(record);
 
     } finally {
       if (implicitTransaction) {

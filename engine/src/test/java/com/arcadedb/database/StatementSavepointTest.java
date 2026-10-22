@@ -568,6 +568,40 @@ class StatementSavepointTest extends TestHelper {
   }
 
   @Test
+  void aStatementThatCannotBeTakenBackAndFailsBeforeItCompletedAWriteStillRefusesTheCommit() {
+    database.command("sql", "CREATE PROPERTY T.blob STRING").close();
+    database.command("sql", "ALTER PROPERTY T.blob EXTERNAL true").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T (id, k, blob) VALUES (1, 1, 'a'), (2, 2, 'b')").close();
+    });
+
+    database.begin();
+    // THE EARLIER STATEMENT QUEUES THE FIRST ROW FOR THE COMMIT, WITH ITS NEW CONTENT
+    database.command("sql", "UPDATE T SET k = 10 WHERE id = 1").close();
+    final RID first;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM T WHERE id = 1")) {
+      first = rs.next().getIdentity().get();
+    }
+
+    // THE NEXT STATEMENT IS REFUSED FOR ANOTHER ROW, AFTER A LISTENER CHANGED THE OBJECT QUEUED FOR THE FIRST ONE (NO WRITE COMPLETED)
+    database.getSchema().getType("T").getEvents().registerListener((BeforeRecordUpdateListener) record -> {
+      if (((Document) record).getLong("id") == 2L) {
+        database.lookupByRID(first, true).asDocument().modify().set("k", 99);
+        throw new IllegalStateException("refused");
+      }
+      return true;
+    });
+    assertThatThrownBy(() -> database.command("sql", "UPDATE T SET k = 20 WHERE id = 2").close()).hasStackTraceContaining("refused");
+
+    // A RECORD WITH AN EXTERNAL PROPERTY CANNOT BE PUT BACK, SO THE COMMIT WOULD STORE WHAT THE LISTENER LEFT ON IT
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed")
+        .hasMessageContaining("could not be taken back");
+    database.rollback();
+
+    assertThat(idByUniqueK(1)).isEqualTo(1L);
+  }
+
+  @Test
   void aStatementRunByAnotherIsTakenBackWithIt() {
     database.command("sql", "CREATE DOCUMENT TYPE Log").close();
     database.command("sql", "CREATE PROPERTY Log.n INTEGER").close();

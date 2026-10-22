@@ -813,9 +813,8 @@ public class TransactionContext implements Transaction {
     // Taken back even when it wrote no record: it may have changed the object the transaction queued for an earlier update
     if (savepoint != null && savepoint.hasChanges() && rollbackStatement(savepoint))
       return;
-    // A write is counted when it completes, after the listeners that run once it is applied: a listener that fails leaves the write in
-    // the transaction and uncounted, which the savepoint sees (and the counter does not) when it could not give it back
-    if (completedRecordWrites != writesBefore || (savepoint != null && savepoint.hasChangedTransaction()))
+    // The counter does not see a record the statement changed in place without writing it: the object an earlier statement queued
+    if (completedRecordWrites != writesBefore || (savepoint != null && savepoint.isQueuedRecordNotKept()))
       refuseCommit(cause, savepoint != null ? savepoint.getUnrestorableReason() : null);
   }
 
