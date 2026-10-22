@@ -105,7 +105,8 @@ public class SQLQueryEngine implements QueryEngine {
 
   // The overloads without a context serve query() and analyze().execute(), which the MCP command tool runs writes through: a
   // write there is a statement of the caller's transaction like one of command() (issue #10194). writeScope() answers null for
-  // an idempotent statement, so the read path pays one virtual call.
+  // an idempotent statement, so the read path pays one virtual call. The four overloads below are the same block around different
+  // execute calls (no lambda, see above): a change to one is a change to all of them.
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;

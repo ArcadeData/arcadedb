@@ -36,6 +36,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -326,6 +327,75 @@ class StatementSavepointTest extends TestHelper {
         values.add(rs.next().getProperty(property));
     }
     return values;
+  }
+
+  @Test
+  void aStatementThatOverwroteMoreGranulesThanTheBudgetIsRefusedBeforeAnyPageIsRestored() {
+    database.command("sql", "CREATE DOCUMENT TYPE W BUCKETS 2").close();
+    database.command("sql", "CREATE PROPERTY W.id LONG").close();
+    database.command("sql", "CREATE PROPERTY W.payload STRING").close();
+    database.command("sql", "CREATE INDEX ON W (id) UNIQUE").close();
+    final String big = "x".repeat(3000);
+
+    database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES, 8);
+    try {
+      database.begin();
+      // THE TWO BUCKETS HOLD A PAGE THE TRANSACTION MODIFIED
+      database.command("sql", "INSERT INTO W (id, payload) VALUES (1, 'a'), (2, 'a')").close();
+      // THE ROWS GO TO BOTH BUCKETS: THE BUDGET RUNS OUT ON THE SECOND PAGE, WHILE THE LOG OF THE FIRST HOLDS GRANULES
+      assertThatThrownBy(() -> database.command("sql",
+          "INSERT INTO W (id, payload) VALUES (3, '" + big + "'), (4, '" + big + "'), (5, '" + big + "'), (6, '" + big + "'), (1, 'clash')")
+          .close()).isInstanceOf(DuplicatedKeyException.class);
+      // THE REASON IS THE BUDGET, NOT A RESTORE THAT STOPPED HALFWAY: NO PAGE WAS TOUCHED
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class)
+          .hasMessageContaining("could not be taken back").hasMessageContaining("granules");
+      database.rollback();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
+          GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM W")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  @Test
+  void aCommitAfterAStatementWasTakenBackSurvivesACrash() {
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+      database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
+    });
+
+    database.begin();
+    database.command("sql", "INSERT INTO T SET id = 3, k = 3").close();
+    // THE FIRST ROW IS WRITTEN TO THE PAGE THE TRANSACTION HOLDS AND TAKEN BACK, THE ROWS AFTER IT GO ON TOP
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO T (id, k) VALUES (4, 4), (5, 4)").close()).isInstanceOf(
+        DuplicatedKeyException.class);
+    database.command("sql", "INSERT INTO T SET id = 6, k = 6").close();
+    database.command("sql", "UPDATE T SET k = k + 100 WHERE id = 1").close();
+    database.commit();
+
+    // NOTHING IS FLUSHED: THE WAL IS WHAT BRINGS THE TRANSACTION BACK
+    ((DatabaseInternal) database).kill();
+    database.close();
+    final AtomicBoolean notClosed = new AtomicBoolean();
+    factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, () -> {
+      notClosed.set(true);
+      return null;
+    });
+    database = factory.open();
+    assertThat(notClosed.get()).isTrue();
+
+    assertThat(ids()).containsExactly(1L, 2L, 3L, 6L);
+    assertThat(idsByIndexedId(4)).isEmpty();
+    assertThat(idsByIndexedId(5)).isEmpty();
+    try (final ResultSet rs = database.query("sql", "SELECT k FROM T WHERE id = 1")) {
+      assertThat(rs.next().<Number>getProperty("k").intValue()).isEqualTo(101);
+    }
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+      assertThat(rs.next().<Number>getProperty("totalErrors").intValue()).isZero();
+    }
   }
 
   @Test
