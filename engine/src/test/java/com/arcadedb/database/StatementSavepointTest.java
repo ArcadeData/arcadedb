@@ -148,7 +148,8 @@ class StatementSavepointTest extends TestHelper {
       } catch (final DuplicatedKeyException e) {
         // CARRIED ON
       }
-      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed")
+          .hasMessageContaining("could not be taken back").hasMessageContaining("more than 4");
       database.rollback();
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
@@ -230,7 +231,8 @@ class StatementSavepointTest extends TestHelper {
       } catch (final DuplicatedKeyException e) {
         // CARRIED ON
       }
-      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed")
+          .hasMessageContaining("no savepoint to take it back to");
       database.rollback();
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
