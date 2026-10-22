@@ -35,8 +35,6 @@ import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.exception.DatabaseNotAvailableException;
-import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.graph.Edge;
@@ -4013,7 +4011,7 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final DatabaseOperationException e) {
       // A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
       // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other
-      if (isHeldDatabase(e))
+      if (ErrorCategory.of(e) == ErrorCategory.UNAVAILABLE)
         writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
       else
         writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
@@ -4021,11 +4019,6 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return true;
-  }
-
-  /** Whether {@code e} refuses a database that exists: {@link DatabaseNotAvailableException} without its narrower not-found subtype. */
-  static boolean isHeldDatabase(final DatabaseOperationException e) {
-    return e instanceof DatabaseNotAvailableException && !(e instanceof DatabaseNotFoundException);
   }
 
   /**
@@ -4220,6 +4213,7 @@ public class PostgresNetworkExecutor extends Thread {
       case PARSING -> "42601";        // syntax_error
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
+      case UNAVAILABLE -> SQLSTATE_CANNOT_CONNECT_NOW; // cannot_connect_now - a database that is held, not one that does not exist
       case SERVER -> "XX000";         // internal_error
     };
   }

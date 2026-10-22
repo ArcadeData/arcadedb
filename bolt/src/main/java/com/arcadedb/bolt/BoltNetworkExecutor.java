@@ -2021,6 +2021,9 @@ public class BoltNetworkExecutor extends Thread {
       case TIMEOUT -> BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
       // Stopped on request (issue #9689): the one Transaction.* title meaning "killed on purpose", which drivers never retry
       case TERMINATED -> BoltErrorCodes.TRANSACTION_TERMINATED_ERROR;
+      // A database the server has and cannot serve now (issue #10553), reached here when it is lost under a statement rather than at
+      // the selection of the database (classifyDatabaseSelectionError): the same title, so the driver reads one thing either way
+      case UNAVAILABLE -> BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR;
       case SERVER -> defaultCode;
     };
   }

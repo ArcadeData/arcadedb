@@ -581,6 +581,10 @@ public class RedisNetworkExecutor extends Thread {
     return switch (ErrorCategory.of(error)) {
       case RETRY -> "TRYAGAIN";
       case SECURITY -> "NOPERM";
+      // A database the server has and cannot serve now (a restore holds its name, close database closed it, issue #10553). What
+      // Redis answers while it holds a dataset it cannot serve yet, and the kind the common clients (go-redis, redis-py, Lettuce)
+      // already treat as "later". TRYAGAIN is a cluster-mode reply that several clients do not retry, and says "run it again".
+      case UNAVAILABLE -> "LOADING";
       default -> "ERR";
     };
   }
@@ -1116,7 +1120,9 @@ public class RedisNetworkExecutor extends Thread {
 
   private void select(final List<Object> list) {
     final String dbName = (String) list.get(1);
-    if (!server.existsDatabase(dbName))
+    // A database an operator holds (a restore, a close database) is not registered but exists: getAuthorizedDatabase below answers it
+    // as unavailable, not as a name that is no database (issue #10553)
+    if (!server.existsDatabase(dbName) && !server.isDatabaseHeld(dbName))
       throw new RedisException("Database '" + dbName + "' not found");
 
     // Authorize access (and bind the principal) before switching the connection's current database.
@@ -1178,7 +1184,9 @@ public class RedisNetworkExecutor extends Thread {
     if (dotPos > 0) {
       final String dbName = key.substring(0, dotPos);
       final String actualKey = key.substring(dotPos + 1);
-      if (server.existsDatabase(dbName))
+      // A database an operator holds is one too: it is not registered, and taking its prefix for part of a plain key wrote the
+      // client's value to the connection-local bucket, answered OK, and lost it for the database (issue #10553)
+      if (server.existsDatabase(dbName) || server.isDatabaseHeld(dbName))
         // A real database prefix: authorize access (throws if not permitted) and bind the principal.
         return new ResolvedKey(actualKey, getAuthorizedDatabase(dbName));
       // Not a database prefix, treat as regular key.

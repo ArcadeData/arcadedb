@@ -166,6 +166,7 @@ class Issue7139RetainedBackupNotDestroyedTest {
         .hasMessageContaining("only intact copy");
 
     assertThat(backup).as("the last copy of the database must survive a refused install").exists();
+    // The restore moves the schema file back last, so this holds whatever order the filesystem lists the backup in (#10426).
     assertThat(backup.resolve("schema.json")).exists();
     assertThat(dbPath.resolve(".snapshot-pending")).exists();
   }
