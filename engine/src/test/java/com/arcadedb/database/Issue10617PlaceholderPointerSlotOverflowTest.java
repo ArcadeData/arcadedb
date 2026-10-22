@@ -45,8 +45,8 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
   /**
    * The issue's first shape: a slot smaller than a pointer that is NOT the last record, on a page with no free tail
-   * at all. The missing bytes cannot come from anywhere on the page, so the update must be refused - and the record after it must
-   * survive untouched.
+   * at all. The missing bytes cannot come from anywhere on the page, so the update must be refused - and the record
+   * after it must survive untouched.
    */
   @Test
   void aSmallSlotOnASealedPageIsNotOverwrittenPastItsEnd() {
@@ -76,7 +76,8 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
   /**
    * The same small slot, not the last record, but with a free tail too small for a chunk header and big enough for
-   * the bytes a pointer is missing. Before the fix the pointer was written anyway and spilled into the next record; now the slot is enlarged first, and the update succeeds without touching anything else.
+   * the bytes a pointer is missing. Before the fix the pointer was written anyway and spilled into the next record;
+   * now the slot is enlarged first, and the update succeeds without touching anything else.
    */
   @Test
   void aSmallSlotIsEnlargedToHostThePointerWhenThePageHasTheBytes() {
@@ -103,6 +104,40 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
       assertThat(empty[0].asDocument(true).getString("v")).isEqualTo(BIG);
       assertThat(empty[0].asDocument(true).getString("brand")).isEqualTo("x");
       assertThat(neighbour[0].asDocument(true).getString("v")).isEqualTo("neighbour");
+    });
+  }
+
+  /**
+   * A refusal in the middle of a commit takes the whole transaction back: an update of another record, applied to its
+   * page before the refused one, must not survive it.
+   */
+  @Test
+  void aRefusedUpdateRollsBackTheOtherWritesOfItsTransaction() {
+    final RID[] empty = new RID[1];
+    final RID[] other = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Rollback10617", 1).createProperty("v", Type.STRING);
+      other[0] = database.newDocument("Rollback10617").set("v", "before").save().getIdentity();
+      empty[0] = database.newDocument("Rollback10617").save().getIdentity();
+      database.newDocument("Rollback10617").set("v", "neighbour").save();
+    });
+    sealFirstPage("Rollback10617");
+    assertThat(freeTailOfPageOf(empty[0])).as("the premise: the page has no free tail").isZero();
+
+    final long countBefore = countRecordsFromCounter("Rollback10617");
+
+    assertRefused(() -> database.transaction(() -> {
+      other[0].asDocument(true).modify().set("v", "after").save();
+      database.newDocument("Rollback10617").set("v", "inserted").save();
+      grow(empty[0]);
+    }));
+
+    assertIntact("Rollback10617", countBefore);
+    assertThat(countRecordsHolding("Rollback10617", "inserted")).as("the insert must have been rolled back").isZero();
+    database.transaction(() -> {
+      assertThat(other[0].asDocument(true).getString("v")).as("the other update must have been rolled back")
+          .isEqualTo("before");
+      assertThat(empty[0].asDocument(true).getPropertyNames()).isEmpty();
     });
   }
 
