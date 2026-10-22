@@ -1187,7 +1187,8 @@ public class RedisNetworkExecutor extends Thread {
       final String dbName = key.substring(0, dotPos);
       final String actualKey = key.substring(dotPos + 1);
       // A database an operator holds is one too: it is not registered, and taking its prefix for part of a plain key wrote the
-      // client's value to the connection-local bucket, answered OK, and lost it for the database (issue #10553)
+      // client's value to the connection-local bucket, answered OK, and lost it for the database (issue #10553). The ORDER matters:
+      // existsDatabase first, isDatabaseHeld second, because every hold goes up before the registry entry leaves (see isDatabaseHeld)
       if (server.existsDatabase(dbName) || server.isDatabaseHeld(dbName))
         // A real database prefix: authorize access (throws if not permitted) and bind the principal.
         return new ResolvedKey(actualKey, getAuthorizedDatabase(dbName));

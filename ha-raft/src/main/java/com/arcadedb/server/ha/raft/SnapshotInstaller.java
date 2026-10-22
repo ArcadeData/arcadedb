@@ -1181,12 +1181,12 @@ public final class SnapshotInstaller {
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
           + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
-          + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
-          + "the only intact copy; entries the failed restore already moved out of .snapshot-backup are in the "
-          + "database directory now and must stay there, so delete only the entries in the database directory that are "
-          + "not one of the installer's own (" + SNAPSHOT_MACHINERY_ENTRY_NAMES + ") and did not come from "
-          + ".snapshot-backup, move the contents of .snapshot-backup into it (schema.json last), then delete the "
-          + "installer's own entries (" + SNAPSHOT_MACHINERY_ENTRY_NAMES + ")");
+          + "(1) stop the node; (2) keep .snapshot-backup untouched until step 4 has completed, it is the only intact "
+          + "copy; (3) in the database directory delete only the entries that are not one of the installer's own ("
+          + SNAPSHOT_MACHINERY_ENTRY_NAMES + ") and did not come from .snapshot-backup: the entries the failed "
+          + "restore already moved out of it are in the database directory now and must stay; (4) move the contents "
+          + "of .snapshot-backup into the database directory (schema.json last); (5) delete the installer's own "
+          + "entries listed in step 3");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
