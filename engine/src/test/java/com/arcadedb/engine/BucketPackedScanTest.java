@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -167,7 +168,7 @@ class BucketPackedScanTest extends TestHelper {
         (int) (rid.getPosition() / bucket.getMaxRecordsInPage()));
     try {
       return ((DatabaseInternal) database).getTransaction().getPageToModify(pageId, bucket.getPageSize(), false);
-    } catch (final java.io.IOException e) {
+    } catch (final IOException e) {
       throw new IllegalStateException(e);
     }
   }
