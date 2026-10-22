@@ -21,10 +21,13 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import de.bwaldvogel.mongo.MongoDatabase;
@@ -88,7 +91,23 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   @Override
   protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
-    return new MongoDBDatabaseWrapper(server.getDatabaseForClient(databaseName), plugin, this);
+    return new MongoDBDatabaseWrapper(databaseForClient(databaseName), plugin, this);
+  }
+
+  /**
+   * The database a client names, resolved the way every wire protocol does (it honours the marks an operator puts on a name: a restore,
+   * a {@code close database}). A database the server HAS and cannot serve now is answered with the code MongoDB gives a server in that
+   * state, {@code TemporarilyUnavailable}: the library would report the bare exception as an uncoded "Unknown error", which a driver
+   * reads as a server fault (issue #10553). A name that is not a database keeps the answer it had.
+   */
+  private ServerDatabase databaseForClient(final String databaseName) {
+    try {
+      return server.getDatabaseForClient(databaseName);
+    } catch (final DatabaseOperationException e) {
+      if (ErrorCategory.of(e) == ErrorCategory.UNAVAILABLE)
+        throw MongoDBDatabaseWrapper.wireException("Database '" + databaseName + "' is not available", e);
+      throw e;
+    }
   }
 
   @Override
@@ -203,7 +222,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // slot. The command document is described only if somebody lists it
     final RunningQuery runningQuery = admission != null ? registerRunningQuery(channel, databaseName, command, query, user) : null;
     try {
-      final DatabaseInternal database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
+      final DatabaseInternal database = (DatabaseInternal) databaseForClient(databaseName);
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
       ctx.setCurrentUser(user.getDatabaseUser(database));
       try {

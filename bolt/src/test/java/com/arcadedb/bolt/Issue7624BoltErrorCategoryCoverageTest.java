@@ -27,6 +27,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -84,6 +85,32 @@ class Issue7624BoltErrorCategoryCoverageTest {
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).startsWith("Neo.TransientError.");
     assertThat(BoltNetworkExecutor.classifyExecutionError(new DatabaseIsClosedException("db"), BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.DATABASE_ERROR);
+  }
+
+  /**
+   * Issue #10553: a database the server holds (a restore, a {@code close database}) that is lost under a statement is the same
+   * transient {@code DatabaseUnavailable} the selection of the database already answers, not the generic database error.
+   */
+  @Test
+  void aDatabaseTheServerHoldsIsTransientEvenWhenItIsLostUnderAStatement() {
+    assertThat(BoltNetworkExecutor.classifyExecutionError(
+        new RuntimeException("command failed", new DatabaseNotAvailableException("held")), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR);
+    assertThat(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR).startsWith("Neo.TransientError.");
+  }
+
+  /**
+   * The two catches of {@code CommandParsingException} in RUN answer through {@code classifyExecutionError} (issue #10553): a held
+   * database wrapped by the exception the query engines wrap execution failures in is not a syntax error, and a genuine parsing
+   * failure keeps its own title.
+   */
+  @Test
+  void aHeldDatabaseWrappedByAParsingExceptionIsNotASyntaxError() {
+    assertThat(BoltNetworkExecutor.classifyExecutionError(
+        new CommandParsingException("failed", new DatabaseNotAvailableException("held")), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new CommandParsingException("unexpected token"),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
   }
 
   @Test
@@ -179,6 +206,7 @@ class Issue7624BoltErrorCategoryCoverageTest {
         new CommandParsingException("unexpected token"),
         new TimeoutException("deadline"),
         new QueryTerminatedException("stopped on request"),
+        new DatabaseNotAvailableException("a restore of it is in progress"),
         new IllegalStateException("something else") }) {
       final ErrorCategory category = ErrorCategory.of(sample);
       covered.add(category);

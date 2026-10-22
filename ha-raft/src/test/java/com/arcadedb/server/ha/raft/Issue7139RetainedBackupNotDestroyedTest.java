@@ -163,9 +163,15 @@ class Issue7139RetainedBackupNotDestroyedTest {
     assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
         serverThatCannotDownload(databasesDir)))
         .isInstanceOf(IOException.class)
-        .hasMessageContaining("only intact copy");
+        .hasMessageContaining("only intact copy")
+        // the operator is sent to the restart-time recovery and told to delete nothing by hand: a live entry absent from the backup
+        // can be an original the failed install never moved into it, and a name does not tell (#10426)
+        .hasMessageContaining("restart the node")
+        .hasMessageContaining("delete nothing by hand")
+        .hasMessageNotContaining("start with '.snapshot'");
 
     assertThat(backup).as("the last copy of the database must survive a refused install").exists();
+    // The restore moves the schema file back last, so this holds whatever order the filesystem lists the backup in (#10426).
     assertThat(backup.resolve("schema.json")).exists();
     assertThat(dbPath.resolve(".snapshot-pending")).exists();
   }

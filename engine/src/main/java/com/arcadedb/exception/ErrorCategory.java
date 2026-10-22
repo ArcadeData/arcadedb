@@ -106,6 +106,19 @@ public enum ErrorCategory {
   TERMINATED,
 
   /**
+   * The database exists and cannot serve the request NOW: a restore holds its name, {@code close database} closed it, it is being
+   * dropped, an interrupted HA snapshot install left it mid-swap ({@link DatabaseNotAvailableException}, issue #10553). Raised where the
+   * name is resolved, before any work of the request, so nothing of it ran. The operator caused it and it clears without the caller
+   * changing anything, which is what separates it from the three it is easily mistaken for: not {@link #NOT_FOUND}, because the database
+   * is there (and the gRPC client rebuilds that as a missing record); not {@link #RETRY}, which means "run the transaction again" and
+   * is decided on the conflict of a commit; not {@link #SERVER}, because nothing is broken and it is not worth a stack trace in the log.
+   * <p>
+   * {@link DatabaseNotFoundException}, the name that is no database at all, is its subtype and NOT in this category: it is permanent and the
+   * caller's to correct.
+   */
+  UNAVAILABLE,
+
+  /**
    * Anything else: the server, not the caller, is at fault.
    */
   SERVER;
@@ -124,6 +137,9 @@ public enum ErrorCategory {
       new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
       new Rule(QueryHeapBudgetExceededException.class, RETRY),
       new Rule(QueryAdmissionException.class, RETRY),
+      // After RETRY, which a driver acts on first, and before everything that classifies the CALLER: a wrapper that parses or
+      // validates (GraphQL, the query engines) must not relabel a database the server holds as the caller's mistake (issue #10553)
+      new Rule(DatabaseNotAvailableException.class, UNAVAILABLE, DatabaseNotFoundException.class),
       new Rule(ArithmeticErrorException.class, ARITHMETIC),
       new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
       // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
@@ -139,8 +155,21 @@ public enum ErrorCategory {
       new Rule(IllegalArgumentException.class, VALIDATION),
       new Rule(TimeoutException.class, TIMEOUT) };
 
-  /** A type that, found anywhere along a cause chain, decides the chain's category. */
-  private record Rule(Class<? extends Throwable> type, ErrorCategory category) {
+  /**
+   * A type that, found anywhere along a cause chain, decides the chain's category, unless the chain also carries {@code except}: a
+   * narrower type that is the opposite verdict although it extends {@code type} (a {@link DatabaseNotFoundException} is permanent,
+   * the {@link DatabaseNotAvailableException} it extends clears by itself). The chain then falls through to the rules below.
+   */
+  private record Rule(Class<? extends Throwable> type, ErrorCategory category, Class<? extends Throwable> except) {
+    Rule(final Class<? extends Throwable> type, final ErrorCategory category) {
+      this(type, category, null);
+    }
+
+    /** The frame of the chain that makes this rule decide, or {@code null} when the rule does not apply to it. */
+    Throwable find(final Throwable error) {
+      final Throwable found = CauseChain.find(error, type);
+      return found != null && (except == null || !CauseChain.contains(error, except)) ? found : null;
+    }
   }
 
   /**
@@ -196,6 +225,10 @@ public enum ErrorCategory {
    * {@link QueryAdmissionException} rides with it too: the query admission gate did not start the query because the
    * server was busy, so nothing of it ran and the same request re-issued later can succeed (issue #9518).
    * <p>
+   * {@link #UNAVAILABLE} is decided right after them and before everything that blames the caller, so a wrapper that parses
+   * or validates cannot relabel a database the server holds. {@link DatabaseNotFoundException} extends the type it is decided on and
+   * is the opposite verdict, so a chain carrying it is left to the rules below (issue #10553).
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -204,7 +237,7 @@ public enum ErrorCategory {
    */
   public static ErrorCategory of(final Throwable error) {
     for (final Rule rule : RULES)
-      if (CauseChain.contains(error, rule.type()))
+      if (rule.find(error) != null)
         return rule.category();
     return SERVER;
   }
@@ -221,7 +254,7 @@ public enum ErrorCategory {
    */
   public static Throwable classifiedCause(final Throwable error) {
     for (final Rule rule : RULES) {
-      final Throwable found = CauseChain.find(error, rule.type());
+      final Throwable found = rule.find(error);
       if (found != null)
         return found;
     }

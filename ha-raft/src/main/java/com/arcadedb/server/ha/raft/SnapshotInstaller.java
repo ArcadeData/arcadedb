@@ -28,6 +28,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.backup.BackupCoordinator;
@@ -155,6 +156,16 @@ public final class SnapshotInstaller {
    */
   static boolean isSnapshotMachineryEntryName(final String name) {
     return SNAPSHOT_MACHINERY_FILES.contains(name) || SNAPSHOT_MACHINERY_DIRS.contains(name);
+  }
+
+  /**
+   * The files that make a directory a database ({@link DatabaseFactory#exists()}), in the order {@link #restoreBackup}
+   * moves them back: the previous-generation file first, the final one last.
+   */
+  private static final String[] SCHEMA_FILES_RESTORED_LAST = { LocalSchema.SCHEMA_PREV_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME };
+
+  private static boolean isSchemaFileName(final String name) {
+    return LocalSchema.SCHEMA_FILE_NAME.equals(name) || LocalSchema.SCHEMA_PREV_FILE_NAME.equals(name);
   }
 
   private enum SwapPhase {
@@ -1157,11 +1168,13 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
-          + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
-          + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
-          + "the only intact copy; delete the entries in the database directory that do not start with '.snapshot', "
-          + "move the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
-          + ".snapshot-pending");
+          + "resolve the underlying problem (typically a full or read-only volume) and restart the node: startup "
+          + "recovery resumes the recorded swap phase and completes the restore from .snapshot-backup by itself, "
+          + "after which a new install can run. Until then delete nothing by hand, neither in .snapshot-backup nor in "
+          + "the database directory: the database directory can hold originals the failed install never moved into "
+          + "the backup, entries the failed restore already moved back and files of the failed snapshot, and a name "
+          + "does not tell which. If the node cannot complete it, copy the database directory and .snapshot-backup "
+          + "aside before touching either");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
@@ -2759,20 +2772,37 @@ public final class SnapshotInstaller {
     deleteDirectoryIfExists(newDir);
   }
 
+  /**
+   * Moves the retained backup back into {@code dbDir}, the schema files LAST (issue #10426). A directory listing is in
+   * whatever order the filesystem keeps (APFS sorts it, ext4, overlayfs and tmpfs do not), so a restore that follows it
+   * and fails part way moved {@code schema.json} out of the backup on one machine and left it there on another. The
+   * schema file is what makes a directory a database ({@link #looksLikeADatabaseDirectory}): moving it last means a
+   * restore that cannot finish never leaves a live directory that looks loadable while entries are still in the backup,
+   * and the backup that remains plainly still holds the thing that identifies the database.
+   */
   private static void restoreBackup(final Path dbDir, final Path backupDir) throws IOException {
-    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(backupDir)) {
-      for (final Path entry : stream) {
-        // REPLACE_EXISTING is required for the phase-1 partial-failure path: some originals may never
-        // have left dbDir, so the backed-up copies must overwrite whatever partial state is there to
-        // reconstruct the exact original set without leaving stale files behind.
-        Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
-        snapshotSwapProgress("RESTORING:" + entry.getFileName());
-      }
+    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(backupDir,
+        entry -> !isSchemaFileName(entry.getFileName().toString()))) {
+      for (final Path entry : stream)
+        moveBackToLiveDirectory(dbDir, entry);
+    }
+    for (final String schemaFile : SCHEMA_FILES_RESTORED_LAST) {
+      final Path entry = backupDir.resolve(schemaFile);
+      if (Files.exists(entry))
+        moveBackToLiveDirectory(dbDir, entry);
     }
     // Persist the restored directory entries before the backup is deleted so a crash during rollback
     // recovery cannot lose the originals we just moved back (issue #4830).
     fsyncDirectory(dbDir);
     deleteDirectoryIfExists(backupDir);
+  }
+
+  private static void moveBackToLiveDirectory(final Path dbDir, final Path entry) throws IOException {
+    // REPLACE_EXISTING is required for the phase-1 partial-failure path: some originals may never
+    // have left dbDir, so the backed-up copies must overwrite whatever partial state is there to
+    // reconstruct the exact original set without leaving stale files behind.
+    Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+    snapshotSwapProgress("RESTORING:" + entry.getFileName());
   }
 
   /**

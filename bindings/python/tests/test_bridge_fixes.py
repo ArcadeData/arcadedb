@@ -84,7 +84,10 @@ def test_to_json_list_writes_a_date_as_midnight_utc_in_any_jvm_zone(tmp_path, zo
     it writes this undeclared LocalDate as days since the epoch, as it writes a
     declared DATE; before that it wrote midnight UTC milliseconds. The engine is
     asked which of the two it does (a version number cannot tell: 26.11.1
-    snapshots from before #10253 exist), and the test holds it to that one."""
+    snapshots from before #10253 exist), and the test holds it to that one.
+    That the bridge writes milliseconds where the record's own JSON writes days
+    is a decision and not a drift (#10522): test_temporal_writers_agree.py pins
+    it, and pins that every bridge writer agrees with the engine's generic one."""
     proc = subprocess.run(  # nosec B603 - fixed argv, no shell, test-owned
         [sys.executable, "-c", _DATE_SCRIPT, str(tmp_path / "db"), zone],
         capture_output=True,

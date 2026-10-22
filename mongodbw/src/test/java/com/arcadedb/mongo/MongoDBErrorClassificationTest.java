@@ -23,6 +23,8 @@ import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
@@ -74,6 +76,25 @@ class MongoDBErrorClassificationTest {
     assertThat(wrapped).isInstanceOf(MongoServerError.class);
     assertThat(((MongoServerError) wrapped).getCode()).isEqualTo(112);
     assertThat(((MongoServerError) wrapped).getCodeName()).isEqualTo("WriteConflict");
+  }
+
+  @Test
+  void aDatabaseTheServerHoldsIsTemporarilyUnavailable() {
+    // Issue #10553: the database exists and cannot serve now (a restore holds its name, close database closed it)
+    final MongoServerException wrapped = MongoDBDatabaseWrapper.wireException("failed",
+        new TransactionException("commit failed", new DatabaseNotAvailableException("Database 'mydb' is not available")));
+
+    assertThat(wrapped).isInstanceOf(MongoServerError.class);
+    assertThat(((MongoServerError) wrapped).getCode()).isEqualTo(365);
+    assertThat(((MongoServerError) wrapped).getCodeName()).isEqualTo("TemporarilyUnavailable");
+  }
+
+  @Test
+  void aNameThatIsNotADatabaseIsNotTemporarilyUnavailable() {
+    final MongoServerException wrapped = MongoDBDatabaseWrapper.wireException("failed",
+        new DatabaseNotFoundException("Database 'nope' does not exist"));
+
+    assertThat(wrapped).isNotInstanceOf(MongoServerError.class);
   }
 
   @Test
