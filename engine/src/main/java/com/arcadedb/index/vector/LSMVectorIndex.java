@@ -5001,6 +5001,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // persisted graph - the manifest always precedes the PQ, on every path that writes one - but only when that graph
       // has exactly one ordinal per code. A graph of another size is a different assignment, and the codes then
       // carry no identity, which the reopen reads as "walk".
+      // On the initial build (CREATE INDEX over existing data) the graph pages are rewritten inside the build transaction,
+      // which drops the manifest until the build has committed and written it again. That path writes no PQ: the codes
+      // are made by the persist above or by the post-load build, both after the manifest. Issue10568ProductReopenOrdinalMapTest
+      // creates an index over existing data and holds the reopen to the ordinal map for it.
       final LSMVectorIndexGraphFile gf = graphFile;
       final LSMVectorIndexGraphManifest.Content certified = gf != null ? gf.getManifest().read() : null;
       final Long builtFor = certified != null && certified.vectorCount() == codes.count() ? certified.fingerprint() : null;

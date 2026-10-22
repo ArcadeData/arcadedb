@@ -21,18 +21,16 @@ package com.arcadedb.index.vector;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
+import io.github.jbellis.jvector.disk.RandomAccessReader;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.logging.Level;
 
 /**
@@ -71,19 +69,23 @@ public class LSMVectorIndexPQFile {
 
   private final Path pqFilePath;
 
+  /**
+   * The codebook, the codes and the identity of the graph they were built for, as one immutable value. They are published
+   * and cleared together by a single volatile write, so a reader never sees the codes of one write with the codebook or
+   * the identity of another, whatever lock the writer and the reader hold. {@code graphFingerprint} is {@code null} when
+   * the file carries none (written by a build older than the trailer, or while the graph's manifest could not vouch for an
+   * ordinal map of the same size).
+   */
+  private record Loaded(ProductQuantization productQuantization, PQVectors pqVectors, Long graphFingerprint) {
+  }
+
   // Cached PQ structures loaded into memory for zero-disk-I/O search
-  private volatile ProductQuantization productQuantization;
-  private volatile PQVectors           pqVectors;
+  private volatile Loaded loaded;
 
   // Set when loadPQ() found the file on disk and could not read it, cleared by anything that replaces or removes it.
   // Sticky on purpose: even a transient read error costs one extra rebuild at the next open, which is the safe side,
   // against trusting a file that may be a fragment.
   private volatile boolean loadFailed;
-
-  // The fingerprint of the graph the loaded or last written codes belong to, or null when the file carries none (written by
-  // a build older than the trailer, or while the graph's manifest could not vouch for an ordinal map of the same size).
-  // Only meaningful together with pqVectors: read it through graphFingerprintOf().
-  private volatile Long graphFingerprint;
 
   /**
    * Create a PQ file handler for the given index file path.
@@ -99,7 +101,8 @@ public class LSMVectorIndexPQFile {
    * Returns null if PQ data hasn't been loaded yet.
    */
   public PQVectors getPQVectors() {
-    return pqVectors;
+    final Loaded current = loaded;
+    return current != null ? current.pqVectors : null;
   }
 
   /**
@@ -107,24 +110,26 @@ public class LSMVectorIndexPQFile {
    * Returns null if PQ data hasn't been loaded yet.
    */
   public ProductQuantization getProductQuantization() {
-    return productQuantization;
+    final Loaded current = loaded;
+    return current != null ? current.productQuantization : null;
   }
 
   /**
    * The identity of the graph the given codes were built for: the fingerprint recorded with them, or {@code null} when
    * {@code codes} is not the instance this handler holds or carries no recorded identity. The caller compares it with the
-   * fingerprint of the graph it is about to pair them with. Read under the same lock as the writers (the index's graph
-   * build lock), so the codes and the identity cannot belong to two different writes.
+   * fingerprint of the graph it is about to pair them with. The codes and the identity are one published value, so they
+   * always belong to the same write.
    */
   Long graphFingerprintOf(final PQVectors codes) {
-    return codes != null && codes == pqVectors ? graphFingerprint : null;
+    final Loaded current = loaded;
+    return codes != null && current != null && codes == current.pqVectors ? current.graphFingerprint : null;
   }
 
   /**
    * Checks if PQ data is loaded and ready for approximate search.
    */
   public boolean isPQReady() {
-    return pqVectors != null && productQuantization != null;
+    return loaded != null;
   }
 
   /**
@@ -223,9 +228,7 @@ public class LSMVectorIndexPQFile {
 
       // Update cached references
       this.loadFailed = false;
-      this.productQuantization = pq;
-      this.graphFingerprint = graphFingerprint;
-      this.pqVectors = vectors;
+      this.loaded = new Loaded(pq, vectors, graphFingerprint);
 
       LogManager.instance().log(this, Level.INFO,
           "PQ data written successfully: %.2f MB",
@@ -266,23 +269,27 @@ public class LSMVectorIndexPQFile {
           "Loading PQ data from disk: %.2f MB", fileSize / (1024.0 * 1024.0));
 
       final long startTime = System.currentTimeMillis();
+      final Loaded read;
 
       // Use JVector's SimpleMappedReader for memory-mapped file access
       try (SimpleMappedReader.Supplier supplier = new SimpleMappedReader.Supplier(pqFilePath)) {
         final var reader = supplier.get();
         // Read ProductQuantization codebook first
-        this.productQuantization = ProductQuantization.load(reader);
+        final ProductQuantization loadedPq = ProductQuantization.load(reader);
         // Read encoded vectors (at current position after PQ load)
-        this.pqVectors = PQVectors.load(reader, reader.getPosition());
+        final PQVectors loadedCodes = PQVectors.load(reader, reader.getPosition());
+        // The identity is read from this same mapped snapshot, right where the codes ended: a second open of the path could
+        // meet a file a concurrent write has since renamed over this one, and pair these codes with its identity
+        read = new Loaded(loadedPq, loadedCodes, readGraphFingerprint(reader));
       }
-      this.graphFingerprint = readGraphFingerprint();
+      this.loaded = read;
 
       this.loadFailed = false;
 
       final long elapsed = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
           "PQ data loaded: %d vectors, %d subspaces in %d ms",
-          pqVectors.count(), productQuantization.getSubspaceCount(), elapsed);
+          read.pqVectors.count(), read.productQuantization.getSubspaceCount(), elapsed);
 
       return true;
 
@@ -291,9 +298,7 @@ public class LSMVectorIndexPQFile {
           "Error loading PQ data from %s: %s. The file is treated as missing: the next graph load rebuilds the graph and the PQ together",
           pqFilePath, e.getMessage());
       // Clear cached data on failure
-      this.productQuantization = null;
-      this.pqVectors = null;
-      this.graphFingerprint = null;
+      this.loaded = null;
       this.loadFailed = true;
       return false;
     }
@@ -304,32 +309,21 @@ public class LSMVectorIndexPQFile {
    * Called when the index is being rebuilt or closed.
    */
   public void clearPQCache() {
-    this.productQuantization = null;
-    this.pqVectors = null;
-    this.graphFingerprint = null;
+    this.loaded = null;
   }
 
   /**
-   * @return the graph fingerprint in the identity trailer at the end of the file, or {@code null} when there is none
-   * (a file written before the trailer existed, or without an identity) or it cannot be read
+   * @param reader positioned where the codes ended
+   *
+   * @return the graph fingerprint in the identity trailer that follows them, or {@code null} when there is none (a file
+   * written before the trailer existed, or without an identity)
    */
-  private Long readGraphFingerprint() {
-    try (final FileChannel channel = FileChannel.open(pqFilePath, StandardOpenOption.READ)) {
-      if (channel.size() < GRAPH_IDENTITY_BYTES)
-        return null;
-      final ByteBuffer trailer = ByteBuffer.allocate(GRAPH_IDENTITY_BYTES); // big-endian, like the writer
-      long position = channel.size() - GRAPH_IDENTITY_BYTES;
-      while (trailer.hasRemaining()) {
-        final int read = channel.read(trailer, position);
-        if (read < 0)
-          return null;
-        position += read;
-      }
-      trailer.flip();
-      return trailer.getLong() == GRAPH_IDENTITY_MAGIC ? trailer.getLong() : null;
-    } catch (final IOException e) {
+  private static Long readGraphFingerprint(final RandomAccessReader reader) throws IOException {
+    final long length = reader.length();
+    if (length - reader.getPosition() < GRAPH_IDENTITY_BYTES)
       return null;
-    }
+    reader.seek(length - GRAPH_IDENTITY_BYTES);
+    return reader.readLong() == GRAPH_IDENTITY_MAGIC ? reader.readLong() : null;
   }
 
   /**

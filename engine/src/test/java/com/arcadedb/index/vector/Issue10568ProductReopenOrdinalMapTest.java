@@ -301,6 +301,83 @@ class Issue10568ProductReopenOrdinalMapTest {
     }
   }
 
+  @Test
+  void anIndexCreatedOverExistingDataRecordsItsGraphAndReopensThroughTheMap() throws IOException {
+    createOverExistingData(true);
+    assertPqRecordsItsGraphAndReopenTakesTheMap();
+  }
+
+  @Test
+  void anIndexCreatedOverExistingDataAndClosedBeforeAnySearchRecordsItsGraphToo() throws IOException {
+    // No search in the creating session: the PQ is whatever the build and the close left behind
+    createOverExistingData(false);
+    assertThat(Files.exists(pqPathAfterCreate)).as("precondition: the creating session left a PQ file").isTrue();
+    assertPqRecordsItsGraphAndReopenTakesTheMap();
+  }
+
+  private Path pqPathAfterCreate;
+  private Path graphPathAfterCreate;
+
+  /** CREATE INDEX over documents that are already there, the common case; the database is left closed. */
+  private void createOverExistingData(final boolean searchBeforeClosing) {
+    final Path graphPath;
+    final Path pqPath;
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        db.transaction(() -> {
+          final var type = db.getSchema().createDocumentType("Doc");
+          type.createProperty("id", Type.INTEGER);
+          type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+        });
+        db.begin();
+        for (int i = 0; i < NUM_VECTORS; i++) {
+          db.newDocument("Doc").set("id", i).set("vector", embedding(i)).save();
+          if (i % 1000 == 999) {
+            db.commit();
+            db.begin();
+          }
+        }
+        db.commit();
+        db.transaction(() -> db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+            + ", \"similarity\": \"COSINE\", \"quantization\": \"PRODUCT\" }"));
+
+        final LSMVectorIndex index = vectorIndex(db);
+        if (searchBeforeClosing)
+          assertThat(index.findNeighborsFromVector(embedding(1), 10, 64)).hasSize(10);
+        graphPath = index.getGraphFilePathForTest();
+        pqPath = index.getProductQuantizationFilePath();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+    graphPathAfterCreate = graphPath;
+    pqPathAfterCreate = pqPath;
+  }
+
+  private void assertPqRecordsItsGraphAndReopenTakesTheMap() throws IOException {
+    final Path graphPath = graphPathAfterCreate;
+    final Path pqPath = pqPathAfterCreate;
+    final Built built = new Built(Set.of(), graphPath, NUM_VECTORS, Files.exists(pqPath), pqPath);
+    assertThat(built.pqFileExists).as("precondition: the first session left a PQ file").isTrue();
+    final LSMVectorIndexPQFile pqFile = pqFileOf(built);
+    assertThat(pqFile.loadPQ()).isTrue();
+    final Long recorded = pqFile.graphFingerprintOf(pqFile.getPQVectors());
+    final LSMVectorIndexGraphManifest.Content manifest = new LSMVectorIndexGraphManifest(graphPath.toString()).read();
+    assertThat(manifest).isNotNull();
+    assertThat(recorded).as("the PQ of an index created over existing data records the graph it was built for").isNotNull();
+    assertThat(recorded).isEqualTo(manifest.fingerprint());
+
+    final List<String> logs = new ArrayList<>();
+    reopenAndSearch(logs, (index, results) -> {
+      assertThat(results).hasSize(10);
+      assertThat(index.getStats().get("graphLoadsFromOrdinalMap")).as("the reopen takes the ordinal map").isEqualTo(1L);
+      assertThat(index.getStats().get("graphRebuildCount")).isZero();
+      assertThat(logs).as("and not the walk").noneMatch(m -> m.contains(WALK_LINE));
+    });
+  }
+
   private LSMVectorIndexPQFile pqFileOf(final Built built) {
     final String file = built.pqPath.toString();
     return new LSMVectorIndexPQFile(file.substring(0, file.length() - ("." + LSMVectorIndexPQFile.FILE_EXT).length()));
