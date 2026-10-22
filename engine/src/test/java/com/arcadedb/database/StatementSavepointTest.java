@@ -152,6 +152,24 @@ class StatementSavepointTest extends TestHelper {
   }
 
   @Test
+  void aStatementWhoseIndexLaneWasDroppedSaysWhyItCannotBeTakenBack() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    database.begin();
+    final TransactionContext tx = db.getTransaction();
+    final StatementSavepoint savepoint = tx.beginStatement();
+    assertThat(savepoint).isNotNull();
+
+    database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+    // A LANE THE STATEMENT QUEUED TO IS DROPPED UNDER IT: THE JOURNAL NO LONGER DESCRIBES THE LANES
+    tx.getIndexChanges().removeIndex(database.getSchema().getIndexByName("T[k]").getName());
+
+    assertThat(tx.rollbackStatement(savepoint)).isFalse();
+    assertThat(savepoint.getUnrestorableReason()).contains("index lane");
+    tx.endStatement(savepoint);
+    database.rollback();
+  }
+
+  @Test
   void savepointsCanBeDisabled() {
     database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES, 0);
     try {

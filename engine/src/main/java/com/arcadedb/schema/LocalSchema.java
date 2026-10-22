@@ -4811,6 +4811,11 @@ public class LocalSchema implements Schema {
    * the in-memory version equal to the one the file holds instead of a generation ahead of it (issue #7604).
    */
   private synchronized void writeNextGeneration() throws IOException {
+    // A database opened READ_ONLY owns nothing of its directory, a writer may be replacing this very file: a schema recovered from the
+    // previous generation (the current file torn) stays in memory, whatever asks for the save (issue #10507)
+    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      return;
+
     // The generations are read BEFORE the document is serialized and recorded only once the file is on disk: a counter changed
     // meanwhile, or a write that fails, leaves it unsaved
     final Map<FullTextIndexMetadata, Long> counterGenerations = new IdentityHashMap<>();

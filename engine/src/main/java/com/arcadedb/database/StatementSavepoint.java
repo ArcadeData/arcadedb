@@ -413,10 +413,15 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   boolean rollback() {
     if (!active || rolledBack || unrestorable != null)
       return false;
-    if (tx.getStatus() != TransactionContext.STATUS.BEGUN || tx.getBeginSequence() != beginSequence)
+    // Each refusal says why: it is the text of the error the commit throws
+    if (tx.getStatus() != TransactionContext.STATUS.BEGUN || tx.getBeginSequence() != beginSequence) {
+      markUnrestorable("the transaction the statement ran in ended while it was running");
       return false;
-    if (!tx.getIndexChanges().isStatementJournalIntact())
+    }
+    if (!tx.getIndexChanges().isStatementJournalIntact()) {
+      markUnrestorable("the statement queued more than " + limit + " index entries, or an index lane it queued to was dropped or replaced");
       return false;
+    }
 
     // A statement cancelled by an interrupt arrives here with the flag set, and the reload of a record reads its file: a channel read
     // by a thread with the flag set is closed under it for every thread of the database (issue #10521). Cleared for the undo, handed back

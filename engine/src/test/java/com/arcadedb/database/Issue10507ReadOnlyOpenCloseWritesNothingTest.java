@@ -85,6 +85,35 @@ class Issue10507ReadOnlyOpenCloseWritesNothingTest {
   }
 
   @Test
+  void aSchemaRecoveredFromThePreviousGenerationStaysInMemoryOnly() throws IOException {
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.create();
+      try {
+        // ONE SCHEMA FILE WRITE PER CHANGE, SO THE PREVIOUS GENERATION ALREADY HOLDS THE TYPE
+        db.getSchema().createDocumentType("Doc");
+        db.getSchema().getType("Doc").createProperty("id", Type.INTEGER);
+        db.getSchema().getType("Doc").createProperty("name", Type.STRING);
+        db.transaction(() -> {
+          for (int i = 0; i < 10; i++)
+            db.newDocument("Doc").set("id", i).save();
+        });
+      } finally {
+        db.close();
+      }
+    }
+
+    // THE CURRENT SCHEMA FILE IS TORN, THE PREVIOUS GENERATION IS FINE: A READ-WRITE OPEN HEALS THE FILE, A READ-ONLY ONE HAS NO
+    // RIGHT TO REPLACE A FILE A WRITER MAY BE REPLACING TOO
+    final File schemaFile = new File(DB_PATH, "schema.json");
+    assertThat(new File(DB_PATH, "schema.prev.json")).as("the previous generation the recovery reads").exists();
+    final String torn = "{ \"torn\": ";
+    Files.writeString(schemaFile.toPath(), torn);
+
+    assertThatReadOnlyLifeWritesNothing("Doc", 10);
+    assertThat(Files.readString(schemaFile.toPath())).isEqualTo(torn);
+  }
+
+  @Test
   void aVectorIndexWhoseGraphTheWritersCloseDeferredIsLeftAsItWas() throws IOException {
     // AT OR ABOVE THIS SIZE THE CLOSE OF A WRITER DOES NOT BUILD THE GRAPH: IT RECORDS THE DEFERRAL IN THE MANIFEST AND LEAVES THE
     // GRAPH FILE EMPTY. A READ-ONLY CLOSE FINDS THE SAME STATE, AND MUST NOT RECORD ANYTHING
