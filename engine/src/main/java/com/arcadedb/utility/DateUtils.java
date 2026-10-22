@@ -271,7 +271,7 @@ public class DateUtils {
       }
       case BigDecimal bigDecimal -> {
         try {
-          yield bigDecimal.setScale(0, RoundingMode.FLOOR).longValueExact();
+          yield floorOrBeyondLong(bigDecimal).longValueExact();
         } catch (final ArithmeticException e) {
           throw new IllegalArgumentException("Timestamp value " + bigDecimal + " is outside the supported range");
         }
@@ -1032,6 +1032,155 @@ public class DateUtils {
    */
   public static Object dateAsMidnightAgainst(final Object value, final Object other) {
     return value instanceof LocalDate date && !(other instanceof LocalDate) && isDate(other) ? date.atStartOfDay() : value;
+  }
+
+  /** A whole number above every {@code long}: what {@link #floorOrBeyondLong} answers for a value of 20 integer digits or more. */
+  public static final BigDecimal ABOVE_EVERY_LONG = BigDecimal.TEN.pow(20);
+
+  /** A whole number below every {@code long}, see {@link #ABOVE_EVERY_LONG}. */
+  public static final BigDecimal BELOW_EVERY_LONG = ABOVE_EVERY_LONG.negate();
+
+  /**
+   * The greatest whole number not above {@code value}, or {@link #ABOVE_EVERY_LONG} / {@link #BELOW_EVERY_LONG} for a value beyond
+   * every {@code long} (20 integer digits or more). {@link BigDecimal#setScale} is not asked for a value whose exponent is far from
+   * zero: {@code 1E+999999999} would make it build a number of a billion digits, and {@code 1E-999999999} the power of ten that
+   * divides it, which a bound or a parameter of a query, sent by a client, must not be able to ask the server for.
+   */
+  public static BigDecimal floorOrBeyondLong(final BigDecimal value) {
+    final int integerDigits = value.precision() - value.scale();
+    if (integerDigits > 19)
+      return value.signum() > 0 ? ABOVE_EVERY_LONG : BELOW_EVERY_LONG;
+    if (integerDigits <= 0)
+      // below 1 in absolute value: 0 for zero and for a positive, -1 for a negative
+      return value.signum() < 0 ? BigDecimal.ONE.negate() : BigDecimal.ZERO;
+    return value.setScale(0, RoundingMode.FLOOR);
+  }
+
+  /** Answer of {@link #compareNumberAndTemporal} for a pair that is not a number against a datetime: the caller keeps its own rule. */
+  public static final int NOT_NUMBER_AND_TEMPORAL = 2;
+
+  /**
+   * Orders a number against a datetime, whichever side each is on, with the number read as a count of epoch milliseconds (what SQL
+   * writes into any datetime, whatever its precision) and compared EXACTLY. The comparison operators used to convert the operand on
+   * the right to the class of the one on the left, which cannot hold a datetime in a number (a number on the left answered "not
+   * equal" and "not below" for every datetime, so {@code 2000 <> ts} was true for the sample at 2000), reads a fractional number as
+   * the millisecond it falls in ({@code ts = 2000.5} was true for the sample at 2000, {@code ts >= 2000.5} too) and has no
+   * datetime for a number outside the range of a long ({@code ts <= 1e19} was false for every sample); issue #10560.
+   * <p>
+   * The datetime is a {@link LocalDateTime}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Date} or
+   * {@link Calendar}, the classes a DATETIME is materialised as. A DATE, a string and the Cypher temporals are left to the caller.
+   * <p>
+   * A NaN is above every datetime, as it is above every number everywhere else in the engine (the order of {@link Double#compare}).
+   *
+   * @return the sign of {@code left - right} (-1, 0 or 1), or {@link #NOT_NUMBER_AND_TEMPORAL} when the pair is not a number against
+   * a datetime
+   */
+  public static int compareNumberAndTemporal(final Object left, final Object right) {
+    if (left instanceof Number number)
+      return compareNumberToDateTime(number, right);
+    if (right instanceof Number number) {
+      final int order = compareNumberToDateTime(number, left);
+      return order == NOT_NUMBER_AND_TEMPORAL ? order : -order;
+    }
+    return NOT_NUMBER_AND_TEMPORAL;
+  }
+
+  /**
+   * The nanoseconds a datetime holds below its millisecond: what a conversion to epoch milliseconds drops. 0 for the classes that hold
+   * milliseconds only, and for anything that is not a datetime. Reads the same classes as {@link #compareNumberToDateTime}, which the
+   * two have to keep in step ({@code DateUtilsCompareNumberAndTemporalTest} compares them class by class).
+   */
+  public static int subMillisecondNanos(final Object value) {
+    final int nanos;
+    if (value instanceof LocalDateTime localDateTime)
+      nanos = localDateTime.getNano();
+    else if (value instanceof ZonedDateTime zonedDateTime)
+      nanos = zonedDateTime.getNano();
+    else if (value instanceof OffsetDateTime offsetDateTime)
+      nanos = offsetDateTime.getNano();
+    else if (value instanceof Instant instant)
+      nanos = instant.getNano();
+    else
+      return 0;
+    return nanos % 1_000_000;
+  }
+
+  /** The sign of {@code number - dateTime} in epoch milliseconds, see {@link #compareNumberAndTemporal}. */
+  private static int compareNumberToDateTime(final Number number, final Object dateTime) {
+    final long millis;
+    // the nanoseconds of the datetime below its millisecond: 0 for every class that holds milliseconds only
+    final int subMillisecondNanos;
+    if (dateTime instanceof Date date) {
+      millis = date.getTime();
+      subMillisecondNanos = 0;
+    } else if (dateTime instanceof Calendar calendar) {
+      millis = calendar.getTimeInMillis();
+      subMillisecondNanos = 0;
+    } else {
+      final long epochSecond;
+      final int nanos;
+      if (dateTime instanceof LocalDateTime localDateTime) {
+        epochSecond = localDateTime.toEpochSecond(ZoneOffset.UTC);
+        nanos = localDateTime.getNano();
+      } else if (dateTime instanceof ZonedDateTime zonedDateTime) {
+        epochSecond = zonedDateTime.toEpochSecond();
+        nanos = zonedDateTime.getNano();
+      } else if (dateTime instanceof OffsetDateTime offsetDateTime) {
+        epochSecond = offsetDateTime.toEpochSecond();
+        nanos = offsetDateTime.getNano();
+      } else if (dateTime instanceof Instant instant) {
+        epochSecond = instant.getEpochSecond();
+        nanos = instant.getNano();
+      } else
+        return NOT_NUMBER_AND_TEMPORAL;
+      try {
+        millis = Math.addExact(Math.multiplyExact(epochSecond, 1_000L), nanos / 1_000_000);
+      } catch (final ArithmeticException e) {
+        // a year no long of milliseconds reaches: not a comparison this class answers
+        return NOT_NUMBER_AND_TEMPORAL;
+      }
+      subMillisecondNanos = nanos % 1_000_000;
+    }
+
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte
+        || number instanceof AtomicLong || number instanceof AtomicInteger) {
+      final int order = Long.compare(number.longValue(), millis);
+      // the number is the millisecond the datetime starts in: the fraction left over makes the datetime the later one
+      return order != 0 ? order : subMillisecondNanos > 0 ? -1 : 0;
+    }
+
+    final BigDecimal exact;
+    if (number instanceof BigDecimal bigDecimal)
+      exact = bigDecimal;
+    else if (number instanceof BigInteger bigInteger) {
+      if (bigInteger.bitLength() > 63)
+        // far outside the milliseconds of any datetime a long can hold
+        return bigInteger.signum();
+      exact = new BigDecimal(bigInteger);
+    } else {
+      final double value = number instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
+      if (Double.isNaN(value))
+        return 1;
+      if (Double.isInfinite(value))
+        return value > 0 ? 1 : -1;
+      if (Math.abs(value) < 9.0e18) {
+        // The common case, a double that is a whole number of milliseconds (1.7E12) or a fraction of one, decided on longs with no
+        // BigDecimal: the number is floor + fraction and the datetime is millis + fraction, both fractions in [0, 1)
+        final double floor = Math.floor(value);
+        final int order = Long.compare((long) floor, millis);
+        if (order != 0)
+          return order;
+        final boolean wholeNumber = floor == value;
+        if (wholeNumber)
+          return subMillisecondNanos > 0 ? -1 : 0;
+        if (subMillisecondNanos == 0)
+          return 1;
+      }
+      exact = new BigDecimal(value);
+    }
+
+    final BigDecimal dateTimeMillis = BigDecimal.valueOf(millis).add(BigDecimal.valueOf(subMillisecondNanos, 6));
+    return Integer.signum(exact.compareTo(dateTimeMillis));
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {

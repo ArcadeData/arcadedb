@@ -71,23 +71,28 @@ public class BetweenCondition extends BooleanExpression {
         || firstValue instanceof Byte;
     // A DATE against a datetime bound is that day at midnight, not the bound narrowed to its day (issue #10206), so
     // each bound may see its own widening of the value
+    // A number against a datetime is compared as epoch milliseconds, exactly, as >= and <= compare it (issue #10560)
+    final int lowerOrder = secondValue == null ? DateUtils.NOT_NUMBER_AND_TEMPORAL : DateUtils.compareNumberAndTemporal(firstValue, secondValue);
+    final int upperOrder = thirdValue == null ? DateUtils.NOT_NUMBER_AND_TEMPORAL : DateUtils.compareNumberAndTemporal(firstValue, thirdValue);
     Object lowerValue = firstValue;
-    if (secondValue != null && !(integralValue && secondValue instanceof Number)) {
+    if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && secondValue instanceof Number)) {
       lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
       secondValue = Type.convertOrNull(context.getDatabase(), secondValue, lowerValue.getClass());
       if (secondValue == null)
         return false;
     }
     Object upperValue = firstValue;
-    if (thirdValue != null && !(integralValue && thirdValue instanceof Number)) {
+    if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && thirdValue instanceof Number)) {
       upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
       thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, upperValue.getClass());
       if (thirdValue == null)
         return false;
     }
 
-    final Boolean lower = secondValue == null ? null : isOnTheRightSide(lowerValue, secondValue, 1);
-    final Boolean upper = thirdValue == null ? null : isOnTheRightSide(upperValue, thirdValue, -1);
+    final Boolean lower = secondValue == null ? null :
+        lowerOrder != DateUtils.NOT_NUMBER_AND_TEMPORAL ? lowerOrder >= 0 : isOnTheRightSide(lowerValue, secondValue, 1);
+    final Boolean upper = thirdValue == null ? null :
+        upperOrder != DateUtils.NOT_NUMBER_AND_TEMPORAL ? upperOrder <= 0 : isOnTheRightSide(upperValue, thirdValue, -1);
     if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
     return lower == null || upper == null ? null : Boolean.TRUE;

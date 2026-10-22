@@ -601,9 +601,12 @@ public class CypherSemanticValidator {
       switch (entry.getType()) {
         case MATCH:
           final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.hasPathPatterns())
+          if (matchClause.hasPathPatterns()) {
             for (final PathPattern path : matchClause.getPathPatterns())
               addBoundVarsFromPattern(path, scope);
+            for (final PathPattern path : matchClause.getPathPatterns())
+              checkGroupWhereScope(path, scope);
+          }
           // Validate WHERE clause references against scope
           if (matchClause.getWhereClause() != null)
             checkBooleanExpressionScope(matchClause.getWhereClause().getConditionExpression(), scope);
@@ -1228,6 +1231,17 @@ public class CypherSemanticValidator {
       // expression. This catches variables that leak out of a pattern/list comprehension into the
       // outer predicate scope (issue #5179).
       checkExpressionScope(((BooleanCoercionExpression) boolExpr).getExpression(), scope);
+    } else if (boolExpr instanceof RegexExpression regex) {
+      // zz.name =~ 'A.*' filtered the rows by a name no clause bound instead of refusing it (issue #10559)
+      checkExpressionScope(regex.getExpression(), scope);
+      checkExpressionScope(regex.getPattern(), scope);
+    } else if (boolExpr instanceof StringMatchExpression match) {
+      checkExpressionScope(match.getExpression(), scope);
+      checkExpressionScope(match.getPattern(), scope);
+    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
+      checkExpressionScope(normalized.getValueExpression(), scope);
+    } else if (boolExpr instanceof IsTypedExpression typed) {
+      checkExpressionScope(typed.getValueExpression(), scope);
     }
   }
 
@@ -1291,6 +1305,19 @@ public class CypherSemanticValidator {
     for (final Object value : properties.values())
       if (value instanceof Expression)
         checkExpressionScope((Expression) value, scope);
+  }
+
+  /**
+   * The inner {@code WHERE} of a quantified path pattern is held to the scope of the clause it is written in, as the {@code WHERE} of
+   * the clause is: the variables the groups write, the ones of the rest of the pattern and the ones of the earlier clauses. A name
+   * outside all of them used to evaluate as null, so the typo answered no row instead of an error (issue #10559).
+   */
+  private void checkGroupWhereScope(final PathPattern path, final Set<String> scope) {
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel instanceof QuantifiedPathPattern group) {
+        checkBooleanExpressionScope(group.getInnerWhere(), scope);
+        checkGroupWhereScope(group.getInnerPattern(), scope);
+      }
   }
 
   private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
@@ -1456,6 +1483,9 @@ public class CypherSemanticValidator {
           final MatchClause matchClause = entry.getTypedClause();
           if (matchClause.hasWhereClause())
             checkAggregationInWhere(matchClause.getWhereClause());
+          if (matchClause.hasPathPatterns())
+            for (final PathPattern path : matchClause.getPathPatterns())
+              checkAggregationInGroupWhere(path);
         } else if (entry.getType() == ClauseEntry.ClauseType.WITH) {
           final WithClause withClause = entry.getTypedClause();
           if (withClause.getWhereClause() != null)
@@ -1618,6 +1648,15 @@ public class CypherSemanticValidator {
     checkAggregationInBooleanExpression(whereClause.getConditionExpression());
   }
 
+  /** The inner {@code WHERE} of a quantified path pattern filters rows like the one of the clause: no aggregate (issue #10559). */
+  private void checkAggregationInGroupWhere(final PathPattern path) {
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel instanceof QuantifiedPathPattern group) {
+        checkAggregationInBooleanExpression(group.getInnerWhere());
+        checkAggregationInGroupWhere(group.getInnerPattern());
+      }
+  }
+
   private void checkAggregationInBooleanExpression(final BooleanExpression boolExpr) {
     if (boolExpr == null)
       return;
@@ -1636,6 +1675,21 @@ public class CypherSemanticValidator {
       checkAggregationInExpression(inExpr.getExpression());
       for (final Expression elem : inExpr.getList())
         checkAggregationInExpression(elem);
+    } else if (boolExpr instanceof IsNullExpression isNull) {
+      // count(x) IS NOT NULL is as much an aggregate in a WHERE as count(x) > 0 (issue #10559)
+      checkAggregationInExpression(isNull.getExpression());
+    } else if (boolExpr instanceof RegexExpression regex) {
+      checkAggregationInExpression(regex.getExpression());
+      checkAggregationInExpression(regex.getPattern());
+    } else if (boolExpr instanceof StringMatchExpression match) {
+      checkAggregationInExpression(match.getExpression());
+      checkAggregationInExpression(match.getPattern());
+    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
+      checkAggregationInExpression(normalized.getValueExpression());
+    } else if (boolExpr instanceof IsTypedExpression typed) {
+      checkAggregationInExpression(typed.getValueExpression());
+    } else if (boolExpr instanceof BooleanCoercionExpression coercion) {
+      checkAggregationInExpression(coercion.getExpression());
     }
   }
 
