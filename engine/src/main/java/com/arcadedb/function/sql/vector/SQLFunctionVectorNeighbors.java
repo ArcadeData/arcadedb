@@ -42,6 +42,8 @@ import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RidHashSet;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -75,22 +77,30 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   private static int parseRerank(final Object value) {
     if (value == null)
       return -1;
-    final double asDouble;
-    if (value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte)
-      asDouble = ((Number) value).longValue();
-    else if (value instanceof Number n)
-      asDouble = n.doubleValue();
-    else
+    // The check is exact: a BigDecimal or BigInteger is never narrowed to a double first, which would round 2.0000000000000001 to 2
+    final BigDecimal exact;
+    if (value instanceof BigDecimal d)
+      exact = d;
+    else if (value instanceof BigInteger i)
+      exact = new BigDecimal(i);
+    else if (value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte)
+      exact = BigDecimal.valueOf(((Number) value).longValue());
+    else if (value instanceof Number n) {
+      final double asDouble = n.doubleValue();
+      if (Double.isNaN(asDouble) || Double.isInfinite(asDouble))
+        throw new CommandSQLParsingException(NAME + " rerank must be an integer >= 0, got " + value);
+      exact = new BigDecimal(asDouble);
+    } else
       try {
-        asDouble = Integer.parseInt(value.toString().trim());
+        exact = BigDecimal.valueOf(Integer.parseInt(value.toString().trim()));
       } catch (final NumberFormatException e) {
         throw new CommandSQLParsingException(NAME + " rerank must be an integer >= 0, got " + value);
       }
-    if (Double.isNaN(asDouble) || Double.isInfinite(asDouble) || asDouble != Math.rint(asDouble) || asDouble > Integer.MAX_VALUE)
+    if (exact.signum() != 0 && exact.stripTrailingZeros().scale() > 0 || exact.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0)
       throw new CommandSQLParsingException(NAME + " rerank must be an integer >= 0, got " + value);
-    if (asDouble < 0)
+    if (exact.signum() < 0)
       throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + value);
-    return (int) asDouble;
+    return exact.intValue();
   }
 
   public SQLFunctionVectorNeighbors() {

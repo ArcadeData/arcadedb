@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -164,7 +166,8 @@ class Issue10514SqlRerankTest extends TestHelper {
   void aRerankThatIsNotAWholeNumberIsRefused() {
     final float[][] base = clustered(new Random(6L), 500);
     load(base, "PRODUCT");
-    for (final Object bad : new Object[] { 2.5, 2.5f, 0.1, Double.NaN, Double.POSITIVE_INFINITY, "2.5", "abc", 3_000_000_000L })
+    for (final Object bad : new Object[] { 2.5, 2.5f, 0.1, Double.NaN, Double.POSITIVE_INFINITY, "2.5", "abc", 3_000_000_000L,
+        new BigDecimal("2.0000000000000001"), new BigDecimal("2.5"), BigInteger.valueOf(3_000_000_000L) })
       assertThatThrownBy(() -> sql(base[0], Map.of("rerank", bad))).as("rerank %s", bad)
           .isInstanceOf(CommandSQLParsingException.class)
           .hasMessageContaining("vector.neighbors rerank must be an integer >= 0, got " + bad);
@@ -178,13 +181,40 @@ class Issue10514SqlRerankTest extends TestHelper {
     load(base, "PRODUCT");
     final List<Result> reference = sql(base[0], Map.of("rerank", 2));
     assertThat(reference).hasSize(K);
-    for (final Object whole : new Object[] { 2L, (short) 2, 2.0, 2.0f, "2" }) {
+    for (final Object whole : new Object[] { 2L, (short) 2, 2.0, 2.0f, "2",
+        new BigDecimal("2"), new BigDecimal("2.000"), new BigDecimal("2.0"), BigInteger.TWO }) {
       final List<Result> rows = sql(base[0], Map.of("rerank", whole));
       assertThat(rows).as("rerank %s", whole).hasSameSizeAs(reference);
       for (int i = 0; i < rows.size(); i++)
         assertThat((int) rows.get(i).getProperty("vid")).isEqualTo((int) reference.get(i).getProperty("vid"));
     }
     assertThat(sql(base[0], Map.of("rerank", 0))).hasSize(K);
+  }
+
+  // A SQL literal in the options map: a decimal literal reaches the function as a Double (never a BigDecimal), so the exact
+  // BigDecimal cases are covered above through the parameter map
+  @Test
+  void aRerankWrittenAsASqlLiteralIsCheckedExactly() {
+    final float[][] base = clustered(new Random(8L), 500);
+    load(base, "PRODUCT");
+    final String literal = "SELECT vid FROM (SELECT expand(`vector.neighbors`('Doc[embedding]', ?, 10, {rerank: %s})))";
+    for (final String bad : new String[] { "2.5", "0.1", "-1", "-2.5" })
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = database.query("sql", String.format(literal, bad), base[0])) {
+          while (rs.hasNext())
+            rs.next();
+        }
+      }).as("rerank %s", bad)
+          .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("rerank must be");
+    for (final String good : new String[] { "2", "2.0", "0" })
+      try (final ResultSet rs = database.query("sql", String.format(literal, good), base[0])) {
+        int rows = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          rows++;
+        }
+        assertThat(rows).as("rerank %s", good).isEqualTo(K);
+      }
   }
 
   @Test
