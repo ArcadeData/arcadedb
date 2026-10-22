@@ -113,7 +113,6 @@ import com.arcadedb.utility.Pair;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -3167,7 +3166,9 @@ public class SelectExecutionPlanner {
     }
 
     final BigDecimal value = (BigDecimal) bound;
-    final BigDecimal floor = value.setScale(0, RoundingMode.FLOOR);
+    // not setScale(0): a bound of 1E+999999999 would make the server build a number of a billion digits. A value beyond every long
+    // answers a whole number beyond every long, which the ranges below read as above or below every sample
+    final BigDecimal floor = DateUtils.floorOrBeyondLong(value);
     final boolean whole = floor.compareTo(value) == 0;
     if (whole && floor.compareTo(BIG_LONG_MIN) == 0)
       // the Long.MIN_VALUE that toEpochMs answers for "not a timestamp" (#8152): declined, as it always was
@@ -5987,14 +5988,23 @@ public class SelectExecutionPlanner {
    * the unindexed query agree. A double bound on a FLOAT key is not one of them: the FLOAT reads as equal to the double that
    * narrows to it on both sides (issue #8882), and the ordering operators follow that rule too.
    */
-  private static boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
+  private boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
       final CommandContext context) {
     final Property property = type.getPropertyIfExists(field);
+    // A literal is a parameter by the time the statement is planned (SQLLiteralParameterizer), so the bound of a DATETIME_SECOND,
+    // DATETIME_MICROS or DATETIME_NANOS key is read from the parameter: those keys count seconds, microseconds or nanoseconds, a
+    // number is milliseconds, and the index cannot hold one that falls between two of its keys (issue #10560). The DATETIME key
+    // counts milliseconds and maps such a bound at run time, see IntegralKeyBound#boundTypeOf
+    final boolean readsParameters = property != null
+        && (property.getType() == Type.DATETIME_SECOND || property.getType() == Type.DATETIME_MICROS
+        || property.getType() == Type.DATETIME_NANOS);
     if (expression instanceof BinaryCondition condition)
-      return isLossyBound(literalValue(condition.getRight(), context), property);
+      return isLossyBound(readsParameters ? boundValue(condition.getRight(), context) : literalValue(condition.getRight(), context),
+          property);
     if (expression instanceof BetweenCondition between)
-      return isLossyBound(literalValue(between.getSecond(), context), property)
-          || isLossyBound(literalValue(between.getThird(), context), property);
+      return isLossyBound(readsParameters ? boundValue(between.getSecond(), context) : literalValue(between.getSecond(), context),
+          property)
+          || isLossyBound(readsParameters ? boundValue(between.getThird(), context) : literalValue(between.getThird(), context), property);
     if (expression instanceof InCondition in) {
       final MathExpression right = in.getRightMathExpression();
       if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
@@ -6026,7 +6036,45 @@ public class SelectExecutionPlanner {
     return expression != null && expression.isLiteral() ? expression.execute((Result) null, context) : null;
   }
 
+  /**
+   * The value of a literal, or of a bare input parameter, which makes the plan depend on the parameters it was given: a plan that
+   * left a bound out of the index because of its value must not be reused for another one.
+   */
+  private Object boundValue(final Expression expression, final CommandContext context) {
+    if (expression == null)
+      return null;
+    if (expression.isLiteral())
+      return expression.execute((Result) null, context);
+    if (!isBareInputParameter(expression))
+      return null;
+    final Object value = expression.execute((Result) null, context);
+    if (value instanceof Number)
+      // only a number is judged here, so a datetime parameter keeps the plan reusable
+      planDependsOnInputParameters = true;
+    return value;
+  }
+
   private static boolean isLossyBound(final Object bound, final Property property) {
+    if (property != null && bound instanceof Number number && !(number instanceof BigDecimal)) {
+      // A number is epoch milliseconds in SQL, and these keys count seconds, microseconds or nanoseconds: the index would convert a
+      // fraction of a millisecond, a NaN, an infinity or (for seconds) a millisecond inside a second to the key it falls in, where
+      // the scan compares the number exactly (issue #10560). A DATETIME key counts milliseconds and maps such a bound onto the keys
+      // that bound the same set, see IntegralKeyBound#boundTypeOf
+      final boolean wholeMilliseconds = number instanceof Byte || number instanceof Short || number instanceof Integer
+          || number instanceof Long || number instanceof BigInteger;
+      switch (property.getType()) {
+      case DATETIME_MICROS, DATETIME_NANOS -> {
+        if (!wholeMilliseconds)
+          return true;
+      }
+      case DATETIME_SECOND -> {
+        if (!wholeMilliseconds || (!(number instanceof BigInteger) && number.longValue() % 1000L != 0L))
+          return true;
+      }
+      default -> {
+      }
+      }
+    }
     if (bound instanceof BigDecimal)
       // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
       // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact

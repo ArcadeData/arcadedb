@@ -178,6 +178,73 @@ class CypherQuantifiedPathPatternSelfLoopScopeIssue10559Test {
         .hasMessageContaining("InvalidAggregation");
   }
 
+  /** Every predicate the grammar allows in a WHERE is held to the scope, not only the comparisons. */
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "zz.name =~ 'A.*'",
+      "zz.name STARTS WITH 'A'",
+      "zz.name ENDS WITH 'A'",
+      "zz.name CONTAINS 'A'",
+      "x.name STARTS WITH zz.name",
+      "zz.id IS NULL",
+      "zz.id IS NOT NULL",
+      "zz.id IN [0, 1]",
+      "zz IS :: INTEGER",
+      "zz IS NORMALIZED",
+      "NOT zz.flag",
+      "x.id = 0 OR zz.id = 1" })
+  void everyKindOfPredicateOfTheInnerWhereIsHeldToTheScope(final String predicate) {
+    loopAndEdge();
+
+    final String group = "MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE " + predicate + "){1,2} (b) RETURN count(*) AS n";
+    assertThatThrownBy(() -> drain(database.query("cypher", group))).as(predicate).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable").hasMessageContaining("'zz'");
+    // the same predicate in the WHERE of the clause, which the group is held to
+    final String clause = "MATCH (a:L {id:0})-[:R]->(y) WHERE " + predicate.replace("x.", "a.") + " RETURN count(*) AS n";
+    assertThatThrownBy(() -> drain(database.query("cypher", clause))).as(clause).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "count(x) IS NOT NULL",
+      "count(x) IS NULL",
+      "count(x) =~ '1'",
+      "toString(count(x)) STARTS WITH '1'",
+      "count(x) IS :: INTEGER",
+      "count(x)",
+      "x.id = 0 AND sum(y.id) IS NOT NULL" })
+  void anAggregateUnderAnyKindOfPredicateOfTheInnerWhereIsRefused(final String predicate) {
+    loopAndEdge();
+
+    final String group = "MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE " + predicate + "){1,2} (b) RETURN count(*) AS n";
+    assertThatThrownBy(() -> drain(database.query("cypher", group))).as(predicate).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("InvalidAggregation");
+  }
+
+  /**
+   * The inner WHERE can read the variable of the right boundary, which is bound to the vertex the whole group ends on: no repetition
+   * but the last knows it, so every repetition is judged against it when a row is emitted. It used to read null, and so matched no row.
+   */
+  @Test
+  void theInnerWhereCanReadTheVariableOfTheRightBoundary() {
+    loopAndEdge();
+
+    // the paths of the group: [loop] ends on a, [a->b] ends on b, [loop, a->b] ends on b
+    assertThat(count("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE b.id >= 0){1,2} (b) RETURN count(*) AS n")).isEqualTo(3L);
+    // y is below the end of the group at every repetition
+    assertThat(count("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE y.id <= b.id){1,2} (b) RETURN count(*) AS n")).isEqualTo(3L);
+    // [loop, a->b] has y = a (0) in its first repetition, below the end b (1): out
+    assertThat(count("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE y.id >= b.id){1,2} (b) RETURN count(*) AS n")).isEqualTo(2L);
+    assertThat(ids("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE y.id >= b.id){1,2} (b) RETURN b.id AS v")).containsExactlyInAnyOrder(0L, 1L);
+    // a bound that no row meets
+    assertThat(count("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE b.id > 5){1,2} (b) RETURN count(*) AS n")).isZero();
+    // a predicate that does not read the boundary keeps being judged repetition by repetition
+    assertThat(count("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE y.id >= 0 AND a.id = 0){1,2} (b) RETURN count(*) AS n")).isEqualTo(3L);
+    // zero repetitions end where they started and have nothing to judge
+    assertThat(count("MATCH (a:L {id:0}) ((x)-[:R]->(y) WHERE b.id > 5){0,1} (b) RETURN count(*) AS n")).isEqualTo(1L);
+  }
+
   private long count(final String query) {
     return ((Number) rows(query).getFirst().getProperty("n")).longValue();
   }

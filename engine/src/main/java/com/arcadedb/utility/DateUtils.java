@@ -271,7 +271,7 @@ public class DateUtils {
       }
       case BigDecimal bigDecimal -> {
         try {
-          yield bigDecimal.setScale(0, RoundingMode.FLOOR).longValueExact();
+          yield floorOrBeyondLong(bigDecimal).longValueExact();
         } catch (final ArithmeticException e) {
           throw new IllegalArgumentException("Timestamp value " + bigDecimal + " is outside the supported range");
         }
@@ -1032,6 +1032,28 @@ public class DateUtils {
    */
   public static Object dateAsMidnightAgainst(final Object value, final Object other) {
     return value instanceof LocalDate date && !(other instanceof LocalDate) && isDate(other) ? date.atStartOfDay() : value;
+  }
+
+  /** A whole number above every {@code long}: what {@link #floorOrBeyondLong} answers for a value of 20 integer digits or more. */
+  public static final BigDecimal ABOVE_EVERY_LONG = BigDecimal.TEN.pow(20);
+
+  /** A whole number below every {@code long}, see {@link #ABOVE_EVERY_LONG}. */
+  public static final BigDecimal BELOW_EVERY_LONG = ABOVE_EVERY_LONG.negate();
+
+  /**
+   * The greatest whole number not above {@code value}, or {@link #ABOVE_EVERY_LONG} / {@link #BELOW_EVERY_LONG} for a value beyond
+   * every {@code long} (20 integer digits or more). {@link BigDecimal#setScale} is not asked for a value whose exponent is far from
+   * zero: {@code 1E+999999999} would make it build a number of a billion digits, and {@code 1E-999999999} the power of ten that
+   * divides it, which a bound or a parameter of a query, sent by a client, must not be able to ask the server for.
+   */
+  public static BigDecimal floorOrBeyondLong(final BigDecimal value) {
+    final int integerDigits = value.precision() - value.scale();
+    if (integerDigits > 19)
+      return value.signum() > 0 ? ABOVE_EVERY_LONG : BELOW_EVERY_LONG;
+    if (integerDigits <= 0)
+      // below 1 in absolute value: 0 for zero and for a positive, -1 for a negative
+      return value.signum() < 0 ? BigDecimal.ONE.negate() : BigDecimal.ZERO;
+    return value.setScale(0, RoundingMode.FLOOR);
   }
 
   /** Answer of {@link #compareNumberAndTemporal} for a pair that is not a number against a datetime: the caller keeps its own rule. */

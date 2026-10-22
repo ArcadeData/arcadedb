@@ -1231,6 +1231,17 @@ public class CypherSemanticValidator {
       // expression. This catches variables that leak out of a pattern/list comprehension into the
       // outer predicate scope (issue #5179).
       checkExpressionScope(((BooleanCoercionExpression) boolExpr).getExpression(), scope);
+    } else if (boolExpr instanceof RegexExpression regex) {
+      // zz.name =~ 'A.*' filtered the rows by a name no clause bound instead of refusing it (issue #10559)
+      checkExpressionScope(regex.getExpression(), scope);
+      checkExpressionScope(regex.getPattern(), scope);
+    } else if (boolExpr instanceof StringMatchExpression match) {
+      checkExpressionScope(match.getExpression(), scope);
+      checkExpressionScope(match.getPattern(), scope);
+    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
+      checkExpressionScope(normalized.getValueExpression(), scope);
+    } else if (boolExpr instanceof IsTypedExpression typed) {
+      checkExpressionScope(typed.getValueExpression(), scope);
     }
   }
 
@@ -1664,6 +1675,21 @@ public class CypherSemanticValidator {
       checkAggregationInExpression(inExpr.getExpression());
       for (final Expression elem : inExpr.getList())
         checkAggregationInExpression(elem);
+    } else if (boolExpr instanceof IsNullExpression isNull) {
+      // count(x) IS NOT NULL is as much an aggregate in a WHERE as count(x) > 0 (issue #10559)
+      checkAggregationInExpression(isNull.getExpression());
+    } else if (boolExpr instanceof RegexExpression regex) {
+      checkAggregationInExpression(regex.getExpression());
+      checkAggregationInExpression(regex.getPattern());
+    } else if (boolExpr instanceof StringMatchExpression match) {
+      checkAggregationInExpression(match.getExpression());
+      checkAggregationInExpression(match.getPattern());
+    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
+      checkAggregationInExpression(normalized.getValueExpression());
+    } else if (boolExpr instanceof IsTypedExpression typed) {
+      checkAggregationInExpression(typed.getValueExpression());
+    } else if (boolExpr instanceof BooleanCoercionExpression coercion) {
+      checkAggregationInExpression(coercion.getExpression());
     }
   }
 

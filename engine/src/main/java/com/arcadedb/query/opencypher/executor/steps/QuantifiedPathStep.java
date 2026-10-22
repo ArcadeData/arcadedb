@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -95,9 +96,16 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    * every other pattern shape resolves its labels statically and must not pay for it.
    */
   private final ExpressionEvaluator  dynamicLabelEvaluator;
+  /**
+   * Whether the group's inner {@code WHERE} reads the variable of the right boundary, as in
+   * {@code MATCH (a) ((x)-[:R]->(y) WHERE y.id <= b.id){1,3} (b)}. The vertex it names is the one the whole group ends on, which
+   * no repetition but the last one knows: the predicate is judged for every repetition when a row is about to be emitted, instead
+   * of when each repetition is matched (issue #10559).
+   */
+  private final boolean              innerWhereReadsTarget;
 
   /**
-   * @param sourceVariable         variable holding the group's left boundary vertex
+   * @param sourceVariable        variable holding the group's left boundary vertex
    * @param targetVariable         variable the group's right boundary vertex binds to
    * @param pathVariable           enclosing named path variable, or null. It binds one PATH running through every
    *                               repetition, whether or not the group is the only thing the path spans (issue #9940).
@@ -126,6 +134,9 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     this.innerRelationships = group.getInnerPattern().getRelationships();
     this.dynamicLabelEvaluator = targetNodePattern != null && targetNodePattern.hasDynamicLabels() ?
         new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance())) : null;
+    // a predicate whose names are not all known reads the target as far as this can tell: judged late, which is only slower
+    this.innerWhereReadsTarget = group.getInnerWhere() != null && targetVariable != null
+        && CypherReferencedVariables.of(group.getInnerWhere()).referencesAny(List.of(targetVariable));
   }
 
   /** One matched repetition: the vertices and relationships the inner pattern bound this time round. */
@@ -304,11 +315,26 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     /** Emits {@code current} when the repetition count is in range, then stacks the ways to go deeper. */
     private void visit(final Vertex current, final Deque<Iterator<Repetition>> pending) {
       final int done = repetitions.size();
-      if (done >= group.getMinRepetitions() && acceptsEndpoint(current))
+      if (done >= group.getMinRepetitions() && acceptsEndpoint(current) && (!innerWhereReadsTarget || innerWhereHolds(current)))
         out.add(buildRow(input, current, repetitions));
 
       pending.push(done < group.getMaxRepetitions() ?
           repetitionsFrom(current).iterator() : Collections.emptyIterator());
+    }
+
+    /**
+     * Judges the inner {@code WHERE} of every repetition made so far with {@code end}, the vertex the group ends on, bound to the
+     * variable of the right boundary. Only for a predicate that reads that variable ({@link #innerWhereReadsTarget}); any other is
+     * judged while the repetition is matched, which prunes the search early.
+     */
+    private boolean innerWhereHolds(final Vertex end) {
+      for (final Repetition repetition : repetitions) {
+        final ResultInternal scope = repetitionScope(input, repetition.nodes(), repetition.edges(), repetition.nodes().length - 1);
+        scope.setProperty(targetVariable, end);
+        if (!group.getInnerWhere().evaluate(scope, context))
+          return false;
+      }
+      return true;
     }
 
     /** Every way the inner pattern matches once starting at {@code current}, in written hop order. */
@@ -336,7 +362,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     private void matchRepetition(final Vertex[] nodes, final Edge[] edges, final int hop,
         final List<Repetition> found) {
       if (hop == innerRelationships.size()) {
-        if (group.getInnerWhere() == null
+        if (group.getInnerWhere() == null || innerWhereReadsTarget
             || group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges, nodes.length - 1), context))
           found.add(new Repetition(nodes.clone(), edges.clone()));
         return;
@@ -443,7 +469,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    *                     left out, because the arrays are reused across sibling candidates and still carry
    *                     the previous branch's values there
    */
-  private Result repetitionScope(final Result input, final Vertex[] nodes, final Edge[] edges,
+  private ResultInternal repetitionScope(final Result input, final Vertex[] nodes, final Edge[] edges,
       final int boundThrough) {
     final ResultInternal scope = new ResultInternal();
     for (final String property : input.getPropertyNames())

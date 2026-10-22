@@ -49,6 +49,8 @@ class Issue10523StringLengthCountsCharactersTest {
   // the two functions whose job is to expose the encoding: the code point value of the first character (À is 192, 𝔸 is 120120) and the
   // number of UTF-8 bytes. Every other function must not.
   private static final Set<String> ANSWERS_THE_ENCODING = Set.of("text.code", "text.byteCount");
+  /** What a call that threw answers, so that a call which threw is told from one that answered null. */
+  private static final Object      THREW                = new Object();
 
   @Test
   void lengthOfAStringCountsCharactersNotCodeUnits() {
@@ -88,6 +90,12 @@ class Issue10523StringLengthCountsCharactersTest {
         continue;
       final Object astral = answerOf(function, ASTRAL + "X");
       final Object bmp = answerOf(function, BMP + "X");
+      if ((astral == THREW) != (bmp == THREW)) {
+        // a function that refuses one of the two strings and answers the other depends on the encoding as much as one that counts it
+        differing.add("cypher " + function.getName() + "(): " + (astral == THREW ? "fails" : "answers") + " for the astral string, "
+            + (bmp == THREW ? "fails" : "answers") + " for the BMP one");
+        continue;
+      }
       if (!isScalarCount(astral) || !isScalarCount(bmp))
         continue;
       checked.add(function.getName());
@@ -105,6 +113,11 @@ class Issue10523StringLengthCountsCharactersTest {
         continue;
       final Object astral = answerOf(method, ASTRAL + "X");
       final Object bmp = answerOf(method, BMP + "X");
+      if ((astral == THREW) != (bmp == THREW)) {
+        differing.add("sql ." + name + "(): " + (astral == THREW ? "fails" : "answers") + " for the astral string, "
+            + (bmp == THREW ? "fails" : "answers") + " for the BMP one");
+        continue;
+      }
       if (!isScalarCount(astral) || !isScalarCount(bmp))
         continue;
       checkedMethods.add(name);
@@ -124,7 +137,7 @@ class Issue10523StringLengthCountsCharactersTest {
     try {
       return function.execute(new Object[] { input }, new BasicCommandContext());
     } catch (final RuntimeException e) {
-      return null;
+      return THREW;
     }
   }
 
@@ -132,7 +145,7 @@ class Issue10523StringLengthCountsCharactersTest {
     try {
       return method.execute(input, null, new BasicCommandContext(), new Object[0]);
     } catch (final RuntimeException e) {
-      return null;
+      return THREW;
     }
   }
 }

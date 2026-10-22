@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -146,6 +147,42 @@ class Issue10560TimeSeriesBoundNotALongTest extends TestHelper {
     assertThat(tsOf("SELECT FROM " + types[0])).containsExactly(1000L, 2000L);
     database.command("sql", "DELETE FROM " + types[0] + " WHERE ts < 1000.5");
     assertThat(tsOf("SELECT FROM " + types[0])).containsExactly(2000L);
+  }
+
+  /**
+   * A bound is the client's: {@code 1E+999999999} must not make the server build a number of a billion digits to find that it is above
+   * every sample, nor {@code 1E-999999999} the power of ten that divides by. The timeout is a hang detector, not a latency bound.
+   */
+  @Test
+  @Timeout(120)
+  void aBoundWithAHugeExponentIsDecidedWithoutBuildingTheNumber() {
+    final String[] types = createSamples();
+    final BigDecimal huge = new BigDecimal("1E+999999999");
+    final BigDecimal tiny = new BigDecimal("1E-999999999");
+
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts <= :p", Map.of("p", huge))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts < :p", Map.of("p", huge))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts >= :p", Map.of("p", huge))).isEmpty();
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts = :p", Map.of("p", huge))).isEmpty();
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts <> :p", Map.of("p", huge))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts > :p", Map.of("p", huge.negate()))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts < :p", Map.of("p", huge.negate()))).isEmpty();
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts BETWEEN :a AND :b", Map.of("a", huge.negate(), "b", huge)))
+        .containsExactly(1000L, 2000L, 3000L);
+
+    // a positive that is nearly zero is above 0 and below 1: every sample is after it
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts > :p", Map.of("p", tiny))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts >= :p", Map.of("p", tiny))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts < :p", Map.of("p", tiny))).isEmpty();
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts = :p", Map.of("p", tiny))).isEmpty();
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts > :p", Map.of("p", tiny.negate()))).containsExactly(1000L, 2000L, 3000L);
+    assertThat(tsOf("SELECT FROM " + types[0] + " WHERE ts <= :p", Map.of("p", tiny.negate()))).isEmpty();
+
+    // and the DELETE it makes a scope of
+    database.command("sql", "DELETE FROM " + types[0] + " WHERE ts >= :p", Map.of("p", huge));
+    assertThat(tsOf("SELECT FROM " + types[0])).containsExactly(1000L, 2000L, 3000L);
+    database.command("sql", "DELETE FROM " + types[0] + " WHERE ts <= :p", Map.of("p", huge));
+    assertThat(tsOf("SELECT FROM " + types[0])).isEmpty();
   }
 
   /**

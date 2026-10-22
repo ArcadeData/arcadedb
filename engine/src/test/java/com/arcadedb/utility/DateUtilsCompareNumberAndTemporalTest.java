@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -29,11 +30,13 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link DateUtils#compareNumberAndTemporal}, the comparison of a number with a datetime that {@code =}, {@code <>}, {@code <},
@@ -121,6 +124,43 @@ class DateUtilsCompareNumberAndTemporalTest {
       assertThat(DateUtils.compareNumberAndTemporal(number, datetime)).as(number.toString()).isEqualTo(-1);
       assertThat(DateUtils.compareNumberAndTemporal(datetime, number)).as(number.toString()).isEqualTo(1);
     }
+  }
+
+  /** A value sent by a client: neither the number nor a power of ten of a billion digits is built to compare it. */
+  @Test
+  @Timeout(60)
+  void aHugeExponentIsComparedWithoutBuildingTheNumber() {
+    final Object datetime = LocalDateTime.ofEpochSecond(2, 500_000, ZoneOffset.UTC);
+    final BigDecimal huge = new BigDecimal("1E+999999999");
+    final BigDecimal tiny = new BigDecimal("1E-999999999");
+    assertThat(DateUtils.compareNumberAndTemporal(huge, datetime)).isEqualTo(1);
+    assertThat(DateUtils.compareNumberAndTemporal(huge.negate(), datetime)).isEqualTo(-1);
+    assertThat(DateUtils.compareNumberAndTemporal(datetime, huge)).isEqualTo(-1);
+    assertThat(DateUtils.compareNumberAndTemporal(tiny, datetime)).isEqualTo(-1);
+    assertThat(DateUtils.compareNumberAndTemporal(tiny.negate(), datetime)).isEqualTo(-1);
+
+    assertThatThrownBy(() -> DateUtils.dateTimeToTimestamp(huge, ChronoUnit.MILLIS)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> DateUtils.dateTimeToTimestamp(huge.negate(), ChronoUnit.MILLIS)).isInstanceOf(IllegalArgumentException.class);
+    // a number that is nearly zero is the millisecond that contains it
+    assertThat(DateUtils.dateTimeToTimestamp(tiny, ChronoUnit.MILLIS)).isZero();
+    assertThat(DateUtils.dateTimeToTimestamp(tiny.negate(), ChronoUnit.MILLIS)).isEqualTo(-1L);
+  }
+
+  @Test
+  void theFloorOfABigDecimalIsTheGreatestWholeNumberNotAboveIt() {
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("2000.5"))).isEqualByComparingTo("2000");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("-2000.5"))).isEqualByComparingTo("-2001");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("2000"))).isEqualByComparingTo("2000");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("0.5"))).isEqualByComparingTo("0");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("-0.5"))).isEqualByComparingTo("-1");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("0E+5"))).isEqualByComparingTo("0");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("0E-100"))).isEqualByComparingTo("0");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("9223372036854775807.5"))).isEqualByComparingTo("9223372036854775807");
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("1E+18"))).isEqualByComparingTo("1000000000000000000");
+    // 20 integer digits: beyond every long, on either side
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("1E+19"))).isEqualTo(DateUtils.ABOVE_EVERY_LONG);
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("-1E+19"))).isEqualTo(DateUtils.BELOW_EVERY_LONG);
+    assertThat(DateUtils.floorOrBeyondLong(new BigDecimal("99999999999999999999.5"))).isEqualTo(DateUtils.ABOVE_EVERY_LONG);
   }
 
   @Test
