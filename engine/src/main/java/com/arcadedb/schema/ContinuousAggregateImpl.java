@@ -63,13 +63,14 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   private volatile boolean                needsCleanRebuild;
   /**
    * The time range samples of the source type were removed from (issue #10428), or appended to behind the watermark (issue #10502),
-   * since the buckets of the aggregate were last computed, or {@code null} when none were. The refresh only recomputes the bucket open at the watermark and the newer ones, so
-   * the buckets behind the watermark keep what they held when they were computed; this is what tells it which of them no longer
-   * match the source. One range, the hull of every delete since: recomputing a bucket the delete did not reach gives the rows it
-   * already had, so a wider range costs time and never correctness.
+   * since the buckets of the aggregate were last computed, or {@code null} when none were. The refresh only recomputes the bucket
+   * open at the watermark and the newer ones, so the buckets behind the watermark keep what they held when they were computed; this
+   * is what tells it which of them no longer match the source. One range, the hull of every change since: recomputing a bucket the
+   * change did not reach gives the rows it already had, so a wider range costs time and never correctness.
    * <p>
    * Part of the definition in the schema, unlike {@link #needsCleanRebuild}: a restart must not forget it, and under HA it has to
    * reach the followers in the replication unit of the delete (a follower promoted to leader would otherwise refresh without it).
+   * The record of a late append is saved on the leader alone for now, like the watermark (issue #10634).
    */
   private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;

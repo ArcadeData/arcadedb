@@ -295,7 +295,9 @@ public class ContinuousAggregateRefresher {
     // bucket), and a delete may not be the only thing the range holds. Every bucket of the grid the range reaches is recomputed then:
     // the grid is the one the watermark is a start of, since every bucket is `interval` wide. The backing type still bounds the start
     // of a range that reaches back to the first instants (a TRUNCATE, a delete with no lower bound), whose buckets are not on any
-    // grid a query could write
+    // grid a query could write. The cutoff only tells such a sentinel bound (Long.MIN_VALUE, what a delete with no lower bound
+    // records) from a timestamp: half of it is about 146 million years before the epoch, below any sample a column can hold, and far
+    // enough from Long.MIN_VALUE that the bucket start and the range query literal cannot overflow
     if (interval > 0 && invalidated.fromTs() > Long.MIN_VALUE / 2) {
       final long first = ContinuousAggregateImpl.bucketStart(invalidated.fromTs(), watermark, interval);
       final long last = ContinuousAggregateImpl.bucketStart(Math.min(invalidated.toTs(), watermark - 1), watermark, interval);

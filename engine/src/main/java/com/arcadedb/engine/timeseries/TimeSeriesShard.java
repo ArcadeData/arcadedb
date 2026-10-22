@@ -428,6 +428,9 @@ public class TimeSeriesShard implements AutoCloseable {
    * the type has an aggregate, and the schema is saved only when a record changed: a stream of late samples saves it once per bucket
    * reached, see {@link ContinuousAggregateImpl#invalidateLateSamples}. Retention and compaction remove or move samples without an
    * append and record nothing: an aggregate outlives the raw samples it summarized.
+   * <p>
+   * Under HA a follower receives the samples as the replicated pages of this commit, not through this method, so it runs on the
+   * leader only and the follower writes no schema; the record is saved on the leader alone, like the watermark (issue #10634).
    */
   private void invalidateContinuousAggregatesBehindWatermark(final TimeSeriesRowSource source) {
     final int size = source.size();
