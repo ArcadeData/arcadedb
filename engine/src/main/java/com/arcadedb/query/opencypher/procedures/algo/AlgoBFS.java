@@ -19,6 +19,10 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -29,8 +33,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.NumberUtils;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.function.IntFunction;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -41,8 +49,11 @@ import java.util.stream.Stream;
  * nodes in BFS order together with their depth from the start node.
  * </p>
  * <p>
- * When a Graph Analytical View (GAV) is available, the algorithm uses zero-allocation
- * NeighborView iteration over CSR arrays, avoiding per-node array materialization.
+ * Every path stops expanding at {@code maxDepth}, so a bounded call reads the edges of the hops it walks and allocates
+ * by the nodes it reaches, not by the graph (issue #10539): a ready Graph Analytical View runs the depth-bounded
+ * {@link GraphAlgorithms#breadthFirst} kernel over its CSR arrays, a view serving pending changes is walked node by
+ * node (or through its packed neighbour view when the walk is expected to pay for it), and without a view the walk
+ * loads the records it reaches from the start node rather than every vertex of the database.
  * </p>
  * <p>
  * Parameters:
@@ -67,6 +78,9 @@ import java.util.stream.Stream;
  */
 public class AlgoBFS extends AbstractAlgoProcedure {
   public static final String NAME = "algo.bfs";
+
+  // First capacity of a walk's result, grown by doubling, so that a bounded walk allocates by what it reaches (issue #10539)
+  private static final int INITIAL_CAPACITY = 1024;
 
   @Override
   public String getName() {
@@ -114,24 +128,18 @@ public class AlgoBFS extends AbstractAlgoProcedure {
       final int startIdx = gav.getNodeId(startNode.getIdentity());
       if (startIdx < 0)
         return Stream.empty();
-      final int n = gav.getNodeCount();
-      final int[] depths = GraphAlgorithms.shortestPathAll(gav, startIdx, dir, relTypes);
-      // The reached ids up front rather than a filter() on the stream: a filtered stream no longer knows its size,
-      // and the exact size is what lets a count-only CALL answer without building a row per node (issue #9453)
-      final int[] reached = new int[n];
-      int reachable = 0;
-      for (int i = 0; i < n; i++)
-        if (i != startIdx && depths[i] >= 0 && depths[i] <= maxDepth)
-          reached[reachable++] = i;
-      return Arrays.stream(reached, 0, reachable).mapToObj(i -> {
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("node", gav.getRID(i));
-        r.setProperty("depth", depths[i]);
-        return (Result) r;
-      });
+      // The kernel stops at maxDepth and returns only the nodes it reached, in BFS order (issue #10539). A sized stream:
+      // the exact size is what lets a count-only CALL answer without building a row per node (issue #9453)
+      final GraphAlgorithms.BFSLevels bfs = GraphAlgorithms.breadthFirst(gav, startIdx, maxDepth, dir, relTypes);
+      final int[] order = bfs.order();
+      return rows(bfs.size(), i -> gav.getRID(order[i]), bfs.levelStarts(), bfs.levels());
     }
 
-    // Fall back to OLTP path
+    // No view at all: walk the records from the start node, rather than loading every vertex of the database to reach
+    // the few a bounded call asks for (issue #10539)
+    if (provider == null)
+      return walkRecords(db, startNode, relTypes, dir, maxDepth, context);
+
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
@@ -142,92 +150,171 @@ public class AlgoBFS extends AbstractAlgoProcedure {
     if (startIdx < 0)
       return Stream.empty();
 
-    // Try zero-allocation NeighborView path (CSR-backed)
-    final NeighborView nv = graph.neighborView(dir, relTypes);
-    if (nv != null)
-      return bfsWithNeighborView(nv, graph, n, startIdx, maxDepth);
+    if (!graph.isCSRBacked()) {
+      // The view went away between the two lookups: the vertices are loaded already, so walk their adjacency
+      final int[][] adj = graph.adjacency(dir, relTypes);
+      return walkIds(graph, null, adj, n, startIdx, maxDepth, dir, relTypes);
+    }
 
-    // Fallback: materialize adjacency arrays
-    final int[][] adj = graph.adjacency(dir, relTypes);
-    return bfsWithAdjacency(adj, graph, n, startIdx, maxDepth);
+    // The packed neighbour view of a view serving pending changes is built for the whole graph: taken only when the walk is
+    // expected to read as many entries as building it writes, and otherwise the walk reads the nodes it reaches one by one
+    final NeighborView nv = graph.neighborViewForVisits(expectedVisits(graph.meanDegree(dir, relTypes), maxDepth), dir, relTypes);
+    return walkIds(graph, nv, null, n, startIdx, maxDepth, dir, relTypes);
   }
 
-  private Stream<Result> bfsWithNeighborView(final NeighborView nv, final GraphData graph,
-      final int n, final int startIdx, final int maxDepth) {
-    final int[] nbrs = nv.neighbors();
-    final int[] queue = new int[n];
-    final int[] depth = new int[n];
-    final boolean[] visited = new boolean[n];
+  /**
+   * About how many adjacency entries a walk of {@code maxDepth} hops reads at {@code meanDegree} entries per node: the
+   * geometric sum of the hops, saturating. {@link Long#MAX_VALUE} for an unbounded walk or an unknown degree, which then
+   * reads the whole graph or does not know better.
+   */
+  static long expectedVisits(final double meanDegree, final int maxDepth) {
+    if (maxDepth == Integer.MAX_VALUE || !(meanDegree >= 0))
+      return Long.MAX_VALUE;
+    if (maxDepth <= 0)
+      return 0;
+    // At most one entry per hop below a mean of one, then the closed form of the geometric sum: no loop over the hops,
+    // which a caller sets
+    final double total = meanDegree <= 1.0 ?
+        maxDepth :
+        meanDegree * (Math.pow(meanDegree, maxDepth) - 1.0) / (meanDegree - 1.0);
+    return total >= Long.MAX_VALUE || Double.isNaN(total) ? Long.MAX_VALUE : (long) total;
+  }
 
-    int head = 0, tail = 0;
-    queue[tail++] = startIdx;
-    visited[startIdx] = true;
-    depth[startIdx] = 0;
+  /**
+   * BFS over dense node ids, from a packed neighbour view when {@code nv} is not null, from the materialised {@code adj}
+   * when it is not null, and otherwise one node at a time through {@link GraphData#neighborIds}. Allocates a visited
+   * bitmap of the node count and a result that grows with the nodes reached.
+   */
+  private static Stream<Result> walkIds(final GraphData graph, final NeighborView nv, final int[][] adj, final int n,
+      final int startIdx, final int maxDepth, final Vertex.DIRECTION dir, final String[] relTypes) {
+    final int[] nbrs = nv != null ? nv.neighbors() : null;
+    final long[] visited = new long[(n + 63) >>> 6];
+    visited[startIdx >>> 6] |= 1L << (startIdx & 63);
 
-    // BFS traversal: record visited nodes and their depths
-    final int[] visited_nodes = new int[n];
-    int visitedCount = 0;
+    int[] order = new int[Math.min(n, INITIAL_CAPACITY)];
+    order[0] = startIdx;
+    int size = 1;
+    int[] levelStarts = new int[16];
+    levelStarts[1] = 1;
+    int levels = 1;
+    int frontierStart = 0;
+    int frontierEnd = 1;
+    int depth = 0;
 
-    while (head < tail) {
-      final int v = queue[head++];
-      if (depth[v] >= maxDepth)
-        continue;
-      for (int j = nv.offset(v), end = nv.offsetEnd(v); j < end; j++) {
-        final int u = nbrs[j];
-        if (!visited[u]) {
-          visited[u] = true;
-          depth[u] = depth[v] + 1;
-          queue[tail++] = u;
-          visited_nodes[visitedCount++] = u;
+    while (frontierEnd > frontierStart && depth < maxDepth) {
+      depth++;
+      for (int f = frontierStart; f < frontierEnd; f++) {
+        final int v = order[f];
+        final int[] row;
+        final int from;
+        final int to;
+        if (nv != null) {
+          row = nbrs;
+          from = nv.offset(v);
+          to = nv.offsetEnd(v);
+        } else {
+          row = adj != null ? adj[v] : graph.neighborIds(v, dir, relTypes);
+          from = 0;
+          to = row.length;
         }
+        for (int j = from; j < to; j++) {
+          final int u = row[j];
+          final int word = u >>> 6;
+          final long bit = 1L << (u & 63);
+          if ((visited[word] & bit) == 0) {
+            visited[word] |= bit;
+            if (size == order.length)
+              order = Arrays.copyOf(order, (int) Math.min(n, (long) order.length * 2));
+            order[size++] = u;
+          }
+        }
+      }
+      frontierStart = frontierEnd;
+      frontierEnd = size;
+      if (frontierEnd > frontierStart) {
+        if (++levels >= levelStarts.length)
+          levelStarts = Arrays.copyOf(levelStarts, levelStarts.length * 2);
+        levelStarts[levels] = frontierEnd;
       }
     }
 
-    final int count = visitedCount;
-    return IntStream.range(0, count).mapToObj(idx -> {
-      final int u = visited_nodes[idx];
-      final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getRID(u));
-      r.setProperty("depth", depth[u]);
-      return (Result) r;
-    });
+    final int[] reached = order;
+    return rows(size, i -> graph.getRID(reached[i]), levelStarts, levels);
   }
 
-  private Stream<Result> bfsWithAdjacency(final int[][] adj, final GraphData graph,
-      final int n, final int startIdx, final int maxDepth) {
-    final int[] queue = new int[n];
-    final int[] depth = new int[n];
-    final boolean[] visited = new boolean[n];
+  /**
+   * BFS over the records, from the start vertex: loads the vertices it reaches and nothing else, and charges them to the
+   * call's memory budget as {@code loadGraph} charges every vertex of the database (issue #10539). The edges are read as an
+   * algorithm reads them, the incoming side of a unidirectional type included (issue #8629), and an entry whose edge or far
+   * vertex is gone is skipped and reported, as the adjacency build skips it.
+   */
+  private Stream<Result> walkRecords(final Database db, final Vertex start, final String[] relTypes, final Vertex.DIRECTION dir,
+      final int maxDepth, final CommandContext context) {
+    final MemoryBudget memory = newMemoryBudget(db);
+    final long capacity = memory.capacityFor(OLTP_VERTEX_BYTES);
+    final CommandContext edgeContext = incomingSideContext(db, context);
 
-    int head = 0, tail = 0;
-    queue[tail++] = startIdx;
-    visited[startIdx] = true;
-    depth[startIdx] = 0;
+    final Set<RID> visited = new HashSet<>();
+    visited.add(start.getIdentity());
+    final List<Vertex> order = new ArrayList<>();
+    order.add(start);
+    int[] levelStarts = new int[16];
+    levelStarts[1] = 1;
+    int levels = 1;
+    int frontierStart = 0;
+    int frontierEnd = 1;
+    int depth = 0;
 
-    // BFS traversal: record visited nodes and their depths
-    final int[] visited_nodes = new int[n];
-    int visitedCount = 0;
-
-    while (head < tail) {
-      final int v = queue[head++];
-      if (depth[v] >= maxDepth)
-        continue;
-      for (final int u : adj[v]) {
-        if (!visited[u]) {
-          visited[u] = true;
-          depth[u] = depth[v] + 1;
-          queue[tail++] = u;
-          visited_nodes[visitedCount++] = u;
+    while (frontierEnd > frontierStart && depth < maxDepth) {
+      depth++;
+      for (int f = frontierStart; f < frontierEnd; f++) {
+        final Vertex v = order.get(f);
+        final RID vid = v.getIdentity();
+        for (final Edge e : edgesOf(edgeContext, v, dir, relTypes)) {
+          final RID nid;
+          try {
+            nid = neighborRid(e, vid, dir);
+          } catch (final RecordNotFoundException rnf) {
+            GhostEdgeReporter.reportSkipped(rnf);
+            continue;
+          }
+          if (!visited.add(nid))
+            continue;
+          final Vertex u;
+          try {
+            u = nid.asVertex();
+          } catch (final RecordNotFoundException rnf) {
+            GhostEdgeReporter.reportSkipped(rnf);
+            continue;
+          }
+          if (order.size() >= capacity)
+            memory.reserve(saturatingProduct(order.size() + 1L, OLTP_VERTEX_BYTES), "the visited vertices",
+                "at least " + (order.size() + 1) + " nodes");
+          order.add(u);
         }
       }
+      frontierStart = frontierEnd;
+      frontierEnd = order.size();
+      if (frontierEnd > frontierStart) {
+        if (++levels >= levelStarts.length)
+          levelStarts = Arrays.copyOf(levelStarts, levelStarts.length * 2);
+        levelStarts[levels] = frontierEnd;
+      }
     }
+    memory.reserve(saturatingProduct(order.size(), OLTP_VERTEX_BYTES), "the visited vertices", order.size() + " nodes");
 
-    final int count = visitedCount;
-    return IntStream.range(0, count).mapToObj(idx -> {
-      final int u = visited_nodes[idx];
+    return rows(order.size(), i -> order.get(i).getIdentity(), levelStarts, levels);
+  }
+
+  /**
+   * One row per reached node but the start (index 0), in BFS order. A sized stream: the exact size is what lets a
+   * count-only CALL answer without building a row per node (issue #9453).
+   */
+  private static Stream<Result> rows(final int size, final IntFunction<RID> rid, final int[] levelStarts, final int levels) {
+    return IntStream.range(1, size).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", graph.getRID(u));
-      r.setProperty("depth", depth[u]);
+      r.setProperty("node", rid.apply(i));
+      r.setProperty("depth", GraphAlgorithms.BFSLevels.depthAt(levelStarts, levels, i));
       return (Result) r;
     });
   }

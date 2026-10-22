@@ -1032,6 +1032,30 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
+     * {@link #neighborView} for a walk that expects to read about {@code expectedVisits} adjacency entries: {@code null} when
+     * packing the view would cost more than that walk (see {@link GraphTraversalProvider#getNeighborViewForVisits}), and then
+     * the walk reads per node with {@link #neighborIds}. Always {@code null} when backed by OLTP vertices.
+     */
+    public NeighborView neighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION dir, final String... relTypes) {
+      return provider != null ? provider.getNeighborViewForVisits(expectedVisits, dir, relTypes) : null;
+    }
+
+    /** The mean degree the provider reports in {@code dir} over {@code relTypes}, or -1 when unknown or OLTP-backed. */
+    public double meanDegree(final Vertex.DIRECTION dir, final String... relTypes) {
+      return provider != null ? provider.getMeanDegree(dir, relTypes) : -1.0;
+    }
+
+    /**
+     * The neighbours of node {@code i}, read from the provider for that one node: what a walk that visits few nodes reads
+     * instead of {@link #adjacency}, which copies the rows of every node. CSR-backed graphs only.
+     */
+    public int[] neighborIds(final int i, final Vertex.DIRECTION dir, final String... relTypes) {
+      if (provider == null)
+        throw new IllegalStateException("neighborIds() needs a CSR-backed graph");
+      return provider.getNeighborIds(i, dir, relTypes);
+    }
+
+    /**
      * Per-node degree in the given direction, for callers that need only the count - not the neighbour ids
      * {@link #adjacency} would materialise to get it.
      * <p>
