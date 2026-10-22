@@ -163,24 +163,6 @@ public class AlgoBFS extends AbstractAlgoProcedure {
   }
 
   /**
-   * About how many adjacency entries a walk of {@code maxDepth} hops reads at {@code meanDegree} entries per node: the
-   * geometric sum of the hops, saturating. {@link Long#MAX_VALUE} for an unbounded walk or an unknown degree, which then
-   * reads the whole graph or does not know better.
-   */
-  static long expectedVisits(final double meanDegree, final int maxDepth) {
-    if (maxDepth == Integer.MAX_VALUE || !(meanDegree >= 0))
-      return Long.MAX_VALUE;
-    if (maxDepth <= 0)
-      return 0;
-    // At most one entry per hop below a mean of one, then the closed form of the geometric sum: no loop over the hops,
-    // which a caller sets
-    final double total = meanDegree <= 1.0 ?
-        maxDepth :
-        meanDegree * (Math.pow(meanDegree, maxDepth) - 1.0) / (meanDegree - 1.0);
-    return total >= Long.MAX_VALUE || Double.isNaN(total) ? Long.MAX_VALUE : (long) total;
-  }
-
-  /**
    * BFS over dense node ids, from a packed neighbour view when {@code nv} is not null, from the materialised {@code adj}
    * when it is not null, and otherwise one node at a time through {@link GraphData#neighborIds}. Allocates a visited
    * bitmap of the node count and a result that grows with the nodes reached.

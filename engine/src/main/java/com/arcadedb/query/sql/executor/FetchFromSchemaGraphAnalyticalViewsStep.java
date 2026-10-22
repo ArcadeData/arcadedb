@@ -63,6 +63,12 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
 
         // Enrich with live stats from in-memory registry
         final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, name);
+        // A view reopened with its CSR file is READY before anything is read from it (issue #10575): the row is asked for the
+        // state of the view, so the restore is started, and the view reads BUILDING until its counts are the real ones. The
+        // status is read before the snapshot is looked at: a snapshot is published before the READY that vouches for it
+        if (liveView != null)
+          liveView.startPendingRestore();
+        final GraphAnalyticalView.Status liveStatus = liveView != null ? liveView.getStatus() : null;
         if (liveView != null && liveView.isBuilt()) {
           r.setProperty("status", liveView.getStatus().name());
           r.setProperty("nodeCount", liveView.getNodeCount());
@@ -78,7 +84,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
             r.setProperty("contractionHierarchies", hierarchyStats);
           }
         } else {
-          r.setProperty("status", liveView != null ? liveView.getStatus().name() : "NOT_BUILT");
+          r.setProperty("status", liveStatus != null ? liveStatus.name() : "NOT_BUILT");
           r.setProperty("nodeCount", 0);
           r.setProperty("edgeCount", 0);
           r.setProperty("memoryUsageBytes", 0L);
