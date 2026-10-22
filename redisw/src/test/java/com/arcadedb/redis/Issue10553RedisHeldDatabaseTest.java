@@ -105,6 +105,32 @@ public class Issue10553RedisHeldDatabaseTest extends BaseRedisServerTest {
     }
   }
 
+  /** A held database named by {@code arcadedb.redis.defaultDatabase} is the connection's database all the same: an unprefixed write is refused. */
+  @Test
+  void aWriteToAHeldConfiguredDefaultDatabaseIsRefusedAndNotKeptAsAPlainKey() {
+    final ArcadeDBServer server = getServer(0);
+    onDiskNotOpen(server);
+    final String previous = server.getConfiguration().getValueAsString(GlobalConfiguration.REDIS_DEFAULT_DATABASE);
+    server.getConfiguration().setValue(GlobalConfiguration.REDIS_DEFAULT_DATABASE, HELD);
+
+    server.reserveDatabaseNameForRestore(HELD);
+    try (final Jedis jedis = connect()) {
+      assertThatThrownBy(() -> jedis.set("k", "v")).isInstanceOf(JedisDataException.class).hasMessageStartingWith("LOADING ");
+    } finally {
+      server.releaseDatabaseNameReservedForRestore(HELD);
+    }
+
+    // Released and opened again (a database on disk that nothing opened yet is the separate case of issue #10567)
+    server.getDatabase(HELD);
+    try (final Jedis jedis = connect()) {
+      assertThat(jedis.set("k", "v")).as("released, the same configured default takes the write").isEqualTo("OK");
+      assertThat(jedis.get(HELD + ".k")).isEqualTo("v");
+    } finally {
+      server.getConfiguration().setValue(GlobalConfiguration.REDIS_DEFAULT_DATABASE, previous != null ? previous : "");
+      dropIfPresent(server);
+    }
+  }
+
   @Test
   void aDottedKeyWhosePrefixIsNoDatabaseStaysAnOrdinaryKey() {
     try (final Jedis jedis = connect()) {

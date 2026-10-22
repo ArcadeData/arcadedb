@@ -158,7 +158,9 @@ public class RedisNetworkExecutor extends Thread {
     // once the connection has authenticated (see getAuthorizedDatabase), so here we only record the name.
     final String defaultDbName = server.getConfiguration().getValueAsString(GlobalConfiguration.REDIS_DEFAULT_DATABASE);
     if (defaultDbName != null && !defaultDbName.isEmpty()) {
-      if (server.existsDatabase(defaultDbName))
+      // A database an operator holds (a restore, a close database) is recorded too, so that getAuthorizedDatabase answers LOADING
+      // for it: left out, an unprefixed SET wrote to the connection-local bucket, answered OK and lost the value (issue #10553)
+      if (server.existsDatabase(defaultDbName) || server.isDatabaseHeld(defaultDbName))
         this.selectedDatabaseName = defaultDbName;
       else
         LogManager.instance().log(this, Level.WARNING,

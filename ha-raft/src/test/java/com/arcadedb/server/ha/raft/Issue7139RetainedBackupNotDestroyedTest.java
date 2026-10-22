@@ -163,7 +163,10 @@ class Issue7139RetainedBackupNotDestroyedTest {
     assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
         serverThatCannotDownload(databasesDir)))
         .isInstanceOf(IOException.class)
-        .hasMessageContaining("only intact copy");
+        .hasMessageContaining("only intact copy")
+        // the operator is told the installer's own entries by exact name: a bucket may legally start with ".snapshot" (#9446)
+        .hasMessageContaining(".snapshot-new, .snapshot-orphans, .snapshot-pending")
+        .hasMessageNotContaining("start with '.snapshot'");
 
     assertThat(backup).as("the last copy of the database must survive a refused install").exists();
     // The restore moves the schema file back last, so this holds whatever order the filesystem lists the backup in (#10426).

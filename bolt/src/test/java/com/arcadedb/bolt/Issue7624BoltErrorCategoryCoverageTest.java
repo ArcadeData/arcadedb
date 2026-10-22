@@ -99,6 +99,20 @@ class Issue7624BoltErrorCategoryCoverageTest {
     assertThat(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR).startsWith("Neo.TransientError.");
   }
 
+  /**
+   * The two catches of {@code CommandParsingException} in RUN answer through {@code classifyExecutionError} (issue #10553): a held
+   * database wrapped by the exception the query engines wrap execution failures in is not a syntax error, and a genuine parsing
+   * failure keeps its own title.
+   */
+  @Test
+  void aHeldDatabaseWrappedByAParsingExceptionIsNotASyntaxError() {
+    assertThat(BoltNetworkExecutor.classifyExecutionError(
+        new CommandParsingException("failed", new DatabaseNotAvailableException("held")), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new CommandParsingException("unexpected token"),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
+  }
+
   @Test
   void schemaErrorNoLongerReadsAsAServerFault() {
     final Throwable e = new SchemaException("Type 'Nope' not found");

@@ -143,6 +143,18 @@ public final class SnapshotInstaller {
    */
   private static final Set<String> SNAPSHOT_MACHINERY_DIRS = Set.of(SNAPSHOT_NEW_DIR, SNAPSHOT_BACKUP_DIR, SNAPSHOT_ORPHANS_DIR);
 
+  /**
+   * Every entry the install keeps in a database directory, by exact name and sorted, for the instructions an operator reads when a
+   * restore could not finish. Never "whatever starts with .snapshot": a bucket may legally be named that way (issue #9446).
+   */
+  private static final String SNAPSHOT_MACHINERY_ENTRY_NAMES = machineryEntryNames();
+
+  private static String machineryEntryNames() {
+    final Set<String> names = new TreeSet<>(SNAPSHOT_MACHINERY_FILES);
+    names.addAll(SNAPSHOT_MACHINERY_DIRS);
+    return String.join(", ", names);
+  }
+
   /** Whether {@code name} is one of the files the snapshot install keeps in a database directory, see {@link #SNAPSHOT_MACHINERY_FILES}. */
   static boolean isSnapshotMachineryFileName(final String name) {
     return SNAPSHOT_MACHINERY_FILES.contains(name);
@@ -1171,9 +1183,10 @@ public final class SnapshotInstaller {
           + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
           + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
           + "the only intact copy; entries the failed restore already moved out of .snapshot-backup are in the "
-          + "database directory now and must stay there, so delete only the entries in the database directory that do "
-          + "not start with '.snapshot' and did not come from .snapshot-backup, move the contents of .snapshot-backup "
-          + "into it (schema.json last), then delete .snapshot-new, .snapshot-backup and .snapshot-pending");
+          + "database directory now and must stay there, so delete only the entries in the database directory that are "
+          + "not one of the installer's own (" + SNAPSHOT_MACHINERY_ENTRY_NAMES + ") and did not come from "
+          + ".snapshot-backup, move the contents of .snapshot-backup into it (schema.json last), then delete the "
+          + "installer's own entries (" + SNAPSHOT_MACHINERY_ENTRY_NAMES + ")");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
