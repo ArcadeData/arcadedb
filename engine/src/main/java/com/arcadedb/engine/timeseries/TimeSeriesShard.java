@@ -465,7 +465,16 @@ public class TimeSeriesShard implements AutoCloseable {
         changed = true;
     }
     if (changed)
-      schema.saveConfiguration();
+      // the samples are committed: a failure to save the record must not report the append as failed. The record stays in memory,
+      // so the next refresh of this process applies it; a later schema save writes it
+      try {
+        schema.saveConfiguration();
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not save the schema recording the samples appended to the TIMESERIES type '%s' behind the watermark of a continuous "
+                + "aggregate: the next refresh of this process still recomputes their buckets, a restart before a schema save forgets them",
+            e, typeName);
+      }
   }
 
   /**
