@@ -42,6 +42,8 @@ public final class RidHashSet {
   /** What one RID held costs, the free slots the load factor keeps around it included: what a heap budget is charged. */
   public static final int   BYTES_PER_ENTRY = (int) Math.ceil((Integer.BYTES + Long.BYTES) / LOAD_FACTOR);
 
+  // THE TABLES ARE ALLOCATED ON THE FIRST add(): A SET THAT STAYS EMPTY COSTS ONE OBJECT, NOT TWO ARRAYS OF initialCapacity SLOTS
+  // (THE LSM-TREE LOOKUP BUILDS ONE PER get() AND NEARLY ALWAYS LEAVES IT EMPTY, ISSUE #10582)
   private int[]  bucketIds;
   private long[] offsets;
   private int    capacity;
@@ -56,9 +58,12 @@ public final class RidHashSet {
   public RidHashSet(final int initialCapacity) {
     capacity = nextPowerOfTwo(Math.max(16, initialCapacity));
     mask = capacity - 1;
+    threshold = (int) (capacity * LOAD_FACTOR);
+  }
+
+  private void allocate() {
     bucketIds = new int[capacity];
     offsets = new long[capacity];
-    threshold = (int) (capacity * LOAD_FACTOR);
     Arrays.fill(bucketIds, EMPTY_BUCKET);
   }
 
@@ -66,6 +71,8 @@ public final class RidHashSet {
    * Adds a RID by its components. Returns true if the set was modified (RID was new).
    */
   public boolean add(final int bucketId, final long offset) {
+    if (bucketIds == null)
+      allocate();
     int idx = hash(bucketId, offset) & mask;
     while (true) {
       if (bucketIds[idx] == EMPTY_BUCKET) {
@@ -92,6 +99,8 @@ public final class RidHashSet {
    * Returns true if the set contains the given RID components.
    */
   public boolean contains(final int bucketId, final long offset) {
+    if (size == 0)
+      return false;
     int idx = hash(bucketId, offset) & mask;
     while (true) {
       if (bucketIds[idx] == EMPTY_BUCKET)
@@ -133,6 +142,8 @@ public final class RidHashSet {
    * Iterates over all entries. No object allocation during iteration.
    */
   public void forEach(final EntryConsumer consumer) {
+    if (size == 0)
+      return;
     for (int i = 0; i < capacity; i++)
       if (bucketIds[i] != EMPTY_BUCKET)
         consumer.accept(bucketIds[i], offsets[i]);
