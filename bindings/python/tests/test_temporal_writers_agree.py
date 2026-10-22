@@ -23,6 +23,7 @@ import jpype
 import numpy as np
 import pytest
 from arcadedb_embedded import results
+from arcadedb_embedded.exceptions import ArcadeDBError
 
 MIDNIGHT_UTC_2024_01_02 = 1704153600000
 DAY_MS = 86_400_000
@@ -109,7 +110,8 @@ def test_the_json_writer_is_the_engines_generic_writer_for_every_temporal(temp_d
     for name, value in values.items():
         expected = _engine_json(name, value)
         if "raises" in expected:
-            with pytest.raises(jpype.JException):
+            # the bridge follows the engine it bundles, and the bindings raise a Java failure of a read as ArcadeDBError
+            with pytest.raises(ArcadeDBError):
                 results.ResultSet(_in_memory([{name: value}]), temp_db).to_json_list()
         else:
             row = results.ResultSet(_in_memory([{name: value}]), temp_db).to_json_list()
