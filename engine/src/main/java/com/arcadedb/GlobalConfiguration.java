@@ -4013,6 +4013,9 @@ public enum GlobalConfiguration {
 
         final String formerKey = FORMER_KEYS.get(v);
         if (formerKey != null && BinaryComparator.equalsString(formerKey, config.getKey())) {
+          // the current key wins when both are given, whatever the order of the map, as in readConfiguration()
+          if (iConfig.containsKey(v.getKey()) || iConfig.containsKey(v.name()))
+            break;
           reportFormerKey(v);
           v.setValue(config.getValue());
           break;

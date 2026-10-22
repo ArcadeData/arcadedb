@@ -21,6 +21,7 @@ package com.arcadedb;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -118,6 +119,19 @@ class Issue10599ConfigurationKeyNamesTest {
     assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(4);
     GlobalConfiguration.setConfiguration(Map.of("SERVER_HTTP_IO_THREADS", 3));
     assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(3);
+
+    // both spellings in one map: the current one wins whatever the order, as it does for the system properties
+    final Map<String, Object> currentFirst = new LinkedHashMap<>();
+    currentFirst.put(KEY, 5);
+    currentFirst.put(LEGACY_KEY, 9);
+    GlobalConfiguration.setConfiguration(currentFirst);
+    assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(5);
+
+    final Map<String, Object> formerFirst = new LinkedHashMap<>();
+    formerFirst.put(LEGACY_KEY, 9);
+    formerFirst.put(KEY, 6);
+    GlobalConfiguration.setConfiguration(formerFirst);
+    assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(6);
   }
 
   @Test
