@@ -47,12 +47,6 @@ public final class PageUndoLog {
   private static final int MAX_RETAINED_BYTES = 1 << 20;
   private static final int MAX_RETAINED_WORDS = 1 << 10;
 
-  /** What the logs of one statement share, so a statement that rewrites the whole transaction cannot copy all of it. */
-  public interface GrainBudget {
-    /** @return false when the statement may not log another granule: the log then stops, and cannot restore the page */
-    boolean takeGrain();
-  }
-
   private       MutablePage       page;
   private final MutablePage.State state    = new MutablePage.State();
   private       long[]            logged   = new long[8];
@@ -60,6 +54,7 @@ public final class PageUndoLog {
   private       byte[]            data     = new byte[4 * GRANULE_SIZE];
   private       int               granuleCount;
   private       int               dataSize;
+  private       int               usedWords;
   private       GrainBudget       budget;
   private       boolean           overflowed;
 
@@ -77,6 +72,7 @@ public final class PageUndoLog {
       logged = new long[words];
     else
       Arrays.fill(logged, 0, words, 0L);
+    usedWords = words;
     granuleCount = 0;
     dataSize = 0;
     target.setUndoLog(this);
@@ -160,8 +156,15 @@ public final class PageUndoLog {
       offset += length;
     }
     page.restoreState(state);
-    Arrays.fill(logged, 0L);
+    // Only the words this page used: the rest of a buffer a bigger page left behind is clear already
+    Arrays.fill(logged, 0, usedWords, 0L);
     granuleCount = 0;
     dataSize = 0;
+  }
+
+  /** What the logs of one statement share, so a statement that rewrites the whole transaction cannot copy all of it. */
+  public interface GrainBudget {
+    /** @return false when the statement may not log another granule: the log then stops, and cannot restore the page */
+    boolean takeGrain();
   }
 }
