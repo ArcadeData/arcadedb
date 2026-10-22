@@ -237,8 +237,16 @@ public class ApiTokenConfiguration {
     @Override
     protected boolean publish(final LoadedTokens loaded, final boolean isFallback) {
       tokens = loaded.tokens();
-      if (loaded.migrated())
-        save();
+      if (loaded.migrated()) {
+        // THE FILE ALREADY HOLDS THIS VERY TOKEN SET, ONLY IN THE LEGACY FORM: A FAILED REWRITE LEAVES THE DISK EQUIVALENT TO
+        // MEMORY, NOT BEHIND IT, SO IT MUST NOT REFUSE EVERY LATER RELOAD (A READ-ONLY CONFIGMAP WOULD THEN IGNORE A
+        // REVOCATION FOR GOOD)
+        final Exception failure = persist(documentOf(tokens.values()), false);
+        if (failure != null)
+          LogManager.instance().log(ApiTokenConfiguration.this, Level.WARNING,
+              "Cannot rewrite '%s' with its legacy plaintext tokens hashed (%s): they stay in plaintext on disk until the file "
+                  + "can be written", filePath, failure.toString());
+      }
       return true;
     }
 
@@ -274,7 +282,9 @@ public class ApiTokenConfiguration {
         LogManager.instance().log(ApiTokenConfiguration.this, Level.WARNING, "Error loading API tokens from '%s'", failure, filePath);
         return null;
       }
-      return super.onFirstLoadFailure(failure);
+      // THE EMPTY STORE WRITES NOTHING OVER THE FILE, SO IT IS SAFE WHETHER OR NOT THE FILE COULD BE PRESERVED
+      preserve(failure, fallingBack());
+      return fallback();
     }
 
     @Override
@@ -310,6 +320,15 @@ public class ApiTokenConfiguration {
    * @return the failure, or {@code null} when the document reached the disk
    */
   private Exception persist(final JSONObject document) {
+    return persist(document, true);
+  }
+
+  /**
+   * @param marksDiskBehind whether a failure leaves the file OLDER than the tokens in force, so that a reload of it must be
+   *                        refused ({@link #diskBehind}). {@code false} for a rewrite of a document the file already holds in
+   *                        another form
+   */
+  private Exception persist(final JSONObject document, final boolean marksDiskBehind) {
     // Serialised BEFORE the try, so only the write is classified as a persistence failure. A RuntimeException out
     // of toString() is a bug in the document, not a full disk, and reporting it with disk-full wording would send
     // an operator to look at the volume.
@@ -325,7 +344,8 @@ public class ApiTokenConfiguration {
       diskBehind = false;
       return null;
     } catch (final IOException e) {
-      diskBehind = true;
+      if (marksDiskBehind)
+        diskBehind = true;
       return e;
     }
   }

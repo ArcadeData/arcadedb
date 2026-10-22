@@ -2211,6 +2211,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * types it was not entitled to (GHSA-c23x-pqcj-7hfm). Binding here - mirroring {@code DatabaseAbstractHandler}
    * - makes the per-type layer enforce. The binding is dropped in {@link #handleRequest}'s finally so it
    * cannot leak onto the pooled worker thread and be inherited by a later request.
+   * <p>
+   * Only a database that is already open is bound here. A handler that then resolves the database itself, opening it
+   * from disk on the first request ({@link com.arcadedb.server.ArcadeDBServer#getDatabaseForRequest}), MUST bind the
+   * principal again on the database it resolved with {@link #bindPrincipal}: the database was not open when this ran,
+   * so nothing was bound and the request would run with every per-type check skipped.
    */
   protected void checkAuthorizationOnDatabase(final ServerSecurityUser user, final String databaseName) {
     if (databaseName == null || databaseName.isEmpty())
@@ -2220,14 +2225,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     // Bind the authenticated principal so the engine's per-type ACL layer enforces on this handler.
     // A null user (unauthenticated handler) leaves the engine in its no-user no-op mode, matching prior behavior.
-    if (user != null && httpServer.getServer().existsDatabase(databaseName)) {
-      final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
-      DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-      if (context == null)
-        context = DatabaseContext.INSTANCE.init(database);
-      context.setCurrentUser(user.getDatabaseUser(database));
-      BOUND_PRINCIPAL_DB.set(database);
-    }
+    if (user != null && httpServer.getServer().existsDatabase(databaseName))
+      bindPrincipal(user, httpServer.getServer().getDatabase(databaseName, false, false));
+  }
+
+  /**
+   * Binds the authenticated principal onto this thread's {@link DatabaseContext} for {@code database}, so the engine's
+   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A no-op for a null user.
+   */
+  protected void bindPrincipal(final ServerSecurityUser user, final DatabaseInternal database) {
+    if (user == null)
+      return;
+    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      context = DatabaseContext.INSTANCE.init(database);
+    context.setCurrentUser(user.getDatabaseUser(database));
+    BOUND_PRINCIPAL_DB.set(database);
   }
 
   /**

@@ -155,6 +155,7 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
   /** The OP_QUERY door: the backend hands it to {@code MongoDatabase.handleQuery} without any command. */
   @Test
   void anOpQueryReadsUnderTheMongoTag() {
+    authenticate();
     backend.handleQuery(new MongoQuery(channel, new MessageHeader(1, 0), getDatabaseName() + ".Person", 0, 0, new Document(),
         null));
 
@@ -182,13 +183,14 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
   }
 
   /**
-   * The {@code renameCollection} door: an admin command, so it enters through {@code handleCommand} with no
-   * authentication, and the library resolves the source collection on the user database before anything else. With
+   * The {@code renameCollection} door: an admin command, so it enters through {@code handleCommand} on the admin namespace
+   * (with a login), and the library resolves the source collection on the user database before anything else. With
    * ArcadeDB's wrapper that lookup answers {@code null}, so the rename stops there with "source namespace does not exist":
    * the lookup must still run tagged, and the failure must not leave the tag behind on the pooled thread.
    */
   @Test
   void aRenameCollectionResolvesUnderTheMongoTagAndAFailureLeavesNoTagBehind() {
+    authenticate();
     backend.resolveDatabase(getDatabaseName());
 
     final Document rename = new Document("renameCollection", getDatabaseName() + ".Person");
@@ -202,6 +204,7 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
 
   @Test
   void aFailedOpQueryLeavesNoTagBehind() {
+    authenticate();
     assertThatThrownBy(() -> backend.handleQuery(
         new MongoQuery(channel, new MessageHeader(1, 0), getDatabaseName() + "." + RecordingDatabase.FAILING, 0, 0,
             new Document(), null))).isInstanceOf(MongoServerException.class);
@@ -228,6 +231,7 @@ class Issue10390MongoProtocolContextTest extends BaseGraphServerTest {
   /** A caller that already tagged the thread gets its own tag back, not INTERNAL. */
   @Test
   void anEnclosingTagIsRestored() {
+    authenticate();
     ProtocolContext.set("http");
 
     backend.handleQuery(new MongoQuery(channel, new MessageHeader(1, 0), getDatabaseName() + ".Person", 0, 0, new Document(),

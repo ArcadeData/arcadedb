@@ -89,6 +89,36 @@ class UngatedHandlerPerTypeAclIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * The same attack as the first request a database gets after it was left closed (on disk, not in the server's registry):
+   * the batch handler opens it on demand, after the authorization gate ran on a database that was not open yet, so the
+   * principal must be bound on the database the load actually runs against.
+   */
+  @Test
+  void perTypeAclEnforcedOnBatchToADatabaseNotOpenYet() throws Exception {
+    command(0, "CREATE VERTEX TYPE " + PUBLIC_TYPE);
+    command(0, "CREATE VERTEX TYPE " + SECRET_TYPE);
+
+    createScopedUser(0);
+    try {
+      getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+      getServer(0).removeDatabase(getDatabaseName());
+      assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
+
+      final int secretStatus = postBatch(0, getDatabaseName(), basicAuth(SCOPED_USER, SCOPED_PWD),
+          "{\"@type\":\"vertex\",\"@class\":\"" + SECRET_TYPE + "\",\"x\":1}\n");
+      assertThat(getServer(0).existsDatabase(getDatabaseName())).as("the batch opened the database on demand").isTrue();
+      assertThat(secretStatus).as("batch write to a per-type forbidden type must be rejected on a cold database").isEqualTo(403);
+      assertThat(countRecords(0, SECRET_TYPE)).as("no forbidden-type record may have been written").isZero();
+
+      final int publicStatus = postBatch(0, getDatabaseName(), basicAuth(SCOPED_USER, SCOPED_PWD),
+          "{\"@type\":\"vertex\",\"@class\":\"" + PUBLIC_TYPE + "\",\"x\":1}\n");
+      assertThat(publicStatus).as("batch write to an authorized type must succeed").isEqualTo(200);
+    } finally {
+      deleteUser(0, SCOPED_USER);
+    }
+  }
+
   private long countRecords(final int serverIndex, final String typeName) throws Exception {
     final String response = command(serverIndex, "SELECT count(*) AS c FROM " + typeName);
     final JSONObject json = new JSONObject(response);

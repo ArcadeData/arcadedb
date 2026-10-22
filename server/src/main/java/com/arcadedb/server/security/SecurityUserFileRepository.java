@@ -166,9 +166,10 @@ public class SecurityUserFileRepository {
    * the file: a reload on a running server keeps the users already in force rather than using the default configuration
    * (issue #10326).
    */
-  public void saveInError(final Exception cause, final String outcome) {
+  public boolean saveInError(final Exception cause, final String outcome) {
     synchronized (saveLock) {
-      preserveInError(this, new File(securityConfPath, FILE_NAME), new File(securityConfPath, ERROR_FILE_NAME), cause, outcome);
+      return preserveInError(this, new File(securityConfPath, FILE_NAME), new File(securityConfPath, ERROR_FILE_NAME), cause,
+          outcome);
     }
   }
 
@@ -184,18 +185,21 @@ public class SecurityUserFileRepository {
    * <p>
    * Not synchronized itself: each caller holds the lock that serializes its own writers ({@code saveLock} here, the
    * repository monitor in {@link SecurityGroupFileRepository#saveInError}).
+   *
+   * @return whether nothing of the file can be lost any more: it was copied to {@code errorFile}, or it is no longer there.
+   *         {@code false} when the copy failed, in which case a caller about to write over the file must not
    */
-  static void preserveInError(final Object requester, final File file, final File errorFile, final Exception cause) {
-    preserveInError(requester, file, errorFile, cause, DEFAULT_FALLBACK);
+  static boolean preserveInError(final Object requester, final File file, final File errorFile, final Exception cause) {
+    return preserveInError(requester, file, errorFile, cause, DEFAULT_FALLBACK);
   }
 
-  static void preserveInError(final Object requester, final File file, final File errorFile, final Exception cause,
+  static boolean preserveInError(final Object requester, final File file, final File errorFile, final Exception cause,
       final String outcome) {
     if (!file.isFile()) {
       LogManager.instance().log(requester, Level.SEVERE,
           "Error on loading file '%s', %s. The file is no longer there, so nothing was saved as '%s'", cause, file.getName(),
           outcome, errorFile.getPath());
-      return;
+      return true;
     }
 
     final Path target = errorFile.toPath();
@@ -228,10 +232,12 @@ public class SecurityUserFileRepository {
       LogManager.instance().log(requester, Level.SEVERE,
           "Error on loading file '%s', %s and saving the corrupt file as '%s'", cause, file.getName(), outcome,
           errorFile.getPath());
+      return true;
     } catch (final IOException | RuntimeException e) {
       LogManager.instance().log(requester, Level.SEVERE,
           "Error on loading file '%s', %s. The corrupt file could not be saved as '%s' (error=%s)", cause, file.getName(),
           outcome, errorFile.getPath(), e.toString());
+      return false;
     } finally {
       if (tmp != null)
         try {
