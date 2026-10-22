@@ -27,9 +27,12 @@ import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.logging.Level;
 
 /**
@@ -59,6 +62,13 @@ public class LSMVectorIndexPQFile {
 
   private static final String TEMPORARY_SUFFIX = ".tmp";
 
+  // The identity trailer: this magic, then the fingerprint (LSMVectorIndexGraphManifest) of the ordinal -> (vector id, RID)
+  // map of the graph the codes were built for, 16 bytes at the very end of the file. JVector's loaders stop at the end of
+  // the codes and ignore what follows, so a file with a trailer loads exactly as one without, and a file written before the
+  // trailer existed simply has none: it is read as "identity unknown" and the reopen takes the walk, never a fast path.
+  static final long GRAPH_IDENTITY_MAGIC = 0x5051475241504831L; // "PQGRAPH1"
+  static final int  GRAPH_IDENTITY_BYTES = 16;
+
   private final Path pqFilePath;
 
   // Cached PQ structures loaded into memory for zero-disk-I/O search
@@ -69,6 +79,11 @@ public class LSMVectorIndexPQFile {
   // Sticky on purpose: even a transient read error costs one extra rebuild at the next open, which is the safe side,
   // against trusting a file that may be a fragment.
   private volatile boolean loadFailed;
+
+  // The fingerprint of the graph the loaded or last written codes belong to, or null when the file carries none (written by
+  // a build older than the trailer, or while the graph's manifest could not vouch for an ordinal map of the same size).
+  // Only meaningful together with pqVectors: read it through graphFingerprintOf().
+  private volatile Long graphFingerprint;
 
   /**
    * Create a PQ file handler for the given index file path.
@@ -98,6 +113,16 @@ public class LSMVectorIndexPQFile {
   /**
    * Checks if PQ data is loaded and ready for approximate search.
    */
+  /**
+   * The identity of the graph the given codes were built for: the fingerprint recorded with them, or {@code null} when
+   * {@code codes} is not the instance this handler holds or carries no recorded identity. The caller compares it with the
+   * fingerprint of the graph it is about to pair them with. Read under the same lock as the writers (the index's graph
+   * build lock), so the codes and the identity cannot belong to two different writes.
+   */
+  Long graphFingerprintOf(final PQVectors codes) {
+    return codes != null && codes == pqVectors ? graphFingerprint : null;
+  }
+
   public boolean isPQReady() {
     return pqVectors != null && productQuantization != null;
   }
@@ -139,6 +164,15 @@ public class LSMVectorIndexPQFile {
    * @param vectors The PQVectors containing encoded vectors
    */
   public void writePQ(final ProductQuantization pq, final PQVectors vectors) {
+    writePQ(pq, vectors, null);
+  }
+
+  /**
+   * As {@link #writePQ(ProductQuantization, PQVectors)}, recording in the file which graph the codes were built for.
+   *
+   * @param graphFingerprint the fingerprint of the ordinal map of that graph, or {@code null} to record none
+   */
+  public void writePQ(final ProductQuantization pq, final PQVectors vectors, final Long graphFingerprint) {
     Path temporary = null;
     try {
       LogManager.instance().log(this, Level.INFO,
@@ -163,6 +197,10 @@ public class LSMVectorIndexPQFile {
         pq.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
         // Write encoded vectors
         vectors.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
+        if (graphFingerprint != null) {
+          writer.writeLong(GRAPH_IDENTITY_MAGIC);
+          writer.writeLong(graphFingerprint);
+        }
         // The rename is atomic, the content behind the new name is not durable until it is forced
         writer.force();
       }
@@ -186,6 +224,7 @@ public class LSMVectorIndexPQFile {
       // Update cached references
       this.loadFailed = false;
       this.productQuantization = pq;
+      this.graphFingerprint = graphFingerprint;
       this.pqVectors = vectors;
 
       LogManager.instance().log(this, Level.INFO,
@@ -236,6 +275,7 @@ public class LSMVectorIndexPQFile {
         // Read encoded vectors (at current position after PQ load)
         this.pqVectors = PQVectors.load(reader, reader.getPosition());
       }
+      this.graphFingerprint = readGraphFingerprint();
 
       this.loadFailed = false;
 
@@ -253,6 +293,7 @@ public class LSMVectorIndexPQFile {
       // Clear cached data on failure
       this.productQuantization = null;
       this.pqVectors = null;
+      this.graphFingerprint = null;
       this.loadFailed = true;
       return false;
     }
@@ -265,6 +306,30 @@ public class LSMVectorIndexPQFile {
   public void clearPQCache() {
     this.productQuantization = null;
     this.pqVectors = null;
+    this.graphFingerprint = null;
+  }
+
+  /**
+   * @return the graph fingerprint in the identity trailer at the end of the file, or {@code null} when there is none
+   * (a file written before the trailer existed, or without an identity) or it cannot be read
+   */
+  private Long readGraphFingerprint() {
+    try (final FileChannel channel = FileChannel.open(pqFilePath, StandardOpenOption.READ)) {
+      if (channel.size() < GRAPH_IDENTITY_BYTES)
+        return null;
+      final ByteBuffer trailer = ByteBuffer.allocate(GRAPH_IDENTITY_BYTES); // big-endian, like the writer
+      long position = channel.size() - GRAPH_IDENTITY_BYTES;
+      while (trailer.hasRemaining()) {
+        final int read = channel.read(trailer, position);
+        if (read < 0)
+          return null;
+        position += read;
+      }
+      trailer.flip();
+      return trailer.getLong() == GRAPH_IDENTITY_MAGIC ? trailer.getLong() : null;
+    } catch (final IOException e) {
+      return null;
+    }
   }
 
   /**

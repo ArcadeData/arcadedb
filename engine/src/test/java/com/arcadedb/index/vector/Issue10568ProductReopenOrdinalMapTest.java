@@ -27,6 +27,11 @@ import com.arcadedb.log.Logger;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import io.github.jbellis.jvector.quantization.MutablePQVectors;
+import io.github.jbellis.jvector.quantization.PQVectors;
+import io.github.jbellis.jvector.quantization.ProductQuantization;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -58,6 +63,8 @@ class Issue10568ProductReopenOrdinalMapTest {
   private static final String DB_ROOT     = "target/test-databases/Issue10568ProductReopenOrdinalMapTest";
   private static final int    DIMENSIONS  = 32;
   private static final int    NUM_VECTORS = 2_000;
+  private static final VectorTypeSupport VTS = VectorizationProvider.getInstance().getVectorTypeSupport();
+
   private static final String FALSE_LINE  = "Deleted vectors detected";
   private static final String WALK_LINE   = "Loaded graph from disk for index";
 
@@ -197,8 +204,122 @@ class Issue10568ProductReopenOrdinalMapTest {
     }
   }
 
+  @Test
+  void pqCodesNotOnePerOrdinalOfTheMapTakeTheWalk() throws IOException {
+    final Built built = build("PRODUCT");
+
+    // A PQ file of another generation of the graph that happens to carry the right identity: only the count tells
+    final LSMVectorIndexPQFile pqFile = pqFileOf(built);
+    assertThat(pqFile.loadPQ()).isTrue();
+    final ProductQuantization pq = pqFile.getProductQuantization();
+    final Long fingerprint = pqFile.graphFingerprintOf(pqFile.getPQVectors());
+    assertThat(fingerprint).as("precondition: a PQ written with its graph records which graph that is").isNotNull();
+    final MutablePQVectors fewer = new MutablePQVectors(pq);
+    for (int i = 0; i < NUM_VECTORS - 100; i++)
+      fewer.encodeAndSet(i, VTS.createFloatVector(embedding(i)));
+    pqFile.writePQ(pq, fewer, fingerprint);
+
+    final List<String> logs = new ArrayList<>();
+    reopenAndSearch(logs, (index, results) -> {
+      assertThat(results).hasSize(10);
+      assertThat(index.getStats().get("graphLoadsFromOrdinalMap")).as("the count says these codes are not the map's")
+          .isZero();
+      assertThat(logs).anyMatch(m -> m.contains("PQ codes of index") && m.contains("not built for it"));
+    });
+  }
+
+  @Test
+  void pqCodesOfAnotherGraphOfTheSameSizeTakeTheWalk() throws IOException {
+    final Built built = build("PRODUCT");
+
+    // Same count, same codes, but recorded as built for a different assignment of ordinals
+    final LSMVectorIndexPQFile pqFile = pqFileOf(built);
+    assertThat(pqFile.loadPQ()).isTrue();
+    final PQVectors codes = pqFile.getPQVectors();
+    final long fingerprint = pqFile.graphFingerprintOf(codes);
+    pqFile.writePQ(pqFile.getProductQuantization(), codes, fingerprint ^ 1L);
+
+    final List<String> logs = new ArrayList<>();
+    reopenAndSearch(logs, (index, results) -> {
+      assertThat(neighbours(results)).isEqualTo(built.neighbours);
+      assertThat(index.getStats().get("graphLoadsFromOrdinalMap"))
+          .as("a count that matches is not an identity that matches").isZero();
+      assertThat(index.getStats().get("graphRebuildCount")).as("the persisted graph is still reused, by the walk").isZero();
+      assertThat(logs).anyMatch(m -> m.contains("were built for another graph than the persisted one"));
+      assertThat(logs).as("the walk ran").anyMatch(m -> m.contains(WALK_LINE));
+    });
+  }
+
+  @Test
+  void aPqFileWithoutARecordedGraphTakesTheWalk() throws IOException {
+    final Built built = build("PRODUCT");
+
+    // What a PQ file written before the identity was recorded looks like: the same bytes without the 16-byte trailer
+    final Path pq = built.pqPath;
+    final byte[] bytes = Files.readAllBytes(pq);
+    Files.write(pq, java.util.Arrays.copyOf(bytes, bytes.length - LSMVectorIndexPQFile.GRAPH_IDENTITY_BYTES));
+    final LSMVectorIndexPQFile check = pqFileOf(built);
+    assertThat(check.loadPQ()).as("precondition: it still loads, the trailer is not part of what JVector reads").isTrue();
+    assertThat(check.graphFingerprintOf(check.getPQVectors())).isNull();
+
+    final List<String> logs = new ArrayList<>();
+    reopenAndSearch(logs, (index, results) -> {
+      assertThat(neighbours(results)).isEqualTo(built.neighbours);
+      assertThat(index.getStats().get("graphLoadsFromOrdinalMap")).isZero();
+      assertThat(index.getStats().get("graphRebuildCount")).isZero();
+      assertThat(logs).anyMatch(m -> m.contains("record no graph they were built for"));
+      assertThat(logs).as("the walk ran").anyMatch(m -> m.contains(WALK_LINE));
+    });
+  }
+
+  @Test
+  void aVectorDeletedAfterTheCountWasReadTakesTheWalk() {
+    build("PRODUCT");
+
+    // The exact-cover reuse is only called when nothing is deleted. A delete landing after that decision is the one a
+    // test cannot time, so this makes it land first and calls the reuse directly: the validation of the map must see it
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        index.findNeighborsFromVector(embedding(1), 5, 64); // the persisted graph and its PQ are loaded
+        db.begin();
+        db.command("sql", "DELETE FROM Doc WHERE id = ?", 0);
+        db.commit();
+        assertThat(index.getStats().get("deletedVectors")).as("precondition: one tombstone").isEqualTo(1L);
+
+        final List<String> logs = new ArrayList<>();
+        final boolean answered = capturingLogs(logs, index::exactCoverReopenAnswersForTest);
+
+        assertThat(answered).as("with a hole in the dense ordinal space the PQ pairing no longer holds").isFalse();
+        assertThat(logs).anyMatch(m -> m.contains("was deleted while its persisted graph was being validated"));
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  private LSMVectorIndexPQFile pqFileOf(final Built built) {
+    final String file = built.pqPath.toString();
+    return new LSMVectorIndexPQFile(file.substring(0, file.length() - ("." + LSMVectorIndexPQFile.FILE_EXT).length()));
+  }
+
+  private void reopenAndSearch(final List<String> logs,
+      final java.util.function.BiConsumer<LSMVectorIndex, List<Pair<RID, Float>>> checks) {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
+        checks.accept(index, results);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
   /** What the building session leaves behind and what it answered, for the reopens to be compared with. */
-  private record Built(Set<RID> neighbours, Path graphPath, int ordinalMapSize, boolean pqFileExists) {
+  private record Built(Set<RID> neighbours, Path graphPath, int ordinalMapSize, boolean pqFileExists, Path pqPath) {
   }
 
   private Built build(final String quantization) {
@@ -228,7 +349,7 @@ class Issue10568ProductReopenOrdinalMapTest {
         final Path graphPath = index.getGraphFilePathForTest();
         final LSMVectorIndexOrdinalMapFile.Content map = new LSMVectorIndexGraphManifest(graphPath.toString()).readOrdinalMap();
         final Path pq = index.getProductQuantizationFilePath();
-        return new Built(neighbours, graphPath, map != null ? map.size() : -1, pq != null && Files.exists(pq));
+        return new Built(neighbours, graphPath, map != null ? map.size() : -1, pq != null && Files.exists(pq), pq);
       } finally {
         if (db.isOpen())
           db.close();

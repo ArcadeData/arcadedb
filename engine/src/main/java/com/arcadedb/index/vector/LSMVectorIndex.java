@@ -2400,8 +2400,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // The exact-cover reuse of a PRODUCT index (no deletions): the recorded map is then the very array the PQ codes
     // were built with, so the pair stays consistent without a rebuild. It needs both halves of that pair in hand -
-    // codes loaded, and as many of them as the map has ordinals - and otherwise leaves the decision to the caller's
-    // walk, which also builds a missing PQ.
+    // codes loaded, one per mapped ordinal, and recorded as built for the graph the manifest certifies - and
+    // otherwise leaves the decision to the caller's walk, which also builds a missing PQ.
+    //
+    // "codes" is a snapshot taken once, here, before the map is read, and every PQ check below is made against it and
+    // against the identity pqFile recorded for that same instance. That is deliberate: a concurrent swap of pqVectors
+    // (a rebuild publishing new codes) leaves these checks answering for the old codes, never for a mixture of old and
+    // new, and a wrong answer in either direction is safe - the only outcome a stale snapshot can reach is "no reuse"
+    // (the count or the identity no longer matches what the manifest and the map say), and the caller's walk decides.
     final PQVectors codes = pqVectors;
     if (productQuantized && (pqFile == null || !pqFile.isPQReady() || codes == null))
       return null;
@@ -2419,10 +2425,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final VectorLocationIndex locations = vectorIndex();
     final int[] mapVectorIds = persistedMap.vectorIds();
-    if (productQuantized && codes.count() != mapVectorIds.length)
-      // Codes that are not one per ordinal of the map were not built with it (a PQ file of another generation of the
-      // graph), and an ordinal without a code would score the wrong vector or none
-      return null;
+    if (productQuantized) {
+      if (codes.count() != mapVectorIds.length) {
+        // Codes that are not one per ordinal of the map were not built with it (a PQ file of another generation of the
+        // graph), and an ordinal without a code would score the wrong vector or none
+        LogManager.instance().log(this, Level.INFO,
+            "PQ codes of index %s number %d but its persisted graph has %d ordinals: they were not built for it, so the "
+                + "ordinal map is not used to reopen it", indexName, codes.count(), mapVectorIds.length);
+        return null;
+      }
+      // A count says how many, not which. A rebuild can keep the count and reassign the ordinals, and codes of the
+      // old assignment would then be paired with the new graph's vectors without anything failing. The fingerprint of
+      // the ordinal -> (vector id, RID) map the codes were built for is recorded with them, and it has to be the one
+      // the manifest certifies for this graph. A file written before it was recorded carries none and takes the walk.
+      final Long codesBuiltFor = pqFile.graphFingerprintOf(codes);
+      if (codesBuiltFor == null || codesBuiltFor != manifest.fingerprint()) {
+        LogManager.instance().log(this, Level.INFO,
+            "PQ codes of index %s %s, so the ordinal map is not used to reopen it", indexName,
+            codesBuiltFor == null ? "record no graph they were built for" :
+                "were built for another graph than the persisted one");
+        return null;
+      }
+    }
     if (exactCoverOnly) {
       // The two sidecars are written as a pair, but they are separate files: a map that is not the one the manifest
       // certifies (a restored or swapped graph, issue #6106) must not vouch for these pages. Recomputing the
@@ -2467,10 +2491,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
-    if (productQuantized && liveOrdinals != mapVectorIds.length)
+    if (productQuantized && liveOrdinals != mapVectorIds.length) {
       // A vector deleted while this ran, since the caller read the count: the dense PQ ordinal space the exact-cover
       // reuse relies on has a hole after all, so the caller's walk decides, as it did before the map was recorded
+      LogManager.instance().log(this, Level.INFO,
+          "A vector of index %s was deleted while its persisted graph was being validated: its PQ codes need a dense "
+              + "ordinal space, so the ordinal map is not used to reopen it", indexName);
       return null;
+    }
 
     final ImmutableGraphIndex loadedGraph;
     try {
@@ -4969,7 +4997,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
     try {
-      pqFile.writePQ(pq, codes);
+      // Which graph these codes were built for, written into the file: the fingerprint the manifest certified for the
+      // persisted graph - the manifest always precedes the PQ, on every path that writes one - but only when that graph
+      // has exactly one ordinal per code. A graph of another size is a different assignment, and the codes then
+      // carry no identity, which the reopen reads as "walk".
+      final LSMVectorIndexGraphFile gf = graphFile;
+      final LSMVectorIndexGraphManifest.Content certified = gf != null ? gf.getManifest().read() : null;
+      final Long builtFor = certified != null && certified.vectorCount() == codes.count() ? certified.fingerprint() : null;
+      pqFile.writePQ(pq, codes, builtFor);
       persistedPQKnownStale = false;
     } catch (final Throwable e) {
       // Throwable, not IndexException: writePQ wraps every Exception in it, but an Error (an OutOfMemoryError while
@@ -7704,6 +7739,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Visible for tests: appends a tombstone for an explicit vector id, inside the caller's transaction. */
   void persistTombstoneForTest(final int id, final RID rid) {
     persistDeletionTombstones(List.of(id), rid);
+  }
+
+  /**
+   * Visible for tests: whether the exact-cover reopen of the persisted graph (issue #8852, PRODUCT included) would answer
+   * now. Call it only where the answer is expected to be {@code false}: an answer of {@code true} has already adopted
+   * the persisted graph, as a reopen does.
+   */
+  boolean exactCoverReopenAnswersForTest() {
+    final LSMVectorIndexGraphFile gf = graphFile;
+    return gf != null && reusePersistedGraphDespiteDeletions(gf, true) != null;
   }
 
   /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
