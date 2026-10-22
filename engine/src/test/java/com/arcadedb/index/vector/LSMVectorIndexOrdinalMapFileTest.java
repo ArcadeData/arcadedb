@@ -237,8 +237,7 @@ class LSMVectorIndexOrdinalMapFileTest {
   }
 
   /**
-   * A caller that will never read a map back - a PRODUCT-quantized index, whose load path refuses to consult one -
-   * must not merely skip writing it: a map left over from before that decision would pair this generation's pages
+   * A caller that will not record a map must not merely skip writing it: a map left over from before that decision would pair this generation's pages
    * with the previous generation's ordinals.
    */
   @Test

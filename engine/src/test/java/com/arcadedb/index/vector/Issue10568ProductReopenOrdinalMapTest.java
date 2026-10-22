@@ -1,0 +1,301 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.vector;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
+import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression test for issue #10568: a PRODUCT-quantized index with nothing deleted must reopen through the ordinal map
+ * recorded next to its graph (issue #8852) instead of the per-vector document walk, and must not log that vectors were
+ * deleted when none were. With a deletion the PRODUCT index keeps the rebuild (issue #7842), and an index persisted
+ * without a map still opens.
+ */
+@Tag("vector")
+class Issue10568ProductReopenOrdinalMapTest {
+  private static final String DB_ROOT     = "target/test-databases/Issue10568ProductReopenOrdinalMapTest";
+  private static final int    DIMENSIONS  = 32;
+  private static final int    NUM_VECTORS = 2_000;
+  private static final String FALSE_LINE  = "Deleted vectors detected";
+  private static final String WALK_LINE   = "Loaded graph from disk for index";
+
+  private String dbPath;
+
+  @BeforeEach
+  void setUp(final TestInfo testInfo) {
+    dbPath = DB_ROOT + "-" + testInfo.getTestMethod().orElseThrow().getName();
+    FileUtils.deleteRecursively(new File(dbPath));
+  }
+
+  @AfterEach
+  void tearDown() {
+    FileUtils.deleteRecursively(new File(dbPath));
+  }
+
+  @Test
+  void aProductIndexWithNothingDeletedReopensThroughItsOrdinalMap() {
+    final Built built = build("PRODUCT");
+
+    assertThat(built.ordinalMapSize).as("precondition: a PRODUCT index records the ordinal map of its graph")
+        .isEqualTo(NUM_VECTORS);
+    assertThat(built.pqFileExists).as("precondition: and has its PQ on disk").isTrue();
+
+    final List<String> logs = new ArrayList<>();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
+
+        assertThat(neighbours(results)).as("the answer after the reopen is the one the session that built it gave")
+            .isEqualTo(built.neighbours);
+        assertThat(index.getStats().get("graphLoadsFromOrdinalMap"))
+            .as("the ordinal map must replace the per-vector document walk for a PRODUCT index too").isEqualTo(1L);
+        assertThat(index.getStats().get("graphRebuildCount")).isZero();
+        assertThat(index.getStats().get("graphNodeCount")).isEqualTo((long) NUM_VECTORS);
+        assertThat(logs).as("nothing was deleted, so nothing may say so").noneMatch(m -> m.contains(FALSE_LINE));
+        assertThat(logs).as("and the walk that re-reads every vector's document must not have run")
+            .noneMatch(m -> m.contains(WALK_LINE));
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  @Test
+  void aProductIndexWithADeletionStillRebuildsAndSaysWhy() {
+    build("PRODUCT");
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        db.begin();
+        db.command("sql", "DELETE FROM Doc WHERE id = ?", 0);
+        db.commit();
+
+        ((DatabaseInternal) db).kill();
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    final List<String> logs = new ArrayList<>();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        assertThat(index.getStats().get("deletedVectors"))
+            .as("precondition: read before the first search, which is what discards the tombstone set").isEqualTo(1L);
+
+        final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 5, 64));
+
+        assertThat(results).hasSize(5);
+        assertThat(index.getStats().get("graphLoadsFromOrdinalMap"))
+            .as("a deletion must never take the exact-cover path").isZero();
+        assertThat(index.getStats().get("graphReusesWithTombstonedNodes"))
+            .as("a PRODUCT index must never take the tombstone-tolerant reuse path").isZero();
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("it pays the full rebuild, which keeps its codebook and its graph on one dense ordinal space")
+            .isEqualTo(1L);
+        assertThat(logs).as("and the line about the deletion is still there")
+            .anyMatch(m -> m.contains(FALSE_LINE) && m.contains("PRODUCT quantization"));
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  @Test
+  void aProductIndexPersistedWithoutAMapStillOpensThroughTheWalk() throws IOException {
+    final Built built = build("PRODUCT");
+
+    // What an index persisted before the map was recorded for PRODUCT looks like: the same manifest, no .vecordmap
+    final Path map = new LSMVectorIndexGraphManifest(built.graphPath.toString()).getOrdinalMapFilePath();
+    assertThat(Files.deleteIfExists(map)).as("precondition: there was a map to remove").isTrue();
+
+    final List<String> logs = new ArrayList<>();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
+
+        assertThat(neighbours(results)).as("the walk answers as it always did").isEqualTo(built.neighbours);
+        assertThat(index.getStats().get("graphLoadsFromOrdinalMap")).as("there is no map to load through").isZero();
+        assertThat(index.getStats().get("graphRebuildCount")).as("the persisted graph is reused, not rebuilt").isZero();
+        assertThat(index.getStats().get("graphNodeCount")).isEqualTo((long) NUM_VECTORS);
+        assertThat(logs).as("the walk ran").anyMatch(m -> m.contains(WALK_LINE));
+        assertThat(logs).as("and nothing was deleted, so nothing may say so").noneMatch(m -> m.contains(FALSE_LINE));
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  @Test
+  void aNonQuantizedIndexStillReopensThroughItsOrdinalMap() {
+    final Built built = build("NONE");
+
+    final List<String> logs = new ArrayList<>();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
+
+        assertThat(neighbours(results)).isEqualTo(built.neighbours);
+        assertThat(index.getStats().get("graphLoadsFromOrdinalMap")).isEqualTo(1L);
+        assertThat(index.getStats().get("graphRebuildCount")).isZero();
+        assertThat(logs).noneMatch(m -> m.contains(FALSE_LINE)).noneMatch(m -> m.contains(WALK_LINE));
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /** What the building session leaves behind and what it answered, for the reopens to be compared with. */
+  private record Built(Set<RID> neighbours, Path graphPath, int ordinalMapSize, boolean pqFileExists) {
+  }
+
+  private Built build(final String quantization) {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        db.transaction(() -> {
+          final var type = db.getSchema().createDocumentType("Doc");
+          type.createProperty("id", Type.INTEGER);
+          type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+          db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+              + ", \"similarity\": \"COSINE\", \"quantization\": \"" + quantization + "\" }");
+        });
+        db.begin();
+        for (int i = 0; i < NUM_VECTORS; i++) {
+          db.newDocument("Doc").set("id", i).set("vector", embedding(i)).save();
+          if (i % 1000 == 999) {
+            db.commit();
+            db.begin();
+          }
+        }
+        db.commit();
+
+        final LSMVectorIndex index = vectorIndex(db);
+        index.buildVectorGraphNow();
+        final Set<RID> neighbours = neighbours(index.findNeighborsFromVector(embedding(1), 10, 64));
+        final Path graphPath = index.getGraphFilePathForTest();
+        final LSMVectorIndexOrdinalMapFile.Content map = new LSMVectorIndexGraphManifest(graphPath.toString()).readOrdinalMap();
+        final Path pq = index.getProductQuantizationFilePath();
+        return new Built(neighbours, graphPath, map != null ? map.size() : -1, pq != null && Files.exists(pq));
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+  }
+
+  private static Set<RID> neighbours(final List<Pair<RID, Float>> results) {
+    return results.stream().map(Pair::getFirst).collect(Collectors.toSet());
+  }
+
+  private static <T> T capturingLogs(final List<String> into, final Supplier<T> action) {
+    final Logger previous = LogManager.instance().getLogger();
+    try {
+      LogManager.instance().setLogger(new Collector(into));
+      return action.get();
+    } finally {
+      LogManager.instance().setLogger(previous);
+    }
+  }
+
+  private record Collector(List<String> lines) implements Logger {
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7,
+        final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12, final Object arg13,
+        final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+      log(requester, level, message, exception, context, new Object[] { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11,
+          arg12, arg13, arg14, arg15, arg16, arg17 });
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        final Object... args) {
+      if (message == null || level.intValue() < Level.INFO.intValue())
+        return;
+      final List<Object> bound = new ArrayList<>();
+      if (args != null)
+        for (final Object arg : args)
+          if (arg != null)
+            bound.add(arg);
+      String formatted;
+      try {
+        formatted = bound.isEmpty() ? message : String.format(message, bound.toArray());
+      } catch (final RuntimeException e) {
+        formatted = message;
+      }
+      synchronized (lines) {
+        lines.add(formatted);
+      }
+    }
+
+    @Override
+    public void flush() {
+    }
+  }
+
+  private static float[] embedding(final int id) {
+    final Random random = new Random(0x10568L * 31 + id);
+    final float[] vector = new float[DIMENSIONS];
+    for (int d = 0; d < DIMENSIONS; d++)
+      vector[d] = random.nextFloat();
+    return vector;
+  }
+
+  private static LSMVectorIndex vectorIndex(final Database db) {
+    return (LSMVectorIndex) db.getSchema().getType("Doc").getPolymorphicIndexByProperties("vector")
+        .getIndexesOnBuckets()[0];
+  }
+}
