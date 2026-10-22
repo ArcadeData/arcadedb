@@ -132,6 +132,7 @@ public final class PageUndoLog {
 
       final int from = granule << GRANULE_SHIFT;
       final int length = Math.min(GRANULE_SIZE, array.length - base - from);
+      // The budget bounds the granules (and so the bytes) of a statement far below the int range, however large it is configured
       if (dataSize + length > data.length)
         data = Arrays.copyOf(data, Math.max(data.length << 1, dataSize + length));
       if (granuleCount == granules.length)

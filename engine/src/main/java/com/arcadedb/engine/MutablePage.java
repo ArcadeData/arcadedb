@@ -128,14 +128,14 @@ public class MutablePage extends BasePage implements TrackableContent {
    */
   static final class State {
     private final int[]   modifiedRanges = new int[(MAX_MODIFIED_RANGES + 1) * 2];
-    private int     modifiedRangeCount;
-    private int     contentSize;
-    private int     declaredCoverage;
-    private int     uncoveredMechanisms;
-    private int     freeSpaceClaim;
-    private boolean freeSpaceClaimIsExact;
-    private boolean packedWriteInProgress;
-    private boolean unpackedWrite;
+    private       int     modifiedRangeCount;
+    private       int     contentSize;
+    private       int     declaredCoverage;
+    private       int     uncoveredMechanisms;
+    private       int     freeSpaceClaim;
+    private       boolean freeSpaceClaimIsExact;
+    private       boolean packedWriteInProgress;
+    private       boolean unpackedWrite;
   }
 
   static {
