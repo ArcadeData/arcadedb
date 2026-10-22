@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -641,6 +642,28 @@ class StatementSavepointTest extends TestHelper {
           GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
     }
     assertThat(idByUniqueK(1)).isEqualTo(1L);
+  }
+
+  @Test
+  void aCallbackAFailedStatementRegisteredForTheCommitIsTakenBackWithIt() {
+    final AtomicInteger published = new AtomicInteger();
+    database.getSchema().getType("T").getEvents().registerListener((BeforeRecordCreateListener) record -> {
+      if (((Document) record).getLong("id") == 5L) {
+        // WORK FOR THE COMMIT, REGISTERED BEFORE THE RECORD IS WRITTEN, AND THEN THE CREATE IS REFUSED
+        ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(published::incrementAndGet);
+        throw new IllegalStateException("refused");
+      }
+      return true;
+    });
+
+    database.begin();
+    database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO T SET id = 5, k = 5").close()).hasStackTraceContaining("refused");
+    database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
+    database.commit();
+
+    assertThat(published.get()).as("the callback of the statement that failed").isZero();
+    assertThat(ids()).containsExactly(1L, 2L);
   }
 
   @Test

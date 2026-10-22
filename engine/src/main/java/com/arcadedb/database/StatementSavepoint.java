@@ -169,7 +169,8 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   boolean hasChanges() {
     return size > 0 || logCount > 0 || !pendingRecords.isEmpty() || !obtained.isEmpty()
         || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0 || tx.getUnidirectionalScanEpoch() != scanEpoch
-        || tx.getScannedBucketsCount() != scannedBucketsCount || isQueuedRecordNotKept();
+        || tx.getScannedBucketsCount() != scannedBucketsCount || tx.getAfterCommitCallbackCount() != callbackMark
+        || isQueuedRecordNotKept();
   }
 
   /**
