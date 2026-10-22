@@ -119,6 +119,34 @@ class Issue10580DfsBoundedWalkTest extends TestHelper {
   }
 
   @Test
+  void parallelEdgesAndSelfLoopsAreWalkedInTheOrderTheEarlierAlgorithmWalkedThem() {
+    // A node met twice in one row is pushed where its last entry is, and a self-loop names a node already visited
+    database.transaction(() -> {
+      rids[1].asVertex().modify().newEdge("E", rids[2].asVertex()).save();
+      rids[1].asVertex().modify().newEdge("E", rids[2].asVertex()).save();
+      rids[5].asVertex().modify().newEdge("E", rids[6].asVertex()).save();
+      rids[7].asVertex().modify().newEdge("E", rids[7].asVertex()).save();
+      rids[0].asVertex().modify().newEdge("E", rids[0].asVertex()).save();
+      rids[3].asVertex().modify().newEdge("E", rids[1].asVertex()).save();
+    });
+
+    for (final Vertex.DIRECTION dir : Vertex.DIRECTION.values())
+      for (final int maxDepth : DEPTHS)
+        assertThat(cypherDfs(0, dir, maxDepth)).as("no view, maxDepth=%d dir=%s", maxDepth, dir)
+            .isEqualTo(referenceDfs(recordNeighbors(dir), 0, maxDepth));
+
+    final GraphAnalyticalView view = createView(GraphAnalyticalView.UpdateMode.OFF);
+    try {
+      for (final Vertex.DIRECTION dir : Vertex.DIRECTION.values())
+        for (final int maxDepth : DEPTHS)
+          assertThat(cypherDfs(0, dir, maxDepth)).as("view, maxDepth=%d dir=%s", maxDepth, dir)
+              .isEqualTo(referenceDfs(viewNeighbors(view, dir), 0, maxDepth));
+    } finally {
+      view.drop();
+    }
+  }
+
+  @Test
   void aCountOnlyCallAnswersTheSizeOfTheWalk() {
     for (final int maxDepth : DEPTHS) {
       final long expected = referenceDfs(recordNeighbors(Vertex.DIRECTION.OUT), 0, maxDepth).size();

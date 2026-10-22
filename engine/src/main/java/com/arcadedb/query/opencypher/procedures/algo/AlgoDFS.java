@@ -292,7 +292,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
           if (nid == null || visited.contains(nid))
             continue;
           if (rowSize == row.length) {
-            // One buffer for the whole walk, so it is charged for the most it ever held
+            // One buffer for the whole walk, charged by what it grows by (the old length, as it doubles), so for the most it held
             memory.reserve(saturatingProduct(row.length, OLTP_ROW_ENTRY_BYTES), "the neighbours of a vertex",
                 "at least " + row.length * 2 + " entries");
             row = Arrays.copyOf(row, row.length * 2);
@@ -310,6 +310,8 @@ public class AlgoDFS extends AbstractAlgoProcedure {
           try {
             u = nid.asVertex();
           } catch (final RecordNotFoundException rnf) {
+            // A far vertex that is gone stays marked as met, so another entry naming it is not read again, and it is not
+            // loaded, so it is not charged
             GhostEdgeReporter.reportSkipped(rnf);
             continue;
           }
