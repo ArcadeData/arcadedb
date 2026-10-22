@@ -177,6 +177,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
+    bindLengthRule(metadata, indexAnalyzer);
     if (metadata != null && metadata.isBM25()) {
       index.setStoreTermFrequency(true);
       // Warn at open time (not only when the first query triggers it) so operators can pre-warm before serving traffic: a BM25
@@ -198,6 +199,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
+    bindLengthRule(metadata, indexAnalyzer);
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
     if (metadata != null && metadata.isBM25()) {
       underlyingIndex.setStoreTermFrequency(true);
@@ -221,6 +223,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = null;
     this.indexAnalyzer = new StandardAnalyzer();
     this.queryAnalyzer = new StandardAnalyzer();
+  }
+
+  /**
+   * Hands the shared metadata what the lengths its counters add up are measured with: the behaviour of the analyzer this index
+   * writes with and of the rule every writer uses, over a fixed corpus. The metadata lives in the schema package, which cannot see
+   * this one, so the index that owns both says it. Every bucket index of the logical index binds the same value.
+   */
+  private static void bindLengthRule(final FullTextIndexMetadata metadata, final Analyzer indexAnalyzer) {
+    if (metadata != null)
+      metadata.bindLengthRule(FullTextLengthSignature.of(indexAnalyzer));
   }
 
   @Override
@@ -914,7 +926,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // The count above vouches for the document count only. The sum of the lengths, which decides avgdl and so every score, depends
         // on the analyzer that measured it: a corpus whose record count is right and whose lengths are not is told by that (issue #10397)
         final boolean anotherAnalyzer = ftMetadata.isMeasuredWithAnotherAnalyzer();
-        if (liveCount != persisted || rescan || anotherAnalyzer) {
+        // The one place the sum can be read against the live data without analyzing anything: a corpus with no document holds no
+        // token, so a sum left above zero (by a clamp, a crash, a hand edit) is wrong whatever the count says (issue #10606)
+        final long persistedLength = ftMetadata.getSumDocLength();
+        final boolean tokensWithoutDocuments = liveCount == 0L && persistedLength != 0L;
+        if (liveCount != persisted || rescan || anotherAnalyzer || tokensWithoutDocuments) {
           // Surface the drift so operators can notice it (e.g. counters left inflated by a crash) without reading EXPLAIN.
           // Escalate to WARNING when the divergence is large (> 10% of the live count): small drift self-heals quietly here, but a
           // big gap usually signals a workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
@@ -923,6 +939,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           if (anotherAnalyzer)
             LogManager.instance().log(this, Level.WARNING, "%s", null, analyzerDriftMessage(logicalIndexName(), typeName,
                 ftMetadata.getMeasuredWith(), ftMetadata.getLengthSignature(), persisted, liveCount));
+          else if (tokensWithoutDocuments && liveCount == persisted && !rescan)
+            LogManager.instance().log(this, Level.WARNING, "%s", null,
+                "BM25 corpus counters of full-text index '" + logicalIndexName() + "' on type '" + typeName + "' hold a sum of document "
+                    + "lengths of " + persistedLength + " tokens for a corpus with no document; recomputing. To repair them on every node "
+                    + "run: " + repairStatement(logicalIndexName()));
           else
             LogManager.instance().log(this, large ? Level.WARNING : Level.INFO, "%s", null,
                 corpusDriftMessage(logicalIndexName(), typeName, persisted, liveCount, rescan));
@@ -1020,6 +1041,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     result.put("staleCheckDone", metadata.isStaleCheckDone());
     result.put("scans", metadata.getScans());
     result.put("epoch", metadata.getCountersEpoch());
+    // Times a counter was driven below zero and floored there: each one is an arithmetic error that armed a rescan (issue #10606)
+    result.put("clamps", metadata.getClamps());
     return result;
   }
 
@@ -1329,11 +1352,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * The length a document counts for in the corpus counters: its analyzed tokens, without the null token {@link #analyzeText}
    * emits for a null value. The ONE definition every writer and the rescan use, so the length a remove subtracts is always the
-   * length the put added for the same values (issue #10131). The counters persist the version of this rule
-   * ({@code FullTextIndexMetadata.LENGTH_MEASURE_VERSION}): change what a token or a null counts for, and bump it with the
-   * numbers {@code Issue10397Bm25AnalyzerDriftTest} pins, so the counters measured by the old rule are rescanned.
+   * length the put added for the same values (issue #10131). The counters persist what this rule and the analyzer DO over a fixed
+   * corpus ({@link FullTextLengthSignature}): change what a token or a null counts for and the counters measured by the old rule are
+   * rescanned, with no version to remember to bump (issue #10606).
    */
-  private static int documentLength(final List<String> tokens) {
+  static int documentLength(final List<String> tokens) {
     int length = 0;
     for (int i = 0; i < tokens.size(); i++)
       if (tokens.get(i) != null)
@@ -1812,6 +1835,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @return A list of tokens extracted from the text.
    */
   public List<String> analyzeText(final Analyzer analyzer, final Object[] text) {
+    return analyze(analyzer, text);
+  }
+
+  /**
+   * {@link #analyzeText} without an index: the analysis keeps no state of it, and the signature of the length a document counts for
+   * (see {@link FullTextLengthSignature}) must run the very same code the writers run.
+   */
+  static List<String> analyze(final Analyzer analyzer, final Object[] text) {
     final List<String> tokens = new ArrayList<>();
 
     for (final Object t : text) {
