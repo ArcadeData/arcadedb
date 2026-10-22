@@ -37,9 +37,12 @@ import java.util.Map;
  * {@code n: 0}. A sample is never updated, and the samples to delete are named by their time and their series, so:
  * <ul>
  *   <li>a {@code deleteMany} is translated into {@code DELETE FROM <type> WHERE ...}, which the engine of the type serves, when its
- *   filter is a conjunction of conditions SQL removes exactly: a range or an equality on the timestamp field and an equality on a
- *   TAG field. Anything else - a FIELD, {@code $or}, {@code $ne}, {@code $in}, a value SQL would coerce where MongoDB would not
- *   match - is refused rather than approximated, since a delete that removed more than its filter says cannot be put back;</li>
+ *   filter is a conjunction of conditions SQL removes exactly: a range or an equality on the timestamp field, with a date, and an
+ *   equality on a TAG field. Anything else - a FIELD, {@code $or}, {@code $ne}, {@code $in}, a value SQL would coerce where MongoDB
+ *   would not match - is refused rather than approximated, since a delete that removed more than its filter says cannot be put
+ *   back. In particular a number on the timestamp is refused (issue #10598): {@code find} and {@code count} hand the timestamp over
+ *   as a date and, as MongoDB does, do not match a number against it, and the rule is that for one filter {@code find},
+ *   {@code count} and {@code deleteMany} select the same rows;</li>
  *   <li>a {@code deleteOne} is refused: a time series removes every sample in a range, it cannot pick one;</li>
  *   <li>an update, a replacement and an upsert are refused, filtered or not.</li>
  * </ul>
@@ -147,23 +150,26 @@ final class MongoTimeSeriesWrites {
   }
 
   /**
-   * A timestamp operand in milliseconds: a whole number (a double only up to 2^53, where it still holds every whole number), or a
-   * date when the type is known to store milliseconds.
+   * A timestamp operand in milliseconds: a date, when the type is known to store milliseconds. A date is the only form of the
+   * operand that {@link MongoFilter} (what {@code find}, {@code count} and the record path of a write use) equates with a sample's
+   * timestamp, which {@code find} hands to the client as a date: MongoDB does not match a number against a date, so the delete must
+   * not either, or it removes samples that the same filter shows none of (issue #10598).
    */
   private static long timestampOf(final TimeSeriesType type, final String column, final Object value) {
-    if (value instanceof Integer || value instanceof Long)
-      return ((Number) value).longValue();
-    if (value instanceof Double d && isWhole(d) && Math.abs(d) <= EXACT_DOUBLE_BOUND)
-      return d.longValue();
     // the BSON decoder hands a date over as an Instant
     if (value instanceof Instant instant) {
       if (!type.isPrecisionHonoured())
         throw new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
             + "' with a date on '" + column + "': the type declares the precision " + type.getPrecision()
-            + ", so its timestamps are not known to be in milliseconds. Compare '" + column + "' with a number in the unit of the "
-            + "stored timestamps, or confirm the unit with ALTER TIMESERIES TYPE " + type.getName() + " PRECISION MILLISECOND");
+            + ", so its timestamps are not known to be in milliseconds. Confirm the unit with ALTER TIMESERIES TYPE " + type.getName()
+            + " PRECISION MILLISECOND");
       return instant.toEpochMilli();
     }
+    if (value instanceof Number)
+      throw new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
+          + "' with the condition on '" + column + "': it compares the timestamp with a number, which find and count do not match"
+          + " against it (a sample's timestamp is a date to a MongoDB client), so the delete would remove samples the same filter"
+          + " shows none of. Compare '" + column + "' with a date");
     throw unsupported(type, column);
   }
 
@@ -210,7 +216,7 @@ final class MongoTimeSeriesWrites {
   private static MongoServerError unsupported(final TimeSeriesType type, final String key) {
     return new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
         + "' with the condition on '" + key + "': a delete removes the samples in a time range of its field '"
-        + type.getTimestampColumn() + "' ($eq, $gt, $gte, $lt, $lte with a number of milliseconds or a date) with the given values of"
+        + type.getTimestampColumn() + "' ($eq, $gt, $gte, $lt, $lte with a date) with the given values of"
         + " its TAG fields (an equality with a value of the tag's own kind: a string for a STRING tag, a boolean for a BOOLEAN tag, a"
         + " number the numeric tag holds exactly; a tag of any other type cannot be named), joined by AND. A condition on a FIELD,"
         + " $or, $ne, $in or any other operator is not supported: the samples to remove are named by their time and their series");

@@ -2495,30 +2495,42 @@ public class LocalSchema implements Schema {
     // BACKING TYPE - RUNS UNDER THE WRITE LOCK, SO IT CANNOT INTERLEAVE WITH A CREATE OR AN ALTER OF THE SAME VIEW
     // THAT IS STILL INSTALLING ITS REFRESH RESOURCES: WHAT IS TORN DOWN HERE IS WHAT THE VIEW REMOVED HERE OWNED
     recordFileChanges(() -> {
-      final MaterializedViewImpl view;
-      final MaterializedViewScheduler scheduler;
+      final MaterializedViewImpl registered;
       synchronized (this) {
         // Two drops of the same view can both pass the check above: the second loses here
-        view = materializedViews.remove(viewName);
-        if (view == null)
-          throw new SchemaException("Materialized view '" + viewName + "' not found");
-        scheduler = materializedViewScheduler;
+        registered = materializedViews.get(viewName);
       }
+      if (registered == null)
+        throw new SchemaException("Materialized view '" + viewName + "' not found");
 
-      // Cancel periodic scheduler if active
-      if (scheduler != null)
-        scheduler.cancel(viewName);
+      // #10590: THE DROP OF THE BACKING TYPE IS THE STEP THAT CAN REFUSE, AND IT COMES LAST: EVERYTHING IT WILL ASK IS ASKED, AND
+      // THE LOCKS OF ITS INDEX FILES ARE TAKEN, BEFORE THE VIEW STOPS BEING REGISTERED. A refusal after the removal left a view that
+      // no longer existed beside a backing type that did, which no statement but DROP TYPE could repair
+      return executeDroppingBackingType("drop the materialized view '" + viewName + "'", registered.getBackingTypeName(), registered, () -> {
+        final MaterializedViewImpl view;
+        final MaterializedViewScheduler scheduler;
+        synchronized (this) {
+          view = materializedViews.remove(viewName);
+          if (view == null)
+            throw new SchemaException("Materialized view '" + viewName + "' not found");
+          scheduler = materializedViewScheduler;
+        }
 
-      // Unregister incremental listeners from source types
-      if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-        MaterializedViewBuilder.unregisterListeners(this, view);
+        // Cancel periodic scheduler if active
+        if (scheduler != null)
+          scheduler.cancel(viewName);
 
-      // Drop the backing type (which drops buckets and indexes)
-      if (existsType(view.getBackingTypeName()))
-        dropType(view.getBackingTypeName());
+        // Unregister incremental listeners from source types
+        if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+          MaterializedViewBuilder.unregisterListeners(this, view);
 
-      saveConfiguration();
-      return null;
+        // Drop the backing type (which drops buckets and indexes)
+        if (existsType(view.getBackingTypeName()))
+          dropType(view.getBackingTypeName());
+
+        saveConfiguration();
+        return null;
+      });
     });
   }
 
@@ -2612,16 +2624,19 @@ public class LocalSchema implements Schema {
     }
 
     recordFileChanges(() -> {
-      synchronized (this) {
-        if (continuousAggregates.remove(name) == null)
-          throw new SchemaException("Continuous aggregate '" + name + "' not found");
-      }
+      // #10590: the refusals of the drop of the backing type are asked before the aggregate stops being registered, see dropMaterializedView
+      return executeDroppingBackingType("drop the continuous aggregate '" + name + "'", ca.getBackingTypeName(), ca, () -> {
+        synchronized (this) {
+          if (continuousAggregates.remove(name) == null)
+            throw new SchemaException("Continuous aggregate '" + name + "' not found");
+        }
 
-      if (existsType(ca.getBackingTypeName()))
-        dropType(ca.getBackingTypeName());
+        if (existsType(ca.getBackingTypeName()))
+          dropType(ca.getBackingTypeName());
 
-      saveConfiguration();
-      return null;
+        saveConfiguration();
+        return null;
+      });
     });
   }
 
@@ -3119,6 +3134,31 @@ public class LocalSchema implements Schema {
     });
   }
 
+  /**
+   * Runs {@code mutation}, the unregistration of {@code owner} - a materialized view or a continuous aggregate - and the drop of
+   * its backing type, after everything the drop of that type is going to ask has been asked: another dependant built from the
+   * backing type, a file that cannot be deleted, the locks of the index files (issue #10590). {@link #dropType} asks the same, but
+   * it is the LAST step of those statements, so a refusal from it came after the owner was no longer registered, with its refresh
+   * scheduler cancelled and its listeners off the source types, while the message claimed that nothing was changed. The owner is
+   * left out of the dependants: it is the one going.
+   * <p>
+   * Called under the database write lock, which every registration of a view or an aggregate takes too, so no dependant can be
+   * added between this verdict and the mutation that follows it.
+   *
+   * @param statement what the statement does, for the refusal message: "drop the materialized view 'V'"
+   */
+  private <RET> RET executeDroppingBackingType(final String statement, final String backingTypeName, final TypeNameDependant owner,
+      final Callable<RET> mutation) {
+    checkTypeHasNoDependants(backingTypeName, owner);
+
+    final List<Integer> filesOfTheDrop = new ArrayList<>();
+    final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+    final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
+    if (backingType != null)
+      collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
+  }
+
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
   private void dropTypeInternal(final LocalDocumentType type, final String typeName, final String canonicalTypeName) {
     // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
@@ -3360,12 +3400,20 @@ public class LocalSchema implements Schema {
    * @return the canonical name of the type
    */
   private String checkTypeHasNoDependants(final String typeName) {
+    return checkTypeHasNoDependants(typeName, null);
+  }
+
+  /**
+   * @param owner the dependant whose own statement drops the type, which does not refuse it, or {@code null} (issue #10590)
+   */
+  private String checkTypeHasNoDependants(final String typeName, final TypeNameDependant owner) {
     final LocalDocumentType resolvedType = getTypeOrNull(typeName);
     final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
 
     synchronized (this) {
       for (final TypeNameDependant dependant : getTypeNameDependants())
-        dependant.checkTypeDrop(this, typeName, canonicalTypeName);
+        if (dependant != owner)
+          dependant.checkTypeDrop(this, typeName, canonicalTypeName);
     }
     return canonicalTypeName;
   }
