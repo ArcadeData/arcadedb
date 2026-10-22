@@ -232,8 +232,11 @@ class DeltaCollector
   private void scheduleSyncCallback(final TxDelta delta) {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
-      if (dbInternal.isTransactionActive())
+      if (dbInternal.isTransactionActive()) {
+        // The delta holds what the statement did, and keeps it: a statement that fails cannot be taken back (issue #10346)
+        dbInternal.getTransaction().markStatementUnrestorable("it changed records a graph analytical view follows");
         dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, new CommittedDeltaCallback(delta));
+      }
     } catch (final DatabaseIsClosedException e) {
       LogManager.instance().log(this, Level.FINE, "Delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
@@ -316,8 +319,10 @@ class DeltaCollector
   private void scheduleAsyncCallback() {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
-      if (dbInternal.isTransactionActive())
+      if (dbInternal.isTransactionActive()) {
+        dbInternal.getTransaction().markStatementUnrestorable("it changed records a graph analytical view follows");
         dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommitCallback);
+      }
     } catch (final DatabaseIsClosedException e) {
       LogManager.instance().log(this, Level.FINE, "Change detection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {

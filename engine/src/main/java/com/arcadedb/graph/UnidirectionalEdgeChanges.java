@@ -154,6 +154,24 @@ public final class UnidirectionalEdgeChanges {
     deleteLookupTooLarge = true;
   }
 
+  /**
+   * A statement of the transaction was taken back (issue #10346). The changes it recorded describe edges that exist no more, and the
+   * log cannot give back one entry without the others, so when the statement recorded any the log is dropped the way an overflow drops
+   * it: the scans taken so far are taken again at their next use, which sees the transaction as it is.
+   *
+   * @param sequenceAtStart {@link #getSequence()} when the statement began
+   */
+  public void statementRolledBack(final long sequenceAtStart) {
+    if (sequence == sequenceAtStart)
+      return;
+    created = null;
+    deleted = null;
+    deletedTwins = null;
+    changes = 0;
+    recording = false;
+    ++overflows;
+  }
+
   /** Drops the changes of the transaction that ended: committed or rolled back, they are no longer its own. */
   public void transactionEnded() {
     // NO CONTEXT BUILT IT, SO ITS SNAPSHOTS CHARGED NO QUERY BUDGET THAT HAS TO BE GIVEN BACK: DROPPED AS THEY ARE
