@@ -223,6 +223,13 @@ public class TransactionManager {
     indexRegisteredAt.put(indexName, indexRegistrationSequence.incrementAndGet());
   }
 
+  /** Called when an index is renamed (a type rename, a vector index compaction): the registration goes with it. */
+  public void indexRenamed(final String oldName, final String newName) {
+    final Long sequence = indexRegisteredAt.remove(oldName);
+    if (sequence != null)
+      indexRegisteredAt.put(newName, sequence);
+  }
+
   /** Called when an index is dropped, so the registrations do not outlive the indexes they describe. */
   public void indexUnregistered(final String indexName) {
     indexRegisteredAt.remove(indexName);

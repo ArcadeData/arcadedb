@@ -133,7 +133,11 @@ public class QueryOperatorEquals {
   /** A pair of elements of two lists or maps: {@code =} itself, except that {@code null} is equal to {@code null} as it is in a list. */
   private static boolean elementsEqual(final Object left, final Object right) {
     if (left == null || right == null)
-      return left == right;
+      return left == null && right == null;
+    // Two strings, or two numbers of one class, are most of the elements of a list: nothing above converts them, so they are
+    // compared as the same-class arm of equals() would, without the checks for a Calendar, a Date subclass and a collection
+    if (left.getClass() == right.getClass() && (left instanceof String || left instanceof Number))
+      return BinaryComparator.equals(left, right);
     return equals(left, right);
   }
 

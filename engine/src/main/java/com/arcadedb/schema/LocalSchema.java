@@ -54,6 +54,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
@@ -3243,6 +3244,7 @@ public class LocalSchema implements Schema {
    * @param sequence the registration sequence the transaction took when it began, see {@link TransactionManager#getIndexRegistrationSequence}
    */
   public void reconcileIndexesRegisteredSince(final TransactionContext tx, final long sequence) {
+    List<IndexInternal> owed = null;
     for (final Map.Entry<String, Long> registration : database.getTransactionManager().getIndexesRegisteredSince(sequence).entrySet()) {
       final String indexName = registration.getKey();
       final IndexInternal index = lookupIndex(indexName);
@@ -3263,8 +3265,23 @@ public class LocalSchema implements Schema {
             "The index '" + (index.getTypeIndex() != null ? index.getTypeIndex().getName() : indexName) + "' was created on type '"
                 + index.getTypeName() + "' while this transaction was writing to it. Please retry the transaction");
 
-      IndexBuildCallerChanges.apply(database, tx, index, null, 0L);
+      if (owed == null)
+        owed = new ArrayList<>(2);
+      owed.add(index);
     }
+
+    if (owed == null)
+      return;
+
+    // The entries are queued on the transaction on top of the calling thread's stack, through the indexer. Queueing the ones this
+    // transaction owes from underneath another would put them in the wrong transaction, and skipping them would publish records the
+    // new index does not know: it is refused instead, and the commit of the transaction on top has to come first
+    if (database.getTransactionIfExists() != tx)
+      throw new TransactionException("Cannot commit a transaction that owes the entries of the index '" + owed.getFirst().getName()
+          + "', created after it began, while another transaction is open on top of it: commit or roll back the innermost one first");
+
+    for (final IndexInternal index : owed)
+      IndexBuildCallerChanges.apply(database, tx, index, null, 0L);
   }
 
   /**
@@ -5418,8 +5435,11 @@ public class LocalSchema implements Schema {
     LogManager.instance().log(this, Level.FINE, "Index '%s' renamed to '%s'", null, oldName, newName);
 
     indexMap.put(newName, index);
-    if (oldName != null)
+    if (oldName != null) {
       indexMap.remove(oldName, index);
+      // The registration follows the index: a transaction that wrote before it was bound still owes it entries after a rename of its type
+      database.getTransactionManager().indexRenamed(oldName, newName);
+    }
   }
 
   public boolean isDirty() {

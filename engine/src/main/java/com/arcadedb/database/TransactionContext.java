@@ -53,6 +53,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LongHashSet;
+import com.arcadedb.utility.LongLongHashMap;
 import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;
@@ -331,10 +332,10 @@ public class TransactionContext implements Transaction {
   private       long                                 indexRegistrationSequenceAtBegin;
   // #10588: the indexes an index build already queued this transaction's writes for, which the commit must not queue again
   private       Set<String>                          indexesReconciled;
-  // #10588: for each bucket this transaction has written to, how many indexes had been bound to a type since it began when it first
-  // wrote there. An index bound after that write owes the write an entry; one bound before it does not. lastNotedBucket spares the
-  // lookup for a run of writes into one bucket, the common case
-  private       IntIntHashMap                        bucketFirstWriteRegistrations;
+  // #10588: for each bucket this transaction has written to, the index registration sequence when it first wrote there. An index
+  // bound after that write owes the write an entry; one bound before it does not. lastNotedBucket spares the lookup for a run of
+  // writes into one bucket, the common case; it is reset wherever the map is (begin() and reset(), which a rollback reaches)
+  private       LongLongHashMap                      bucketFirstWriteSequences;
   private       int                                  lastNotedBucket = -1;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
@@ -453,7 +454,7 @@ public class TransactionContext implements Transaction {
       unidirectionalEdgeChanges.transactionEnded();
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
-    bucketFirstWriteRegistrations = null;
+    bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
@@ -3749,7 +3750,7 @@ public class TransactionContext implements Transaction {
     unidirectionalScanEpoch = -1L;
     scannedBuckets = null;
     indexesReconciled = null;
-    bucketFirstWriteRegistrations = null;
+    bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
@@ -4011,19 +4012,18 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Remembers, the first time this transaction writes to a bucket, how many indexes have been bound to a type since it began
-   * (issue #10588). Called by every write to a bucket: a create, an update and a delete. The common case, one more write into the
-   * bucket the previous one went to, costs one compare.
+   * Remembers, the first time this transaction writes to a bucket, the index registration sequence of that moment (issue #10588).
+   * Called by every write to a bucket: a create, an update and a delete. The common case, one more write into the bucket the
+   * previous one went to, costs one compare.
    */
   private void noteBucketWritten(final int bucketId) {
     if (bucketId == lastNotedBucket)
       return;
     lastNotedBucket = bucketId;
-    if (bucketFirstWriteRegistrations == null)
-      bucketFirstWriteRegistrations = new IntIntHashMap();
-    if (!bucketFirstWriteRegistrations.containsKey(bucketId))
-      bucketFirstWriteRegistrations.put(bucketId,
-          (int) (database.getTransactionManager().getIndexRegistrationSequence() - indexRegistrationSequenceAtBegin));
+    if (bucketFirstWriteSequences == null)
+      bucketFirstWriteSequences = new LongLongHashMap();
+    if (bucketFirstWriteSequences.get(bucketId, -1L) < 0L)
+      bucketFirstWriteSequences.put(bucketId, database.getTransactionManager().getIndexRegistrationSequence());
   }
 
   /**
@@ -4032,10 +4032,10 @@ public class TransactionContext implements Transaction {
    * entries queued as they are written.
    */
   public boolean wroteToBucketBefore(final int bucketId, final long registrationSequence) {
-    if (bucketFirstWriteRegistrations == null)
+    if (bucketFirstWriteSequences == null)
       return false;
-    final int registrationsBeforeFirstWrite = bucketFirstWriteRegistrations.get(bucketId, -1);
-    return registrationsBeforeFirstWrite >= 0 && indexRegistrationSequenceAtBegin + registrationsBeforeFirstWrite < registrationSequence;
+    final long sequenceAtFirstWrite = bucketFirstWriteSequences.get(bucketId, -1L);
+    return sequenceAtFirstWrite >= 0L && sequenceAtFirstWrite < registrationSequence;
   }
 
   /** Whether {@link #indexReconciled} was called for the index since this transaction began. */
@@ -4071,15 +4071,10 @@ public class TransactionContext implements Transaction {
     if (database.getTransactionManager().getIndexRegistrationSequence() == indexRegistrationSequenceAtBegin)
       return;
 
-    if (database.getTransactionIfExists() != this) {
-      // The entries are queued on the transaction on top of the thread's stack, through the indexer: queueing them for this one
-      // from underneath another would put them in the wrong transaction
-      LogManager.instance().log(this, Level.WARNING,
-          "A transaction that began before an index was created is committing underneath another one: its records are not indexed by the new index");
-      return;
-    }
-
     try {
+      // The entries are queued on the transaction on top of the thread's stack, through the indexer, so the schema refuses (and does
+      // not skip) a transaction that owes some and is committing underneath another one: queueing them for it from underneath
+      // would put them in the wrong transaction, and skipping them would publish records the new index does not know
       database.getSchema().getEmbedded().reconcileIndexesRegisteredSince(this, indexRegistrationSequenceAtBegin);
     } catch (final DuplicatedKeyException | NeedRetryException | TransactionException e) {
       rollback();

@@ -19,10 +19,14 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -328,6 +332,43 @@ class Issue10588CreateIndexBesideUncommittedWriterTest extends TestHelper {
     assertIndexCompleteFor("T", "p");
     assertThat(lookup("T", "p", 999)).isEqualTo(1L);
     assertThat(database.countType("U", true)).isEqualTo(COMMITTED + 1);
+  }
+
+  @Test
+  void aTypeRenamedBetweenTheIndexAndTheCommitStillGetsTheEntriesTheWriterOwes() throws Exception {
+    createPopulatedType("T", "p");
+
+    runWriterAcrossIndexCreation(() -> database.newDocument("T").set("p", 999).save(), () -> {
+      database.command("sql", "CREATE INDEX ON T (p) UNIQUE");
+      // the sub-indexes are renamed with their type, and the registration of the index has to follow
+      database.command("sql", "ALTER TYPE T NAME T2");
+    });
+
+    assertIndexCompleteFor("T2", "p");
+    assertThat(lookup("T2", "p", 999)).isEqualTo(1L);
+  }
+
+  @Test
+  void aTransactionCommittingUnderneathAnotherOneThatOwesEntriesIsRefusedNotSkipped() {
+    createPopulatedType("V", "id");
+
+    database.begin();
+    database.newDocument("V").set("id", 999).save();
+    database.begin();
+    try {
+      database.command("sql", "CREATE INDEX ON V (id) UNIQUE");
+
+      final TransactionContext outer = DatabaseContext.INSTANCE.getContext(((DatabaseInternal) database).getDatabasePath()).transactions.get(0);
+      assertThatThrownBy(outer::commit).isInstanceOf(TransactionException.class).hasMessageContaining("innermost");
+    } finally {
+      if (database.isTransactionActive())
+        database.rollbackAllNested();
+    }
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertIndexCompleteFor("V", "id");
+    assertThat(lookup("V", "id", 999)).isZero();
+    assertThat(database.countType("V", true)).isEqualTo(COMMITTED);
   }
 
   @Test

@@ -212,6 +212,15 @@ class Issue10595ListMapTemporalEqualityTest extends TestHelper {
 
     assertThat(QueryOperatorEquals.equals(timestamp, STORED)).isTrue();
     assertThat(QueryOperatorEquals.equals(STORED, timestamp)).isTrue();
+
+    // against another class the Timestamp is its instant at the millisecond a Date holds: the nanoseconds below it are not compared
+    final Timestamp withNanos = Timestamp.from(INSTANT.plusNanos(500_000));
+    assertThat(QueryOperatorEquals.equals(withNanos, STORED)).isTrue();
+    assertThat(QueryOperatorEquals.equals(STORED, withNanos)).isTrue();
+    assertThat(QueryOperatorEquals.equals(withNanos, Date.from(INSTANT))).isTrue();
+    assertThat(QueryOperatorEquals.equals(List.of(withNanos), List.of(STORED))).as("as an element too").isTrue();
+    // ...and against another Timestamp they are
+    assertThat(QueryOperatorEquals.equals(withNanos, timestamp)).isFalse();
   }
 
   @Test
