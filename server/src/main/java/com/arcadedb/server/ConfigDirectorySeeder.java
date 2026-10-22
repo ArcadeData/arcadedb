@@ -22,6 +22,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.security.SecurityGroupFileRepository;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,8 +49,11 @@ import java.util.stream.Stream;
  * succeeded, and a failure removes what it placed. A half-seeded directory would otherwise hold a file, and so never be
  * seeded again.
  * <p>
- * The defaults are read from the image's {@code <root>/config}, so a volume mounted over that very directory hides them
- * and is not seeded: mount it elsewhere and point {@code arcadedb.server.configDirectory} at it.
+ * Each default is read from the image's {@code <root>/config} when it holds a copy, otherwise from the copy bundled in
+ * the server jar under {@link #BUNDLED_DEFAULTS} (issue #10554), which the build takes from the same single source,
+ * {@code package/src/main/config}. A volume mounted over {@code <root>/config} itself hides what the image shipped
+ * there, so it is seeded from the bundled copies alone. A server with no {@code <root>/config} directory at all (an
+ * embedded server) is never seeded.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -61,13 +65,26 @@ public final class ConfigDirectorySeeder {
   public static final List<String> SEEDED_FILES = List.of(SecurityGroupFileRepository.FILE_NAME, "gremlin-server.yaml",
       "gremlin-server.groovy", "gremlin-server.properties");
 
+  /** Classpath folder holding a copy of each of {@link #SEEDED_FILES}, copied there from the distribution at build time. */
+  public static final String BUNDLED_DEFAULTS = "com/arcadedb/server/config/defaults/";
+
   private ConfigDirectorySeeder() {
   }
 
   /**
-   * Copies each of {@link #SEEDED_FILES} present in {@code shippedDirectory} into {@code configDirectory} when that
-   * directory is missing or holds no regular file (a fresh volume may hold a {@code lost+found} directory). Nothing
-   * happens when both name the same directory, or when there is nothing shipped to copy (an embedded server).
+   * Opens the copy of a shipped default bundled in the server jar.
+   *
+   * @return the stream, or null when {@code file} is not one of the bundled defaults
+   */
+  public static InputStream openBundledDefault(final String file) {
+    return ConfigDirectorySeeder.class.getResourceAsStream("/" + BUNDLED_DEFAULTS + file);
+  }
+
+  /**
+   * Copies each of {@link #SEEDED_FILES} into {@code configDirectory} when that directory is missing or holds no regular
+   * file (a fresh volume may hold a {@code lost+found} directory). Each file comes from {@code shippedDirectory} when it
+   * holds a copy, otherwise from the bundled one; when both name the same directory it is empty, so every file comes
+   * from the bundled copy. Nothing happens when {@code shippedDirectory} does not exist (an embedded server).
    *
    * @return the names of the files copied
    */
@@ -79,24 +96,19 @@ public final class ConfigDirectorySeeder {
     final Path source = shippedDirectory.toRealPath();
     // Normalized first: on POSIX "missing/.." does not resolve, so the same directory spelled that way would not exist
     final Path target = configDirectory.toAbsolutePath().normalize();
-    if (Files.exists(target) && (Files.isSameFile(source, target) || holdsAFile(target)))
-      return seeded;
-
-    final List<String> shipped = new ArrayList<>();
-    for (final String file : SEEDED_FILES)
-      if (Files.isRegularFile(source.resolve(file)))
-        shipped.add(file);
-    if (shipped.isEmpty())
+    if (Files.exists(target) && holdsAFile(target))
       return seeded;
 
     Files.createDirectories(target);
     // A directory, so a staging area left by a crash does not count as a file and the next start seeds again
     final Path staging = Files.createTempDirectory(target, ".seeding-");
     try {
-      for (final String file : shipped)
-        Files.copy(source.resolve(file), staging.resolve(file));
+      final List<String> staged = new ArrayList<>(SEEDED_FILES.size());
+      for (final String file : SEEDED_FILES)
+        if (stage(source.resolve(file), file, staging.resolve(file)))
+          staged.add(file);
 
-      for (final String file : shipped)
+      for (final String file : staged)
         try {
           // No REPLACE_EXISTING: a file that appears concurrently is kept as it is
           Files.move(staging.resolve(file), target.resolve(file));
@@ -113,6 +125,24 @@ public final class ConfigDirectorySeeder {
       deleteStaging(staging);
     }
     return seeded;
+  }
+
+  /**
+   * Copies the shipped file, or the bundled copy when none was shipped, to {@code staged}.
+   *
+   * @return false when neither exists
+   */
+  private static boolean stage(final Path shipped, final String file, final Path staged) throws IOException {
+    if (Files.isRegularFile(shipped)) {
+      Files.copy(shipped, staged);
+      return true;
+    }
+    try (final InputStream bundled = openBundledDefault(file)) {
+      if (bundled == null)
+        return false;
+      Files.copy(bundled, staged);
+      return true;
+    }
   }
 
   /** Best effort: a leftover staging directory is not a file, so it never stops a later seed. */
@@ -142,8 +172,8 @@ public final class ConfigDirectorySeeder {
   }
 
   /**
-   * Seeds the configuration directory of a server from {@code <root>/config}. A failure is logged, not thrown: the server
-   * still starts on its built-in defaults, as it did before seeding existed.
+   * Seeds the configuration directory of a server from {@code <root>/config} and the bundled defaults. A failure is
+   * logged, not thrown: the server still starts on its built-in defaults, as it did before seeding existed.
    */
   static void seedFromRoot(final String rootPath, final String configPath) {
     final Path shipped = Path.of(rootPath, "config");
@@ -152,8 +182,9 @@ public final class ConfigDirectorySeeder {
       final List<String> seeded = seed(shipped, target);
       if (!seeded.isEmpty())
         LogManager.instance()
-            .log(ConfigDirectorySeeder.class, Level.INFO, "Seeded the configuration directory '%s' with the defaults %s from '%s'",
-                target, seeded, shipped);
+            .log(ConfigDirectorySeeder.class, Level.INFO,
+                "Seeded the configuration directory '%s' with the defaults %s, from '%s' or the copies bundled in the server", target,
+                seeded, shipped);
     } catch (final IOException | RuntimeException e) {
       LogManager.instance()
           .log(ConfigDirectorySeeder.class, Level.WARNING,
