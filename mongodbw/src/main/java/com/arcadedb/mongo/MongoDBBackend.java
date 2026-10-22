@@ -118,7 +118,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
    * state, {@code TemporarilyUnavailable}: the library would report the bare exception as an uncoded "Unknown error", which a driver
    * reads as a server fault (issue #10553). A name that is not a database keeps the answer it had.
    */
-  ServerDatabase databaseForClient(final String databaseName) {
+  private ServerDatabase databaseForClient(final String databaseName) {
     try {
       return server.getDatabaseForClient(databaseName);
     } catch (final DatabaseOperationException e) {
@@ -284,7 +284,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
     try {
       final DatabaseInternal database = (DatabaseInternal) databaseForClient(databaseName);
       // THE WRAPPER THE LIBRARY CACHES FOR THIS NAME SERVES THE INSTANCE JUST RESOLVED, NOT ONE A RESTORE, A CLOSE + OPEN OR A
-      // DROP + CREATE HAS SINCE REPLACED AND CLOSED (ISSUE #10562)
+      // DROP + CREATE HAS SINCE REPLACED AND CLOSED (ISSUE #10562). THE NAME IS A DATABASE THE LINE ABOVE JUST RESOLVED, SO THIS
+      // NEVER BUILDS A WRAPPER FOR A NAME THAT IS NOT ONE
       if (resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper)
         wrapper.bind(database);
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
