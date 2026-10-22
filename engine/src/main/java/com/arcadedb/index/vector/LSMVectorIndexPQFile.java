@@ -111,9 +111,6 @@ public class LSMVectorIndexPQFile {
   }
 
   /**
-   * Checks if PQ data is loaded and ready for approximate search.
-   */
-  /**
    * The identity of the graph the given codes were built for: the fingerprint recorded with them, or {@code null} when
    * {@code codes} is not the instance this handler holds or carries no recorded identity. The caller compares it with the
    * fingerprint of the graph it is about to pair them with. Read under the same lock as the writers (the index's graph
@@ -123,6 +120,9 @@ public class LSMVectorIndexPQFile {
     return codes != null && codes == pqVectors ? graphFingerprint : null;
   }
 
+  /**
+   * Checks if PQ data is loaded and ready for approximate search.
+   */
   public boolean isPQReady() {
     return pqVectors != null && productQuantization != null;
   }

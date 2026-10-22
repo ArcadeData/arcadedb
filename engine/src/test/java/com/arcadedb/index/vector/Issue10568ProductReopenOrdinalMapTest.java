@@ -43,9 +43,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
@@ -257,7 +259,7 @@ class Issue10568ProductReopenOrdinalMapTest {
     // What a PQ file written before the identity was recorded looks like: the same bytes without the 16-byte trailer
     final Path pq = built.pqPath;
     final byte[] bytes = Files.readAllBytes(pq);
-    Files.write(pq, java.util.Arrays.copyOf(bytes, bytes.length - LSMVectorIndexPQFile.GRAPH_IDENTITY_BYTES));
+    Files.write(pq, Arrays.copyOf(bytes, bytes.length - LSMVectorIndexPQFile.GRAPH_IDENTITY_BYTES));
     final LSMVectorIndexPQFile check = pqFileOf(built);
     assertThat(check.loadPQ()).as("precondition: it still loads, the trailer is not part of what JVector reads").isTrue();
     assertThat(check.graphFingerprintOf(check.getPQVectors())).isNull();
@@ -305,7 +307,7 @@ class Issue10568ProductReopenOrdinalMapTest {
   }
 
   private void reopenAndSearch(final List<String> logs,
-      final java.util.function.BiConsumer<LSMVectorIndex, List<Pair<RID, Float>>> checks) {
+      final BiConsumer<LSMVectorIndex, List<Pair<RID, Float>>> checks) {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.open();
       try {
