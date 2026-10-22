@@ -3122,6 +3122,9 @@ public class LocalSchema implements Schema {
    * cannot be deleted (issue #10590). {@link #dropType} asks the same, but it is the LAST step of those statements, so a refusal
    * from it came after the owner was no longer registered, with its refresh scheduler cancelled and its listeners off the source
    * types, while the message claimed that nothing was changed. The owner is left out of the dependants: it is the one going.
+   * <p>
+   * Called under the database write lock, which every registration of a view or an aggregate takes too, so no dependant can be
+   * added between this verdict and the drop that follows it.
    *
    * @return the index files of the drop of the backing type, whose locks the statement takes once, up front
    */

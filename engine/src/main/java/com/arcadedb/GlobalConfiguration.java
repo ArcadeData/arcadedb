@@ -3857,8 +3857,10 @@ public enum GlobalConfiguration {
    */
   private static void reportFormerKey(final GlobalConfiguration setting) {
     final String formerKey = FORMER_KEYS.get(setting);
-    if (FORMER_KEYS_REPORTED.add(formerKey) && LogManager.instance() != null)
-      LogManager.instance().log(setting, Level.WARNING, "The setting '%s' was renamed '%s': the old name is still read, switch to the new one",
+    // the logger first: a key marked reported while no logger was up would never be reported
+    final LogManager logManager = LogManager.instance();
+    if (logManager != null && FORMER_KEYS_REPORTED.add(formerKey))
+      logManager.log(setting, Level.WARNING, "The setting '%s' was renamed '%s': the old name is still read, switch to the new one",
           formerKey, setting.key);
   }
 
