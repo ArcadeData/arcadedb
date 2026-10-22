@@ -27,6 +27,7 @@ import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -94,6 +95,11 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private int     callbackMark;
   private int     indexJournalMark;
   private long    unidirectionalSequence;
+  // The scan for incoming unidirectional edges the deletes of the transaction made before the statement, to put back (copied only when
+  // a delete did scan)
+  private long       scanEpoch;
+  private int        scannedBucketsCount;
+  private IntHashSet scannedBuckets;
 
   // The journal of the changes to maps and sets: parallel arrays, so a change costs no object
   private byte[]   ops = new byte[32];
@@ -140,6 +146,9 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     reservationMark = tx.getInsertReservationCount();
     callbackMark = tx.getAfterCommitCallbackCount();
     unidirectionalSequence = tx.getUnidirectionalSequence();
+    scanEpoch = tx.getUnidirectionalScanEpoch();
+    scannedBucketsCount = tx.getScannedBucketsCount();
+    scannedBuckets = tx.copyOfScannedBuckets();
     indexJournalMark = tx.getIndexChanges().beginStatementJournal(limit);
   }
 
@@ -157,7 +166,8 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
    */
   boolean hasChanges() {
     return size > 0 || logCount > 0 || !pendingRecords.isEmpty() || !obtained.isEmpty()
-        || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0;
+        || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0 || tx.getUnidirectionalScanEpoch() != scanEpoch
+        || tx.getScannedBucketsCount() != scannedBucketsCount;
   }
 
   /** Whether {@link #rollback()} took the statement back. */
@@ -498,6 +508,9 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       tx.restoreUnidirectionalTargets(unidirectional);
 
     tx.restoreAppendOnlyState(newRecordsMark, reservationMark, callbackMark, completedRecordWrites, unidirectionalSequence);
+    tx.restoreUnidirectionalScan(scanEpoch, scannedBuckets);
+    // handed to the transaction: the next statement takes its own copy
+    scannedBuckets = null;
 
     // A record an earlier statement updated and this one changed in place gets back the content it had: the object is the only copy
     for (int i = 0; i < pendingRecords.size(); i++) {
@@ -563,6 +576,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     }
     queuedInStatement = null;
     snapshotted = null;
+    scannedBuckets = null;
     obtained.clear();
     pendingRecords.clear();
     pendingSnapshots.clear();

@@ -41,6 +41,8 @@ class TransactionContextStatementStateTest {
   private static final String JOURNALED  = "journaled";
   /** Only grows: the savepoint takes a mark when the statement begins and cuts back to it. */
   private static final String MARKED     = "marked";
+  /** Copied when the statement begins, and put back when it is taken back. */
+  private static final String CAPTURED   = "captured";
   /** Rebuilt or emptied when the statement is taken back. */
   private static final String REBUILT    = "rebuilt";
   /** Tracks the writes a page can be rebuilt from at commit: the pages the statement wrote to are poisoned. */
@@ -68,6 +70,7 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("unidirectionalEdgeTargets", JOURNALED);
     CLASSIFICATION.put("registeredCallbackKeys", JOURNALED);
     CLASSIFICATION.put("indexChanges", JOURNALED);
+    CLASSIFICATION.put("scannedBuckets", CAPTURED);
     CLASSIFICATION.put("newRecords", MARKED);
     CLASSIFICATION.put("afterCommitCallbacks", MARKED);
     CLASSIFICATION.put("insertReservationBuckets", MARKED);
@@ -91,7 +94,6 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("lockedFiles", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("explicitLockedFiles", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("explicitLock", NOT_STATEMENT_STATE);
-    CLASSIFICATION.put("scannedBuckets", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("requester", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("statement", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("pooledStatement", NOT_STATEMENT_STATE);

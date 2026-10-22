@@ -849,6 +849,32 @@ public class TransactionContext implements Transaction {
     return unidirectionalEdgeChanges != null ? unidirectionalEdgeChanges.getSequence() : 0L;
   }
 
+  long getUnidirectionalScanEpoch() {
+    return unidirectionalScanEpoch;
+  }
+
+  int getScannedBucketsCount() {
+    return scannedBuckets != null ? scannedBuckets.size() : 0;
+  }
+
+  /** A copy of the buckets the deletes of this transaction scanned for unidirectional edges, or null when none did. */
+  IntHashSet copyOfScannedBuckets() {
+    if (scannedBuckets == null)
+      return null;
+    final IntHashSet copy = new IntHashSet();
+    scannedBuckets.forEach(copy::add);
+    return copy;
+  }
+
+  /**
+   * A scan a statement made for the edges ending in a vertex it deleted is a scan of a delete the transaction no longer holds once the
+   * statement is taken back: the commit must not be refused for an edge another transaction published meanwhile.
+   */
+  void restoreUnidirectionalScan(final long epoch, final IntHashSet buckets) {
+    unidirectionalScanEpoch = epoch;
+    scannedBuckets = buckets;
+  }
+
   void restoreModifiedRecord(final RID rid, final Record previous) {
     if (previous == null)
       modifiedRecordsCache.remove(rid);

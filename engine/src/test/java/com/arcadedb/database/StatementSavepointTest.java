@@ -28,11 +28,13 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.IntHashSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -170,6 +172,51 @@ class StatementSavepointTest extends TestHelper {
   }
 
   @Test
+  void theScanForIncomingEdgesOfAStatementTakenBackIsTakenBackToo() {
+    createGraphSchema();
+    database.command("sql", "CREATE EDGE TYPE U UNIDIRECTIONAL").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO V (id) VALUES (1), (2)").close();
+      database.command("sql", "CREATE EDGE U FROM (SELECT FROM V WHERE id = 1) TO (SELECT FROM V WHERE id = 2)").close();
+    });
+
+    // THE SECOND VERTEX THE STATEMENT DELETES IS REFUSED, WHICHEVER IT IS
+    final AtomicInteger deletes = new AtomicInteger();
+    database.getSchema().getType("V").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
+      if (deletes.incrementAndGet() == 2)
+        throw new IllegalStateException("refused");
+      return true;
+    });
+
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int vertexBucket = database.getSchema().getType("V").getBuckets(false).get(0).getFileId();
+    database.begin();
+    // THE DELETE OF THE FIRST VERTEX SCANS FOR THE UNIDIRECTIONAL EDGES ENDING IN IT, THEN THE SECOND ONE IS REFUSED
+    assertThatThrownBy(() -> database.command("sql", "DELETE VERTEX FROM V WHERE id IN [1, 2]").close()).hasStackTraceContaining("refused");
+    assertThat(deletes.get()).as("the first vertex was deleted, the second one refused").isEqualTo(2);
+    assertThat(ids("V")).containsExactly(1L, 2L);
+    // SOMETHING TO COMMIT: A TRANSACTION WITH NOTHING TO WRITE IS NOT CHECKED AT ALL
+    database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+
+    // ANOTHER TRANSACTION PUBLISHES AN EDGE ENDING IN THE BUCKET: THE DELETE THE TRANSACTION NO LONGER HOLDS HAS NOTHING TO BE REFUSED FOR
+    final IntHashSet buckets = new IntHashSet();
+    buckets.add(vertexBucket);
+    db.getTransactionManager().unidirectionalEdgesCommitted(buckets);
+
+    database.commit();
+    assertThat(ids("V")).containsExactly(1L, 2L);
+  }
+
+  private List<Long> ids(final String type) {
+    final List<Long> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT id FROM " + type + " ORDER BY id")) {
+      while (rs.hasNext())
+        ids.add(rs.next().<Number>getProperty("id").longValue());
+    }
+    return ids;
+  }
+
+  @Test
   void savepointsCanBeDisabled() {
     database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES, 0);
     try {
@@ -228,7 +275,7 @@ class StatementSavepointTest extends TestHelper {
     });
 
     database.begin();
-    assertThatThrownBy(() -> database.command("sql", "DELETE FROM T ORDER BY id").close()).isInstanceOf(RuntimeException.class);
+    assertThatThrownBy(() -> database.command("sql", "DELETE FROM T").close()).hasStackTraceContaining("refused");
 
     assertThat(ids()).containsExactly(1L, 2L, 3L, 4L, 5L);
     assertThat(countStar()).isEqualTo(5L);
@@ -369,8 +416,8 @@ class StatementSavepointTest extends TestHelper {
     });
 
     database.begin();
-    assertThatThrownBy(() -> database.command("sql", "INSERT INTO T (id, k) VALUES (1, 1), (2, 2)").close()).isInstanceOf(
-        RuntimeException.class);
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO T (id, k) VALUES (1, 1), (2, 2)").close()).hasStackTraceContaining(
+        "Duplicated key");
 
     assertThat(ids()).isEmpty();
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Log")) {
@@ -587,8 +634,8 @@ class StatementSavepointTest extends TestHelper {
     });
 
     database.begin();
-    assertThatThrownBy(() -> database.command("sql", "DELETE VERTEX FROM V WHERE id IN [1, 2, 3, 4] ORDER BY id").close()).isInstanceOf(
-        RuntimeException.class);
+    assertThatThrownBy(() -> database.command("sql", "DELETE VERTEX FROM V WHERE id IN [1, 2, 3, 4]").close()).hasStackTraceContaining(
+        "refused");
 
     assertThat(degrees()).isEqualTo("1:1/0 2:1/1 3:1/1 4:0/1");
     database.commit();
@@ -741,7 +788,7 @@ class StatementSavepointTest extends TestHelper {
     database.command("opencypher", "CREATE (:P {id: 1})").close();
     assertThatThrownBy(() -> database.command("opencypher",
         "UNWIND [2, 3, 1] AS i CREATE (a:P {id: i}) WITH a MATCH (b:P {id: 1}) WHERE a <> b CREATE (a)-[:KNOWS]->(b)").close())
-        .isInstanceOf(RuntimeException.class);
+        .hasStackTraceContaining("Duplicated key");
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:P) RETURN count(n) AS c")) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
