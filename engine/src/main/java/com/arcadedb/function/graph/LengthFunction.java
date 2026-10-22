@@ -25,8 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * length() function - returns the length of a path (number of relationships). The path is read in any shape
- * {@link TraversalPath#of(Object)} reads; a string answers its length, as it always has; anything else is a type error
- * rather than 0 (issue #9913).
+ * {@link TraversalPath#of(Object)} reads; a string answers its length in Unicode characters, as {@code size()} counts it,
+ * not in UTF-16 code units (issue #10523); anything else is a type error rather than 0 (issue #9913).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -55,9 +55,10 @@ public class LengthFunction implements StatelessFunction {
     final TraversalPath path = TraversalPath.of(args[0]);
     if (path != null)
       return (long) path.length();
-    // Also support string length for compatibility
+    // Also support string length for compatibility. A string is measured as size() and char_length() measure it: one Unicode
+    // character is one unit, whatever it costs in UTF-16 (issue #10523)
     if (args[0] instanceof String string)
-      return (long) string.length();
+      return (long) CypherFunctionHelper.codePointLength(string);
     throw CypherFunctionHelper.typeMismatch(getName(), "a PATH or a STRING", args[0]);
   }
 }

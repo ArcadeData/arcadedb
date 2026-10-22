@@ -993,11 +993,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (key == null)
         continue;
       for (int i = 0; i < key.length && i < keyTypes.length; i++) {
-        if (!IntegralKeyBound.isInexact(keyTypes[i], key[i]))
+        final byte boundType = IntegralKeyBound.boundTypeOf(keyTypes[i]);
+        if (!IntegralKeyBound.isInexact(boundType, key[i]))
           continue;
         if (i != rangeSlot)
           return false;
-        final Object mapped = side == 0 ? IntegralKeyBound.ceilingKey(keyTypes[i], key[i]) : IntegralKeyBound.floorKey(keyTypes[i], key[i]);
+        final Object mapped = side == 0 ? IntegralKeyBound.ceilingKey(boundType, key[i]) : IntegralKeyBound.floorKey(boundType, key[i]);
         if (mapped == null)
           return false;
         // a copy: the array can be the one the other side, or another seek, holds
@@ -1010,8 +1011,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
     // 11.5 < i < 11.9 maps to 12 <= i <= 11: an empty range, which the index is not asked to read backwards
     if (mappedAny && seek[0] != null && seek[1] != null && seek[0].length > rangeSlot && seek[1].length > rangeSlot
-        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], seek[0][rangeSlot])
-        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], seek[1][rangeSlot])
+        && !IntegralKeyBound.isInexact(IntegralKeyBound.boundTypeOf(keyTypes[rangeSlot]), seek[0][rangeSlot])
+        && !IntegralKeyBound.isInexact(IntegralKeyBound.boundTypeOf(keyTypes[rangeSlot]), seek[1][rangeSlot])
         && IntegralKeyBound.isEmptyRange(seek[0][rangeSlot], seek[1][rangeSlot]))
       return false;
     return true;
@@ -1035,11 +1036,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (keyTypes == null)
       return BOUND_KEPT;
     for (int i = 0; i < key.length && i < keyTypes.length; i++) {
-      if (!IntegralKeyBound.isInexact(keyTypes[i], key[i]))
+      final byte boundType = IntegralKeyBound.boundTypeOf(keyTypes[i]);
+      if (!IntegralKeyBound.isInexact(boundType, key[i]))
         continue;
       if (i < key.length - 1)
         return NO_MATCH;
-      final Object mapped = lower ? IntegralKeyBound.ceilingKey(keyTypes[i], key[i]) : IntegralKeyBound.floorKey(keyTypes[i], key[i]);
+      final Object mapped = lower ? IntegralKeyBound.ceilingKey(boundType, key[i]) : IntegralKeyBound.floorKey(boundType, key[i]);
       if (mapped == null)
         return NO_MATCH;
       key[i] = mapped;
@@ -1055,7 +1057,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
     if (keyTypes == null || position >= keyTypes.length)
       return false;
-    final byte keyType = keyTypes[position];
+    final byte keyType = IntegralKeyBound.boundTypeOf(keyTypes[position]);
     return keyType == BinaryTypes.TYPE_BYTE || keyType == BinaryTypes.TYPE_SHORT || keyType == BinaryTypes.TYPE_INT
         || keyType == BinaryTypes.TYPE_LONG;
   }

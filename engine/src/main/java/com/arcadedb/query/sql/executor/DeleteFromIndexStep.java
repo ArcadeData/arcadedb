@@ -289,7 +289,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     if (index instanceof IndexInternal internalIndex) {
       final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
       if (keyTypes != null && keyTypes.length > 0)
-        return keyTypes[0];
+        return IntegralKeyBound.boundTypeOf(keyTypes[0]);
     }
     return -1;
   }
