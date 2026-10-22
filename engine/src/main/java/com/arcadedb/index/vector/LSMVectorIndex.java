@@ -11355,7 +11355,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Build and persist graph if it hasn't been built yet. This ensures the graph is available on next
       // database open (fast restart). See needsGraphBuild() for exactly which states count as "needs one".
       final LSMVectorIndexGraphFile gf = graphFile;
-      final boolean needsBuild = needsGraphBuild(gf);
+      // Not for a READ_ONLY handle: it refuses every mutation, so nothing is pending, and it does not own the directory - a graph
+      // built here would fail to persist and leave a manifest of its failure behind, in files a read-write process may be writing
+      // (#10507)
+      final boolean needsBuild = getDatabase().getMode() == ComponentFile.MODE.READ_WRITE && needsGraphBuild(gf);
 
       // Reset before deciding: see the field javadoc for why releaseBackgroundResources() needs this to
       // distinguish "this flush() skipped" from "this flush() attempted (and possibly failed)".

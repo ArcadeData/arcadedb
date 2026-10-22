@@ -673,6 +673,10 @@ public enum GlobalConfiguration {
       "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_PAGE_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
       Long.class, 16L * 1024 * 1024),
 
+  TX_STATEMENT_SAVEPOINT_MAX_ENTRIES("arcadedb.txStatementSavepointMaxEntries", SCOPE.DATABASE,
+      "A statement that fails inside a transaction the caller keeps is undone on its own, and the transaction goes on (issue #10346). To undo it the engine journals what the statement changes in the transaction, up to this many entries: a statement that changes more is not journaled past it, and when it fails the transaction can no longer be committed, as it was before statement savepoints existed. A bulk statement thus pays no memory for a journal it could never use, while the many small statements of an interactive transaction are all undone exactly. 0 disables statement savepoints: a statement that fails after writing part of its records leaves the transaction uncommittable",
+      Integer.class, 100_000),
+
   TX_STALE_READ_CHECK("arcadedb.txStaleReadCheck", SCOPE.DATABASE,
       "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Only direct property assignment and removal is checked: an in-place change to a list, map or embedded document got from the record is not. Set to false to restore the previous last-writer-wins behavior",
       Boolean.class, true),

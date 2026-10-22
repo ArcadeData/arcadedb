@@ -85,39 +85,36 @@ fills the properties that are null, as that is what it asks for.
 which now refuses an explicit `NULL` ("cannot be null") instead of silently filling it. Leave the column out of the statement,
 or run `UPDATE ... APPLY DEFAULTS` afterwards.
 
-### SQL: a transaction cannot be committed after a statement failed halfway (#10194)
+### A statement that fails inside a transaction is taken back, and the transaction goes on (#10194, #10379, #10346)
 
-A multi-row `INSERT`, `UPDATE` or `DELETE` that fails after part of its records were written, inside a transaction the caller
-keeps (for example `INSERT INTO T (id, k) VALUES (1, 7), (2, 7)` on a unique `k`, whose error the caller catches), used to leave
-the rows written before the error, and the commit published half a statement. The engine has no savepoint to take the statement
-back to, so the transaction is now marked rollback-only: `commit()` throws a `TransactionException` ("Transaction cannot be
-committed: a statement failed after part of its records were written ...") and nothing of the transaction is published. A
-statement that fails having written nothing, which includes every single-row refusal because the refused record retracts
-itself, leaves the transaction usable. A statement that owns its transaction (auto-transaction mode) rolls back whole, as before.
-A `sqlscript` that handles its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) is unchanged; openCypher and a script
-without such a block are covered since #10379, see below.
+A multi-row `INSERT`, `UPDATE`, `DELETE`, `CREATE EDGE`, or an openCypher or `sqlscript` statement, that fails after part of its
+records were written, inside a transaction the caller keeps (for example `INSERT INTO T (id, k) VALUES (1, 7), (2, 7)` on a unique
+`k`, whose error the caller catches), used to leave the rows written before the error in the transaction, and the commit published
+half a statement. #10194 and #10379 refused the commit of such a transaction, in every language. The engine now takes the statement
+back on its own, the way SQLite does, and the transaction goes on as if it had never run: the records it wrote, its unique and plain
+indexes (vector and full-text ones included, with the BM25 counters of the latter), the edges and the edge lists of both vertices,
+the bytes of the pages it wrote to, the record counters and the slots it had reserved. A record an earlier statement of the
+transaction had updated, and the failed one changed again, gets back the content that earlier statement gave it. The rest of the
+transaction commits.
 
-**Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes
-on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+A statement that owns its transaction (auto-transaction mode) pays nothing and rolls back whole, as before. A `sqlscript` that handles
+its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) is unchanged. The events a statement already fired (listeners,
+triggers, what an external system was told) cannot be taken back.
 
-### openCypher and SQL scripts: a transaction cannot be committed after a statement failed halfway, whatever the language (#10379)
+**When the statement cannot be taken back exactly it is not taken back at all**, and the transaction is refused its commit as in
+#10194: `commit()` throws a `TransactionException` ("Transaction cannot be committed: a statement failed after part of its records
+were written (...), and could not be taken back: ...") naming the reason. That is the case for:
 
-The rule of #10194 belongs to the transaction, not to SQL. It was enforced by the SQL engine alone, so
-`MATCH (n:T) SET n.v = 1` run in openCypher (or by Bolt inside `BEGIN`), and `UPDATE T SET v = 1;` run as a `sqlscript`, inside a
-transaction the caller keeps, failed after their first row and the caller's commit published that row. The check now sits where
-`database.command()` and `database.query()` dispatch every language, so any engine, including a later one, answers the same:
-`commit()` throws a `TransactionException` and nothing of the transaction is published. A statement that fails having written
-nothing leaves the transaction usable, and so does an openCypher statement whose own existence-constraint check took back every
-record it had created (#7945). A `sqlscript` whose writes are all inside a `BEGIN ... COMMIT RETRY n` block, which rolls back its
-failed attempts and answers the failure in its `ELSE` branch, is unchanged; a write outside such a block is covered. The SQL,
-openCypher and script engines run a write statement to its end inside the call; a Gremlin traversal runs while its result is read,
-so its result carries the same check.
+- a statement that changed more than `arcadedb.txStatementSavepointMaxEntries` entries of the transaction (100,000 by default; `0`
+  disables statement savepoints altogether), so a bulk load pays no memory for a journal it could not use;
+- a statement that changed records a Graph Analytical View follows, or that dropped a file;
+- a record with an `EXTERNAL` property that an earlier statement updated and a later one changed again;
+- a statement run by another one (a function, a trigger) that failed after writing, whose failure the outer statement swallowed: the
+  outer one succeeded, so there is nothing to take back to;
+- a Gremlin traversal, which runs while its result is read, after the call has returned.
 
-The check runs at every call, so a statement that a function or a procedure runs through the database, whose failure the outer
-statement catches and carries on from, marks the caller's transaction too when it wrote before it failed.
-
-**Who sees a different answer.** A caller that catches the error of a multi-row openCypher or script statement inside its own
-transaction and goes on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+**Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes on to
+commit: the commit used to throw, and now publishes the rest of the transaction without the failed statement.
 
 ### openCypher: `DISTINCT`, `GROUP BY`, `UNION`, `min()` and `max()` key a `BINARY` or `ARRAY_OF_*` value by its content (#10380)
 
@@ -212,6 +209,15 @@ what matters.
 
 ## Fixes
 
+- **#10521** A commit cancelled in the WAL write, which sets the interrupt flag of the thread itself before it raises its
+  `TransactionException`, concluded its failed 2nd phase with the flag set: the rollback's file reads (the dictionary, the modified
+  records) then closed the shared channel under every thread of the database, and the failed reload was swallowed. The conclusion
+  of a 2nd phase (the commit, `completeCommit()` and `concludeFailedPhase2()` alike) now clears the flag for its whole duration and
+  hands it back.
+- **#10507** A database opened `READ_ONLY` writes nothing to its directory when it closes. Closing it after another process had
+  committed rewrote `statistics.json` and `last-tx-id.bin` from the state of its open, so `SELECT count(*)` and `countType` under-
+  reported, `CHECK DATABASE` reported an error and `last-tx-id.bin` went backwards. It no longer rewrites the statistics, the
+  recency marker or a dirty schema, sweeps the `.wal` files of a writer, or records a failed vector graph build in a manifest.
 - **#10514** A `PRODUCT` vector index searches with its PQ codes (see the migration note above), its graph file is about the size
   of a `NONE` index's instead of 8x, `pqTrainingLimit` is honoured, the PQ-only search can re-rank on the stored vectors, and the
   FusedPQ reader that was switched off for returning a single result is back behind the `fusedPQ` index setting: it was handed a

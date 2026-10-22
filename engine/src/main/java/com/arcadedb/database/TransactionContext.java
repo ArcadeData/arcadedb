@@ -48,6 +48,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
@@ -348,6 +349,11 @@ public class TransactionContext implements Transaction {
   private       String                               rollbackOnlyReason    = null;
   /** Monotonic: only the difference across a statement is read, see {@link #countCompletedRecordWrite()}. */
   private       long                                 completedRecordWrites = 0L;
+  // #10346: the savepoint of the statement the caller is running in this transaction, null while none is: what the statement changes is
+  // journaled into it, to be taken back if the statement fails. One object per context, reused by every statement
+  private       StatementSavepoint                   statement;
+  private       StatementSavepoint                   pooledStatement;
+  private       int                                  statementJournalLimit;
   /**
    * The write refusal ({@link LocalDatabase#refuseWrites}) in force when this transaction began, or {@code null}
    * (issue #8270). A transaction begun on a database that was still waiting to be wrapped for replication is refused
@@ -445,6 +451,7 @@ public class TransactionContext implements Transaction {
     staleReadCheck = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_STALE_READ_CHECK);
     slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES);
     slotRebaseTrackedBytes = 0;
+    statementJournalLimit = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES);
 
     // Optimized: initial capacity 32 for typical transaction page count
     modifiedPages = new HashMap<>(32);
@@ -592,18 +599,31 @@ public class TransactionContext implements Transaction {
    */
   public Record getWrittenRecord(final RID rid) {
     Record rec = updatedRecords != null ? updatedRecords.get(rid) : null;
-    if (rec == null)
-      rec = modifiedRecordsCache.get(rid);
+    if (rec != null) {
+      if (statement != null)
+        statement.recordObtained(rid, rec, true);
+      return rec;
+    }
+    rec = modifiedRecordsCache.get(rid);
+    if (rec != null && statement != null)
+      statement.recordObtained(rid, rec, false);
     return rec;
   }
 
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
-    if (rec == null)
-      rec = immutableRecordsCache.get(rid);
-    if (rec == null && updatedRecords != null)
+    if (rec != null) {
+      if (statement != null)
+        statement.recordObtained(rid, rec, updatedRecords != null && updatedRecords.get(rid) == rec);
+      return rec;
+    }
+    rec = immutableRecordsCache.get(rid);
+    if (rec == null && updatedRecords != null) {
       // IN CASE `READ-YOUR-WRITE` IS FALSE, THE MODIFIED RECORD IS NOT IN CACHE AND MUST BE READ FROM THE UPDATE RECORDS
       rec = updatedRecords.get(rid);
+      if (rec != null && statement != null)
+        statement.recordObtained(rid, rec, true);
+    }
     return rec;
   }
 
@@ -679,10 +699,11 @@ public class TransactionContext implements Transaction {
   /**
    * A statement that fails inside the caller's transaction after part of its records were written leaves that part behind, and
    * a caller that catches the error and commits publishes half a statement: the first rows of a multi-row INSERT, the first
-   * rows of an UPDATE (issue #10194). The engine has no savepoint to take the statement back to, so the transaction can no
-   * longer be committed: the caller's error handling reaches the rollback that discards it, the same answer a half-applied
-   * delete already gets (#9305). A statement that failed before writing anything, or whose only write was a record that
-   * retracted itself, completed no write and leaves the transaction usable.
+   * rows of an UPDATE (issue #10194). The statement is taken back to its savepoint (issue #10346, see {@link #statementFailed}); this
+   * is what is left for a statement the engine cannot take back exactly, or that has no savepoint (a Gremlin traversal, which runs
+   * while its result is read): the transaction can no longer be committed, the caller's error handling reaches the rollback that
+   * discards it, the same answer a half-applied delete already gets (#9305). A statement that failed before writing anything, or
+   * whose only write was a record that retracted itself, completed no write and leaves the transaction usable.
    * <p>
    * The class of the failure only, not its message: a duplicated-key message carries the key values, and this text
    * resurfaces in the exception of {@link #commit()}, which can be logged or shown somewhere the original error never was.
@@ -691,9 +712,265 @@ public class TransactionContext implements Transaction {
    * @param cause        what the statement failed with
    */
   public void refuseCommitIfWrittenSince(final long writesBefore, final Throwable cause) {
+    refuseCommitIfWrittenSince(writesBefore, cause, null);
+  }
+
+  /**
+   * @param notTakenBackBecause why the statement could not be taken back to its savepoint (see {@link StatementSavepoint}), or null
+   *                            when there was no savepoint to ask
+   */
+  public void refuseCommitIfWrittenSince(final long writesBefore, final Throwable cause, final String notTakenBackBecause) {
     if (completedRecordWrites != writesBefore)
-      setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName()
-          + "), and the transaction has no savepoint to take it back to");
+      setRollbackOnly("a statement failed after part of its records were written (" + cause.getClass().getSimpleName() + "), and "
+          + (notTakenBackBecause != null ?
+          "could not be taken back: " + notTakenBackBecause :
+          "the transaction has no savepoint to take it back to"));
+  }
+
+  /**
+   * Starts the savepoint of a statement the CALLER runs inside this transaction, so the statement can be taken back on its own if it
+   * fails (issue #10346). A statement that owns its transaction (an auto-transaction) never asks: it rolls back whole.
+   * <p>
+   * The caller pairs this with {@link #endStatement} in a {@code finally}, and on a failure asks {@link #rollbackStatement}.
+   *
+   * @return the savepoint, or null when the statement cannot have one: this transaction is not begun, another statement is running (a
+   * statement run by the first one is taken back with it, see {@link StatementSavepoint#nestedStatementFailed}), or
+   * {@link GlobalConfiguration#TX_STATEMENT_SAVEPOINT_MAX_ENTRIES} disables them
+   */
+  public StatementSavepoint beginStatement() {
+    if (statement != null || status != STATUS.BEGUN || statementJournalLimit <= 0)
+      return null;
+    StatementSavepoint savepoint = pooledStatement;
+    if (savepoint == null)
+      pooledStatement = savepoint = new StatementSavepoint(this);
+    savepoint.begin(statementJournalLimit);
+    statement = savepoint;
+    return savepoint;
+  }
+
+  /** The savepoint of the statement running in this transaction, or null. */
+  public StatementSavepoint getActiveStatement() {
+    return statement;
+  }
+
+  /**
+   * Takes the failed statement back: the transaction holds again what it held when {@link #beginStatement} was called.
+   *
+   * @return true when it did, false when the statement cannot be taken back exactly (see {@link StatementSavepoint}), in which case
+   * nothing was changed and the transaction has to be refused its commit, as it was before statement savepoints existed
+   */
+  public boolean rollbackStatement(final StatementSavepoint savepoint) {
+    if (savepoint == null || statement != savepoint)
+      return false;
+    // Detached first: the undo goes through the methods that journal, and must not journal itself
+    statement = null;
+    return savepoint.rollback();
+  }
+
+  /**
+   * The statement is over, taken back or not: releases what its savepoint journaled. A statement run by this one that failed after
+   * writing, and that this one did not fail with, left its half in the transaction: it cannot be committed.
+   */
+  public void endStatement(final StatementSavepoint savepoint) {
+    if (savepoint == null)
+      return;
+    // A statement that concluded the transaction it ran in (a script's own COMMIT) ended its savepoint with it: what it saw of the
+    // transaction is not this one's any more
+    final boolean ofThisTransaction = savepoint.isActive();
+    final Throwable nestedFailure = savepoint.getNestedFailure();
+    final boolean takenBack = savepoint.isRolledBack();
+    if (statement == savepoint)
+      statement = null;
+    savepoint.end();
+    if (ofThisTransaction && nestedFailure != null && !takenBack && status == STATUS.BEGUN)
+      setRollbackOnly("a statement run by another failed after part of its records were written ("
+          + nestedFailure.getClass().getSimpleName() + "), and the transaction has no savepoint to take it back to");
+  }
+
+  /**
+   * What the layer that ran a statement does when it fails inside this transaction (issue #10346), shared by every one of them so the
+   * answer is the same whichever is reached first: nothing for a statement that wrote nothing; the statement run by another one is
+   * left to it (see {@link StatementSavepoint#nestedStatementFailed}); the statement taken back to its savepoint, after which the
+   * transaction goes on; and, when it cannot be taken back exactly, the transaction refused its commit as it was before savepoints
+   * (see {@link #refuseCommitIfWrittenSince}).
+   *
+   * @param savepoint    what {@link #beginStatement} answered for the statement, null when it did not
+   * @param writesBefore {@link #getCompletedRecordWrites()} when the statement started
+   * @param cause        what the statement failed with
+   */
+  public void statementFailed(final StatementSavepoint savepoint, final long writesBefore, final Throwable cause) {
+    if (!isActive())
+      return;
+    if (savepoint == null && statement != null) {
+      if (completedRecordWrites != writesBefore)
+        statement.nestedStatementFailed(cause);
+      return;
+    }
+    // Taken back even when it wrote no record: it may have changed the object the transaction queued for an earlier update
+    if (savepoint != null && savepoint.hasChanges() && rollbackStatement(savepoint))
+      return;
+    if (completedRecordWrites != writesBefore)
+      refuseCommitIfWrittenSince(writesBefore, cause, savepoint != null ? savepoint.getUnrestorableReason() : null);
+  }
+
+  /**
+   * Tells the running statement, if any, that it changed state outside the transaction that it cannot give back (issue #10346): an
+   * observer that was told of the change as it happened, and keeps it. The statement is then not taken back when it fails, and the
+   * transaction is refused its commit, as it was before statement savepoints.
+   */
+  public void markStatementUnrestorable(final String reason) {
+    if (statement != null)
+      statement.markUnrestorable(reason);
+  }
+
+  /** Tells the running statement, if any, that it moved the corpus counters of a full-text index, so it can move them back. */
+  public void noteCorpusDelta(final FullTextCorpusDeltas deltas, final FullTextIndexMetadata metadata, final String indexName,
+      final int docs, final long length) {
+    if (statement != null)
+      statement.corpusDelta(deltas, metadata, indexName, docs, length);
+  }
+
+  // PACKAGE-PRIVATE SUPPORT OF StatementSavepoint: the marks it takes when a statement begins, and the primitives that put the
+  // transaction back
+
+  int getNewRecordsCount() {
+    return newRecords.size();
+  }
+
+  int getInsertReservationCount() {
+    return insertReservationCount;
+  }
+
+  int getAfterCommitCallbackCount() {
+    return afterCommitCallbacks != null ? afterCommitCallbacks.size() : 0;
+  }
+
+  long getUnidirectionalSequence() {
+    return unidirectionalEdgeChanges != null ? unidirectionalEdgeChanges.getSequence() : 0L;
+  }
+
+  void restoreModifiedRecord(final RID rid, final Record previous) {
+    if (previous == null)
+      modifiedRecordsCache.remove(rid);
+    else
+      modifiedRecordsCache.put(rid, previous);
+  }
+
+  void restoreUpdatedRecord(final RID rid, final Record previous) {
+    if (previous == null) {
+      if (updatedRecords != null)
+        updatedRecords.remove(rid);
+    } else {
+      if (updatedRecords == null)
+        updatedRecords = new HashMap<>();
+      updatedRecords.put(rid, previous);
+    }
+  }
+
+  void restoreLightEdgeCounter(final LightEdgeEntry entry, final int counter, final int amount) {
+    final int[] counters = lightEdgeEntryChanges != null ? lightEdgeEntryChanges.get(entry) : null;
+    if (counters != null)
+      counters[counter] -= amount;
+  }
+
+  void restoreIndexSnapshot(final RID rid, final Document previous) {
+    if (previous == null) {
+      if (updatedRecordsIndexSnapshot != null)
+        updatedRecordsIndexSnapshot.remove(rid);
+    } else {
+      if (updatedRecordsIndexSnapshot == null)
+        updatedRecordsIndexSnapshot = new HashMap<>();
+      updatedRecordsIndexSnapshot.put(rid, previous);
+    }
+  }
+
+  void restoreOffPageFingerprint(final RID rid, final Long previous) {
+    if (previous == null) {
+      if (offPageFingerprints != null)
+        offPageFingerprints.remove(rid);
+    } else {
+      if (offPageFingerprints == null)
+        offPageFingerprints = new HashMap<>();
+      offPageFingerprints.put(rid, previous);
+    }
+  }
+
+  /** The set has no removal: it is rebuilt without the records the statement deleted. */
+  void restoreDeletedRecords(final RidHashSet toRemove) {
+    final RidHashSet kept = new RidHashSet(Math.max(DELETED_SET_CAPACITY, deletedRecordsInTx.size() * 2));
+    deletedRecordsInTx.forEach((bucketId, offset) -> {
+      if (!toRemove.contains(bucketId, offset))
+        kept.add(bucketId, offset);
+    });
+    deletedRecordsInTx = kept;
+  }
+
+  /** The set has no removal: it is rebuilt without the targets the statement added. */
+  void restoreUnidirectionalTargets(final List<Long> toRemove) {
+    if (unidirectionalEdgeTargets == null)
+      return;
+    final Set<Long> removed = new HashSet<>(toRemove);
+    final LongHashSet kept = new LongHashSet();
+    unidirectionalEdgeTargets.forEach(target -> {
+      if (!removed.contains(target))
+        kept.add(target);
+    });
+    unidirectionalEdgeTargets = kept;
+  }
+
+  void restoreAddedPage(final PageId pageId, final boolean isNew, final ImmutablePage pinned) {
+    if (isNew) {
+      if (newPages != null)
+        newPages.remove(pageId);
+    } else if (modifiedPages != null)
+      modifiedPages.remove(pageId);
+    if (pinned != null)
+      immutablePages.put(pageId, pinned);
+  }
+
+  void restorePageCounter(final int fileId, final Integer previous) {
+    if (previous == null)
+      newPageCounters.remove(fileId);
+    else
+      newPageCounters.put(fileId, previous);
+  }
+
+  void restoreCallbackKey(final String key) {
+    if (registeredCallbackKeys != null)
+      registeredCallbackKeys.remove(key);
+  }
+
+  /**
+   * A page the statement wrote to can no longer be rebuilt at commit from the writes this transaction tracked on it: the tracking
+   * describes writes the statement took back. A conflict on the page costs a retry instead of a merge.
+   */
+  void poisonPageMerges(final PageId pageId) {
+    poisonSlotRebasePage(pageId.getFileId(), pageId.getPageNumber());
+    poisonEdgeAppendPage(pageId.getFileId(), pageId.getPageNumber());
+  }
+
+  /** Gives back what only grows: the records created, the slots reserved, the callbacks registered, the writes counted. */
+  void restoreAppendOnlyState(final int newRecordsMark, final int reservationMark, final int callbackMark,
+      final long completedWrites, final long unidirectionalSequence) {
+    // The records the statement created exist no more: like a rolled back transaction, their object can be inserted again
+    for (int i = newRecords.size() - 1; i >= newRecordsMark; i--)
+      ((RecordInternal) newRecords.remove(i)).setIdentity(null);
+    // Hashed again at the next question, from the records that are left
+    newRecordRIDs = null;
+
+    releaseInsertSlotReservationsFrom(reservationMark);
+
+    if (afterCommitCallbacks != null)
+      while (afterCommitCallbacks.size() > callbackMark)
+        afterCommitCallbacks.remove(afterCommitCallbacks.size() - 1);
+
+    completedRecordWrites = completedWrites;
+
+    // Records read after the statement wrote a page describe a page that is back to what it was
+    immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
+
+    if (unidirectionalEdgeChanges != null)
+      unidirectionalEdgeChanges.statementRolledBack(unidirectionalSequence);
   }
 
   /**
@@ -709,6 +986,9 @@ public class TransactionContext implements Transaction {
   public void unregisterNewRecord(final Record record) {
     for (int i = newRecords.size() - 1; i >= 0; i--)
       if (newRecords.get(i) == record) {
+        // A statement takes back the records it registered by their position: one registered before it left the list shifted under it
+        if (statement != null && i < statement.getNewRecordsMark())
+          statement.markUnrestorable("a record created by an earlier statement of the transaction was taken back");
         newRecords.remove(i);
         return;
       }
@@ -720,9 +1000,11 @@ public class TransactionContext implements Transaction {
       if (rid == null)
         throw new IllegalArgumentException("Cannot update record in TX cache because it is not persistent: " + record);
 
-      if (record instanceof RecordInternal)
-        modifiedRecordsCache.put(rid, record);
-      else
+      if (record instanceof RecordInternal) {
+        final Record previous = modifiedRecordsCache.put(rid, record);
+        if (statement != null)
+          statement.modifiedCachePut(rid, previous, record);
+      } else
         immutableRecordsCache.put(rid, record);
     }
   }
@@ -741,13 +1023,18 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeRecordFromCache(final RID rid) {
-    if (updatedRecords != null)
-      updatedRecords.remove(rid);
+    if (updatedRecords != null) {
+      final Record removed = updatedRecords.remove(rid);
+      if (removed != null && statement != null)
+        statement.updatedRemoved(rid, removed);
+    }
 
     if (database.isReadYourWrites()) {
       if (rid == null)
         throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent");
-      modifiedRecordsCache.remove(rid);
+      final Record removed = modifiedRecordsCache.remove(rid);
+      if (removed != null && statement != null)
+        statement.modifiedCacheRemoved(rid, removed);
       immutableRecordsCache.remove(rid);
     }
 
@@ -977,6 +1264,8 @@ public class TransactionContext implements Transaction {
       registeredCallbackKeys = new HashSet<>();
     if (!registeredCallbackKeys.add(key))
       return false;
+    if (statement != null)
+      statement.callbackKeyAdded(key);
     addAfterCommitCallback(callback);
     return true;
   }
@@ -995,6 +1284,9 @@ public class TransactionContext implements Transaction {
 
   /** Attaches {@code value} to this transaction under {@code key}. See {@link #getAttachment(String)}. */
   public void setAttachment(final String key, final Object value) {
+    // The statement can take back the corpus counters (see noteCorpusDelta); what else is attached it does not know how to undo
+    if (statement != null && !(value instanceof FullTextCorpusDeltas))
+      statement.markUnrestorable("the statement attached state to the transaction");
     if (attachments == null)
       attachments = new HashMap<>(4);
     attachments.put(key, value);
@@ -1216,7 +1508,10 @@ public class TransactionContext implements Transaction {
 
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
-    if (updatedRecords.put(record.getIdentity(), record) == null) {
+    final Record previousQueued = updatedRecords.put(rid, record);
+    if (statement != null)
+      statement.updatedPut(rid, previousQueued, record);
+    if (previousQueued == null) {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
       final MutablePage recordPage = bucket.fetchPageInTransaction(rid);
       // #8985: BEFORE the read image is compared with what the pin loaded, so a change to the part of the record that
@@ -1229,6 +1524,8 @@ public class TransactionContext implements Transaction {
         // The transaction is doomed either way, but a caller that swallows the conflict and commits anyway must not
         // find this record still queued for a write it never got to make.
         updatedRecords.remove(rid);
+        if (statement != null)
+          statement.updatedRemoved(rid, record);
         throw e;
       }
       // #6129, #6141: same moment, and the same reason, as the page pinned right above - it is the view of the record
@@ -1240,7 +1537,9 @@ public class TransactionContext implements Transaction {
       if (fingerprint != LocalBucket.NO_OFF_PAGE_FINGERPRINT) {
         if (offPageFingerprints == null)
           offPageFingerprints = new HashMap<>();
-        offPageFingerprints.put(rid, fingerprint);
+        final Long previousFingerprint = offPageFingerprints.put(rid, fingerprint);
+        if (statement != null)
+          statement.offPageFingerprintChanged(rid, previousFingerprint);
       }
     }
     updateRecordInCache(record);
@@ -1275,7 +1574,9 @@ public class TransactionContext implements Transaction {
   public void setLastIndexedSnapshot(final RID rid, final Document snapshot) {
     if (updatedRecordsIndexSnapshot == null)
       updatedRecordsIndexSnapshot = new HashMap<>();
-    updatedRecordsIndexSnapshot.put(rid, snapshot);
+    final Document previous = updatedRecordsIndexSnapshot.put(rid, snapshot);
+    if (statement != null)
+      statement.indexSnapshotChanged(rid, previous);
   }
 
   /**
@@ -1446,8 +1747,16 @@ public class TransactionContext implements Transaction {
           newPages.put(pageId, page);
         else
           modifiedPages.put(pageId, page);
+
+        // A page the statement brings into the transaction is dropped to take the statement back; the pinned one it replaced is given back
+        if (statement != null)
+          statement.pageAdded(page, isNew, loadedPage);
+        return page;
       }
     }
+    // A page the transaction already held: the statement journals the bytes it is about to overwrite
+    if (statement != null)
+      statement.touchPage(page);
     return page;
   }
 
@@ -1461,12 +1770,19 @@ public class TransactionContext implements Transaction {
     final MutablePage mutablePage = page.modify();
 
     final PageId pageId = page.getPageId();
-    if (newPages.containsKey(pageId))
-      newPages.put(pageId, mutablePage);
-    else
-      modifiedPages.put(pageId, mutablePage);
+    final boolean isNew = newPages.containsKey(pageId);
+    final MutablePage previous = isNew ? newPages.put(pageId, mutablePage) : modifiedPages.put(pageId, mutablePage);
 
-    immutablePages.remove(pageId);
+    final ImmutablePage pinned = immutablePages.remove(pageId);
+
+    if (statement != null) {
+      if (previous == null)
+        statement.pageAdded(mutablePage, isNew, pinned);
+      else if (previous == mutablePage)
+        statement.touchPage(mutablePage);
+      else
+        statement.markUnrestorable("a page of the transaction was replaced");
+    }
 
     return mutablePage;
   }
@@ -1476,11 +1792,21 @@ public class TransactionContext implements Transaction {
 
     // CREATE A PAGE ID BASED ON NEW PAGES IN TX. IN CASE OF ROLLBACK THEY ARE SIMPLY REMOVED AND THE GLOBAL PAGE COUNT IS UNCHANGED
     final MutablePage page = new MutablePage(pageId, pageSize);
-    newPages.put(pageId, page);
+    final MutablePage replaced = newPages.put(pageId, page);
 
     final Integer indexCounter = newPageCounters.get(pageId.getFileId());
-    if (indexCounter == null || indexCounter < pageId.getPageNumber() + 1)
+    if (indexCounter == null || indexCounter < pageId.getPageNumber() + 1) {
+      if (statement != null)
+        statement.pageCounterChanged(pageId.getFileId(), indexCounter);
       newPageCounters.put(pageId.getFileId(), pageId.getPageNumber() + 1);
+    }
+
+    if (statement != null) {
+      if (replaced != null)
+        statement.markUnrestorable("a page of the transaction was created again");
+      else
+        statement.pageAdded(page, true, null);
+    }
 
     return page;
   }
@@ -1871,7 +2197,19 @@ public class TransactionContext implements Transaction {
    * (commit, rollback and kill): a leaked reservation would keep a slot of a live page permanently unusable.
    */
   private void releaseInsertSlotReservations() {
-    for (int i = 0; i < insertReservationCount; i++) {
+    releaseInsertSlotReservationsFrom(0);
+
+    if (insertReservationBuckets != null && insertReservationBuckets.length > MAX_RETAINED_INSERT_RESERVATIONS) {
+      // A HUGE BULK INSERT MUST NOT LEAVE ITS ARRAYS BEHIND ON A THREAD-LOCAL, REUSED TRANSACTION CONTEXT
+      insertReservationBuckets = null;
+      insertReservationPages = null;
+      insertReservationSlots = null;
+    }
+  }
+
+  /** Gives back the reservations made since {@code mark}: the ones of a statement taken back (issue #10346). */
+  private void releaseInsertSlotReservationsFrom(final int mark) {
+    for (int i = mark; i < insertReservationCount; i++) {
       final LocalBucket bucket = insertReservationBuckets[i];
       insertReservationBuckets[i] = null;
       try {
@@ -1885,14 +2223,7 @@ public class TransactionContext implements Transaction {
             .log(this, Level.FINE, "Error on releasing the insert slot reservation of page %d", e, insertReservationPages[i]);
       }
     }
-    insertReservationCount = 0;
-
-    if (insertReservationBuckets != null && insertReservationBuckets.length > MAX_RETAINED_INSERT_RESERVATIONS) {
-      // A HUGE BULK INSERT MUST NOT LEAVE ITS ARRAYS BEHIND ON A THREAD-LOCAL, REUSED TRANSACTION CONTEXT
-      insertReservationBuckets = null;
-      insertReservationPages = null;
-      insertReservationSlots = null;
-    }
+    insertReservationCount = Math.min(mark, insertReservationCount);
   }
 
   /**
@@ -2410,6 +2741,8 @@ public class TransactionContext implements Transaction {
    */
   public void updateBucketRecordDelta(final int bucketId, final int delta) {
     bucketRecordDelta.add(bucketId, delta);
+    if (statement != null)
+      statement.bucketDelta(bucketId, delta);
   }
 
   /**
@@ -2860,7 +3193,8 @@ public class TransactionContext implements Transaction {
    * Restored HERE, after {@link #concludePhase2}, and not where the exception is caught: concluding the failure reads and
    * writes files (the rollback reloads the records, the fence is logged), and an NIO channel that a thread with the flag
    * set uses is closed under it ({@code ClosedByInterruptException}), which would turn one cancelled commit into a closed
-   * file for every thread of the database.
+   * file for every thread of the database. A flag that is already SET when the failure is concluded is the business of
+   * {@link #concludePhase2} itself, which clears it for the whole conclusion and hands it back (#10521).
    * <p>
    * Only the DIRECT cause is looked at, on purpose: phase 2 raises an interrupt in exactly one shape, the
    * {@link TransactionException} of {@code publishCommittedPagesInternal}. One found deeper in a chain was already handled
@@ -3091,7 +3425,30 @@ public class TransactionContext implements Transaction {
       localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", cause);
   }
 
+  /**
+   * The single way a 2nd phase ends, for {@link #commit2ndPhase}, {@link #completeCommit()} and
+   * {@link #concludeFailedPhase2(Throwable)}: with the interrupt flag of the thread CLEARED, and handed back afterwards (#10521).
+   * <p>
+   * The conclusion reads and writes files (the rollback reloads the dictionary and the records, the fence is logged, the
+   * callbacks run), and an NIO channel that a thread with the flag set uses is closed under it
+   * ({@code ClosedByInterruptException}), for every thread of the database. A failed 2nd phase can reach this point with the flag
+   * up: the WAL write sets it itself before it raises its {@link TransactionException}. Owning the clear here, rather than
+   * restoring a flag an {@link InterruptedException} consumed at the call sites, leaves no caller able to opt out and no future
+   * producer able to reintroduce the problem.
+   */
   private void concludePhase2(final boolean committed, final Throwable commitFailureCause) {
+    final boolean interrupted = Thread.interrupted();
+    try {
+      concludePhase2Internal(committed, commitFailureCause);
+    } finally {
+      if (interrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  private void concludePhase2Internal(final boolean committed, final Throwable commitFailureCause) {
+    assert !Thread.currentThread().isInterrupted() : "a 2nd phase must be concluded with the interrupt flag cleared (#10521)";
+
     if (committed)
       resetAndFireCallbacks();
     else if (phase2WalAppended) {
@@ -3298,7 +3655,9 @@ public class TransactionContext implements Transaction {
   public void addUnidirectionalEdgeTarget(final RID target) {
     if (unidirectionalEdgeTargets == null)
       unidirectionalEdgeTargets = new LongHashSet();
-    unidirectionalEdgeTargets.add(((long) target.getBucketId() << UNIDIRECTIONAL_TARGET_BUCKET_SHIFT) | target.getPosition());
+    final long packed = ((long) target.getBucketId() << UNIDIRECTIONAL_TARGET_BUCKET_SHIFT) | target.getPosition();
+    if (unidirectionalEdgeTargets.add(packed) && statement != null)
+      statement.unidirectionalTargetAdded(packed);
   }
 
   /**
@@ -3329,6 +3688,12 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
+    // The statement ends with the transaction it runs in (a script's own COMMIT, a batch boundary): nothing is left to take back
+    if (statement != null) {
+      final StatementSavepoint ended = statement;
+      statement = null;
+      ended.end();
+    }
     unidirectionalEdgeTargets = null;
     unidirectionalScanEpoch = -1L;
     scannedBuckets = null;
@@ -3432,6 +3797,8 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeFile(final int fileId) {
+    if (statement != null)
+      statement.markUnrestorable("the statement dropped a file");
     if (newPages != null)
       newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
@@ -3807,12 +4174,16 @@ public class TransactionContext implements Transaction {
    * @param rid The RID that was deleted
    */
   public void addDeletedRecord(final RID rid) {
-    deletedRecordsInTx.add(rid);
+    if (deletedRecordsInTx.add(rid) && statement != null)
+      statement.deletedAdded(rid);
     forgetSnapshotChunkChain(rid);
     // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
     // removes the index entries through its own path, so drop the retained memory right away.
-    if (updatedRecordsIndexSnapshot != null)
-      updatedRecordsIndexSnapshot.remove(rid);
+    if (updatedRecordsIndexSnapshot != null) {
+      final Document removed = updatedRecordsIndexSnapshot.remove(rid);
+      if (removed != null && statement != null)
+        statement.indexSnapshotChanged(rid, removed);
+    }
   }
 
   /**
@@ -3835,6 +4206,8 @@ public class TransactionContext implements Transaction {
   /** Counts {@code removed} lightweight edge entries removed by this transaction from the edge list {@code entry} names (#10302). */
   public void lightEdgeEntriesRemoved(final LightEdgeEntry entry, final int removed) {
     lightEdgeEntryCounters(entry)[REMOVED] += removed;
+    if (statement != null)
+      statement.lightEdgeChanged(entry, REMOVED, removed);
   }
 
   /** How many lightweight edge entries this transaction removed from the edge list {@code entry} names (#10302). */
@@ -3849,6 +4222,8 @@ public class TransactionContext implements Transaction {
    */
   public void lightEdgeEntryAppended(final LightEdgeEntry entry) {
     ++lightEdgeEntryCounters(entry)[APPENDED];
+    if (statement != null)
+      statement.lightEdgeChanged(entry, APPENDED, 1);
   }
 
   /** How many lightweight edge entries this transaction appended to the edge list {@code entry} names (#10315). */

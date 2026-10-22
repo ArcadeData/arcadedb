@@ -67,6 +67,21 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     return new MutableEdgeSegment(database, rid, buffer.copyOfContent());
   }
 
+  /** A copy of what this segment holds, to give back with {@link #restoreContent} (issue #10346). */
+  public Binary snapshotContent() {
+    return buffer.copyOfContent();
+  }
+
+  /**
+   * Gives this segment back, in place, the content {@link #snapshotContent} copied: a statement that appended to the object the
+   * transaction queued for its commit, and was taken back, leaves it holding edges that exist no more.
+   */
+  public void restoreContent(final Binary snapshot) {
+    final Binary restored = snapshot.copyOfContent();
+    restored.setAutoResizable(false);
+    this.buffer = restored;
+  }
+
   @Override
   public byte getRecordType() {
     return RECORD_TYPE;

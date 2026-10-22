@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
+import com.arcadedb.database.StatementSavepoint;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -108,28 +109,36 @@ public class SQLQueryEngine implements QueryEngine {
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Object[] parameters) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
@@ -137,14 +146,18 @@ public class SQLQueryEngine implements QueryEngine {
       final CommandContext context) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
@@ -152,14 +165,18 @@ public class SQLQueryEngine implements QueryEngine {
       final CommandContext context) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
@@ -173,11 +190,11 @@ public class SQLQueryEngine implements QueryEngine {
     return internal.getTransaction();
   }
 
-  /** See {@link TransactionContext#refuseCommitIfWrittenSince}: a statement failed in the caller's transaction (issue #10194). */
-  private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final long writesBefore,
-      final Throwable cause) {
+  /** See {@link TransactionContext#statementFailed}: a statement failed in the caller's transaction (issues #10194, #10346). */
+  private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final StatementSavepoint savepoint,
+      final long writesBefore, final Throwable cause) {
     if (tx != null)
-      tx.refuseCommitIfWrittenSince(writesBefore, cause);
+      tx.statementFailed(savepoint, writesBefore, cause);
   }
 
   @Override

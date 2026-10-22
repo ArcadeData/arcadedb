@@ -129,22 +129,23 @@ class Issue10379GremlinFailedTraversalTest {
   }
 
   /**
-   * A traversal that ends in a terminal step runs inside the call, so the failure is raised where the dispatcher catches it. A query
-   * of Gremlin can write, which one of SQL and openCypher cannot: this covers the check of {@code query()} and of {@code command()}.
+   * A traversal that ends in a terminal step runs inside the call, so the failure is raised where the dispatcher catches it, and the
+   * statement is taken back to its savepoint (#10346) like one of any other language. A query of Gremlin can write, which one of SQL and
+   * openCypher cannot: this covers {@code query()} and {@code command()}.
    */
   @ParameterizedTest
   @ValueSource(strings = { "command", "query" })
-  void aTraversalThatFailsInsideTheCallCannotBeCommittedHalfApplied(final String call) {
+  void aTraversalThatFailsInsideTheCallIsTakenBack(final String call) {
     final String traversal = "g.V().hasLabel('T').property('v', 1).toList()";
     final AtomicReference<Throwable> caught = new AtomicReference<>();
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         (call.equals("command") ? database.command("gremlin", traversal) : database.query("gremlin", traversal)).close();
       } catch (final RuntimeException e) {
         caught.set(e);
       }
-    }, false, 0)).as(call).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(caught.get()).as(call + " failed").isNotNull();
     assertThat(values()).as(call).containsExactly(100, 101, 102);

@@ -631,6 +631,24 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     super.reload();
   }
 
+  /**
+   * Gives this record back the content a snapshot of it held, in place (issue #10346). A statement that changed the object the
+   * transaction queued for its commit, and was taken back, leaves it with content that never reached a page and that nothing can
+   * be reloaded from: the object IS the only copy of what the earlier statements did to the record. The snapshot is what
+   * {@code serializeForRead} rendered before the statement could change it, installed the way a reload installs the buffer it read.
+   *
+   * @param snapshot           the content of the record before the statement
+   * @param dirtyBefore        whether the record was dirty then
+   * @param assignedBefore     whether a property had been assigned or removed then
+   */
+  void restoreContent(final Binary snapshot, final boolean dirtyBefore, final boolean assignedBefore) {
+    map = null;
+    buffer = snapshot;
+    parseRecordPrefix(snapshot);
+    dirty = dirtyBefore;
+    propertiesAssigned = assignedBefore;
+  }
+
   protected void checkForLazyLoadingProperties() {
     if (this.map == null) {
       if (buffer == null) {
