@@ -76,6 +76,10 @@ jobs:
       # now shipped that skew and broken every native leg. This is cheap and runs on every PR.
       - name: Check native image GraalVM pin
         run: ./.github/scripts/check-native-graalvm-pin.py
+      # The -march baseline is the native binary's minimum CPU, and native-image.yml runs too rarely for
+      # anyone to notice it changing (#10581). Explicit, never `native`, and documented.
+      - name: Check native image CPU baseline
+        run: ./.github/scripts/check-native-march.py
       # `gh release upload` hard-errors on an asset pattern that matches nothing, and the release
       # steps that call it run only on a published release - so a wrong asset list is discovered by
       # losing the release's assets. Run 33796693420 did exactly that to every 26.9.1 native binary.

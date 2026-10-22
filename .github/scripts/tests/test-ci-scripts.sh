@@ -47,6 +47,7 @@ CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
 NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
+NATIVEMARCH="$SCRIPTS/check-native-march.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 WRAPPER="$SCRIPTS/check-maven-wrapper.py"
@@ -1571,6 +1572,95 @@ expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
 # The repository's own two files must agree - this is the case that would have caught b53c48c1e2.
 expect "the repository's own native pin matches its own workflow" 0 "consistent" \
     "$GRAALVMPIN"
+
+echo
+echo "check-native-march.py"
+
+# Writes a native pom whose base native-maven-plugin passes $2 as its -march build arg (none when
+# empty), with $3 as the native.march default and the per-arch profiles of the real pom unless $4
+# is "no-profiles". Extra profile XML can be passed as $5.
+march_pom() {
+    local path="$1" arg="$2" default="$3" profiles="${4:-}" extra="${5:-}"
+    local arg_xml="" profile_xml=""
+    [[ -n $arg ]] && arg_xml="<buildArg>$arg</buildArg>"
+    if [[ $profiles != no-profiles ]]; then
+        profile_xml='
+        <profile><id>native-march-amd64</id><activation><os><arch>amd64</arch></os></activation>
+            <properties><native.march>x86-64-v3</native.march></properties></profile>
+        <profile><id>native-march-x86_64</id><activation><os><arch>x86_64</arch></os></activation>
+            <properties><native.march>x86-64-v3</native.march></properties></profile>
+        <profile><id>native-march-aarch64</id><activation><os><arch>aarch64</arch></os></activation>
+            <properties><native.march>armv8.1-a</native.march></properties></profile>'
+    fi
+    cat >"$path" <<XML
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <properties>
+        <native.march>$default</native.march>
+    </properties>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.graalvm.buildtools</groupId>
+                <artifactId>native-maven-plugin</artifactId>
+                <configuration>
+                    <buildArgs>
+                        <buildArg>--no-fallback</buildArg>
+                        $arg_xml
+                    </buildArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    <profiles>$profile_xml
+        $extra
+    </profiles>
+</project>
+XML
+}
+
+mkdir -p "$work/march"
+printf '## CPU requirements\n\n`x86-64-v3` on amd64, `armv8.1-a` on arm64.\n' >"$work/march/docs.md"
+printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.static=true package\n' >"$work/march/clean.yml"
+
+march_pom "$work/march/ok-pom.xml" '-march=${native.march}' compatibility
+expect "accepts a per-arch -march that the docs name" 0 "amd64=x86-64-v3, x86_64=x86-64-v3, aarch64=armv8.1-a" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# The #10581 shape: no -march at all, so the binary silently inherits GraalVM's x86-64-v3 default.
+march_pom "$work/march/none-pom.xml" "" compatibility
+expect "rejects a native pom that passes no -march (#10581)" 1 "passes no -march build arg" \
+    "$NATIVEMARCH" "$work/march/none-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# -march=native ties a CI-built binary to the runner's CPU, whichever way it gets in.
+march_pom "$work/march/native-pom.xml" '-march=${native.march}' native no-profiles
+expect "rejects a native.march that resolves to native" 1 "targets the CPU of the machine" \
+    "$NATIVEMARCH" "$work/march/native-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.march=native package\n' >"$work/march/native.yml"
+expect "rejects a workflow that builds with -Dnative.march=native" 1 "native.yml:4" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/native.yml"
+
+# A profile's buildArgs are appended after the base ones, so a second -march there silently wins.
+march_pom "$work/march/profile-arg-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>sneaky</id><build><plugins><plugin><artifactId>native-maven-plugin</artifactId>
+     <configuration><buildArgs combine.children="append"><buildArg>-march=x86-64-v4</buildArg></buildArgs>
+     </configuration></plugin></plugins></build></profile>'
+expect "rejects a -march passed from a profile" 1 "profile 'sneaky' passes -march=x86-64-v4" \
+    "$NATIVEMARCH" "$work/march/profile-arg-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# An x86 baseline on aarch64 cannot build, and means the profiles were mixed up.
+march_pom "$work/march/wrong-family-pom.xml" '-march=${native.march}' x86-64-v3 no-profiles
+expect "rejects a baseline from the wrong architecture" 1 "not a baseline for that architecture" \
+    "$NATIVEMARCH" "$work/march/wrong-family-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# Raising the baseline without telling users is the drift this guards: docs must follow the pom.
+march_pom "$work/march/v4-pom.xml" '-march=${native.march}' compatibility no-profiles \
+    '<profile><id>a</id><activation><os><arch>amd64</arch></os></activation><properties><native.march>x86-64-v4</native.march></properties></profile>'
+expect "rejects a baseline the docs do not name" 1 'does not name `x86-64-v4`' \
+    "$NATIVEMARCH" "$work/march/v4-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# The repository's own pom, docs, workflow and scripts must pass.
+expect "the repository's own native CPU baseline is explicit and documented" 0 "explicit and documented" \
+    "$NATIVEMARCH"
 
 echo
 echo "check-release-upload-assets.py"
