@@ -95,9 +95,8 @@ function globalFormatSpace(v) {
 // stubs that let it run to completion.
 const document = { documentElement: {}, querySelector: () => ({}) };
 const getComputedStyle = () => ({ getPropertyValue: () => "" });
-function ApexCharts() {
-  this.render = function () {};
-  this.destroy = function () {};
+function studioChartDraw() {
+  return {};
 }
 
 var opsPerSecHistory = {};
@@ -106,6 +105,7 @@ var serverData = {};
 
 eval(extractFn("diskDirectoryOf"));
 eval(extractFn("displayServerSummary"));
+eval(extractFn("serverCommandsChartOption"));
 
 function render(profiler) {
   serverData = { metrics: { profiler: profiler, events: {} } };

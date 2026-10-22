@@ -1090,7 +1090,7 @@ function aiSyncToggle(blockId) {
 
 // ===== Charts the assistant asks for =====
 // The model sends {type, title, language, query, x, y[]}; Studio runs the query itself through api/v1/query, which the engine
-// refuses when it would write, and draws the rows with ApexCharts (pure parts in studio-ai-chart.js). The rows never go
+// refuses when it would write, and draws the rows with Apache ECharts (pure parts in studio-ai-chart.js). The rows never go
 // back to the model. Everything that came from the model or the database is escaped or handed over as text.
 
 var aiChartSpecs = {};
@@ -1100,7 +1100,7 @@ var aiChartCounter = 0;
 function aiDestroyCharts() {
   for (var id in aiChartInstances) {
     try {
-      aiChartInstances[id].destroy();
+      studioChartDispose(aiChartInstances[id]);
     } catch (e) { /* the element is already gone */ }
   }
   aiChartInstances = {};
@@ -1146,7 +1146,7 @@ function aiDrawChart(id) {
     aiChartNote(id, "fa-circle-info", "var(--text-muted)", "Select a database to draw this chart.");
     return;
   }
-  if (typeof ApexCharts === "undefined") {
+  if (typeof echarts === "undefined") {
     aiChartNote(id, "fa-circle-exclamation", "#dc3545", "The charting library is not loaded.");
     return;
   }
@@ -1169,10 +1169,7 @@ function aiDrawChart(id) {
     }
     var body = $("#" + id + "_body");
     body.empty().append('<div id="' + id + '_plot"></div>');
-    var dark = document.documentElement.getAttribute("data-theme") === "dark";
-    var chart = new ApexCharts(document.getElementById(id + "_plot"), aiChartOptions(spec, model, dark));
-    aiChartInstances[id] = chart;
-    chart.render();
+    aiChartInstances[id] = studioChartDraw(document.getElementById(id + "_plot"), aiChartOptions(spec, model), aiChartHeight(spec, model));
     // A column the chart did not name exactly was substituted: say so, small and muted (text, never HTML)
     for (var n = 0; n < model.notes.length; n++)
       body.append($('<div style="font-size: 0.75rem; color: var(--text-muted);"></div>').text(model.notes[n]));
