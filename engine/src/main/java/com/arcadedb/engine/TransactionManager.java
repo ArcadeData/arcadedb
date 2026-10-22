@@ -225,6 +225,9 @@ public class TransactionManager {
 
   /** Called when an index is renamed (a type rename, a vector index compaction): the registration goes with it. */
   public void indexRenamed(final String oldName, final String newName) {
+    if (oldName == null || newName == null || oldName.equals(newName))
+      return;
+
     final Long sequence = indexRegisteredAt.remove(oldName);
     if (sequence != null)
       indexRegisteredAt.put(newName, sequence);

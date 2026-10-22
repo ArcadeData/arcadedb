@@ -592,8 +592,8 @@ public abstract class IndexBuilder<T extends Index> {
    * no other transaction commits under, and the index is registered on its type before the first step, so what the caller writes
    * afterwards is indexed live. A transaction of another session, or an outer frame of the caller's own stack, that wrote before
    * the registration is not covered by either step, and does not need to be: it began before the registration, so it queues the
-   * entries it owes the index when it commits (issue #10588, {@link LocalSchema#reconcileIndexesRegisteredSince}). The second step reads the committed version of the caller's writes a chunk at a time. A
-   * failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
+   * entries it owes the index when it commits (issue #10588, {@link LocalSchema#reconcileIndexesRegisteredSince}). The second step
+   * reads the committed version of the caller's writes a chunk at a time. A failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
    * {@code TypeIndexBuilder#create} and {@code BucketIndexBuilder}, the guard around the super-type propagation), the same
    * as a failure anywhere in a build.
    */

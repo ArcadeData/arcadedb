@@ -667,17 +667,21 @@ public class TransactionIndexContext {
    * tell the entries of one sub-index from those of the next.
    */
   public boolean hasEntriesInFiles(final Collection<Integer> indexFileIds) {
-    final List<String> indexNames = new ArrayList<>(indexEntries.size() + unorderedEntries.size());
-    indexNames.addAll(indexEntries.keySet());
-    indexNames.addAll(unorderedEntries.keySet());
+    for (final String indexName : indexEntries.keySet())
+      if (laneHasFiles(indexName, indexFileIds))
+        return true;
+    for (final String indexName : unorderedEntries.keySet())
+      if (laneHasFiles(indexName, indexFileIds))
+        return true;
+    return false;
+  }
 
-    for (final String indexName : indexNames) {
-      if (!laneIndexStillExists(indexName))
-        continue;
-      for (final int fileId : resolveIndex(indexName).getFileIds())
-        if (indexFileIds.contains(fileId))
-          return true;
-    }
+  private boolean laneHasFiles(final String indexName, final Collection<Integer> indexFileIds) {
+    if (!laneIndexStillExists(indexName))
+      return false;
+    for (final int fileId : resolveIndex(indexName).getFileIds())
+      if (indexFileIds.contains(fileId))
+        return true;
     return false;
   }
 

@@ -126,6 +126,18 @@ class Issue10589DropIndexIsAtomicTest extends TestHelper {
   }
 
   @Test
+  void aTruncateTypeWithoutIndexesIsNotASchemaChange() {
+    database.command("sql", "CREATE DOCUMENT TYPE Plain").close();
+    database.transaction(() -> database.newDocument("Plain").set("x", 1).save());
+    final long versionBefore = database.getSchema().getEmbedded().getVersion();
+
+    database.command("sql", "TRUNCATE TYPE Plain").close();
+
+    assertThat(database.countType("Plain", true)).isZero();
+    assertThat(database.getSchema().getEmbedded().getVersion()).as("no index to drop, no schema.json saved").isEqualTo(versionBefore);
+  }
+
+  @Test
   void aTruncateTypeOverSeveralIndexesDropsNoneWhenTheFirstDroppedWouldNotBeTheRefusedOne() throws IOException {
     for (final String refusing : new String[] { "p", "q" }) {
       createTwoIndexedType();

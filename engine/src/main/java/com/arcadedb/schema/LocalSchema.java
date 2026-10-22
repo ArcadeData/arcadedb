@@ -2227,6 +2227,10 @@ public class LocalSchema implements Schema {
    * them are probed and locked once, before the first is dropped.
    */
   public void dropIndexes(final Collection<String> indexNames) {
+    if (indexNames.isEmpty())
+      // nothing to drop is no schema change: no session, no save of schema.json, no schema entry shipped by HA
+      return;
+
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // The guard and the drop run in one schema session, under the write lock that orders every other schema change (#9848,

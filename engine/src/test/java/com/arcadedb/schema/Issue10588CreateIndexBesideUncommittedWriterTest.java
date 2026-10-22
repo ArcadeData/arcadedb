@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -245,6 +246,47 @@ class Issue10588CreateIndexBesideUncommittedWriterTest extends TestHelper {
     assertThat(lookup("T", "p", 901)).isEqualTo(1L);
     assertThat(lookup("T", "p", 3)).isZero();
     assertThat(lookup("T", "p", 303)).isEqualTo(1L);
+  }
+
+  /** The refusal of a writer on both sides of the index is retried by the retry loop of {@code Database.transaction()}, and succeeds. */
+  @Test
+  void theRetryLoopOfTransactionAbsorbsTheRefusalOfAWriterOnBothSidesOfTheIndex() throws Exception {
+    createPopulatedType("T", "p", 1);
+
+    final CountDownLatch written = new CountDownLatch(1);
+    final CountDownLatch indexed = new CountDownLatch(1);
+    final AtomicInteger attempts = new AtomicInteger();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread writer = new Thread(() -> {
+      try {
+        database.transaction(() -> {
+          final boolean firstAttempt = attempts.incrementAndGet() == 1;
+          database.newDocument("T").set("p", 900).save();
+          if (firstAttempt) {
+            written.countDown();
+            try {
+              indexed.await(30, TimeUnit.SECONDS);
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+          database.newDocument("T").set("p", 901).save();
+        });
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    writer.start();
+    assertThat(written.await(30, TimeUnit.SECONDS)).isTrue();
+    database.command("sql", "CREATE INDEX ON T (p) UNIQUE");
+    indexed.countDown();
+    writer.join(30_000);
+
+    assertThat(failure.get()).isNull();
+    assertThat(attempts.get()).as("the first attempt was refused, the second committed").isEqualTo(2);
+    assertIndexCompleteFor("T", "p");
+    assertThat(lookup("T", "p", 900)).isEqualTo(1L);
+    assertThat(lookup("T", "p", 901)).isEqualTo(1L);
   }
 
   @Test
