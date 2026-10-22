@@ -136,13 +136,15 @@ public class EdgeLinkedList {
   }
 
   /**
-   * {@link #edgeIteratorForRemoval()} that skips the entries reaching {@code skippedNeighbor}, on the pointer read from the
-   * segment (issue #10369): the incoming walk of a vertex being deleted passes the vertex itself, whose self-loops the
-   * outgoing walk already deleted.
+   * {@link #edgeIteratorForRemoval()} that passes over the self-loops {@code deletedSelfLoops} holds, on the pointers read from
+   * the segment: the incoming walk of a vertex being deleted, whose outgoing walk already deleted them (issues #10369, #10520).
+   * Only those: a self-loop entry the outgoing walk did not delete is yielded like any other.
+   *
+   * @param deletedSelfLoops the self-loops to pass over, or {@code null} to yield every entry
    */
-  public Iterator<Edge> edgeIteratorForRemoval(final RID skippedNeighbor) {
+  Iterator<Edge> edgeIteratorForRemoval(final DeletedSelfLoops deletedSelfLoops) {
     final EdgeIterator iterator = withCensus(new EdgeIterator(lastSegment, vertex.getIdentity(), direction));
-    iterator.excludeNeighborVertex(skippedNeighbor);
+    iterator.skipDeletedSelfLoops(deletedSelfLoops);
     return iterator;
   }
 

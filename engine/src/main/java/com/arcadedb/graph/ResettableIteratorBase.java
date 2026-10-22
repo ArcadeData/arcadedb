@@ -40,9 +40,6 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         int              neighborBucketId = -1;
   private         long             neighborPosition = -1;
   private         boolean          neighborFiltered = false;
-  // THE ONE NEIGHBOUR WHOSE ENTRIES ARE SKIPPED, SEE excludeNeighborVertex()
-  private         int              excludedBucketId = -1;
-  private         long             excludedPosition = -1;
   private         ChainCycleGuard  cycleGuard;
   // THE ENTRY THE LAST next() RETURNED, SEE entryReturned()
   private         EdgeSegment      returnedContainer;
@@ -118,22 +115,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     this.neighborPosition = neighbor != null ? neighbor.getPosition() : -1;
   }
 
-  /**
-   * Skips the entries whose neighbour vertex is the given one: the opposite of {@link #setNeighborVertexFilter}, decided on
-   * the same inline pointer and so before the edge record is touched.
-   *
-   * @param neighbor the neighbour vertex whose entries are skipped, or {@code null} to skip none
-   */
-  final void excludeNeighborVertex(final RID neighbor) {
-    this.excludedBucketId = neighbor != null ? neighbor.getBucketId() : -1;
-    this.excludedPosition = neighbor != null ? neighbor.getPosition() : -1;
-  }
-
   /** Tells whether the entry just read out of the segment survives the neighbour filter. */
   protected final boolean matchesNeighborFilter(final RID neighbor) {
-    if (excludedBucketId > -1 && neighbor != null && neighbor.getBucketId() == excludedBucketId
-        && neighbor.getPosition() == excludedPosition)
-      return false;
     return !neighborFiltered
         || (neighbor != null && neighbor.getBucketId() == neighborBucketId && neighbor.getPosition() == neighborPosition);
   }
