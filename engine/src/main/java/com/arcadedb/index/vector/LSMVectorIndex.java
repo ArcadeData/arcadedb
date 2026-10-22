@@ -2113,7 +2113,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // walk below performs. That read was the whole cost of the first search after a reopen: O(N) document
     // deserializations on the calling thread (2.8 s at 1M vectors, 17.9 s at 10M). Only an exact cover is taken
     // here - a live set the map does not cover completely (vectors added since, or ones the build dropped as
-    // unusable) still goes through the walk, which is the one that knows how to tell those apart.
+    // unusable) still goes through the walk, which is the one that knows how to tell those apart. PRODUCT included:
+    // with nothing deleted its PQ codes are on the same dense ordinal space as the recorded map.
     final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, true);
     if (viaOrdinalMap != null)
       return viaOrdinalMap;
@@ -2366,7 +2367,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * Also the no-deletions fast path of issue #8852: with {@code exactCoverOnly} it answers only when the map covers
    * the live set exactly and every ordinal is live, which is the common restart, and returns {@code null} for
-   * anything else so the caller's own walk decides.
+   * anything else so the caller's own walk decides. A PRODUCT-quantized index takes that fast path as well, because
+   * while nothing is deleted the recorded map is exactly the array its PQ codes were built with; it is refused for
+   * PRODUCT whenever something was deleted ({@code exactCoverOnly} false), and an index persisted without a map, or
+   * whose PQ codes are not one per mapped ordinal, is left to the walk.
    *
    * @param gf             the component holding the persisted graph, already known to have one
    * @param exactCoverOnly refuse (return {@code null}) when live vectors exist that the map does not cover, instead
@@ -2376,7 +2380,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private PersistedGraphCheck reusePersistedGraphDespiteDeletions(final LSMVectorIndexGraphFile gf,
       final boolean exactCoverOnly) {
-    if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
+    final boolean productQuantized = metadata.quantizationType == VectorQuantizationType.PRODUCT;
+    if (productQuantized && !exactCoverOnly) {
       // PQ codes are addressed by the same ordinal and are produced, wholesale, by the rebuild this path avoids.
       // Reusing a graph whose ordinal space has holes would pair it with a codebook built over a dense one, so
       // PRODUCT keeps the rebuild until the PQ format learns to carry holes of its own.
@@ -2384,12 +2389,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Logged here rather than left to the caller's fallback line, which would say "no usable ordinal map is
       // recorded" - true but beside the point for an index that would refuse one however good it was, and
       // misleading to whoever is reading these logs to find out why a PQ index keeps rebuilding (PR #7844 review).
+      // Only this call says it: the exact-cover call below runs with nothing deleted, and reaching it is not a
+      // deletion.
       LogManager.instance().log(this, Level.INFO,
           "Deleted vectors detected in index %s, which uses PRODUCT quantization: its PQ codes are addressed by the "
               + "same ordinals the rebuild reassigns, so the graph is rebuilt from scratch rather than reused "
               + "(issue #7842)", indexName);
       return null;
     }
+
+    // The exact-cover reuse of a PRODUCT index (no deletions): the recorded map is then the very array the PQ codes
+    // were built with, so the pair stays consistent without a rebuild. It needs both halves of that pair in hand -
+    // codes loaded, and as many of them as the map has ordinals - and otherwise leaves the decision to the caller's
+    // walk, which also builds a missing PQ.
+    final PQVectors codes = pqVectors;
+    if (productQuantized && (pqFile == null || !pqFile.isPQReady() || codes == null))
+      return null;
 
     final LSMVectorIndexGraphManifest.Content manifest = gf.getManifest().read();
     if (manifest == null || manifest.vectorCount() <= 0)
@@ -2404,6 +2419,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final VectorLocationIndex locations = vectorIndex();
     final int[] mapVectorIds = persistedMap.vectorIds();
+    if (productQuantized && codes.count() != mapVectorIds.length)
+      // Codes that are not one per ordinal of the map were not built with it (a PQ file of another generation of the
+      // graph), and an ordinal without a code would score the wrong vector or none
+      return null;
     if (exactCoverOnly) {
       // The two sidecars are written as a pair, but they are separate files: a map that is not the one the manifest
       // certifies (a restored or swapped graph, issue #6106) must not vouch for these pages. Recomputing the
@@ -2447,6 +2466,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return null;
       }
     }
+
+    if (productQuantized && liveOrdinals != mapVectorIds.length)
+      // A vector deleted while this ran, since the caller read the count: the dense PQ ordinal space the exact-cover
+      // reuse relies on has a hole after all, so the caller's walk decides, as it did before the map was recorded
+      return null;
 
     final ImmutableGraphIndex loadedGraph;
     try {
@@ -4654,12 +4678,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // The length the write ended on, so the next session measures the JVector footer from what was actually
     // written instead of re-deriving it from a page count that the async flush thread is still catching up to
     // (issue #7362).
-    // PRODUCT is the one quantization reusePersistedGraphDespiteDeletions() refuses to consult a map for - its PQ
-    // codes are addressed by the same ordinal and are produced wholesale by the rebuild - so recording one would be
-    // a temp file and an atomic rename per persist, forever, for a file nothing will ever read (PR #7844 review).
-    // The two conditions are the same decision stated twice and have to move together.
-    persistedTo.getManifest().write(graphOrdinalToVectorId, vectorIndex()::getRid,
-        metadata.quantizationType != VectorQuantizationType.PRODUCT,
+    // The ordinal map is recorded for every quantization, PRODUCT included. A PRODUCT index does not consult it once
+    // something has been deleted (its PQ codes must stay on a dense ordinal space, see
+    // reusePersistedGraphDespiteDeletions()), but with nothing deleted the map is exactly the array its PQ codes were
+    // built with, and the reopen reads it to skip the per-vector document walk (issue #8852). An index persisted
+    // before this carries no map and is read the walk's way.
+    persistedTo.getManifest().write(graphOrdinalToVectorId, vectorIndex()::getRid, true,
         unreachable != null ? unreachable : EMPTY_ORDINALS,
         persistedTo.getLastWrittenGraphBytes());
   }
