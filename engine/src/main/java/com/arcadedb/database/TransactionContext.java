@@ -811,7 +811,9 @@ public class TransactionContext implements Transaction {
 
   /**
    * Makes the space this transaction allocates in a bucket skip the free-space search and append, for THIS transaction
-   * only. See the {@code appendOnlyInserts} field.
+   * only. See the {@code appendOnlyInserts} field. Meant for engine-internal bulk writers that run several concurrent
+   * transactions into one bucket: a transaction that appends never fills the room deletes left behind, so a workload
+   * that sets it on ordinary updates and deletes grows its files.
    */
   public void setAppendOnlyInserts(final boolean appendOnlyInserts) {
     this.appendOnlyInserts = appendOnlyInserts;

@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -33,8 +34,10 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10547: the parallel flush of a {@link GraphBatch} scheduled one task per vertex bucket, so a vertex type created
@@ -84,6 +87,56 @@ class Issue10547GraphBatchOneBucketParallelismTest extends TestHelper {
     assertThat(outThreads).as("async threads that connected outgoing edges, %d bucket(s)", buckets).hasSizeGreaterThan(1);
     assertThat(inThreads).as("async threads that connected incoming edges, %d bucket(s)", buckets).hasSizeGreaterThan(1);
 
+    assertAdjacency(rids, edges);
+    assertDatabaseIsConsistent();
+  }
+
+  /**
+   * The incoming drain of one bucket runs as several tasks, one of which fails its commit. The retry at close() must run that
+   * task alone, against the plan the failed attempt used (pinned with the drain prefix): a committed task run again would
+   * duplicate its edges, a task the retry plans differently could skip or repeat vertices.
+   */
+  @Test
+  void aSplitIncomingDrainThatFailsPartwayIsResumedTaskByTask() {
+    database.command("sql", "CREATE VERTEX TYPE Node BUCKETS 1");
+    database.command("sql", "CREATE EDGE TYPE E BUCKETS 1");
+    database.async().setParallelLevel(PARALLEL_LEVEL);
+
+    final int edgeCount = PARALLEL_LEVEL * GraphBatch.MIN_EDGES_PER_CONNECT_TASK * 2;
+    final int[][] edges = new int[edgeCount][];
+    final Random rnd = new Random(105470);
+    for (int e = 0; e < edgeCount; e++)
+      edges[e] = new int[] { rnd.nextInt(VERTICES), rnd.nextInt(VERTICES) };
+
+    final AtomicInteger calls = new AtomicInteger();
+    GraphBatch.TEST_BEFORE_INCOMING_EDGE_COMMIT_HOOK = attempt -> {
+      calls.incrementAndGet();
+      if (attempt == 2)
+        throw new RuntimeException("simulated commit failure of one incoming task");
+    };
+
+    final RID[] rids;
+    final GraphBatch batch = database.batch().withBatchSize(edgeCount).withBidirectional(true).withWAL(false)
+        .withParallelFlush(true).withMaxDeferredIncomingEdges(edgeCount).build();
+    try {
+      final Object[][] props = new Object[VERTICES][];
+      for (int i = 0; i < VERTICES; i++)
+        props[i] = new Object[] { "i", i };
+      rids = batch.createVertices("Node", props);
+
+      // the flush - the one the last newEdge() triggers, or the explicit one - drains the deferred incoming edges early (the
+      // buffer reached its cap), and the drain fails
+      assertThatThrownBy(() -> {
+        for (final int[] e : edges)
+          batch.newEdge(rids[e[0]], "E", rids[e[1]]);
+        batch.flush();
+      }).hasMessageContaining("simulated commit failure");
+    } finally {
+      batch.close();
+    }
+
+    assertThat(calls.get()).as("%d incoming tasks, one failed and was run again alone", PARALLEL_LEVEL)
+        .isEqualTo(PARALLEL_LEVEL + 1);
     assertAdjacency(rids, edges);
     assertDatabaseIsConsistent();
   }
