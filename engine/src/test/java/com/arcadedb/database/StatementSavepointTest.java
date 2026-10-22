@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.Index;
@@ -276,6 +277,55 @@ class StatementSavepointTest extends TestHelper {
           GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
     }
     assertThat(ids()).containsExactly(1L, 2L);
+  }
+
+  @Test
+  void aVertexAndAnEdgeAnEarlierStatementUpdatedComeBackAsThatStatementLeftThem() {
+    database.command("sql", "CREATE VERTEX TYPE VV").close();
+    database.command("sql", "CREATE EDGE TYPE EE").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO VV (id, name) VALUES (1, 'x'), (2, 'x'), (3, 'x')").close();
+      database.command("sql", "CREATE EDGE EE FROM (SELECT FROM VV WHERE id = 1) TO (SELECT FROM VV WHERE id IN [2, 3]) SET label = 'x'")
+          .close();
+    });
+
+    // THE SECOND UPDATE OF A STATEMENT IS REFUSED ONCE THE LISTENER IS ARMED
+    final AtomicInteger updates = new AtomicInteger();
+    final AtomicInteger refuseAt = new AtomicInteger(-1);
+    final BeforeRecordUpdateListener refuseTheNth = record -> {
+      if (updates.incrementAndGet() == refuseAt.get())
+        throw new IllegalStateException("refused");
+      return true;
+    };
+    database.getSchema().getType("VV").getEvents().registerListener(refuseTheNth);
+    database.getSchema().getType("EE").getEvents().registerListener(refuseTheNth);
+
+    database.begin();
+    // THE EARLIER STATEMENTS QUEUE THE VERTICES AND THE EDGES FOR THE COMMIT WITH THEIR NEW CONTENT
+    database.command("sql", "UPDATE VV SET name = 'a'").close();
+    database.command("sql", "UPDATE EE SET label = 'a'").close();
+
+    updates.set(0);
+    refuseAt.set(2);
+    assertThatThrownBy(() -> database.command("sql", "UPDATE VV SET name = 'b'").close()).hasStackTraceContaining("refused");
+    updates.set(0);
+    assertThatThrownBy(() -> database.command("sql", "UPDATE EE SET label = 'b'").close()).hasStackTraceContaining("refused");
+    refuseAt.set(-1);
+
+    assertThat(valuesOf("VV", "name")).containsExactly("a", "a", "a");
+    assertThat(valuesOf("EE", "label")).containsExactly("a", "a");
+    database.commit();
+    assertThat(valuesOf("VV", "name")).containsExactly("a", "a", "a");
+    assertThat(valuesOf("EE", "label")).containsExactly("a", "a");
+  }
+
+  private List<String> valuesOf(final String type, final String property) {
+    final List<String> values = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT " + property + " FROM " + type)) {
+      while (rs.hasNext())
+        values.add(rs.next().getProperty(property));
+    }
+    return values;
   }
 
   @Test
