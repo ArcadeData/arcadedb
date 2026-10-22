@@ -1065,7 +1065,8 @@ public class DateUtils {
 
   /**
    * The nanoseconds a datetime holds below its millisecond: what a conversion to epoch milliseconds drops. 0 for the classes that hold
-   * milliseconds only, and for anything that is not a datetime.
+   * milliseconds only, and for anything that is not a datetime. Reads the same classes as {@link #compareNumberToDateTime}, which the
+   * two have to keep in step ({@code DateUtilsCompareNumberAndTemporalTest} compares them class by class).
    */
   public static int subMillisecondNanos(final Object value) {
     final int nanos;
@@ -1140,6 +1141,19 @@ public class DateUtils {
         return 1;
       if (Double.isInfinite(value))
         return value > 0 ? 1 : -1;
+      if (Math.abs(value) < 9.0e18) {
+        // The common case, a double that is a whole number of milliseconds (1.7E12) or a fraction of one, decided on longs with no
+        // BigDecimal: the number is floor + fraction and the datetime is millis + fraction, both fractions in [0, 1)
+        final double floor = Math.floor(value);
+        final int order = Long.compare((long) floor, millis);
+        if (order != 0)
+          return order;
+        final boolean wholeNumber = floor == value;
+        if (wholeNumber)
+          return subMillisecondNanos > 0 ? -1 : 0;
+        if (subMillisecondNanos == 0)
+          return 1;
+      }
       exact = new BigDecimal(value);
     }
 
