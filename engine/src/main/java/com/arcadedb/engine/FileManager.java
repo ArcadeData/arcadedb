@@ -86,6 +86,10 @@ public class FileManager {
    * node is ever told about them, and pages a commit of the session wrote into them describe nothing anybody else holds.
    * Allocated on the first cancellation only, since an ordinary session drops nothing it created. {@code null} when no
    * session is open or nothing was cancelled in it.
+   * <p>
+   * Written by the session's own thread only ({@link #dropFile} inside it, and the start and stop of the session), and read
+   * by that thread before it stops the session. Volatile like the fields it sits beside, so a reader on another thread sees
+   * either a session's set or none, never a set from a session that has already stopped.
    */
   private volatile     Set<Integer>                              cancelledCreates  = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
