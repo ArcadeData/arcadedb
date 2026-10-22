@@ -54,6 +54,7 @@ import java.util.function.BiConsumer;
  *   <li>{@link #connectedComponents} — parallel union-find (Afforest) for weakly connected components</li>
  *   <li>{@link #shortestPath} — BFS-based unweighted shortest path (returns hop count)</li>
  *   <li>{@link #shortestPathAll} — parallel BFS for single-source shortest paths to all nodes</li>
+ *   <li>{@link #breadthFirst} — the same BFS, depth-bounded, returning the reached nodes in BFS order</li>
  *   <li>{@link #labelPropagation} — synchronous parallel community detection via label propagation</li>
  *   <li>{@link #localClusteringCoefficient} — parallel triangle counting for LCC</li>
  * </ul>
@@ -94,6 +95,8 @@ public final class GraphAlgorithms {
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
   private static final double ALPHA              = 8.0;  // edge ratio for push->pull switch
   private static final int PULL_ENTER_DIVISOR    = 8;    // push->pull when frontier > n/8
+  // First capacity of a BFS result, grown by doubling: a search bounded to a few hops allocates by what it reaches (issue #10539)
+  private static final int BFS_INITIAL_CAPACITY  = 1024;
   private static final int PULL_EXIT_DIVISOR     = 512;  // pull->push when frontier < n/512
 
   // VarHandle for lock-free CAS on long[] bitmap in parallel push mode
@@ -832,13 +835,98 @@ public final class GraphAlgorithms {
    */
   public static int[] shortestPathAll(final GraphAnalyticalView.Pinned view, final int source,
       final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return shortestPathAll(view, source, Integer.MAX_VALUE, direction, edgeTypes);
+  }
+
+  /**
+   * {@link #shortestPathAll(GraphAnalyticalView.Pinned, int, Vertex.DIRECTION, String...)} that stops expanding at
+   * {@code maxDepth}: a node further than that from the source is reported unreachable (-1), and the search never reads
+   * its edges (issue #10539). The answer is dense, one entry per node of the view: a caller that only needs the nodes
+   * reached should call {@link #breadthFirst} instead, which allocates by what it reaches.
+   *
+   * @see #breadthFirst
+   */
+  public static int[] shortestPathAll(final GraphAnalyticalView.Pinned view, final int source, final int maxDepth,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    final int[] dist = new int[view.getNodeMapping().size()];
+    Arrays.fill(dist, -1);
+    final BFSLevels bfs = breadthFirst(view, source, maxDepth, direction, edgeTypes);
+    final int[] order = bfs.order();
+    final int[] levelStarts = bfs.levelStarts();
+    for (int d = 0; d < bfs.levels(); d++)
+      for (int i = levelStarts[d], end = levelStarts[d + 1]; i < end; i++)
+        dist[order[i]] = d;
+    return dist;
+  }
+
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return shortestPathAll(view.pinned(), source, direction, edgeTypes);
+  }
+
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static int[] shortestPathAll(final GraphAnalyticalView view, final int source, final int maxDepth,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return shortestPathAll(view.pinned(), source, maxDepth, direction, edgeTypes);
+  }
+
+  /**
+   * The nodes a breadth-first search reached from its source, in the order it reached them and grouped by depth: the source
+   * is {@code order[0]}, and the nodes at depth {@code d} are {@code order[levelStarts[d] .. levelStarts[d + 1])}. Sized by
+   * what the search reached, not by the graph (issue #10539).
+   *
+   * @param order       the reached node ids in BFS order; only the first {@code size} entries are meaningful
+   * @param size        how many nodes were reached, the source included
+   * @param levelStarts where each depth begins in {@code order}, with {@code levelStarts[levels] == size}
+   * @param levels      how many depths were reached, depth 0 (the source) included; 0 when the source is not a node
+   */
+  public record BFSLevels(int[] order, int size, int[] levelStarts, int levels) {
+    /** The depth of the node at {@code index} in {@link #order()}. */
+    public int depthAt(final int index) {
+      return depthAt(levelStarts, levels, index);
+    }
+
+    /** The depth of the node at {@code index} of a BFS order whose depths begin at {@code levelStarts}, by binary search. */
+    public static int depthAt(final int[] levelStarts, final int levels, final int index) {
+      int lo = 0;
+      int hi = levels - 1;
+      while (lo < hi) {
+        final int mid = (lo + hi + 1) >>> 1;
+        if (levelStarts[mid] <= index)
+          lo = mid;
+        else
+          hi = mid - 1;
+      }
+      return lo;
+    }
+  }
+
+  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
+  public static BFSLevels breadthFirst(final GraphAnalyticalView view, final int source, final int maxDepth,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return breadthFirst(view.pinned(), source, maxDepth, direction, edgeTypes);
+  }
+
+  /**
+   * Breadth-first search from {@code source} that expands no node at depth {@code maxDepth} or deeper, returning the nodes it
+   * reached in BFS order (issue #10539). {@link Integer#MAX_VALUE} means unbounded.
+   * <p>
+   * Uses Beamer's direction-optimizing push/pull BFS with edge-count heuristic, hysteresis thresholds (separate enter/exit),
+   * and parallel pull mode. Push mode uses VarHandle CAS on the visited bitmap for lock-free thread safety.
+   * <p>
+   * What a call allocates beside its result is two bitmaps of the node count (the visited set and, only once the search
+   * switches to pull mode, the frontier): a node's degree is read off the CSR offsets of the nodes the search reaches rather
+   * than precomputed for every node of the graph, and the frontier of a level is the slice of the result the previous level
+   * appended, so the result itself grows with what was reached. A search bounded to a few hops of a large graph therefore
+   * costs the edges of the hops it walks, not a pass over the whole graph.
+   */
+  public static BFSLevels breadthFirst(final GraphAnalyticalView.Pinned view, final int source, final int maxDepth,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
 
-    if (source < 0 || source >= n) {
-      final int[] result = new int[n];
-      Arrays.fill(result, -1);
-      return result;
-    }
+    if (source < 0 || source >= n)
+      return new BFSLevels(new int[0], 0, new int[] { 0 }, 0);
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
@@ -862,44 +950,42 @@ public final class GraphAlgorithms {
       allBwdNeighbors[t] = csr.getBackwardNeighbors();
     }
 
-    // Precompute push-direction degree per node for edge-count heuristic
-    final int[] degree = new int[n];
+    // The push-direction offsets of every type, which the edge-count heuristic reads a node's degree from when the search
+    // reaches it. The total is the last offset of each, so neither needs a pass over the nodes (issue #10539).
+    final int[][] degreeOffsets = new int[typeCount * 2][];
+    int degreeArrayCount = 0;
     long totalEdges = 0;
     for (int t = 0; t < typeCount; t++) {
       if (useFwd && allFwdOffsets[t] != null) {
-        final int[] off = allFwdOffsets[t];
-        for (int i = 0; i < n; i++)
-          degree[i] += off[i + 1] - off[i];
+        degreeOffsets[degreeArrayCount++] = allFwdOffsets[t];
+        totalEdges += allFwdOffsets[t][n] - allFwdOffsets[t][0];
       }
       if (useBwd && allBwdOffsets[t] != null) {
-        final int[] off = allBwdOffsets[t];
-        for (int i = 0; i < n; i++)
-          degree[i] += off[i + 1] - off[i];
+        degreeOffsets[degreeArrayCount++] = allBwdOffsets[t];
+        totalEdges += allBwdOffsets[t][n] - allBwdOffsets[t][0];
       }
     }
-    for (int i = 0; i < n; i++)
-      totalEdges += degree[i];
-
-    // dist[] for output, bitmap for fast visited check in hot loop
-    final int[] dist = new int[n];
-    Arrays.fill(dist, -1);
-    dist[source] = 0;
+    final int degreeArrays = degreeArrayCount;
 
     // Bitmap visited set: n/64 longs (~80KB for 633K nodes) fits in L2 cache
     final long[] visited = new long[(n + 63) >>> 6];
     visited[source >>> 6] |= 1L << (source & 63);
 
-    // Pre-allocate frontiers at full capacity, swap references between levels
-    int[] frontier = new int[n];
-    int[] nextFrontier = new int[n];
-    frontier[0] = source;
-    int frontierSize = 1;
-    int depth = 0;
+    // Frontier bitmap for pull mode: tracks which nodes are in the CURRENT frontier (separate from the visited bitmap,
+    // which tracks all ever-seen nodes). Only a pull level reads it, so it is allocated the first time the search pulls.
+    long[] frontierBitmap = null;
 
-    // Frontier bitmap for pull mode: tracks which nodes are in the CURRENT frontier
-    // (separate from visited bitmap which tracks all ever-seen nodes)
-    final long[] frontierBitmap = new long[(n + 63) >>> 6];
-    frontierBitmap[source >>> 6] |= 1L << (source & 63);
+    // The result doubles as the frontier: the nodes of the level being expanded are order[frontierStart .. frontierEnd),
+    // and the level they discover is appended behind them. n >= 1 here (source is a valid node), so the array holds it
+    int[] order = new int[Math.min(n, BFS_INITIAL_CAPACITY)];
+    order[0] = source;
+    int size = 1;
+    int[] levelStarts = new int[16];
+    levelStarts[1] = 1;
+    int levels = 1;
+    int frontierStart = 0;
+    int frontierEnd = 1;
+    int depth = 0;
 
     // Pre-hoist pull-mode CSR arrays: pull checks reverse direction neighbors
     // OUT direction pull: check backward neighbors (who points to me?)
@@ -928,12 +1014,13 @@ public final class GraphAlgorithms {
     final int pullEnterThreshold = n / PULL_ENTER_DIVISOR;
     final int pullExitThreshold = n / PULL_EXIT_DIVISOR;
     boolean inPullMode = false;
-    long visitedEdges = degree[source];
-    long edgesInFrontier = degree[source];
+    long visitedEdges = degreeOf(degreeOffsets, degreeArrays, source);
+    long edgesInFrontier = visitedEdges;
     int prevFrontierSize = 1;
 
-    while (frontierSize > 0) {
+    while (frontierEnd > frontierStart && depth < maxDepth) {
       depth++;
+      final int frontierSize = frontierEnd - frontierStart;
 
       // Direction-optimizing switch using edge-count heuristic with hysteresis
       final long edgesUnexplored = totalEdges - visitedEdges;
@@ -952,15 +1039,23 @@ public final class GraphAlgorithms {
       long nextEdgesInFrontier = 0;
 
       if (inPullMode) {
+        if (frontierBitmap == null)
+          frontierBitmap = new long[(n + 63) >>> 6];
+        else
+          Arrays.fill(frontierBitmap, 0L);
+        for (int i = frontierStart; i < frontierEnd; i++) {
+          final int v = order[i];
+          frontierBitmap[v >>> 6] |= 1L << (v & 63);
+        }
+        final long[] inFrontier = frontierBitmap;
+
         // PULL mode: scan ALL unvisited nodes, check if any reverse-neighbor is in frontier.
         // Parallelized: each thread handles a disjoint node range — no synchronization needed.
         // Breaks early after finding one parent per node.
-        final int currentDepth = depth;
         final int numThreads = Math.min(PARALLELISM, Math.max(1, (n + PARALLEL_THRESHOLD - 1) / PARALLEL_THRESHOLD));
 
         if (numThreads <= 1) {
           // Sequential pull (small graph)
-          int nextSize = 0;
           for (int v = 0; v < n; v++) {
             final int vWord = v >>> 6;
             final long vBit = 1L << (v & 63);
@@ -973,7 +1068,7 @@ public final class GraphAlgorithms {
                 final int[] offsets = pullOffsets1[t];
                 final int[] neighbors = pullNeighbors1[t];
                 for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
-                  if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                  if ((inFrontier[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
                     found = true;
                     break;
                   }
@@ -983,7 +1078,7 @@ public final class GraphAlgorithms {
                 final int[] offsets = pullOffsets2[t];
                 final int[] neighbors = pullNeighbors2[t];
                 for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
-                  if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                  if ((inFrontier[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
                     found = true;
                     break;
                   }
@@ -992,21 +1087,12 @@ public final class GraphAlgorithms {
             }
             if (found) {
               visited[vWord] |= vBit;
-              dist[v] = currentDepth;
-              nextFrontier[nextSize++] = v;
-              nextEdgesInFrontier += degree[v];
+              if (size == order.length)
+                order = grownOrder(order, size + 1, n);
+              order[size++] = v;
+              nextEdgesInFrontier += degreeOf(degreeOffsets, degreeArrays, v);
             }
           }
-
-          Arrays.fill(frontierBitmap, 0L);
-          for (int i = 0; i < nextSize; i++) {
-            final int v = nextFrontier[i];
-            frontierBitmap[v >>> 6] |= 1L << (v & 63);
-          }
-          final int[] tmp = frontier;
-          frontier = nextFrontier;
-          nextFrontier = tmp;
-          frontierSize = nextSize;
 
         } else {
           // Parallel pull: each thread scans a disjoint range of unvisited nodes
@@ -1040,7 +1126,7 @@ public final class GraphAlgorithms {
                     final int[] offsets = pullOffsets1[t];
                     final int[] neighbors = pullNeighbors1[t];
                     for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
-                      if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                      if ((inFrontier[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
                         found = true;
                         break;
                       }
@@ -1050,7 +1136,7 @@ public final class GraphAlgorithms {
                     final int[] offsets = pullOffsets2[t];
                     final int[] neighbors = pullNeighbors2[t];
                     for (int j = offsets[v], end = offsets[v + 1]; j < end; j++) {
-                      if ((frontierBitmap[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
+                      if ((inFrontier[neighbors[j] >>> 6] & (1L << (neighbors[j] & 63))) != 0) {
                         found = true;
                         break;
                       }
@@ -1058,11 +1144,10 @@ public final class GraphAlgorithms {
                   }
                 }
                 if (found) {
-                  dist[v] = currentDepth;
                   if (localSize >= localNext.length)
                     localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                   localNext[localSize++] = v;
-                  localEdgeSum += degree[v];
+                  localEdgeSum += degreeOf(degreeOffsets, degreeArrays, v);
                 }
               }
               localNexts[tIdx] = localNext;
@@ -1079,7 +1164,8 @@ public final class GraphAlgorithms {
             callerTask.run();
           awaitFutures(futures, launched);
 
-          // Merge thread-local results
+          // Merge thread-local results behind the frontier, then mark them visited (sequential, no atomics)
+          final int levelStart = size;
           int totalNext = 0;
           for (int t = 0; t < numThreads; t++) {
             if (localNexts[t] == null)
@@ -1087,37 +1173,25 @@ public final class GraphAlgorithms {
             totalNext += localSizes[t];
             nextEdgesInFrontier += localEdges[t];
           }
-          int pos = 0;
+          if (size + totalNext > order.length)
+            order = grownOrder(order, size + totalNext, n);
           for (int t = 0; t < numThreads; t++)
             if (localNexts[t] != null && localSizes[t] > 0) {
-              System.arraycopy(localNexts[t], 0, nextFrontier, pos, localSizes[t]);
-              pos += localSizes[t];
+              System.arraycopy(localNexts[t], 0, order, size, localSizes[t]);
+              size += localSizes[t];
             }
-
-          // Update visited and frontier bitmaps after merge (sequential, no atomics)
-          for (int i = 0; i < totalNext; i++) {
-            final int v = nextFrontier[i];
+          for (int i = levelStart; i < size; i++) {
+            final int v = order[i];
             visited[v >>> 6] |= 1L << (v & 63);
           }
-          Arrays.fill(frontierBitmap, 0L);
-          for (int i = 0; i < totalNext; i++) {
-            final int v = nextFrontier[i];
-            frontierBitmap[v >>> 6] |= 1L << (v & 63);
-          }
-
-          final int[] tmp = frontier;
-          frontier = nextFrontier;
-          nextFrontier = tmp;
-          frontierSize = totalNext;
         }
 
       } else if (frontierSize > PARALLEL_BFS_THRESHOLD) {
         // PUSH mode (parallel): expand frontier using VarHandle CAS on visited bitmap
-        final int fSize = frontierSize;
-        final int[] currentFrontier = frontier;
-        final int currentDepth = depth;
-        final int numThreads = Math.min(PARALLELISM, (fSize + PARALLEL_BFS_THRESHOLD - 1) / PARALLEL_BFS_THRESHOLD);
-        final int chunkSize = (fSize + numThreads - 1) / numThreads;
+        final int[] currentFrontier = order;
+        final int fStart = frontierStart;
+        final int numThreads = Math.min(PARALLELISM, (frontierSize + PARALLEL_BFS_THRESHOLD - 1) / PARALLEL_BFS_THRESHOLD);
+        final int chunkSize = (frontierSize + numThreads - 1) / numThreads;
         final int[][] localNexts = new int[numThreads][];
         final int[] localSizes = new int[numThreads];
         final long[] localEdges = new long[numThreads];
@@ -1128,9 +1202,9 @@ public final class GraphAlgorithms {
         Runnable callerTask = null;
         for (int t = 0; t < numThreads; t++) {
           final int tIdx = t;
-          final int tStart = t * chunkSize;
-          final int tEnd = Math.min(tStart + chunkSize, fSize);
-          if (tStart >= fSize)
+          final int tStart = fStart + t * chunkSize;
+          final int tEnd = Math.min(tStart + chunkSize, fStart + frontierSize);
+          if (tStart >= fStart + frontierSize)
             break;
           final Runnable task = () -> {
             int[] localNext = new int[Math.min(n, (tEnd - tStart) * 8)];
@@ -1153,11 +1227,10 @@ public final class GraphAlgorithms {
                         break;
                     } while (!LONG_ARRAY_VH.compareAndSet(visited, word, oldVal, oldVal | bit));
                     if ((oldVal & bit) == 0) {
-                      dist[v] = currentDepth;
                       if (localSize >= localNext.length)
                         localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                       localNext[localSize++] = v;
-                      localEdgeSum += degree[v];
+                      localEdgeSum += degreeOf(degreeOffsets, degreeArrays, v);
                     }
                   }
                 }
@@ -1175,11 +1248,10 @@ public final class GraphAlgorithms {
                         break;
                     } while (!LONG_ARRAY_VH.compareAndSet(visited, word, oldVal, oldVal | bit));
                     if ((oldVal & bit) == 0) {
-                      dist[v] = currentDepth;
                       if (localSize >= localNext.length)
                         localNext = Arrays.copyOf(localNext, Math.min(n, localNext.length * 2));
                       localNext[localSize++] = v;
-                      localEdgeSum += degree[v];
+                      localEdgeSum += degreeOf(degreeOffsets, degreeArrays, v);
                     }
                   }
                 }
@@ -1199,37 +1271,25 @@ public final class GraphAlgorithms {
           callerTask.run();
         awaitFutures(futures, launched);
 
-        // Merge thread-local frontiers
+        // Merge thread-local frontiers behind the current one
         int totalNext = 0;
         for (int t = 0; t < numThreads; t++)
           if (localNexts[t] != null) {
             totalNext += localSizes[t];
             nextEdgesInFrontier += localEdges[t];
           }
-        int pos = 0;
+        if (size + totalNext > order.length)
+          order = grownOrder(order, size + totalNext, n);
         for (int t = 0; t < numThreads; t++)
           if (localNexts[t] != null && localSizes[t] > 0) {
-            System.arraycopy(localNexts[t], 0, nextFrontier, pos, localSizes[t]);
-            pos += localSizes[t];
+            System.arraycopy(localNexts[t], 0, order, size, localSizes[t]);
+            size += localSizes[t];
           }
-
-        // Update frontier bitmap for potential pull mode next iteration
-        Arrays.fill(frontierBitmap, 0L);
-        for (int i = 0; i < totalNext; i++) {
-          final int v = nextFrontier[i];
-          frontierBitmap[v >>> 6] |= 1L << (v & 63);
-        }
-
-        final int[] tmp = frontier;
-        frontier = nextFrontier;
-        nextFrontier = tmp;
-        frontierSize = totalNext;
 
       } else {
         // PUSH mode (sequential): expand frontier outward — uses plain long[] bitmap
-        int nextSize = 0;
-        for (int f = 0; f < frontierSize; f++) {
-          final int u = frontier[f];
+        for (int f = frontierStart; f < frontierEnd; f++) {
+          final int u = order[f];
           for (int t = 0; t < typeCount; t++) {
             if (useFwd && allFwdOffsets[t] != null) {
               final int[] offsets = allFwdOffsets[t];
@@ -1240,9 +1300,10 @@ public final class GraphAlgorithms {
                 final long bit = 1L << (v & 63);
                 if ((visited[word] & bit) == 0) {
                   visited[word] |= bit;
-                  dist[v] = depth;
-                  nextFrontier[nextSize++] = v;
-                  nextEdgesInFrontier += degree[v];
+                  if (size == order.length)
+                    order = grownOrder(order, size + 1, n);
+                  order[size++] = v;
+                  nextEdgesInFrontier += degreeOf(degreeOffsets, degreeArrays, v);
                 }
               }
             }
@@ -1255,26 +1316,24 @@ public final class GraphAlgorithms {
                 final long bit = 1L << (v & 63);
                 if ((visited[word] & bit) == 0) {
                   visited[word] |= bit;
-                  dist[v] = depth;
-                  nextFrontier[nextSize++] = v;
-                  nextEdgesInFrontier += degree[v];
+                  if (size == order.length)
+                    order = grownOrder(order, size + 1, n);
+                  order[size++] = v;
+                  nextEdgesInFrontier += degreeOf(degreeOffsets, degreeArrays, v);
                 }
               }
             }
           }
         }
+      }
 
-        // Update frontier bitmap for potential pull mode next iteration
-        Arrays.fill(frontierBitmap, 0L);
-        for (int i = 0; i < nextSize; i++) {
-          final int v = nextFrontier[i];
-          frontierBitmap[v >>> 6] |= 1L << (v & 63);
-        }
-
-        final int[] tmp = frontier;
-        frontier = nextFrontier;
-        nextFrontier = tmp;
-        frontierSize = nextSize;
+      // The level just discovered is the next frontier
+      frontierStart = frontierEnd;
+      frontierEnd = size;
+      if (frontierEnd > frontierStart) {
+        if (++levels >= levelStarts.length)
+          levelStarts = Arrays.copyOf(levelStarts, levelStarts.length * 2);
+        levelStarts[levels] = frontierEnd;
       }
 
       // Update edge-count tracking for next iteration
@@ -1282,13 +1341,20 @@ public final class GraphAlgorithms {
       edgesInFrontier = nextEdgesInFrontier;
     }
 
-    return dist;
+    return new BFSLevels(order, size, levelStarts, levels);
   }
 
-  /** On the snapshot {@code view} serves now, {@linkplain GraphAnalyticalView#pinned() pinned} for the whole kernel (issue #10350). */
-  public static int[] shortestPathAll(final GraphAnalyticalView view, final int source,
-      final Vertex.DIRECTION direction, final String... edgeTypes) {
-    return shortestPathAll(view.pinned(), source, direction, edgeTypes);
+  /** The push-direction degree of {@code node}: the sum of its offset spans over the first {@code count} arrays. */
+  private static int degreeOf(final int[][] offsets, final int count, final int node) {
+    int degree = 0;
+    for (int i = 0; i < count; i++)
+      degree += offsets[i][node + 1] - offsets[i][node];
+    return degree;
+  }
+
+  /** {@code order} grown to hold at least {@code required} entries, doubling, never past the node count {@code n}. */
+  private static int[] grownOrder(final int[] order, final int required, final int n) {
+    return Arrays.copyOf(order, (int) Math.min(n, Math.max(required, (long) order.length * 2)));
   }
 
   // --- Dijkstra Single-Source Shortest Path (weighted) ---
