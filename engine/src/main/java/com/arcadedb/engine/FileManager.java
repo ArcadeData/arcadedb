@@ -254,7 +254,8 @@ public class FileManager {
    * @return the cancelled creates, or {@code null} when no session is open or none was cancelled
    */
   public Set<Integer> getCancelledCreates() {
-    return cancelledCreates;
+    final Set<Integer> cancelled = cancelledCreates;
+    return cancelled != null ? Collections.unmodifiableSet(cancelled) : null;
   }
 
   /**

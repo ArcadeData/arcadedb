@@ -3153,7 +3153,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * (issue #10569): a refused index build that the session outlives - a replacing build puts the replaced index back inside
    * it - committed batches into files that are gone, and that no other node is ever told to create. A follower would skip
    * every such page, one log line each, after carrying them through the log. An entry that also wrote into a file that is
-   * still there is kept whole. Costs nothing on a session that cancelled no create, the usual case.
+   * still there is kept whole. Costs nothing on a session that cancelled no create, the usual case; one that did decodes every
+   * buffered WAL image once, which for a large refused build is one pass over pages the leader is about to drop anyway.
    */
   // @VisibleForTesting
   static void dropWalOfCancelledFiles(final Set<Integer> cancelledCreates, final List<byte[]> walEntries,
