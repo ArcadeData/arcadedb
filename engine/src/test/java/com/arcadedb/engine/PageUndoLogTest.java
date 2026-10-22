@@ -215,22 +215,25 @@ class PageUndoLogTest extends TestHelper {
     final MutablePage page = newPage(new Random(7));
     final PageUndoLog log = new PageUndoLog();
 
-    // THE PAGE IS KNOWN TO HOLD THREE SLOTS, NONE A HOLE
-    page.rememberPackedScan(3, 200, 50);
-    assertThat(page.hasPackedScan(3)).isTrue();
+    // THE PAGE IS KNOWN TO HOLD THREE SLOTS, THE FIRST TWO TAKEN AND THE THIRD A HOLE TO REUSE
+    page.rememberSlotScan(3, 200, 2, 50);
+    assertThat(page.hasSlotScan(3)).isTrue();
+    assertThat(page.getSlotScanFirstFreeSlot()).isEqualTo(2);
 
-    // A STATEMENT APPENDS: ITS WRITE TO THE RECORD TABLE DROPS THE SUMMARY, AND IT IS REMEMBERED AGAIN FOR ONE SLOT MORE
+    // A STATEMENT INSERTS: ITS WRITE TO THE RECORD TABLE DROPS THE SUMMARY, AND IT IS REMEMBERED AGAIN, THE HOLE TAKEN
     log.begin(page, null);
     page.writeInt(10, 7);
-    page.rememberPackedScan(4, 999, 60);
-    assertThat(page.hasPackedScan(4)).isTrue();
+    page.rememberSlotScan(3, 999, 3, 50);
+    assertThat(page.hasSlotScan(3)).isTrue();
+    assertThat(page.getSlotScanFirstFreeSlot()).isEqualTo(3);
     log.restore();
     log.end();
 
-    // THE BYTES ARE THOSE OF THREE SLOTS AGAIN, AND SO IS WHAT THE PAGE REMEMBERS OF THEM
-    assertThat(page.hasPackedScan(3)).isTrue();
-    assertThat(page.getPackedScanLastPosition()).isEqualTo(200);
-    assertThat(page.hasPackedScan(4)).isFalse();
+    // THE BYTES ARE THOSE OF THE HOLE AGAIN, AND SO IS WHAT THE PAGE REMEMBERS OF THEM
+    assertThat(page.hasSlotScan(3)).isTrue();
+    assertThat(page.getSlotScanLastPosition()).isEqualTo(200);
+    assertThat(page.getSlotScanFirstFreeSlot()).isEqualTo(2);
+    assertThat(page.hasSlotScan(4)).isFalse();
   }
 
   @Test

@@ -156,4 +156,42 @@ public class NumberUtils {
 
     return Math.toIntExact(value.longValue());
   }
+
+  /**
+   * Reads a numeric value that has to be a whole number as a long, throwing {@link ArithmeticException} when it is not
+   * one: a fractional part ({@code 2.5}), NaN, an infinity, or a magnitude that does not fit a long. {@code 2.0} and
+   * {@code new BigDecimal("2.000")} are whole numbers and are accepted. The strict counterpart of
+   * {@code Number.longValue()}, which truncates a fraction and wraps an overflow, so a value the caller got wrong is
+   * read as a different, plausible one (issue #10611).
+   */
+  public static long toLongWhole(final Number value) {
+    if (value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte)
+      return value.longValue();
+
+    if (value instanceof Double || value instanceof Float) {
+      final double d = value.doubleValue();
+      // NaN fails the comparison; -2^63 is the smallest long and 2^63 is the first double past the largest
+      if (d == Math.rint(d) && d >= -0x1p63 && d < 0x1p63)
+        return (long) d;
+      throw new ArithmeticException("not a whole number in the long range: " + value);
+    }
+
+    if (value instanceof BigInteger bigInteger)
+      return bigInteger.longValueExact();
+
+    try {
+      // BigDecimal, and any other Number (the atomic and adder classes) through its decimal text
+      return (value instanceof BigDecimal bigDecimal ? bigDecimal : new BigDecimal(value.toString())).longValueExact();
+    } catch (final NumberFormatException e) {
+      throw new ArithmeticException("not a whole number: " + value);
+    }
+  }
+
+  /**
+   * The int counterpart of {@link #toLongWhole(Number)}: throws {@link ArithmeticException} for a value that is not a
+   * whole number or does not fit an int.
+   */
+  public static int toIntWhole(final Number value) {
+    return Math.toIntExact(toLongWhole(value));
+  }
 }

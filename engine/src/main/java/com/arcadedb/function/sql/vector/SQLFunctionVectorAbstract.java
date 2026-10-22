@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -136,6 +137,41 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (param == null) {
       throw new CommandSQLParsingException(paramName + " cannot be null");
     }
+  }
+
+  /**
+   * Reads a positional argument that has to be an integer (a count, a beam width). {@code intValue()} would read
+   * {@code 2.5} as 2 and {@code 3000000000} as a negative int, so a number that is not an int is refused, as is a text
+   * that does not parse as one (issue #10611).
+   *
+   * @param param     the argument value
+   * @param paramName the argument name, for the error message
+   *
+   * @throws CommandSQLParsingException if the argument is null or is not an integer
+   */
+  protected int parseInteger(final Object param, final String paramName) {
+    validateNotNull(param, getName() + " " + paramName);
+    try {
+      if (param instanceof Number number)
+        return NumberUtils.toIntWhole(number);
+      return Integer.parseInt(param.toString().trim());
+    } catch (final ArithmeticException | NumberFormatException e) {
+      throw new CommandSQLParsingException(
+          getName() + " " + paramName + " must be an integer, got " + NumberUtils.describeRejectedNumber(param));
+    }
+  }
+
+  /**
+   * Reads the {@code k} of a nearest-neighbour function. {@code 0} is a valid, empty request, as {@code LIMIT 0} is; a
+   * negative {@code k} is a caller mistake, and answering no rows would read as "no neighbours" (issue #10611).
+   *
+   * @throws CommandSQLParsingException if {@code k} is null, not an integer, or negative
+   */
+  protected int parseNeighborCount(final Object param) {
+    final int k = parseInteger(param, "k");
+    if (k < 0)
+      throw new CommandSQLParsingException(getName() + " k must not be negative, got " + k);
+    return k;
   }
 
   /**

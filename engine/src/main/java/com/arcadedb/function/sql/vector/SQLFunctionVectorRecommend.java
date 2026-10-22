@@ -105,8 +105,8 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
 
     final List<RID> negatives = parseRidList(params[2], "negatives");
 
-    final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
-    if (k <= 0)
+    final int k = parseNeighborCount(params[3]);
+    if (k == 0)
       return new ArrayList<>(0);
 
     // Index spec must be in {@code Type[property]} form so we know which property to read off

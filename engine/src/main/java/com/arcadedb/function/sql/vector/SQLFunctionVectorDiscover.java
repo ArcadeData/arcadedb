@@ -93,8 +93,8 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     if (pairs.isEmpty())
       throw new CommandSQLParsingException(NAME + " requires at least one (positive, negative) pair");
 
-    final int k = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
-    if (k <= 0)
+    final int k = parseNeighborCount(params[2]);
+    if (k == 0)
       return new ArrayList<>(0);
 
     Map<?, ?> rawOpts = null;
