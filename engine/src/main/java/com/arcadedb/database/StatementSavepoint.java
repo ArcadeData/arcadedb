@@ -83,7 +83,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private boolean active;
   private boolean rolledBack;
   private String  unrestorable;
-  private boolean queuedRecordNotKept;
+  private boolean readQueuedRecord;
   private Throwable nestedFailure;
   private long    beginSequence;
   private long    epoch;
@@ -136,7 +136,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     this.active = true;
     this.rolledBack = false;
     this.unrestorable = null;
-    this.queuedRecordNotKept = false;
+    this.readQueuedRecord = false;
     this.nestedFailure = null;
     this.limit = limit;
     this.grainBudget = limit;
@@ -169,15 +169,15 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   boolean hasChanges() {
     return size > 0 || logCount > 0 || !pendingRecords.isEmpty() || !obtained.isEmpty()
         || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0 || tx.getUnidirectionalScanEpoch() != scanEpoch
-        || tx.getScannedBucketsCount() != scannedBucketsCount || queuedRecordNotKept;
+        || tx.getScannedBucketsCount() != scannedBucketsCount || isQueuedRecordNotKept();
   }
 
   /**
-   * Whether the statement was handed the object an earlier statement queued for the commit and could not keep a copy of it to put back:
-   * it may have changed the object before it failed, with nothing journaled, and the commit would store what it left there.
+   * Whether the statement cannot be taken back and was handed the object an earlier statement queued for the commit: it may have
+   * changed the object before it failed, with nothing journaled, and the commit would store what it left there.
    */
   boolean isQueuedRecordNotKept() {
-    return queuedRecordNotKept;
+    return unrestorable != null && readQueuedRecord;
   }
 
   /** Whether {@link #rollback()} took the statement back. */
@@ -269,7 +269,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       queuedInStatement = new RidHashSet(64);
     if (queuedInStatement.add(rid) && previous != null && previous == record && (snapshotted == null || !snapshotted.contains(rid))) {
       markUnrestorable("the statement changed again the record " + rid + ", updated by an earlier statement of the transaction");
-      queuedRecordNotKept = true;
+      readQueuedRecord = true;
     }
     add(OP_UPDATED, rid, previous, null, 0, 0);
   }
@@ -285,6 +285,10 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
    * if the statement fails. A clean one that is dirty when the statement fails was changed by it and is reloaded.
    */
   void recordObtained(final RID rid, final Record record, final boolean queued) {
+    // Noted before the early return, whatever made the statement unrestorable and whenever: the object is the only copy of an earlier
+    // update, and a statement that cannot be taken back leaves it as it changed it
+    if (queued)
+      readQueuedRecord = true;
     if (unrestorable != null)
       return;
     if (queued) {
@@ -317,12 +321,10 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       // kind has no way to be put back
       markUnrestorable("the statement read the record " + rid + ", updated by an earlier statement of the transaction, and its content "
           + "cannot be kept");
-      queuedRecordNotKept = true;
       return;
     }
     if (pendingRecords.size() >= limit) {
       markUnrestorable("the statement read more than " + limit + " records updated by earlier statements of the transaction");
-      queuedRecordNotKept = true;
       return;
     }
     try {
@@ -343,7 +345,6 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       pendingRecords.add(record);
     } catch (final RuntimeException e) {
       markUnrestorable("the record " + rid + ", updated by an earlier statement of the transaction, cannot be kept (" + e.getMessage() + ")");
-      queuedRecordNotKept = true;
     }
   }
 
@@ -592,7 +593,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     queuedInStatement = null;
     snapshotted = null;
     scannedBuckets = null;
-    queuedRecordNotKept = false;
+    readQueuedRecord = false;
     obtained.clear();
     pendingRecords.clear();
     pendingSnapshots.clear();

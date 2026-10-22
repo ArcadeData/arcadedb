@@ -602,6 +602,48 @@ class StatementSavepointTest extends TestHelper {
   }
 
   @Test
+  void aStatementThatCannotBeTakenBackForAnotherReasonAndReadsAQueuedRecordRefusesTheCommit() {
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T (id, k) VALUES (1, 1), (2, 2)").close();
+    });
+
+    database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES, 2);
+    try {
+      database.begin();
+      // THREE RECORDS THE TRANSACTION WROTE AND LEFT CLEAN: A STATEMENT THAT READS THEM ALL IS PAST THE BUDGET OF ITS SAVEPOINT
+      final List<RID> clean = new ArrayList<>();
+      for (int i = 10; i < 13; i++)
+        clean.add(database.newDocument("T").set("id", (long) i).set("k", i).save().getIdentity());
+      // THE EARLIER STATEMENT QUEUES THE FIRST ROW FOR THE COMMIT
+      database.command("sql", "UPDATE T SET k = 100 WHERE id = 1").close();
+      final RID first;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM T WHERE id = 1")) {
+        first = rs.next().getIdentity().get();
+      }
+
+      // THE LISTENER READS THE CLEAN RECORDS (THE SAVEPOINT GIVES UP), THEN CHANGES THE QUEUED OBJECT OF THE FIRST ROW, THEN REFUSES
+      database.getSchema().getType("T").getEvents().registerListener((BeforeRecordUpdateListener) record -> {
+        if (((Document) record).getLong("id") == 2L) {
+          for (final RID rid : clean)
+            database.lookupByRID(rid, true);
+          database.lookupByRID(first, true).asDocument().modify().set("k", 99);
+          throw new IllegalStateException("refused");
+        }
+        return true;
+      });
+      assertThatThrownBy(() -> database.command("sql", "UPDATE T SET k = 20 WHERE id = 2").close()).hasStackTraceContaining("refused");
+
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed")
+          .hasMessageContaining("could not be taken back");
+      database.rollback();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
+          GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
+    }
+    assertThat(idByUniqueK(1)).isEqualTo(1L);
+  }
+
+  @Test
   void aStatementRunByAnotherIsTakenBackWithIt() {
     database.command("sql", "CREATE DOCUMENT TYPE Log").close();
     database.command("sql", "CREATE PROPERTY Log.n INTEGER").close();
