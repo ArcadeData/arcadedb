@@ -167,6 +167,39 @@ class Issue10539BfsHonoursMaxDepthTest extends TestHelper {
   }
 
   @Test
+  void aNegativeBoundAndAStartWithoutEdgesReachOnlyTheStart() throws Exception {
+    final RID[] lonely = new RID[1];
+    database.transaction(() -> lonely[0] = database.newVertex("Node").set("id", -1).save().getIdentity());
+
+    // Without a view: the record walk
+    assertThat(cypherBfs(0, -1)).isEmpty();
+    assertThat(cypherBfs(-1, 3)).isEmpty();
+
+    final GraphAnalyticalView view = createView();
+    try {
+      final int source = view.getNodeId(rids[0]);
+      final GraphAlgorithms.BFSLevels negative = GraphAlgorithms.breadthFirst(view, source, -1, Vertex.DIRECTION.OUT, "E");
+      assertThat(negative.size()).isEqualTo(1);
+      assertThat(negative.levels()).isEqualTo(1);
+
+      final int lonelySource = view.getNodeId(lonely[0]);
+      for (final Vertex.DIRECTION dir : Vertex.DIRECTION.values()) {
+        final GraphAlgorithms.BFSLevels alone = GraphAlgorithms.breadthFirst(view, lonelySource, Integer.MAX_VALUE, dir, "E");
+        assertThat(alone.size()).as("dir=%s", dir).isEqualTo(1);
+        assertThat(alone.levels()).as("dir=%s", dir).isEqualTo(1);
+        assertThat(alone.order()[0]).isEqualTo(lonelySource);
+      }
+
+      // On the view: the kernel through the procedure
+      assertThat(cypherBfs(0, -1)).isEmpty();
+      assertThat(cypherBfs(-1, 3)).isEmpty();
+      assertThat(cypherBfs(-1, Integer.MAX_VALUE)).isEmpty();
+    } finally {
+      view.drop();
+    }
+  }
+
+  @Test
   void algoBfsOnAViewAnswersWhatTraverseAnswers() throws Exception {
     final Map<Integer, Map<Integer, Integer>> withoutView = new HashMap<>();
     for (final int maxDepth : DEPTHS)
@@ -252,10 +285,14 @@ class Issue10539BfsHonoursMaxDepthTest extends TestHelper {
   }
 
   private Map<Integer, Integer> cypherBfs(final int maxDepth) {
+    return cypherBfs(0, maxDepth);
+  }
+
+  private Map<Integer, Integer> cypherBfs(final int startId, final int maxDepth) {
     final Map<Integer, Integer> depthById = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (s:Node {id: 0}) CALL algo.bfs(s, 'E', 'OUT', $k) YIELD node, depth RETURN node.id AS id, depth",
-        Map.of("k", (long) maxDepth))) {
+        "MATCH (s:Node {id: $start}) CALL algo.bfs(s, 'E', 'OUT', $k) YIELD node, depth RETURN node.id AS id, depth",
+        Map.of("start", startId, "k", (long) maxDepth))) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         assertThat(depthById.put(row.<Number>getProperty("id").intValue(), row.<Number>getProperty("depth").intValue()))

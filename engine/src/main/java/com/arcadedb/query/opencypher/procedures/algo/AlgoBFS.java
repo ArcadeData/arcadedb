@@ -278,7 +278,8 @@ public class AlgoBFS extends AbstractAlgoProcedure {
             GhostEdgeReporter.reportSkipped(rnf);
             continue;
           }
-          if (!visited.add(nid))
+          // A damaged edge can carry no endpoint: there is no vertex to reach through it
+          if (nid == null || !visited.add(nid))
             continue;
           final Vertex u;
           try {
