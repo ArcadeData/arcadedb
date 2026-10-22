@@ -27,7 +27,7 @@ import java.util.Objects;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TriggerImpl implements Trigger {
+public class TriggerImpl implements Trigger, TypeNameDependant {
   private final String name;
   private final TriggerTiming timing;
   private final TriggerEvent event;
@@ -87,6 +87,17 @@ public class TriggerImpl implements Trigger {
    */
   void retargetType(final String newTypeName) {
     typeName = newTypeName;
+  }
+
+  /** Nothing to refuse: a trigger is part of its type and is dropped with it (issue #10207). */
+  @Override
+  public void checkTypeDrop(final LocalSchema schema, final String typeName, final String canonicalTypeName) {
+  }
+
+  @Override
+  public void carryTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (oldName.equals(typeName))
+      retargetType(newName);
   }
 
   @Override

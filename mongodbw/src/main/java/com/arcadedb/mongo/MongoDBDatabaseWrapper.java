@@ -21,7 +21,6 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -36,6 +35,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
@@ -130,7 +130,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   public Document handleCommand(final Channel channel, final String command, final Document document,
       final DatabaseResolver databaseResolver,
       final Oplog opLog) {
-    ProtocolContext.set("mongo");
+    // NOT TAGGED HERE: MongoDBBackend TAGS EVERY ENTRY POINT THE LIBRARY CALLS WITH A CLIENT'S REQUEST, THIS ONE AMONG THEM
+    // (ISSUE #10390)
     try {
       if ("find".equalsIgnoreCase(command))
         return find(document);
@@ -157,8 +158,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
     } catch (final Exception e) {
       throw wireException("Error on executing MongoDB '" + command + "' command", e);
-    } finally {
-      ProtocolContext.clear();
     }
   }
 
@@ -548,6 +547,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       try {
         if (collectionName.startsWith("system.")) {
           throw new MongoServerError(16459, "attempt to insert in system namespace");
+        } else if (database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries) {
+          // its samples are not records, so there is no _id index to keep: they go to the engine of the type (issue #10476)
+          n = MongoTimeSeriesInserts.insert(database, timeSeries, documents, isOrdered, writeErrors);
+          this.putLastResult(channel, new Document("n", n));
         } else {
           final MongoDBCollectionWrapper collection = getOrCreateCollection(collectionName);
           try {
@@ -648,22 +651,27 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       try {
         // one regex budget for the whole command, whatever the number of entries
         final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
-        for (final Document del : deletes) {
-          final Document q = (Document) del.get("q");
-          final Number limit = (Number) del.get("limit");
-          final boolean single = limit != null && limit.intValue() == 1;
+        // the samples of a TIMESERIES type have no identity for the record path to select: they are deleted by the engine of the type,
+        // by time range and tags, or the delete is refused naming the type (issue #10464)
+        if (database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries)
+          n = deleteSamples(timeSeries, deletes, budget);
+        else
+          for (final Document del : deletes) {
+            final Document q = (Document) del.get("q");
+            final Number limit = (Number) del.get("limit");
+            final boolean single = limit != null && limit.intValue() == 1;
 
-          final MongoFilter filter = new MongoFilter(database, q, budget);
-          if (filter.isEmpty()) {
-            final Map<String, Object> params = new HashMap<>();
-            final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
-            if (single)
-              sql.append(" LIMIT 1");
+            final MongoFilter filter = new MongoFilter(database, q, budget);
+            if (filter.isEmpty()) {
+              final Map<String, Object> params = new HashMap<>();
+              final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
+              if (single)
+                sql.append(" LIMIT 1");
 
-            n += executeCount(sql.toString(), params);
-          } else
-            n += deleteMatching(collectionName, filter, single);
-        }
+              n += executeCount(sql.toString(), params);
+            } else
+              n += deleteMatching(collectionName, filter, single);
+          }
         tx.commit();
       } finally {
         tx.rollbackIfMine();
@@ -679,6 +687,31 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Document response = new Document("n", n);
     markOkay(response);
     return response;
+  }
+
+  /**
+   * Deletes the samples of a TIMESERIES type each entry names (issue #10464), see {@link MongoTimeSeriesWrites}. Every entry is
+   * translated before any runs: the engine's delete is not part of the transaction, so an entry refused after another ran would
+   * leave that one applied. A failure while an entry runs (an I/O error of the engine) still leaves the entries before it applied:
+   * the command is not atomic across its entries, as MongoDB's own unordered deletes are not.
+   */
+  private int deleteSamples(final TimeSeriesType type, final List<Document> deletes, final MongoFilter.RegexBudget budget) {
+    final List<String> statements = new ArrayList<>(deletes.size());
+    final List<Map<String, Object>> statementParams = new ArrayList<>(deletes.size());
+    for (final Document del : deletes) {
+      final Document q = (Document) del.get("q");
+      final Number limit = (Number) del.get("limit");
+      // an invalid filter is the error MongoDB answers first, whatever the collection
+      new MongoFilter(database, q, budget);
+      final Map<String, Object> params = new HashMap<>();
+      statements.add(MongoTimeSeriesWrites.deleteStatement(type, q, limit != null && limit.intValue() == 1, params));
+      statementParams.add(params);
+    }
+
+    int deleted = 0;
+    for (int i = 0; i < statements.size(); i++)
+      deleted += executeCount(statements.get(i), statementParams.get(i));
+    return deleted;
   }
 
   /**
@@ -700,6 +733,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (updates != null) {
       // one regex budget for the whole command, whatever the number of entries
       final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
+      // a sample of a TIMESERIES type is never updated, and has no identity for the record path to select: an update, a replacement
+      // or an upsert is refused naming the type, before the upsert would prepare an _id index on it (issue #10464). The filters are
+      // still validated first: an invalid one is an error whatever the collection
+      if (!updates.isEmpty() && database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries) {
+        for (final Document upd : updates)
+          new MongoFilter(database, (Document) upd.get("q"), budget);
+        throw MongoTimeSeriesWrites.updateRefusal(timeSeries);
+      }
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
       prepareUpsertIdIndex(collectionName, updates, budget);
 

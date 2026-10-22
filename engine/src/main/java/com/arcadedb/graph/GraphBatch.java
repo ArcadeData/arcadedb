@@ -146,6 +146,12 @@ public class GraphBatch implements AutoCloseable {
   /** {@link #newEdgeWithHints} hint: the destination had no incoming edge when its first edge was handed to this batch. */
   public static final int DESTINATION_HAS_NO_IN_EDGES = 2;
 
+  /**
+   * Fewest edges a parallel connect task is cut to when a bucket's range is split across the async slots (issue
+   * #10547): below this the cost of a transaction per task outweighs what the extra thread brings.
+   */
+  static final int MIN_EDGES_PER_CONNECT_TASK = 1_024;
+
   private final DatabaseInternal database;
 
   /**
@@ -208,7 +214,7 @@ public class GraphBatch implements AutoCloseable {
    * Test-only fault-injection hook. Invoked with a 1-based call number immediately before each
    * {@code database.commit()} that durably persists a slice of deferred incoming edges - both the
    * sequential path's {@code commitEvery}-driven commits ({@link #connectIncomingEdgesSequential})
-   * and the parallel path's one commit per destination-bucket task (fired at the end of
+   * and the parallel path's one commit per task (fired at the end of
    * {@link #connectIncomingEdgesRangeLocal}, right before the surrounding {@code async.transaction}
    * commits). A test can throw to simulate a commit failing partway through
    * {@link #connectDeferredIncomingEdges()} and verify that a subsequent retry (e.g. from
@@ -219,9 +225,9 @@ public class GraphBatch implements AutoCloseable {
 
   /**
    * Test-only fault-injection hook. Invoked with a 1-based call number at the end of each
-   * {@link #connectOutEdgesRangeLocal} bucket task, right before the surrounding
+   * {@link #connectOutEdgesRangeLocal} task, right before the surrounding
    * {@code async.transaction} commits it. A test throwing a {@link ConcurrentModificationException} here
-   * drives the async executor's own CME retry (which re-invokes the same bucket lambda after a rollback,
+   * drives the async executor's own CME retry (which re-invokes the same task lambda after a rollback,
    * see {@code DatabaseAsyncTransaction.execute()}) and so verifies that a rolled-back attempt left no
    * non-durable RID behind in the shared head-chunk caches (issue #5950 review cycle 4). Always
    * {@code null} in production.
@@ -292,23 +298,31 @@ public class GraphBatch implements AutoCloseable {
    * no pass is pending. Pinning this decouples the resume state from later appends to the buffer (issue
    * #5950 review cycle 4): {@link #partitionIncomingByDestBucket} is a counting sort, so a buffer that
    * grew between a failed attempt and its retry would produce a differently-shaped sort index, against
-   * which {@link #inEdgesResumeSortIndex} (a raw index) and {@link #completedIncomingBuckets} (bucket
+   * which {@link #inEdgesResumeSortIndex} (a raw index) and {@link #completedIncomingTasks} (sort index
    * ranges) would silently skip or reprocess groups. Rows appended past the pin are drained separately.
    */
   private int inEdgesDrainPrefix = 0;
 
   /**
-   * Destination-bucket ids whose incoming-edge slice the parallel path
+   * The {@code [from,to)} sort-index ranges the parallel incoming pass ({@link #connectIncomingEdgesParallel}) runs
+   * as separate tasks, planned by {@link #planConnectTasks} at the first attempt over the pinned prefix and reused by
+   * every retry of it, so that the task indexes in {@link #completedIncomingTasks} keep naming the same ranges even if
+   * the async parallel level changed in between (issue #10547). Null when no parallel drain is pending.
+   */
+  private int[] inEdgesTaskRanges = null;
+
+  /**
+   * Indexes, into {@link #inEdgesTaskRanges}, of the incoming-edge tasks the parallel path
    * ({@link #connectIncomingEdgesParallel}) has already durably committed, across possibly several
-   * attempts at {@link #connectDeferredIncomingEdges()} (issue #5950 review cycle 3). Each bucket
-   * runs as its own independent {@code async.transaction} unit, so one bucket's commit failing does
-   * not roll back another's; a retry skips scheduling any bucket already in this set instead of
+   * attempts at {@link #connectDeferredIncomingEdges()} (issue #5950 review cycle 3). Each task
+   * runs as its own independent {@code async.transaction} unit, so one task's commit failing does
+   * not roll back another's; a retry skips scheduling any task already in this set instead of
    * recommitting it. Marked from the transaction's post-commit {@code OkCallback} - never from
-   * inside the bucket-range lambda itself, which runs BEFORE the surrounding commit and could still
+   * inside the range lambda itself, which runs BEFORE the surrounding commit and could still
    * fail there - so membership always implies a durable commit. Cleared alongside the buffer arrays
    * only once {@code connectDeferredIncomingEdges()} completes ALL remaining work.
    */
-  private final Set<Integer> completedIncomingBuckets = ConcurrentHashMap.newKeySet();
+  private final Set<Integer> completedIncomingTasks = ConcurrentHashMap.newKeySet();
 
   // --- Temp arrays for vectorized segment writes (reused across flushes) ---
   private int[]  tmpEdgeBucketIds;
@@ -1080,7 +1094,7 @@ public class GraphBatch implements AutoCloseable {
    * <p>
    * An edge is written in two steps that do not share a transaction: PHASE 1 creates the record, PHASE 3 links it
    * into the source vertex's edge list. The parallel path has to commit between them (the edge-record pages must
-   * be released before the per-bucket tasks touch them) and the sequential path does so too whenever
+   * be released before the parallel tasks touch them) and the sequential path does so too whenever
    * {@code commitEvery > 0}. So a connect pass that dies part-way leaves records that are durable and reachable
    * from nothing: {@code countType()} counts them and no traversal finds them.
    * <p>
@@ -2067,10 +2081,13 @@ public class GraphBatch implements AutoCloseable {
         final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded, hasNoOutEdges);
 
         // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons its
-        // chunk pages. Since #5596 that needs no side condition: the merge accepts a page only when EVERY byte this
-        // transaction wrote to it was declared replayable, and these bulk writes declare nothing - so a page this
-        // path touched can never be rebased, even if the same transaction also drove EdgeLinkedList.add on it.
-        // See docs/supernode.md §3.
+        // chunk pages. Since #5596 the merge accepts a page only when EVERY byte this transaction wrote to it was
+        // declared replayable, and a segment write is declared so only when the segment has tracked appends - which
+        // no segment this path writes has, because it neither tracks nor runs inside a caller's transaction whose
+        // EdgeLinkedList.add could have tracked one. That last condition is load-bearing: a segment carrying tracked
+        // appends is declared as a whole, rewrites included (#10375), so a bulk write that could reach one must go
+        // through EdgeLinkedList.updateRewrittenSegment instead. The refusal is pinned by
+        // Issue9242GraphBatchCallerTransactionTest. See docs/supernode.md §3.
         if (lastSegmentPromoted) {
           // #5667: the vertex is already a promoted super-node - route this group through the standard,
           // MVCC-safe StripedEdgeList write path instead of the bulk segment path.
@@ -2214,7 +2231,7 @@ public class GraphBatch implements AutoCloseable {
   private void connectDeferredIncomingEdges() {
     // Drains in PINNED PREFIXES rather than straight over inEdgeCount (issue #5950 review cycle 4).
     //
-    // The resume state (inEdgesResumeSortIndex, completedIncomingBuckets) is expressed against the sort
+    // The resume state (inEdgesResumeSortIndex, completedIncomingTasks) is expressed against the sort
     // index built at the top of a pass. That index is a counting sort over the buffer, so appending rows
     // changes bucketCounts/bucketOffsets and therefore what a given raw index - and a given bucket's
     // [from,to) range - refers to. A caller that catches the exception from a failed early drain and keeps
@@ -2255,7 +2272,8 @@ public class GraphBatch implements AutoCloseable {
       discardDrainedIncomingPrefix(prefix);
       inEdgesDrainPrefix = 0;
       inEdgesResumeSortIndex = 0;
-      completedIncomingBuckets.clear();
+      inEdgesTaskRanges = null;
+      completedIncomingTasks.clear();
     }
 
     // Fully drained - release the buffers so a long-lived batch does not hold them between drains.
@@ -2412,42 +2430,47 @@ public class GraphBatch implements AutoCloseable {
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
 
-    // One local (non-concurrent) head-pointer map pair per scheduled bucket task, keyed by bucket id.
-    // Each bucket's vertexKeys are disjoint from every other bucket's (vertexKey encodes the
-    // destination bucket id), and a bucket runs on exactly one thread at a time - including across its
+    // Planned once per pinned prefix and reused by a retry, so the indexes in completedIncomingTasks keep naming the
+    // same ranges (issue #10547). A destination vertex's group never straddles two tasks, see planConnectTasks.
+    if (inEdgesTaskRanges == null)
+      inEdgesTaskRanges = planConnectTasks(inSortIndex, inDstPositions, maxBucket, parallelLevel);
+    final int[] tasks = inEdgesTaskRanges;
+    final int taskCount = tasks.length / 2;
+
+    // One local (non-concurrent) head-pointer map pair per scheduled task, keyed by task index.
+    // Each task's vertexKeys are disjoint from every other task's (a task is a run of whole destination
+    // vertices of one bucket), and a task runs on exactly one thread at a time - including across its
     // own internal CME retries, which rerun connectIncomingEdgesRangeLocal from scratch into the SAME
     // local maps - so no synchronization is needed for these. They are merged into the class-level,
     // NOT-thread-safe deferredHeads/inChunkRIDCache only in the single-threaded pass below, and only
-    // for buckets that are actually in completedIncomingBuckets: a bucket that exhausts its retries
+    // for tasks that are actually in completedIncomingTasks: a task that exhausts its retries
     // must not poison the authoritative state with RIDs from its rolled-back transaction, which a
     // subsequent retry of connectDeferredIncomingEdges() would then dereference and crash on (issue
     // #5950 review cycle 3).
-    final Map<Integer, Map<Long, RID>> bucketDeferredInHead = new HashMap<>();
-    final Map<Integer, Map<Long, RID>> bucketInChunkCache = new HashMap<>();
+    final Map<Integer, Map<Long, RID>> taskDeferredInHead = new HashMap<>();
+    final Map<Integer, Map<Long, RID>> taskInChunkCache = new HashMap<>();
 
-    // Schedule each bucket as a transaction on its assigned async slot (bucket % parallelLevel).
-    // Buckets assigned to the same slot run sequentially within that slot's thread, so
-    // no two tasks on the same slot ever run concurrently — thread-local state is safe.
-    for (int b = 0; b <= maxBucket; b++) {
-      if (bucketCounts[b] == 0)
-        continue;
-
+    // Schedule each task as a transaction on its assigned async slot (task % parallelLevel).
+    // Tasks assigned to the same slot run sequentially within that slot's thread, so
+    // no two tasks on the same slot ever run concurrently - thread-local state is safe.
+    for (int t = 0; t < taskCount; t++) {
       // Already durably committed by a prior, partially-failed attempt at this drain - skip
       // rescheduling it so a retry doesn't recommit it (issue #5950 review cycle 3).
-      if (completedIncomingBuckets.contains(b))
+      if (completedIncomingTasks.contains(t))
         continue;
 
-      final int from = bucketOffsets[b];
-      final int to = bucketOffsets[b + 1];
-      final int slot = b % parallelLevel;
-      final int bucketId = b;
+      final int from = tasks[t * 2];
+      final int to = tasks[t * 2 + 1];
+      final int slot = t % parallelLevel;
+      final int taskId = t;
+      final boolean sharesBucket = sharesBucketWithSiblingTask(tasks, t, inSortIndex, inDstBucketIds);
 
       final Map<Long, RID> localDeferredInHead = new HashMap<>();
       final Map<Long, RID> localInChunkCache = new HashMap<>();
-      bucketDeferredInHead.put(bucketId, localDeferredInHead);
-      bucketInChunkCache.put(bucketId, localInChunkCache);
+      taskDeferredInHead.put(taskId, localDeferredInHead);
+      taskInChunkCache.put(taskId, localInChunkCache);
 
-      // Mark the bucket complete from the transaction's OWN post-commit success callback, never from
+      // Mark the task complete from the transaction's OWN post-commit success callback, never from
       // inside connectIncomingEdgesRangeLocal itself: that method runs BEFORE the surrounding commit
       // and could still fail there, so only the OkCallback (fired strictly after database.commit()
       // succeeds, see DatabaseAsyncTransaction.execute()) guarantees membership implies a durable
@@ -2460,21 +2483,23 @@ public class GraphBatch implements AutoCloseable {
       async.transaction(() -> {
             localDeferredInHead.clear();
             localInChunkCache.clear();
+            if (sharesBucket)
+              database.getTransaction().setAppendOnlyInserts(true);
             connectIncomingEdgesRangeLocal(inSortIndex, from, to, localDeferredInHead, localInChunkCache);
           },
-          3, () -> completedIncomingBuckets.add(bucketId), e -> error.compareAndSet(null, e), slot);
+          3, () -> completedIncomingTasks.add(taskId), e -> error.compareAndSet(null, e), slot);
     }
 
     async.waitCompletion();
 
     // Merge deferred head pointers back into the (non-concurrent) shared maps, single-threaded here,
-    // and ONLY for buckets that durably committed (issue #5950 review cycle 3) - putAll is unavailable
+    // and ONLY for tasks that durably committed (issue #5950 review cycle 3) - putAll is unavailable
     // on LongObjectHashMap by design; iterate and put.
-    for (final Map.Entry<Integer, Map<Long, RID>> entry : bucketDeferredInHead.entrySet()) {
-      if (!completedIncomingBuckets.contains(entry.getKey()))
+    for (final Map.Entry<Integer, Map<Long, RID>> entry : taskDeferredInHead.entrySet()) {
+      if (!completedIncomingTasks.contains(entry.getKey()))
         continue;
       entry.getValue().forEach(deferredHeads::putIn);
-      bucketInChunkCache.get(entry.getKey()).forEach(inChunkRIDCache::put);
+      taskInChunkCache.get(entry.getKey()).forEach(inChunkRIDCache::put);
     }
 
     final Throwable t = error.get();
@@ -2483,7 +2508,7 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
-   * Connects incoming edges for a bucket range using local tmp arrays.
+   * Connects incoming edges for a range of one bucket, made of whole destination vertices, using local tmp arrays.
    * Uses the same fill-then-persist optimization as the sequential path.
    * Each invocation runs within a single async slot's transaction.
    */
@@ -2565,7 +2590,7 @@ public class GraphBatch implements AutoCloseable {
         vertexHeadReads.increment();
         final MutableVertex dstVertex = ((Vertex) database.lookupByRID(new RID(dstBucket, dstPos), true)).modify();
         // #5667: check for an already-promoted super-node BEFORE assuming a plain segment, with purely
-        // local variables - this method runs concurrently across async-executor threads (one per bucket slot),
+        // local variables - this method runs concurrently across async-executor threads (one per task slot),
         // so signalling through a shared instance field (as the single-threaded sequential path does) would race.
         final RID dstHeadChunk = dstVertex.getInEdgesHeadChunk();
         if (dstHeadChunk != null) {
@@ -2631,7 +2656,7 @@ public class GraphBatch implements AutoCloseable {
       i = j;
     }
 
-    // Fired right before the surrounding async.transaction commits this bucket's work (see
+    // Fired right before the surrounding async.transaction commits this task's work (see
     // DatabaseAsyncTransaction.execute()), so a test hook throwing here simulates that commit failing.
     fireBeforeIncomingEdgeCommitHook();
   }
@@ -3342,63 +3367,67 @@ public class GraphBatch implements AutoCloseable {
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final int parallelLevel = async.getParallelLevel();
 
-    // One local head-pointer map pair per scheduled bucket, merged into the class-level maps only for
-    // buckets that durably committed - structurally identical to connectIncomingEdgesParallel (issue
+    // A source vertex's group never straddles two tasks, see planConnectTasks (issue #10547).
+    final int[] tasks = planConnectTasks(sortIndex, edgeSrcPositions, maxBucket, parallelLevel);
+    final int taskCount = tasks.length / 2;
+
+    // One local head-pointer map pair per scheduled task, merged into the class-level maps only for
+    // tasks that durably committed - structurally identical to connectIncomingEdgesParallel (issue
     // #5950 review cycle 4). Two distinct pre-commit-write hazards make this necessary here too:
     //   1. async.transaction(..., 3, ...) retries the SAME lambda on a ConcurrentModificationException,
     //      re-invoking connectOutEdgesRangeLocal over the same range after a rollback. Anything the
     //      failed attempt wrote into a class-level map still points at records that rollback undid, and
     //      the retry reads those maps FIRST - dereferencing a RID that was never made durable.
-    //   2. A bucket that exhausts its 3 retries would otherwise still have its entries merged below,
+    //   2. A task that exhausts its 3 retries would otherwise still have its entries merged below,
     //      poisoning the OUT side of deferredHeads - the authoritative head-chunk fallback the review-cycle-1/2 fix
     //      depends on - for the whole rest of the batch.
     // Unlike the IN side this set is method-local, not an instance field: a failed flush() drops the
     // outgoing buffer outright (see flush()'s catch block), so there is no cross-call resume to support.
-    final Map<Integer, Map<Long, RID>> bucketDeferredOutHead = new HashMap<>();
-    final Map<Integer, Map<Long, RID>> bucketOutChunkCache = new HashMap<>();
-    final Set<Integer> completedOutgoingBuckets = ConcurrentHashMap.newKeySet();
+    final Map<Integer, Map<Long, RID>> taskDeferredOutHead = new HashMap<>();
+    final Map<Integer, Map<Long, RID>> taskOutChunkCache = new HashMap<>();
+    final Set<Integer> completedOutgoingTasks = ConcurrentHashMap.newKeySet();
 
-    for (int b = 0; b <= maxBucket; b++) {
-      if (bucketCounts[b] == 0)
-        continue;
-
-      final int from = bucketOffsets[b];
-      final int to = bucketOffsets[b + 1];
-      final int slot = b % parallelLevel;
-      final int bucketId = b;
+    for (int t = 0; t < taskCount; t++) {
+      final int from = tasks[t * 2];
+      final int to = tasks[t * 2 + 1];
+      final int slot = t % parallelLevel;
+      final int taskId = t;
+      final boolean sharesBucket = sharesBucketWithSiblingTask(tasks, t, sortIndex, edgeSrcBucketIds);
 
       // Re-created per attempt inside the lambda, not captured from here: a CME retry must not inherit
       // the rolled-back attempt's entries (issue #5950 review cycle 4, hazard 1 above).
       final Map<Long, RID> localDeferredOutHead = new HashMap<>();
       final Map<Long, RID> localOutChunkCache = new HashMap<>();
-      bucketDeferredOutHead.put(bucketId, localDeferredOutHead);
-      bucketOutChunkCache.put(bucketId, localOutChunkCache);
+      taskDeferredOutHead.put(taskId, localDeferredOutHead);
+      taskOutChunkCache.put(taskId, localOutChunkCache);
 
       async.transaction(() -> {
             localDeferredOutHead.clear();
             localOutChunkCache.clear();
+            if (sharesBucket)
+              database.getTransaction().setAppendOnlyInserts(true);
             connectOutEdgesRangeLocal(edgeRIDs, from, to, localDeferredOutHead, localOutChunkCache);
           },
-          3, () -> completedOutgoingBuckets.add(bucketId), e -> error.compareAndSet(null, e), slot);
+          3, () -> completedOutgoingTasks.add(taskId), e -> error.compareAndSet(null, e), slot);
     }
 
     async.waitCompletion();
 
     // Merge deferred head pointers back into the (non-concurrent) shared maps, single-threaded here, and
-    // ONLY for buckets that durably committed - putAll is unavailable on LongObjectHashMap by design.
-    for (final Map.Entry<Integer, Map<Long, RID>> entry : bucketDeferredOutHead.entrySet()) {
-      if (!completedOutgoingBuckets.contains(entry.getKey()))
+    // ONLY for tasks that durably committed - putAll is unavailable on LongObjectHashMap by design.
+    for (final Map.Entry<Integer, Map<Long, RID>> entry : taskDeferredOutHead.entrySet()) {
+      if (!completedOutgoingTasks.contains(entry.getKey()))
         continue;
       entry.getValue().forEach(deferredHeads::putOut);
-      bucketOutChunkCache.get(entry.getKey()).forEach(outChunkRIDCache::put);
+      taskOutChunkCache.get(entry.getKey()).forEach(outChunkRIDCache::put);
     }
 
-    // Exactly the edges a completed bucket connected, counted whether or not a sibling bucket failed (issue
-    // #6083 item 4). A bucket is in this set only once its own transaction committed, so this never claims an
+    // Exactly the edges a completed task connected, counted whether or not a sibling task failed (issue
+    // #6083 item 4). A task is in this set only once its own transaction committed, so this never claims an
     // edge a rollback took back.
     int durable = 0;
-    for (final int bucketId : completedOutgoingBuckets)
-      durable += bucketCounts[bucketId];
+    for (final int taskId : completedOutgoingTasks)
+      durable += tasks[taskId * 2 + 1] - tasks[taskId * 2];
     flushDurableOutEdges = durable;
     flushDurableOutRanges = null;
 
@@ -3406,21 +3435,19 @@ public class GraphBatch implements AutoCloseable {
     if (t == null)
       return;
 
-    // Every edge record was made durable by the commit that preceded this dispatch, so a bucket that never
+    // Every edge record was made durable by the commit that preceded this dispatch, so a task that never
     // committed leaves its records behind connected to nothing (issue #6083 item 2). Unlike the sequential
-    // path's failure these are not a suffix of the sort index - the buckets that failed are wherever they are -
-    // so walk the partition once, reclaiming the failed buckets and recording the surviving ones for the IN
+    // path's failure these are not a suffix of the sort index - the tasks that failed are wherever they are -
+    // so walk the plan once, reclaiming the failed tasks and recording the surviving ones for the IN
     // pass that flush() still owes them.
-    final int[] survivors = new int[completedOutgoingBuckets.size() * 2];
+    final int[] survivors = new int[completedOutgoingTasks.size() * 2];
     int survivorCount = 0;
-    for (int b = 0; b <= maxBucket; b++) {
-      if (bucketCounts[b] == 0)
-        continue;
-      if (completedOutgoingBuckets.contains(b)) {
-        survivors[survivorCount++] = bucketOffsets[b];
-        survivors[survivorCount++] = bucketOffsets[b + 1];
+    for (int task = 0; task < taskCount; task++) {
+      if (completedOutgoingTasks.contains(task)) {
+        survivors[survivorCount++] = tasks[task * 2];
+        survivors[survivorCount++] = tasks[task * 2 + 1];
       } else
-        reclaimOrphanEdgeRecords(edgeRIDs, bucketOffsets[b], bucketOffsets[b + 1], true, t);
+        reclaimOrphanEdgeRecords(edgeRIDs, tasks[task * 2], tasks[task * 2 + 1], true, t);
     }
     flushDurableOutRanges = survivorCount == survivors.length ? survivors : Arrays.copyOf(survivors, survivorCount);
 
@@ -3428,7 +3455,95 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
-   * Connects outgoing edges for a bucket range using local tmp arrays.
+   * Cuts the range of every non-empty bucket of a counting-sort partition ({@link #bucketCounts}/{@link #bucketOffsets},
+   * each bucket's range sorted by vertex position) into the {@code [from,to)} ranges the parallel connect pass runs as
+   * separate async transactions, returned as consecutive pairs in sort-index order.
+   * <p>
+   * One task per bucket when there are at least {@code parallelLevel} non-empty buckets, which is what the pass always did.
+   * With fewer - a vertex type created with the default single bucket is the common case - that left all but a few async
+   * slots idle and loaded the whole graph on one thread (issue #10547), so each bucket's range is then cut into about as
+   * many pieces as its share of the edges is worth, never smaller than {@link #MIN_EDGES_PER_CONNECT_TASK}. A cut is moved
+   * forward to the next change of vertex, so every vertex's edges are written by exactly one task: two tasks building the
+   * same vertex's edge list concurrently would each chain their own head segment, and one would be lost at the merge.
+   * Tasks of the same bucket do share the bucket's edge-list bucket. They append their new segments to pages of their own
+   * (see {@link #sharesBucketWithSiblingTask}); the in-page updates of segments that already existed are what
+   * {@link GlobalConfiguration#TX_PAGE_SLOT_MERGE} reconciles at commit, and a conflict it cannot is retried by the async
+   * transaction like any other.
+   * <p>
+   * What appending trades: each task of a shared bucket leaves at most its last page partly filled per flush, which a
+   * free-space search would have filled. The pages still update the statistics, so a later searching transaction can reuse
+   * that room. Measured on 4M edges into one bucket over 8 tasks and 8 flushes: 1,761 edge-list pages, against 1,746 with
+   * one task per bucket.
+   *
+   * @param index     the sort index the partition was built into
+   * @param positions vertex position per buffer row, read through {@code index}
+   */
+  private int[] planConnectTasks(final int[] index, final long[] positions, final int maxBucket, final int parallelLevel) {
+    int nonEmptyBuckets = 0;
+    long total = 0;
+    for (int b = 0; b <= maxBucket; b++)
+      if (bucketCounts[b] > 0) {
+        nonEmptyBuckets++;
+        total += bucketCounts[b];
+      }
+
+    final boolean split = parallelLevel > 1 && nonEmptyBuckets < parallelLevel && total >= 2L * MIN_EDGES_PER_CONNECT_TASK;
+    int[] tasks = new int[(nonEmptyBuckets + (split ? parallelLevel : 0)) * 2];
+    int n = 0;
+
+    for (int b = 0; b <= maxBucket; b++) {
+      if (bucketCounts[b] == 0)
+        continue;
+
+      final int bucketFrom = bucketOffsets[b];
+      final int bucketTo = bucketOffsets[b + 1];
+      final int count = bucketTo - bucketFrom;
+
+      int pieces = 1;
+      if (split) {
+        pieces = (int) Math.max(1, Math.round((double) count * parallelLevel / total));
+        pieces = Math.min(pieces, Math.max(1, count / MIN_EDGES_PER_CONNECT_TASK));
+      }
+      final int step = (count + pieces - 1) / pieces;
+
+      int from = bucketFrom;
+      for (int p = 1; p < pieces && from < bucketTo; p++) {
+        int cut = Math.max(bucketFrom + p * step, from + 1);
+        // Never cut inside a vertex's group: move forward to where the position changes.
+        while (cut < bucketTo && positions[index[cut]] == positions[index[cut - 1]])
+          cut++;
+        if (cut >= bucketTo)
+          break;
+        if (n + 2 > tasks.length)
+          tasks = Arrays.copyOf(tasks, tasks.length * 2 + 2);
+        tasks[n++] = from;
+        tasks[n++] = cut;
+        from = cut;
+      }
+      if (n + 2 > tasks.length)
+        tasks = Arrays.copyOf(tasks, tasks.length * 2 + 2);
+      tasks[n++] = from;
+      tasks[n++] = bucketTo;
+    }
+
+    return n == tasks.length ? tasks : Arrays.copyOf(tasks, n);
+  }
+
+  /**
+   * Whether task {@code t} of a {@link #planConnectTasks} plan runs concurrently with another task of the same bucket. Such
+   * tasks write the same edge-list bucket at the same time, so they append their new segments rather than search the
+   * bucket's free space for them: that search runs under a bucket-wide monitor and serialized the very tasks the split
+   * created (issue #10547, see {@link TransactionContext#setAppendOnlyInserts(boolean)}). Tasks of a
+   * bucket are adjacent in the plan.
+   */
+  private static boolean sharesBucketWithSiblingTask(final int[] tasks, final int t, final int[] index, final int[] buckets) {
+    final int bucket = buckets[index[tasks[t * 2]]];
+    return (t > 0 && buckets[index[tasks[t * 2 - 2]]] == bucket)
+        || (t * 2 + 2 < tasks.length && buckets[index[tasks[t * 2 + 2]]] == bucket);
+  }
+
+  /**
+   * Connects outgoing edges for a range of one bucket, made of whole source vertices, using local tmp arrays.
    * Uses fill-then-persist for new segments and vectorized writes for existing ones.
    */
   private void connectOutEdgesRangeLocal(final RID[] edgeRIDs, final int from, final int to,
@@ -3570,7 +3685,7 @@ public class GraphBatch implements AutoCloseable {
       i = j;
     }
 
-    // Fired right before the surrounding async.transaction commits this bucket's work, so a test hook
+    // Fired right before the surrounding async.transaction commits this task's work, so a test hook
     // throwing here simulates that commit failing (issue #5950 review cycle 4).
     final IntConsumer hook = TEST_BEFORE_OUTGOING_EDGE_COMMIT_HOOK;
     if (hook != null)

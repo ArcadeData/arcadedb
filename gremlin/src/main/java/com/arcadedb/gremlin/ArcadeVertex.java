@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -42,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -238,26 +240,16 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     // A REMOVED VERTEX HAS NO EDGES: ITS RECORD STILL POINTS TO THE LISTS ITS DELETE FREED (#10196)
     if (isRemoved())
       return Collections.emptyIterator();
-    final List<Edge> result = new ArrayList<>();
-
-    int walked = 0;
-    if (edgeLabels.length == 0) {
-      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction))) {
-        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
-          ArcadeGraph.checkNotTerminated();
-        if (exists(edge))
-          result.add(new ArcadeEdge(this.graph, edge));
+    // READ AS THE TRAVERSAL PULLS THEM: AN EXISTENCE TEST OR A limit() OVER A SUPERNODE STOPS AT THE FIRST ENTRIES (#10308)
+    final Iterator<com.arcadedb.graph.Edge> source = (edgeLabels.length == 0 ?
+        this.baseElement.getEdges(ArcadeGraph.mapDirection(direction)) :
+        this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels)).iterator();
+    return new IteratorWalk<com.arcadedb.graph.Edge, Edge>(source) {
+      @Override
+      protected Edge wrap(final com.arcadedb.graph.Edge edge) {
+        return exists(edge) ? new ArcadeEdge(graph, edge) : null;
       }
-    } else {
-      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels)) {
-        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
-          ArcadeGraph.checkNotTerminated();
-        if (exists(edge))
-          result.add(new ArcadeEdge(this.graph, edge));
-      }
-    }
-
-    return result.iterator();
+    };
   }
 
   /** Filters out deleted edges. A lightweight edge has no record to look for: it exists as long as the vertex lists it (#9142). */
@@ -271,9 +263,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     ArcadeGraph.checkNotTerminated();
     if (isRemoved())
       return Collections.emptyIterator();
-    // CSR fast path: use GAV provider when available for O(1) neighbor lookup
+    // CSR fast path: use GAV provider when available for O(1) neighbor lookup. Pinned, so the node id, the neighbours and their
+    // RIDs come from one snapshot whatever the view does meanwhile (issue #10415)
     final GraphTraversalProvider provider = graph.getDatabase() instanceof Database db
-        ? (edgeLabels.length == 0
+        ? GraphViewPins.pinAlone(edgeLabels.length == 0
             ? GraphTraversalProviderRegistry.findProvider(db)
             : GraphTraversalProviderRegistry.findProvider(db, edgeLabels))
         : null;
@@ -284,41 +277,137 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
         final int[] neighborIds = edgeLabels.length == 0
             ? provider.getNeighborIds(nodeId, dir)
             : provider.getNeighborIds(nodeId, dir, edgeLabels);
-        final List<Vertex> result = new ArrayList<>(neighborIds.length);
-        for (final int neighborId : neighborIds) {
-          final RID rid = provider.getRID(neighborId);
-          if (rid != null) {
-            try {
-              final com.arcadedb.graph.Vertex v = rid.asVertex();
-              result.add(new ArcadeVertex(this.graph, v));
-            } catch (final RecordNotFoundException e) {
-              // vertex deleted since CSR was built — skip
-            }
-          }
-        }
-        return result.iterator();
+        // THE IDS ARE ONE ARRAY OF PRIMITIVES, BUT EACH NEIGHBOR IS LOOKED UP AND WRAPPED WHEN THE TRAVERSAL PULLS IT (#10308)
+        return new NeighborIdWalk(provider, neighborIds);
       }
     }
 
-    // OLTP fallback
-    final List<Vertex> result = new ArrayList<>();
-    int walked = 0;
-    if (edgeLabels.length == 0) {
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction))) {
-        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
-          ArcadeGraph.checkNotTerminated();
-        if (graph.getDatabase().existsRecord(vertex.getIdentity()))
-          result.add(new ArcadeVertex(this.graph, vertex));
+    // OLTP fallback, read as the traversal pulls the neighbors: an existence test or a limit() over a supernode stops at the first
+    // entries (#10308)
+    final Iterator<com.arcadedb.graph.Vertex> source = (edgeLabels.length == 0 ?
+        this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)) :
+        this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels)).iterator();
+    return new IteratorWalk<com.arcadedb.graph.Vertex, Vertex>(source) {
+      @Override
+      protected Vertex wrap(final com.arcadedb.graph.Vertex vertex) {
+        return graph.getDatabase().existsRecord(vertex.getIdentity()) ? new ArcadeVertex(graph, vertex) : null;
       }
-    } else {
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels)) {
+    };
+  }
+
+  /**
+   * Walks the entries of an adjacency list one at a time, wrapping each when the caller asks for it, in the order of the list and
+   * with its duplicates (a parallel edge lists its neighbor twice). An entry whose record is gone is skipped, as it was when the
+   * whole list was read up front, but now as of the moment it is reached: a neighbor a traversal deleted after this walk began is
+   * not handed out afterwards. The statement termination is checked every {@link ArcadeGraph#TERMINATION_CHECK_INTERVAL} entries
+   * walked, inside a supernode (#9689).
+   * <p>
+   * The walk ends when this vertex is removed meanwhile: its delete freed the lists the walk would go on to read, and a removed
+   * vertex has no edges (#10196).
+   */
+  private abstract class LazyWalk<T> implements Iterator<T> {
+    private T   next;
+    private int walked;
+
+    protected abstract boolean hasMoreEntries();
+
+    /** @return the element handed out for the next entry, or null when its record is gone and the entry is skipped */
+    protected abstract T wrapNextEntry();
+
+    @Override
+    public boolean hasNext() {
+      while (true) {
+        if (isRemoved()) {
+          // THE VERTEX WENT: ITS EDGES WENT WITH IT, THE ELEMENT A hasNext() ALREADY PULLED INCLUDED
+          next = null;
+          return false;
+        }
+        if (next != null) {
+          // PULLED BY AN EARLIER hasNext(): AN ELEMENT REMOVED SINCE IS NOT HANDED OUT, AS ONE REMOVED BEFORE IT WAS PULLED IS NOT
+          if (next instanceof ArcadeElement<?> element && element.isRemoved())
+            next = null;
+          else
+            return true;
+        }
+        if (!hasMore())
+          return false;
         if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
           ArcadeGraph.checkNotTerminated();
-        if (graph.getDatabase().existsRecord(vertex.getIdentity()))
-          result.add(new ArcadeVertex(this.graph, vertex));
+        next = wrapNextEntry();
       }
     }
-    return result.iterator();
+
+    private boolean hasMore() {
+      try {
+        return hasMoreEntries();
+      } catch (final RecordNotFoundException e) {
+        // A segment of the list was freed under the walk by the delete of this vertex, one the graph did not see (a statement ran
+        // it): its edges went with it, so the walk is over
+        if (graph.getDatabase().existsRecord(baseElement.getIdentity()))
+          throw e;
+        return false;
+      }
+    }
+
+    @Override
+    public T next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final T result = next;
+      next = null;
+      return result;
+    }
+  }
+
+  /** A {@link LazyWalk} over the entries an iterator of the engine yields. */
+  private abstract class IteratorWalk<S, T> extends LazyWalk<T> {
+    private final Iterator<S> source;
+
+    IteratorWalk(final Iterator<S> source) {
+      this.source = source;
+    }
+
+    protected abstract T wrap(S entry);
+
+    @Override
+    protected boolean hasMoreEntries() {
+      return source.hasNext();
+    }
+
+    @Override
+    protected T wrapNextEntry() {
+      return wrap(source.next());
+    }
+  }
+
+  /** A {@link LazyWalk} over the neighbor ids a graph view answered, kept as the array of primitives it is. */
+  private final class NeighborIdWalk extends LazyWalk<Vertex> {
+    private final GraphTraversalProvider provider;
+    private final int[]                  neighborIds;
+    private       int                    position;
+
+    NeighborIdWalk(final GraphTraversalProvider provider, final int[] neighborIds) {
+      this.provider = provider;
+      this.neighborIds = neighborIds;
+    }
+
+    @Override
+    protected boolean hasMoreEntries() {
+      return position < neighborIds.length;
+    }
+
+    @Override
+    protected Vertex wrapNextEntry() {
+      final RID rid = provider.getRID(neighborIds[position++]);
+      if (rid == null)
+        return null;
+      try {
+        return new ArcadeVertex(graph, rid.asVertex());
+      } catch (final RecordNotFoundException e) {
+        // vertex deleted since CSR was built - skip
+        return null;
+      }
+    }
   }
 
   @Override

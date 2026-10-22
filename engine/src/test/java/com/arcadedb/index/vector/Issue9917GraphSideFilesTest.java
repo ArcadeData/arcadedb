@@ -67,10 +67,8 @@ class Issue9917GraphSideFilesTest extends TestHelper {
     assertThat(Files.exists(pq)).isTrue();
     try (final LSMVectorIndexGraphSideFiles.Opened opened = captured.get(graphFile("PqDoc").getFileId()).openIfUnchanged()) {
       assertThat(opened).isNotNull();
-      // NO ORDINAL MAP: a PRODUCT-quantized index never records one (writeGraphManifest), and one absent at the capture
-      // has to be absent at the open too, which it is
-      assertThat(names(opened)).as("a PRODUCT-quantized index carries its PQ, and no ordinal map")
-          .containsExactly(pq.getFileName().toString(), manifestName("PqDoc"));
+      assertThat(names(opened)).as("a PRODUCT-quantized index carries its ordinal map and its PQ, and the manifest comes last")
+          .containsExactly(ordinalMapName("PqDoc"), pq.getFileName().toString(), manifestName("PqDoc"));
     }
   }
 
@@ -187,7 +185,7 @@ class Issue9917GraphSideFilesTest extends TestHelper {
 
   @Test
   void filesOpenedWhileUnchangedKeepTheirBytesWhenAPersistReplacesThemDuringTheCopy() throws Exception {
-    // BOTH SHAPES: the non-quantized index has an ordinal map, the PRODUCT-quantized one a PQ
+    // BOTH SHAPES: the non-quantized index has an ordinal map, the PRODUCT-quantized one an ordinal map and a PQ
     createVectorIndex("Doc", "NONE");
     createVectorIndex("PqDoc", "PRODUCT");
     final Path directory = Path.of(database.getDatabasePath());
@@ -198,7 +196,7 @@ class Issue9917GraphSideFilesTest extends TestHelper {
       final Map<String, byte[]> before = new HashMap<>();
       try (final LSMVectorIndexGraphSideFiles.Opened opened = sideFiles.openIfUnchanged()) {
         assertThat(opened).isNotNull();
-        assertThat(opened.entries()).hasSize(2);
+        assertThat(opened.entries()).hasSize(type.equals("PqDoc") ? 3 : 2);
         for (final LSMVectorIndexGraphSideFiles.Entry entry : opened.entries())
           before.put(entry.fileName(), Files.readAllBytes(directory.resolve(entry.fileName())));
 

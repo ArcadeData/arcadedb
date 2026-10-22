@@ -20,9 +20,9 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.graph.Vertex;
@@ -76,6 +76,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private static final int PARALLEL_THRESHOLD = 8192;
   // The paths each walker turns into rows per round of the row path: what bounds the rows held at once (issue #9738)
   private static final int ROWS_PER_ROUND     = 16_384;
+  // Up to this many sources the entries of the first hop are counted per source to estimate what the chain visits, above it the mean
+  // degree stands for them: counting is a lookup each, worth it for a point read and not for a scan
+  private static final int COUNTED_SOURCES    = 1024;
 
   private final GraphTraversalProvider provider;
 
@@ -198,26 +201,43 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     this.unfusedHops = unfusedHops;
   }
 
+  /**
+   * This chain reading {@code pinned} instead of the view the plan holds: the same configuration, for one execution. The plan
+   * is cached and shared by concurrent executions, so the snapshot an execution reads cannot be a field of it.
+   */
+  private GAVFusedChainOperator readingFrom(final GraphTraversalProvider pinned) {
+    final GAVFusedChainOperator copy = new GAVFusedChainOperator(child, pinned, sourceVariable, hopDirections, hopEdgeTypes,
+        hopTargetVariables, hopTargetBucketIds, materializeVariable, estimatedCost, estimatedCardinality);
+    copy.pushedFilter = pushedFilter;
+    copy.filterAtDepth = filterAtDepth;
+    copy.pathFilter = pathFilter;
+    copy.groupKeyVariables = groupKeyVariables;
+    copy.countOutputName = countOutputName;
+    copy.groupKeyOutputNames = groupKeyOutputNames;
+    copy.hopTracked = hopTracked;
+    copy.hopConflictsWith = hopConflictsWith;
+    copy.unfusedHops = unfusedHops;
+    return copy;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Every node id of the execution, in every round and every worker, is read off the snapshot the statement pinned
+    // (issue #10415): a rebuild of the view while the rows stream out cannot hand the walk another numbering, so there is
+    // nothing to detect and no query to retry
+    final GraphTraversalProvider pinned = GraphViewPins.pin(context, provider);
+    if (pinned != provider)
+      return readingFrom(pinned).execute(context, nRecords);
+
     // Built once on the calling thread and handed to the workers: reading the deadline from the shared context
     // inside each chunk would have every worker race to publish the same lazily-computed value (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    // Taken before any node ID is read: every ID of this execution must belong to this numbering
-    final Object nodeIdSpace = provider.getNodeIdSpace();
     final ResultSet inputResults = child.execute(context, nRecords);
     final Database db = context.getDatabase();
     final int chainLength = hopDirections.length;
 
     // Pre-compute the output variable names array (shared across all rows — zero per-row allocation)
     final String[] outputNames = buildOutputNames();
-
-    // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices)
-    final NeighborView[] hopViews = new NeighborView[chainLength];
-    for (int i = 0; i < chainLength; i++)
-      if (hopTracked == null || !hopTracked[i])
-        hopViews[i] = provider.getNeighborView(hopDirections[i], hopEdgeTypes[i]);
-    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes(db) : null;
 
     // Collect all source nodeIds into a primitive int[] for parallel partitioning (zero boxing)
     int[] sourceNodeIdsBuf = new int[1024];
@@ -227,13 +247,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       guard.check();
       final Result inputResult = inputResults.next();
       final Object sourceObj = inputResult.getProperty(sourceVariable);
-      final int nodeId;
-      if (sourceObj instanceof GAVVertex)
-        nodeId = ((GAVVertex) sourceObj).getNodeId();
-      else if (sourceObj instanceof Vertex)
-        nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
-      else
+      if (!(sourceObj instanceof Vertex))
         continue;
+      final int nodeId = GAVVertex.nodeIdIn(sourceObj, provider);
       if (nodeId >= 0) {
         if (sourceCount == sourceNodeIdsBuf.length)
           sourceNodeIdsBuf = Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
@@ -251,6 +267,18 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
     final int[] sourceNodeIds = sourceNodeIdsBuf;
     final int totalSources = sourceCount; // effectively final for lambda capture
+
+    // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices). Asked for after the
+    // sources are known: a view packs the adjacency of the whole graph, and a chain that starts from a handful of vertices does
+    // not pay for building one while the view has an overlay, which every commit replaces (issue #10471)
+    final long[] hopVisits = expectedVisits(sourceNodeIds, totalSources);
+    final NeighborView[] hopViews = new NeighborView[chainLength];
+    // From the last hop back: it expects the most entries, so it is the one that builds a view the hops before it share (two hops
+    // of one edge type read the same view), and they then find it built instead of each adding to the demand for it
+    for (int i = chainLength - 1; i >= 0; i--)
+      if (hopTracked == null || !hopTracked[i])
+        hopViews[i] = provider.getNeighborViewForVisits(hopVisits[i], hopDirections[i], hopEdgeTypes[i]);
+    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes(db, hopVisits) : null;
     final int parallelism = Runtime.getRuntime().availableProcessors();
     // Guard against an empty source set: chunkSize must never be 0 (issue #5306, it later divides by it).
     final int chunkSize = Math.max(1, (totalSources + parallelism - 1) / parallelism);
@@ -258,7 +286,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // If fused aggregation is enabled, use the parallel aggregating path
     if (groupKeyVariables != null)
       return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
-          hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows, nodeIdSpace);
+          hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows);
 
     // One walker per thread, each over a contiguous slice of the sources, resumed round after round (issue #9738)
     final int walkerCount = totalSources < PARALLEL_THRESHOLD ? 1 :
@@ -269,7 +297,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       final int end = walkerCount == 1 ? totalSources : Math.min(start + chunkSize, totalSources);
       walkers[t] = new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, db, context);
     }
-    return new StreamingRows(walkers, outputNames, db, context, unmappedRows, nodeIdSpace);
+    return new StreamingRows(walkers, outputNames, db, context, unmappedRows);
   }
 
   /**
@@ -285,11 +313,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * interleave round by round, which no consumer relies on (Cypher rows have no order without ORDER BY, and the planner
    * never answers an ORDER BY from the index order through a fused chain).
    * <p>
-   * A rebuild of the view between two rounds fails the next one with a {@link NeedRetryException} (see
-   * {@link #checkNodeIdSpace(Object)}): unlike a fused count, which is all or nothing, a consumer may by then hold the rows
-   * of the earlier rounds, which were read in one numbering and are right; only the rest of the walk is refused. Retrying
-   * means running the query again from its first row: a caller that keeps the rows it already had and appends the
-   * retry's would hold those rows twice.
+   * Every round reads the snapshot the statement pinned, so a rebuild of the view between two rounds changes nothing the walk
+   * reads (issue #10415): the rows of a later round belong to the same graph as the earlier ones.
    */
   private final class StreamingRows implements ResultSet {
     private final ChainWalker[]  walkers;
@@ -298,7 +323,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private final String[]       outputNames;
     private final Database       database;
     private final CommandContext context;
-    private final Object         nodeIdSpace;
     private       List<Result>   unmappedRows;
     private       int            unfinished;
     private       int            buffer;
@@ -306,14 +330,13 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
     @SuppressWarnings("unchecked")
     private StreamingRows(final ChainWalker[] walkers, final String[] outputNames, final Database database,
-        final CommandContext context, final List<Result> unmappedRows, final Object nodeIdSpace) {
+        final CommandContext context, final List<Result> unmappedRows) {
       this.walkers = walkers;
       this.buffers = new List[walkers.length];
       this.finished = new boolean[walkers.length];
       this.outputNames = outputNames;
       this.database = database;
       this.context = context;
-      this.nodeIdSpace = nodeIdSpace;
       this.unmappedRows = unmappedRows;
       this.unfinished = walkers.length;
       for (int t = 0; t < walkers.length; t++)
@@ -375,10 +398,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private void walkRound() {
       try {
         walkPendingSlices();
-      } catch (final RuntimeException e) {
-        close();
-        throw asRetryIfRenumbered(nodeIdSpace, e);
-      } catch (final Error e) {
+      } catch (final RuntimeException | Error e) {
         close();
         throw e;
       }
@@ -410,8 +430,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       }
       // finished[] and the buffers were written by the workers: Future.get() in awaitFutures, which also covers a slice
       // reclaimed and run on this thread, is what makes those writes visible here.
-      // The walkers resume on the node IDs the rounds before read: a rebuild in between numbered the nodes afresh
-      checkNodeIdSpace(nodeIdSpace);
       unfinished = 0;
       for (final boolean done : finished)
         if (!done)
@@ -439,7 +457,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
       final int parallelism, final int chunkSize, final NeighborView[] hopViews, final TrackedTypes trackedTypes,
       final int chainLength, final Database db, final CommandContext context, final WorkGuard guard,
-      final List<Result> unmappedRows, final Object nodeIdSpace) {
+      final List<Result> unmappedRows) {
 
     // Resolve which nodeId slot each group key variable maps to:
     // sourceVariable = slot 0, hopTargetVariables[i] = slot i+1
@@ -461,40 +479,35 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final boolean grouped = groupKeySlots.length > 0;
     final LongLongHashMap[] threadMaps = new LongLongHashMap[numThreads];
     final long[] threadTotals = new long[numThreads];
-    try {
-      if (totalSources < PARALLEL_THRESHOLD) {
-        // Single-threaded
+    if (totalSources < PARALLEL_THRESHOLD) {
+      // Single-threaded
+      if (grouped)
+        threadMaps[0] = new LongLongHashMap();
+      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
+          threadMaps[0], threadTotals, 0);
+    } else {
+      // Parallel using shared query worker pool
+      final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+      final Future<?>[] futures = new Future<?>[numThreads];
+      int launched = 0;
+      for (int t = 0; t < numThreads; t++) {
+        final int start = t * chunkSize;
+        final int end = Math.min(start + chunkSize, totalSources);
+        if (start >= totalSources)
+          break;
         if (grouped)
-          threadMaps[0] = new LongLongHashMap();
-        aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
-            threadMaps[0], threadTotals, 0);
-      } else {
-        // Parallel using shared query worker pool
-        final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-        final Future<?>[] futures = new Future<?>[numThreads];
-        int launched = 0;
-        for (int t = 0; t < numThreads; t++) {
-          final int start = t * chunkSize;
-          final int end = Math.min(start + chunkSize, totalSources);
-          if (start >= totalSources)
-            break;
-          if (grouped)
-            threadMaps[t] = new LongLongHashMap();
-          final int threadIdx = t;
-          futures[t] = executor.submit(() ->
-              aggregateChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
-                  threadMaps[threadIdx], threadTotals, threadIdx));
-          launched++;
-        }
-        // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
-        // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
-        // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the row path.
-        GraphAlgorithms.awaitFutures(futures, launched);
+          threadMaps[t] = new LongLongHashMap();
+        final int threadIdx = t;
+        futures[t] = executor.submit(() ->
+            aggregateChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
+                threadMaps[threadIdx], threadTotals, threadIdx));
+        launched++;
       }
-    } catch (final RuntimeException e) {
-      throw asRetryIfRenumbered(nodeIdSpace, e);
+      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+      // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
+      // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the row path.
+      GraphAlgorithms.awaitFutures(futures, launched);
     }
-    checkNodeIdSpace(nodeIdSpace);
 
     if (!grouped) {
       // The sources the view does not map were expanded and filtered already: each of their rows is one path
@@ -522,8 +535,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         final int[] nodeIds = new int[groupKeyVariables.length];
         for (int g = 0; g < groupKeyVariables.length; g++) {
           keys[g] = row.getProperty(groupKeyVariables[g]);
-          nodeIds[g] = keys[g] instanceof GAVVertex gav ? gav.getNodeId() :
-              keys[g] instanceof Vertex v ? provider.getNodeId(v.getIdentity()) : -1;
+          nodeIds[g] = GAVVertex.nodeIdIn(keys[g], provider);
           if (nodeIds[g] < 0)
             mapped = false;
         }
@@ -580,30 +592,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   }
 
   /**
-   * Refuses what a walk read when the provider numbered its nodes afresh since the walk started: the walk's node IDs,
-   * read in the old numbering, would be answered by the new one as other records, and its labels, RIDs and counts would
-   * be wrong without any error. The query is safe to run again, on the new numbering.
-   */
-  private void checkNodeIdSpace(final Object nodeIdSpace) {
-    if (provider.getNodeIdSpace() != nodeIdSpace)
-      throw renumbered(null);
-  }
-
-  /**
-   * A walk that failed while the provider numbered its nodes afresh failed on IDs of the old numbering read in the new one
-   * (an ID past the new mapping, say): it is the rebuild the caller has to hear about, as the retry it calls for, not
-   * whatever the stale ID broke.
-   */
-  private RuntimeException asRetryIfRenumbered(final Object nodeIdSpace, final RuntimeException failure) {
-    return failure instanceof NeedRetryException || provider.getNodeIdSpace() == nodeIdSpace ? failure : renumbered(failure);
-  }
-
-  private NeedRetryException renumbered(final Throwable cause) {
-    final String message = "Graph Analytical View '" + provider.getName() + "' was rebuilt while the query walked it: run the query again";
-    return cause != null ? new NeedRetryException(message, cause) : new NeedRetryException(message);
-  }
-
-  /**
    * Expands the sources the view does not map through a fresh copy of the hops this chain replaced, which walk their
    * edge records, and applies the filter pushed into the chain. The copies enforce relationship uniqueness with the
    * same labels the fused walk compares (issue #8394).
@@ -611,7 +599,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private List<Result> expandUnmappedSources(final List<Result> sources, final CommandContext context) {
     PhysicalOperator chain = new RowsOperator(sources);
     for (final GAVExpandAll hop : unfusedHops) {
-      final GAVExpandAll copy = new GAVExpandAll(chain, hop.getProvider(), hop.getSourceVariable(),
+      // the snapshot this execution reads, so the rows of these sources take its node ids on as the walk's rows do
+      final GAVExpandAll copy = new GAVExpandAll(chain, provider, hop.getSourceVariable(),
           hop.getTargetVariable(), hop.getDirection(), hop.getEdgeTypes(), hop.getEstimatedCost(),
           hop.getEstimatedCardinality());
       copy.setTargetLabel(hop.getTargetLabel());
@@ -892,7 +881,44 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private record TrackedTypes(String[] names, int[][] hopTypeIds, NeighborView[] views) {
   }
 
-  private TrackedTypes resolveTrackedTypes(final Database database) {
+  /**
+   * The entries each hop is expected to visit when the chain starts from the first {@code sources} of {@code sourceNodeIds}: the
+   * entries the sources really have for the first hop (a hub is billed for its own degree, not for the mean), and for each hop
+   * after it the fan-out of the hops walked so far, multiplied in at the mean degree. Counting the sources is a lookup each, so
+   * it is done for a point read and not for a scan of thousands of vertices, which is billed at the mean. A provider that does
+   * not know its degrees (or a hop's types) makes the hop expect every entry there is, so the view is asked for as it always
+   * was. A target label that thins a hop is ignored, which overestimates: a view that was not worth building is built, never
+   * the reverse.
+   */
+  private long[] expectedVisits(final int[] sourceNodeIds, final int sources) {
+    final long[] visits = new long[hopDirections.length];
+    double reached = sources;
+    for (int i = 0; i < visits.length; i++) {
+      double entries = i == 0 && sources <= COUNTED_SOURCES ? countedEntries(sourceNodeIds, sources) : -1;
+      if (entries < 0) {
+        final double degree = provider.getMeanDegree(hopDirections[i], hopEdgeTypes[i]);
+        entries = degree < 0 ? Long.MAX_VALUE : reached * degree;
+      }
+      // a double over several hops can reach infinity: the minimum keeps it at the largest estimate a long holds
+      reached = Math.min(entries, Long.MAX_VALUE);
+      visits[i] = (long) reached;
+    }
+    return visits;
+  }
+
+  /** The entries of the first hop the sources have, -1 when the provider cannot count them. */
+  private double countedEntries(final int[] sourceNodeIds, final int sources) {
+    long entries = 0;
+    for (int s = 0; s < sources; s++) {
+      final long degree = provider.countEdges(sourceNodeIds[s], hopDirections[0], hopEdgeTypes[0]);
+      if (degree < 0)
+        return -1;
+      entries += degree;
+    }
+    return entries;
+  }
+
+  private TrackedTypes resolveTrackedTypes(final Database database, final long[] hopVisits) {
     final Map<String, Integer> ids = new HashMap<>();
     final List<String> names = new ArrayList<>();
     final int[][] hopTypeIds = new int[hopDirections.length][];
@@ -909,11 +935,17 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         });
       }
     }
+    // The entries a type is expected to be read for: the most of the hops that walk it, a slice being shared by them
+    final long[] typeVisits = new long[names.size()];
+    for (int i = 0; i < hopDirections.length; i++)
+      if (hopTypeIds[i] != null)
+        for (final int id : hopTypeIds[i])
+          typeVisits[id] = Math.max(typeVisits[id], hopVisits[i]);
     // One concrete type per slice, sub-types left out: each has its own (issue #10213)
     final NeighborView[] views = new NeighborView[names.size() * 2];
     for (int t = 0; t < names.size(); t++) {
-      views[t * 2] = provider.getNeighborViewOfSlice(Vertex.DIRECTION.IN, names.get(t));
-      views[t * 2 + 1] = provider.getNeighborViewOfSlice(Vertex.DIRECTION.OUT, names.get(t));
+      views[t * 2] = provider.getNeighborViewOfSliceForVisits(typeVisits[t], Vertex.DIRECTION.IN, names.get(t));
+      views[t * 2 + 1] = provider.getNeighborViewOfSliceForVisits(typeVisits[t], Vertex.DIRECTION.OUT, names.get(t));
     }
     return new TrackedTypes(names.toArray(new String[0]), hopTypeIds, views);
   }

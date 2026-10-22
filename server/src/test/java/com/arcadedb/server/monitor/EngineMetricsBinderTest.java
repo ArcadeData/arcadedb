@@ -71,7 +71,11 @@ class EngineMetricsBinderTest {
         // #6526: async batch transactions cut short by a durability-flag change
         "arcadedb.engine.async.boundary.commits",
         // #9235: bucket count() recomputes refused because a replicated apply ran under the scan
-        "arcadedb.engine.bucket.recount.publishes.refused" }) {
+        "arcadedb.engine.bucket.recount.publishes.refused",
+        // #10509: the group commit and the commit file locks, each time with its count so their rates divide into an average
+        "arcadedb.engine.wal.group.commits", "arcadedb.engine.wal.group.commit.syncs", "arcadedb.engine.commit.lock.holds",
+        "arcadedb.engine.commit.lock.hold.seconds", "arcadedb.engine.commit.lock.handoffs",
+        "arcadedb.engine.commit.lock.handoff.seconds" }) {
       final FunctionCounter counter = registry.find(name).functionCounter();
       assertThat(counter).as(name).isNotNull();
       assertThat(Double.isNaN(counter.count())).as(name).isFalse();

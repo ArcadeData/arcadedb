@@ -115,6 +115,19 @@ public interface QueryEngine {
     return DDLClassification.UNKNOWN;
   }
 
+  /**
+   * Whether {@code query} decides by itself what a failure leaves behind, so the dispatcher must not refuse the commit of the
+   * transaction the caller keeps when it fails after writing (issue #10379). By default no statement does: it failed after part of
+   * its records were written, the engine has no savepoint to take it back to, and a caller that catches the error and commits would
+   * publish half of it. A SQL script with a {@code COMMIT RETRY n ELSE ...} block is the exception, as its {@code ELSE} writes are
+   * the answer to the failure and the caller is meant to go on after it.
+   * <p>
+   * Asked only once a statement has failed having written, so an engine may parse the statement again to answer.
+   */
+  default boolean handlesItsOwnFailures(final String query) {
+    return false;
+  }
+
   ResultSet query(String query, ContextConfiguration configuration, Map<String, Object> parameters);
 
   /**

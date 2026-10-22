@@ -19,15 +19,18 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.TimeSeriesColumnConstraints;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
@@ -39,6 +42,7 @@ import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
@@ -103,6 +107,12 @@ public class SaveElementStep extends AbstractExecutionStep {
       // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
       private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());
 
+      // the column constraints of the TIMESERIES type written, read once per execution and type instead of once per row (issue
+      // #10238). This result set lives for one pull of one execution, never across statements: an ALTER PROPERTY between two
+      // statements is always seen, and a cached plan builds a new result set on every execution
+      private LocalTimeSeriesType         constrainedType;
+      private TimeSeriesColumnConstraints constraints;
+
       // Every record pulled through one INSERT statement targets the same type, so the unique-index list is
       // resolved once per distinct type name seen rather than on every single row of a CONTENT [...] batch.
       private String          cachedTypeName;
@@ -127,7 +137,12 @@ public class SaveElementStep extends AbstractExecutionStep {
             // own cannot serve correctly either (issue #6356).
             // Gated accessor: appending a sample is a record creation on a type that owns no bucket, so the
             // per-type check is the only thing that can enforce a "createRecord" denial on it.
-            saveToTimeSeries(tsType, tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD), doc, context, rejectUndeclared);
+            if (tsType != constrainedType) {
+              constrainedType = tsType;
+              constraints = TimeSeriesColumnConstraints.of(context.getDatabase(), tsType);
+            }
+            saveToTimeSeries(tsType, tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD), doc, context, rejectUndeclared,
+                constraints);
             scheduleContinuousAggregateRefresh(context, tsType);
             return result;
           }
@@ -244,9 +259,17 @@ public class SaveElementStep extends AbstractExecutionStep {
    * it is spelled out here rather than left to the engine javadoc; the mechanism is documented on
    * {@code TimeSeriesShard.appendSamples}, and {@code Issue7410AppendTransactionScopeTest} pins this entry
    * point.
+   * <p>
+   * A TAG/FIELD value reaches this method as the statement produced it (the document layer leaves it alone, see
+   * {@link LocalTimeSeriesType#skipsDocumentConversion}), so every refusal of a value is raised here, as a
+   * {@link CommandExecutionException} naming the column; the constraints declared on the columns are then held to the value the
+   * column stores ({@link TimeSeriesColumnConstraints}, issue #10238), and a violation raises the {@link ValidationException} a
+   * document property raises.
+   *
+   * @param constraints the type's column constraints, {@code null} when it declares none
    */
   private void saveToTimeSeries(final LocalTimeSeriesType tsType, final TimeSeriesEngine engine, final Document doc,
-      final CommandContext context, final boolean rejectUndeclared) {
+      final CommandContext context, final boolean rejectUndeclared, final TimeSeriesColumnConstraints constraints) {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final ZoneId zoneId = context.getDatabase().getSchema().getZoneId();
 
@@ -267,6 +290,8 @@ public class SaveElementStep extends AbstractExecutionStep {
         nonTsCount++;
     final Object[][] columnValues = new Object[nonTsCount][1];
 
+    final Database database = context.getDatabase();
+    final long deadline = constraints != null ? constraints.sampleDeadline() : 0L;
     int colIdx = 0;
     for (int i = 0; i < columns.size(); i++) {
       final ColumnDefinition col = columns.get(i);
@@ -274,14 +299,20 @@ public class SaveElementStep extends AbstractExecutionStep {
 
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         timestamps[0] = toEpochMs(value, zoneId);
+        if (constraints != null)
+          refuseViolation(tsType, col, value, constraints.checkTimestamp(timestamps[0], deadline));
       } else {
         // The one conversion contract every ingestion surface shares (issue #10064): the line protocol, gRPC and Prometheus remote
         // write read a value through it too. Here the refusal is the statement's, where a batch drops the row and reports it.
+        final Object stored;
         try {
-          columnValues[colIdx][0] = col.storableValue(context.getDatabase(), value);
+          stored = col.storableValue(database, col.isTemporal() ? sqlTemporal(database, tsType, col, value) : value);
         } catch (final IllegalArgumentException e) {
           throw new CommandExecutionException(e.getMessage(), e);
         }
+        if (constraints != null)
+          refuseViolation(tsType, col, value, constraints.check(colIdx, stored, deadline));
+        columnValues[colIdx][0] = stored;
         colIdx++;
       }
     }
@@ -291,6 +322,59 @@ public class SaveElementStep extends AbstractExecutionStep {
     } catch (final IOException e) {
       throw new CommandExecutionException("Error appending to TimeSeries engine", e);
     }
+  }
+
+  /**
+   * A DATE/DATETIME value as SQL reads it, before {@link ColumnDefinition#storableValue} counts it in the column's unit: the
+   * conversion a document property of the same type applies, so a number is epoch MILLIS whatever the precision (epoch DAYS for a
+   * DATE) and text is read with the database's date formats (issues #9643, #9724). The line protocol, gRPC and Prometheus read a
+   * number, and text of digits, as a count in the column's own unit instead: that is their contract and stays theirs (issue
+   * #10233). Converted here rather than by the document layer, so that a value the column refuses is refused like every other value
+   * of this step, by a {@link CommandExecutionException} naming the column.
+   */
+  private static Object sqlTemporal(final Database database, final LocalTimeSeriesType tsType, final ColumnDefinition col,
+      final Object value) {
+    if (value == null)
+      return null;
+    final Object converted;
+    try {
+      converted = Type.convert(database, value, col.getDataType().getJavaImplementation(database),
+          tsType.getPolymorphicPropertyIfExists(col.getName()));
+    } catch (final RuntimeException e) {
+      throw refusedBySql(col, value, e);
+    }
+    if (converted == null)
+      throw refusedBySql(col, value, null);
+    return converted;
+  }
+
+  /**
+   * {@link ColumnDefinition#unstorable}, in the words the wire protocols refuse a value in, plus the rule SQL reads a temporal
+   * value by. The wire reads a number, and text of digits, as a count in the column's own unit, so a value they store can be one SQL
+   * refuses (text of digits) or stores as another instant (a number in a column that is not in milliseconds), and an operator who
+   * wrote the same literal from both places should not have to read the refusal as a defect of this one (issue #10398).
+   */
+  private static IllegalArgumentException refusedBySql(final ColumnDefinition col, final Object value, final Throwable cause) {
+    return new IllegalArgumentException(col.unstorable(value, cause).getMessage()
+        + ". In SQL a number is epoch milliseconds (epoch days for a DATE) and text is a date in the database's format; the line"
+        + " protocol and gRPC read a number, and text of digits, as a count in the column's own unit", cause);
+  }
+
+  /**
+   * Raises the refusal of a column constraint, if there is one, as the {@link ValidationException} a document property raises,
+   * showing the value as the statement wrote it.
+   */
+  private static void refuseViolation(final LocalTimeSeriesType tsType, final ColumnDefinition col, final Object value,
+      final String violation) {
+    if (violation == null)
+      return;
+    // at most 100 characters of the value, as the check of stored values shows it: a long text would make the message as long
+    String text = value == null ? null : String.valueOf(value);
+    if (text != null && text.length() > 100)
+      text = text.substring(0, 100) + "...";
+    throw new ValidationException("The property '" + tsType.getName() + "." + col.getName() + "' refuses " + (text == null ?
+        "the sample" :
+        "the value " + text) + ": " + violation);
   }
 
   private void scheduleContinuousAggregateRefresh(final CommandContext context, final LocalTimeSeriesType tsType) {

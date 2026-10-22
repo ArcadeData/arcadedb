@@ -59,8 +59,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue10088MisdirectedListenerDoesNotBlockTest {
 
+  // None of these refusals carries a self-dial probe's nonce (issue #10299)
+  private static final long NO_PROBE = RaftHAServer.NO_PROBE_CALL_ID;
   private static final String SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
-  // Every call below arrives from this host, as a request this node sent to itself does (issue #10225)
+  // Every call below arrives from this host; whether one is this node's own is settled by a probe (issue #10299)
   private static final InetSocketAddress FROM_THIS_HOST = new InetSocketAddress(InetAddress.getLoopbackAddress(), 40_000);
   private static final String UNREADABLE  = "Cannot read the live Raft configuration";
 
@@ -88,7 +90,7 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     final RaftHAServer raft = detachedServer(blockingRatis());
 
     returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("localhost_2435"),
-        raft.getLocalPeerId(), FROM_THIS_HOST));
+        raft.getLocalPeerId(), FROM_THIS_HOST, NO_PROBE));
 
     assertThat(raft.getMisdirectedRaftRequestsRefused()).isEqualTo(1L);
     // Neither the handler thread nor the recovery task has a reason to ask: the declared list answers. The task is waited
@@ -105,7 +107,7 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
 
     for (int i = 0; i < 5; i++) {
       final RaftPeerId stranger = RaftPeerId.valueOf("stranger_" + i);
-      returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("requestVote", stranger, RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST));
+      returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("requestVote", stranger, RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST, NO_PROBE));
     }
 
     assertThat(raft.getMisdirectedRaftRequestsRefused()).isEqualTo(5L);
@@ -121,7 +123,7 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     final RaftHAServer raft = detachedServer(ratisThatCannotResolveTheDivision());
 
     for (int i = 0; i < 10; i++)
-      raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("stranger"), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST);
+      raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("stranger"), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST, NO_PROBE);
 
     Awaitility.await("the refusal is reported").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining("is not a peer of this cluster", "stranger") == 1);
@@ -141,7 +143,7 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     final RaftPeer joined = RaftPeer.newBuilder().setId("joined_peer").setAddress("localhost:2439").build();
     final RaftHAServer raft = detachedServer(ratisWithLivePeers(List.of(joined)));
 
-    raft.onMisdirectedRaftRequest("appendEntries", joined.getId(), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST);
+    raft.onMisdirectedRaftRequest("appendEntries", joined.getId(), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST, NO_PROBE);
 
     Awaitility.await("the refusal is reported").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining("Refused a Raft appendEntries", "addressed to peer 'joined_peer'") == 1);
@@ -165,8 +167,8 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     raft.onRaftConfigurationApplied(List.of(raft.getLocalPeerId(), joined.getId()), List.of());
 
     returnsWhileTheDivisionIsParked(
-        () -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST));
-    returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("appendEntries", joined.getId(), raft.getLocalPeerId(), FROM_THIS_HOST));
+        () -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), RaftPeerId.valueOf("localhost_2435"), FROM_THIS_HOST, NO_PROBE));
+    returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("appendEntries", joined.getId(), raft.getLocalPeerId(), FROM_THIS_HOST, NO_PROBE));
     divisionGate.countDown();
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
@@ -241,6 +243,8 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     final Field field = RaftHAServer.class.getDeclaredField("raftServer");
     field.setAccessible(true);
     field.set(raft, ratis);
+    // The stand-in Raft server has no channels: this node's own requests come back to it (issue #10299)
+    SelfDialChannels.leadBackToItself(raft);
     return raft;
   }
 }

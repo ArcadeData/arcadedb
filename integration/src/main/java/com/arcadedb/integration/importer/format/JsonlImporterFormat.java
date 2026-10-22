@@ -21,13 +21,14 @@ package com.arcadedb.integration.importer.format;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentValidator;
+import com.arcadedb.database.DocumentValidator.LinkTargetTypeDeferral;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -37,6 +38,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
@@ -50,6 +52,7 @@ import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.misc.ValueTypeHints;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -71,7 +74,9 @@ import com.arcadedb.utility.FileUtils;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -383,6 +388,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                       docType.getProperty(propertyName).setCustomValue(key, custom.get(key));
                     }
                   }
+                  if (docType instanceof LocalTimeSeriesType)
+                    restoreTimeSeriesColumnConstraints(typeName, propertyName, docType.getProperty(propertyName), property);
                   return;
                 }
                 if (docType instanceof LocalTimeSeriesType tsType && !tsType.isDeclaredColumn(propertyName)) {
@@ -611,6 +618,33 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   }
 
   /**
+   * Restores the constraints the export recorded on a column of a TIMESERIES type, whose property the type's builder already
+   * created without them. Every write path holds a sample to MANDATORY, NOTNULL, MIN, MAX and REGEXP (issue #10238), the samples of
+   * this import included, so dropping them would restore a type that accepts what the source refused. DEFAULT and HIDDEN are refused
+   * on such a column, having no effect on it: one exported from a database written before that rule is dropped with a warning, as
+   * the CUSTOM 'role' above, so the backup still restores.
+   */
+  private void restoreTimeSeriesColumnConstraints(final String typeName, final String propertyName, final Property p,
+      final JSONObject exported) {
+    if (exported.has("readonly"))
+      p.setReadonly(exported.getBoolean("readonly"));
+    if (exported.has("mandatory"))
+      p.setMandatory(exported.getBoolean("mandatory"));
+    if (exported.has("notNull"))
+      p.setNotNull(exported.getBoolean("notNull"));
+    if (exported.has("min"))
+      p.setMin(exported.getString("min"));
+    if (exported.has("max"))
+      p.setMax(exported.getString("max"));
+    if (exported.has("regexp"))
+      p.setRegexp(exported.getString("regexp"));
+    if (exported.has("default") && Property.fillsInAValue(exported.get("default")) || exported.getBoolean("hidden", false))
+      LogManager.instance().log(this, Level.WARNING,
+          "Ignored the DEFAULT/HIDDEN recorded on TIMESERIES property '%s.%s': no write path of a TIMESERIES type fills in a "
+              + "default and every read returns all of its columns", typeName, propertyName);
+  }
+
+  /**
    * Recreates a TIMESERIES type from its exported schema definition (issue #7032).
    * <p>
    * Everything the type's identity depends on comes out of the export: the column list WITH the per-column codec
@@ -792,7 +826,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     // The values follow the timestamp in non-timestamp schema order, which is the order of the converted grid's columns: the
     // value column `valueColumn` is at position `valueColumn + 1` of the sample
-    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, kept, false,
+    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, tsType, timestamps, kept, false,
         (row, valueColumn, column) -> decodeSampleValue(samples.getJSONArray(sampleOfRow[row]).get(valueColumn + 1),
             column.getDataType()), unreadable);
 
@@ -910,7 +944,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var oldRid = new RID(document.getString("r"));
     var imported = database.newDocument(document.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, document.getJSONObject(ValueTypeHints.KEY, null));
-    imported.save();
+    saveReadRecord(imported, unresolvedLinks);
     ridIndex.put(oldRid, imported.getIdentity());
     if (!unresolvedLinks.isEmpty())
       pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
@@ -927,11 +961,29 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var oldRid = new RID(vertex.getString("r"));
     var imported = database.newVertex(vertex.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, vertex.getJSONObject(ValueTypeHints.KEY, null));
-    imported.save();
+    saveReadRecord(imported, unresolvedLinks);
     ridIndex.put(oldRid, imported.getIdentity());
     if (!unresolvedLinks.isEmpty())
       pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
     context.createdVertices.incrementAndGet();
+  }
+
+  /**
+   * Saves a record read from the file. One that holds a link to a record the file has not reached yet (a forward reference, see
+   * {@link #pendingLinkReconciliation}) is saved with the check of the link's target type suspended: the link still holds the
+   * identity the target had in the SOURCE database, which in this one names a record of another type - or none - so the check would
+   * refuse every restore of a {@code LINK OF T}, {@code LIST OF T} or {@code MAP OF T} that points at a record exported later, and
+   * the exporter writes every vertex before every document. Nothing else is relaxed, and the check is not dropped:
+   * {@link #reconcileUnresolvedLinks} saves the record again with the real link, and that save validates all of it (issue #10483).
+   */
+  private static void saveReadRecord(final MutableDocument imported, final List<PendingLink> unresolvedLinks) {
+    if (unresolvedLinks.isEmpty()) {
+      imported.save();
+      return;
+    }
+    try (final LinkTargetTypeDeferral ignored = DocumentValidator.deferLinkTargetTypeChecks()) {
+      imported.save();
+    }
   }
 
   /**
@@ -954,17 +1006,55 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-    MutableEdge imported = sourceVertex.newEdge(edgeType, newIn);
-    if (!(imported instanceof LightEdge)) {
-      // A lightweight edge has no record: it is already connected by newEdge, carries no properties, and
-      // rejects fromMap()/save() by design.
-      var unresolvedLinks = loadProperties(database, imported, properties, edge.getJSONObject(ValueTypeHints.KEY, null));
-      imported.save();
-      if (!unresolvedLinks.isEmpty())
-        pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
-    }
+    final boolean lightweight = database.getSchema().getType(edgeType) instanceof EdgeType type && type.isLightweight();
+    final List<PendingLink> unresolvedLinks = new ArrayList<>(0);
+    final boolean endpointWaitsForALink =
+        !pendingLinkReconciliation.isEmpty() && (pendingLinkReconciliation.containsKey(newOut) || pendingLinkReconciliation.containsKey(newIn));
+    final MutableEdge imported = createEdgeWithProperties(database, sourceVertex, edgeType, newIn, lightweight, endpointWaitsForALink,
+        properties, edge.getJSONObject(ValueTypeHints.KEY, null), unresolvedLinks);
+    if (imported == null)
+      throw RecordVetoedException.ofCreateEdge(edgeType, sourceVertex, newIn);
+
+    // An edge created while one of its vertices waited for a link had the check of its own links suspended too: it is validated again
+    // by the reconciliation even when every one of its links resolved (an empty list), or a resolved link to the wrong type is stored
+    if (!lightweight && (!unresolvedLinks.isEmpty() || endpointWaitsForALink && properties.length() > 0))
+      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
 
     context.createdEdges.incrementAndGet();
+  }
+
+  /**
+   * Creates the edge WITH its properties, not empty and given them by a second save: the creation validates the record, so an edge type
+   * with a MANDATORY property refused every edge, and a READONLY one refused the second save as an alteration (issue #10483). A
+   * lightweight edge has no record: it is connected by the creation, carries no properties, and rejects fromMap()/save() by design.
+   * <p>
+   * The check of the target type of a link is suspended in two cases, and validated again by {@link #reconcileUnresolvedLinks}:
+   * connecting the edge updates the records of its two vertices (their edge lists), and an update validates the whole record, so a
+   * vertex that still waits for the target of one of its links (see {@link #saveReadRecord}) would be refused for it
+   * ({@code endpointWaitsForALink}); and the edge's own links, when one waits for its target.
+   *
+   * @param unresolvedLinks receives the links of the edge that wait for their target
+   *
+   * @return the edge, or null when a before-create listener vetoed it
+   */
+  private MutableEdge createEdgeWithProperties(final DatabaseInternal database, final Vertex sourceVertex, final String edgeType,
+      final RID newIn, final boolean lightweight, final boolean endpointWaitsForALink, final JSONObject properties,
+      final JSONObject hints, final List<PendingLink> unresolvedLinks) {
+    final LinkTargetTypeDeferral[] ownLinksDeferral = new LinkTargetTypeDeferral[1];
+    try (final LinkTargetTypeDeferral ignored = endpointWaitsForALink ? DocumentValidator.deferLinkTargetTypeChecks() : null) {
+      return database.getGraphEngine().newEdgeInitializedReportingVeto(sourceVertex, edgeType, newIn, lightweight ?
+          null :
+          newEdge -> {
+            unresolvedLinks.addAll(loadProperties(database, newEdge, properties, hints));
+            // The creation saves the edge right after this, on this thread (the initializer runs inside the call, never later or
+            // elsewhere), so the scope opened here is the one the save runs in and the finally below closes
+            if (!unresolvedLinks.isEmpty())
+              ownLinksDeferral[0] = DocumentValidator.deferLinkTargetTypeChecks();
+          });
+    } finally {
+      if (ownLinksDeferral[0] != null)
+        ownLinksDeferral[0].close();
+    }
   }
 
   @Override
@@ -1011,9 +1101,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /**
    * Undoes what the generic JSON parse does to numbers on the record path (issue #8871), driven by the declared
    * property types: FLOAT/DOUBLE values exported as the {@link NonFiniteNumbers} markers ("PosInfinity", "NegInfinity")
-   * are decoded back (scalar or LIST OF FLOAT/DOUBLE), and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from
-   * their JSON text instead of the double the parse produced, which dropped every digit past the 17th. A property with
-   * no declared type is left as it is: there is no schema to say that a marker string is a number.
+   * are decoded back (scalar, LIST OF or MAP OF FLOAT/DOUBLE), and DECIMAL values (scalar, LIST OF or MAP OF DECIMAL) are
+   * re-read from their JSON text instead of the double the parse produced, which dropped every digit past the 17th. A
+   * property with no declared type is left as it is: there is no schema to say that a marker string is a number.
+   * <p>
+   * A LIST OF / MAP OF DATE or BINARY is read from the type tree when the file has one; the same pass restores the elements of
+   * a file written before the tree covered them ({@link #restoreElement}).
    */
   private static void restoreNumberFidelity(final DocumentType type, final JSONObject json, final Map<String, Object> map) {
     if (type == null)
@@ -1037,22 +1130,87 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       } else if (propertyType == Type.LIST && entry.getValue() instanceof List<?> list) {
         // json2map built a fresh mutable ArrayList, so the items are replaced in place and nothing is allocated
         @SuppressWarnings("unchecked") final List<Object> items = (List<Object>) list;
-        final String ofType = property.getOfType();
-        if (Type.DECIMAL.name().equalsIgnoreCase(ofType)) {
+        final Type elementType = restoredElementType(property);
+        if (elementType == Type.DECIMAL) {
           final JSONArray array = json.getJSONArray(entry.getKey());
           for (int i = 0; i < items.size(); ++i)
             if (items.get(i) instanceof Number)
               items.set(i, array.getBigDecimal(i));
-        } else if (Type.DOUBLE.name().equalsIgnoreCase(ofType) || Type.FLOAT.name().equalsIgnoreCase(ofType)) {
+        } else if (elementType != null)
           for (int i = 0; i < items.size(); ++i)
-            if (items.get(i) instanceof String text) {
-              final Double marker = NonFiniteNumbers.decode(text);
-              if (marker != null)
-                items.set(i, marker);
-            }
-        }
+            items.set(i, restoreElement(elementType, items.get(i)));
+      } else if (propertyType == Type.MAP && entry.getValue() instanceof Map<?, ?> container) {
+        // the same restoration as the LIST above, for the same element types: a MAP OF is not a second-class container (issue #10391)
+        @SuppressWarnings("unchecked") final Map<String, Object> values = (Map<String, Object>) container;
+        final Type elementType = restoredElementType(property);
+        if (elementType == Type.DECIMAL) {
+          final JSONObject object = json.getJSONObject(entry.getKey());
+          for (final Map.Entry<String, Object> mapEntry : values.entrySet())
+            if (mapEntry.getValue() instanceof Number)
+              mapEntry.setValue(object.getBigDecimal(mapEntry.getKey()));
+        } else if (elementType != null)
+          for (final Map.Entry<String, Object> mapEntry : values.entrySet())
+            mapEntry.setValue(restoreElement(elementType, mapEntry.getValue()));
       }
     }
+  }
+
+  /**
+   * The element type of a {@code LIST OF} / {@code MAP OF} property when the elements may need restoring from the JSON the
+   * generic parse produced, {@code null} for the element types that never do (so a list of strings or longs is not walked).
+   */
+  private static Type restoredElementType(final Property property) {
+    final String ofType = property.getOfType();
+    if (ofType == null)
+      return null;
+    final Type elementType = Type.getTypeByName(ofType);
+    if (elementType == null)
+      return null;
+    return switch (elementType) {
+      case DECIMAL, DOUBLE, FLOAT, DATE, BINARY -> elementType;
+      default -> null;
+    };
+  }
+
+  /**
+   * One element of a declared container, restored from what the generic parse made of it:
+   * <ul>
+   *   <li>FLOAT/DOUBLE: the {@link NonFiniteNumbers} marker string is the number it stands for;</li>
+   *   <li>DATE: an export written before the type tree covered a DATE inside a container holds the serializer's epoch
+   *   MILLISECONDS at UTC midnight, where the scalar the declaration reads is an epoch DAY. The tree now writes the date as text,
+   *   so a number can only be one of those files (issue #10391);</li>
+   *   <li>BINARY: an export of the same age holds the bytes as a JSON array, never converted back.</li>
+   * </ul>
+   * Returns {@code item} itself when there is nothing to restore.
+   */
+  private static Object restoreElement(final Type elementType, final Object item) {
+    switch (elementType) {
+    case FLOAT, DOUBLE -> {
+      if (item instanceof String text) {
+        final Double marker = NonFiniteNumbers.decode(text);
+        if (marker != null)
+          return marker;
+      }
+    }
+    case DATE -> {
+      if (item instanceof Number millis)
+        return Instant.ofEpochMilli(millis.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
+    }
+    case BINARY -> {
+      if (item instanceof List<?> bytes) {
+        final byte[] result = new byte[bytes.size()];
+        for (int i = 0; i < result.length; ++i)
+          if (bytes.get(i) instanceof Number number)
+            result[i] = number.byteValue();
+          else
+            return item;
+        return result;
+      }
+    }
+    default -> {
+    }
+    }
+    return item;
   }
 
   /**
@@ -1150,21 +1308,25 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private Object remapLinkValue(final Object value, final String property, final Object[] path,
       final List<PendingLink> unresolved) {
-    if (!(value instanceof String string))
-      return value;
-
     final RID oldRid;
-    try {
-      oldRid = new RID(string);
-    } catch (final Exception e) {
-      // Not a RID-shaped string. Schema says this is a LINK, but the data disagrees - leave it for the normal
-      // property conversion/validation path to deal with rather than silently swallowing it here.
+    if (value instanceof RID rid)
+      // A link the type tree decoded is a RID already, whatever the declaration says: a MAP OF LINK with the key "t" is read through
+      // a tree, and was left on its source RID because only a String was mapped (issue #10483)
+      oldRid = rid;
+    else if (value instanceof String string)
+      try {
+        oldRid = new RID(string);
+      } catch (final Exception e) {
+        // Not a RID-shaped string. Schema says this is a LINK, but the data disagrees - leave it for the normal
+        // property conversion/validation path to deal with rather than silently swallowing it here.
+        return value;
+      }
+    else
       return value;
-    }
 
     final RID newRid = ridIndex.get(oldRid);
     if (newRid != null)
-      return newRid.toString();
+      return value instanceof RID ? newRid : newRid.toString();
 
     unresolved.add(new PendingLink(property, path, oldRid));
     return value;
@@ -1237,8 +1399,13 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           }
         }
 
+        // The record was saved with the check of its links' target types suspended (see saveReadRecord): this is where it is made.
+        // A save validates the whole record; a record none of whose links was found to replace is validated as it stands. That is one
+        // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore
         if (changed)
           mutable.save();
+        else
+          mutable.validate();
       } catch (final Exception e) {
         // Same per-record failure handling as the main import loop (issue #6468): logged, counted, and either aborts the
         // whole import or is skipped per -onRowError, exactly like any other record failure, instead of propagating raw and

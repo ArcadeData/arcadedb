@@ -2206,7 +2206,10 @@ public class SelectExecutionPlanner {
       // newest blocks instead of walking everything.
       final int descendingLimit = timeSeriesDescendingScanLimit(tsType, info, context);
       if (descendingLimit >= 0) {
-        plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context));
+        final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context);
+        consumeTimeSeriesWhereIfPushedDown(tsType, info, context, false);
+        fuseTimeSeriesProjection(fetch, tsType, info);
+        plan.chain(fetch);
         return;
       }
 
@@ -2218,8 +2221,12 @@ public class SelectExecutionPlanner {
       // takes a cap only when isTimeSeriesWhereFullyPushedDown proved the engine returns no row the WHERE drops - which a
       // field predicate never lets it prove. The residual FilterStep still runs over the rows the field filter kept.
       final int ascendingLimit = timeSeriesAscendingScanLimit(tsType, info, context);
-      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, ascendingLimit > 0 ? null : fieldFilter, false,
-          ascendingLimit, context));
+      final FieldFilter pushedFieldFilter = ascendingLimit > 0 ? null : fieldFilter;
+      final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, pushedFieldFilter, false,
+          ascendingLimit, context);
+      consumeTimeSeriesWhereIfPushedDown(tsType, info, context, pushedFieldFilter != null);
+      fuseTimeSeriesProjection(fetch, tsType, info);
+      plan.chain(fetch);
       return;
     }
 
@@ -3042,9 +3049,16 @@ public class SelectExecutionPlanner {
     for (final AndBlock andBlock : flattenedWhere) {
       long blockFrom = Long.MIN_VALUE;
       long blockTo = Long.MAX_VALUE;
+      boolean matchesNothing = false;
       for (final BooleanExpression expr : andBlock.getSubBlocks()) {
         final long[] range = extractTimeRange(expr, timestampColumn, context);
         if (range != null) {
+          // A predicate that is empty by itself empties the block. Said here, and not left to the bounds below: Long.MIN_VALUE
+          // and Long.MAX_VALUE on a side read as "no bound", so an empty range's own ends would not tighten anything (issue #10528)
+          if (range[0] > range[1]) {
+            matchesNothing = true;
+            break;
+          }
           // Tighten bounds: take the most restrictive range
           if (range[0] != Long.MIN_VALUE)
             blockFrom = Math.max(blockFrom, range[0]);
@@ -3052,13 +3066,13 @@ public class SelectExecutionPlanner {
             blockTo = Math.min(blockTo, range[1]);
         }
       }
-      if (blockFrom > blockTo)
+      if (matchesNothing || blockFrom > blockTo)
         continue; // contradictory block: matches nothing
       anyBlock = true;
       from = Math.min(from, blockFrom);
       to = Math.max(to, blockTo);
     }
-    return anyBlock ? new long[] { from, to } : new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+    return anyBlock ? new long[] { from, to } : emptyTimeRange();
   }
 
   /**
@@ -3068,7 +3082,7 @@ public class SelectExecutionPlanner {
    */
   private static long[] extractTimeRange(final BooleanExpression expr, final String timestampColumn, final CommandContext context) {
     if (expr instanceof BetweenCondition between) {
-      final String fieldName = between.getFirst() != null ? between.getFirst().toString().trim() : null;
+      final String fieldName = between.getFirst() != null ? identifierText(between.getFirst()) : null;
       if (timestampColumn.equals(fieldName)) {
         final Object fromVal = between.getSecond().execute((Identifiable) null, context);
         final Object toVal = between.getThird().execute((Identifiable) null, context);
@@ -3083,8 +3097,8 @@ public class SelectExecutionPlanner {
       }
     } else if (expr instanceof BinaryCondition binary) {
       // Check if one side is the timestamp column and the other is a value
-      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+      final String rightStr = binary.right != null ? identifierText(binary.right) : null;
       final boolean leftIsTs = timestampColumn.equals(leftStr);
       final boolean rightIsTs = timestampColumn.equals(rightStr);
 
@@ -3099,11 +3113,11 @@ public class SelectExecutionPlanner {
         // When field is on the right side, invert the operator semantics
         if (leftIsTs) {
           if (op instanceof GtOperator)
-            return new long[] { val + 1, Long.MAX_VALUE };
+            return after(val);
           if (op instanceof GeOperator)
             return new long[] { val, Long.MAX_VALUE };
           if (op instanceof LtOperator)
-            return new long[] { Long.MIN_VALUE, val - 1 };
+            return before(val);
           if (op instanceof LeOperator)
             return new long[] { Long.MIN_VALUE, val };
           if (op instanceof EqualsCompareOperator)
@@ -3111,11 +3125,11 @@ public class SelectExecutionPlanner {
         } else {
           // timestamp is on the right: "value > ts" means "ts < value"
           if (op instanceof GtOperator)
-            return new long[] { Long.MIN_VALUE, val - 1 };
+            return before(val);
           if (op instanceof GeOperator)
             return new long[] { Long.MIN_VALUE, val };
           if (op instanceof LtOperator)
-            return new long[] { val + 1, Long.MAX_VALUE };
+            return after(val);
           if (op instanceof LeOperator)
             return new long[] { val, Long.MAX_VALUE };
           if (op instanceof EqualsCompareOperator)
@@ -3124,6 +3138,28 @@ public class SelectExecutionPlanner {
       }
     }
     return null;
+  }
+
+  /**
+   * The range of no timestamp at all, {@code [Long.MAX_VALUE, Long.MIN_VALUE]}: what a predicate that no {@code long} satisfies, or
+   * a block of predicates that contradict each other, is pushed down as. A scan or a DELETE over it touches nothing.
+   */
+  private static long[] emptyTimeRange() {
+    return new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+  }
+
+  /**
+   * The range {@code ts > val}. The first timestamp above {@code Long.MAX_VALUE} does not exist: {@code val + 1} would wrap to
+   * {@code Long.MIN_VALUE}, which the range union reads as "no lower bound", and a predicate no sample satisfies would select (and
+   * DELETE) every one of them (issue #10528).
+   */
+  private static long[] after(final long val) {
+    return val == Long.MAX_VALUE ? emptyTimeRange() : new long[] { val + 1, Long.MAX_VALUE };
+  }
+
+  /** The range {@code ts < val}, empty at {@code Long.MIN_VALUE} for the reason {@link #after} is empty at the other extreme. */
+  private static long[] before(final long val) {
+    return val == Long.MIN_VALUE ? emptyTimeRange() : new long[] { Long.MIN_VALUE, val - 1 };
   }
 
   /**
@@ -3147,6 +3183,44 @@ public class SelectExecutionPlanner {
     } catch (final DateTimeParseException e) {
       throw new CommandExecutionException("Cannot parse timestamp: '" + value + "'", e);
     }
+  }
+
+  /**
+   * The name a TIMESERIES push-down compares with a column name: the text of {@code operand}, trimmed, without the back-quotes that
+   * quote an identifier ({@code `value`} names the column {@code value}). A quoted column used to be left out of the push-down, which
+   * costs a SELECT only a residual filter and a DELETE its statement (issue #10342).
+   */
+  private static String identifierText(final Object operand) {
+    if (operand == null)
+      return null;
+    final String text = operand.toString().trim();
+    return text.length() > 2 && text.charAt(0) == '`' && text.charAt(text.length() - 1) == '`' ? text.substring(1, text.length() - 1) : text;
+  }
+
+  /**
+   * What a {@code DELETE} over a TIMESERIES type names (issue #10342): a time range on the timestamp column and the tag
+   * equalities, exactly as the WHERE says them.
+   */
+  record TimeSeriesDeleteScope(long fromTs, long toTs, TagFilter tagFilter) {
+  }
+
+  /**
+   * The samples a {@code DELETE FROM <timeseries type> WHERE ...} removes, or {@code null} when the WHERE says more than a time range
+   * and tag equalities (issue #10342). A DELETE is not undone by reading the result again, so the engine is given the predicate only
+   * when it IS the WHERE: the same extraction a SELECT of the same WHERE pushes into the scan, under the proof that nothing is left
+   * for a residual filter ({@link #isTimeSeriesWhereFullyPushedDown}). An OR, a predicate on a FIELD column, a tag compared with a
+   * parameter that is null or that its column cannot read, two equalities on one tag: none is a scope.
+   *
+   * @param whereClause the WHERE of the statement, {@code null} for every sample
+   */
+  static TimeSeriesDeleteScope timeSeriesDeleteScope(final LocalTimeSeriesType tsType, final WhereClause whereClause,
+      final CommandContext context) {
+    final List<AndBlock> flattened = whereClause == null ? null : whereClause.flatten();
+    if (!isTimeSeriesWhereFullyPushedDown(tsType, flattened, context, false))
+      return null;
+    final long[] range = extractTimeRangeUnion(flattened, tsType.getTimestampColumn(), context);
+    final TagFilter tagFilter = extractTagFilter(flattened, tsType.getTsColumns(), tsType.getTimestampColumn(), context);
+    return new TimeSeriesDeleteScope(range[0], range[1], tagFilter);
   }
 
   /**
@@ -3177,8 +3251,8 @@ public class SelectExecutionPlanner {
           continue;
         if (!(binary.operator instanceof EqualsCompareOperator))
           continue;
-        final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-        final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+        final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+        final String rightStr = binary.right != null ? identifierText(binary.right) : null;
         if (leftStr == null || rightStr == null)
           continue;
         // Skip timestamp predicates, already handled by time range extraction
@@ -3607,18 +3681,23 @@ public class SelectExecutionPlanner {
    */
   private boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
       final CommandContext context, final boolean withFieldFilter) {
-    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+    return isTimeSeriesWhereFullyPushedDown(tsType, info.flattenedWhereClause, context, withFieldFilter);
+  }
+
+  private static boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final List<AndBlock> flattenedWhereClause,
+      final CommandContext context, final boolean withFieldFilter) {
+    if (flattenedWhereClause == null || flattenedWhereClause.isEmpty())
       return true;
     // An OR pushes the union of the per-block tag values, a superset that relies on the residual
     // filter to drop false positives.
-    if (info.flattenedWhereClause.size() > 1)
+    if (flattenedWhereClause.size() > 1)
       return false;
 
     final String timestampColumn = tsType.getTimestampColumn();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final Set<String> constrainedTags = new HashSet<>();
 
-    for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : flattenedWhereClause.getFirst().getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
         continue;
 
@@ -3635,6 +3714,52 @@ public class SelectExecutionPlanner {
         return false;
     }
     return true;
+  }
+
+  /**
+   * Drops the WHERE of a TIMESERIES row scan when the fetch step reproduces it exactly (issue #10324): its time range, its tag
+   * filter and, when {@code withFieldFilter}, its field filter return exactly the rows the WHERE keeps, so the residual
+   * {@link FilterStep} would evaluate the whole WHERE a second time on every row and drop none. A WHERE that reads a per-record
+   * LET variable is kept: the variables are evaluated after the fetch.
+   */
+  private void consumeTimeSeriesWhereIfPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context, final boolean withFieldFilter) {
+    if (info.whereClause == null || info.perRecordLetClause != null)
+      return;
+    if (isTimeSeriesWhereFullyPushedDown(tsType, info, context, withFieldFilter))
+      info.whereClause = null;
+  }
+
+  /**
+   * Has the fetch of a TIMESERIES row scan build each row as the projection makes it (issue #10324), instead of a row of every
+   * column that the projection step then copies into a second one: for a projection made only of plain references to the columns
+   * of the type, when nothing planned between the fetch and the projection reads a row (no residual WHERE, no per-record LET, no
+   * aggregation, expand() or UNWIND). What runs after the projection (ORDER BY, DISTINCT, SKIP, LIMIT) reads the projected row
+   * anyway, the aliases an ORDER BY adds to the projection included.
+   */
+  private static void fuseTimeSeriesProjection(final FetchFromTimeSeriesStep fetch, final LocalTimeSeriesType tsType,
+      final QueryPlanningInfo info) {
+    if (info.whereClause != null || info.perRecordLetClause != null || info.projectionsCalculated || info.projection == null
+        || info.projection.getItems() == null || info.projection.getItems().isEmpty() || info.projection.isExpand() || info.expand
+        || info.unwind != null || info.groupBy != null || info.aggregateProjection != null || info.preAggregateProjection != null)
+      return;
+
+    final List<ProjectionItem> items = info.projection.getItems();
+    final String[] aliases = new String[items.size()];
+    final String[] columns = new String[items.size()];
+    for (int i = 0; i < aliases.length; i++) {
+      final ProjectionItem item = items.get(i);
+      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null
+          || !item.getExpression().isBaseIdentifier())
+        return;
+      final String column = item.getExpression().getDefaultAlias().getStringValue();
+      if (tsType.getTsColumn(column) == null)
+        return;
+      columns[i] = column;
+      aliases[i] = item.getProjectionAliasAsString();
+    }
+    fetch.setProjection(aliases, columns);
+    info.projectionsCalculated = true;
   }
 
   /**
@@ -3686,13 +3811,33 @@ public class SelectExecutionPlanner {
       final CommandContext context) {
     if (!(binary.operator instanceof EqualsCompareOperator))
       return null;
-    final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
-    final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+    final String leftStr = binary.left != null ? identifierText(binary.left) : null;
+    final String rightStr = binary.right != null ? identifierText(binary.right) : null;
     final String tag = isTimeSeriesTagColumn(columns, leftStr) ? leftStr : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
     if (tag == null)
       return null;
     final Expression valueExpr = tag.equals(leftStr) ? binary.right : binary.left;
-    return valueExpr == null || valueExpr.execute((Identifiable) null, context) == null ? null : tag;
+    final Object value = valueExpr == null ? null : valueExpr.execute((Identifiable) null, context);
+    if (value == null)
+      return null;
+    // The tag filter holds the literal coerced to the column's type, as extractTagFilter coerces it: the equality is reproduced
+    // only when that coerced value is still SQL-equal to the literal. A DATETIME literal on a DATE tag is truncated to its day and
+    // would keep every sample of that day, which SQL does not match; a literal a temporal tag cannot read is left out of the tag
+    // filter altogether. Either way only the filter above the fetch decides the equality
+    for (final ColumnDefinition col : columns)
+      if (col.getName().equals(tag)) {
+        final Object coerced;
+        try {
+          coerced = col.isTemporal() ? col.temporalOf(context.getDatabase(), col.epochOf(context.getDatabase(), value)) :
+              col.coerceValue(value);
+        } catch (final IllegalArgumentException e) {
+          return null;
+        }
+        if (coerced == null || !((EqualsCompareOperator) binary.operator).execute(context.getDatabase(), coerced, value))
+          return null;
+        break;
+      }
+    return tag;
   }
 
   private static boolean isTimeSeriesTagColumn(final List<ColumnDefinition> columns, final String name) {

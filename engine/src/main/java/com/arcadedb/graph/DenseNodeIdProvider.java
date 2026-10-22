@@ -19,9 +19,13 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 
+import java.lang.ref.SoftReference;
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 
 /**
  * A {@link GraphTraversalProvider} whose node ID space has no holes in it, wrapped around one whose has.
@@ -59,6 +63,8 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   private final int[]                  toDelegate;
   /** Delegate ID -> dense ID, {@code -1} for a hole. */
   private final int[]                  toDense;
+  /** The translated neighbour views, see {@link #cachedView}. */
+  private final ConcurrentHashMap<String, SoftReference<NeighborView>> views = new ConcurrentHashMap<>();
 
   /**
    * Returns {@code provider} itself when its node IDs are already compact, and a renumbering wrapper around it
@@ -67,14 +73,22 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    * Asking is one comparison, so a caller that may be handed either shape calls this unconditionally rather than
    * testing for a Graph Analytical View, or for an overlay, at the call site: the question is about the ID space,
    * not about who produced it.
+   * <p>
+   * The provider is {@linkplain GraphTraversalProvider#pinned() pinned} first, compact or not: the renumbering is read once
+   * and answered for as long as the caller holds it, which only holds if every later question is put to the snapshot it was
+   * read from. A view rebuilt meanwhile numbers its nodes afresh (issue #10350).
    */
-  public static GraphTraversalProvider wrap(final GraphTraversalProvider provider) {
-    if (provider == null)
+  public static GraphTraversalProvider wrap(final GraphTraversalProvider live) {
+    if (live == null)
       return null;
+    final GraphTraversalProvider provider = live.pinned();
     final int bound = provider.getNodeIdUpperBound();
     if (bound == provider.getNodeCount())
       // Compact already: every ID below the bound is a live node, which is the space this class would build.
       return provider;
+    // A view's snapshot never changes, so neither does its renumbering: built once and kept with the snapshot (issue #10411)
+    if (provider instanceof GraphAnalyticalView.Pinned pinned)
+      return pinned.denseIds(() -> new DenseNodeIdProvider(pinned, bound));
     return new DenseNodeIdProvider(provider, bound);
   }
 
@@ -232,8 +246,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
 
   @Override
   public NeighborView getNeighborViewOfSlice(final Vertex.DIRECTION direction, final String edgeType) {
-    // Not renumbered, for the reason given on getNeighborView()
-    return null;
+    return cachedView(sliceKey(direction, edgeType), () -> translate(delegate.getNeighborViewOfSlice(direction, edgeType)));
   }
 
   @Override
@@ -340,13 +353,118 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
     return delegate.isStale();
   }
 
+  /**
+   * The delegate's view, renumbered into the dense space. Holes exist only while an overlay holds deletions, and a view of a
+   * snapshot with an overlay is a copy of the graph already, built for that snapshot (issue #10411): renumbering it is one more
+   * sequential pass, where answering null sent the caller down the per-node path, one array per node, for every query until the
+   * overlay was compacted. The renumbering is monotonic, so each node's neighbours stay in ascending order.
+   */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    // A packed view IS the delegate's own CSR arrays, addressed by its own node IDs. Renumbering it would mean
-    // copying the whole graph, which is the allocation the view exists to avoid, so the honest answer is the one
-    // the SPI already reserves for "I cannot serve this": the caller falls back to per-node lookups, which this
-    // class does renumber.
-    return null;
+    return cachedView(viewKey(direction, edgeTypes), () -> translate(delegate.getNeighborView(direction, edgeTypes)));
+  }
+
+  private static String viewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
+    return direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
+  }
+
+  /** The key of a slice view: the one place it is spelled, so the lookup of a held view cannot drift from the one that stores it. */
+  private static String sliceKey(final Vertex.DIRECTION direction, final String edgeType) {
+    return "slice|" + direction + "|" + edgeType;
+  }
+
+  /** The translated view of {@code key} if one is held, without building it. */
+  private NeighborView heldView(final String key) {
+    final SoftReference<NeighborView> held = views.get(key);
+    return held != null ? held.get() : null;
+  }
+
+  /**
+   * A translated view, built once per key: the renumbering is fixed for the life of this instance, and an instance kept with a
+   * view's snapshot serves every query on it. Soft, like the delegate's own views, so a copy of a large graph is given back
+   * under memory pressure. A delegate with no view for the key answers null, which is not kept.
+   */
+  private NeighborView cachedView(final String key, final Supplier<NeighborView> builder) {
+    final SoftReference<NeighborView> cached = views.get(key);
+    NeighborView view = cached != null ? cached.get() : null;
+    if (view == null) {
+      view = builder.get();
+      if (view != null)
+        views.put(key, new SoftReference<>(view));
+    }
+    return view;
+  }
+
+  /** The delegate's: renumbering its view is one pass over it, kept with the snapshot, so what costs is the view being renumbered. */
+  @Override
+  public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return delegate.getNeighborViewBuildCost(direction, edgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return delegate.getNeighborViewOfSliceBuildCost(direction, edgeType);
+  }
+
+  @Override
+  public double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+    return delegate.getMeanDegree(direction, edgeTypes);
+  }
+
+  /**
+   * A renumbered view that is held is returned as it is, whatever became of the delegate's (it may have been given back under
+   * memory pressure): it costs nothing to use. Otherwise the delegate decides whether its view is worth building, and the
+   * renumbered one is only asked for when it is.
+   */
+  @Override
+  public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final NeighborView held = heldView(viewKey(direction, edgeTypes));
+    if (held != null)
+      return held;
+    if (delegate.getNeighborViewForVisits(expectedVisits, direction, edgeTypes) == null)
+      return null;
+    return getNeighborView(direction, edgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    final NeighborView held = heldView(sliceKey(direction, edgeType));
+    if (held != null)
+      return held;
+    if (delegate.getNeighborViewOfSliceForVisits(expectedVisits, direction, edgeType) == null)
+      return null;
+    return getNeighborViewOfSlice(direction, edgeType);
+  }
+
+  private NeighborView translate(final NeighborView view) {
+    if (view == null)
+      return null;
+    final int nodes = toDelegate.length;
+    final int[] source = view.neighbors();
+    final int[] offsets = new int[nodes + 1];
+    for (int dense = 0; dense < nodes; dense++) {
+      final int id = toDelegate[dense];
+      int degree = 0;
+      if (id < view.nodeCount())
+        for (int j = view.offset(id), end = view.offsetEnd(id); j < end; j++)
+          if (denseId(source[j]) >= 0)
+            ++degree;
+      offsets[dense + 1] = offsets[dense] + degree;
+    }
+    final int[] neighbors = new int[offsets[nodes]];
+    int pos = 0;
+    for (int dense = 0; dense < nodes; dense++) {
+      final int id = toDelegate[dense];
+      if (id < view.nodeCount())
+        for (int j = view.offset(id), end = view.offsetEnd(id); j < end; j++) {
+          final int neighbor = denseId(source[j]);
+          if (neighbor >= 0)
+            neighbors[pos++] = neighbor;
+        }
+    }
+    return new NeighborView(nodes, offsets, neighbors);
   }
 
   @Override

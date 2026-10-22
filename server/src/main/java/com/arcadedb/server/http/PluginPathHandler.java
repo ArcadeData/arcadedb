@@ -19,42 +19,142 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ServerPlugin;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
- * The outer {@link PathHandler} {@code HttpServer} routes through, which notices a plugin route registered without a
- * method restriction (issue #10157).
+ * The outer {@link PathHandler} {@code HttpServer} routes through. It is the one object every plugin registers on, so it is
+ * where a claim on a name another party holds is noticed (issues #10157, #10385).
  * <p>
- * {@code ServerPlugin.registerAPI} keeps handing plugins a {@link PathHandler}, so a plugin built against it keeps
- * working. But a handler added to it directly answers every HTTP method, which turned {@code GET} into a way to run
- * state-changing cluster operations. Every plugin in this repository declares its routes through {@link PluginRoutes};
- * a plugin that does not is named here, once per path, at {@code WARNING}, so the gap is visible at startup rather than
- * in a code review. Routing is unchanged: the route is served as registered.
+ * A {@link PathHandler} is a last-writer-wins map, which makes three plugin registrations silently destructive: a second
+ * plugin on a path replaces the first plugin's entry, an exact path that a core route serves wins over the {@code /api/v1}
+ * prefix the core {@code RoutingHandler} is mounted under, and a prefix equal to that mount replaces the whole core router.
+ * Every path registered here is therefore recorded with its owner, the server or a plugin, and a plugin's claim is refused
+ * with an {@link IllegalStateException} naming both parties when it is equal to a path already claimed, when it is an exact
+ * path (or a prefix) that another party holds as a prefix (or an exact path) - an exact path is matched before any prefix, so
+ * one of the two would lose the root of the path while keeping everything below it (issue #10532) - or when it would
+ * shadow a route the server registered for itself ({@link #reserveServerRoutes}). The refusal propagates out of
+ * {@code registerAPI}, so the server does not start with a route that silently does not exist, rather than starting with a
+ * line in a log. {@link PluginRoutes} shares its method-keyed table through {@link #getRouteTable()}, so a second plugin
+ * declaring ANOTHER method on a path merges into the same entry instead of replacing it.
+ * <p>
+ * The deprecated {@code ServerPlugin.registerAPI(HttpServer, PathHandler)} keeps handing plugins a {@link PathHandler},
+ * so a plugin built against it keeps working. But a handler added to it directly answers every HTTP method, which turned
+ * {@code GET} into a way to run state-changing cluster operations. Every plugin in this repository implements
+ * {@code registerAPI(HttpServer, PluginRoutes)} instead (issue #10296); a route a plugin adds to the raw handler is named
+ * here, once per path, at {@code WARNING}, so the gap is visible at startup rather than in a code review. Routing is
+ * unchanged: the route is served as registered, once the claim itself is accepted.
  */
 final class PluginPathHandler extends PathHandler {
-  private final List<String> unrestricted = new ArrayList<>();
-  private       String       registeringPlugin;
+  private static final String SERVER = "the server";
+
+  private final List<String>              unrestricted = new ArrayList<>();
+  private final PluginRoutes.RouteTable   routeTable   = new PluginRoutes.RouteTable();
+  // Normalized path -> who registered it as an exact path and as a prefix ("the server" or "plugin 'name'"). One table for both
+  // kinds, so that a lookup cannot be written against one kind and forget the other (issue #10532)
+  private final Map<String, PathClaims>   claims       = new HashMap<>();
+  // The routes the server answers through a router mounted under a prefix: a plugin path that fills one of them shadows it
+  private final List<ServerRoute>         serverRoutes = new ArrayList<>();
+  private       String                    registeringPlugin;
+
+  /** A route of the server's: its path split in segments, how many of them are the router's mount, and how it is named. */
+  private record ServerRoute(String[] segments, int mountLength, String description) {
+  }
+
+  /**
+   * The holders of one path: who registered it as an exact path, and who as a prefix. A kind has several owners when plugins
+   * declared different methods on it, which {@link PluginRoutes} merges into one entry without asking the {@link PathHandler}
+   * again ({@link #joinClaim}): every owner keeps a root the opposite kind would take away.
+   */
+  private static final class PathClaims {
+    private final Set<String> exact  = new LinkedHashSet<>();
+    private final Set<String> prefix = new LinkedHashSet<>();
+
+    private Set<String> ownersOf(final boolean isPrefix) {
+      return isPrefix ? prefix : exact;
+    }
+
+    /** The first owner of the kind, {@code null} for none. */
+    String heldAs(final boolean isPrefix) {
+      final Set<String> owners = ownersOf(isPrefix);
+      return owners.isEmpty() ? null : owners.iterator().next();
+    }
+
+    /** The first owner of the kind other than {@code claimant}, {@code null} when the claimant holds it alone or nobody does. */
+    String heldAsByAnotherThan(final boolean isPrefix, final String claimant) {
+      for (final String owner : ownersOf(isPrefix))
+        if (!owner.equals(claimant))
+          return owner;
+      return null;
+    }
+
+    void hold(final boolean isPrefix, final String owner) {
+      ownersOf(isPrefix).add(owner);
+    }
+  }
 
   /** Marks the routes added from now on as {@code plugin}'s, or as the server's own when {@code null}. */
   synchronized void setRegisteringPlugin(final String plugin) {
     this.registeringPlugin = plugin;
   }
 
+  /** The plugin whose routes are being registered, or {@code null} when it is the server's own. */
+  synchronized String getRegisteringPlugin() {
+    return registeringPlugin;
+  }
+
+  /**
+   * Adds the plugin being registered to the owners of a path it declares another method on: {@link PluginRoutes} merges that
+   * into the entry another plugin created instead of registering it again, so the claim would otherwise name the first plugin
+   * alone (issue #10532).
+   */
+  synchronized void joinClaim(final String path, final boolean isPrefix) {
+    if (registeringPlugin != null)
+      claims.computeIfAbsent(normalize(path), key -> new PathClaims()).hold(isPrefix, "plugin '" + registeringPlugin + "'");
+  }
+
+  /** The method-keyed table every {@link PluginRoutes} built on this handler shares (issue #10385). */
+  PluginRoutes.RouteTable getRouteTable() {
+    return routeTable;
+  }
+
+  /**
+   * Records the routes the server answers through a {@code RoutingHandler} it mounted at {@code prefix}, so a plugin path
+   * that would shadow one is refused (issue #10385). The paths are the templates the router was given, relative to the
+   * prefix, e.g. {@code /query/{database}}.
+   */
+  synchronized void reserveServerRoutes(final String prefix, final List<RouteRecordingRoutingHandler.RouteDescriptor> routes) {
+    final String normalizedPrefix = normalize(prefix);
+    final int mountLength = segmentsOf(normalizedPrefix).length;
+    for (final RouteRecordingRoutingHandler.RouteDescriptor route : routes) {
+      final String full = "/".equals(normalizedPrefix) ? route.path() : normalizedPrefix + route.path();
+      serverRoutes.add(new ServerRoute(segmentsOf(normalize(full)), mountLength, route.method() + " " + full));
+    }
+  }
+
   @Override
   public synchronized PathHandler addExactPath(final String path, final HttpHandler handler) {
-    audit(path, handler);
-    return super.addExactPath(path, handler);
+    judge(path, false);
+    final PathHandler result = super.addExactPath(path, handler);
+    record(path, handler, false);
+    return result;
   }
 
   @Override
   public synchronized PathHandler addPrefixPath(final String path, final HttpHandler handler) {
-    audit(path, handler);
-    return super.addPrefixPath(path, handler);
+    judge(path, true);
+    final PathHandler result = super.addPrefixPath(path, handler);
+    record(path, handler, true);
+    return result;
   }
 
   /** The {@code plugin path} of every plugin route registered without a method restriction, in registration order. */
@@ -62,12 +162,122 @@ final class PluginPathHandler extends PathHandler {
     return List.copyOf(unrestricted);
   }
 
-  private void audit(final String path, final HttpHandler handler) {
-    if (registeringPlugin == null || handler instanceof PluginRoutes.MethodRestrictedHandler)
+  /**
+   * Whether {@code plugin}'s class (or a superclass or interface of it) overrides the deprecated
+   * {@code registerAPI(HttpServer, PathHandler)}, rather than inheriting the {@link ServerPlugin} no-op default (issue
+   * #10296).
+   */
+  static boolean implementsDeprecatedRegisterAPI(final ServerPlugin plugin) {
+    return overridesRegisterAPI(plugin, PathHandler.class);
+  }
+
+  /** Whether {@code plugin} overrides {@code registerAPI(HttpServer, PluginRoutes)} (issue #10296). */
+  static boolean implementsPluginRoutesRegisterAPI(final ServerPlugin plugin) {
+    return overridesRegisterAPI(plugin, PluginRoutes.class);
+  }
+
+  private static boolean overridesRegisterAPI(final ServerPlugin plugin, final Class<?> routesType) {
+    try {
+      return plugin.getClass().getMethod("registerAPI", HttpServer.class, routesType).getDeclaringClass() != ServerPlugin.class;
+    } catch (final NoSuchMethodException e) {
+      // ServerPlugin declares both overloads, so this means the SPI changed without this lookup: failing here is what
+      // keeps a renamed overload from silently dropping every third-party plugin's routes
+      throw new IllegalStateException(
+          "ServerPlugin no longer declares registerAPI(HttpServer, " + routesType.getSimpleName() + ")", e);
+    }
+  }
+
+  /** Refuses a plugin's claim on a name that is taken, before the {@link PathHandler} sees it. The server's own are never judged. */
+  private void judge(final String path, final boolean isPrefix) {
+    final String owner = registeringPlugin;
+    if (owner != null)
+      refuseIfTaken("plugin '" + owner + "'", path, normalize(path), isPrefix);
+  }
+
+  /**
+   * Records who holds a path once the {@link PathHandler} has accepted it, so a registration it refuses leaves no claim behind,
+   * and names a plugin route that was added without its methods.
+   */
+  private void record(final String path, final HttpHandler handler, final boolean isPrefix) {
+    final String owner = registeringPlugin;
+    final PathClaims held = claims.computeIfAbsent(normalize(path), key -> new PathClaims());
+    if (owner == null) {
+      // The server's own mounts: recorded so a plugin cannot claim them
+      held.hold(isPrefix, SERVER);
       return;
-    unrestricted.add(registeringPlugin + " " + path);
+    }
+
+    held.hold(isPrefix, "plugin '" + owner + "'");
+
+    // A route declared through PluginRoutes carries its methods, which is what the warning below is about
+    if (handler instanceof PluginRoutes.MethodRestrictedHandler)
+      return;
+    unrestricted.add(owner + " " + path);
     LogManager.instance().log(this, Level.WARNING,
         "Plugin '%s' registered the HTTP route %s without declaring its method, so it answers every method (GET included). "
-            + "Declare it through PluginRoutes instead", registeringPlugin, path);
+            + "Implement registerAPI(HttpServer, PluginRoutes) and declare it there instead", owner, path);
+  }
+
+  /** Throws when {@code key} is a name somebody already holds, or when it would shadow a route the server registered. */
+  private void refuseIfTaken(final String claimant, final String path, final String key, final boolean isPrefix) {
+    final PathClaims taken = claims.get(key);
+    if (taken != null) {
+      final String held = taken.heldAs(isPrefix);
+      if (held != null)
+        throw new IllegalStateException(claimant + " cannot register the HTTP route " + path + ": " + held + " already registered "
+            + (isPrefix ? "that prefix" : "that path") + ", so one of the two would silently lose it");
+
+      // An exact path is matched before any prefix, so one of the two kinds on a path that another party holds as the other kind
+      // takes that party's root away while its subtree keeps working: an exact path answers the root of a prefix instead of it
+      // (the server's mount included), and a prefix on an exact path never answers its own root (issue #10532). The same party
+      // declaring both is the deliberate "the root here, everything below there" pair
+      final String other = taken.heldAsByAnotherThan(!isPrefix, claimant);
+      if (other != null)
+        throw new IllegalStateException(isPrefix ?
+            claimant + " cannot register the HTTP route " + path + " as a prefix: " + other + " registered that exact path, which is "
+                + "matched before any prefix, so the prefix would never answer its own root" :
+            claimant + " cannot register the HTTP route " + path + ": it is the path of a prefix that " + other + " registered, "
+                + "which the exact path would answer instead, leaving the prefix everything below it but not its root");
+    }
+
+    final String[] segments = segmentsOf(key);
+    for (final ServerRoute route : serverRoutes)
+      if (shadows(segments, isPrefix, route))
+        throw new IllegalStateException(
+            claimant + " cannot register the HTTP route " + path + ": it would shadow the server's own route " + route.description
+                + ", which the plugin's route would answer instead");
+  }
+
+  /**
+   * Whether a plugin's {@code pluginSegments} - an exact path, or a prefix - are matched BEFORE the server's {@code route}:
+   * every segment equal, or the server's a {@code {parameter}}. An exact path wins over any prefix, so it has to have as
+   * many segments as the route; a prefix wins over the router's mount only when it is at least as long as the mount, and it
+   * covers the route when it is no longer than the route. A shorter prefix loses to the mount, which is more specific.
+   */
+  private static boolean shadows(final String[] pluginSegments, final boolean isPrefix, final ServerRoute route) {
+    final String[] serverSegments = route.segments;
+    if (isPrefix ?
+        pluginSegments.length > serverSegments.length || pluginSegments.length < route.mountLength :
+        pluginSegments.length != serverSegments.length)
+      return false;
+    for (int i = 0; i < pluginSegments.length; i++)
+      if (!pluginSegments[i].equals(serverSegments[i]) && !(serverSegments[i].startsWith("{") && serverSegments[i].endsWith("}")))
+        return false;
+    return true;
+  }
+
+  private static String[] segmentsOf(final String normalizedPath) {
+    return "/".equals(normalizedPath) ? new String[0] : normalizedPath.substring(1).split("/");
+  }
+
+  /**
+   * A path as {@link PathHandler} keys it: a leading slash and no trailing one. {@link PluginRoutes} keys its table the same
+   * way, so {@code /api/v1/cluster/peer/} and {@code /api/v1/cluster/peer} are one entry there as they are one path here.
+   */
+  static String normalize(final String path) {
+    String normalized = path.startsWith("/") ? path : "/" + path;
+    while (normalized.length() > 1 && normalized.endsWith("/"))
+      normalized = normalized.substring(0, normalized.length() - 1);
+    return normalized;
   }
 }

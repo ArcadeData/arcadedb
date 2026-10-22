@@ -35,6 +35,8 @@ import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.graph.Edge;
@@ -139,6 +141,9 @@ public class PostgresNetworkExecutor extends Thread {
   public enum ERROR_SEVERITY {FATAL, ERROR}
 
   public static final String PG_SERVER_VERSION = "12.0";
+
+  /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
+  static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
 
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
   /**
@@ -1599,14 +1604,35 @@ public class PostgresNetworkExecutor extends Thread {
       return new CatalogAnswer(types, getColumns(types));
 
     final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
-    if (answer != null && answer.rows != null)
-      return new CatalogAnswer(toResults(answer.rows), answer.columns);
+    if (answer != null) {
+      if (answer.rows != null)
+        return new CatalogAnswer(toResults(answer.rows), answer.columns);
 
-    if (answer == PostgresCatalog.DECLINED || PostgresCatalog.containsIgnoreCase(query, "pg_catalog")
-        || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
+      // An answer with no rows to send is a refusal, whatever the reason: a new reason cannot fall into the empty result set by
+      // default, which would read as an empty catalog and lose the one row of an ungrouped count (issue #10371)
+      return refuseCatalogQuery(query, parameters);
+    }
+
+    // The one deliberate compatibility shim: a statement that names pg_catalog or pg_type but reads no emulated relation -
+    // SELECT pg_catalog.set_config(...), the session probes pg_dump and friends send - is given the empty result set it has
+    // always been given, rather than handed to ArcadeDB's SQL engine, which has no such function and would fail the probe
+    if (PostgresCatalog.containsIgnoreCase(query, "pg_catalog") || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
       return new CatalogAnswer(Collections.emptyList(), Map.of());
 
     return null;
+  }
+
+  /**
+   * Refuses a catalog query the resolver declined, with {@code feature_not_supported} (issue #10371). Not while its placeholders
+   * are unbound: a Parse, or a Describe of a statement, sees the query before the values of its filters arrive, and a shape whose
+   * resolver needs a value to recognise it declines until they do (issue #8562). That is not the answer yet, so it is deferred as
+   * an empty one and asked again at Execute, where the same refusal is final. The lookups a driver sends to name a type it does not
+   * know are answered from {@link PostgresType} like any other catalog query (issue #10495): there is no exemption for them.
+   */
+  private static CatalogAnswer refuseCatalogQuery(final String query, final Object[] parameters) {
+    if (parameters.length < PostgresCatalog.countPlaceholders(query))
+      return new CatalogAnswer(Collections.emptyList(), Map.of());
+    throw PostgresCatalog.refusalOf(query);
   }
 
   private static List<Result> toResults(final List<Map<String, Object>> rows) {
@@ -3971,7 +3997,7 @@ public class PostgresNetworkExecutor extends Thread {
       final ServerSecurityUser dbUser = server.getSecurity().authenticate(userName, userPassword, databaseName);
       authenticatedUser = dbUser;
 
-      database = server.getDatabase(databaseName);
+      database = server.getDatabaseForClient(databaseName);
 
       DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
       sessionSettings.setSuperuser(ServerSecurityUser.ROOT_USER.equals(dbUser.getName()));
@@ -3985,11 +4011,21 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (final DatabaseOperationException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+      // A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
+      // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other
+      if (isHeldDatabase(e))
+        writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+      else
+        writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
       return false;
     }
 
     return true;
+  }
+
+  /** Whether {@code e} refuses a database that exists: {@link DatabaseNotAvailableException} without its narrower not-found subtype. */
+  static boolean isHeldDatabase(final DatabaseOperationException e) {
+    return e instanceof DatabaseNotAvailableException && !(e instanceof DatabaseNotFoundException);
   }
 
   /**
@@ -4168,8 +4204,8 @@ public class PostgresNetworkExecutor extends Thread {
       return copy.sqlState;
     if (error instanceof PostgresSessionSettings.SettingException setting)
       return setting.sqlState;
-    if (error instanceof PostgresCatalog.WorkLimitExceeded)
-      return PostgresCatalog.WorkLimitExceeded.SQLSTATE; // program_limit_exceeded (issue #10228)
+    if (error instanceof PostgresCatalog.Refusal refusal)
+      return refusal.sqlState; // program_limit_exceeded (issue #10228), feature_not_supported (issue #10371)
     return switch (ErrorCategory.of(error)) {
       // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
       // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)
@@ -4248,8 +4284,10 @@ public class PostgresNetworkExecutor extends Thread {
   /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */
   private String concealableMessage(final String message, final Throwable cause) {
     // A refused SET/DISCARD is text the protocol layer wrote, with no user data in it, and the explanation is what the
-    // client is owed; it is also a client mistake, never a server fault (issue #9327)
-    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException)
+    // client is owed; it is also a client mistake, never a server fault (issue #9327). A refused catalog query is the same: text
+    // this server wrote, with at most the relation the client named in it (issue #10371)
+    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException
+        || cause instanceof PostgresCatalog.Refusal)
       return message;
     // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
     // failure (syntax error, duplicated key, ...) is not an incident: the message alone, no stack trace. Anything the

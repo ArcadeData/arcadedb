@@ -39,9 +39,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Proxy;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -66,60 +63,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue6990BulkSchemaScopeTest extends TestHelper {
 
   /**
-   * Counts outermost schema recording sessions, which is the number of Raft entries the same code would publish under
-   * HA. Nested calls are the ones that ride an already-open frame, so they are deliberately not counted.
-   */
-  private static final class SessionCountingDatabase {
-    private final DatabaseInternal delegate;
-    private final DatabaseInternal proxy;
-    private       int              depth      = 0;
-    private       int              outermost  = 0;
-
-    private SessionCountingDatabase(final DatabaseInternal delegate) {
-      this.delegate = delegate;
-      this.proxy = (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
-          new Class<?>[] { DatabaseInternal.class }, (p, method, args) -> {
-            final boolean session = "recordFileChanges".equals(method.getName());
-            if (session) {
-              if (depth == 0)
-                ++outermost;
-              ++depth;
-            }
-            try {
-              return method.invoke(delegate, args);
-            } catch (final InvocationTargetException e) {
-              throw e.getCause();
-            } finally {
-              if (session)
-                --depth;
-            }
-          });
-    }
-  }
-
-  /**
    * Sessions opened by the last {@link #countSchemaSessions(Runnable)} call, readable even when the work threw. That is
    * the only way to measure a script that fails part way, which is the case with the most to say about the scope.
    */
   private int lastSessionCount = -1;
 
   /**
-   * Runs {@code work} with the counting database installed, and returns how many outermost sessions it opened. A
-   * failure propagates; the count is still available in {@link #lastSessionCount}.
+   * Runs {@code work} with the counting database installed (see {@link SchemaSessionCounter}), and returns how many outermost
+   * sessions it opened. A failure propagates; the count is still available in {@link #lastSessionCount}.
    */
   private int countSchemaSessions(final Runnable work) {
-    final LocalDatabase local = (LocalDatabase) database;
-    final DatabaseInternal previous = local.getWrappedDatabaseInstance();
-    final SessionCountingDatabase counter = new SessionCountingDatabase(local);
-    local.setWrappedDatabaseInstance(counter.proxy);
-    lastSessionCount = -1;
+    final SchemaSessionCounter.Count seen = new SchemaSessionCounter.Count();
     try {
-      work.run();
+      return SchemaSessionCounter.count((LocalDatabase) database, seen, work);
     } finally {
-      local.setWrappedDatabaseInstance(previous);
-      lastSessionCount = counter.outermost;
+      lastSessionCount = seen.sessions();
     }
-    return counter.outermost;
   }
 
   /**

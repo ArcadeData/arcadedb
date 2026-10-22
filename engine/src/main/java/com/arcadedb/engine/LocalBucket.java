@@ -655,6 +655,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public boolean existsRecord(final RID rid) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    return isRecordPresent(rid);
+  }
+
+  /**
+   * {@link #existsRecord(RID)} without the READ_RECORD check, for the engine's own integrity checks that never hand the record
+   * out: the endpoint of a unidirectional edge is not read to create the edge (issue #10325), so asking whether it exists must
+   * not need a grant the creation itself never needed. Reads the slot through the transaction, so a record this transaction
+   * created is found.
+   * <p>
+   * Internal: the answer is an existence oracle for any RID of the bucket. A caller must never hand it to a user who has not been
+   * checked for READ_RECORD on the bucket, except as the refusal of an operation on a RID that user named.
+   */
+  public boolean isRecordPresent(final RID rid) {
+    if (rid.getPosition() < 0)
+      return false;
 
     try {
       // #6196: FIRST_CHUNK and not isChunkHead(), deliberately. A record EXISTS at this RID when the slot holds one of
@@ -2839,6 +2854,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
       final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
+      // The record table summary of the page (see getFreeSpaceInPage) stays true across a plain append to the end of a
+      // page it described, or to a brand-new page: the table writes below drop it, the append re-states it.
+      final int recordCountBefore = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final boolean keepsPackedScan = packedAppend && availablePositionIndex == recordCountBefore
+              && (createNewPage ? recordCountBefore == 0 : selectedPage.hasPackedScan(recordCountBefore));
       try {
         // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
         selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
@@ -2875,6 +2895,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
                   bufferSize);
           updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
+          if (keepsPackedScan)
+            selectedPage.rememberPackedScan(recordCountBefore + 1, newRecordPositionInPage,
+                    PAGE_RECORD_TABLE_OFFSET + (recordCountBefore + 1) * INT_SERIALIZED_SIZE);
         }
       } finally {
         if (packedAppend)
@@ -3286,6 +3309,167 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // The page is not there (or not readable): the record is certainly not committed at that position.
       return false;
     }
+  }
+
+  /**
+   * The content of the record at {@code rid} in the CURRENT COMMITTED state of its page, ignoring the calling
+   * transaction's own image of that page and its record caches, or null when no record is committed there. The
+   * companion of {@link #existsRecordInCommittedPage} for a caller that needs the bytes too.
+   * <p>
+   * Every shape is answered from the committed pages (#10304): a record stored in place from its own page, a placeholder
+   * pointer from its page and the content record's, read with no commit published in between, and a multi-page record
+   * assembled from its chain and validated against one commit as {@link #assembleFromNewestCommitted} does. A
+   * multi-page record that cannot be assembled whole raises a retryable {@link ConcurrentModificationException} rather
+   * than answering "no record".
+   * <p>
+   * Used by the edge removal (#10263) to tell an entry that is genuinely missing from a vertex's edge list from one
+   * this transaction cannot see because the list it read is older than the edge being deleted.
+   */
+  public Binary getRecordFromCommittedPage(final RID rid) {
+    final long position = rid.getPosition();
+    if (position < 0)
+      return null;
+
+    final int pageNumber = (int) (position / maxRecordsInPage);
+    if (pageNumber >= pageCount.get())
+      // A page no commit has published yet: reading it would load it from the file ahead of its commit
+      return null;
+    final int positionInPage = (int) (position % maxRecordsInPage);
+    final long[] recordSize;
+    final int recordPositionInPage;
+    final BasePage committed;
+    try {
+      committed = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+      if (committed == null || positionInPage >= committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return null;
+
+      recordPositionInPage = getRecordPositionInPage(committed, positionInPage);
+      if (recordPositionInPage == 0)
+        // FREE SLOT (NEVER USED OR DELETED)
+        return null;
+
+      recordSize = committed.readNumberAndSize(recordPositionInPage);
+    } catch (final IOException e) {
+      // NOT "NO RECORD": THE CALLER WOULD TAKE AN UNREADABLE PAGE FOR AN ABSENT ENTRY AND COMMIT THE DELETE IT GUARDS
+      throw new DatabaseOperationException("Error on reading the committed page of record " + rid, e);
+    }
+
+    if (recordSize[0] == 0 || recordSize[0] == NEXT_CHUNK || isPlaceholderContent(recordSize[0]))
+      // DELETED, OR NOT A RECORD OF ITS OWN
+      return null;
+
+    try {
+      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+        return committedPlaceholderContent(rid);
+
+      if (recordSize[0] == FIRST_CHUNK)
+        // #10304: ASSEMBLED FROM THE COMMITTED PAGES ONLY, VALIDATED AGAINST ONE COMMIT, NOT THROUGH THE TRANSACTION
+        return committedMultiPageRecord(rid, new PageId(database, file.getFileId(), pageNumber), positionInPage, FIRST_CHUNK);
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the committed pages of record " + rid, e);
+    }
+
+    return committed.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
+  }
+
+  /**
+   * The committed content behind the placeholder POINTER at {@code rid} (#10304). The pointer and the content record
+   * live on two pages, which a commit publishes one at a time, so the two are read with no publication in between:
+   * optimistically, and again under the publication lock when one overlapped the read.
+   */
+  private Binary committedPlaceholderContent(final RID rid) throws IOException {
+    final PageManager pageManager = database.getPageManager();
+    final long sequence = pageManager.getPublicationSequence();
+    if ((sequence & 1) == 0) {
+      final Binary content = readCommittedPlaceholderContent(rid);
+      if (pageManager.getPublicationSequence() == sequence)
+        return content;
+    }
+    try {
+      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
+      return (Binary) pageManager.executeInLock(() -> readCommittedPlaceholderContent(rid));
+    } catch (final RuntimeException e) {
+      if (e.getCause() instanceof IOException ioException)
+        throw ioException;
+      throw e;
+    }
+  }
+
+  private Binary readCommittedPlaceholderContent(final RID rid) throws IOException {
+    final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
+    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+    final BasePage pointerPage = database.getPageManager()
+            .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+    if (pointerPage == null || positionInPage >= pointerPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return null;
+    final int pointerPosition = getRecordPositionInPage(pointerPage, positionInPage);
+    if (pointerPosition == 0)
+      return null;
+    final long[] pointerSize = pointerPage.readNumberAndSize(pointerPosition);
+    if (pointerSize[0] != RECORD_PLACEHOLDER_POINTER) {
+      // A CONCURRENT COMMIT TURNED THE SLOT INTO ANOTHER SHAPE SINCE THE CALLER READ IT
+      if (pointerSize[0] > 0)
+        return pointerPage.getImmutableView((int) (pointerPosition + pointerSize[1]), (int) pointerSize[0]);
+      if (pointerSize[0] == FIRST_CHUNK)
+        return committedMultiPageRecord(rid, pointerPage.getPageId(), positionInPage, FIRST_CHUNK);
+      return null;
+    }
+
+    final RID contentRID = new RID(fileId, pointerPage.readLong((int) (pointerPosition + pointerSize[1])));
+    final int contentPageNumber = (int) (contentRID.getPosition() / maxRecordsInPage);
+    if (contentRID.getPosition() < 0 || contentPageNumber >= pageCount.get())
+      return null;
+    final int contentSlot = (int) (contentRID.getPosition() % maxRecordsInPage);
+    final PageId contentPageId = new PageId(database, file.getFileId(), contentPageNumber);
+    final BasePage contentPage = database.getPageManager().getImmutablePage(contentPageId, pageSize, false, false);
+    if (contentPage == null || contentSlot >= contentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return null;
+    final int contentPosition = getRecordPositionInPage(contentPage, contentSlot);
+    if (contentPosition == 0)
+      return null;
+    final long[] contentSize = contentPage.readNumberAndSize(contentPosition);
+
+    if (contentSize[0] < RECORD_PLACEHOLDER_CONTENT) {
+      // A PLACEHOLDER CONTENT RECORD STORES ITS SIZE NEGATED
+      final int size = (int) -contentSize[0];
+      final int offset = (int) (contentPosition + contentSize[1]);
+      if ((long) offset + size > contentPage.getMaxContentSize())
+        return null;
+      return contentPage.getImmutableView(offset, size);
+    }
+
+    if (isChunkHead(contentSize[0]))
+      // A CONTENT RECORD NO PAGE COULD HOST WHOLE, WRITTEN WITH ITS OWN MARKER (#6196) OR WITH THE LEGACY FIRST_CHUNK
+      return committedMultiPageRecord(contentRID, contentPageId, contentSlot, contentSize[0]);
+
+    // THE POINTER DOES NOT LEAD TO A CONTENT RECORD
+    return null;
+  }
+
+  /**
+   * The committed content of the multi-page record whose head chunk sits at {@code headSlot} of {@code headPageId},
+   * assembled from the committed pages only and validated against one commit ({@link #assembleFromNewestCommitted}).
+   * A record no attempt could assemble whole is in motion or broken: it is not reported as missing, which a caller
+   * deciding on its absence would act on, but as a retryable conflict.
+   */
+  private Binary committedMultiPageRecord(final RID rid, final PageId headPageId, final int headSlot, final long headMarker)
+          throws IOException {
+    final Binary content = assembleFromNewestCommitted(headPageId, headSlot, headMarker,
+            database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    if (content != null)
+      return content;
+
+    final BasePage head = database.getPageManager().getImmutablePage(headPageId, pageSize, false, false);
+    if (head == null || headSlot >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return null;
+    final int headPosition = getRecordPositionInPage(head, headSlot);
+    if (headPosition == 0 || head.readNumberAndSize(headPosition)[0] == 0)
+      // DELETED MEANWHILE
+      return null;
+
+    throw new ConcurrentModificationException(
+            "Multi-page record " + rid + " could not be read as one committed state. Please retry the operation");
   }
 
   /**
@@ -3964,8 +4148,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #5596: an in-chunk edge append is invisible to the slot map on purpose - the commutative edge-append merge
       // owns it - so the in-place rewrite of the segment below is declared covered by THAT merge instead. Only when
       // the append was really registered (TransactionContext.trackEdgeAppend) and the page is not already
-      // excluded: a segment write nobody tracked (an edge removal, addAll, a bulk load) stays undeclared and can
-      // therefore never be rebased away, whether or not its writer remembered to poison the page.
+      // excluded: a write to a segment nobody appended to (addAll, a bulk load) stays undeclared and can therefore
+      // never be rebased away. A segment that DID receive tracked appends is declared as a whole, whatever else this
+      // transaction changed in it: an append-plus-removal buffer looks exactly like an append-only one, so a removal
+      // from such a segment is safe only because its writer excluded the page (EdgeLinkedList.updateRewrittenSegment,
+      // #10375).
       final boolean edgeAppendReplayable = !slotCandidate && slotTx != null && slotTx.isEdgeAppendMergeEnabled()//
               && slotTx.isEdgeAppendTracked(rid) && !slotTx.isEdgeAppendPagePoisoned(fileId, pageId);
 
@@ -7137,9 +7324,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     pageAnalysis.lastRecordPositionInPage = -1;
     pageAnalysis.newRecordPositionInPage = -1;
 
+    // A page this transaction keeps appending to has no hole and no write touched its record table since the last
+    // walk (or the last append, which recorded what it wrote): answer from that instead of walking every slot again.
+    final MutablePage ownPage = pageAnalysis.page instanceof MutablePage mp ? mp : null;
+    if (ownPage != null && ownPage.hasPackedScan(pageAnalysis.totalRecordsInPage)) {
+      pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
+      pageAnalysis.lastRecordPositionInPage = ownPage.getPackedScanLastPosition();
+      pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
+      pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
+      return;
+    }
+
+    boolean sawHole = false;
     for (int i = 0; i < pageAnalysis.totalRecordsInPage; i++) {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
+        sawHole = true;
         // Check if this position was deleted in the current transaction
         final RID potentialRID = new RID(file.getFileId(),
                 ((long) pageAnalysis.page.getPageId().getPageNumber()) * maxRecordsInPage + i);
@@ -7156,6 +7356,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (pageAnalysis.availablePositionIndex == -1)
       // USE NEW POSITION
       pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
+
+    if (ownPage != null && !sawHole && pageAnalysis.lastRecordPositionInPage > -1)
+      ownPage.rememberPackedScan(pageAnalysis.totalRecordsInPage, pageAnalysis.lastRecordPositionInPage,
+              PAGE_RECORD_TABLE_OFFSET + pageAnalysis.totalRecordsInPage * INT_SERIALIZED_SIZE);
 
     pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
     pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
@@ -7183,7 +7387,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
                                           final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
-    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
+    // #10547: a transaction that asked to append skips the search, which runs under the bucket-wide monitor below
+    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal() && !database.getTransaction().isAppendOnlyInserts()) {
       synchronized (freeSpaceInPages) {
         relistQueuedPages();
         if (freeSpaceInPages.isEmpty())

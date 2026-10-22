@@ -1396,7 +1396,7 @@ public class BoltNetworkExecutor extends Thread {
       return false;
 
     try {
-      database = server.getDatabase(targetName);
+      database = server.getDatabaseForClient(targetName);
       if (database == null) {
         // Defensive, and knowingly so: the server resolves a missing name by THROWING - the catch below
         // classifies it - rather than by answering null, so this is the message a client is least likely to

@@ -121,7 +121,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
     // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
-    if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
+    if (provider instanceof GraphAnalyticalView.Pinned gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
       return executeWithCSR(gav, dampingFactor, maxIterations, tolerance, direction, guard);
     }
@@ -164,7 +164,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         getName() + "(): unknown direction '" + s + "', expected one of OUT, IN or BOTH");
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav,
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView.Pinned gav,
       final double dampingFactor, final int maxIterations, final double tolerance, final Vertex.DIRECTION direction,
       final WorkGuard guard) {
     final int n = gav.getNodeCount();

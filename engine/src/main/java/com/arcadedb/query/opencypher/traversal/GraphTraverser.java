@@ -18,9 +18,13 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeEntryRIDIterator;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -36,6 +40,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.function.Predicate;
 
 /**
@@ -134,10 +139,11 @@ public abstract class GraphTraverser {
     final Iterator<Edge> edges;
     if (isIncomingLookupNeeded(vertex))
       edges = IncomingEdgeLookup.getEdges(context, vertex, direction.toArcadeDirection(), relationshipTypes);
-    else if (edgesUnread && vertex instanceof VertexInternal internal)
-      edges = ((DatabaseInternal) internal.getDatabase()).getGraphEngine()
-          .getEdgesKnowingEndpoints(internal, direction.toArcadeDirection(), relationshipTypes);
-    else if (relationshipTypes == null || relationshipTypes.length == 0)
+    else if (edgesUnread && vertex instanceof VertexInternal internal) {
+      final DatabaseInternal database = (DatabaseInternal) internal.getDatabase();
+      edges = new LiveEdges(database,
+          database.getGraphEngine().getEdgesKnowingEndpoints(internal, direction.toArcadeDirection(), relationshipTypes));
+    } else if (relationshipTypes == null || relationshipTypes.length == 0)
       edges = vertex.getEdges(direction.toArcadeDirection()).iterator();
     else
       edges = vertex.getEdges(direction.toArcadeDirection(), relationshipTypes).iterator();
@@ -149,10 +155,162 @@ public abstract class GraphTraverser {
   }
 
   /**
+   * The edges of a walk that follows them on the endpoints their adjacency entries hold, without a ghost among them: an entry whose
+   * edge record is gone is skipped and reported (issue #10149), as it is by every walk that loads the record. The bucket is asked
+   * about the edge RID the entry holds, which reads no record, so the walk keeps what it gained by not loading the edges.
+   */
+  private static final class LiveEdges implements Iterator<Edge> {
+    private final DatabaseInternal database;
+    private final Iterator<Edge>   edges;
+    private       Edge             next;
+
+    private LiveEdges(final DatabaseInternal database, final Iterator<Edge> edges) {
+      this.database = database;
+      this.edges = edges;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (next == null && edges.hasNext()) {
+        final Edge candidate = edges.next();
+        if (GhostEdgeReporter.isLiveEntry(database, candidate.getIdentity()))
+          next = candidate;
+      }
+      return next != null;
+    }
+
+    @Override
+    public Edge next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final Edge result = next;
+      next = null;
+      return result;
+    }
+  }
+
+  /**
+   * The adjacency entries of a vertex, for a walk that wants the vertices they lead to and nothing of the edges: the far vertex of
+   * each entry and, on request, whether the edge the entry names still has its record.
+   * <p>
+   * The far end is read off the entry and the edge is not loaded, which is what makes these walks cheap. What that cannot tell is a
+   * ghost, an entry whose edge record is gone, and a walk that followed it answered differently from one that read the edge
+   * ({@code RETURN DISTINCT b.name} against {@code RETURN DISTINCT b.name, size(r)}) and reported nothing (issue #10149). So the
+   * walk asks {@link #liveEdge()} for the entry it is about to follow, after the test for a vertex it has met already, which turns
+   * away the large majority of the entries: the probe is paid once per vertex reached and not once per entry, and it asks the
+   * bucket about the edge RID the entry holds, so no record is read (the same rule {@code path.subgraphNodes} follows, #10148).
+   */
+  protected final class Neighbours {
+    private final Database                database;
+    private final VertexInternal          source;
+    // Only for the sides that are not read off an adjacency list of this vertex (the incoming side of a unidirectional edge type, which
+    // the lookup answers with the vertices themselves, and a vertex that is not an engine vertex): read after the lists
+    private final Iterator<Vertex>        resolved;
+    private       Vertex                  resolvedVertex;
+    // Whether the entry next() returned last came from resolved, which has no edge RID to ask the bucket about
+    private       boolean                 lastResolved;
+    // The adjacency list being read, null once every list is read
+    private       EdgeEntryRIDIterator    entries;
+    // The list still to be read after the current one: the incoming one of an undirected hop
+    private       Vertex.DIRECTION        pending;
+
+    private Neighbours(final Iterator<Vertex> resolved, final Database database) {
+      this.resolved = resolved;
+      this.database = database;
+      this.source = null;
+    }
+
+    /**
+     * @param direction the side of the vertex to read off its adjacency list(s), null for none
+     * @param resolved  the vertices of the sides not read that way, null for none
+     */
+    private Neighbours(final VertexInternal source, final Vertex.DIRECTION direction, final Iterator<Vertex> resolved) {
+      this.resolved = resolved;
+      this.source = source;
+      this.database = source.getDatabase();
+      if (direction == Vertex.DIRECTION.BOTH) {
+        entries = open(Vertex.DIRECTION.OUT);
+        pending = Vertex.DIRECTION.IN;
+      } else if (direction != null)
+        entries = open(direction);
+    }
+
+    private EdgeEntryRIDIterator open(final Vertex.DIRECTION side) {
+      return ((DatabaseInternal) database).getGraphEngine().getConnectedVertexEntries(source, side, relationshipTypes);
+    }
+
+    public boolean hasNext() {
+      while (entries != null) {
+        if (entries.hasNext())
+          return true;
+        if (pending == null)
+          entries = null;
+        else {
+          entries = open(pending);
+          pending = null;
+        }
+      }
+      return resolved != null && resolved.hasNext();
+    }
+
+    /** The RID of the vertex the next entry leads to, null for an entry that names none. */
+    public RID next() {
+      // hasNext() leaves entries on the list the next entry is in, and null when the lists are read and it is in resolved
+      if (entries != null) {
+        lastResolved = false;
+        return entries.next();
+      }
+      lastResolved = true;
+      resolvedVertex = resolved.next();
+      return resolvedVertex.getIdentity();
+    }
+
+    /**
+     * Whether the edge of the entry {@link #next()} last returned still has its record. A ghost is reported and the walk skips it,
+     * without spending the vertex it names: another, live, entry may reach it.
+     */
+    public boolean liveEdge() {
+      // The vertices a lookup answered have no edge RID to ask about, and need none: the incoming side of a unidirectional type is
+      // answered from a scan of the edge RECORDS of the type, which a ghost has none of, and a stored incoming side reads the edge
+      // when it reads the source, which fails on a ghost where the expansions catch it. The outgoing list of an undirected hop over
+      // such a type is stored, so it is read by its entries like every other list and probed here (issue #10463)
+      return lastResolved || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
+    }
+
+    /** The vertex the entry {@link #next()} last returned leads to, or null when its record is gone. */
+    public Vertex vertex(final RID rid) {
+      if (lastResolved)
+        return resolvedVertex;
+      try {
+        return (Vertex) database.lookupByRID(rid, false);
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+    }
+  }
+
+  /**
+   * The adjacency entries of {@code vertex} in the direction and over the relationship types of this walk, see {@link Neighbours}.
+   */
+  protected Neighbours getNeighbours(final Vertex vertex) {
+    if (!(vertex instanceof VertexInternal internal))
+      return new Neighbours(getNextVertices(vertex).iterator(), vertex.getDatabase());
+
+    final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+    if (isIncomingLookupNeeded(vertex))
+      // Over a unidirectional type the lookup answers the incoming side; the outgoing list of an undirected hop is stored, and read
+      // by its entries to be asked about each of them (issue #10463)
+      return new Neighbours(internal, arcadeDirection == Vertex.DIRECTION.BOTH ? Vertex.DIRECTION.OUT : null,
+          IncomingEdgeLookup.getIncomingVertices(context, vertex, arcadeDirection, relationshipTypes));
+    return new Neighbours(internal, arcadeDirection, null);
+  }
+
+  /**
    * Gets connected vertices directly without loading edge records.
    * <p>
    * PERFORMANCE: This is much faster than getEdges() + getOtherVertex()
-   * because it skips loading the edge records entirely.
+   * because it skips loading the edge records entirely. It follows a ghost entry like any other: a walk that has to agree with the
+   * ones that read the edge uses {@link #getNeighbours} and asks about the entries it follows.
    *
    * @param vertex vertex to get connected vertices from
    * @return iterable of connected vertices

@@ -25,6 +25,7 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
@@ -47,14 +48,36 @@ import java.util.logging.Level;
 
 /** Builds empty LSM indexes from a bounded, globally sorted logical entry stream. */
 public final class LSMTreeIndexBulkLoader implements AutoCloseable {
-  private static final ThreadLocal<BuildTestHook> BUILD_TEST_HOOK = new ThreadLocal<>();
+  private static final ThreadLocal<BuildTestHook> BUILD_TEST_HOOK              = new ThreadLocal<>();
+  private static final ThreadLocal<Integer>       ENTRIES_PER_RUN_TEST_LIMIT = new ThreadLocal<>();
 
-  private static final long ESTIMATED_BYTES_PER_ENTRY    = 3_072L;
+  /**
+   * What an entry of a run retains whatever its key: the {@link Entry}, its {@link RID}, the {@link TransactionIndexContext.ComparableKey}
+   * and its slot in the list of the run (with the slack of the list's growth and the copy the sort makes of it). The array of key
+   * values and the values themselves are measured per key, see {@link #keyBytes}.
+   */
+  private static final long ENTRY_BYTES                  = 32L + 32L + 16L + 12L;
+  /** What an entry whose key is shared with the entries before it retains: the same without the key, which is held once (#9291). */
+  private static final long SHARED_ENTRY_BYTES           = 32L + 32L + 12L;
+  /** What registering a key in the shared-key table adds to the key itself: its hash entry, its holder and its slot in the key list. */
+  private static final long SHARED_KEY_TABLE_BYTES       = HeapEstimator.HASH_ENTRY_BYTES + 16L + HeapEstimator.REFERENCE_BYTES;
+  /**
+   * The first keys are measured one by one, then one in {@link #KEY_SAMPLE_INTERVAL}: a moving average of the keys measured stands in
+   * for the others, each measure moving it by 1 in {@link #KEY_SAMPLE_SMOOTHING} of its distance, so it follows keys that change in
+   * size (a plain average over the whole build lags far behind a late jump). The interval is a prime, so that it does not line up
+   * with the period of a column (a power of two, a bucket count).
+   */
+  private static final long KEY_SAMPLE_FIRST             = 256L;
+  private static final long KEY_SAMPLE_INTERVAL          = 13L;
+  private static final long KEY_SAMPLE_SMOOTHING         = 16L;
+  /** A measure above the average moves it faster than one below: counting a run too small is the direction that overshoots the budget. */
+  private static final long KEY_SAMPLE_RISE_SMOOTHING    = 4L;
+  /** A list cannot hold more, whatever the budget. */
+  private static final int  MAX_ENTRIES_PER_RUN          = Integer.MAX_VALUE - 8;
+  private static final int  INITIAL_RUN_CAPACITY         = 65_536;
   /** Distinct keys of the current run that are shared between entries, so a repeated key is one object and compares by identity (#9291). */
   private static final int  MAX_SHARED_KEYS_PER_RUN      = 65_536;
   private static final int  SHARING_PROBE_ENTRIES        = 32_768;
-  private static final int  SHARED_KEY_RUN_GROWTH        = 8;
-  private static final int  MIN_ENTRIES_PER_SHARED_KEY   = 16;
   private static final long MIN_MEMORY_BUDGET_BYTES      = 1L << 20;
   private static final long WRITER_WORKER_OVERHEAD_BYTES = 8L << 20;
   private static final int  MAX_BUFFERED_RIDS_PER_GROUP  = 256;
@@ -68,7 +91,6 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private final Path                       spillWorkspace;
   private final int                        mergeFanIn;
   private final int                        requestedBuildParallelism;
-  private final int                        maxEntriesPerRun;
   private final List<Entry>                entries;
   private final Map<TransactionIndexContext.ComparableKey, SharedKey> sharedKeys    = new HashMap<>();
   private final List<TransactionIndexContext.ComparableKey>            sharedKeyList = new ArrayList<>();
@@ -76,9 +98,19 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private       boolean                                                allKeysShared = true;
   /** Cleared for the rest of a run once its first entries show that keys hardly repeat. */
   private       boolean                                                sharingKeys   = true;
+  /** Whether the key {@link #shareKey} was last asked about is one the run already holds, so the entry adds no key of its own. */
+  private       boolean                                                lastKeyReused;
+  /** What the entries of the current run retain, by the estimate of {@link #ENTRY_BYTES}: the run is spilled when it reaches the budget. */
+  private       long                                                   runBytes;
+  /** The part of {@link #runBytes} that is the shared-key table, given back when the table is dropped before the run ends. */
+  private       long                                                   sharedTableBytes;
+  /** The moving average of the heap the values of a key retain, and how many keys were measured. */
+  private       long                                                   averageKeyBytes;
+  private       long                                                   sampledKeys;
   /** The group id {@link #shareKey} assigned to the key it was last asked about, {@link Entry#NO_GROUP} when the key is not shared. */
   private       int                                                    lastKeyGroup  = Entry.NO_GROUP;
   private final BuildTestHook               buildTestHook;
+  private final int                         entriesPerRunLimit;
   private final Map<Integer, LSMTreeIndex> indexesByBucket = new LinkedHashMap<>();
   private       LSMTreeIndexExternalSorter externalSorter;
   private       byte[]                     binaryKeyTypes;
@@ -117,14 +149,14 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     this.spillWorkspace = spillWorkspace;
     this.mergeFanIn = mergeFanIn;
     this.requestedBuildParallelism = buildParallelism;
-    this.maxEntriesPerRun = (int) Math.max(1L,
-        Math.min(Integer.MAX_VALUE, memoryBudgetBytes / ESTIMATED_BYTES_PER_ENTRY));
-    this.entries = new ArrayList<>(Math.min(maxEntriesPerRun, 65_536));
+    this.entries = new ArrayList<>((int) Math.min(INITIAL_RUN_CAPACITY, memoryBudgetBytes / ENTRY_BYTES));
     this.buildTestHook = BUILD_TEST_HOOK.get();
+    final Integer testLimit = ENTRIES_PER_RUN_TEST_LIMIT.get();
+    this.entriesPerRunLimit = testLimit != null ? testLimit : MAX_ENTRIES_PER_RUN;
 
     LogManager.instance().log(this, Level.INFO,
-        "Sorted index build '%s': memoryBudget=%s maxEntriesPerRun=%,d spillParent=%s mergeFanIn=%d buildParallelism=%d",
-        indexName, FileUtils.getSizeAsString(memoryBudgetBytes), maxEntriesPerRun,
+        "Sorted index build '%s': memoryBudget=%s spillParent=%s mergeFanIn=%d buildParallelism=%d",
+        indexName, FileUtils.getSizeAsString(memoryBudgetBytes),
         spillDirectory != null ? spillDirectory : Path.of(database.getDatabasePath()), mergeFanIn,
         requestedBuildParallelism);
   }
@@ -144,8 +176,9 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       registerIndex(index);
       final TransactionIndexContext.ComparableKey key = shareKey(new TransactionIndexContext.ComparableKey(normalizedKeys));
       entries.add(new Entry(index, key, rid, lastKeyGroup));
+      runBytes += entryBytes(key);
       totalEntries++;
-      if (entries.size() >= currentRunLimit())
+      if (runBytes >= memoryBudgetBytes || entries.size() >= entriesPerRunLimit)
         spillCurrentRun();
     });
   }
@@ -204,10 +237,16 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     } catch (final InterruptedException error) {
       Thread.currentThread().interrupt();
       throw new IndexException("Sorted build for '" + indexName + "' was interrupted", error);
-    } catch (final IndexException error) {
+    } catch (final IndexException | DuplicatedKeyException error) {
+      // The typed failures keep their own message and type. DuplicatedKeyException is not an IndexException, and it is
+      // the one this build exists to raise: wrapped, the key and the record holding it would be two levels down the cause
+      // chain instead of in the message the caller reads (issue #10382)
       throw error;
     } catch (final Exception error) {
-      throw new IndexException("Cannot build sorted index '" + indexName + "'", error);
+      // The reason travels in the message too: a full spill directory is an IOException that would otherwise read as a
+      // bare "Cannot build sorted index"
+      throw new IndexException("Cannot build sorted index '" + indexName + "'"
+          + (error.getMessage() != null ? ": " + error.getMessage() : ""), error);
     } finally {
       if (!success)
         for (final BucketWriter writer : writers.values())
@@ -379,19 +418,41 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   /**
-   * How many entries the current run may hold. {@code maxEntriesPerRun} budgets {@link #ESTIMATED_BYTES_PER_ENTRY} for an entry that
-   * carries its own key; while the keys of the run repeat heavily (every key is shared and there is at most one distinct key per
-   * {@link #MIN_ENTRIES_PER_SHARED_KEY} entries) an entry is only the record and its rid, so the run is allowed {@link #SHARED_KEY_RUN_GROWTH} times as many and a
-   * low-cardinality build spills, and merges, far less (#9291). The shared-key table (at most {@link #MAX_SHARED_KEYS_PER_RUN} keys) is
-   * small next to the entries it replaces, so it is not part of the per-entry estimate. An entry of a shared run holds the entry
-   * record, the rid and a reference to the shared key (about 100 bytes), a third of what the 8x growth budgets for it. The limit is re-read on every add: if the
-   * keys stop repeating after the run has grown, the run is spilled at once, which is correct but depends on the data order.
+   * What the entry just added retains, which is what a run is measured by (issue #10267). A fixed estimate per entry, set high enough
+   * for the largest key, sized the run at a small fraction of what the budget holds and spilled data that would have stayed in
+   * memory. An entry carries its own key unless the run already holds an equal one (a low-cardinality column, #9291), in which case
+   * it is only the record and its rid, and the key is paid once when it enters the shared-key table. The size of a key is the one
+   * {@link HeapEstimator} gives to its values, sampled (see {@link #keyBytes}).
    */
-  private int currentRunLimit() {
-    final int size = entries.size();
-    if (size >= SHARING_PROBE_ENTRIES && sharingKeys && allKeysShared && (long) sharedKeyList.size() * MIN_ENTRIES_PER_SHARED_KEY <= size)
-      return (int) Math.min(Integer.MAX_VALUE, (long) maxEntriesPerRun * SHARED_KEY_RUN_GROWTH);
-    return maxEntriesPerRun;
+  private long entryBytes(final TransactionIndexContext.ComparableKey key) {
+    if (lastKeyReused)
+      return SHARED_ENTRY_BYTES;
+    if (lastKeyGroup == Entry.NO_GROUP)
+      return ENTRY_BYTES + keyBytes(key);
+    sharedTableBytes += SHARED_KEY_TABLE_BYTES;
+    return ENTRY_BYTES + keyBytes(key) + SHARED_KEY_TABLE_BYTES;
+  }
+
+  /**
+   * The heap the values of a key retain: measured for the first keys and for one in {@link #KEY_SAMPLE_INTERVAL} after them, the
+   * moving average of those standing in for the others, so the estimate follows a column whose keys change in size without paying
+   * for the measure on every entry. It is asked only for the keys an entry carries itself: a key the run already holds costs the
+   * entry nothing more, and was measured when it first came in, which is also why dropping the shared-key table does not leave
+   * keys uncounted.
+   */
+  private long keyBytes(final TransactionIndexContext.ComparableKey key) {
+    if (sampledKeys < KEY_SAMPLE_FIRST || totalEntries % KEY_SAMPLE_INTERVAL == 0) {
+      final long measured = HeapEstimator.estimate(key.values);
+      if (sampledKeys == 0)
+        averageKeyBytes = measured;
+      else {
+        final long distance = measured - averageKeyBytes;
+        averageKeyBytes += distance / (distance > 0 ? KEY_SAMPLE_RISE_SMOOTHING : KEY_SAMPLE_SMOOTHING);
+      }
+      sampledKeys++;
+      return measured;
+    }
+    return averageKeyBytes;
   }
 
   /**
@@ -403,6 +464,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
    */
   private TransactionIndexContext.ComparableKey shareKey(final TransactionIndexContext.ComparableKey key) {
     lastKeyGroup = Entry.NO_GROUP;
+    lastKeyReused = false;
     if (!sharingKeys)
       return key;
     if (entries.size() == SHARING_PROBE_ENTRIES && sharedKeyList.size() > SHARING_PROBE_ENTRIES / 2) {
@@ -411,11 +473,14 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       allKeysShared = false;
       sharedKeys.clear();
       sharedKeyList.clear();
+      runBytes -= sharedTableBytes;
+      sharedTableBytes = 0L;
       return key;
     }
     final SharedKey shared = sharedKeys.get(key);
     if (shared != null) {
       lastKeyGroup = shared.id;
+      lastKeyReused = true;
       return shared.key;
     }
     if (sharedKeys.size() < MAX_SHARED_KEYS_PER_RUN) {
@@ -476,6 +541,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       sortRun(entries);
       externalSorter.addSortedRun(entries);
       entries.clear();
+      runBytes = 0L;
+      sharedTableBytes = 0L;
       resetSharedKeys();
     } catch (final IOException error) {
       throw new IndexException("Cannot spill external sort run for index '" + indexName + "'", error);
@@ -532,6 +599,18 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   private record SharedKey(TransactionIndexContext.ComparableKey key, int id) {
+  }
+
+  /**
+   * Test seam: caps the entries of a run for the loaders this thread creates next, so that a test can make a small table spill
+   * without a budget the size of the data. The budget alone no longer does it: a run is sized by what its entries retain, and a
+   * handful of thousands retain far less than the smallest budget (issue #10267). Zero removes the cap.
+   */
+  public static void setEntriesPerRunTestLimit(final int limit) {
+    if (limit <= 0)
+      ENTRIES_PER_RUN_TEST_LIMIT.remove();
+    else
+      ENTRIES_PER_RUN_TEST_LIMIT.set(limit);
   }
 
   static void setBuildTestHook(final BuildTestHook hook) {

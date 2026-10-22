@@ -26,14 +26,16 @@ repos:
   # native-image.yml's publishing steps run only on a published release, so a shell bug in one of
   # them is otherwise found by a release that silently fails to publish (#7282 shipped
   # `[ a || b ]` in the Docker push gate). actionlint runs shellcheck over every `run:` block.
-  # Scoped to that one file because the other workflows still carry pre-existing findings.
+  # Every workflow is linted: mvn-deploy.yml and bolt-nightly.yml never run on a pull request, so a
+  # schema error there surfaced only as deploy runs that failed to start (#10530). The shellcheck
+  # findings that predate the wider scope are ignored per file and rule in .github/actionlint.yaml.
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
       - id: actionlint
-        files: ^\.github/workflows/native-image\.yml$
+        files: ^\.github/workflows/.*\.ya?ml$
   - repo: https://github.com/psf/black
-    rev: 26.10.0
+    rev: 26.10.1
     hooks:
       - id: black
         language_version: python3
@@ -59,12 +61,12 @@ repos:
         args: ["-i", "4", "-ci", "-sr", "-w"]
         files: ^bindings/python/.*\.sh$
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.9.9
+    rev: v3.9.10
     hooks:
       - id: prettier
         types: [ java, xml ]
         additional_dependencies:
-          - prettier@3.9.9
+          - prettier@3.9.10
           - prettier-plugin-java@2.11.0
           - prettier-plugin-xml
         args:

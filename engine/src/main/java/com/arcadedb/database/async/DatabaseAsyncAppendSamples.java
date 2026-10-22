@@ -32,24 +32,14 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
   private final TimeSeriesRowSource source;
 
   /**
-   * Snapshots the caller's boxed arrays: the task runs later on an async thread, so it cannot share
-   * arrays the caller may still be filling.
-   */
-  public DatabaseAsyncAppendSamples(final TimeSeriesEngine engine, final int shardIndex, final long[] timestamps,
-      final Object[][] columnValues) {
-    this.engine = engine;
-    this.shardIndex = shardIndex;
-
-    final Object[][] copiedColumns = new Object[columnValues.length][];
-    for (int i = 0; i < columnValues.length; i++)
-      copiedColumns[i] = columnValues[i] != null ? columnValues[i].clone() : null;
-    this.source = engine.newRowSource(timestamps.clone(), copiedColumns);
-  }
-
-  /**
    * Takes the row source as-is. The primitive path exists precisely to avoid a per-sample copy, so
    * ownership passes to this task: see
    * {@link DatabaseAsyncExecutor#appendSamples(String, TimeSeriesRowSource)}.
+   * <p>
+   * The source must already have been converted and held to what the columns can store and to the constraints of the type by the
+   * caller ({@code TimeSeriesStorableRows.requireStorable}, issues #10381, #10487): this task appends it
+   * on an async thread, where a refusal reaches nobody. It takes no boxed arrays of its own for that reason - the constructor
+   * that did was the way around that conversion.
    */
   public DatabaseAsyncAppendSamples(final TimeSeriesEngine engine, final int shardIndex, final TimeSeriesRowSource source) {
     this.engine = engine;

@@ -21,12 +21,16 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -46,16 +50,27 @@ import java.util.NoSuchElementException;
  */
 class MatchGAVFusedStep extends AbstractExecutionStep {
   private final List<EdgeTraversal>    edges;
-  private final GraphTraversalProvider provider;
+  // The view as the plan holds it, and as this execution reads it: pinned on first use, for the whole statement (issue #10415)
+  private final GraphTraversalProvider liveProvider;
+  // Per hop, the type and the bucket the pattern gives the node the hop reaches, null where it gives none (issue #10435)
+  private final String[]               hopTypes;
+  private final String[]               hopBuckets;
+  private       GraphTraversalProvider provider;
+  // Per hop, the sorted ids of the buckets the reached node may live in, null where the hop is unconstrained. Resolved with the
+  // pin, so a type or a bucket created after the plan was cached is the one the statement reads
+  private       int[][]                hopBucketIds;
   private       ResultSet              upstream;
   private       Result                 lastUpstreamRecord;
   private       List<ResultInternal>   bufferedResults;
   private       int                    bufferIndex;
 
-  MatchGAVFusedStep(final CommandContext context, final List<EdgeTraversal> edges, final GraphTraversalProvider provider) {
+  MatchGAVFusedStep(final CommandContext context, final List<EdgeTraversal> edges, final GraphTraversalProvider provider,
+      final String[] hopTypes, final String[] hopBuckets) {
     super(context);
     this.edges = edges;
-    this.provider = provider;
+    this.liveProvider = provider;
+    this.hopTypes = hopTypes;
+    this.hopBuckets = hopBuckets;
   }
 
   @Override
@@ -64,6 +79,40 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
     this.lastUpstreamRecord = null;
     this.bufferedResults = null;
     this.bufferIndex = 0;
+    this.provider = null;
+    this.hopBucketIds = null;
+  }
+
+  /**
+   * The ids of the buckets each hop's node must live in: those of the type the pattern names, sub-types included as the regular
+   * step's {@code isSubTypeOf} takes them, narrowed to the bucket it names. A type or a bucket that does not exist matches nothing,
+   * as it does there.
+   */
+  private int[][] resolveHopBuckets() {
+    final Schema schema = context.getDatabase().getSchema();
+    final int[][] resolved = new int[edges.size()][];
+    for (int hop = 0; hop < resolved.length; hop++) {
+      final String type = hopTypes[hop];
+      final String bucket = hopBuckets[hop];
+      if (type == null && bucket == null)
+        continue;
+
+      int[] accepted = null;
+      if (type != null) {
+        final List<Integer> ids = schema.existsType(type) ? schema.getType(type).getBucketIds(true) : List.of();
+        accepted = new int[ids.size()];
+        for (int i = 0; i < accepted.length; i++)
+          accepted[i] = ids.get(i);
+        Arrays.sort(accepted);
+      }
+      if (bucket != null) {
+        final Bucket named = schema.getBucketByNameIfExists(bucket);
+        final int bucketId = named == null ? -1 : named.getFileId();
+        accepted = named != null && (accepted == null || Arrays.binarySearch(accepted, bucketId) >= 0) ? new int[] { bucketId } : new int[0];
+      }
+      resolved[hop] = accepted;
+    }
+    return resolved;
   }
 
   @Override
@@ -116,6 +165,10 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
    */
   private List<ResultInternal> computeFusedResults(final Result upstream) {
     final List<ResultInternal> results = new ArrayList<>();
+    if (provider == null)
+      provider = GraphViewPins.pin(context, liveProvider);
+    if (hopBucketIds == null)
+      hopBucketIds = resolveHopBuckets();
 
     // Get the starting point from the first edge's source alias
     final String startAlias = edges.get(0).out ? edges.get(0).edge.out.alias : edges.get(0).edge.in.alias;
@@ -167,7 +220,12 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
         ? provider.getNeighborIds(currentNodeId, directions[hop])
         : provider.getNeighborIds(currentNodeId, directions[hop], edgeLabelsPerHop[hop]);
 
+    final int[] acceptedBuckets = hopBucketIds[hop];
     for (final int neighborId : neighbors) {
+      // The type and the bucket the pattern gives this node, which the walk would otherwise bind without asking (issue #10435)
+      // (the bucket id alone: no RID is built in the loop over every neighbour, and -1 for a node the view does not map is in no bucket)
+      if (acceptedBuckets != null && Arrays.binarySearch(acceptedBuckets, provider.getBucketId(neighborId)) < 0)
+        continue;
       pathNodeIds[hop + 1] = neighborId;
 
       if (hop == chainLen - 1) {

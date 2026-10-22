@@ -39,22 +39,36 @@ public final class InListValues {
   private final List<Expression>  values;
   // Elements that stand for one key even when their parameter resolves to a collection: the operand of an equality
   private final Set<Expression>   scalarValues;
+  // Elements that are the whole right side of the IN, which has to resolve to a list (x IN $ids)
+  private final Set<Expression>   wholeListValues;
 
   public InListValues(final List<Expression> values) {
     this(values, Collections.emptySet());
   }
 
-  /**
-   * @param scalarValues the elements, by identity, that came from an equality ({@code x = $p}) rather than from a list: a
-   *                     collection they resolve to is compared whole by Cypher, so the seek must not split it into one key per item
-   */
   public InListValues(final List<Expression> values, final Set<Expression> scalarValues) {
+    this(values, scalarValues, Collections.emptySet());
+  }
+
+  /**
+   * @param scalarValues    the elements, by identity, that came from an equality ({@code x = $p}) rather than from a list: a
+   *                        collection they resolve to is compared whole by Cypher, so the seek must not split it into one key per item
+   * @param wholeListValues the elements, by identity, that are the whole right side of the IN ({@code x IN $ids}) and not the items of a
+   *                        list literal: the value has to be a list, which the seek splits into one key per item, and a value that is
+   *                        not one is refused as the evaluation of the IN refuses it (issue #10541)
+   */
+  public InListValues(final List<Expression> values, final Set<Expression> scalarValues, final Set<Expression> wholeListValues) {
     this.values = values;
     this.scalarValues = scalarValues;
+    this.wholeListValues = wholeListValues;
   }
 
   public boolean isScalar(final Expression element) {
     return scalarValues.contains(element);
+  }
+
+  public boolean isWholeList(final Expression element) {
+    return wholeListValues.contains(element);
   }
 
   public List<Expression> getValues() {

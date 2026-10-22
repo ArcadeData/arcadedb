@@ -48,6 +48,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -416,6 +417,93 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Splits {@code str} around every occurrence of the literal {@code delimiter}, as openCypher {@code split()} does, and as every
+   * other split of this engine now does (issue #10485): the pieces are the ones {@code String.split(Pattern.quote(delimiter), -1)}
+   * returns - every occurrence, left to right and not overlapping, with the empty leading, inner and trailing pieces kept - except
+   * that a surrogate pair is never cut.
+   * <ul>
+   * <li>An empty delimiter splits into characters, a pair being one: {@code "a😀"} is {@code ["a", "😀"]}, where the regex matches
+   * between UTF-16 units and answers the two lone halves of the emoji. The empty string is the one piece {@code [""]}.</li>
+   * <li>The delimiter is found with {@code indexOf}, not a regex compiled on every call, which a quoted pattern never gets out of.
+   * {@code indexOf} compares UTF-16 units and the regex compares code points: an occurrence that starts or ends inside a pair of
+   * {@code str}, which only a delimiter with a lone surrogate at that end can produce, is not one.</li>
+   * </ul>
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final String delimiter) {
+    if (delimiter.isEmpty()) {
+      if (str.isEmpty())
+        return List.of("");
+      final List<String> characters = new ArrayList<>(str.length());
+      for (int begin = 0; begin < str.length(); ) {
+        final int end = begin + Character.charCount(str.codePointAt(begin));
+        characters.add(str.substring(begin, end));
+        begin = end;
+      }
+      return Collections.unmodifiableList(characters);
+    }
+
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = str.indexOf(delimiter);
+    while (at >= 0) {
+      final int end = at + delimiter.length();
+      if (splitsSurrogatePair(str, at, end)) {
+        at = str.indexOf(delimiter, at + 1);
+        continue;
+      }
+      pieces.add(str.substring(from, at));
+      from = end;
+      at = str.indexOf(delimiter, from);
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
+   * Replaces every occurrence of the literal {@code search} in {@code str}, as {@code String.replace(CharSequence, CharSequence)}
+   * does, except that a surrogate pair is never cut (issue #10485, #10484): an empty {@code search} puts the replacement before
+   * every character and after the last - {@code "-a-😀-"} for {@code ("a😀", "", "-")}, never between the two halves of the emoji -
+   * and an occurrence that starts or ends inside a pair, which only a search with a lone surrogate at that end can produce, is not
+   * one. The string itself is returned when nothing is replaced.
+   */
+  public static String replaceLiteral(final String str, final String search, final String replacement) {
+    if (search.isEmpty()) {
+      // Sized in a long and capped: a long text with a long replacement is a size an int cannot hold, which the builder reports
+      // when it outgrows its limit and not as a negative capacity here
+      final long expected = str.length() + (long) (codePointLength(str) + 1) * replacement.length();
+      final StringBuilder result = new StringBuilder((int) Math.min(expected, 1 << 20));
+      for (int begin = 0; begin < str.length(); ) {
+        final int end = begin + Character.charCount(str.codePointAt(begin));
+        result.append(replacement).append(str, begin, end);
+        begin = end;
+      }
+      return result.append(replacement).toString();
+    }
+
+    int at = str.indexOf(search);
+    if (at < 0)
+      return str;
+
+    StringBuilder result = null;
+    int from = 0;
+    while (at >= 0) {
+      final int end = at + search.length();
+      if (splitsSurrogatePair(str, at, end)) {
+        at = str.indexOf(search, at + 1);
+        continue;
+      }
+      if (result == null)
+        result = new StringBuilder(str.length());
+      result.append(str, from, at).append(replacement);
+      from = end;
+      at = str.indexOf(search, from);
+    }
+    return result == null ? str : result.append(str, from, str.length()).toString();
+  }
+
+  /**
    * Answers whether cutting {@code str} at {@code begin} or at {@code end} (UTF-16 offsets) would separate the two halves of a
    * surrogate pair.
    */
@@ -511,6 +599,9 @@ public final class CypherFunctionHelper {
       return 2;
     if (value instanceof Map)
       return 0;
+    // An array that is not a BINARY value is a sequence, ordered with the lists (issue #10380)
+    if (MultiValue.isSequenceArray(value))
+      return 3;
     // After the common graph and collection values, which are never temporal, so a sort over them skips the temporal checks
     final int temporal = temporalTypeRank(value);
     if (temporal >= 0)
@@ -581,9 +672,13 @@ public final class CypherFunctionHelper {
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
       return Boolean.compare((Boolean) a, (Boolean) b);
-    if (a instanceof List && b instanceof List) {
-      final List<?> la = (List<?>) a;
-      final List<?> lb = (List<?>) b;
+    // BINARY values order by their bytes, unsigned, as SQL and the index order them. A byte[] is not Comparable, so without this arm
+    // every pair of them tied and min() / max() kept the first row (issue #10380)
+    if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
+      return BinaryComparator.compareBytes(bytesA, bytesB);
+    if ((a instanceof List || MultiValue.isSequenceArray(a)) && (b instanceof List || MultiValue.isSequenceArray(b))) {
+      final List<?> la = MultiValue.getMultiValueAsList(a);
+      final List<?> lb = MultiValue.getMultiValueAsList(b);
       for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
         final int cmp = cypherCompare(la.get(i), lb.get(i));
         if (cmp != 0)

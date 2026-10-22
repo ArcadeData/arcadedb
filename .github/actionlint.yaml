@@ -1,0 +1,25 @@
+# actionlint configuration, picked up automatically by the pre-commit hook (.pre-commit-config.yaml).
+#
+# Every workflow is linted, so a workflow the parser refuses fails at pre-commit instead of at the next
+# release or nightly (#10530: an empty `with:` in mvn-deploy.yml stopped every deploy run from starting).
+#
+# The ignores below are the shellcheck findings that predate linting the whole directory, scoped to the
+# exact file and rule. They are style findings in `run:` scripts, not schema errors, and the list is meant
+# to shrink: fix the script and delete its entry. Never add a non-shellcheck rule (syntax-check, expression,
+# action, ...) here - those are the defects the hook exists to catch.
+paths:
+  .github/workflows/license-compliance.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2086|2129):'
+  .github/workflows/mvn-test.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2086:'
+  .github/workflows/studio-security-audit.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2016|2162):'
+  .github/workflows/test-python-bindings.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2001|2010|2012|2086|2129):'
+  .github/workflows/test-python-examples.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC(2010|2012|2086|2129|2188):'

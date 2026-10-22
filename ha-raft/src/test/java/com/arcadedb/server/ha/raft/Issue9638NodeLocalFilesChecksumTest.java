@@ -159,7 +159,7 @@ class Issue9638NodeLocalFilesChecksumTest {
         assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
 
         // #9751: LSM VECTOR INDEXES, THEIR GRAPHS BUILT, WRITE THE GRAPH COMPONENT AND THREE PLAIN SIDE FILES BESIDE IT -
-        // ONE WITHOUT AND ONE WITH PRODUCT QUANTIZATION, SINCE ONLY THE FORMER WRITES AN ORDINAL MAP AND ONLY THE LATTER A PQ
+        // ONE WITHOUT AND ONE WITH PRODUCT QUANTIZATION, SINCE ONLY THE LATTER WRITES A PQ
         Issue9751VectorSideFilesChecksumTest.createVectorIndex(database, "Doc", "NONE");
         Issue9751VectorSideFilesChecksumTest.createVectorIndex(database, "PqDoc", "PRODUCT");
 

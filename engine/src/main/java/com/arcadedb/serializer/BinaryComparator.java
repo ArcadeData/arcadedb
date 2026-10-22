@@ -35,6 +35,7 @@ import java.time.ZonedDateTime;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -584,6 +585,9 @@ public class BinaryComparator {
     if (a instanceof BigDecimal && b instanceof BigDecimal)
       // scale-sensitive on purpose: BigDecimal.hashCode() is, and these keys pick their slot by hash
       return a.equals(b);
+    if ((a instanceof List && b instanceof List) || (a instanceof Map && b instanceof Map))
+      // the elements of a list or map key follow Object.equals() too, not the numeric rule equals() applies to them (issue #10448)
+      return a.equals(b);
     if (!(a != null && b != null && !a.getClass().equals(b.getClass()) && a instanceof Number number && b instanceof Number number1))
       return equals(a, b);
     final Number[] pair = Type.castComparableNumber(number, number1);
@@ -616,7 +620,55 @@ public class BinaryComparator {
     else if (a instanceof OffsetDateTime && b instanceof ZonedDateTime || a instanceof ZonedDateTime && b instanceof OffsetDateTime)
       // the zoned datetime an OffsetDateTime is stored and indexed as, so the filter answers what the index does (issue #9648)
       return zonedOf(a).equals(zonedOf(b));
+    else if (a instanceof List<?> list && b instanceof List<?> list1)
+      return listsEqual(list, list1);
+    else if (a instanceof Map<?, ?> map && b instanceof Map<?, ?> map1)
+      return mapsEqual(map, map1);
     return a.equals(b);
+  }
+
+  /**
+   * Two lists are equal when they have the same size and their elements are equal pairwise in order, each pair under the rule of
+   * {@link #equals(Object, Object)}: a list of {@code Long} and the same list of {@code Integer} are one value, as the scalars
+   * are (issue #10448).
+   */
+  private static boolean listsEqual(final List<?> a, final List<?> b) {
+    if (a.size() != b.size())
+      return false;
+    final Iterator<?> it = a.iterator();
+    final Iterator<?> it1 = b.iterator();
+    while (it.hasNext() && it1.hasNext())
+      if (!equals(it.next(), it1.next()))
+        return false;
+    return !it.hasNext() && !it1.hasNext();
+  }
+
+  /**
+   * Two maps are equal when they hold the same keys and the values of each key are equal under the rule of
+   * {@link #equals(Object, Object)}, so a value of {@code Long} 1 and one of {@code Integer} 1 are one value (issue #10448). The
+   * keys are matched by the map itself, that is by {@code equals()}/{@code hashCode()}: a map keyed by {@code Long} 1 is not one
+   * keyed by {@code Integer} 1, as a document's MAP property is keyed by String. A key mapped to {@code null} is a key, as in
+   * {@link Map#equals}.
+   */
+  private static boolean mapsEqual(final Map<?, ?> a, final Map<?, ?> b) {
+    if (a.size() != b.size())
+      return false;
+    for (final Map.Entry<?, ?> entry : a.entrySet()) {
+      final Object other;
+      try {
+        final Object key = entry.getKey();
+        other = b.get(key);
+        if (other == null && !b.containsKey(key))
+          return false;
+      } catch (final ClassCastException | NullPointerException e) {
+        // a sorted or null-hostile map asked for a key of a class it cannot hold: not one of its keys. Only the lookup is guarded, so
+        // a failure of the comparison of the values below is not taken for a missing key
+        return false;
+      }
+      if (!equals(entry.getValue(), other))
+        return false;
+    }
+    return true;
   }
 
   public static boolean equalsString(final String buffer1, final String buffer2) {
@@ -706,8 +758,14 @@ public class BinaryComparator {
       if (a instanceof Boolean || b instanceof Boolean)
         throw new IllegalArgumentException(
             "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
-      return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
-          .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
+      final Long timestampA = DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS);
+      final Long timestampB = DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS);
+      // The same refusal for every other operand the helper has no timestamp for (a list, a map): it answers null for them too, which
+      // NPE'd on the unboxing of the comparison of a date against one (issue #10541)
+      if (timestampA == null || timestampB == null)
+        throw new IllegalArgumentException(
+            "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
+      return timestampA.compareTo(timestampB);
     } else if (a instanceof Double da && b instanceof Double db)
       // Double.compareTo orders -0.0 below 0.0 (issue #8920)
       return compareDoubles(da, db);

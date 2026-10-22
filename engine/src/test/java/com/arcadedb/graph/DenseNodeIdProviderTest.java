@@ -26,6 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -85,8 +86,13 @@ class DenseNodeIdProviderTest {
 
   @Test
   void aCompactProviderIsHandedBackUnwrapped() {
-    // Nothing pending, so the view's IDs are already 0..getNodeCount(): wrapping would only cost a translation.
-    assertThat(DenseNodeIdProvider.wrap(view)).isSameAs(view);
+    // Nothing pending, so the view's IDs are already 0..getNodeCount(): wrapping would only cost a translation. The view is
+    // still pinned, so a rebuild cannot renumber what the caller reads (issue #10350)
+    final GraphTraversalProvider compact = DenseNodeIdProvider.wrap(view);
+    assertThat(compact).isNotInstanceOf(DenseNodeIdProvider.class);
+    assertThat(compact).isInstanceOf(GraphAnalyticalView.Pinned.class);
+    assertThat(compact.getName()).isEqualTo(view.getName());
+    assertThat(DenseNodeIdProvider.wrap(compact)).isSameAs(compact);
     assertThat(DenseNodeIdProvider.wrap(null)).isNull();
   }
 
@@ -142,13 +148,20 @@ class DenseNodeIdProviderTest {
   }
 
   @Test
-  void theWrapperRefusesThePackedViewAndKeepsTheDelegatesOwnAnswers() {
+  void theWrapperRenumbersThePackedViewAndKeepsTheDelegatesOwnAnswers() {
     deleteSpareAndAddFresh();
     final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(view);
 
-    // A packed NeighborView is the delegate's own CSR arrays, addressed by the delegate's own ids: it cannot be
-    // renumbered without copying the graph, so it is refused and the caller uses the per-node lookups.
-    assertThat(dense.getNeighborView(Vertex.DIRECTION.OUT, "E")).isNull();
+    // The delegate's view of a snapshot with an overlay, renumbered into the dense space: the per-node answers, packed
+    // (issue #10411)
+    for (final Vertex.DIRECTION direction : Vertex.DIRECTION.values()) {
+      final NeighborView packed = dense.getNeighborView(direction, "E");
+      assertThat(packed).as(direction.name()).isNotNull();
+      assertThat(packed.nodeCount()).isEqualTo(dense.getNodeCount());
+      for (int node = 0; node < dense.getNodeCount(); node++)
+        assertThat(Arrays.copyOfRange(packed.neighbors(), packed.offset(node), packed.offsetEnd(node)))
+            .as(direction + " of " + node).containsExactly(dense.getNeighborIds(node, direction, "E"));
+    }
 
     // Renumbering says nothing about the freshness of those arrays, so the delegate's answer is passed through.
     assertThat(dense.hasPendingChanges()).isTrue();

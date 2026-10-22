@@ -28,6 +28,8 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.ConsistentKeyLookup;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -36,8 +38,10 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
@@ -49,13 +53,17 @@ import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
@@ -63,9 +71,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -92,6 +102,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // concurrent queries (issue #4909).
   private static final Result       EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
+  // The IN-lists of the WHERE filter a property index can answer, found once here rather than per input row (see InListSeek)
+  private final List<InListSeek>    inListSeeks;
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
   // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
   // pretty printer at plan-print time. Not safe to share a step instance across concurrent MATCH
@@ -104,6 +116,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final    AtomicLong           completedScansShrunkBatches = new AtomicLong();
   // THE FULL TYPE SCAN IN PROGRESS, KEPT TO GIVE ITS READ-AHEAD BACK WHEN THE STEP CLOSES OR OPENS ANOTHER SCAN
   private volatile ScanPressureReporter openScan;
+  // The IN-list seek the step is reading, closed with the step: a LIMIT stops reading it before its last key
+  private DistinctKeySeek openSeek;
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
   // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
@@ -217,6 +231,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.whereFilter = dynamicIdExpression != null
         ? stripIdEqualityForVariable(whereFilter, variable)
         : whereFilter;
+    this.inListSeeks = this.whereFilter != null ? findInListSeeks(this.whereFilter) : List.of();
   }
 
   /**
@@ -266,6 +281,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (openScan != null) {
       openScan.releaseReadAhead();
       openScan = null;
+    }
+    if (openSeek != null) {
+      openSeek.close();
+      openSeek = null;
     }
     super.close();
   }
@@ -544,8 +563,31 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       if (whereFilterHasEqualityPredicateOnOwnVariable(whereFilter))
         return false;
+      if (seeksIndexPerRow(labels.getFirst()))
+        return false;
     }
     return true;
+  }
+
+  /**
+   * True when an IN-list of the WHERE filter is seeked from an index with keys only the input row can tell: every row then gets
+   * its own candidates. A fixed list gives every row the same ones, and a list over a property no index covers is not seeked at
+   * all, so neither keeps the candidates from being cached.
+   */
+  private boolean seeksIndexPerRow(final String label) {
+    DocumentType type = null;
+    for (final InListSeek seek : inListSeeks) {
+      if (seek.rowIndependent())
+        continue;
+      if (type == null) {
+        if (!context.getDatabase().getSchema().existsType(label))
+          return false;
+        type = context.getDatabase().getSchema().getType(label);
+      }
+      if (singlePropertyIndex(type, seek.propertyName()) != null)
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -624,8 +666,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // A non-vertex type with the same name (edge/document type) matches no node pattern: labels
         // and relationship types are separate namespaces in Cypher, so yield 0 rows instead of
         // failing with a ClassCastException while casting edges to vertices (issue #5194)
-        if (!(type instanceof VertexType))
+        if (!(type instanceof VertexType)) {
+          // ...except a time-series type: a static label naming one was refused at planning, a dynamic one is only known
+          // here, and zero rows would read as a series with no samples (issue #10440)
+          Labels.requireNotTimeSeriesType(type, "label");
           return Collections.emptyIterator();
+        }
 
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
@@ -715,6 +761,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // tryFindAndUseIndexFromWhere, tryPartitionPrunedIterator), which is why it treats properties/WHERE
       // as safe to ignore for a multi-label or label-less pattern. If a future change ever gives this
       // branch an index/partition fast path of its own, isRowIndependentFullScan() must be revisited too.
+      // A static label was refused when the statement was planned (TimeSeriesPatternGuard), a dynamic one is only known
+      // here (issue #10440): only then are the labels looked up, so a static multi-label scan opened per row pays nothing
+      if (pattern.hasDynamicLabels()) {
+        final Schema schema = context.getDatabase().getSchema();
+        for (int i = 0; i < labels.size(); i++)
+          Labels.requireNotTimeSeriesType(schema.getTypeOrNull(labels.get(i)), "label");
+      }
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
           (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels,
               pattern.isLabelDisjunction());
@@ -936,7 +989,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     extractEqualityPredicates(whereFilter, equalityPredicates, currentInputResult);
 
     if (equalityPredicates.isEmpty())
-      return null;
+      return tryInListIndexSeek(type, label, currentInputResult);
 
     // Find the best matching index
     TypeIndex bestIndex = null;
@@ -977,7 +1030,239 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return lookupByKey(bestIndex, label, propertyNames, propertyValues);
     }
 
+    return tryInListIndexSeek(type, label, currentInputResult);
+  }
+
+  /**
+   * A {@code variable.property IN <list>} conjunct of the WHERE filter's top-level AND chain that {@link #tryInListIndexSeek}
+   * may answer from an index. Found once, from the constructor: the answer is a property of the query text, and a chained MATCH
+   * re-opens the step once per outer row.
+   *
+   * @param rowIndependent true when the list reads no variable at all (literals and parameters), so every input row seeks the
+   *                       same keys and the candidates may be cached like those of a full scan
+   */
+  private record InListSeek(InExpression in, String propertyName, boolean rowIndependent) {
+  }
+
+  /**
+   * The IN-lists of {@code expr} the index can answer: one whose elements read the node being matched cannot be, since the
+   * node is not bound while its candidates are being chosen and every such element would evaluate to a null the seek would
+   * take for "equals nothing". The WHERE filter, which sees the node, answers those. A list whose names are not
+   * all known (a shape the collector does not model) is left to the filter too.
+   */
+  private List<InListSeek> findInListSeeks(final BooleanExpression expr) {
+    final List<InListSeek> seeks = new ArrayList<>();
+    collectInListSeeks(expr, seeks);
+    return seeks.isEmpty() ? List.of() : seeks;
+  }
+
+  private void collectInListSeeks(final BooleanExpression expr, final List<InListSeek> seeks) {
+    if (expr instanceof InExpression in && in.getExpression() instanceof PropertyAccessExpression property
+        && isPropertyAccessOnOwnVariable(property)) {
+      boolean rowIndependent = true;
+      for (final Expression element : in.getList()) {
+        final CypherReferencedVariables referenced = CypherReferencedVariables.of(element);
+        if (referenced.referencesAny(List.of(variable)))
+          return;
+        rowIndependent &= referenced.getNames().isEmpty();
+      }
+      seeks.add(new InListSeek(in, property.getPropertyName(), rowIndependent));
+    } else if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      collectInListSeeks(logical.getLeft(), seeks);
+      collectInListSeeks(logical.getRight(), seeks);
+    }
+  }
+
+  /**
+   * Answers a {@code variable.property IN <list>} predicate of the WHERE filter's top-level AND chain with one seek per
+   * distinct list element on a single-property index, as the optimizer's {@code NodeIndexSeek} does for an IN-list anchor.
+   * Every query with an OPTIONAL MATCH runs here, and without this a {@code WHERE n.id IN $ids} scanned the whole type and
+   * compared each record against every element. The WHERE filter still runs on every record the seek yields, so the seek
+   * only narrows the candidates; anything it cannot answer exactly (an element that is a list or a map, a right side that
+   * is not a list, a concurrent index drop) returns null and leaves the scan in charge. When several IN-lists could be
+   * seeked, the one with the fewest distinct elements is.
+   * <p>
+   * The seek returns the records key by key in the order of the list (each key at its first place), where the scan returns them in
+   * storage order. A MATCH without an ORDER BY promises neither, so a seek that restored storage order would only cost what it
+   * is there to save - every record read before the first is returned, and the early stop of a LIMIT lost - for an order no other
+   * index access in the engine honours (issue #10392). Under an ORDER BY the two answer alike.
+   */
+  private Iterator<Identifiable> tryInListIndexSeek(final DocumentType type, final String label,
+      final Result currentInputResult) {
+    TypeIndex bestIndex = null;
+    String bestProperty = null;
+    List<Object[]> bestKeys = null;
+
+    for (final InListSeek seek : inListSeeks) {
+      final TypeIndex index = singlePropertyIndex(type, seek.propertyName());
+      if (index == null)
+        continue;
+
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult);
+      if (keys != null && (bestKeys == null || keys.size() < bestKeys.size())) {
+        bestIndex = index;
+        bestProperty = seek.propertyName();
+        bestKeys = keys;
+      }
+    }
+    if (bestKeys == null)
+      return null;
+
+    // No element can equal anything (an empty list, or only nulls): the predicate is never true
+    final Iterator<Identifiable> seek = bestKeys.isEmpty() ? Collections.emptyIterator() : seekKeys(bestIndex, label, bestKeys);
+    // Only a seek that answered is reported: a null leaves the scan in charge
+    if (seek != null)
+      usedIndexName = bestIndex.getTypeName() + "[" + bestProperty + "]";
+    return seek;
+  }
+
+  private TypeIndex singlePropertyIndex(final DocumentType type, final String propertyName) {
+    for (final TypeIndex index : polymorphicIndexesOf(type)) {
+      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+      if (indexProperties != null && indexProperties.size() == 1 && indexProperties.getFirst().equals(propertyName))
+        return index;
+    }
     return null;
+  }
+
+  /**
+   * The distinct index keys of the IN-list's elements, evaluated as {@code InExpression} evaluates them; null elements are
+   * dropped because they equal nothing. Null when the list cannot be resolved here or holds an element that is not a plain
+   * scalar, so the scan and the WHERE filter answer it (and raise the error a non-list right side deserves).
+   */
+  private List<Object[]> resolveInListKeys(final InExpression in, final Result currentInputResult) {
+    final List<Expression> list = in.getList();
+    final List<Object> elements = new ArrayList<>();
+    try {
+      if (list.size() == 1) {
+        final Object listValue = evaluator.evaluate(list.getFirst(), currentInputResult, context);
+        if (listValue instanceof Collection<?> collection)
+          elements.addAll(collection);
+        else if (MultiValue.isSequenceArray(listValue))
+          elements.addAll(MultiValue.getMultiValueAsList(listValue));
+        else
+          return null;
+      } else
+        for (final Expression element : list)
+          elements.add(evaluator.evaluate(element, currentInputResult, context));
+    } catch (final Exception e) {
+      // An element only an input row can answer (a leading MATCH has none): the scan and the WHERE filter answer it
+      return null;
+    }
+
+    final Set<Object> distinct = new LinkedHashSet<>();
+    for (final Object element : elements) {
+      if (element == null)
+        continue;
+      if (element instanceof Collection<?> || element instanceof Map<?, ?> || element.getClass().isArray())
+        return null;
+      distinct.add(TemporalUtil.toIndexKey(element));
+    }
+
+    final List<Object[]> keys = new ArrayList<>(distinct.size());
+    for (final Object key : distinct)
+      keys.add(new Object[] { key });
+    return keys;
+  }
+
+  /**
+   * Every record the keys select, each once. Up to {@link ConsistentKeyLookup#MAX_ENTRIES} entries are read whole against
+   * one committed state; past that the keys are sought one at a time as the caller pulls, so a LIMIT stops the seek early,
+   * as in {@code NodeIndexSeek}. Null when a concurrent DDL dropped or rebuilt the index before the first cursor opened,
+   * for the scan to answer; once records have been returned, such a failure surfaces as it does on the optimizer path.
+   */
+  private Iterator<Identifiable> seekKeys(final TypeIndex index, final String label, final List<Object[]> keys) {
+    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
+    final IndexCursor first;
+    final int nextKey;
+    try {
+      final IndexCursor consistent = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, keys);
+      first = consistent != null ? consistent : index.get(keys.getFirst());
+      nextKey = consistent != null ? keys.size() : 1;
+      if (!index.isUnchangedSince(subIndexes)) {
+        first.close();
+        return null;
+      }
+    } catch (final IndexException e) {
+      return null;
+    } catch (final IllegalArgumentException e) {
+      if (TypeIndex.isStaleRead(index, e) || !index.isReadyForQueries())
+        return null;
+      throw e;
+    }
+    // A new seek is only opened once the one before it is drained, so there is never more than one to close
+    final DistinctKeySeek distinct = new DistinctKeySeek(index, keys, first, nextKey);
+    openSeek = distinct;
+    return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(distinct, context.getDatabase(), label) : distinct;
+  }
+
+  /**
+   * Streams the records of the seek keys, opening the next key's cursor only when the current one is drained and
+   * returning each RID once. The RIDs remembered are charged to the heap budget all queries share, as in
+   * {@code NodeIndexSeek}.
+   */
+  private final class DistinctKeySeek implements Iterator<Identifiable> {
+    private final TypeIndex          index;
+    private final List<Object[]>     keys;
+    private final WorkGuard          guard         = WorkGuard.forCommandDeadline(context);
+    private final OperationHeapLimit seenHeapLimit = OperationHeapLimit.of(context, "record addresses", "MatchNodeStep");
+    private       RidHashSet         seen          = new RidHashSet();
+    private       IndexCursor        cursor;
+    private       int                nextKey;
+    private       Identifiable       next;
+
+    private DistinctKeySeek(final TypeIndex index, final List<Object[]> keys, final IndexCursor first, final int nextKey) {
+      this.index = index;
+      this.keys = keys;
+      this.cursor = first;
+      this.nextKey = nextKey;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (next == null && cursor != null) {
+        guard.check();
+        if (cursor.hasNext()) {
+          final Identifiable identifiable = cursor.next();
+          if (seen.add(identifiable.getIdentity())) {
+            seenHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
+            next = identifiable;
+          }
+        } else {
+          cursor.close();
+          cursor = nextKey < keys.size() ? index.get(keys.get(nextKey++)) : null;
+          if (cursor == null)
+            releaseSeen();
+        }
+      }
+      return next != null;
+    }
+
+    /** Gives back the cursor and the heap the RIDs seen hold, whether the seek is drained or abandoned. Safe to call twice. */
+    private void close() {
+      if (cursor != null) {
+        cursor.close();
+        cursor = null;
+      }
+      next = null;
+      releaseSeen();
+    }
+
+    private void releaseSeen() {
+      if (seen != null) {
+        seen = null;
+        seenHeapLimit.release();
+      }
+    }
+
+    @Override
+    public Identifiable next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final Identifiable result = next;
+      next = null;
+      return result;
+    }
   }
 
   /**

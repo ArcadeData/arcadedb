@@ -911,6 +911,13 @@ generate_dockerfile() {
   log_info "Generating Dockerfile..."
 
   if [[ "$DRY_RUN" != true ]]; then
+    # Every directory the image declares as a VOLUME must exist in the distribution: Docker creates a missing one owned
+    # by root, which the 1000:1000 runtime user cannot write to. The base assemblies ship them all, so this only guards
+    # a distribution that lost an empty one; `COPY --chown` below then hands each to the runtime user.
+    if ! mkdir -p "${dist_dir}/config" "${dist_dir}/databases" "${dist_dir}/replication" "${dist_dir}/backups" "${dist_dir}/log"; then
+      error_exit "Failed to create the volume directories in: $dist_dir"
+    fi
+
     cat >"$dockerfile" <<'EOF'
 FROM eclipse-temurin:25-jre-alpine
 
@@ -925,7 +932,10 @@ ARG ARCADEDB_HOME=/home/arcadedb
 ENV ARCADEDB_OPTS_GC="-XX:+UseZGC"
 ENV ARCADEDB_OPTS_MEMORY="-XX:MaxRAMPercentage=75"
 
-RUN addgroup -S ${ARCADEDB_USER} && adduser -S ${ARCADEDB_USER} -G ${ARCADEDB_USER}
+# UID/GID 1000:1000 as in package/src/main/docker/Dockerfile and the native images, so a volume written by a custom
+# distribution opens in the official images (and vice versa) with no re-chown. A system user (-S) would land on
+# 100:101 instead (issue #10330). Without -G, adduser creates the same-named group with GID = UID.
+RUN adduser -D -u 1000 -h ${ARCADEDB_HOME} -s /bin/sh ${ARCADEDB_USER}
 
 WORKDIR ${ARCADEDB_HOME}
 
@@ -937,7 +947,10 @@ USER ${ARCADEDB_USER}
 
 EXPOSE 2480 2434
 
-VOLUME ["${ARCADEDB_HOME}/databases", "${ARCADEDB_HOME}/backups", "${ARCADEDB_HOME}/log"]
+# The same five volumes as package/src/main/docker/Dockerfile and the native images (issue #10387). config is written at
+# runtime (server-users.jsonl, server-groups.json, server-api-tokens.json) and replication holds HA state, so neither
+# may live in the container layer.
+VOLUME ["${ARCADEDB_HOME}/config", "${ARCADEDB_HOME}/databases", "${ARCADEDB_HOME}/replication", "${ARCADEDB_HOME}/backups", "${ARCADEDB_HOME}/log"]
 
 CMD ["./bin/server.sh"]
 EOF

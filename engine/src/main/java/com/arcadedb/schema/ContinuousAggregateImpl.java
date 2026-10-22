@@ -19,13 +19,16 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
-public class ContinuousAggregateImpl implements ContinuousAggregate {
+public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant {
   private final Database database;
   private final String   name;
   // volatile, not final: a rename of the source type rewrites them in place (#10096), see retargetSourceType()
@@ -58,9 +61,21 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
    * the schema is written with the flag this absence stood for.
    */
   private volatile boolean                needsCleanRebuild;
+  /**
+   * The time range samples of the source type were removed from since the buckets of the aggregate were last computed, or
+   * {@code null} when none were (issue #10428). The refresh only recomputes the bucket open at the watermark and the newer ones, so
+   * the buckets behind the watermark keep what they held when they were computed; this is what tells it which of them no longer
+   * match the source. One range, the hull of every delete since: recomputing a bucket the delete did not reach gives the rows it
+   * already had, so a wider range costs time and never correctness.
+   * <p>
+   * Part of the definition in the schema, unlike {@link #needsCleanRebuild}: a restart must not forget it, and under HA it has to
+   * reach the followers in the replication unit of the delete (a follower promoted to leader would otherwise refresh without it).
+   */
+  private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
+  private final    AtomicBoolean          refreshRequested  = new AtomicBoolean(false);
 
   // Runtime metrics (not persisted)
   private final AtomicLong refreshCount          = new AtomicLong(0);
@@ -121,6 +136,43 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
   void retargetSourceType(final String newName, final String newQuery) {
     sourceTypeName = newName;
     query = newQuery;
+  }
+
+  /** Refuses the drop of its backing type and of its source type (issue #10096). */
+  @Override
+  public void checkTypeDrop(final LocalSchema schema, final String typeName, final String canonicalTypeName) {
+    final String source = sourceTypeName;
+    TypeNameDependant.checkNamesResolve(schema, typeName, "continuous aggregate", name, dropStatement(),
+        source != null ? List.of(backingTypeName, source) : List.of(backingTypeName));
+    if (backingTypeName.equals(canonicalTypeName))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '"
+          + name + "'. Drop the continuous aggregate first with: " + dropStatement());
+    if (source != null && canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(schema, source)))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '"
+          + name + "'. Drop the continuous aggregate first with: " + dropStatement());
+  }
+
+  /**
+   * Refuses the rename of the backing type, which the aggregate is named after, and of the source type when its query cannot be
+   * re-pointed at with certainty (issue #10096).
+   */
+  @Override
+  public void checkTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (backingTypeName.equals(oldName))
+      throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for continuous aggregate '"
+          + name + "': an aggregate is named after its backing type. Drop the continuous aggregate first with: " + dropStatement());
+    if (oldName.equals(sourceTypeName) && schema.retargetQuery(query, oldName, newName) == null)
+      throw LocalSchema.cannotRepointQuery(oldName, newName, "continuous aggregate", name, dropStatement());
+  }
+
+  @Override
+  public void carryTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (oldName.equals(sourceTypeName))
+      retargetSourceType(newName, schema.retargetedQuery("continuous aggregate", name, query, oldName, newName));
+  }
+
+  private String dropStatement() {
+    return "DROP CONTINUOUS AGGREGATE " + name;
   }
 
   @Override
@@ -206,6 +258,61 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
     static final Watermark UNSET = new Watermark(0, false);
   }
 
+  /**
+   * Samples with a timestamp in {@code [fromTs, toTs]} were removed from the source type (issue #10428). The bounds are the ones of
+   * the delete, not bucket boundaries: the refresh finds the buckets they reach in the backing type, which holds every bucket start
+   * the grid of the aggregate produced, whatever origin or offset the {@code ts.timeBucket()} of its query gives it.
+   */
+  public record Invalidation(long fromTs, long toTs) {
+    Invalidation merge(final Invalidation other) {
+      return other == null ? this : new Invalidation(Math.min(fromTs, other.fromTs), Math.max(toTs, other.toTs));
+    }
+  }
+
+  /**
+   * Records that samples in {@code [fromTs, toTs]} of the source type were removed, so the next refresh recomputes the buckets they
+   * were in. The caller persists the schema (inside the replication unit of the delete, under HA) when the answer is {@code true}.
+   *
+   * @return {@code false} when the range was inside the one already recorded, which is then what the schema already holds. It is
+   * recorded all the same, as a new instance: a refresh that read the range before this delete must not clear it
+   */
+  public boolean invalidate(final long fromTs, final long toTs) {
+    final Invalidation added = new Invalidation(fromTs, toTs);
+    final boolean[] widened = new boolean[1];
+    invalidation.updateAndGet(current -> {
+      // assigned on every try of the update: the last one is the one that took effect
+      widened[0] = current == null || fromTs < current.fromTs() || toTs > current.toTs();
+      return added.merge(current);
+    });
+    return widened[0];
+  }
+
+  /** The range recorded by {@link #invalidate}, or {@code null} when the buckets of the aggregate all match the source. */
+  public Invalidation getInvalidation() {
+    return invalidation.get();
+  }
+
+  /**
+   * Forgets {@code recomputed}, the range a refresh has just recomputed. A no-op when another delete was recorded meanwhile, even
+   * one inside the range, which widens nothing: that delete may have landed after the refresh read the source, so the next refresh
+   * recomputes it. This rests on the {@link AtomicReference} comparing REFERENCES, and on {@link #invalidate} storing a new
+   * instance every time - never an equal record already there - so it is the identity of the record that tells a refresh whether
+   * anything was recorded since it read it.
+   */
+  void clearInvalidation(final Invalidation recomputed) {
+    invalidation.compareAndSet(recomputed, null);
+  }
+
+  /** Puts back a range whose clearing could not be persisted, with whatever was recorded since. */
+  void restoreInvalidation(final Invalidation recomputed) {
+    invalidation.updateAndGet(current -> recomputed.merge(current));
+  }
+
+  /** The width of one bucket, for the refresh to bound the buckets a range reaches. */
+  long bucketIntervalMs() {
+    return bucketIntervalMs;
+  }
+
   public void setLastRefreshTime(final long lastRefreshTime) {
     this.lastRefreshTime = lastRefreshTime;
   }
@@ -216,6 +323,19 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
 
   public boolean tryBeginRefresh() {
     return refreshInProgress.compareAndSet(false, true);
+  }
+
+  /** A refresh was asked for and has not begun: see {@link ContinuousAggregateRefresher#incrementalRefresh}. */
+  void requestRefresh() {
+    refreshRequested.set(true);
+  }
+
+  boolean isRefreshRequested() {
+    return refreshRequested.get();
+  }
+
+  void clearRefreshRequest() {
+    refreshRequested.set(false);
   }
 
   public void endRefresh() {
@@ -297,6 +417,11 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
     final Watermark currentWatermark = watermark;
     json.put("watermarkTs", currentWatermark.timestamp());
     json.put("watermarkSet", currentWatermark.set());
+    final Invalidation pending = invalidation.get();
+    if (pending != null) {
+      json.put("invalidatedFromTs", pending.fromTs());
+      json.put("invalidatedToTs", pending.toTs());
+    }
     json.put("lastRefreshTime", lastRefreshTime);
     json.put("status", status.name());
     return json;
@@ -327,6 +452,8 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
     // the aggregate per refresh that has run. Resuming normally would add one more, so the next refresh rebuilds
     // from empty instead - which repairs the existing duplication rather than merely declining to add to it.
     ca.needsCleanRebuild = legacy && loadedWatermarkTs == 0;
+    if (json.has("invalidatedFromTs") && json.has("invalidatedToTs"))
+      ca.invalidation.set(new Invalidation(json.getLong("invalidatedFromTs"), json.getLong("invalidatedToTs")));
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return ca;

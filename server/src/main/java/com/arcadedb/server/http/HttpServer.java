@@ -454,11 +454,32 @@ public class HttpServer implements ServerPlugin {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
-    // A plugin's route added to the PathHandler directly answers every method; PluginPathHandler names it (issue #10157)
+    // The routes the two routers above answer: a plugin path that would shadow one is refused, not served instead (issue #10385).
+    // What the server registered directly on this handler (/ws, /api/v1, /api/v1/ai and the Studio mount /) needs no entry
+    // here: PluginPathHandler records those paths as the server's own when they are added, and refuses a plugin claim on them
+    routes.reserveServerRoutes("/api/v1", basicRoutes.getRegisteredRoutes());
+    routes.reserveServerRoutes("/api/v1/ai", aiRoutes.getRegisteredRoutes());
+
+    // A plugin declares its routes with their methods through PluginRoutes (issue #10296). The deprecated PathHandler
+    // overload is still called for a plugin built against it; a route added there directly answers every method, and
+    // PluginPathHandler names it (issue #10157). A route that is not one plugin's alone - another plugin's, or the
+    // server's - is refused there, and the refusal fails the start (issue #10385)
     for (final ServerPlugin plugin : server.getPlugins()) {
       routes.setRegisteringPlugin(plugin.getName());
       try {
-        plugin.registerAPI(this, routes);
+        plugin.registerAPI(this, new PluginRoutes(routes));
+        if (PluginPathHandler.implementsDeprecatedRegisterAPI(plugin)) {
+          if (PluginPathHandler.implementsPluginRoutesRegisterAPI(plugin))
+            LogManager.instance().log(this, Level.WARNING,
+                "Plugin '%s' implements both registerAPI(HttpServer, PluginRoutes) and the deprecated registerAPI(HttpServer, "
+                    + "PathHandler): both are called, so a route may be registered twice. "
+                    + "Keep only registerAPI(HttpServer, PluginRoutes)", plugin.getName());
+          else
+            LogManager.instance().log(this, Level.WARNING,
+                "Plugin '%s' implements the deprecated registerAPI(HttpServer, PathHandler), which will be removed in a future "
+                    + "release: implement registerAPI(HttpServer, PluginRoutes) instead", plugin.getName());
+          callDeprecatedRegisterAPI(plugin, routes);
+        }
       } finally {
         routes.setRegisteringPlugin(null);
       }
@@ -469,6 +490,11 @@ public class HttpServer implements ServerPlugin {
     unrestrictedPluginRoutes = routes.getUnrestrictedPluginRoutes();
 
     return routes;
+  }
+
+  @SuppressWarnings("removal")
+  private void callDeprecatedRegisterAPI(final ServerPlugin plugin, final PathHandler routes) {
+    plugin.registerAPI(this, routes);
   }
 
   private static Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> mergeWithPrefix(final String basicPrefix,

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 
@@ -184,28 +186,32 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    */
   public static void alterShape(final LocalSchema schema, final LocalEdgeType type, final Boolean lightweight,
       final Boolean unique) {
-    schema.recordChange(() -> {
-      final boolean previousLightweight = type.lightweight;
-      final boolean previousUnique = type.unique;
-      try {
-        // Order matters when both arrive together: the storage shape decides how UNIQUE is enforced, so it is settled before
-        // the constraint is materialised.
-        if (lightweight != null)
-          type.setLightweight(lightweight);
-        if (unique != null)
-          // Withdrawn first so that the index drop below passes the guard that protects a live constraint's index
-          type.setUnique(unique);
+    // The async quiescence is taken OUTSIDE the frame (issue #10537): the index of the constraint waits for the async workers to drain,
+    // and they need the database write lock the frame holds to commit their batch, so asked from inside it the wait never ends
+    try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) schema.getDatabase()).quiesceAsync()) {
+      schema.recordChange(() -> {
+        final boolean previousLightweight = type.lightweight;
+        final boolean previousUnique = type.unique;
+        try {
+          // Order matters when both arrive together: the storage shape decides how UNIQUE is enforced, so it is settled before
+          // the constraint is materialised.
+          if (lightweight != null)
+            type.setLightweight(lightweight);
+          if (unique != null)
+            // Withdrawn first so that the index drop below passes the guard that protects a live constraint's index
+            type.setUnique(unique);
 
-        if (type.isUnique())
-          applyUniqueConstraint(schema, type);
-        else
-          removeUniqueConstraint(schema, type);
-      } catch (final RuntimeException e) {
-        type.lightweight = previousLightweight;
-        type.unique = previousUnique;
-        throw e;
-      }
-    });
+          if (type.isUnique())
+            applyUniqueConstraint(schema, type);
+          else
+            removeUniqueConstraint(schema, type);
+        } catch (final RuntimeException e) {
+          type.lightweight = previousLightweight;
+          type.unique = previousUnique;
+          throw e;
+        }
+      });
+    }
   }
 
   /**

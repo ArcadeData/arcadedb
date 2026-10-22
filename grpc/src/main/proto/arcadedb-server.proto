@@ -394,16 +394,28 @@ message BeginTransactionRequest {
   TransactionIsolation isolation = 3;
 }
 
+// The engine provides two isolation levels, READ_COMMITTED and REPEATABLE_READ. BeginTransaction accepts those two, and
+// READ_UNCOMMITTED, which runs at the STRONGER READ_COMMITTED (it is also the proto default, so an unset field begins at
+// READ_COMMITTED). SERIALIZABLE is NOT supported: BeginTransaction refuses it with INVALID_ARGUMENT, as it refuses a value
+// this server does not know, because starting it at a weaker level would be the one failure a caller cannot detect. The
+// HTTP API (POST /api/v1/begin/{database}), SQL, openCypher and PostgreSQL refuse it the same way. The constant stays in
+// the enum so that a client generated from an older version of this file still compiles and gets that answer, not
+// a silent downgrade.
 enum TransactionIsolation {
-  READ_UNCOMMITTED = 0;
+  READ_UNCOMMITTED = 0;  // runs as READ_COMMITTED
   READ_COMMITTED = 1;
   REPEATABLE_READ = 2;
-  SERIALIZABLE = 3;
+  SERIALIZABLE = 3;      // NOT SUPPORTED: refused with INVALID_ARGUMENT
 }
 
 message BeginTransactionResponse {
   string transaction_id = 1;
   int64 timestamp = 2;
+  // The isolation level the transaction really runs at: READ_COMMITTED or REPEATABLE_READ, which differs from the requested
+  // value only for READ_UNCOMMITTED, run at the stronger READ_COMMITTED (see TransactionIsolation). A server that predates
+  // this field leaves it unset, which reads as READ_UNCOMMITTED (the proto default) - a value a current server never
+  // reports, so it means "unknown".
+  TransactionIsolation effective_isolation = 3;
 }
 
 message CommitTransactionRequest {

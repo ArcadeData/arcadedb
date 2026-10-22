@@ -40,7 +40,6 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -227,8 +226,12 @@ class Issue9738GAVFusedChainCountTest {
     assertThat(withView).isEqualTo(rows(count));
   }
 
+  /**
+   * A rebuild while the rows stream: the walk read the snapshot the statement pinned, so the rounds after the rebuild go on
+   * reading it, and every row is right. It used to fail the rest of the walk with a {@link NeedRetryException} (issue #10415).
+   */
   @Test
-  void aRebuildWhileTheRowsStreamFailsTheQueryInsteadOfMixingNumberings() {
+  void aRebuildWhileTheRowsStreamDoesNotMixNumberings() {
     // 2,000 x 10 x 10 = 200,000 paths: many rounds of the single walker
     buildGraph(2_000, 10);
     createView();
@@ -243,20 +246,14 @@ class Issue9738GAVFusedChainCountTest {
       // A rebuild numbers the nodes afresh: the walk's IDs would name other records in the new numbering
       database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW v9738");
       assertThat(GraphAnalyticalViewRegistry.get(database, "v9738").awaitReady(60, TimeUnit.SECONDS)).isTrue();
-      assertThatThrownBy(() -> {
-        long served = 0;
-        while (rs.hasNext()) {
-          rs.next();
-          ++served;
-        }
-        // Reached only when every row of the walk was buffered before the rebuild
-        throw new AssertionError(served + " more rows served across the rebuild");
-      }).isInstanceOf(NeedRetryException.class).hasMessageContaining("rebuilt");
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<Vertex>getProperty("a").getTypeName()).isEqualTo("P");
+        assertThat(row.<Vertex>getProperty("c").getTypeName()).isEqualTo("P");
+        ++rows;
+      }
     }
-
-    // Run again, the query answers from the new numbering
-    assertThat(scalar(TWO_HOPS + "RETURN count(*) AS n", "n")).isEqualTo(twoHopPaths());
-    assertThat(rows).isEqualTo(1);
+    assertThat(rows).isEqualTo(twoHopPaths());
   }
 
   @Test

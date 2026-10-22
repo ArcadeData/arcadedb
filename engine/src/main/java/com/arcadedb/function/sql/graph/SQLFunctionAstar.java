@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.FileUtils;
 
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -58,6 +59,11 @@ import java.util.Set;
  * <p>
  * The weight follows {@link EdgeWeight}: an edge without a numeric weight weighs 1, and an edge whose weight is negative,
  * NaN or infinite is not walked (issue #9443).
+ * <p>
+ * {@code maxDepth} is the number of edges a returned path may have (issue #10527), as it is for {@code shortestPath()}: the answer
+ * is the cheapest path of at most that many edges, or an empty list when there is none. A path is returned only when it ends at the
+ * destination, so {@code emptyIfMaxDepth}, which used to choose between an empty list and the path to wherever the search stood when
+ * it ran out of bound, is accepted and no longer changes the answer.
  *
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
@@ -71,15 +77,17 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       PARAM_PARALLEL, PARAM_MAX_DEPTH, PARAM_EMPTY_IF_MAX_DEPTH, PARAM_TIE_BREAKER, PARAM_D_FACTOR, PARAM_HEURISTIC_FORMULA,
       PARAM_CUSTOM_HEURISTIC_FORMULA);
 
-  private         String              paramWeightFieldName = "weight";
-  private         long                currentDepth         = 0;
-  protected final Set<Vertex>         closedSet            = new HashSet<Vertex>();
-  protected final Map<Vertex, Vertex> cameFrom             = new HashMap<Vertex, Vertex>();
+  private String paramWeightFieldName = "weight";
+  // The number of edges between the source and the vertex whose estimate is being asked for: the "depth" a heuristic receives
+  private long   currentDepth         = 0;
 
-  protected final Map<Vertex, Double>   gScore = new HashMap<Vertex, Double>();
-  protected final Map<Vertex, Double>   fScore = new HashMap<Vertex, Double>();
-  protected final PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1,
-      (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
+  /**
+   * One way of reaching a vertex: what it cost, how many edges it took, and the label it was reached from. The search settles
+   * labels, not vertices (issue #10527): under a bound on the edges, the cheapest way to a vertex and the shortest way to it are two
+   * answers, and the dearer one can be the only one that leaves room for the rest of the path.
+   */
+  private record Label(Vertex vertex, double cost, double estimate, int edges, Label parent, long sequence) {
+  }
 
   public SQLFunctionAstar() {
     super(NAME);
@@ -171,60 +179,76 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     // algorithm (issue #6459) - astar()/dijkstra() previously had no timeout/interrupt check at all.
     final WorkGuard guard = WorkGuard.forCommand(ctx, NAME + "()");
 
-    open.add(start);
+    // One call can run on an instance a previous call used
+    route.clear();
 
-    // The cost of going from start to start is zero.
-    gScore.put(start, 0.0);
-    // For the first node, that value is completely heuristic.
-    fScore.put(start, getHeuristicCost(start, null, goal, ctx));
+    // maxDepth is the number of EDGES a returned path may have, as for shortestPath() (issues #10439, #10527). It used to be read
+    // against the number of vertices the loop had polled, which on a graph that branches says nothing about how deep the vertex at
+    // hand is: the destination was refused when polled past the count (dijkstra), and a path ending anywhere else was answered
+    // (astar). A path is returned only when it runs from the source to the destination, whatever emptyIfMaxDepth says.
+    if (paramMaxDepth < 0)
+      return getPath();
+    final boolean bounded = paramMaxDepth < Long.MAX_VALUE;
+    final int maxEdges = (int) Math.min(paramMaxDepth, Integer.MAX_VALUE);
+
+    final PriorityQueue<Label> open = new PriorityQueue<>(
+        Comparator.comparingDouble(Label::estimate).thenComparingLong(Label::sequence));
+    // The fewest edges among the labels already expanded at a vertex. Labels leave the queue in order of estimate, so a later label
+    // at the same vertex costs no less: it is dominated by an expanded one unless it has fewer edges, and without a bound the edges
+    // never matter, so the first one expanded settles the vertex
+    final Map<Vertex, Integer> expanded = new HashMap<>();
+    // The cheapest label pushed so far to each vertex, so a way that is neither cheaper nor shorter is not queued at all
+    final Map<Vertex, Label> cheapest = new HashMap<>();
+    long sequence = 0;
+
+    // The cost of going from start to start is zero. For the first node, the estimate is completely heuristic.
+    currentDepth = 0;
+    final Label first = new Label(start, 0.0, getHeuristicCost(start, null, goal, ctx), 0, null, sequence++);
+    open.add(first);
+    cheapest.put(start, first);
 
     while (!open.isEmpty()) {
       guard.check();
 
-      Vertex current = open.poll();
+      final Label current = open.poll();
+      final Vertex vertex = current.vertex();
 
-      // we discussed about this feature in https://github.com/orientechnologies/orientdb/pull/6002#issuecomment-212492687
-      if (paramEmptyIfMaxDepth && currentDepth >= paramMaxDepth) {
-        route.clear(); // to ensure our result is empty
-        return getPath();
-      }
-      // if start and goal vertex is equal so return current path from  cameFrom hash map
-      if (current.getIdentity().equals(goal.getIdentity()) || currentDepth >= paramMaxDepth) {
-
-        while (current != null) {
-          route.add(0, current);
-          current = cameFrom.get(current);
-        }
+      // Checked before the bound: the destination reached in exactly maxDepth edges is an answer, not a refusal
+      if (vertex.getIdentity().equals(goal.getIdentity())) {
+        for (Label label = current; label != null; label = label.parent())
+          route.add(0, label.vertex());
         return getPath();
       }
 
-      closedSet.add(current);
+      final Integer settled = expanded.get(vertex);
+      if (settled != null && (!bounded || settled <= current.edges()))
+        continue;
+      expanded.put(vertex, current.edges());
 
+      if (current.edges() >= maxEdges)
+        continue;
+
+      final int edges = current.edges() + 1;
       // Try CSR + edge property columns first for O(1) neighbor + weight access
-      final Map<Vertex, Double> neighborWeights = getNeighborWeightsCSR(current, ctx);
+      final Map<Vertex, Double> neighborWeights = getNeighborWeightsCSR(vertex, ctx);
       for (final Map.Entry<Vertex, Double> entry : neighborWeights.entrySet()) {
         final Vertex neighbor = entry.getKey();
         // Ignore the neighbor which is already evaluated.
-        if (closedSet.contains(neighbor))
+        final Integer neighborSettled = expanded.get(neighbor);
+        if (neighborSettled != null && (!bounded || neighborSettled <= edges))
           continue;
         // The distance from start to a neighbor
-        final double tentative_gScore = gScore.get(current) + entry.getValue();
-        final boolean contains = open.contains(neighbor);
+        final double cost = current.cost() + entry.getValue();
+        final Label best = cheapest.get(neighbor);
+        if (best != null && cost >= best.cost() && (!bounded || edges >= best.edges()))
+          continue;
 
-        if (!contains || tentative_gScore < gScore.get(neighbor)) {
-          gScore.put(neighbor, tentative_gScore);
-          fScore.put(neighbor, tentative_gScore + getHeuristicCost(neighbor, current, goal, ctx));
-
-          if (contains)
-            open.remove(neighbor);
-          open.offer(neighbor);
-          cameFrom.put(neighbor, current);
-        }
+        currentDepth = edges;
+        final Label label = new Label(neighbor, cost, cost + getHeuristicCost(neighbor, vertex, goal, ctx), edges, current, sequence++);
+        open.add(label);
+        if (best == null || cost < best.cost() || cost == best.cost() && edges < best.edges())
+          cheapest.put(neighbor, label);
       }
-
-      // Increment Depth Level
-      currentDepth++;
-
     }
 
     return getPath();
@@ -269,8 +293,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (node == null)
       return result;
 
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(
-        ctx.getDatabase(), paramEdgeTypeNames);
+    // Pinned for the statement: the id, the weighted neighbours and their records come from one snapshot, and so does every node
+    // the search expands (issue #10415)
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(ctx, paramEdgeTypeNames);
     if (provider != null) {
       final int nodeId = provider.getNodeId(node.getIdentity());
       // edgeWeightsOf() answers null unless the provider can serve THIS property for EVERY type in play, and it

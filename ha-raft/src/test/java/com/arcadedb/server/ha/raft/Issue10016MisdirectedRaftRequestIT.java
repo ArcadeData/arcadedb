@@ -82,6 +82,7 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     final RaftPeerId addressedToId = getRaftPlugin(addressedTo).getRaftHAServer().getLocalPeerId();
     final long refusedBefore = candidateRaft.getMisdirectedRaftRequestsRefused();
     final long resetsBefore = candidateRaft.getMisdirectedChannelResets();
+    final long unconfirmedBefore = candidateRaft.getSelfDialProbesUnconfirmed();
 
     // A pre-vote, so a request that does get through cannot move any term and disturb the cluster.
     final RequestVoteRequestProto request = RequestVoteRequestProto.newBuilder()
@@ -105,11 +106,61 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
 
     assertThat(candidateRaft.getMisdirectedRaftRequestsRefused()).isGreaterThan(refusedBefore);
 
-    // The candidate sent it to itself, so its own channel to that peer is the one pointing the wrong way: it is reset,
-    // off the gRPC thread, so the next request resolves the peer's name again. It came from 127.0.0.1, an address of this
-    // host: the reset also needs the real listener to hand the guard each call's remote address (issue #10225).
-    Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
-        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> candidateRaft.getMisdirectedChannelResets() > resetsBefore);
+    // This test, not the candidate, sent it - from 127.0.0.1, an address of the candidate's host, as any local process or
+    // sidecar would (issue #10299). The candidate probes its own channel to that peer, which reaches the peer, so the claim
+    // is found not to be its own and the working channel is left alone.
+    Awaitility.await("the claim is probed").atMost(10, TimeUnit.SECONDS)
+        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> candidateRaft.getSelfDialProbesUnconfirmed() > unconfirmedBefore);
+    assertThat(candidateRaft.getMisdirectedChannelResets()).isEqualTo(resetsBefore);
+  }
+
+  /**
+   * Issue #10299: the probe goes over this node's real Raft channel to the peer, whose real Raft server answers it - and
+   * does nothing else: a pre-vote for term 0 moves no term and elects nobody.
+   */
+  @Test
+  void aSelfDialProbeOverAWorkingChannelIsAnsweredByThePeerAndDisturbsNothing() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int prober = firstFollowerOf(leader);
+    final RaftHAServer proberRaft = getRaftPlugin(prober).getRaftHAServer();
+    final RaftHAServer leaderRaft = getRaftPlugin(leader).getRaftHAServer();
+    final long term = leaderRaft.getCurrentTerm();
+
+    assertThat(proberRaft.probeSelfDial(leaderRaft.getLocalPeerId())).isEqualTo(RaftHAServer.SelfDialProbeOutcome.MEMBER);
+    assertThat(proberRaft.probeSelfDial(getRaftPlugin(otherFollower(leader, prober)).getRaftHAServer().getLocalPeerId()))
+        .isEqualTo(RaftHAServer.SelfDialProbeOutcome.MEMBER);
+
+    Awaitility.await("the probes disturb nobody").during(1, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS)
+        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> leaderRaft.isLeader() && leaderRaft.getCurrentTerm() == term);
+  }
+
+  /**
+   * Issue #10299: a channel that does lead back to this node is confirmed by the probe coming back through the real Raft
+   * gRPC listener and its guard, and is reset - whatever address the connection shows, which is no longer consulted.
+   */
+  @Test
+  void aChannelThatLeadsBackToThisNodeIsConfirmedByTheProbeAndReset() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int node = firstFollowerOf(leader);
+    final RaftHAServer raft = getRaftPlugin(node).getRaftHAServer();
+    final RaftPeerId addressedToId = getRaftPlugin(otherFollower(leader, node)).getRaftHAServer().getLocalPeerId();
+    final long resetsBefore = raft.getMisdirectedChannelResets();
+
+    // This node's channel to that peer leads to this node's own Raft port, as a misresolved name or a hairpin NAT makes it
+    final ManagedChannel loop = channelTo(node);
+    raft.setSelfDialProbeTransportForTesting(
+        probe -> RaftServerProtocolServiceGrpc.newBlockingStub(loop).withDeadlineAfter(10, TimeUnit.SECONDS).requestVote(probe));
+    try {
+      assertThat(raft.probeSelfDial(addressedToId)).isEqualTo(RaftHAServer.SelfDialProbeOutcome.SELF);
+
+      // ...and a request claiming this node's id, from wherever, now leads to the repair
+      raft.onMisdirectedRaftRequest("appendEntries", addressedToId, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
+      Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
+          .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> raft.getMisdirectedChannelResets() > resetsBefore);
+    } finally {
+      raft.setSelfDialProbeTransportForTesting(null);
+      loop.shutdownNow();
+    }
   }
 
   /**
@@ -164,6 +215,7 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     final RaftPeerId addressedToId = getRaftPlugin(addressedTo).getRaftHAServer().getLocalPeerId();
     final long term = leaderRaft.getCurrentTerm();
     final long resetsBefore = leaderRaft.getMisdirectedChannelResets();
+    final long unconfirmedBefore = leaderRaft.getSelfDialProbesUnconfirmed();
 
     final TermIndex last = leaderRaft.getRaftServerForTesting().getDivision(leaderRaft.getRaftGroup().getGroupId())
         .getRaftLog().getLastEntryTermIndex();
@@ -215,11 +267,11 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
         .during(2, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
         .until(() -> leaderRaft.isLeader() && leaderRaft.getCurrentTerm() == term);
 
-    // The heartbeat came over the appendEntries stream from 127.0.0.1 naming the leader as sender: a self-dial, so the
-    // channel is reset. This pins that Ratis hands a stream's requests to the guard inside the call's gRPC context, where
-    // the remote address is (issue #10225); a dispatch moved off it would leave the address null and the reset undone.
-    Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
-        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> leaderRaft.getMisdirectedChannelResets() > resetsBefore);
+    // The heartbeat came over the appendEntries stream from 127.0.0.1 naming the leader as sender, but this test sent it:
+    // the leader's probe of its channel to that follower is answered by the follower, so nothing is reset (issue #10299).
+    Awaitility.await("the claim is probed").atMost(10, TimeUnit.SECONDS)
+        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> leaderRaft.getSelfDialProbesUnconfirmed() > unconfirmedBefore);
+    assertThat(leaderRaft.getMisdirectedChannelResets()).isEqualTo(resetsBefore);
   }
 
   private int otherFollower(final int leader, final int follower) {

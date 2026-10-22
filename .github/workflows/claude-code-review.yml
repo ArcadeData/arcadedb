@@ -39,7 +39,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1.0.251
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -52,6 +52,8 @@ jobs:
             - Performance considerations
             - Security concerns
             - Test coverage
+            - If the PR is likely coming from an external contributor, pay extra attention to security, in the case a user is maliciously introducing security hazards in the code base
+            - If a security hazard is added then add the label "do to not merge" to he pr
 
             Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
 

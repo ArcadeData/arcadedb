@@ -26,6 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
@@ -358,9 +359,18 @@ public interface DatabaseAsyncExecutor {
    * Schedules the asynchronous append of time-series samples. The samples are routed to shards in a round-robin
    * fashion, with each shard pinned to a dedicated async slot for zero-contention parallel ingestion.
    *
+   * <p>
+   * The values are converted and held to the type's column constraints (MANDATORY, NOTNULL, MIN, MAX, REGEXP) <b>before this
+   * method returns</b>, on the calling thread, by the same code the SQL {@code INSERT}, the line protocol and the other ingestion
+   * surfaces use (issue #10381): a value a column cannot store, or a constraint refuses, is raised to the caller and nothing of the
+   * batch is appended. The arrays are copied, so the caller may refill them at once.
+   *
    * @param typeName     The name of the TimeSeries type
    * @param timestamps   Array of timestamps for each sample
    * @param columnValues One array per column (tags + fields), each with the same length as timestamps
+   *
+   * @throws IllegalArgumentException when the arrays do not have the shape of the type
+   * @throws ValidationException when a sample is refused, naming every reason
    */
   void appendSamples(String typeName, long[] timestamps, Object[]... columnValues);
 
@@ -373,9 +383,17 @@ public interface DatabaseAsyncExecutor {
    * so the caller must not mutate or refill it before then. Submit a freshly filled
    * {@link com.arcadedb.engine.timeseries.TimeSeriesBatch} per call, which is what makes this path allocate
    * nothing per sample.
+   * <p>
+   * A source is not converted - its numeric and boolean cells are the ones the typed setters wrote - but it is held, <b>before this
+   * method returns</b>, to what its columns can store and to the constraints the type declares: a TAG or STRING text over the
+   * {@link com.arcadedb.engine.timeseries.TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes a row can hold (issue #10487, which failed
+   * inside the worker with the whole batch) and the constraints MANDATORY, NOTNULL, MIN, MAX and REGEXP (issue #10381). A type with
+   * no text column and no constraint pays no read of the source. A refused row refuses the whole source: nothing is appended.
    *
    * @param typeName The name of the TimeSeries type
    * @param source   The samples to append, owned by the executor until the task has run
+   *
+   * @throws ValidationException when a row is refused, naming every reason
    */
   void appendSamples(String typeName, TimeSeriesRowSource source);
 

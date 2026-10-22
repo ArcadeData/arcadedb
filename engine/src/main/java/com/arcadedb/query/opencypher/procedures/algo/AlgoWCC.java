@@ -99,7 +99,7 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
     // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
-    if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
+    if (provider instanceof GraphAnalyticalView.Pinned gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
       return executeWithCSR(gav, relTypes);
     }
@@ -108,7 +108,7 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     return executeWithOLTP(db, relTypes);
   }
 
-  private Stream<Result> executeWithCSR(final GraphAnalyticalView gav, final String[] relTypes) {
+  private Stream<Result> executeWithCSR(final GraphAnalyticalView.Pinned gav, final String[] relTypes) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();

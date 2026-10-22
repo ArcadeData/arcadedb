@@ -33,6 +33,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -1820,17 +1821,34 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Maps the wire-protocol {@link TransactionIsolation} to the engine {@link Database.TRANSACTION_ISOLATION_LEVEL}.
-   * ArcadeDB only supports READ_COMMITTED and REPEATABLE_READ, so weaker/stronger levels collapse to the closest match.
-   * Unset (proto default, old clients) maps to READ_COMMITTED to preserve the previous behavior.
+   * Maps the wire-protocol {@link TransactionIsolation} of a begin request to the engine
+   * {@link Database.TRANSACTION_ISOLATION_LEVEL}, or REFUSES it (issue #10386). The engine provides READ_COMMITTED and
+   * REPEATABLE_READ. READ_UNCOMMITTED is accepted and runs at READ_COMMITTED, a STRONGER level than asked for: it is the proto
+   * default, so every client that leaves the field unset sends it. SERIALIZABLE is refused, and so is a value this server does
+   * not know (a newer client's constant, which the generated code reads as UNRECOGNIZED): either would otherwise begin at a
+   * weaker level than the caller asked for, the one failure a client cannot detect. HTTP, SQL, openCypher and Postgres refuse
+   * the same way, with the same words. The level the transaction really runs at is reported back in
+   * {@code BeginTransactionResponse.effective_isolation} (issue #10322).
+   *
+   * @throws IllegalArgumentException when the engine cannot provide the requested level
    */
-  private static Database.TRANSACTION_ISOLATION_LEVEL mapIsolationLevel(final TransactionIsolation isolation) {
-    if (isolation == null)
-      return Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private static Database.TRANSACTION_ISOLATION_LEVEL mapIsolationLevel(final BeginTransactionRequest request) {
+    final TransactionIsolation isolation = request.getIsolation();
     return switch (isolation) {
-      case REPEATABLE_READ, SERIALIZABLE -> Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
-      default -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+      case READ_UNCOMMITTED, READ_COMMITTED -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+      case REPEATABLE_READ -> Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+      case SERIALIZABLE -> throw IsolationLevels.refusal("'" + isolation.name() + "'");
+      case UNRECOGNIZED -> throw IsolationLevels.refusal("'" + request.getIsolationValue() + "'");
     };
+  }
+
+  /**
+   * The wire-protocol value of the level an engine transaction runs at. The engine provides only these two levels.
+   */
+  private static TransactionIsolation toWireIsolation(final Database.TRANSACTION_ISOLATION_LEVEL level) {
+    return level == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ ?
+        TransactionIsolation.REPEATABLE_READ :
+        TransactionIsolation.READ_COMMITTED;
   }
 
   @Override
@@ -1855,6 +1873,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
+
+      // Honor the isolation level requested by the client (defaults to READ_COMMITTED). This is required so that
+      // REPEATABLE_READ transactions track the version of the records they read and a write-write conflict raises a
+      // ConcurrentModificationException on commit, exactly as on HTTP (issue #4533). A level the engine cannot provide is
+      // refused here, once the caller is known to be allowed in and before a transaction slot or a thread is taken for it
+      // (issue #10386): it is a mistake of the caller, so it is answered as one and not logged as a server error.
+      final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel;
+      try {
+        isolationLevel = mapIsolationLevel(request);
+      } catch (final IllegalArgumentException e) {
+        responseObserver.onError(Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asException());
+        return;
+      }
 
       LogManager.instance().log(this, Level.FINE, """
               beginTransaction(): resolved database instance dbName=%s class=%s \
@@ -1891,11 +1922,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.FINE, """
           beginTransaction(): calling database.begin() on dedicated thread \
           for txId=%s""", transactionId);
-
-      // Honor the isolation level requested by the client (defaults to READ_COMMITTED). This is required so that
-      // REPEATABLE_READ transactions track the version of the records they read and a write-write conflict raises a
-      // ConcurrentModificationException on commit, exactly as on HTTP (issue #4533).
-      final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = mapIsolationLevel(request.getIsolation());
 
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
@@ -1961,8 +1987,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .log(this, Level.FINE, "beginTransaction(): started txId=%s for db=%s activeTxCount(after)=%s", transactionId,
               database != null ? database.getName() : "<null>", activeTransactions.size());
 
+      // Issue #10322: report the level the transaction REALLY runs at, read from the engine transaction rather than
+      // recomputed from the request, so a mapped (or a future, differently-mapped) request can never be mis-reported.
+      // Fully qualified because this class imports the gRPC-generated TransactionContext of the same simple name.
+      final com.arcadedb.database.TransactionContext engineTx = startedTxCtx.engineTransaction;
+      final TransactionIsolation effectiveIsolation = toWireIsolation(
+          engineTx != null ? engineTx.getIsolationLevel() : isolationLevel);
       final BeginTransactionResponse response = BeginTransactionResponse.newBuilder().setTransactionId(transactionId)
-          .setTimestamp(System.currentTimeMillis()).build();
+          .setTimestamp(System.currentTimeMillis()).setEffectiveIsolation(effectiveIsolation).build();
 
       responseObserver.onNext(response);
       responded = true;
@@ -6154,7 +6186,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (arcadeServer != null) {
 
       // This is how other plugins do it - get the already-open database
-      Database db = arcadeServer.getDatabase(databaseName);
+      Database db = arcadeServer.getDatabaseForClient(databaseName);
 
       LogManager.instance().log(this, Level.FINE, "getDatabase(): db = %s isOpen = %s", db, db.isOpen());
 
@@ -6173,8 +6205,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Below this line the service is running WITHOUT an ArcadeDBServer, which only a standalone or embedded use of
     // this class does - GrpcServerPlugin, the single production construction site, always passes one. The branch
-    // above returns or throws in that case: ArcadeDBServer.getDatabase(name) opens from disk and raises
-    // DatabaseOperationException("... does not exist") rather than returning null, so `db != null` never falls
+    // above returns or throws in that case: ArcadeDBServer.getDatabaseForClient(name) opens from disk and raises
+    // DatabaseOperationException("... does not exist"), or DatabaseNotAvailableException when a restore holds the name or
+    // a 'close database' closed it (issue #10533), rather than returning null, so `db != null` never falls
     // through on a real server. That is what keeps the raw DatabaseFactory.create() below outside the set of
     // database creators the restore name reservation has to bind (issue #7441).
 

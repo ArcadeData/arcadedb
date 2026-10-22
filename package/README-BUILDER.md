@@ -207,6 +207,25 @@ The builder creates:
 - `{output-name}.tar.gz` - Compressed tarball
 - Docker image with tag `{docker-tag}` (if not skipped)
 
+### Docker image user
+
+The generated image runs as the `arcadedb` user with UID/GID `1000:1000`, the same owner as the official JVM and
+native images, so their volumes are interchangeable. It declares the same five volumes as the official images:
+`config` (users, groups and API tokens the server writes at runtime), `databases`, `replication` (HA state), `backups`
+and `log`. Mount all five to keep that state across container recreation. A named volume mounted on `config` is seeded
+with the image's default configuration files on first use; a bind mount starts out empty and hides them, so copy the
+defaults into the host directory first. Either way, once `config` holds state it is no longer refreshed from the image:
+a default configuration file added by a later release does not appear in an existing `config` volume.
+
+**Upgrading a custom image built before 26.11.1:** older builder versions created a system user (`100:101`) and
+declared only `databases`, `backups` and `log` as volumes. Change the owner of each existing volume or bind mount
+(`config`, `databases`, `replication`, `backups` and `log`, including any you mounted by hand) once before starting the
+new image, for example by running this for every one of them:
+
+```bash
+docker run --rm -u 0 -v <volume>:/data alpine chown -R 1000:1000 /data
+```
+
 ## Directory Structure
 
 ```

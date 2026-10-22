@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -124,6 +125,14 @@ abstract class PostgresCatalogExpression {
     default Object subquery(final List<PostgresCatalogToken> tokens, final SubqueryKind kind) {
       return UNKNOWN;
     }
+
+    /**
+     * @return the position, from 0, of the row a set-returning function of the projection is producing for the row being
+     * evaluated, or -1 when the row is not being projected
+     */
+    default int expansion() {
+      return -1;
+    }
   }
 
   /** What a sub-select is asked for, which is decided by where it is written. */
@@ -137,6 +146,38 @@ abstract class PostgresCatalogExpression {
   }
 
   abstract Object evaluate(Resolver resolver);
+
+  /** Receives the columns an expression reads, see {@link #collectColumns}. */
+  interface Columns {
+    /** The expression reads the column {@code name} of {@code qualifier}, null when it was written bare. */
+    void column(String qualifier, String name);
+
+    /**
+     * The expression reads columns that cannot be listed: a sub-select is correlated to the row it is evaluated against by names
+     * its own text carries, so it depends on every relation of the statement.
+     */
+    void anyColumn();
+  }
+
+  /**
+   * Reports every column this expression reads, without evaluating it. What lets a join evaluate a condition as soon as the
+   * relations it reads are bound, rather than once they all are.
+   */
+  abstract void collectColumns(Columns columns);
+
+  /** An equality between two expressions, see {@link #equalityOf}. */
+  record Equality(PostgresCatalogExpression left, PostgresCatalogExpression right) {
+  }
+
+  /** The two sides of {@code expression} when it is a plain {@code =}, null for anything else. */
+  static Equality equalityOf(final PostgresCatalogExpression expression) {
+    return expression instanceof Binary binary && "=".equals(binary.operator) ? new Equality(binary.left, binary.right) : null;
+  }
+
+  /** The column {@code expression} is, when it is nothing but a column reference, null otherwise. */
+  static ColumnReference columnOf(final PostgresCatalogExpression expression) {
+    return expression instanceof ColumnReference reference ? reference : null;
+  }
 
   /**
    * Parses one expression and returns it, or null when it is not written in the supported slice. The whole
@@ -179,6 +220,22 @@ abstract class PostgresCatalogExpression {
     return false;
   }
 
+  /**
+   * A value read as a boolean, for a comparison with one: text is read the way PostgreSQL reads the input of a {@code boolean}
+   * ({@code indisprimary = 't'} is a test of the flag), anything that is neither is {@link #isTrue}.
+   */
+  static boolean truth(final Object value) {
+    if (value instanceof String text) {
+      switch (text.trim().toLowerCase(Locale.ENGLISH)) {
+      case "t", "true", "y", "yes", "on", "1":
+        return true;
+      default:
+        return false;
+      }
+    }
+    return isTrue(value);
+  }
+
   static String asString(final Object value) {
     if (value == null || value == UNKNOWN)
       return null;
@@ -194,6 +251,11 @@ abstract class PostgresCatalogExpression {
 
     Literal(final Object value) {
       this.value = value;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      // a literal reads no column
     }
 
     @Override
@@ -222,6 +284,11 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      columns.anyColumn();
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.subquery(tokens, kind);
     }
@@ -237,6 +304,12 @@ abstract class PostgresCatalogExpression {
       this.operand = operand;
       this.subquery = subquery;
       this.negated = negated;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      subquery.collectColumns(columns);
     }
 
     @Override
@@ -285,6 +358,14 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      if (argument != null)
+        argument.collectColumns(columns);
+      for (final PostgresCatalogExpression extra : extraArguments)
+        extra.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.aggregate(this);
     }
@@ -300,6 +381,11 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      columns.column(qualifier, name);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.column(qualifier, name);
     }
@@ -312,6 +398,12 @@ abstract class PostgresCatalogExpression {
     FunctionCall(final String name, final List<PostgresCatalogExpression> arguments) {
       this.name = name;
       this.arguments = arguments;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      for (final PostgresCatalogExpression argument : arguments)
+        argument.collectColumns(columns);
     }
 
     @Override
@@ -371,6 +463,14 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      for (final PostgresCatalogExpression expression : partitionBy)
+        expression.collectColumns(columns);
+      for (final PostgresCatalogExpression expression : orderBy)
+        expression.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       return resolver.window(this);
     }
@@ -378,7 +478,8 @@ abstract class PostgresCatalogExpression {
 
   private static Object scalarFunction(final String name, final List<Object> values) {
     switch (name) {
-    case "lower", "upper", "length", "abs", "trim", "btrim", "ltrim", "rtrim", "replace", "concat" -> {
+    case "lower", "upper", "length", "abs", "trim", "btrim", "ltrim", "rtrim", "replace", "concat", "substring", "substr",
+         "array_upper", "array_lower", "array_length", "cardinality" -> {
       for (final Object value : values)
         if (value == UNKNOWN)
           return UNKNOWN;
@@ -396,10 +497,19 @@ abstract class PostgresCatalogExpression {
       return buffer.toString();
     }
 
+    if (name.startsWith("array_") || "cardinality".equals(name))
+      return arrayFunction(name, values);
+
     if (values.isEmpty() || values.get(0) == null)
       return values.isEmpty() ? UNKNOWN : null;
 
     final String first = asString(values.get(0));
+    // btrim(string, characters) takes the characters named off the ends instead of the spaces
+    if (values.size() == 2 && ("trim".equals(name) || "btrim".equals(name) || "ltrim".equals(name) || "rtrim".equals(name))) {
+      if (values.get(1) == null)
+        return null;
+      return strip(first, asString(values.get(1)), !"rtrim".equals(name), !"ltrim".equals(name));
+    }
     return switch (name) {
       case "lower" -> first.toLowerCase(Locale.ENGLISH);
       case "upper" -> first.toUpperCase(Locale.ENGLISH);
@@ -410,8 +520,157 @@ abstract class PostgresCatalogExpression {
       case "abs" -> values.get(0) instanceof Number n ? (Object) Math.abs(n.doubleValue()) : UNKNOWN;
       case "replace" -> values.size() == 3 && values.get(1) != null && values.get(2) != null ?
           first.replace(asString(values.get(1)), asString(values.get(2))) : (values.size() == 3 ? null : UNKNOWN);
+      case "substring", "substr" -> substring(first, values);
       default -> UNKNOWN;
     };
+  }
+
+  /**
+   * {@code substring(text, from [, count])}: the characters at the positions {@code from} (counted from 1) up to {@code count} of
+   * them, that lie inside the text. A start before the first character takes its length from the count, as PostgreSQL does, so
+   * {@code substring('abc', 0, 2)} is {@code 'a'}. A NULL position or count is NULL; a negative count is an error in PostgreSQL and
+   * is not read here.
+   */
+  private static Object substring(final String text, final List<Object> values) {
+    if (values.size() < 2 || values.size() > 3)
+      return UNKNOWN;
+    if (values.get(1) == null || values.size() == 3 && values.get(2) == null)
+      return null;
+    if (!(values.get(1) instanceof Number start) || values.size() == 3 && !(values.get(2) instanceof Number))
+      return UNKNOWN;
+
+    final long from = start.longValue();
+    long to = Long.MAX_VALUE;
+    if (values.size() == 3) {
+      final long count = ((Number) values.get(2)).longValue();
+      if (count < 0)
+        return UNKNOWN;
+      // a window that would pass the largest position is the rest of the text
+      to = from > Long.MAX_VALUE - count ? Long.MAX_VALUE : from + count;
+    }
+    final long first = Math.max(from, 1L);
+    final long end = Math.min(to, text.length() + 1L);
+    return end <= first ? "" : text.substring((int) (first - 1), (int) (end - 1));
+  }
+
+  /**
+   * {@code array_upper}, {@code array_lower}, {@code array_length} and {@code cardinality}: the bounds of an array, which is a
+   * one-dimensional list here. An empty array has no bounds, so they are NULL for it (not {@code cardinality}, which is 0), and so
+   * they are for a dimension other than the first. The key arrays of an index ({@link PostgresCatalogIndexes.Vector}) start at 0.
+   */
+  private static Object arrayFunction(final String name, final List<Object> values) {
+    final boolean cardinality = "cardinality".equals(name);
+    if (values.size() != (cardinality ? 1 : 2))
+      return UNKNOWN;
+    if (values.get(0) == null || !cardinality && values.get(1) == null)
+      return null;
+    if (!(values.get(0) instanceof List<?> list) || !cardinality && !(values.get(1) instanceof Number))
+      return UNKNOWN;
+
+    if (cardinality)
+      return (long) list.size();
+    if (((Number) values.get(1)).longValue() != 1L || list.isEmpty())
+      return null;
+
+    final long lower = list instanceof PostgresCatalogIndexes.Vector ? 0L : 1L;
+    return switch (name) {
+      case "array_lower" -> lower;
+      case "array_upper" -> lower + list.size() - 1;
+      case "array_length" -> (long) list.size();
+      default -> UNKNOWN;
+    };
+  }
+
+  /**
+   * {@code (expression).field}: one member of a composite value, such as the {@code x} and {@code n} of what
+   * {@code information_schema._pg_expandarray()} produces. A value that is no composite, or has no such member, is not read.
+   */
+  private static class Field extends PostgresCatalogExpression {
+    private final PostgresCatalogExpression operand;
+    private final String                    name;
+
+    Field(final PostgresCatalogExpression operand, final String name) {
+      this.operand = operand;
+      this.name = name;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+    }
+
+    @Override
+    Object evaluate(final Resolver resolver) {
+      final Object value = operand.evaluate(resolver);
+      if (value == UNKNOWN)
+        return UNKNOWN;
+      if (value == null)
+        return null;
+      return value instanceof Map<?, ?> composite && composite.containsKey(name) ? composite.get(name) : UNKNOWN;
+    }
+  }
+
+  /**
+   * {@code information_schema._pg_expandarray(array)}: a set-returning function, one row for each element of the array, each the
+   * pair {@code (x, n)} of the element and its position from 1 (the JDBC driver lists the key columns of an index and of a
+   * primary key with it). A projection holding it is evaluated once for each element, the calls of one row in step with each
+   * other; a NULL array has no element, and so no row. See {@link Resolver#expansion}.
+   */
+  static final class ExpandArray extends PostgresCatalogExpression {
+    private final PostgresCatalogExpression array;
+
+    ExpandArray(final PostgresCatalogExpression array) {
+      this.array = array;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      array.collectColumns(columns);
+    }
+
+    /**
+     * How many rows this call produces for the row {@code resolver} is on.
+     *
+     * @return -1 when the array cannot be read
+     */
+    int rows(final Resolver resolver) {
+      final Object value = array.evaluate(resolver);
+      if (value == null)
+        return 0;
+      return value instanceof List<?> list ? list.size() : -1;
+    }
+
+    @Override
+    Object evaluate(final Resolver resolver) {
+      final int position = resolver.expansion();
+      if (position < 0)
+        return UNKNOWN;
+      final Object value = array.evaluate(resolver);
+      if (value == UNKNOWN)
+        return UNKNOWN;
+      if (value == null)
+        return null;
+      if (!(value instanceof List<?> list))
+        return UNKNOWN;
+      // a call with fewer elements than another of the same row reads NULL for the rows it has none for
+      if (position >= list.size())
+        return null;
+      final Map<String, Object> pair = new LinkedHashMap<>(2);
+      pair.put("x", list.get(position));
+      pair.put("n", position + 1);
+      return pair;
+    }
+  }
+
+  /** {@code text} without the characters of {@code characters} at its start and at its end, as the flags say. */
+  private static String strip(final String text, final String characters, final boolean start, final boolean end) {
+    int from = 0;
+    int to = text.length();
+    while (start && from < to && characters.indexOf(text.charAt(from)) >= 0)
+      ++from;
+    while (end && to > from && characters.indexOf(text.charAt(to - 1)) >= 0)
+      --to;
+    return text.substring(from, to);
   }
 
   private static class Not extends PostgresCatalogExpression {
@@ -419,6 +678,11 @@ abstract class PostgresCatalogExpression {
 
     Not(final PostgresCatalogExpression operand) {
       this.operand = operand;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
     }
 
     @Override
@@ -437,6 +701,11 @@ abstract class PostgresCatalogExpression {
 
     Negate(final PostgresCatalogExpression operand) {
       this.operand = operand;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
     }
 
     @Override
@@ -479,6 +748,12 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      left.collectColumns(columns);
+      right.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object l = left.evaluate(resolver);
 
@@ -512,6 +787,8 @@ abstract class PostgresCatalogExpression {
 
       return switch (operator) {
         case "||" -> l == null || r == null ? null : asString(l) + asString(r);
+        case "&" -> l == null || r == null ? null : l instanceof Number ln && r instanceof Number rn ?
+            (Object) (ln.longValue() & rn.longValue()) : UNKNOWN;
         case "+", "-", "*", "/" -> arithmetic(operator, l, r);
         case "~", "!~", "~*", "!~*" -> regex(operator, l, r);
         case "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE" -> like(operator, l, r);
@@ -590,7 +867,7 @@ abstract class PostgresCatalogExpression {
       if (l instanceof Number ln && r instanceof Number rn)
         comparison = Double.compare(ln.doubleValue(), rn.doubleValue());
       else if (l instanceof Boolean || r instanceof Boolean)
-        comparison = Boolean.compare(isTrue(l), isTrue(r));
+        comparison = Boolean.compare(truth(l), truth(r));
       else
         comparison = asString(l).compareTo(asString(r));
 
@@ -798,6 +1075,13 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      for (final PostgresCatalogExpression candidate : candidates)
+        candidate.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object value = operand.evaluate(resolver);
       if (value == UNKNOWN)
@@ -821,6 +1105,59 @@ abstract class PostgresCatalogExpression {
     }
   }
 
+  /**
+   * {@code value op ANY (array)} and {@code value op ALL (array)} ({@code SOME} is {@code ANY}): the comparison against every
+   * element of an array, pgjdbc's {@code n.nspname = ANY(current_schemas(true))} being the one that matters here. As SQL says,
+   * {@code ANY} is TRUE when one element satisfies it, else NULL when one comparison was NULL (a NULL operand or element), else
+   * FALSE, and an empty array is FALSE whatever the operand; {@code ALL} is the same with TRUE and FALSE swapped, so an empty array
+   * is TRUE. A NULL array is NULL.
+   */
+  private static class Quantified extends PostgresCatalogExpression {
+    private final String                    operator;
+    private final boolean                   all;
+    private final PostgresCatalogExpression operand;
+    private final PostgresCatalogExpression array;
+
+    Quantified(final String operator, final boolean all, final PostgresCatalogExpression operand,
+        final PostgresCatalogExpression array) {
+      this.operator = operator;
+      this.all = all;
+      this.operand = operand;
+      this.array = array;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      array.collectColumns(columns);
+    }
+
+    @Override
+    Object evaluate(final Resolver resolver) {
+      final Object value = operand.evaluate(resolver);
+      final Object elements = array.evaluate(resolver);
+      if (value == UNKNOWN || elements == UNKNOWN)
+        return UNKNOWN;
+      if (elements == null)
+        return null;
+      if (!(elements instanceof List<?> list))
+        return UNKNOWN;
+
+      boolean sawNull = false;
+      for (final Object element : list) {
+        final Object result = Binary.compare(operator, value, element);
+        if (result == UNKNOWN)
+          return UNKNOWN;
+        if (result == null)
+          sawNull = true;
+        else if (isTrue(result) != all)
+          // the element that decides it: a match for ANY, a miss for ALL
+          return !all;
+      }
+      return sawNull ? null : all;
+    }
+  }
+
   private static class IsNull extends PostgresCatalogExpression {
     private final PostgresCatalogExpression operand;
     private final boolean                   negated;
@@ -828,6 +1165,11 @@ abstract class PostgresCatalogExpression {
     IsNull(final PostgresCatalogExpression operand, final boolean negated) {
       this.operand = operand;
       this.negated = negated;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
     }
 
     @Override
@@ -851,6 +1193,18 @@ abstract class PostgresCatalogExpression {
       this.conditions = conditions;
       this.results = results;
       this.fallback = fallback;
+    }
+
+    @Override
+    void collectColumns(final Columns columns) {
+      if (operand != null)
+        operand.collectColumns(columns);
+      for (final PostgresCatalogExpression condition : conditions)
+        condition.collectColumns(columns);
+      for (final PostgresCatalogExpression result : results)
+        result.collectColumns(columns);
+      if (fallback != null)
+        fallback.collectColumns(columns);
     }
 
     @Override
@@ -888,6 +1242,12 @@ abstract class PostgresCatalogExpression {
     }
 
     @Override
+    void collectColumns(final Columns columns) {
+      operand.collectColumns(columns);
+      index.collectColumns(columns);
+    }
+
+    @Override
     Object evaluate(final Resolver resolver) {
       final Object value = operand.evaluate(resolver);
       final Object position = index.evaluate(resolver);
@@ -896,8 +1256,9 @@ abstract class PostgresCatalogExpression {
       if (!(value instanceof List<?> list) || !(position instanceof Number n))
         return UNKNOWN;
 
-      // PostgreSQL arrays are 1-based by default, which is the only base a catalog query ever uses.
-      final int i = n.intValue() - 1;
+      // PostgreSQL arrays are 1-based by default, which is the base a catalog query uses - but for int2vector and oidvector, the
+      // arrays an index keeps its key columns in, which start at 0: psqlodbc subscripts indkey[attnum - 1]
+      final int i = n.intValue() - (list instanceof PostgresCatalogIndexes.Vector ? 0 : 1);
       return i < 0 || i >= list.size() ? null : list.get(i);
     }
   }
@@ -927,9 +1288,15 @@ abstract class PostgresCatalogExpression {
     private       int                        position;
     private       int                        depth;
     private       boolean                    aggregated;
+    private final List<ExpandArray>          expansions = new ArrayList<>();
 
     Parser(final List<PostgresCatalogToken> tokens) {
       this.tokens = tokens;
+    }
+
+    /** The set-returning calls the expression read, which multiply the row they are projected on. */
+    List<ExpandArray> expansions() {
+      return expansions;
     }
 
     boolean atEnd() {
@@ -1081,6 +1448,14 @@ abstract class PostgresCatalogExpression {
             return null;
           else if (isComparisonOperator(next)) {
             ++position;
+            final PostgresCatalogToken quantifier = peek();
+            if (quantifier != null && (quantifier.isKeyword("ANY") || quantifier.isKeyword("SOME") || quantifier.isKeyword("ALL"))
+                && peek(1) != null && peek(1).isSymbol("(")) {
+              left = parseQuantified(next, quantifier.isKeyword("ALL"), left);
+              if (left == null)
+                return null;
+              continue;
+            }
             final PostgresCatalogExpression right = parseConcat();
             if (right == null)
               return null;
@@ -1095,6 +1470,32 @@ abstract class PostgresCatalogExpression {
       return token.isSymbol("=") || token.isSymbol("<>") || token.isSymbol("!=") || token.isSymbol("<")
           || token.isSymbol(">") || token.isSymbol("<=") || token.isSymbol(">=") || token.isSymbol("~")
           || token.isSymbol("!~") || token.isSymbol("~*") || token.isSymbol("!~*");
+    }
+
+    /**
+     * {@code ANY (array)}, {@code SOME (array)} or {@code ALL (array)} after the comparison operator {@code operator}, the position
+     * on the quantifier. The array is an expression or a sub-select, whose one column is the elements. Only the operators the
+     * comparison evaluates are read: a regular-expression operator is not compared element by element here.
+     */
+    private PostgresCatalogExpression parseQuantified(final PostgresCatalogToken operator, final boolean all,
+        final PostgresCatalogExpression operand) {
+      if (operator.isSymbol("~") || operator.isSymbol("!~") || operator.isSymbol("~*") || operator.isSymbol("!~*"))
+        return null;
+
+      ++position;
+      final PostgresCatalogExpression array;
+      if (peek(1) != null && peek(1).isKeyword("SELECT")) {
+        final List<PostgresCatalogToken> inner = readParenthesised();
+        if (inner == null)
+          return null;
+        array = new Subquery(inner, SubqueryKind.ARRAY);
+      } else {
+        ++position;
+        array = parseExpression();
+        if (array == null || !skipSymbol(")"))
+          return null;
+      }
+      return new Quantified(operator.text, all, operand, array);
     }
 
     private boolean lookaheadIsKeyword(final int offset, final String... keywords) {
@@ -1112,12 +1513,15 @@ abstract class PostgresCatalogExpression {
       if (left == null)
         return null;
 
-      while (peek() != null && peek().isSymbol("||")) {
+      // "&" is PostgreSQL's bitwise AND, which binds with the other operators that are no arithmetic (the JDBC driver reads the
+      // descending flag of an index key with it)
+      while (peek() != null && (peek().isSymbol("||") || peek().isSymbol("&"))) {
+        final String operator = peek().text;
         ++position;
         final PostgresCatalogExpression right = parseAdditive();
         if (right == null)
           return null;
-        left = new Binary("||", left, right);
+        left = new Binary(operator, left, right);
       }
       return left;
     }
@@ -1195,6 +1599,11 @@ abstract class PostgresCatalogExpression {
           if (index == null || !skipSymbol("]"))
             return null;
           operand = new Subscript(operand, index);
+        } else if (token != null && token.isSymbol(".") && peek(1) != null
+            && (peek(1).type == PostgresCatalogToken.Type.IDENTIFIER || peek(1).type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER)) {
+          // (expression).member: a bare column reference has taken its own dots already, so this follows a parenthesis
+          operand = new Field(operand, peek(1).text.toLowerCase(Locale.ENGLISH));
+          position += 2;
         } else
           return operand;
       }
@@ -1363,6 +1772,8 @@ abstract class PostgresCatalogExpression {
       if (peek() != null && peek().isSymbol("(")) {
         if (currentQualifier == null && AGGREGATES.contains(name.toLowerCase(Locale.ENGLISH)))
           return parseAggregate(name.toLowerCase(Locale.ENGLISH));
+        if (currentQualifier == null && "trim".equalsIgnoreCase(name))
+          return parseTrim();
 
         ++position;
         final List<PostgresCatalogExpression> arguments = new ArrayList<>();
@@ -1380,11 +1791,59 @@ abstract class PostgresCatalogExpression {
         if (peek() != null && peek().isKeyword("OVER"))
           return parseWindow(functionName);
 
+        if ("_pg_expandarray".equals(functionName) && arguments.size() == 1) {
+          final ExpandArray expansion = new ExpandArray(arguments.get(0));
+          expansions.add(expansion);
+          return expansion;
+        }
         return new FunctionCall(functionName, arguments);
       }
 
       return new ColumnReference(currentQualifier == null ? null : currentQualifier.toLowerCase(Locale.ENGLISH),
           name.toLowerCase(Locale.ENGLISH));
+    }
+
+    /**
+     * Reads {@code trim([BOTH | LEADING | TRAILING] [characters] FROM string)}, SQL's own spelling, and the plain
+     * {@code trim(string)}: as the functions PostgreSQL turns them into, {@code btrim}, {@code ltrim} and {@code rtrim} with the
+     * characters as a second argument (the JDBC driver strips the quotes off an index column with it).
+     */
+    private PostgresCatalogExpression parseTrim() {
+      ++position; // (
+      String function = "btrim";
+      boolean sided = false;
+      if (skipKeyword("BOTH"))
+        sided = true;
+      else if (skipKeyword("LEADING")) {
+        function = "ltrim";
+        sided = true;
+      } else if (skipKeyword("TRAILING")) {
+        function = "rtrim";
+        sided = true;
+      }
+
+      PostgresCatalogExpression characters = null;
+      PostgresCatalogExpression string = null;
+      if (!skipKeyword("FROM")) {
+        string = parseExpression();
+        if (string == null)
+          return null;
+        if (skipKeyword("FROM")) {
+          characters = string;
+          string = null;
+        } else if (sided)
+          // a side with nothing to take it off
+          return null;
+      }
+      if (string == null) {
+        string = parseExpression();
+        if (string == null)
+          return null;
+      }
+      if (!skipSymbol(")"))
+        return null;
+
+      return new FunctionCall(function, characters == null ? List.of(string) : List.of(string, characters));
     }
 
     /**

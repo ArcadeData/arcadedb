@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeEntryRIDIterator;
@@ -358,7 +357,9 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     for (int level = 0; level < maxLevel && !frontier.isEmpty() && reachableNodes.size() < limit; ++level) {
       walk.startLevel(level + 1);
 
-      // The adjacency entries are walked on the RIDs they hold, so no record is read to follow one. THE INCOMING SIDE OF A
+      // The adjacency entries are walked on the RIDs they hold, so no record is read to follow one. The outgoing list and then the
+      // incoming one, the order the single pass over BOTH read them in: each list is walked by an iterator that can name the edge of
+      // its entry, which a pass over both lists cannot, and the walk is the same entry for entry. THE INCOMING SIDE OF A
       // UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT END IN THE VERTEX
       final String[] outTypes = relationships.typesFor(level, Vertex.DIRECTION.OUT);
       final String[] inTypes = relationships.typesFor(level, Vertex.DIRECTION.IN);
@@ -375,7 +376,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
         if (inTypes == null)
           continue;
         if (incomingSideMissing)
-          walk.followEdges(current, Vertex.DIRECTION.IN, edgesOf(context, current, Vertex.DIRECTION.IN, inTypes).iterator());
+          walk.followEdges(Vertex.DIRECTION.IN, edgesOf(context, current, Vertex.DIRECTION.IN, inTypes).iterator());
         else
           walk.followEntries(current, Vertex.DIRECTION.IN, inTypes);
       }
@@ -445,17 +446,6 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * Whether the record of the edge named by an adjacency entry is still there, answered by the bucket without reading the
-   * record. A lightweight edge has no record of its own: its adjacency entry is all there is of it.
-   */
-  private static boolean edgeRecordExists(final Database database, final RID edgeId) {
-    if (edgeId == null || edgeId.getPosition() < 0)
-      return true;
-    final Bucket bucket = database.getSchema().getBucketByIdIfExists(edgeId.getBucketId());
-    return bucket != null && bucket.existsRecord(edgeId);
-  }
-
-  /**
    * The state of one {@link #collectReachableComponent} walk, and the following of the adjacency entries of the nodes of a level.
    * <p>
    * A neighbour is reached by an adjacency entry only if the edge that entry names still has its record (issue #10148): the walk
@@ -505,7 +495,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     /** Follows the entries of the adjacency list of {@code current} in {@code direction} (outgoing or incoming) over {@code types}. */
     private void followEntries(final Vertex current, final Vertex.DIRECTION direction, final String[] types) {
       if (!(current instanceof VertexInternal internal)) {
-        followEdges(current, direction, current.getEdges(direction, types).iterator());
+        followEdges(direction, current.getEdges(direction, types).iterator());
         return;
       }
 
@@ -525,7 +515,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
      * Follows edges that were read as records (those of an incoming side stored on the other end only): the far end is read off
      * the edge, which for a record loaded lazily is what finds one whose record is gone.
      */
-    private void followEdges(final Vertex current, final Vertex.DIRECTION direction, final Iterator<Edge> edges) {
+    private void followEdges(final Vertex.DIRECTION direction, final Iterator<Edge> edges) {
       while (edges.hasNext() && reachableNodes.size() < limit) {
         final RID edgeId;
         final RID neighborId;
@@ -545,10 +535,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
 
     /** Reaches {@code neighborId} through the entry naming {@code edgeId}, unless that edge is a ghost or the filters turn it away. */
     private void reach(final RID edgeId, final RID neighborId) {
-      if (!edgeRecordExists(database, edgeId)) {
-        GhostEdgeReporter.reportSkipped(new RecordNotFoundException("Record " + edgeId + " not found", edgeId));
+      if (!GhostEdgeReporter.isLiveEntry(database, edgeId))
         return;
-      }
 
       if (!visitedNodes.add(neighborId))
         return;

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -58,7 +59,8 @@ public class SQLMethodSize extends AbstractSQLMethod {
         }
         size = s;
       }
-      case String s -> size = s.length();
+      // Unicode characters, as length() counts them, not UTF-16 code units (issue #10378)
+      case String s -> size = CypherFunctionHelper.codePointLength(s);
       default -> size = MultiValue.getSize(value);
       }
 

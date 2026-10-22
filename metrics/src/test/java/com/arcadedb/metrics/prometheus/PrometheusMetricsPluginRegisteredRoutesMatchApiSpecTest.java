@@ -19,6 +19,7 @@
 package com.arcadedb.metrics.prometheus;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.server.http.PluginRoutes;
 import com.arcadedb.server.http.RecordingPathHandler;
 import com.arcadedb.server.http.RoutePathNormalizer;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
@@ -50,7 +51,7 @@ class PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest {
     plugin.configure(null, new ContextConfiguration());
     final RecordingPathHandler routes = new RecordingPathHandler();
 
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
 
     assertThat(routes.getRegisteredPaths())
         .as("PrometheusMetricsPlugin.registerAPI() and PluginApiSpec.METRICS_PATHS have drifted apart")
@@ -64,10 +65,25 @@ class PrometheusMetricsPluginRegisteredRoutesMatchApiSpecTest {
     plugin.configure(null, new ContextConfiguration());
     final RecordingPathHandler routes = new RecordingPathHandler();
 
-    plugin.registerAPI(null, routes);
+    plugin.registerAPI(null, new PluginRoutes(routes));
 
     assertThat(routes.getRegisteredOperations())
         .as("PrometheusMetricsPlugin.registerAPI() serves methods PluginApiSpec.METRICS_OPERATIONS does not declare")
         .containsExactlyInAnyOrderElementsOf(RoutePathNormalizer.normalizeOperations(PluginApiSpec.METRICS_OPERATIONS));
+  }
+
+  /**
+   * Issue #10384: the scrape route answers HEAD as it answers GET. {@code HEAD /prometheus} was a 405 after #10157, so the
+   * {@code wget --spider} healthcheck the core routes were fixed to pass (#8133) failed on the endpoint most likely to be probed.
+   */
+  @Test
+  void theScrapeRouteAnswersHeadToo() {
+    plugin = new PrometheusMetricsPlugin();
+    plugin.configure(null, new ContextConfiguration());
+    final RecordingPathHandler routes = new RecordingPathHandler();
+
+    plugin.registerAPI(null, new PluginRoutes(routes));
+
+    assertThat(routes.getGetRoutesNotAnsweringHead()).isEmpty();
   }
 }

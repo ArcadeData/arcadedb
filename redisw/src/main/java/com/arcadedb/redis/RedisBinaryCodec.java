@@ -118,6 +118,25 @@ final class RedisBinaryCodec {
     return out;
   }
 
+  /**
+   * Encodes {@code text} into {@code out} when every char is ASCII, the common case of a reply, without the String copy and
+   * the second array {@link #encode} makes. Answers the number of bytes written, or -1, having written nothing usable, when
+   * {@code text} holds anything else (an escaped byte is above ASCII too) or the charset is not UTF-8: {@link #encode} is then
+   * the one to call. {@code out} must hold at least {@code text.length()} bytes from {@code offset}.
+   */
+  static int encodeAscii(final CharSequence text, final byte[] out, final int offset) {
+    if (!utf8())
+      return -1;
+    final int len = text.length();
+    for (int i = 0; i < len; i++) {
+      final char c = text.charAt(i);
+      if (c >= 0x80)
+        return -1;
+      out[offset + i] = (byte) c;
+    }
+    return len;
+  }
+
   static int encodedLength(final String s) {
     if (!utf8())
       return s.getBytes(DatabaseFactory.getDefaultCharset()).length;

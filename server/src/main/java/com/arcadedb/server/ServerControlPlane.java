@@ -1135,11 +1135,11 @@ public class ServerControlPlane {
   private void dropDatabaseClusterWide(final ServerDatabase database, final String databaseName) {
     if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
       haDb.dropInReplicas();
-    else {
-      // Non-HA: there is no cluster to tell, so delete the files here.
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
-    }
+    else
+      // Non-HA: there is no cluster to tell, so delete the files here. The name is held until they are gone, so a request
+      // cannot open the directory while it is being deleted (issue #10388). A replicated database does the equivalent on every
+      // peer: the apply closes, deregisters and renames the directory aside under the registry lock.
+      server.dropLocalDatabase(database.getEmbedded(), databaseName);
   }
 
   public void openDatabase(final String databaseName) {
@@ -1150,7 +1150,8 @@ public class ServerControlPlane {
 
   /**
    * Closes the open instance of {@code databaseName} and deregisters it from this server. The files stay where they
-   * are; a later request reopens them.
+   * are; {@code open database} reopens them. An HTTP request does not (issue #10234): a database is closed on purpose, for a
+   * restore of its files or a cold backup, and stays closed until it is opened again.
    * <p>
    * Takes the per-database maintenance slot as {@link Operation#CLOSE} first (issue #7469). Closing the instance is
    * not a delete, but a backup, an export and an import all read or write THROUGH that instance, and closing it out
@@ -1170,9 +1171,20 @@ public class ServerControlPlane {
     beginExclusive(databaseName, Operation.CLOSE);
     try {
       final ServerDatabase database = server.getDatabase(databaseName);
-      database.getEmbedded().close();
+      // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234). MARKED BEFORE THE CLOSE, SO NO
+      // REQUEST REOPENS IT WHILE IT CLOSES, AND DEREGISTERED TOGETHER WITH ITS MARK, SO NONE DOES BETWEEN THE TWO
+      server.markClosedByCommand(database.getName());
+      boolean closed = false;
+      try {
+        database.getEmbedded().close();
+        closed = true;
+      } finally {
+        // WHATEVER THE CLOSE THREW, AN ERROR INCLUDED: THE DATABASE IS STILL REGISTERED, AND NOT CLOSED ON PURPOSE
+        if (!closed)
+          server.unmarkClosedByCommand(database.getName());
+      }
 
-      server.removeDatabase(database.getName());
+      server.removeClosedDatabase(database.getName());
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.CLOSE);
     }
@@ -2749,8 +2761,7 @@ public class ServerControlPlane {
   /** Best-effort compensating drop after a failed restore or import. Never masks the original failure. */
   private void dropQuietly(final ServerDatabase database, final String databaseName) {
     try {
-      database.getEmbedded().drop();
-      server.removeDatabase(databaseName);
+      server.dropLocalDatabase(database.getEmbedded(), databaseName);
     } catch (final Exception inner) {
       LogManager.instance().log(this, Level.SEVERE, "Compensating drop for '%s' failed", inner, databaseName);
     }

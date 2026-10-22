@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.utility.TimeBoundRegex;
@@ -81,6 +82,8 @@ public class BasicCommandContext implements CommandContext {
   private volatile   QueryHeapTracker     queryHeapTracker;
   /** Created by the root context on first use. See {@link #getIncomingEdgeLookup()}. */
   private volatile   IncomingEdgeLookup   incomingEdgeLookup;
+  /** Set by the statement that opens a scope. See {@link #getGraphViewPins()}. */
+  private volatile   GraphViewPins        graphViewPins;
   /**
    * The registry entry of the statement, captured from the thread that builds the context (issue #9680). Captured at
    * construction rather than resolved on first use: a root context can be read first by a parallel worker, on a thread
@@ -466,6 +469,30 @@ public class BasicCommandContext implements CommandContext {
   }
 
   /**
+   * Makes this context the statement scope of the graph views its statement reads (issue #10415): the one an enclosing context
+   * already holds - a sub-query is part of its statement - or a new one. Called by the statements that open a scope, on the
+   * context they execute with, after it was given its parent.
+   */
+  public void openGraphViewPins() {
+    if (getGraphViewPins() == null)
+      graphViewPins = new GraphViewPins();
+  }
+
+  /** Makes this context read the graph views through {@code pins}, for a nested plan run on a context of its own. */
+  public void setGraphViewPins(final GraphViewPins pins) {
+    this.graphViewPins = pins;
+  }
+
+  /** This context's scope, or the one of the context it derives from; null when no statement opened one. */
+  @Override
+  public GraphViewPins getGraphViewPins() {
+    final GraphViewPins pins = graphViewPins;
+    if (pins != null)
+      return pins;
+    return parent != null ? parent.getGraphViewPins() : null;
+  }
+
+  /**
    * The tracker of the query: the parent's, or this context's own when it is the root. A derived context has to be given
    * its parent before its first call, since a context that has none yet creates and keeps a tracker of its own, and
    * would then account the query's buffers apart from the rest of it.
@@ -616,6 +643,8 @@ public class BasicCommandContext implements CommandContext {
     copy.queryHeapTracker = getQueryHeapTracker();
     // And for the incoming-edge lookup, so the workers share the one scan the query builds (issue #8625)
     copy.incomingEdgeLookup = getIncomingEdgeLookup();
+    // And for the graph views, so the workers read the snapshots the statement pinned (issue #10415)
+    copy.graphViewPins = getGraphViewPins();
     // And for the termination switch, so a worker stops with the statement it works for (issue #9680)
     copy.runningQuery = getRunningQuery();
     return copy;

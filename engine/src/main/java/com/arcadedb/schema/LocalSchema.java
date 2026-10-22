@@ -37,6 +37,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PaginatedComponent;
@@ -55,6 +56,7 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
 import com.arcadedb.function.polyglot.PolyglotFunctionDefinition;
 import com.arcadedb.function.polyglot.PolyglotFunctionLibraryDefinition;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
@@ -78,13 +80,23 @@ import com.arcadedb.schema.trigger.*;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONFactory;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.stream.JsonWriter;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.StringWriter;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -93,6 +105,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.logging.Level;
 
 /**
@@ -106,6 +119,7 @@ public class LocalSchema implements Schema {
   public static final String                                 SCHEMA_PREV_FILE_NAME         = "schema.prev.json";
   public static final String                                 CACHED_COUNT_FILE_NAME_LEGACY = "cached-count.json"; // DEPRECATED FROM v25.2.1
   public static final String                                 STATISTICS_FILE_NAME          = "statistics.json";
+  private static final String                                TYPES                         = "types";
   /**
    * Format version of {@link #STATISTICS_FILE_NAME}, written as a reserved top-level key and bumped whenever a
    * value the file carries stops being trustworthy when written by an older build. Version 1 means "the cached
@@ -213,12 +227,14 @@ public class LocalSchema implements Schema {
    * reader that has taken the reference: the maps are replaced wholesale by a load, never edited in place by one.
    * <p>
    * The type map itself stays mutable - ordinary DDL adds and removes types through {@link #typeMap()} without
-   * going near a load - so what this makes immutable is WHICH maps a generation consists of, not their contents.
+   * going near a load - so what this makes immutable is WHICH maps a generation consists of, not their contents. The
+   * bucket maps are concurrent for the same reason: a bucket attached by DDL is added to them in place rather than by a
+   * rebuild over every type (issue #10247), with readers resolving buckets lock-free meanwhile.
    */
   private record SchemaState(Map<String, LocalDocumentType> types, Map<Integer, LocalDocumentType> bucketId2TypeMap,
                              Map<Integer, LocalDocumentType> bucketId2InvolvedTypeMap) {
     private static SchemaState empty() {
-      return new SchemaState(new ConcurrentHashMap<>(), new HashMap<>(), new HashMap<>());
+      return new SchemaState(new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     }
   }
 
@@ -260,6 +276,35 @@ public class LocalSchema implements Schema {
    */
   private             Map<Integer, LocalDocumentType>        stagedBucketId2TypeMap;
   private             Map<Integer, LocalDocumentType>        stagedBucketId2InvolvedTypeMap;
+  /**
+   * The owner of every bucket the load in flight has attached to a type of the graph it assembles, so the check that a
+   * bucket belongs to one type only answers in one lookup instead of walking every type: once per bucket, it made opening
+   * a schema of N types O(N^2) (issue #10247). Reachable by the staging thread only, like the graph it describes.
+   */
+  private final       Map<Integer, LocalDocumentType>        stagedBucketOwners            = new HashMap<>();
+  /**
+   * Set when a change left the published bucket maps behind in a way only a full {@link #rebuildBucketTypeMap()} can
+   * follow (a bucket detached from its type, a type dropped): the additive changes, which are what DDL makes nearly all
+   * the time, update the maps in place (issue #10247). Read and written under the database write lock DDL holds.
+   * <p>
+   * THE CONTRACT OF IN-PLACE MAINTENANCE: every change of which buckets a type owns or involves reports itself here, or
+   * the maps go stale with nothing to say so outside of {@code -ea}, where every refresh compares them with a full
+   * rebuild. The reporting sites are {@code LocalDocumentType.addBucketInternal} ({@link #bucketAttached}),
+   * {@code removeBucketInternal} ({@link #bucketDetached}), the external-bucket pairing and unpairing
+   * ({@link #involvedBucketAttached}, {@link #bucketMembershipChanged}), {@code LocalVertexType.addBucketInternal} (its
+   * edge-list buckets), the type rename, {@link #dropType}, {@link #dropBucket} and a stripe-pool bucket created through
+   * {@link #createBucket}. A new way to change a type's buckets has to report itself too.
+   * <p>
+   * THE GUARANTEE TO READERS. Readers resolve a bucket lock-free, but only the transactions that resolve one are excluded
+   * from DDL: every site above runs under the database write lock (a DDL frame, or a load that stages its own maps), which
+   * a transaction's reads and writes take shared. So no reader works on a bucket between the two puts of an attach - the
+   * type map first, the involved-bucket map second - and the same lock is what makes the flag and the rebuild that
+   * publishes a new generation single-writer.
+   */
+  private volatile    boolean                                bucketTypeMapsStale           = false;
+  /** Length of the last schema file written, to size the buffer of the next one (issue #10247). */
+  private             int                                    lastSchemaFileLength          = 0;
+  private             long                                   bucketTypeMapRebuilds         = 0;
 
   /**
    * The graph {@link #commitStagedPublication()} published, so {@link #endStagedPublication()} can tell an abort
@@ -748,6 +793,7 @@ public class LocalSchema implements Schema {
     // remembered rather than dropped: its TimeSeries types own engines that have to be closed, and closing them
     // before the replacement is published would close them under readers still holding the old graph.
     stagedTypes.clear();
+    stagedBucketOwners.clear();
     supersededTypes = published.types();
     stagedMembers = new StagedMembers(timeZone, zoneId, dateFormat, dateTimeFormat, legacyTemporalText, versionSerial.get());
   }
@@ -1059,6 +1105,7 @@ public class LocalSchema implements Schema {
     stagedIndexMap.clear();
     publishedFromStaging = null;
     stagedTypes.clear();
+    stagedBucketOwners.clear();
     stagedBucketId2TypeMap = null;
     stagedBucketId2InvolvedTypeMap = null;
     supersededTypes = null;
@@ -1886,6 +1933,11 @@ public class LocalSchema implements Schema {
         registerFile((Component) bucket);
         publishBucketDuringLoad(bucketName, bucket);
 
+        if (bucketName.contains(InternalBucketNaming.Convention.SUPER_NODE_STRIPE.suffix()))
+          // A super-node stripe pool is among the involved buckets of the vertex type it is named after, found by its name
+          // alone: the bucket maps are rebuilt from the types when this frame ends (issue #10247)
+          bucketMembershipChanged();
+
         return bucket;
 
       } catch (final IOException e) {
@@ -2238,13 +2290,17 @@ public class LocalSchema implements Schema {
                 // schema serialization (toJSON) calls TypeIndex.getPropertyNames(), which fails on an
                 // empty wrapper.
                 //
-                // The lookup walks UP from `type`, the subtype that owned the bucket component, to find whichever
-                // type declares the wrapper. LocalDocumentType#dropSubIndexesNoLongerCovered calls in here with that
-                // walk deliberately broken - it drops components precisely because the link was just severed - so it
-                // repeats this cleanup itself against the wrapper's real owner, and depends on this one being a
-                // harmless no-op rather than on it succeeding. Keep the two in step if this ever stops walking up.
+                // The walk UP from `type`, the subtype that owned the bucket component, finds whichever type declares
+                // the wrapper only while the link between them stands. LocalDocumentType#dropSubIndexesNoLongerCovered
+                // and dropType call in here with that link already severed - they drop components precisely because it
+                // was just severed - so the wrapper is also taken off the type that declares it, by name (issue #10412):
+                // dropType left an indexed super type that had lost its own buckets holding a wrapper with no sub-index
+                // after dropping its last sub type, which the next schema save failed on ("is not valid")
                 if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
                   type.removeTypeIndexInternal(parentTypeIndex);
+                  final LocalDocumentType declaringType = getTypeOrNull(parentTypeIndex.getTypeName());
+                  if (declaringType != null && declaringType != type)
+                    declaringType.removeTypeIndexInternal(parentTypeIndex);
                   removeIndexDuringLoad(parentTypeIndex.getName());
                 }
               }
@@ -2758,7 +2814,8 @@ public class LocalSchema implements Schema {
     timeSeriesEnginesAwaitingReplay = null;
     // Save dirty configuration before clearing everything. The database's close has saved it already while it was still open
     // (saveBeforeClose()): this only catches a schema closed some other way, e.g. by an open that failed
-    if (dirtyGeneration.get() > savedGeneration) {
+    // Not for a READ_ONLY handle, which never writes its schema (#10507)
+    if (dirtyGeneration.get() > savedGeneration && database.getMode() == ComponentFile.MODE.READ_WRITE) {
       try {
         // Force save even if transaction is active - this is the last chance to save
         LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
@@ -2781,7 +2838,10 @@ public class LocalSchema implements Schema {
       timeSeriesMaintenanceScheduler = null;
     }
 
-    writeStatisticsFile();
+    // A READ_ONLY handle writes nothing to the directory: its counters are those of its open, and a read-write process may have
+    // committed since, so writing them back would rewind the writer's record counts (#10507)
+    if (database.getMode() == ComponentFile.MODE.READ_WRITE)
+      writeStatisticsFile();
     materializedViews.clear();
     continuousAggregates.clear();
     extensions.clear();
@@ -2998,81 +3058,26 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
-        // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
-        for (final LocalDocumentType parent : superTypes)
-          type.removeSuperType(parent);
+        // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
+        // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
+        // (and saved): the file of an index that cannot be deleted, the lock of a file another thread holds. The files are
+        // probed here, and the locks of the index files taken once, up front, so the drops below re-acquire what is held
+        final List<Integer> filesOfTheDrop = new ArrayList<>();
+        final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+        collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
+        requireFilesCanBeDeleted("drop the type '" + type.getName() + "'", filesOfTheDrop);
 
-        for (final LocalDocumentType sub : type.subTypes) {
-          sub.superTypes.remove(type);
-          for (final LocalDocumentType parent : superTypes)
-            sub.addSuperType(parent, false);
-        }
-        // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
-        // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
-        if (!type.subTypes.isEmpty())
-          typesChanged();
-
-        // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
-        // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
-        // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
-        // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
-        // PR #5946).
-        for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
-          dropIndexInternal(m.getName());
-
-        if (type instanceof LocalVertexType vertexType)
-          // DELETE IN/OUT EDGE FILES
-          database.getGraphEngine().dropVertexType(vertexType);
-
-        // DELETE ALL ASSOCIATED BUCKETS
-        final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
-        for (final Bucket b : buckets) {
-          type.removeBucket(b);
-          dropBucket(b.getName());
-        }
-
-        if (type instanceof LocalTimeSeriesType tsType)
-          tsType.drop();
-
-        // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
-        // second is the damaging one:
-        //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
-        //     type registered under its own name with its buckets and indexes already torn down.
-        //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
-        //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
-        //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
-        //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
-        //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
-        //     left the instance in getTypes(), which is what CHECK DATABASE walks.
-        // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
-        // form: a name that has since been taken over by another type must not be taken away from it.
-        // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
-        // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
-        // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
-        // leaves the type map, which is where the listener is unregistered from
-        for (final Trigger trigger : new ArrayList<>(triggers.values()))
-          if (canonicalTypeName.equals(trigger.getTypeName())) {
-            unregisterTriggerListener(trigger.getName());
-            triggers.remove(trigger.getName());
-          }
-
-        for (final String alias : type.getAliases())
-          typeMap().remove(alias, type);
-
-        if (!typeMap().remove(type.getName(), type))
-          throw new SchemaException("Type '" + typeName + "' not found");
-
-        // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
-        type.events.detachFromDatabase();
-        type.triggerEvents.detachFromDatabase();
-
-        // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
-        reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
+        database.executeLockingFiles(indexFilesOfTheDrop, () -> {
+          dropTypeInternal(type, typeName, canonicalTypeName);
+          return null;
+        });
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
           multipleUpdate = false;
+        // The type's edge-list and stripe buckets went with it without being detached one by one, and it left the type map
+        // after the last refresh: the bucket maps are rebuilt from the types (issue #10247)
+        bucketMembershipChanged();
         saveConfiguration();
         updateSecurity();
       }
@@ -3080,8 +3085,155 @@ public class LocalSchema implements Schema {
     });
   }
 
+  /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
+  private void dropTypeInternal(final LocalDocumentType type, final String typeName, final String canonicalTypeName) {
+    // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
+    final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
+    for (final LocalDocumentType parent : superTypes)
+      type.removeSuperType(parent);
+
+    for (final LocalDocumentType sub : type.subTypes) {
+      sub.superTypes.remove(type);
+      for (final LocalDocumentType parent : superTypes)
+        sub.addSuperType(parent, false);
+    }
+    // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
+    // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
+    if (!type.subTypes.isEmpty())
+      typesChanged();
+
+    // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
+    // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
+    // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
+    // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
+    // PR #5946).
+    for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
+      dropIndexInternal(m.getName());
+
+    if (type instanceof LocalVertexType vertexType)
+      // DELETE IN/OUT EDGE FILES
+      database.getGraphEngine().dropVertexType(vertexType);
+
+    // DELETE ALL ASSOCIATED BUCKETS
+    final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
+    for (final Bucket b : buckets) {
+      type.removeBucket(b);
+      dropBucket(b.getName());
+    }
+
+    if (type instanceof LocalTimeSeriesType tsType)
+      tsType.drop();
+
+    // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
+    // second is the damaging one:
+    //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
+    //     type registered under its own name with its buckets and indexes already torn down.
+    //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
+    //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
+    //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
+    //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
+    //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
+    //     left the instance in getTypes(), which is what CHECK DATABASE walks.
+    // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
+    // form: a name that has since been taken over by another type must not be taken away from it.
+    // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
+    // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
+    // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
+    // leaves the type map, which is where the listener is unregistered from
+    for (final Trigger trigger : new ArrayList<>(triggers.values()))
+      if (canonicalTypeName.equals(trigger.getTypeName())) {
+        unregisterTriggerListener(trigger.getName());
+        triggers.remove(trigger.getName());
+      }
+
+    for (final String alias : type.getAliases())
+      typeMap().remove(alias, type);
+
+    if (!typeMap().remove(type.getName(), type))
+      throw new SchemaException("Type '" + typeName + "' not found");
+
+    // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
+    type.events.detachFromDatabase();
+    type.triggerEvents.detachFromDatabase();
+
+    // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
+    reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
+  }
+
   /**
-   * Refuses to drop a type that is the backing or a source type of a materialized view or a continuous aggregate.
+   * The files {@link #dropType} is going to delete for {@code type} (issue #10421): the sub-indexes of the indexes it declares and
+   * the ones it inherits over its own buckets, its buckets, and the edge buckets of a vertex type. The index files are told apart
+   * because their locks are taken up front. An index naming a type that does not exist is refused here: the drop of it would
+   * fail on that name after the sub types were unlinked.
+   */
+  private void collectFilesOfTheDrop(final LocalDocumentType type, final List<Integer> files, final List<Integer> indexFiles) {
+    final Set<Integer> ownBucketIds = new HashSet<>(type.getBucketIds(false));
+    final Collection<TypeIndex> declared = type.getAllIndexes(false);
+    for (final TypeIndex index : type.getAllIndexes(true)) {
+      boolean declaredHere = false;
+      for (final TypeIndex candidate : declared)
+        // BY IDENTITY: TypeIndex.equals() is content-based and asks the wrapper for its property names
+        if (candidate == index) {
+          declaredHere = true;
+          break;
+        }
+      for (final IndexInternal subIndex : index.getIndexesOnBuckets())
+        if (declaredHere || ownBucketIds.contains(subIndex.getAssociatedBucketId())) {
+          if (subIndex.getTypeName() != null && !existsType(subIndex.getTypeName()))
+            throw new SchemaException("Cannot drop the type '" + type.getName() + "': its index '" + subIndex.getName()
+                + "' names the type '" + subIndex.getTypeName() + "', which does not exist. Nothing was changed");
+          indexFiles.addAll(subIndex.getFileIds());
+        }
+    }
+    files.addAll(indexFiles);
+
+    for (final Bucket bucket : type.getBuckets(false)) {
+      files.add(bucket.getFileId());
+      if (type instanceof LocalVertexType)
+        for (final String edgeBucketName : List.of(InternalBucketNaming.outEdgesBucketName(bucket.getName()),
+            InternalBucketNaming.inEdgesBucketName(bucket.getName())))
+          if (existsBucket(edgeBucketName))
+            files.add(getBucketByName(edgeBucketName).getFileId());
+    }
+  }
+
+  /**
+   * Refuses, before a statement changes anything, a file it is going to delete that cannot be (issue #10421): one that is not a
+   * regular file, or sits in a directory that cannot be written. The delete of such a file fails after the statement has changed
+   * the files and the schema graph in front of it, and what it leaves behind is neither the schema it found nor the one it meant to
+   * reach. A file that is already gone is not a refusal: the delete of it fails as it always did, and the statement is the one that
+   * finds it out.
+   * <p>
+   * A best-effort pre-check, not a guarantee: the state of a file can change between the check and the delete, and
+   * {@link Files#isWritable} on a directory says nothing reliable on some platforms or for a process that runs as root. What the
+   * check does not detect fails the delete as it always did.
+   *
+   * @param statement what the statement does, for the message: "drop the type 'T'"
+   */
+  void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
+    final FileManager fileManager = database.getFileManager();
+    for (final Integer fileId : fileIds) {
+      final ComponentFile file = fileManager.getFileIfExists(fileId);
+      if (file == null)
+        continue;
+
+      final Path path = Path.of(file.getFilePath());
+      final String reason;
+      if (Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+        reason = "it is not a regular file";
+      else if (path.getParent() != null && !Files.isWritable(path.getParent()))
+        reason = "its directory cannot be written";
+      else
+        continue;
+
+      throw new SchemaException("Cannot " + statement + ": the file '" + file.getFileName() + "' of '" + file.getComponentName()
+          + "' cannot be deleted, " + reason + ". Nothing was changed");
+    }
+  }
+
+  /**
+   * Refuses to drop a type a dependant is built from: the backing or a source type of a materialized view or a continuous
+   * aggregate, a vertex or edge type of a Graph Analytical View - every {@link TypeNameDependant} (issue #10368).
    * <p>
    * The guards compare the CANONICAL name, not the string the caller typed (#8169): {@link #getType} resolves aliases,
    * so {@code typeName} can be an alias - and comparing the raw argument let {@code DROP TYPE <alias>} walk straight
@@ -3099,89 +3251,39 @@ public class LocalSchema implements Schema {
     final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
 
     synchronized (this) {
-      for (final MaterializedViewImpl view : materializedViews.values()) {
-        checkDependantNamesResolve(typeName, "materialized view", view.getName(), "DROP MATERIALIZED VIEW " + view.getName(),
-            view.getBackingTypeName(), view.getSourceTypeNames());
-        if (view.getBackingTypeName().equals(canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
-                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
-        if (isSourceTypeName(view.getSourceTypeNames(), canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
-                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
-      }
-      for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
-        checkDependantNamesResolve(typeName, "continuous aggregate", ca.getName(), "DROP CONTINUOUS AGGREGATE " + ca.getName(),
-            ca.getBackingTypeName(), ca.getSourceTypeName() != null ? List.of(ca.getSourceTypeName()) : List.of());
-        if (ca.getBackingTypeName().equals(canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
-                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-        if (ca.getSourceTypeName() != null && canonicalTypeName.equals(canonicalTypeNameOf(ca.getSourceTypeName())))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
-                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-      }
+      for (final TypeNameDependant dependant : getTypeNameDependants())
+        dependant.checkTypeDrop(this, typeName, canonicalTypeName);
     }
     return canonicalTypeName;
   }
 
   /**
-   * A view or an aggregate stores its source types as its query names them, and a query can name a type by an alias:
-   * each stored name is resolved before it is compared, so a type is protected whichever of its names the dependant
-   * was defined with - including definitions persisted before this check resolved them.
+   * Every schema object that stores the NAME of a type (issue #10368): the one list the drop guard, the rename check and the
+   * rename carry walk, so a kind of dependant is protected by all three or by none. Materialized views, continuous aggregates
+   * and triggers live in this schema; Graph Analytical Views keep their definitions in the schema extension
+   * {@code graphAnalyticalViews}, which is what a reopen restores them from.
    */
-  private boolean isSourceTypeName(final List<String> sourceTypeNames, final String canonicalTypeName) {
-    for (final String sourceTypeName : sourceTypeNames)
-      if (canonicalTypeName.equals(canonicalTypeNameOf(sourceTypeName)))
-        return true;
-    return false;
-  }
-
-  private String canonicalTypeNameOf(final String typeName) {
-    final LocalDocumentType type = getTypeOrNull(typeName);
-    return type != null ? type.getName() : typeName;
+  public List<TypeNameDependant> getTypeNameDependants() {
+    synchronized (this) {
+      final List<TypeNameDependant> dependants = new ArrayList<>(
+          materializedViews.size() + continuousAggregates.size() + triggers.size());
+      dependants.addAll(materializedViews.values());
+      dependants.addAll(continuousAggregates.values());
+      for (final Trigger trigger : triggers.values())
+        if (trigger instanceof TriggerImpl impl)
+          dependants.add(impl);
+      dependants.addAll(GraphAnalyticalViewPersistence.getTypeNameDependants(database));
+      return dependants;
+    }
   }
 
   /**
-   * Fails safe on a dependant that names a type which does not exist (issue #10096). The guards of {@link #checkTypeHasNoDependants}
-   * compare the dropped type with what a view or an aggregate stores, and a stored name that resolves to no type matches nothing:
-   * that is what a type rename used to leave behind, and the drop was then let through by the guard whose whole purpose is to
-   * refuse it. Whether the dangling name is the OLD name of the type being dropped cannot be told - the type does not remember
-   * its names - so the drop is refused, saying which dependant is out of date and what to do about it. A dependant in that state
-   * cannot refresh anyway.
-   */
-  private void checkDependantNamesResolve(final String droppedTypeName, final String kind, final String dependantName,
-      final String dropStatement, final String backingTypeName, final Collection<String> sourceTypeNames) {
-    if (getTypeOrNull(backingTypeName) == null)
-      throw outOfDateDependant(droppedTypeName, kind, dependantName, dropStatement, backingTypeName);
-    for (final String sourceTypeName : sourceTypeNames)
-      if (getTypeOrNull(sourceTypeName) == null)
-        throw outOfDateDependant(droppedTypeName, kind, dependantName, dropStatement, sourceTypeName);
-  }
-
-  private static SchemaException outOfDateDependant(final String droppedTypeName, final String kind, final String dependantName,
-      final String dropStatement, final String missingTypeName) {
-    return new SchemaException("Cannot drop type '" + droppedTypeName + "' because the " + kind + " '" + dependantName
-        + "' names the type '" + missingTypeName + "', which does not exist (the type was probably renamed before a rename "
-        + "carried its views and aggregates), so it cannot be told whether this is a type the " + kind + " depends on. Drop the "
-        + kind + " first with: " + dropStatement + ", and create it again if it is still needed");
-  }
-
-  /**
-   * Decides, before a single file moves, whether the rename of {@code type} to {@code newName} can keep every materialized view
-   * and continuous aggregate that depends on it consistent (issue #10096).
-   * <ul>
-   *   <li>the BACKING type of a view or an aggregate is not renamed: a view is named after its backing type, which is the name
-   *   {@code SELECT FROM <view>} answers to and every record's {@code @type} reports, so a renamed backing type is a view that
-   *   no longer answers to its own name;</li>
-   *   <li>a SOURCE type is renamed, and its dependants follow ({@link #carryTypeRenameToDependants}), provided the defining query
-   *   can be re-pointed at the new name with certainty ({@link DependantQueryRetargeter}); otherwise the rename is refused rather
-   *   than leaving half of the dependants on a name that no longer resolves.</li>
-   * </ul>
-   * A dependant that stores the type by one of its ALIASES needs nothing: the alias stays in the type map across a rename, and the
-   * query that names it keeps resolving.
+   * Decides, before a single file moves, whether the rename of {@code type} to {@code newName} can keep every dependant of it
+   * consistent (issue #10096): each {@link TypeNameDependant} refuses what it could not follow with certainty. A materialized
+   * view or a continuous aggregate refuses the rename of its BACKING type - a view is named after it, which is the name
+   * {@code SELECT FROM <view>} answers to - and of a SOURCE type its defining query cannot be re-pointed at with certainty
+   * ({@link DependantQueryRetargeter}). A dependant that stores the type by one of its ALIASES needs nothing: the alias stays in
+   * the type map across a rename, and the definition that names it keeps resolving.
    */
   void checkTypeRenameKeepsDependants(final LocalDocumentType type, final String newName) {
     // A NAME THAT IS TAKEN IS REFUSED BY THE RENAME ITSELF, WITH ITS OWN MESSAGE
@@ -3190,30 +3292,17 @@ public class LocalSchema implements Schema {
 
     final String oldName = type.getName();
     synchronized (this) {
-      for (final MaterializedViewImpl view : materializedViews.values()) {
-        if (view.getBackingTypeName().equals(oldName))
-          throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for materialized view '"
-              + view.getName() + "': a view is named after its backing type. Drop the materialized view first with: "
-              + "DROP MATERIALIZED VIEW " + view.getName());
-        if (view.getSourceTypeNames().contains(oldName)
-            && DependantQueryRetargeter.retarget(database, view.getQuery(), oldName, newName) == null)
-          throw cannotRepointQuery(oldName, newName, "materialized view", view.getName(),
-              "DROP MATERIALIZED VIEW " + view.getName());
-      }
-      for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
-        if (ca.getBackingTypeName().equals(oldName))
-          throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for continuous aggregate '"
-              + ca.getName() + "': an aggregate is named after its backing type. Drop the continuous aggregate first with: "
-              + "DROP CONTINUOUS AGGREGATE " + ca.getName());
-        if (oldName.equals(ca.getSourceTypeName())
-            && DependantQueryRetargeter.retarget(database, ca.getQuery(), oldName, newName) == null)
-          throw cannotRepointQuery(oldName, newName, "continuous aggregate", ca.getName(),
-              "DROP CONTINUOUS AGGREGATE " + ca.getName());
-      }
+      for (final TypeNameDependant dependant : getTypeNameDependants())
+        dependant.checkTypeRename(this, oldName, newName);
     }
   }
 
-  private static SchemaException cannotRepointQuery(final String oldName, final String newName, final String kind,
+  /** {@code query} naming the type {@code newName} where it names {@code oldName}, or null when that cannot be done with certainty. */
+  String retargetQuery(final String query, final String oldName, final String newName) {
+    return DependantQueryRetargeter.retarget(database, query, oldName, newName);
+  }
+
+  static SchemaException cannotRepointQuery(final String oldName, final String newName, final String kind,
       final String dependantName, final String dropStatement) {
     return new SchemaException("Cannot rename type '" + oldName + "' to '" + newName + "' because it is a source type for the "
         + kind + " '" + dependantName + "' and its query cannot be re-pointed at the new name with certainty (the name appears "
@@ -3223,29 +3312,19 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * The types a rename carries to its dependants (issue #10096): every materialized view and continuous aggregate that names the
-   * type {@code oldName} as a source has that name, and the defining query that spells it, rewritten to {@code newName}, in place,
-   * and so does every trigger bound to the type.
-   * Runs inside the schema recording session that publishes the rename, so under the database write lock that every view and
-   * aggregate registration takes too and before the session saves the schema: the names that reach {@code schema.json} are the
-   * new ones, and nothing can register a dependant between the carry and the save. {@link #checkTypeRenameKeepsDependants} already
+   * Carries the rename of the type {@code oldName} to every dependant (issue #10096): each {@link TypeNameDependant} names
+   * {@code newName} wherever it named {@code oldName} - a materialized view or a continuous aggregate in its source names and in
+   * the defining query that spells them, a trigger in the type it is bound to, a Graph Analytical View in its vertex and edge
+   * types (issue #10368).
+   * Runs inside the schema recording session that publishes the rename, so under the database write lock that every dependant
+   * registration takes too and before the session saves the schema: the names that reach {@code schema.json} are the new ones,
+   * and nothing can register a dependant between the carry and the save. {@link #checkTypeRenameKeepsDependants} already
    * refused what cannot be carried, so this does not throw: the files have moved by now.
    */
   void carryTypeRenameToDependants(final String oldName, final String newName) {
     synchronized (this) {
-      for (final MaterializedViewImpl view : materializedViews.values())
-        if (view.getSourceTypeNames().contains(oldName))
-          view.retargetSourceType(oldName, newName,
-              retargetedQuery("materialized view", view.getName(), view.getQuery(), oldName, newName));
-
-      for (final ContinuousAggregateImpl ca : continuousAggregates.values())
-        if (oldName.equals(ca.getSourceTypeName()))
-          ca.retargetSourceType(newName, retargetedQuery("continuous aggregate", ca.getName(), ca.getQuery(), oldName, newName));
-
-      // A TRIGGER IS BOUND TO ITS TYPE BY NAME TOO: PERSISTED, BOUND BY ON RELOAD, AND LOOKED UP BY WHEN IT IS DROPPED
-      for (final Trigger trigger : triggers.values())
-        if (trigger instanceof TriggerImpl impl && oldName.equals(impl.getTypeName()))
-          impl.retargetType(newName);
+      for (final TypeNameDependant dependant : getTypeNameDependants())
+        dependant.carryTypeRename(this, oldName, newName);
     }
   }
 
@@ -3254,9 +3333,9 @@ public class LocalSchema implements Schema {
    * AFTER the check of the rename can get here: its names follow all the same, so that the drop guard keeps protecting the type,
    * and the refresh that fails on the old name says why.
    */
-  private String retargetedQuery(final String kind, final String dependantName, final String query, final String oldName,
+  String retargetedQuery(final String kind, final String dependantName, final String query, final String oldName,
       final String newName) {
-    final String retargeted = DependantQueryRetargeter.retarget(database, query, oldName, newName);
+    final String retargeted = retargetQuery(query, oldName, newName);
     if (retargeted != null)
       return retargeted;
 
@@ -3278,12 +3357,11 @@ public class LocalSchema implements Schema {
         multipleUpdate = true;
 
       try {
-        for (final LocalDocumentType type : typeMap().values()) {
-          if (type.buckets.contains(bucket))
-            throw new SchemaException(
-                "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName()
-                    + "'. Remove the association first");
-        }
+        final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
+        if (owner != null)
+          throw new SchemaException(
+              "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + owner.getName()
+                  + "'. Remove the association first");
 
         // Drop the dependent sub-indexes BEFORE deleting the bucket file. This ordering matters for crash
         // consistency: these steps are not atomic, so if the process dies mid-drop the surviving on-disk state
@@ -3306,6 +3384,8 @@ public class LocalSchema implements Schema {
         removeFile(bucket.getFileId());
 
         removeBucketDuringLoad(bucketName);
+        // it can be a bucket a type involves without owning it (an edge-list, external or stripe bucket)
+        bucketMembershipChanged();
 
         return null;
 
@@ -3580,9 +3660,14 @@ public class LocalSchema implements Schema {
     // fallback in TransactionIndexContext.getIndexKeyLanes is: a third caller must not silently inherit the
     // staging assumption. It is NOT covered by a test, so anything relying on it needs to bring one.
     final Map<String, LocalDocumentType> graph = typeMap();
-    if (graph == published.types())
+    if (graph == published.types()) {
       retireTimeSeriesTypesOf(graph);
+      // the bucket maps describe the graph being emptied: rebuilt from the new one as it is assembled
+      bucketTypeMapsStale = true;
+    }
     graph.clear();
+    if (isStagingPublication())
+      stagedBucketOwners.clear();
 
     loadInRamCompleted = false;
     readingFromFile = true;
@@ -3843,7 +3928,8 @@ public class LocalSchema implements Schema {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
                     // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
                     // the full ancestor chain: reading it as anything else would make put/remove miss them.
-                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
+                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON),
+                        GeoIndexMetadata.readPlanar(indexJSON));
                     publishIndexDuringLoad(registeredName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
@@ -4685,7 +4771,7 @@ public class LocalSchema implements Schema {
    *                              commit of the outermost transaction, right before its durable phase
    */
   private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
-    rebuildBucketTypeMap();
+    refreshBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
     // A MEMOIZED QUERY RESULT (THE PER-RECORD LET CACHE, #8400) DOES NOT OUTLIVE IT
@@ -4731,8 +4817,46 @@ public class LocalSchema implements Schema {
     for (final Index index : getIndexes())
       if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
         counterGenerations.computeIfAbsent(ftIndex.getFullTextMetadata(), FullTextIndexMetadata::getCountersGeneration);
-    update(toJSON(versionSerial.get() + 1));
+    final long schemaVersion = versionSerial.get() + 1;
+    writeSchemaFile(serializeSchema(schemaVersion), schemaVersion);
     counterGenerations.forEach(FullTextIndexMetadata::markCountersSaved);
+  }
+
+  /**
+   * The schema file's text, byte for byte what {@code toJSON(schemaVersion).toString()} answers, without assembling the
+   * document of every type first (issue #10247). Inserting each type into the root's {@code types} object - a tree map
+   * the whole schema is serialized from - was the larger half of the cost of a schema change at tens of thousands of
+   * types: each type is now serialized as it is visited, into the same Gson writer the document's {@code toString()}
+   * uses, so the formatting cannot differ.
+   */
+  // Byte identity with toJSON().toString() is pinned by Issue10247SchemaChangeScalingTest, which writes the same schema both ways
+  private String serializeSchema(final long schemaVersion) throws IOException {
+    final JSONObject root = toJSON(schemaVersion, false);
+    final Gson gson = JSONFactory.INSTANCE.getGson();
+    final StringWriter out = new StringWriter(Math.max(1024, lastSchemaFileLength + 1024));
+    final JsonWriter writer = gson.newJsonWriter(out);
+    writer.beginObject();
+    for (final Map.Entry<String, JsonElement> member : ((JsonObject) root.getInternal()).entrySet()) {
+      writer.name(member.getKey());
+      if (TYPES.equals(member.getKey())) {
+        writer.beginObject();
+        forEachTypeToWrite((name, type) -> {
+          try {
+            writer.name(name);
+            gson.toJson(type.getInternal(), writer);
+          } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+          }
+        });
+        writer.endObject();
+      } else
+        gson.toJson(member.getValue(), writer);
+    }
+    writer.endObject();
+    writer.flush();
+    final String text = out.toString();
+    lastSchemaFileLength = text.length();
+    return text;
   }
 
   public synchronized JSONObject toJSON() {
@@ -4740,6 +4864,39 @@ public class LocalSchema implements Schema {
   }
 
   private synchronized JSONObject toJSON(final long schemaVersion) {
+    return toJSON(schemaVersion, true);
+  }
+
+  /**
+   * Visits the types the schema file holds, in name order (issue #8206): hash-map order depends on table capacity, which
+   * differs between a map grown by DDL and one rebuilt by a reload, so replicas would write different files. Sorts a key
+   * array instead of copying into a TreeMap, to spare the garbage.
+   */
+  private void forEachTypeToWrite(final BiConsumer<String, JSONObject> consumer) {
+    final Map<String, LocalDocumentType> typesToWrite = typeMap();
+    final String[] typeNames = typesToWrite.keySet().toArray(new String[0]);
+    Arrays.sort(typeNames);
+    // The map also holds a type under each of its aliases: a type is written once, under its own name, at the place of the
+    // first key that reaches it - as a JSON object keyed by name did - where a streamed writer would repeat the key
+    Set<String> aliasedWritten = null;
+    for (final String typeName : typeNames) {
+      final DocumentType t = typesToWrite.get(typeName);
+      if (t == null)
+        continue;
+      if (!t.getAliases().isEmpty()) {
+        if (aliasedWritten == null)
+          aliasedWritten = new HashSet<>();
+        if (!aliasedWritten.add(t.getName()))
+          continue;
+      }
+      consumer.accept(t.getName(), t.toJSON());
+    }
+  }
+
+  /**
+   * @param withTypes false to leave the {@code types} object empty, for {@link #serializeSchema} to write it type by type
+   */
+  private synchronized JSONObject toJSON(final long schemaVersion, final boolean withTypes) {
     final JSONObject root = new JSONObject();
     root.put("schemaVersion", schemaVersion);
     root.put("dbmsVersion", Constants.getRawVersion());
@@ -4757,16 +4914,9 @@ public class LocalSchema implements Schema {
     // differs between a map grown by DDL and one rebuilt by a reload, so replicas would write different files.
     // Large maps (types, properties) sort a key array instead of copying into a TreeMap, to spare the garbage.
     final JSONObject types = new JSONObject();
-    root.put("types", types);
-
-    final Map<String, LocalDocumentType> typesToWrite = typeMap();
-    final String[] typeNames = typesToWrite.keySet().toArray(new String[0]);
-    Arrays.sort(typeNames);
-    for (final String typeName : typeNames) {
-      final DocumentType t = typesToWrite.get(typeName);
-      if (t != null)
-        types.put(t.getName(), t.toJSON());
-    }
+    root.put(TYPES, types);
+    if (withTypes)
+      forEachTypeToWrite(types::put);
 
     final JSONObject triggersJson = new JSONObject();
     root.put("triggers", triggersJson);
@@ -5178,8 +5328,11 @@ public class LocalSchema implements Schema {
     // rejected schema must leave both generations exactly as they were. An ABSENT version keeps the current one,
     // which is why the default-value getter cannot be used here - it treats an explicit null as absent too.
     final long newVersion = newSchema.has("schemaVersion") ? newSchema.getLong("schemaVersion") : versionSerial.get();
-    final String latestSchema = newSchema.toString();
+    writeSchemaFile(newSchema.toString(), newVersion);
+  }
 
+  /** Publishes {@code latestSchema} as the schema file of version {@code newVersion}, keeping the previous one aside. */
+  private synchronized void writeSchemaFile(final String latestSchema, final long newVersion) throws IOException {
     if (configurationFile.exists()) {
       // #6114: A COPY, NOT A RENAME. The rename this replaces moved schema.json out of the way and only then wrote
       // the new one, so between the two statements schema.json DID NOT EXIST and while the writer ran it was
@@ -5308,9 +5461,9 @@ public class LocalSchema implements Schema {
           // still holds the database write lock, which is what excludes the observers #7457 is about.
           if (!outermost) {
             recordingSavePending = true;
-            // THE MAP saveConfiguration() REBUILDS BEFORE IT POSTPONES: A BUCKET THIS FRAME CREATED OR ATTACHED MUST
+            // THE MAP saveConfiguration() REFRESHES BEFORE IT POSTPONES: A BUCKET THIS FRAME CREATED OR ATTACHED MUST
             // RESOLVE TO ITS TYPE FOR THE STEPS THAT FOLLOW IN THE ENCLOSING FRAME
-            rebuildBucketTypeMap();
+            refreshBucketTypeMap();
             return callbackResult;
           }
 
@@ -5341,8 +5494,22 @@ public class LocalSchema implements Schema {
             recordingThread = null;
             final boolean pending = recordingSavePending;
             recordingSavePending = false;
-            if (!executed[0] && pending)
-              keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            if (!executed[0]) {
+              // A change that failed part way may have attached or detached a bucket that a hook reported before the
+              // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted, at once, so no
+              // lock-free reader resolves a bucket to a type through an entry the failed change left behind (issue #10247)
+              bucketTypeMapsStale = true;
+              try {
+                rebuildBucketTypeMap();
+              } catch (final RuntimeException e) {
+                // stays stale: the next lookup or save rebuilds it, and the exception to report is the change's own
+                LogManager.instance().log(this, Level.WARNING,
+                    "Cannot rebuild the bucket-to-type maps after a failed schema change on database '%s': %s", e,
+                    database.getName(), e.getMessage());
+              }
+              if (pending)
+                keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            }
           }
           --recordingDepth;
         }
@@ -5552,7 +5719,11 @@ public class LocalSchema implements Schema {
           IndexInternal.INDEX_STATUS.UNAVAILABLE))
         throw new IndexException("Cannot prepare empty index '" + indexName + "' for population");
 
-      type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
+      // Bound to the type that OWNS the bucket, as the sub-indexes minted by LocalDocumentType.createSubIndexesFor and the ones a
+      // schema load binds are (issue #10412): CREATE INDEX on a type that already had sub types came here with the declaring type
+      // for the bucket of a sub type too, so the sub-index named the declaring type until the next open re-bound it, and a rename
+      // or a DROP TYPE in between looked for the sub-index under the wrong type
+      bindBucketIndexToItsOwner(type, getBucketOwner(bucket.getFileId()), index, bucket.getFileId(), propertyNames, propIndex);
 
       // Re-set metadata after addIndexInternal populated propertyNames, to propagate
       // caseInsensitiveKeys to the underlying mutable/compacted indexes.
@@ -5583,16 +5754,33 @@ public class LocalSchema implements Schema {
    */
   private static void addLoadedIndex(final LocalDocumentType declaringType, final Map<Integer, LocalDocumentType> ownerOfBucket,
       final IndexInternal index, final int bucketId, final String[] propertyNames) {
-    final LocalDocumentType owner = ownerOfBucket.get(bucketId);
+    bindBucketIndexToItsOwner(declaringType, ownerOfBucket.get(bucketId), index, bucketId, propertyNames, null);
+  }
+
+  /**
+   * The one place a sub-index is bound to a type, shared by the schema load and by the creation of a bucket index (issue #10412):
+   * the sub-index of a bucket that a sub type of {@code declaringType} owns is bound to that sub type, under the wrapper of the
+   * type that declares the index, so the layout is the same right after the creation and after every load.
+   *
+   * @param declaringType    the type that declares the index
+   * @param owner            the type that owns the bucket, null when none does
+   * @param index            the bucket index to bind
+   * @param bucketId         the bucket the index sits on
+   * @param propertyNames    the indexed properties
+   * @param declaringWrapper the wrapper of the index on {@code declaringType} when the caller has it, null to mint it
+   */
+  private static void bindBucketIndexToItsOwner(final LocalDocumentType declaringType, final LocalDocumentType owner,
+      final IndexInternal index, final int bucketId, final String[] propertyNames, final TypeIndex declaringWrapper) {
     if (owner == null || owner == declaringType || !owner.instanceOf(declaringType.getName()))
       // The bucket is the declaring type's own, or belongs to a type that does not inherit from it: a schema written by hand
       // keeps the binding it has always had
-      declaringType.addIndexInternal(index, bucketId, propertyNames, null);
+      declaringType.addIndexInternal(index, bucketId, propertyNames, declaringWrapper);
     else
       // The declaring type's wrapper is minted here when this sub-index is the first of its index to be read (they are read in
       // name order, so the sub type's can come before the declaring type's own). It is staged by publishIndexDuringLoad like
       // any wrapper minted during a load, so a reader never sees it before the load publishes the schema
-      owner.addIndexInternal(index, bucketId, propertyNames, declaringType.typeIndexFor(index, propertyNames));
+      owner.addIndexInternal(index, bucketId, propertyNames,
+          declaringWrapper != null ? declaringWrapper : declaringType.typeIndexFor(index, propertyNames));
   }
 
   protected boolean isSchemaLoaded() {
@@ -5756,16 +5944,157 @@ public class LocalSchema implements Schema {
     return ((RecordEventsRegistry) database.getEmbedded().getEvents()).newTypeRegistry();
   }
 
+  /**
+   * Brings the bucket maps up to the type graph at the end of a schema change: a full rebuild only when a change left
+   * them stale (or for the graph a load assembles), since the additive changes already updated them in place (issue
+   * #10247). It used to rebuild them over every type on every change, nested frames included, which made one
+   * {@code CREATE TYPE} cost O(N) and N of them O(N^2).
+   */
+  private void refreshBucketTypeMap() {
+    // A type being dropped tears its buckets down in an order no single hook follows: rebuilt at every step until it is gone
+    if (bucketTypeMapsStale || typeBeingDropped != null || isStagingPublication()) {
+      rebuildBucketTypeMap();
+      return;
+    }
+    typesChanged();
+    assert bucketTypeMapsDifference() == null :
+        "the bucket maps maintained in place differ from the ones the types describe: " + bucketTypeMapsDifference();
+  }
+
+  /**
+   * Records that {@code type} took {@code bucket} as one of its own (issue #10247): the bucket now answers to the type in
+   * both maps, as a full rebuild would make it answer, a type's own bucket winning over any other claim.
+   */
+  void bucketAttached(final LocalDocumentType type, final Bucket bucket) {
+    if (isStagingPublication()) {
+      stagedBucketOwners.put(bucket.getFileId(), type);
+      return;
+    }
+    if (bucketTypeMapsStale)
+      return;
+    final SchemaState state = published;
+    state.bucketId2TypeMap().put(bucket.getFileId(), type);
+    state.bucketId2InvolvedTypeMap().put(bucket.getFileId(), type);
+  }
+
+  /**
+   * Records that {@code bucket} became one of the buckets {@code type} involves without owning it - the paired bucket of its
+   * EXTERNAL values, the edge-list bucket of a vertex bucket (issue #10247): the bucket answers to the type for security
+   * unless another type owns it, as in {@link #rebuildBucketTypeMap()}.
+   */
+  void involvedBucketAttached(final LocalDocumentType type, final Bucket bucket) {
+    if (isStagingPublication() || bucketTypeMapsStale)
+      return;
+    final SchemaState state = published;
+    final LocalDocumentType owner = state.bucketId2TypeMap().get(bucket.getFileId());
+    if (owner == null || owner == type)
+      state.bucketId2InvolvedTypeMap().put(bucket.getFileId(), type);
+  }
+
+  /**
+   * Records a change of bucket membership the maps can only follow by a full rebuild, done when the change ends: a bucket
+   * detached from its type, an external bucket unpaired (issue #10247).
+   */
+  void bucketDetached(final LocalDocumentType type, final Bucket bucket) {
+    if (isStagingPublication())
+      stagedBucketOwners.remove(bucket.getFileId(), type);
+    else
+      bucketTypeMapsStale = true;
+  }
+
+  /** A change of the buckets a type involves without owning them that only a full rebuild follows (issue #10247). */
+  void bucketMembershipChanged() {
+    if (!isStagingPublication())
+      bucketTypeMapsStale = true;
+  }
+
+  /**
+   * The type that owns the bucket {@code bucketId}, in the graph this thread works on: the one a load in flight is
+   * assembling, or the published one. One lookup, where the check that a bucket belongs to one type only used to walk
+   * every type (issue #10247).
+   */
+  LocalDocumentType getBucketOwner(final int bucketId) {
+    if (isStagingPublication())
+      return stagedBucketOwners.get(bucketId);
+    if (bucketTypeMapsStale)
+      rebuildBucketTypeMap();
+    return published.bucketId2TypeMap().get(bucketId);
+  }
+
+  /**
+   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it. The one place the verdict and its
+   * wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before it registers a type,
+   * so a refusal leaves no half-built type behind (issue #10317).
+   */
+  void checkBucketIsFree(final String typeName, final Bucket bucket) {
+    final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
+    if (owner != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+  }
+
+  /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */
+  private String bucketTypeMapsDifference() {
+    final Map<Integer, LocalDocumentType>[] expected = computeBucketTypeMaps();
+    final SchemaState state = published;
+    final StringBuilder difference = new StringBuilder();
+    describeDifference("bucketId2TypeMap", expected[0], state.bucketId2TypeMap(), difference);
+    describeDifference("bucketId2InvolvedTypeMap", expected[1], state.bucketId2InvolvedTypeMap(), difference);
+    return difference.isEmpty() ? null : difference.toString();
+  }
+
+  private void describeDifference(final String name, final Map<Integer, LocalDocumentType> expected,
+      final Map<Integer, LocalDocumentType> actual, final StringBuilder difference) {
+    final Set<Integer> ids = new TreeSet<>(expected.keySet());
+    ids.addAll(actual.keySet());
+    for (final Integer id : ids) {
+      final LocalDocumentType e = expected.get(id);
+      final LocalDocumentType a = actual.get(id);
+      if (e != a) {
+        final LocalBucket bucket = getBucketById(id, false);
+        difference.append(name).append('[').append(bucket != null ? bucket.getName() : id).append("] expected=")
+            .append(e != null ? e.getName() : null).append(" actual=").append(a != null ? a.getName() : null).append("; ");
+      }
+    }
+  }
+
   private void rebuildBucketTypeMap() {
     typesChanged();
-    final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new HashMap<>();
+    final Map<Integer, LocalDocumentType>[] maps = computeBucketTypeMaps();
+
+    if (isStagingPublication()) {
+      // Derived from the staged graph, so they belong to it and are published with it (PR #8001 review).
+      stagedBucketId2TypeMap = maps[0];
+      stagedBucketId2InvolvedTypeMap = maps[1];
+      return;
+    }
+
+    published = new SchemaState(published.types(), maps[0], maps[1]);
+    bucketTypeMapsStale = false;
+    ++bucketTypeMapRebuilds;
+  }
+
+  /** Full rebuilds of the published bucket maps so far: visible to the test of issue #10247, which counts them. */
+  long getBucketTypeMapRebuilds() {
+    return bucketTypeMapRebuilds;
+  }
+
+  /** The text the next save would write as the schema file: visible to the test of issue #10247. */
+  synchronized String serializeSchemaForTest() throws IOException {
+    return serializeSchema(versionSerial.get());
+  }
+
+  /** The bucket-to-type map and the involved-bucket-to-type map the types of {@link #typeMap()} describe. */
+  @SuppressWarnings("unchecked")
+  private Map<Integer, LocalDocumentType>[] computeBucketTypeMaps() {
+    final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new ConcurrentHashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getBuckets(false))
         newBucketId2TypeMap.put(b.getFileId(), t);
     }
 
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
-    final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
+    final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new ConcurrentHashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getInvolvedBuckets()) {
         // A type's own bucket answers to that type, whatever another type's naming convention claims (a vertex type's
@@ -5775,14 +6104,6 @@ public class LocalSchema implements Schema {
           newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
       }
     }
-
-    if (isStagingPublication()) {
-      // Derived from the staged graph, so they belong to it and are published with it (PR #8001 review).
-      stagedBucketId2TypeMap = newBucketId2TypeMap;
-      stagedBucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
-      return;
-    }
-
-    published = new SchemaState(published.types(), newBucketId2TypeMap, newBucketId2InvolvedTypeMap);
+    return new Map[] { newBucketId2TypeMap, newBucketId2InvolvedTypeMap };
   }
 }

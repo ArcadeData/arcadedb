@@ -12,7 +12,16 @@ on:
 
 jobs:
   setup:
+    name: setup (${{ matrix.image }})
     runs-on: ubuntu-latest
+    # Same suite twice: against the JVM image built below, and against the published native nightly. A native failure is
+    # a failure, so no continue-on-error; fail-fast off so one leg's red never cancels the other
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [jvm, native]
+    env:
+      TEST_IMAGE_ARGS: ${{ matrix.image == 'native' && '-Darcadedb.test.image=arcadedata/arcadedb:latest-native -Darcadedb.test.native=true' || '' }}
     permissions:
       contents: write
       packages: write
@@ -26,12 +35,12 @@ jobs:
       - name: Run pre-commit
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13.0"
+          python-version: "3.13"
           cache: "pip"
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
@@ -45,22 +54,40 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Set up QEMU
+        if: matrix.image == 'jvm'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
+        if: matrix.image == 'jvm'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build and package with Maven Docker profile
+        if: matrix.image == 'jvm'
         run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors  --show-version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The native image is pulled, not built: a GraalVM build is far too slow for this job. `latest-native` is the
+      # nightly from native-image.yml; digest and creation time name the build tested (the image has no version label)
+      - name: Pull native image
+        if: matrix.image == 'native'
+        run: |
+          set -euo pipefail
+          docker pull arcadedata/arcadedb:latest-native
+          docker image inspect --format '{{index .RepoDigests 0}} created {{.Created}}' arcadedata/arcadedb:latest-native
+
+      - name: Build test modules
+        if: matrix.image == 'native'
+        run: ./mvnw -B -q install -DskipTests -pl e2e-ha -am
+
       - name: Run HA Tests
         run: |
+          # TEST_IMAGE_ARGS is unquoted on purpose: two arguments on the native leg, none on the JVM one
+          # shellcheck disable=SC2086
           if [ -n "${IT_TEST}" ]; then
-            ./mvnw verify -DskipTests -Pintegration --batch-mode --errors --fail-never --show-version -pl e2e-ha -Dit.test="${IT_TEST}"
+            ./mvnw verify -DskipTests -Pintegration --batch-mode --errors --fail-never --show-version -pl e2e-ha -Dit.test="${IT_TEST}" ${TEST_IMAGE_ARGS}
           else
-            ./mvnw verify -DskipTests -Pintegration --batch-mode --errors --fail-never --show-version -pl e2e-ha
+            ./mvnw verify -DskipTests -Pintegration --batch-mode --errors --fail-never --show-version -pl e2e-ha ${TEST_IMAGE_ARGS}
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -70,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success() || failure()
         with:
-          name: e2e-ha-failsafe-reports
+          name: e2e-ha-failsafe-reports${{ matrix.image == 'native' && '-native' || '' }}
           path: e2e-ha/target/failsafe-reports/
           retention-days: 7
           if-no-files-found: warn
@@ -79,8 +106,17 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success() || failure()
         with:
-          name: e2e-ha-server-logs
+          name: e2e-ha-server-logs${{ matrix.image == 'native' && '-native' || '' }}
           path: e2e-ha/target/logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload container stdout
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success() || failure()
+        with:
+          name: e2e-ha-container-logs${{ matrix.image == 'native' && '-native' || '' }}
+          path: e2e-ha/target/container-logs/
           retention-days: 7
           if-no-files-found: warn
 
@@ -88,7 +124,7 @@ jobs:
         uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         with:
-          name: IT Tests Report
+          name: IT Tests Report${{ matrix.image == 'native' && ' (native)' || '' }}
           path: "**/failsafe-reports/TEST*.xml"
           list-tests: "failed"
           list-suites: "failed"

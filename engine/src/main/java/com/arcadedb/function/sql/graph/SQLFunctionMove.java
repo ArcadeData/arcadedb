@@ -27,6 +27,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.SQLQueryEngine;
@@ -75,7 +76,9 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
         // A VIEW ONLY ACCELERATES: ITS REVERSE INDEX HOLDS THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE, WHICH A FUNCTION
         // CALLED ON ITS OWN MUST NOT ANSWER, OR in()/both() WOULD RETURN DIFFERENT ROWS WITH AND WITHOUT A VIEW AND
         // DISAGREE WITH inE() AND THE VERTEX API (ISSUE #8939). A PATTERN WALK ANSWERS IT, VIEW OR NOT (ISSUE #8625)
-        GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        // Pinned for the statement: the iterable maps the neighbour ids back to records when it is read, possibly long after this
+        // call, and a rebuild in between would answer them as other vertices (issue #10415)
+        GraphTraversalProvider provider = GraphViewPins.pin(context, GraphTraversalProviderRegistry.findProvider(database, iLabels));
         // ASKED ONLY WHEN A VIEW EXISTS, SO THE NO-VIEW PATH PAYS NOTHING
         if (provider != null && iDirection != Vertex.DIRECTION.OUT && !IncomingEdgeLookup.isWalkingPattern()
             && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : NO_LABELS))

@@ -34,6 +34,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
+import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
@@ -2018,16 +2019,21 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void appendSamples(final String typeName, final long[] timestamps, final Object[]... columnValues) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
     final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // CONVERTED AND HELD TO THE COLUMN CONSTRAINTS HERE, ON THE CALLER'S THREAD, LIKE EVERY OTHER SURFACE: A REFUSAL REACHES THE
+    // CALLER INSTEAD OF STORING THE SAMPLE OR LOSING THE BATCH INSIDE THE WORKER (issue #10381)
+    final TimeSeriesRowSource source = TimeSeriesStorableRows.requireStorable(database, tsType, engine, timestamps, columnValues);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
-    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, timestamps, columnValues), true,
-        backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);
   }
 
   @Override
   public void appendSamples(final String typeName, final TimeSeriesRowSource source) {
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
     final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // A PRIMITIVE SOURCE IS HELD TO WHAT THE COLUMNS CAN STORE AND TO THE CONSTRAINTS THE TYPE DECLARES TOO: A TEXT OVER THE LIMIT
+    // FAILED INSIDE THE WORKER WITH THE WHOLE BATCH, UNSEEN (issues #10381, #10487)
+    TimeSeriesStorableRows.requireStorable(database, tsType, source);
     final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);
@@ -2864,6 +2870,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   public boolean isCurrentThreadOneOfMyWorkers() {
     return Thread.currentThread() instanceof AsyncThread worker && worker.getOwner() == this;
+  }
+
+  /**
+   * True while the calling thread holds a {@link #quiesceWorkers() quiescence}: every worker is parked with its transaction batch
+   * committed, and stays so until the quiescence is released. Not the case for a quiescence of an executor with no workers, which takes
+   * no lock because there is nothing to park.
+   */
+  public boolean isQuiescedByCurrentThread() {
+    return quiesceLock.isHeldByCurrentThread();
   }
 
   /**

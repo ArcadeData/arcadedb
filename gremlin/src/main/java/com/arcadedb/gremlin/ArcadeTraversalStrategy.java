@@ -21,6 +21,7 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
@@ -33,13 +34,20 @@ import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.step.LambdaHolder;
+import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
+import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
+import org.apache.tinkerpop.gremlin.process.traversal.step.SideEffectCapable;
 import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.IsStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.filter.RangeGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.TraversalFilterStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.WhereTraversalStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.CallStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.FailStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
@@ -85,8 +93,22 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   private static final String LABEL_KEY = "~label";
 
+  // THE STEPS OF TINKERPOP DO NOTHING BUT READ UNLESS THEY ARE MARKED OTHERWISE (SEE hasNoEffect()), AND SO DO THESE OF THIS MODULE,
+  // NAMED ONE BY ONE: A STEP NOT LISTED, A FUTURE ONE OF THIS MODULE INCLUDED, IS UNKNOWN, AND AN UNKNOWN STEP IS ASSUMED TO HAVE AN
+  // EFFECT
+  private static final String           TINKERPOP_STEP_PACKAGE = "org.apache.tinkerpop.gremlin.process.traversal.step.";
+  private static final Set<Class<?>>    ARCADE_READ_ONLY_STEPS = Set.of(ArcadeCountGlobalStep.class, ArcadeEdgeCountFilterStep.class,
+      ArcadeFilterByIndexStep.class, ArcadeFilterByTypeStep.class, ArcadeGAVFusedStep.class, ArcadeGAVVertexStep.class);
+
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
+    // BEFORE ANY REWRITE: THE REWRITES BELOW TAKE THE LABEL OUT OF THE has() STEP (#10442)
+    if (traversal.getGraph().orElse(null) instanceof ArcadeGraph arcadeGraph)
+      TimeSeriesLabelGuard.check(arcadeGraph.database.getSchema(), traversal);
+
+    // A FILTER THAT CAN NEVER LET A TRAVERSER THROUGH ENDS THE WALK IN FRONT OF IT, BEFORE ANY OF THE REWRITES BELOW LOOKS AT THE STEPS
+    applyAlwaysEmptyFilterOptimization(traversal);
+
     boolean replacedWithFilterByType = false;
     final List<Step> steps = traversal.getSteps();
     for (int i = 1; i < steps.size(); i++) {
@@ -229,6 +251,77 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   }
 
   /**
+   * Replaces {@code filter(limit(0))} and {@code where(limit(0))} with a {@code limit(0)} of their own (issue #10307).
+   * <p>
+   * The child of such a filter is empty for every input, so the filter drops every traverser - but only after the traversal in front
+   * of it produced each one: {@code g.V(x).out('E').filter(__.limit(0))} expanded every neighbor of {@code x}, to throw each of them
+   * away. A {@code limit(0)} in the traversal itself stops at the first traverser it is offered, which is the same answer: nothing.
+   * <p>
+   * Only when nothing in front of the filter has an effect of its own ({@link #hasNoEffect}): stopping at the first traverser also
+   * stops what the steps in front would have done for the others, and TinkerPop's answer includes it. A mutation, a side effect that
+   * is read back ({@code aggregate('x')...cap('x')}), a lambda, a service call and any step this module does not know all keep the
+   * filter where it is.
+   */
+  private static void applyAlwaysEmptyFilterOptimization(final Traversal.Admin<?, ?> traversal) {
+    final List<Step> steps = traversal.getSteps();
+    for (int i = 0; i < steps.size(); i++) {
+      final Step<?, ?> step = steps.get(i);
+      if (!(step instanceof TraversalFilterStep<?> || step instanceof WhereTraversalStep<?>))
+        continue;
+
+      final List<?> children = ((TraversalParent) step).getLocalChildren();
+      // THE CHILD TOO: ITS STEPS IN FRONT OF THE limit(0) RUN ONCE FOR EVERY TRAVERSER THE FILTER IS OFFERED, AND THE FILTER IS GONE
+      if (children.size() != 1 || !neverEmitsAnything((Traversal.Admin<?, ?>) children.get(0))
+          || !hasNoEffect(((Traversal.Admin<?, ?>) children.get(0)).getSteps()) || !hasNoEffect(steps.subList(0, i)))
+        continue;
+
+      final RangeGlobalStep<?> stop = new RangeGlobalStep<>(traversal, 0L, 0L);
+      // A LABEL ON THE FILTER (as('x') AFTER IT) STAYS ON THE STEP THAT TAKES ITS PLACE
+      TraversalHelper.copyLabels(step, stop, false);
+      traversal.removeStep(i);
+      traversal.addStep(i, stop);
+    }
+  }
+
+  /**
+   * Whether the traversal emits nothing whatever it is fed: it ends with a {@code limit(0)}, which lets no traverser through. The
+   * steps in front of it still run, once for each traverser the traversal is offered, before the {@code limit(0)} stops it: whoever
+   * drops the traversal has to know they have no effect ({@link #hasNoEffect}).
+   */
+  private static boolean neverEmitsAnything(final Traversal.Admin<?, ?> child) {
+    final List<? extends Step> childSteps = child.getSteps();
+    return !childSteps.isEmpty() && childSteps.get(childSteps.size() - 1) instanceof RangeGlobalStep<?> range
+        && range.getHighRange() == 0L;
+  }
+
+  /**
+   * Whether running the steps does nothing but read the graph, so that running them for fewer traversers changes nothing but the
+   * work: no mutation, no side effect another step can read, no lambda, no service call, no step that is not TinkerPop's or this
+   * module's. The children of a step are asked too.
+   */
+  private static boolean hasNoEffect(final Iterable<? extends Step> steps) {
+    for (final Step<?, ?> step : steps) {
+      // A FailStep IS AN EFFECT TOO: IT ENDS THE TRAVERSAL WITH AN EXCEPTION THE REWRITE WOULD NEVER LET IT RAISE
+      if (step instanceof Mutating || step instanceof SideEffectCapable || step instanceof ReadWriting || step instanceof LambdaHolder
+          || step instanceof CallStep || step instanceof FailStep)
+        return false;
+
+      if (!step.getClass().getName().startsWith(TINKERPOP_STEP_PACKAGE) && !ARCADE_READ_ONLY_STEPS.contains(step.getClass()))
+        return false;
+
+      if (step instanceof TraversalParent parent) {
+        for (final Object child : parent.getLocalChildren())
+          if (!hasNoEffect(((Traversal.Admin<?, ?>) child).getSteps()))
+            return false;
+        for (final Object child : parent.getGlobalChildren())
+          if (!hasNoEffect(((Traversal.Admin<?, ?>) child).getSteps()))
+            return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Replaces TinkerPop VertexStep instances with GAV-accelerated steps when a CSR provider
    * is available. Then fuses 2+ consecutive GAV steps into a single fused chain step.
    */
@@ -239,15 +332,20 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     if (!(graph.getDatabase() instanceof Database db))
       return;
 
+    // One pin per view for the whole traversal: the steps of a view then share it, which is what lets Phase 2 fuse them
+    final GraphViewPins pins = new GraphViewPins();
+
     // Phase 1: Replace VertexStep → ArcadeGAVVertexStep when provider covers the edge labels
     final List<Step> steps = traversal.getSteps();
     for (int i = 0; i < steps.size(); i++) {
       final Step step = steps.get(i);
       if (step instanceof VertexStep<?> vertexStep && vertexStep.returnsVertex()) {
         final String[] edgeLabels = vertexStep.getEdgeLabels();
-        final GraphTraversalProvider provider = edgeLabels.length == 0
+        // Pinned when the traversal is about to run: the step maps, walks and maps back in one snapshot for the whole traversal,
+        // whatever the view does meanwhile (issue #10415)
+        final GraphTraversalProvider provider = pins.pin(edgeLabels.length == 0
             ? GraphTraversalProviderRegistry.findProvider(db)
-            : GraphTraversalProviderRegistry.findProvider(db, edgeLabels);
+            : GraphTraversalProviderRegistry.findProvider(db, edgeLabels));
         if (provider != null) {
           final ArcadeGAVVertexStep gavStep = new ArcadeGAVVertexStep(
               graph, vertexStep, provider, vertexStep.getDirection(), edgeLabels);
@@ -347,9 +445,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         continue;
 
       final String[] edgeLabels = vertexStep.getEdgeLabels();
-      final GraphTraversalProvider provider = edgeLabels.length == 0
+      // Pinned, as for the vertex steps above (issue #10415)
+      final GraphTraversalProvider provider = GraphViewPins.pinAlone(edgeLabels.length == 0
           ? GraphTraversalProviderRegistry.findProvider(db)
-          : GraphTraversalProviderRegistry.findProvider(db, edgeLabels);
+          : GraphTraversalProviderRegistry.findProvider(db, edgeLabels));
       if (provider == null)
         continue;
 

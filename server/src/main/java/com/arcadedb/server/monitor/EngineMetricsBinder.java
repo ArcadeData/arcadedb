@@ -61,6 +61,8 @@ public final class EngineMetricsBinder implements MeterBinder {
 
   /** The engine times the t0 barrier in milliseconds; a {@code _seconds} series is what Prometheus expects (#6125). */
   private static final double MILLIS_TO_SECONDS = 0.001d;
+  /** The commit lock times are in microseconds (#10509). */
+  private static final double MICROS_TO_SECONDS = 0.000001d;
 
   /**
    * The memoized {@link Profiler} snapshot every meter reads through.
@@ -86,6 +88,17 @@ public final class EngineMetricsBinder implements MeterBinder {
     counter(registry, "arcadedb.engine.pages.read", "Pages read from disk", "pagesRead");
     counter(registry, "arcadedb.engine.pages.written", "Pages written to disk", "pagesWritten");
     counter(registry, "arcadedb.engine.wal.bytes.written", "WAL bytes written", "walBytesWritten");
+    // #10509: with arcadedb.txWalGroupCommit, the commits per shared WAL flush (commits rate / syncs rate)
+    counter(registry, "arcadedb.engine.wal.group.commits", "Commits whose WAL flush was shared (group commit)", "walGroupCommits");
+    counter(registry, "arcadedb.engine.wal.group.commit.syncs", "Shared WAL flushes of the group commit", "walGroupCommitSyncs");
+    // #10509: the commit file locks. The average hold (time rate / holds rate) is what a queue of commits on one type grows
+    // on, the average hand-off is how long a contended lock stays idle between two commits
+    counter(registry, "arcadedb.engine.commit.lock.holds", "Releases of the commit file locks", "commitLockHolds");
+    counter(registry, "arcadedb.engine.commit.lock.hold.seconds", "Total time the commit file locks were held",
+        "commitLockHoldTime", MICROS_TO_SECONDS);
+    counter(registry, "arcadedb.engine.commit.lock.handoffs", "Commit file locks handed to a waiting commit", "commitLockHandOffs");
+    counter(registry, "arcadedb.engine.commit.lock.handoff.seconds",
+        "Total time from a commit file lock's release to the waiting commit running", "commitLockHandOffTime", MICROS_TO_SECONDS);
     counter(registry, "arcadedb.engine.mvcc.conflicts", "Concurrent modification exceptions",
         "concurrentModificationExceptions");
     // #5608: the commit-time page merges are what keeps the conflict counter above from exploding under contention

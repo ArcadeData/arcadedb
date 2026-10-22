@@ -59,6 +59,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.ReduceExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -99,6 +100,10 @@ import java.util.Map;
  * Crossing into a body changes the variable scope, so the descent goes through
  * {@link Visitor#forNestedStatement(CypherStatement)}: a check that reads variable kinds re-binds itself to the inner
  * scope there, and one that does not simply keeps the same visitor.
+ * <p>
+ * <b>The walk is also what backs {@code TimeSeriesPatternGuard}</b>, which refuses at planning every pattern naming a
+ * time-series type through {@link Visitor#visitPattern} (issue #10440). A clause or expression holding a pattern that this
+ * walk does not reach lets such a pattern through, and it answers zero rows again instead of failing.
  * <p>
  * <b>Add a case here when introducing an expression type that nests other expressions.</b> The {@code default} arms
  * treat an unrecognised type as a leaf, which is right for a literal or a variable but silently hides whatever a new
@@ -540,7 +545,8 @@ public final class CypherExpressionWalker {
   /**
    * Hands the pattern itself to {@link Visitor#visitPattern}, then visits every expression nested inside it: the
    * inline property values of each node and relationship, their dynamic labels, and any inline {@code WHERE}. This is
-   * how {@code CREATE (n:P {age: abs('x')})} is reached.
+   * how {@code CREATE (n:P {age: abs('x')})} is reached. A quantified path pattern is a single hop of its enclosing
+   * pattern, so the pattern it repeats, and its inner {@code WHERE}, are handed over after it (issue #10525).
    */
   public static void walk(final PathPattern pattern, final Visitor visitor) {
     if (pattern == null)
@@ -563,6 +569,12 @@ public final class CypherExpressionWalker {
           continue;
         walkPatternProperties(relationship.getProperties(), visitor);
         walk(relationship.getWhereExpression(), visitor);
+        // A quantified path pattern is ONE hop here, whose types, variables and WHERE are placeholders: what it repeats
+        // is a pattern of its own, and without descending into it nothing inside a group is checked (issue #10525)
+        if (relationship instanceof QuantifiedPathPattern group) {
+          walk(group.getInnerPattern(), visitor);
+          walk(group.getInnerWhere(), visitor);
+        }
       }
   }
 

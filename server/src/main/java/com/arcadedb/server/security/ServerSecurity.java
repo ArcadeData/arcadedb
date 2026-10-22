@@ -39,12 +39,17 @@ import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
+import com.arcadedb.utility.FileUtils;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import java.io.File;
 import java.io.IOException;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -67,6 +72,8 @@ import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public static final  int                             LATEST_VERSION       = 2;
+  /** Prefix of the users-file watcher thread's name; the watched file's path is appended to it. */
+  public static final  String                          USERS_WATCHER_PREFIX = "arcadedb-security-users-watcher";
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -77,7 +84,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   // Volatile reference to an immutable-by-convention snapshot: readers (authenticate on Undertow worker
   // threads) grab the current map lock-free, while loadUsers/applyReplicatedUsers build a fresh map and
   // publish it in one atomic reference swap so a read never observes a clear()->repopulate empty window.
+  // Every writer REPLACES the map, never edits it in place (issue #10460): the users watcher publishes a file it read
+  // with a compare-and-set against the map it saw before reading (USERS), so a change installed after its read -
+  // replicated on the lock-free Raft apply thread, or local - makes that publish fail rather than be reverted by it.
   private volatile     Map<String, ServerSecurityUser> users                = new ConcurrentHashMap<>();
+  private static final VarHandle                       USERS;
+
+  static {
+    try {
+      USERS = MethodHandles.lookup().findVarHandle(ServerSecurity.class, "users", Map.class);
+    } catch (final ReflectiveOperationException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
 
   // The fingerprint of the last REPLICATED document this node installed, per document kind (issue #7693). Read
   // by isSuperseded to decide whether this node's own document is one the cluster installed and therefore
@@ -107,7 +126,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
     }
   });
-  private              Timer                           reloadConfigurationTimer;
+  // The users half of the reload policy shared with the group and token stores (issue #10404), and its watcher.
+  private final        UsersPolicy                     usersPolicy;
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
   private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
@@ -196,6 +216,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
     usersRepository = new SecurityUserFileRepository(configPath);
+    usersPolicy = new UsersPolicy(configPath);
     groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload(latestConfiguration -> {
       refreshAllDatabasePermissions();
       return null;
@@ -242,7 +263,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Issue #7545: schedules the {@code server-groups.json} reload watcher, once, for the lifetime of this
    * service - the mirror of the {@code groupRepository.stop()} that {@link #stopService()} has always done.
    * <p>
-   * It used to be scheduled only as a side effect of {@link SecurityGroupFileRepository#load()}, i.e. only on a
+   * It used to be scheduled only as a side effect of {@code SecurityGroupFileRepository}'s first load, i.e. only on a
    * node that reached {@link SecurityGroupFileRepository#getGroups()} while the in-memory document was still
    * absent. A node seeded by a replicated {@code SECURITY_GROUPS_ENTRY} before it opened any database gets its
    * document published straight into memory by {@link #applyReplicatedGroups}, so that branch never ran and the
@@ -255,75 +276,205 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     groupRepository.startWatching();
   }
 
+  /**
+   * Loads {@code server-users.jsonl} into the users in force, and schedules the watcher that calls this again when the
+   * file changes.
+   * <p>
+   * The first load falls back to the default configuration (a single {@code root}) when the file cannot be loaded. A
+   * RELOAD never does (issue #10326): an unreadable, malformed, missing or empty file keeps the users already in force,
+   * and the bad file is preserved as {@code server-users-error.jsonl}. Two consequences an operator should know: emptying
+   * the file by hand does not drop every user (it only logs a WARNING), and until the file is fixed the users in memory
+   * differ from the file on disk - a restart would fall back to the default, and the next user change made through the
+   * server saves the users in force over the bad file.
+   */
   public void loadUsers() {
-    try {
-      final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
+    // Issue #10326: a RELOAD - the users-file watcher, on a running server - has users in force to fall back on, the first
+    // load has none (stopService() empties the map, and a first load always publishes at least root).
+    final boolean reload = usersPolicy.hasInForce();
+    usersPolicy.reload();
 
-      try {
-        for (final JSONObject userJson : usersRepository.getUsers()) {
-          final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          newUsers.put(user.getName(), user);
+    // Issue #10383: the token file is read here at STARTUP only, and from then on by its own watcher. This used to run on
+    // every users-file reload too, with the first-load policy: a token file that was absent or unparseable at that
+    // moment emptied the token set of a running server - because of a file it had not been asked to re-read - and
+    // nothing re-read it afterwards, so the revocation outlasted the restore of the file.
+    if (!reload) {
+      apiTokenConfig.load();
+      apiTokenConfig.startWatching(checkConfigReloadEveryMs);
+    }
+
+    // Schedule periodic cleanup of stale token failure entries
+    if (tokenFailureCleanupTimer == null) {
+      tokenFailureCleanupTimer = new Timer(true);
+      tokenFailureCleanupTimer.schedule(new TimerTask() {
+        @Override
+        public void run() {
+          final long now = System.currentTimeMillis();
+          tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
+          passwordFailures.entrySet().removeIf(e -> now - e.getValue()[1] > PASSWORD_LOCKOUT_MS);
         }
-      } catch (final JSONException e) {
-        groupRepository.saveInError(e);
-        for (final JSONObject userJson : SecurityUserFileRepository.createDefault()) {
-          final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          newUsers.put(user.getName(), user);
-        }
+      }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
+    }
+
+    usersPolicy.startWatching(checkConfigReloadEveryMs);
+  }
+
+  /**
+   * The users half of the reload policy shared with the group and token stores (issue #10404): the records of
+   * {@code server-users.jsonl} turned into users, a single {@code root} as the first load's fallback, and the swap into
+   * {@link #users}. Two answers differ from the default policy:
+   * <ul>
+   *   <li>its baseline is the repository's stamp, which {@link SecurityUserFileRepository#save} advances: a user change
+   *       made through the server is not re-read. In a cluster that matters, because a replicated install publishes
+   *       before it writes, and re-reading a file a moment older than the users in force would revert them;</li>
+   *   <li>a first load that fails with anything but a bad file - an I/O error or a {@code JSONException} - is not
+   *       recoverable by falling back and is rethrown, refusing to start.</li>
+   * </ul>
+   * Locked on its own monitor rather than on {@code ServerSecurity}'s, which the cluster-wide mutations hold across a
+   * Raft round trip: a watcher tick must not queue behind one.
+   */
+  private final class UsersPolicy extends ReloadableSecurityArtifact<Map<String, ServerSecurityUser>> {
+    // What was in force when the current load began, for publish()'s compare-and-set. Guarded by the policy's lock, and
+    // always set before publish() reads it: the base class calls publish() only from firstLoad() and reload(), both of
+    // which call beginLoad() first under that lock.
+    private Map<String, ServerSecurityUser> inForceAtLoad;
+
+    private UsersPolicy(final String configPath) {
+      this(new File(FileUtils.appendSeparatorIfMissing(configPath)));
+    }
+
+    private UsersPolicy(final File dir) {
+      super(ServerSecurity.this, new Object(), new File(dir, SecurityUserFileRepository.FILE_NAME),
+          new File(dir, SecurityUserFileRepository.ERROR_FILE_NAME), USERS_WATCHER_PREFIX, "User file");
+    }
+
+    /** {@code null} for an empty file: typically an editor caught between truncating the file and writing it. */
+    @Override
+    protected Map<String, ServerSecurityUser> read() throws IOException {
+      final List<JSONObject> records = usersRepository.loadRecords();
+      return records.isEmpty() ? null : toUsers(records);
+    }
+
+    @Override
+    protected Map<String, ServerSecurityUser> fallback() {
+      return toUsers(SecurityUserFileRepository.createDefault());
+    }
+
+    @Override
+    protected void beginLoad() {
+      inForceAtLoad = users;
+    }
+
+    /**
+     * A compare-and-set against the map in force when the load began (issue #10460), not a plain swap. The policy's lock
+     * does not serialize this with every writer: {@link #applyReplicatedUsers(String)} runs on the Raft apply thread and
+     * must stay lock-free, and the local user changes run under {@code ServerSecurity}'s monitor. So a change can land
+     * between this load's read and this publish - a replicated drop, a rotated password - and publishing the read would
+     * revert it on this node. Every writer replaces the map, so such a change makes the compare fail and the read is
+     * dropped: it predates the change. Nothing is lost by dropping it: a successful write of the change stamps the file
+     * the change wrote, and a failed one is the #10451 refusal, which a hand edit cannot win either.
+     */
+    @Override
+    protected boolean publish(final Map<String, ServerSecurityUser> newUsers, final boolean isFallback) {
+      final Map<String, ServerSecurityUser> previous = inForceAtLoad;
+      // Not kept past this load: it would pin a replaced map in memory until the next one.
+      inForceAtLoad = null;
+      // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the previous
+      // complete map or this one, never an empty intermediate state.
+      if (!USERS.compareAndSet(ServerSecurity.this, previous, newUsers)) {
+        LogManager.instance().log(ServerSecurity.this, Level.WARNING,
+            "File '%s' was read while the users in force changed (a replicated user list or a user change was installed): "
+                + "what was read is older than that change and is not applied, keeping the %d users in force. A hand edit "
+                + "made before that change is not applied either: the change's write replaced it, or, if that write failed, "
+                + "the file is not read until the users in force reach it. Make the edit again, through the server",
+            file.getName(), users.size());
+        return false;
       }
 
-      // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
-      // previous complete map or this one, never an empty intermediate state.
-      final Map<String, ServerSecurityUser> previousUsers = this.users;
-      this.users = newUsers;
-
-      // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password
-      // rotated - an operator editing the file directly, or a peer's file being re-read - and the bearer
-      // path only requires the name to still resolve. Same comparison the replicated path makes. A no-op at
-      // startup, when no session exists yet.
-      invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
+      // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password rotated - an
+      // operator editing the file directly, or a peer's file being re-read - and the bearer path only requires the name
+      // to still resolve. Same comparison the replicated path makes. A no-op at startup, when no session exists yet.
+      invalidateAuthSessionsOfRevokedPrincipals(previous, newUsers);
 
       if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
-        askForRootPassword();
-
-      apiTokenConfig.load();
-
-      // Schedule periodic cleanup of stale token failure entries
-      if (tokenFailureCleanupTimer == null) {
-        tokenFailureCleanupTimer = new Timer(true);
-        tokenFailureCleanupTimer.schedule(new TimerTask() {
-          @Override
-          public void run() {
-            final long now = System.currentTimeMillis();
-            tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
-            passwordFailures.entrySet().removeIf(e -> now - e.getValue()[1] > PASSWORD_LOCKOUT_MS);
-          }
-        }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
-      }
-
-      final long fileLastModified = usersRepository.getFileLastModified();
-      if (fileLastModified > -1 && reloadConfigurationTimer == null) {
-        reloadConfigurationTimer = new Timer();
-        reloadConfigurationTimer.schedule(new TimerTask() {
-          @Override
-          public void run() {
-            if (usersRepository.isUserFileChanged()) {
-              LogManager.instance().log(this, Level.INFO, "Reloading user files...");
-              loadUsers();
-            }
-          }
-        }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
-      }
-
-    } catch (final IOException e) {
-      throw new ServerException("Error on starting Security service", e);
+        try {
+          askForRootPassword();
+        } catch (final IOException e) {
+          throw new ServerException("Error on starting Security service", e);
+        }
+      return true;
     }
+
+    /**
+     * A replicated list whose write failed is in force even when it is EMPTY (issue #10451): without the second clause the
+     * reload would treat it as nothing to keep and take the first-load path, which never consults {@link #refusal()}, and
+     * publish the older file.
+     */
+    @Override
+    protected boolean hasInForce() {
+      return !users.isEmpty() || usersRepository.isDiskBehind();
+    }
+
+    @Override
+    protected String keeping() {
+      return "keeping the " + users.size() + " users already in force";
+    }
+
+    @Override
+    protected Map<String, ServerSecurityUser> onFirstLoadFailure(final Exception failure) {
+      if (failure instanceof IOException || failure instanceof JSONException)
+        return super.onFirstLoadFailure(failure);
+      throw failure instanceof RuntimeException r ? r : new ServerException("Error on starting Security service", failure);
+    }
+
+    /** The repository's own lock, which also serializes the preservation with its saves. */
+    @Override
+    protected void preserve(final Exception failure, final String outcome) {
+      usersRepository.saveInError(failure, outcome);
+    }
+
+    @Override
+    protected boolean fileChanged() {
+      return file.exists() && usersRepository.isUserFileChanged();
+    }
+
+    /**
+     * Refuses while the users in force have not reached the disk (issue #10451): a replicated list is published even when
+     * its write fails (issue #7137), so the file then holds an OLDER list - with a user the cluster has since dropped, or a
+     * password it has since rotated - and publishing it would undo the replicated change on this node. The #7752 retry
+     * ({@link #retryReplicatedSecurityPersistence}), or any later successful save, lifts the refusal.
+     * <p>
+     * The base class stamps its own baseline on a refusal; this store watches the repository's stamp instead
+     * ({@link #fileChanged()}), so it is advanced here too, or the refusal would be logged again on every tick.
+     * <p>
+     * The check and the stamp are not one atomic step, on purpose. A successful {@code save()} in between stamps the
+     * file it wrote, which is the stamp this would read. A hand edit in between is taken as seen without being read,
+     * which is the refusal's own outcome: the next successful write overwrites that edit with the users in force.
+     */
+    @Override
+    protected String refusal() {
+      if (!usersRepository.isDiskBehind())
+        return null;
+      usersRepository.markFileSeen();
+      return "the users in force have not been written to it yet (the last write of a replicated user list failed), so it "
+          + "is not read: make the configuration directory writable again - the next successful write lifts this and writes "
+          + "the users in force OVER this edit - and make a user change through the server instead: a hand edit cannot win "
+          + "over a replicated user list, which a restart would also replay";
+    }
+  }
+
+  /** Builds a users map from the records of {@code server-users.jsonl}; throws {@link JSONException} on a record that is not a user. */
+  private Map<String, ServerSecurityUser> toUsers(final List<JSONObject> records) {
+    final Map<String, ServerSecurityUser> result = new ConcurrentHashMap<>();
+    for (final JSONObject userJson : records) {
+      final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
+      result.put(user.getName(), user);
+    }
+    return result;
   }
 
   @Override
   public void stopService() {
-    if (reloadConfigurationTimer != null)
-      reloadConfigurationTimer.cancel();
+    usersPolicy.stop();
     if (tokenFailureCleanupTimer != null) {
       tokenFailureCleanupTimer.cancel();
       tokenFailureCleanupTimer = null;
@@ -332,6 +483,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     users = new ConcurrentHashMap<>();
     if (groupRepository != null)
       groupRepository.stop();
+    if (apiTokenConfig != null)
+      apiTokenConfig.stop();
 
     // shutdown() rather than shutdownNow(), with the queue drained by hand, because neither one alone is right
     // here. shutdownNow() interrupts a walk that may be inside ArcadeDBServer.getDatabase(), turning a normal
@@ -485,7 +638,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // first would leave the new user live in memory while nothing reached the disk - authoritative until the
     // next restart silently took it away again.
     saveUsers(snapshotWith(name, userConfiguration));
-    users.put(name, user);
+    publishLocalChange(name, user);
     return user;
   }
 
@@ -505,7 +658,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // force rather than activate a new one that no longer exists after a restart - and the throw would
       // also skip the session invalidation below, so the rotation would be half-applied.
       saveUsers(snapshotWith(name, userConfiguration));
-      users.put(name, user);
+      publishLocalChange(name, user);
     }
 
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
@@ -525,6 +678,67 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       invalidateHttpSessions(name);
 
     return user;
+  }
+
+  /**
+   * Grants {@code userName} access to {@code databaseName} under {@code groups} on THIS node only, merging the groups into the
+   * ones the user already holds for it. Persisted before it is published, through {@link #updateUser} (issue #10535): the grant is
+   * made on a copy of the user, because {@link #getUser} hands out the live object and a grant made on it was already in force
+   * when the save that could refuse it ran. A refused save leaves the user as it was.
+   * <p>
+   * A user that already holds the database under every one of the groups is left alone and nothing is written, so that what the
+   * server does at startup for the credentials of its default databases is repeatable on a configuration directory that cannot be
+   * written (a Kubernetes ConfigMap mount) once the first start has made the grant. A cluster-wide grant is an
+   * {@link #updateUserClusterWide} of the user's configuration.
+   *
+   * @throws ServerSecurityException when the user does not exist or the users file cannot be written
+   */
+  public synchronized ServerSecurityUser addDatabaseToUser(final String userName, final String databaseName, final String[] groups) {
+    final ServerSecurityUser current = users.get(userName);
+    if (current == null)
+      throw new ServerSecurityException("User '" + userName + "' not found");
+
+    if (current.holdsDatabaseWithGroups(databaseName, groups))
+      return current;
+
+    final JSONObject configuration = current.toJSON().copy();
+    if (!configuration.has("databases"))
+      configuration.put("databases", new JSONObject());
+    // The grant itself stays where it is defined: on a user nobody else can see yet, whose configuration is the copy
+    new ServerSecurityUser(server, configuration).addDatabase(databaseName, groups);
+    return updateUser(configuration);
+  }
+
+  /**
+   * Publishes a local change of one user - {@code user}, or its removal when {@code null} - as a NEW map rather than an
+   * edit of the one in force (issue #10460), so a users-file reload that read the file before the change fails its
+   * compare-and-set instead of publishing over it. A compare-and-set here too, retried, because the replicated install
+   * on the Raft apply thread swaps the map without this class's monitor, and its list must not be overwritten by a copy
+   * of the one it replaced. A copy per change is fine: user administration is rare, and the map is small.
+   * <p>
+   * Not closed here, and older than this method: the caller saved a snapshot of the map before calling it, so an install
+   * landing between that save and this swap writes its own list over the save and then swaps it in. Memory ends up with
+   * the install plus this change, and the file with the install alone, until the next successful local save writes both.
+   */
+  private void publishLocalChange(final String name, final ServerSecurityUser user) {
+    while (true) {
+      final Map<String, ServerSecurityUser> current = users;
+      final Map<String, ServerSecurityUser> next = new ConcurrentHashMap<>(current);
+      if (user == null)
+        next.remove(name);
+      else
+        next.put(name, user);
+      if (USERS.compareAndSet(this, current, next))
+        return;
+    }
+  }
+
+  /**
+   * Test seam (issue #10460): runs {@code hook} in every users-file load after the file was read and before what was read
+   * is published, the window a concurrent install has to land in. {@code null} removes it.
+   */
+  void afterUsersFileRead(final Runnable hook) {
+    usersPolicy.afterRead = hook;
   }
 
   /**
@@ -551,7 +765,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // Persist before publishing, as in createUser()/updateUser(): a failed save must not leave a user
       // removed in memory and still present on disk, which a restart would resurrect.
       saveUsers(snapshotWith(userName, null));
-      users.remove(userName);
+      publishLocalChange(userName, null);
     }
     // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
     // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
@@ -1080,6 +1294,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return encodePassword(userPassword, ServerSecurity.generateRandomSalt());
   }
 
+  /**
+   * Hashes a random throwaway password with the configured iterations, and caches nothing: the code the first login of a
+   * server runs - the JCE provider and its HMAC loop - is then loaded and compiled before a client waits on it (issue
+   * #10218). Called by the background warm-up only.
+   */
+  public void warmUpPasswordHashing() {
+    getEncodedHash(generateRandomSalt(), generateRandomSalt(), saltIteration);
+  }
+
   public boolean passwordMatch(final String password, final String hashedPassword) {
     // hashedPassword consist of: ALGORITHM, ITERATIONS_NUMBER, SALT and
     // HASH; parts are joined with dollar character ("$")
@@ -1182,18 +1405,20 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return json;
   }
 
-  public void saveUsers() {
-    saveUsers(usersToJSON());
-  }
-
   /**
    * Writes an explicit user list to {@code server-users.jsonl}, so a mutation can be persisted <i>before</i>
    * it is published to the in-memory map. Publishing first and saving after leaves the change authoritative
    * in memory while nothing reached the disk when the write fails - and the propagated failure then also
    * skips whatever the caller does afterwards (session invalidation, most importantly), so the mutation ends
    * up half-applied instead of not applied at all.
+   * <p>
+   * There is deliberately no form that serialises the live map: {@link #getUser} hands out the live user, so a caller
+   * that mutated it and then saved "what is there" had already published the change, which is the order this method
+   * exists to prevent (issue #10535). A caller that changes a user goes through {@link #createUser},
+   * {@link #updateUser}, {@link #addDatabaseToUser} or {@link #dropUserLocally}, which all persist first. Package-private
+   * for the tests that write a list they built themselves.
    */
-  private void saveUsers(final List<JSONObject> snapshot) {
+  void saveUsers(final List<JSONObject> snapshot) {
     try {
       usersRepository.save(snapshot);
     } catch (final IOException e) {
@@ -1642,6 +1867,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // is accepted deliberately here, and it does not hide: the only caller logs every one of these at SEVERE
       // with the cause attached (ArcadeStateMachine.applySecurityUsersEntry), which is the visibility the
       // similarly-widened catches in RaftHAServer had to add a log-level bump to get.
+      //
+      // Both callers publish the list whether or not it was written (the replicated install, and the #7752 retry of what
+      // is already in force), so the file is now OLDER than the users in force (issue #10451): see UsersPolicy.refusal().
+      usersRepository.markDiskBehind();
       return e;
     }
   }
@@ -1839,9 +2068,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     //
     // - no usable 'databases' section and every authorization lookup - getDatabaseGroupsConfiguration, called
     //   per request - throws instead of answering;
-    // - no 'version' and the document is written out anyway, but SecurityGroupFileRepository.load() discards a
-    //   versionless file on the next restart and falls back to createDefault(), which is the silent widening
-    //   to the default permissions the repository's own atomic-write comment exists to prevent.
+    // - no 'version' and the document is written out anyway, but SecurityGroupFileRepository.load() refuses a
+    //   versionless file on the next restart and falls back to the default document (preserving the refused one
+    //   since issue #10383), which is the widening to the default permissions the repository's own atomic-write
+    //   comment exists to prevent. SecurityGroupFileRepository.shapeProblem() is the file reader's side of the same
+    //   two checks.
     if (!root.has("databases") || !(root.get("databases") instanceof JSONObject))
       throw new ServerSecurityException(
           "Replicated group document has no usable 'databases' section; refusing to install it over the current "
@@ -2212,6 +2443,25 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return password;
   }
 
+  /**
+   * Reads the root password from the file at {@code rootPasswordPath} ({@code arcadedb.server.rootPasswordPath}),
+   * dropping one trailing line terminator (see {@link #stripTrailingNewline(String)}). Shared by the creation of the
+   * root user and by the HA cluster-token derivation, so both read the very same password out of the same file.
+   *
+   * @throws ServerSecurityException if the file cannot be read, or holds an empty password
+   */
+  public static String readRootPasswordFile(final String rootPasswordPath) {
+    final String rootPassword;
+    try {
+      rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
+    } catch (final IOException | InvalidPathException e) {
+      throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'", e);
+    }
+    if (rootPassword.isEmpty())
+      throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
+    return rootPassword;
+  }
+
   protected void askForRootPassword() throws IOException {
     String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
@@ -2222,15 +2472,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
           GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
 
-      if (rootPasswordPath != null) {
-        if (Files.isReadable(Path.of(rootPasswordPath)))
-          rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
-        else
-          throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'");
-
-        if (rootPassword.isEmpty())
-          throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
-      }
+      if (rootPasswordPath != null)
+        rootPassword = readRootPasswordFile(rootPasswordPath);
     }
 
     if (rootPassword == null) {
@@ -2330,8 +2573,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final String encodedPassword = encodePassword(rootPassword, ServerSecurity.generateRandomSalt());
 
     if (existsUser("root")) {
-      getUser("root").setPassword(encodedPassword);
-      saveUsers();
+      // A copy, persisted before it is published (issue #10535): setting the password on the live user and saving after
+      // left root authenticating against a password a read-only configuration directory never received
+      final JSONObject updated = getUser("root").toJSON().copy();
+      updated.put("password", encodedPassword);
+      updateUser(updated);
     } else
       createUser(new JSONObject().put("name", "root").put("password", encodedPassword));
   }

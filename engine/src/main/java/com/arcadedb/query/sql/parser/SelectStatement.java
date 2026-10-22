@@ -187,6 +187,8 @@ public class SelectStatement extends Statement {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
+    // ONE SNAPSHOT OF EACH GRAPH VIEW FOR THE WHOLE STATEMENT, ITS SUB-QUERIES INCLUDED (issue #10415)
+    context.openGraphViewPins();
 
     context.setDatabase(db);
     final Map<String, Object> params = new HashMap<>();
@@ -208,6 +210,8 @@ public class SelectStatement extends Statement {
     final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
+    // ONE SNAPSHOT OF EACH GRAPH VIEW FOR THE WHOLE STATEMENT, ITS SUB-QUERIES INCLUDED (issue #10415)
+    context.openGraphViewPins();
 
     context.setDatabase(db);
 

@@ -20,13 +20,16 @@ package com.arcadedb.database;
 
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -136,6 +139,44 @@ public class DeferredExistenceChecks {
    */
   private int sweepAt = SWEEP_THRESHOLD;
 
+  /**
+   * For a record still in {@link #pending}, how many updates it took while it was provisional, which are writes the transaction
+   * counted ({@link TransactionContext#countCompletedRecordWrite}) and which taking the record back retracts again. Tallied by
+   * {@link #updateCounted} at the moment the write is counted, never earlier: validation runs before a listener can veto the update
+   * or an index can refuse it, and a count given back for a write that was not made cancels one that stands. Created on the first
+   * such update, so the usual statement that never updates a record before completing it pays nothing.
+   */
+  private Map<RID, Integer> deferredUpdates;
+
+  /**
+   * Most records {@link #journal} follows. A statement that writes more than this beside a provisional record is not the shape this
+   * exists for (a pattern that connects it); the journal gives up and the take-back gives back only what the provisional records
+   * themselves counted, which keeps the commit refused rather than risk giving back a write that stands.
+   */
+  private static final int JOURNAL_LIMIT = 4_096;
+
+  /**
+   * What the statement did, since a provisional record is pending, to the records that are not provisional themselves: the edges it
+   * connected to it, the segments that hold them, the records at the other end. Taking the provisional records back deletes those of
+   * them the statement created, and {@link #retractJournaledWrites} gives their writes back with the provisional ones. Created on the
+   * first such write, so the statement that never leaves a record provisional pays nothing.
+   */
+  private Map<RID, WriteTally> journal;
+
+  /** True once {@link #journal} reached {@link #JOURNAL_LIMIT}: it was dropped, and nothing more is journaled until the scope closes. */
+  private boolean journalOverflowed;
+
+  /**
+   * True once the statement connected a lightweight edge while a provisional record was pending. Such an edge is an entry in the edge
+   * lists of its two vertices and no record, so nothing in {@link #journal} says whether it stands or was removed with the provisional
+   * record: the property-less updates of the vertices are then never given back (see {@link #retractJournaledWrites}).
+   */
+  private boolean lightEdgeConnected;
+
+  /** The transaction the statement ran in when this scope was opened, and what it had counted by then: see {@link #deleteProvisionalRecord}. */
+  private TransactionContext txAtOpen;
+  private long               writesAtOpen;
+
   /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */
   private boolean active = false;
 
@@ -181,6 +222,8 @@ public class DeferredExistenceChecks {
       return null;
 
     scope.active = true;
+    scope.txAtOpen = database.getTransactionIfExists();
+    scope.writesAtOpen = scope.txAtOpen != null ? scope.txAtOpen.getCompletedRecordWrites() : 0L;
     return scope;
   }
 
@@ -197,6 +240,11 @@ public class DeferredExistenceChecks {
     active = false;
     unresolved.clear();
     pending.clear();
+    deferredUpdates = null;
+    journal = null;
+    journalOverflowed = false;
+    lightEdgeConnected = false;
+    txAtOpen = null;
     patternCreateDepth = 0;
     sweepAt = SWEEP_THRESHOLD;
     disarm();
@@ -272,6 +320,170 @@ public class DeferredExistenceChecks {
   }
 
   /**
+   * Tallies an update of a record that is still provisional, called by the update path right after it counted the write
+   * ({@link TransactionContext#countCompletedRecordWrite}): the retraction of {@link #deleteProvisionalRecord} gives back what was
+   * counted for the record, no more. An update that completed the record is not tallied, as the record and that write stay.
+   * <p>
+   * An update of any other record is journaled (see {@link #journal}): taking the provisional records back can take back records the
+   * statement wrote beside them, and the writes counted for those are given back with them.
+   *
+   * @param structural whether the update touched the record's edge lists only (no property was assigned or removed)
+   */
+  static void updateCounted(final DatabaseInternal database, final RID rid, final boolean structural) {
+    final DeferredExistenceChecks scope = scopeOf(database, rid);
+    if (scope == null)
+      return;
+
+    if (scope.isPending(rid)) {
+      if (scope.deferredUpdates == null)
+        scope.deferredUpdates = new HashMap<>();
+      scope.deferredUpdates.merge(rid, 1, Integer::sum);
+    } else
+      scope.journalWrite(rid, false, false, structural);
+  }
+
+  /** Journals the creation of a record while a provisional one is pending, called by the create path right after it counted the write. */
+  static void createCounted(final DatabaseInternal database, final RID rid) {
+    final DeferredExistenceChecks scope = scopeOf(database, rid);
+    if (scope != null && !scope.isPending(rid))
+      scope.journalWrite(rid, true, false, false);
+  }
+
+  /** Journals the deletion of a record while a provisional one is pending, called by the delete path right after it counted the write. */
+  static void deleteCounted(final DatabaseInternal database, final RID rid) {
+    final DeferredExistenceChecks scope = scopeOf(database, rid);
+    if (scope != null && !scope.isPending(rid))
+      scope.journalWrite(rid, false, true, false);
+  }
+
+  /**
+   * Notes that the statement connected a lightweight edge, called by the graph engine for every one of them. A statement with no
+   * provisional record pending pays one volatile read.
+   */
+  public static void lightEdgeConnected(final DatabaseInternal database) {
+    if (!anyScopeArmed())
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
+    if (scope != null && scope.active && scope.armed)
+      scope.lightEdgeConnected = true;
+  }
+
+  private static DeferredExistenceChecks scopeOf(final DatabaseInternal database, final RID rid) {
+    if (rid == null)
+      return null;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    if (context == null)
+      return null;
+
+    final DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
+    return scope != null && scope.active ? scope : null;
+  }
+
+  /**
+   * Records one counted write of a record that is not provisional, while the scope holds a provisional one. Past
+   * {@link #JOURNAL_LIMIT} records the journal gives up and takes nothing back (see {@link #journalOverflowed}).
+   */
+  private void journalWrite(final RID rid, final boolean creation, final boolean deletion, final boolean structural) {
+    if (!armed || journalOverflowed)
+      return;
+    if (journal == null)
+      journal = new HashMap<>();
+
+    WriteTally tally = journal.get(rid);
+    if (tally == null) {
+      if (journal.size() >= JOURNAL_LIMIT) {
+        journalOverflowed = true;
+        journal = null;
+        return;
+      }
+      tally = new WriteTally();
+      journal.put(rid, tally);
+    }
+    tally.writes++;
+    tally.created |= creation;
+    tally.deleted |= deletion;
+    tally.content |= !creation && !deletion && !structural;
+  }
+
+  /**
+   * Gives back the writes counted for the records the statement wrote beside its provisional ones and that went with them (issue
+   * #10482). A pattern that connects a provisional record writes more than the record: the edge, the edge segments that hold it, the
+   * records it touches at the other end. Deleting the provisional record deletes those it created, and every write counted for a
+   * record the statement created and that is gone is given back: nothing of it stands.
+   * <p>
+   * What the statement did to a record that EXISTED before it is given back only when it is the other end of such an edge: updates
+   * that assigned no property (the edge list of the vertex grew, then shrank again with the edge), and only when no record the
+   * statement created is left and it connected no lightweight edge, since an edge that stands is what those updates were for (a
+   * lightweight edge is no record, so nothing says whether it was removed with the provisional one). Anything else the statement wrote -
+   * a property set, a record deleted, an edge between existing vertices - keeps its count, and the commit stays refused.
+   * <p>
+   * Called once the provisional records are deleted, in the transaction the statement ran in; the counter never goes below what it
+   * held when the statement started.
+   * <p>
+   * What has to hold for a give-back to be right, in one place: every lightweight edge the statement connects while a provisional
+   * record is pending is reported ({@link #lightEdgeConnected}); a write is classified property-less only when
+   * {@code MutableDocument.arePropertiesAssigned()} is still false when it is counted (the flag is reset by a save that reaches the
+   * page, never by the deferred update that is counted, and {@code aPropertyWrittenWhileTheProvisionalRecordIsPendingStillRefusesTheCommit}
+   * fails without it); a record created by the statement is given back only when it is deleted in the transaction or is an edge
+   * segment with no edge; and whatever cannot be shown is kept, which only ever refuses a commit that could have been allowed.
+   */
+  private void retractJournaledWrites() {
+    if (journal == null || journalOverflowed || journal.isEmpty())
+      return;
+
+    final TransactionContext tx = database.getTransaction();
+    if (tx != txAtOpen)
+      return;
+
+    long given = 0L;
+    boolean createdRecordStands = false;
+    for (final Map.Entry<RID, WriteTally> entry : journal.entrySet()) {
+      final WriteTally tally = entry.getValue();
+      if (!tally.created)
+        continue;
+      if (tally.deleted || tx.isDeletedInTransaction(entry.getKey()) || isEmptyEdgeSegment(entry.getKey()))
+        given += tally.writes;
+      else
+        createdRecordStands = true;
+    }
+
+    if (!createdRecordStands && !lightEdgeConnected)
+      for (final WriteTally tally : journal.values())
+        if (!tally.created && !tally.deleted && !tally.content)
+          given += tally.writes;
+
+    if (given > 0L)
+      tx.retractCompletedRecordWrites(given, writesAtOpen);
+    journal = null;
+  }
+
+  /**
+   * Whether {@code rid} is an edge segment holding no edge. Deleting the provisional record removes the edges it held, but the segment
+   * that held them survives on a vertex that existed before the statement, as the empty list that vertex now points to: the same
+   * thing a delete of its only edge leaves. It is the statement's creation, and nothing of it stands.
+   */
+  private boolean isEmptyEdgeSegment(final RID rid) {
+    try {
+      return database.lookupByRID(rid, true) instanceof EdgeSegment segment && segment.isEmpty();
+    } catch (final RecordNotFoundException e) {
+      // A record that cannot be read is not shown to be gone (a delete in this transaction was asked before): the guard refuses
+      return false;
+    }
+  }
+
+  /** What the statement did to one record that was not provisional, while a provisional one was pending. */
+  private static final class WriteTally {
+    int     writes;
+    boolean created;
+    boolean deleted;
+    /** True once a write of this record was not the maintenance of an edge list: a property assigned or removed. */
+    boolean content;
+  }
+
+  /**
    * Forgets a record that has just validated cleanly, so the pending set holds only what is still incomplete.
    * Called on the ordinary update path, where the {@code SET} that completes a provisional record runs.
    */
@@ -296,14 +508,22 @@ public class DeferredExistenceChecks {
       // statement's row count.
       scope.resolve();
       scope.pending.remove(rid);
+      if (scope.deferredUpdates != null)
+        // Completed, so it stays: its writes are the statement's to keep
+        scope.deferredUpdates.remove(rid);
 
       // Nothing incomplete left, so this scope stops making every other write in the JVM look for it. Without this
       // the counter would stay up for the rest of the statement, and a bulk upsert - which holds a provisional
       // record for a moment per row, for as long as the import runs - would tax every other database's writes for
       // its whole duration, which is the opposite of what the counter is for. The atomic is paid only when the
       // state actually changes, and the write pipeline batches, so it is one disarm per batch rather than per row.
-      if (scope.isEmpty())
+      if (scope.isEmpty()) {
         scope.disarm();
+        // What the statement wrote so far stands, so a later provisional record has no claim on it
+        scope.journal = null;
+        scope.journalOverflowed = false;
+        scope.lightEdgeConnected = false;
+      }
     }
   }
 
@@ -329,8 +549,10 @@ public class DeferredExistenceChecks {
     // catch hands it to discard() - the guarded one - and close() clears this scope in its finally either way.
     final StringJoiner violations = new StringJoiner("; ");
     final List<RID> incomplete = takeIncomplete(violations);
-    if (incomplete.isEmpty())
+    if (incomplete.isEmpty()) {
+      disarm();
       return;
+    }
 
     // Best effort, like discard()'s: the ValidationException below names the constraint the statement actually
     // broke, and a failure to tidy up after it must not take its place.
@@ -340,6 +562,8 @@ public class DeferredExistenceChecks {
     } catch (final RuntimeException | Error e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not take back the incomplete records of a statement that failed its existence constraints", e);
+    } finally {
+      disarm();
     }
 
     // What the message claims is what actually happened. Taking the records back is best effort - a delete can
@@ -401,19 +625,22 @@ public class DeferredExistenceChecks {
         record = (Document) database.lookupByRID(rid, true);
       } catch (final RecordNotFoundException | ClassCastException e) {
         // Rolled back, or deleted later in the same statement: there is nothing left to constrain.
+        forgetTally(rid);
         continue;
       }
 
       final String violation = firstUnmetExistenceConstraint(record);
-      if (violation == null)
+      if (violation == null) {
+        forgetTally(rid);
         continue;
+      }
 
       violations.add(violation);
       incomplete.add(rid);
     }
 
+    // Still armed: the deletion that follows is journaled like the writes that came before it (retractJournaledWrites)
     pending.clear();
-    disarm();
     return incomplete;
   }
 
@@ -467,6 +694,7 @@ public class DeferredExistenceChecks {
           removed[0]++;
     }, true);
 
+    retractJournaledWrites();
     return removed[0];
   }
 
@@ -478,8 +706,21 @@ public class DeferredExistenceChecks {
   private boolean deleteProvisionalRecord(final RID rid) {
     try {
       final Record record = database.lookupByRID(rid, false);
-      if (record != null)
+      if (record != null) {
         database.deleteRecord(record);
+        // The statement created this record and now takes it back, with every update it took meanwhile: nothing of it stands, so the
+        // writes the transaction counted for it (the creation, those updates, this delete) are given back, and a caller that goes on
+        // after the ValidationException is not told that part of the statement is left behind (issue #10379)
+        final Integer updates = deferredUpdates != null ? deferredUpdates.remove(rid) : null;
+        // The two writes every provisional record counted besides its tallied updates: its creation, counted when LocalDatabase
+        // created it (createRecordNoLock), and the delete just made, counted by deleteRecordInternal. The test
+        // Issue10379FailedStatementInCallerTransactionTest pins that the counter is where it was after the take-back.
+        // Never below what the transaction had counted when the statement started. In another transaction than the statement started
+        // in nothing is given back: the commit is refused, as for any half-applied statement
+        final TransactionContext tx = database.getTransaction();
+        if (tx == txAtOpen)
+          tx.retractCompletedRecordWrites(2L + (updates != null ? updates : 0), writesAtOpen);
+      }
       return true;
     } catch (final RecordNotFoundException e) {
       // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
@@ -540,15 +781,26 @@ public class DeferredExistenceChecks {
     }
   }
 
+  /** A record that leaves {@link #pending} without being taken back keeps no tally of updates, so a RID reused later starts from none. */
+  private void forgetTally(final RID rid) {
+    if (deferredUpdates != null)
+      deferredUpdates.remove(rid);
+  }
+
   /** Drops from {@link #pending} every record the statement has completed since it was registered. */
   private void sweep() {
     for (final Iterator<RID> it = pending.iterator(); it.hasNext(); ) {
       final RID rid = it.next();
       try {
-        if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null)
+        if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null) {
           it.remove();
+          if (deferredUpdates != null)
+            deferredUpdates.remove(rid);
+        }
       } catch (final RecordNotFoundException | ClassCastException e) {
         it.remove();
+        if (deferredUpdates != null)
+          deferredUpdates.remove(rid);
       }
     }
   }

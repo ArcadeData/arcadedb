@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.IsolationLevels;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -55,15 +56,13 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     // Read before anything is created: the envelope already refused a label that cannot be one, and nothing below may fail
     // between publishing the session and handing its id to the client (issue #9775)
     final String tag = queryTag(exchange);
+    // Resolved before the context is attached to this worker thread, so a refused value leaves nothing behind (issue #10295)
+    final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = isolationLevel(payload);
 
     DatabaseContext.INSTANCE.init((DatabaseInternal) database);
 
-    // isolationLevel is optional: when a payload is present but omits it, fall back to the default isolation.
-    // getString(name, default) avoids the full recursive toMap() copy on this hot path; a scalar value stringifies
-    // (no ClassCastException, unlike the old (String) cast), while a JSON object/array would still be rejected.
-    final String isolationLevel = payload != null ? payload.getString("isolationLevel", null) : null;
     if (isolationLevel != null)
-      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel));
+      database.begin(isolationLevel);
     else
       database.begin();
 
@@ -85,6 +84,24 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     Metrics.counter("http.begin").increment();
 
     return new ExecutionResponse(204, "");
+  }
+
+  /**
+   * The optional {@code isolationLevel} of the request body, the values the OpenAPI spec declares for it (issue #10295).
+   * Absent (no body, or a body that omits it) means the database's default isolation and returns {@code null}. Anything
+   * outside {@link Database.TRANSACTION_ISOLATION_LEVEL} is a client error, answered 400 by the
+   * {@link IllegalArgumentException} arm with a message that names the parameter and the values it accepts.
+   */
+  static Database.TRANSACTION_ISOLATION_LEVEL isolationLevel(final JSONObject payload) {
+    // opt(name) reads the one member without the full recursive toMap() copy on this hot path. Not getString(): it unwraps a
+    // one-element array, so ["READ_COMMITTED"] would have begun a transaction, while the spec declares a string
+    final Object value = payload != null ? payload.opt("isolationLevel") : null;
+    if (value == null)
+      return null;
+    // Parsed where every surface parses it, so the accepted values and the refusal are the same everywhere (issue #10386)
+    if (value instanceof String name)
+      return IsolationLevels.parse(name);
+    throw IsolationLevels.refusal("of type " + value.getClass().getSimpleName());
   }
 
   @Override

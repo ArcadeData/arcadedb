@@ -173,12 +173,37 @@ public final class IncomingEdgeLookup {
     final MultiIterator<Vertex> result = new MultiIterator<>();
     if (direction == Vertex.DIRECTION.BOTH)
       result.addIterator(vertex.getVertices(Vertex.DIRECTION.OUT, edgeTypes).iterator());
+    addIncomingVertices(result, vertex, edgeTypes, involved);
+    return result;
+  }
+
+  /**
+   * The incoming half of {@link #getVertices}: what it answers besides the stored outgoing list of an undirected hop, which the caller
+   * reads itself. A walk that wants to ask, entry by entry, whether the edge an adjacency entry names still has its record cannot do it
+   * on vertices the stored list answered (they carry no edge RID); it reads that list by its entries and takes the rest from here
+   * (issue #10463). Nothing for {@link Vertex.DIRECTION#OUT}, and what the vertex API answers for the incoming side when no
+   * unidirectional type is involved.
+   */
+  public static Iterator<Vertex> getIncomingVertices(final CommandContext context, final Vertex vertex,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    if (direction == Vertex.DIRECTION.OUT)
+      return Collections.emptyIterator();
+    final Involved involved = involved(context, vertex, direction, edgeTypes);
+    if (involved == null)
+      return vertex.getVertices(Vertex.DIRECTION.IN, edgeTypes).iterator();
+
+    final MultiIterator<Vertex> result = new MultiIterator<>();
+    addIncomingVertices(result, vertex, edgeTypes, involved);
+    return result;
+  }
+
+  private static void addIncomingVertices(final MultiIterator<Vertex> result, final Vertex vertex, final String[] edgeTypes,
+      final Involved involved) {
     if (involved.closure.anyBidirectional)
       result.addIterator(new SourceVertices(
           new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(), involved.schema)));
     for (final Snapshot snapshot : involved.snapshots)
       result.addIterator(snapshot.sourcesOf(vertex.getIdentity()));
-    return result;
   }
 
   /**
@@ -835,14 +860,16 @@ public final class IncomingEdgeLookup {
     long count(final RID target, final boolean skipSelfLoops) {
       final UnidirectionalEdgeChanges changes = overlay();
       final boolean deletions = changes != null && changes.hasDeletions();
+      final TwinOverlay twins = changes != null ? twinsOf(target, changes) : null;
       // COUNTED ON THE ARRAYS AND THE CHANGES ALONE: NO EDGE IS MATERIALIZED
       long count = 0;
       for (int i = firstIndex(target); i < size && isTarget(i, target); i++)
-        if ((!skipSelfLoops || !isSource(i, target)) && (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt)))
+        if ((!skipSelfLoops || !isSource(i, target)) && !isDeletedSince(i, changes, deletions, twins))
           ++count;
       if (changes != null)
         for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
-          if (isLive(created, changes) && (!skipSelfLoops || !target.equals(created.edge().getOut())))
+          // isLive FIRST: IT TAKES A DELETE OUT OF THE CREATED TWINS, SO EVERY CREATED ENTRY MUST BE ASKED, SELF-LOOP OR NOT
+          if (isLive(created, changes, twins) && (!skipSelfLoops || !target.equals(created.edge().getOut())))
             ++count;
       return count;
     }
@@ -872,6 +899,7 @@ public final class IncomingEdgeLookup {
     private Iterator<Edge> edgesInto(final RID target, final UnidirectionalEdgeChanges changes) {
       // STREAMED: THE SCANNED EDGES FIRST, A DELETED ONE TOLD BY THE IDENTITY THE ARRAYS HOLD, THEN THE CREATED ONES
       final boolean deletions = changes.hasDeletions();
+      final TwinOverlay twins = twinsOf(target, changes);
       final Iterator<UnidirectionalEdgeChanges.Created> created = changes.createdInto(typeName, target).iterator();
       return new Iterator<>() {
         private int  index = firstIndex(target);
@@ -882,12 +910,12 @@ public final class IncomingEdgeLookup {
           while (next == null) {
             if (index < size && isTarget(index, target)) {
               final int i = index++;
-              if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
-                next = edgeAt(i);
+              if (!isDeletedSince(i, changes, deletions, twins))
+                next = twins != null ? twins.numberScanned(edgeAt(i), i) : edgeAt(i);
             } else if (created.hasNext()) {
               final UnidirectionalEdgeChanges.Created entry = created.next();
-              if (isLive(entry, changes))
-                next = entry.edge();
+              if (isLive(entry, changes, twins))
+                next = twins != null ? twins.numberCreated(entry.edge()) : entry.edge();
             } else
               return false;
           }
@@ -905,9 +933,30 @@ public final class IncomingEdgeLookup {
       };
     }
 
-    /** Whether an edge the transaction created is still there: created after the scan and not deleted since. */
-    private boolean isLive(final UnidirectionalEdgeChanges.Created created, final UnidirectionalEdgeChanges changes) {
-      return created.sequence() > builtAt && !changes.isDeletedAfter(created.edge().getIdentity(), created.sequence());
+    /**
+     * Whether the scanned edge at {@code i} was deleted by the transaction since the scan. A record-backed edge is told by
+     * its address; a lightweight one has none, and is deleted when one of the deletes of its triple falls on it (see
+     * {@link TwinOverlay}).
+     */
+    private boolean isDeletedSince(final int i, final UnidirectionalEdgeChanges changes, final boolean deletions,
+        final TwinOverlay twins) {
+      if (edgePositions[i] == LIGHTWEIGHT_POSITION)
+        return twins != null && twins.dropsScanned(i);
+      return deletions && changes.isDeletedAfter(edgeIdentityAt(i), builtAt);
+    }
+
+    /**
+     * Whether an edge the transaction created is still there: created after the scan and not deleted since. A lightweight
+     * one is not told from its twins, so it asks {@code twins} and has to be asked once, in creation order.
+     */
+    private boolean isLive(final UnidirectionalEdgeChanges.Created created, final UnidirectionalEdgeChanges changes,
+        final TwinOverlay twins) {
+      if (created.sequence() <= builtAt)
+        return false;
+      final RID identity = created.edge().getIdentity();
+      if (identity.getPosition() < 0)
+        return twins == null || !twins.dropsCreated(identity);
+      return !changes.isDeletedAfter(identity, created.sequence());
     }
 
     /** The identity of the edge at {@code i}, as the vertex API gives it, built from the arrays with no record load. */
@@ -990,6 +1039,191 @@ public final class IncomingEdgeLookup {
           high = mid;
       }
       return low;
+    }
+
+    /**
+     * The lightweight edges the transaction changed since the scan, for one lookup into one target (issue #10376). Twins -
+     * lightweight edges of one type over one ordered pair - share their identity, so neither a delete nor a create can
+     * name its twin:
+     * <ul>
+     * <li>a delete takes ONE twin out, whichever: the twins left are the ones the scan found plus the ones the
+     * transaction created, less the deletes. Twins are indistinguishable (a lightweight edge has no property), so which of
+     * them goes is free: the ones the transaction created go first, in creation order, then the last of the scanned ones,
+     * which leaves the survivors numbered as a list holding only them would number them;</li>
+     * <li>the twins the lookup answers are numbered across the scanned and the created ones, so a consumer that keys on the
+     * occurrence (a {@code DELETE} claiming each relationship once, {@code DISTINCT}) sees as many relationships as there
+     * are twins: a created edge read back is a new object with no list to be read off, which would number it 0 as well.</li>
+     * </ul>
+     * One lookup builds one of these. {@link #dropsScanned} answers from the run of the entry alone, so it can be asked about
+     * any entry, in any order, as often as needed. {@link #dropsCreated} consumes what it answers: it is asked once per created
+     * entry, in creation order, and asking twice about one entry miscounts.
+     * <p>
+     * Example: the scan found 2 twins of a pair, the transaction created 1 more and then deleted 2 of them. The created twin
+     * takes the first delete and the last scanned one the second, so one scanned twin is left, numbered 0 of 1.
+     * <p>
+     * The deletes of a triple are not matched to its creates by order: a delete recorded before a twin was created can take
+     * that twin out, and the twin it was recorded against stay. Twins are indistinguishable, so the count and the numbering
+     * of the twins left are the same either way.
+     */
+    private final class TwinOverlay {
+      private final UnidirectionalEdgeChanges changes;
+      private final boolean                   deletions;
+      // BY TRIPLE, THE TWINS THE TRANSACTION CREATED SINCE THE SCAN: A TRIPLE WITH NONE IS NOT HERE, ITS DELETES ALL FALL ON
+      // SCANNED TWINS AND ARE READ OFF THE CHANGES WHEN ITS RUN IS MET. ALLOCATED WITH THE FIRST CREATED TWIN: A LOOKUP OVER
+      // RECORD-BACKED EDGES, OR OVER TWINS THE TRANSACTION ONLY DELETED, NEVER NEEDS IT
+      private       Map<RID, TwinGroup>       groups = Collections.emptyMap();
+      // THE RUN OF SCANNED TWINS ASKED ABOUT LAST, WHERE THE ENTRIES TAKEN OUT START IN IT, AND HOW MANY CREATED TWINS ARE LIVE
+      private       int                       runFirst;
+      private       int                       runLast = -1;
+      private       int                       runDropFrom;
+      private       int                       runLiveCreated;
+
+      TwinOverlay(final RID target, final UnidirectionalEdgeChanges changes) {
+        this.changes = changes;
+        this.deletions = changes.hasTwinDeletions();
+        for (final UnidirectionalEdgeChanges.Created entry : changes.createdInto(typeName, target)) {
+          final RID triple = entry.edge().getIdentity();
+          if (entry.sequence() <= builtAt || triple.getPosition() >= 0)
+            continue;
+          TwinGroup group = groups.get(triple);
+          if (group == null) {
+            if (groups.isEmpty())
+              groups = new HashMap<>();
+            group = new TwinGroup(deletions ? changes.twinsDeletedAfter(triple, builtAt) : 0);
+            groups.put(triple, group);
+          }
+          ++group.created;
+        }
+        for (final TwinGroup group : groups.values())
+          group.settle();
+      }
+
+      /** Whether the lookup has anything to do with lightweight edges: a twin deleted or created since the scan. */
+      boolean isNeeded() {
+        return deletions || !groups.isEmpty();
+      }
+
+      /** Whether the delete that falls on a created twin of {@code triple} is the one asked about now. */
+      boolean dropsCreated(final RID triple) {
+        final TwinGroup group = groups.get(triple);
+        if (group == null || group.createdToDrop == 0)
+          return false;
+        --group.createdToDrop;
+        return true;
+      }
+
+      /** Whether the scanned twin at {@code i} is one the deletes took out. */
+      boolean dropsScanned(final int i) {
+        if (i < runFirst || i > runLast)
+          enterRun(i);
+        return i >= runDropFrom;
+      }
+
+      /** Numbers the scanned twin at {@code i}, just asked about and kept, among the twins of its triple that are left. */
+      Edge numberScanned(final Edge edge, final int i) {
+        if (edgePositions[i] == LIGHTWEIGHT_POSITION)
+          ((LightEdgeRID) edge.getIdentity()).numbered(i - runFirst, runDropFrom - runFirst + runLiveCreated);
+        return edge;
+      }
+
+      /** Numbers a created twin, just asked about and kept, after the scanned twins left and the created ones before it. */
+      Edge numberCreated(final Edge edge) {
+        if (!(edge.getIdentity() instanceof LightEdgeRID light))
+          return edge;
+        // KEYED BY THE TRIPLE ALONE: RID.equals AND hashCode LEAVE OUT THE OCCURRENCE AND THE LIST ENTRY THE IDENTITY WAS READ FROM
+        final TwinGroup group = groups.get(light);
+        if (group == null)
+          // CREATED AFTER THIS LOOKUP COUNTED THEM: NOT NUMBERED WITH THE ONES IT KNEW
+          return edge;
+        if (group.scannedLive < 0) {
+          final int scanned = scannedTwins(light);
+          group.scannedLive = scanned - Math.min(group.scannedToDrop, scanned);
+        }
+        final ImmutableLightEdge numbered = new ImmutableLightEdge(database, edge.getType(), light.getBucketId(), light.getOutRID(),
+            light.getInRID());
+        ((LightEdgeRID) numbered.getIdentity()).numbered(group.scannedLive + group.emitted++, group.scannedLive + group.liveCreated);
+        return numbered;
+      }
+
+      private void enterRun(final int i) {
+        runFirst = i;
+        while (runFirst > 0 && sameTriple(runFirst - 1, i))
+          --runFirst;
+        runLast = i;
+        while (runLast + 1 < size && sameTriple(runLast + 1, i))
+          ++runLast;
+        final RID triple = edgeIdentityAt(i);
+        final TwinGroup group = groups.get(triple);
+        final int toDrop = group != null ? group.scannedToDrop : deletions ? changes.twinsDeletedAfter(triple, builtAt) : 0;
+        runDropFrom = runLast + 1 - Math.min(toDrop, runLast - runFirst + 1);
+        runLiveCreated = group != null ? group.liveCreated : 0;
+      }
+    }
+
+    /** The twins of one triple the transaction created since the scan, and the deletes of the triple that fall on them. */
+    private static final class TwinGroup {
+      private final int deletes;
+      private       int created;
+      // SETTLED ONCE ALL THE CREATED TWINS ARE COUNTED: HOW MANY OF THEM THE DELETES TAKE (LEFT TO TAKE, WHILE THEY ARE ASKED
+      // ABOUT), HOW MANY SCANNED TWINS THE REST OF THE DELETES TAKE, AND HOW MANY CREATED TWINS ARE LEFT
+      private       int createdToDrop;
+      private       int scannedToDrop;
+      private       int liveCreated;
+      // THE SCANNED TWINS LEFT, KNOWN WHEN THE FIRST CREATED TWIN IS NUMBERED (-1 BEFORE), AND THE CREATED ONES NUMBERED SO FAR
+      private       int scannedLive = -1;
+      private       int emitted;
+
+      private TwinGroup(final int deletes) {
+        this.deletes = deletes;
+      }
+
+      private void settle() {
+        createdToDrop = Math.min(deletes, created);
+        scannedToDrop = deletes - createdToDrop;
+        liveCreated = created - createdToDrop;
+      }
+    }
+
+    /** How many scanned twins the triple {@code twin} stands for there are: its run, found by two searches on the sort key. */
+    private int scannedTwins(final LightEdgeRID twin) {
+      return firstIndexOfTriple(twin, 1L) - firstIndexOfTriple(twin, 0L);
+    }
+
+    /** The first index not below the triple, the source position moved by {@code sourceShift}: the sort key of a lightweight edge. */
+    private int firstIndexOfTriple(final LightEdgeRID twin, final long sourceShift) {
+      final RID target = twin.getInRID();
+      final RID source = twin.getOutRID();
+      final long sourcePosition = source.getPosition() + sourceShift;
+      int low = 0;
+      int high = size;
+      while (low < high) {
+        final int mid = (low + high) >>> 1;
+        int cmp = Integer.compare(targetBuckets[mid], target.getBucketId());
+        if (cmp == 0)
+          cmp = Long.compare(targetPositions[mid], target.getPosition());
+        if (cmp == 0)
+          cmp = Integer.compare(edgeBuckets[mid], twin.getBucketId());
+        if (cmp == 0)
+          cmp = Long.compare(edgePositions[mid], LIGHTWEIGHT_POSITION);
+        if (cmp == 0)
+          cmp = Integer.compare(sourceBuckets[mid], source.getBucketId());
+        if (cmp == 0)
+          cmp = Long.compare(sourcePositions[mid], sourcePosition);
+        if (cmp < 0)
+          low = mid + 1;
+        else
+          high = mid;
+      }
+      return low;
+    }
+
+    /** The overlay of the lightweight edges of {@code target}, or null when the transaction changed none of them since the scan. */
+    private TwinOverlay twinsOf(final RID target, final UnidirectionalEdgeChanges changes) {
+      // NOTHING DELETED AND NOTHING CREATED INTO THE TARGET: NO TWIN CAN HAVE CHANGED, AND THE LOOKUP COSTS WHAT IT DID BEFORE
+      if (!changes.hasTwinDeletions() && changes.createdInto(typeName, target).isEmpty())
+        return null;
+      final TwinOverlay twins = new TwinOverlay(target, changes);
+      return twins.isNeeded() ? twins : null;
     }
 
     private abstract class RangeIterator<T> implements Iterator<T> {

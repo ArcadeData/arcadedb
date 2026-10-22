@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -37,11 +38,14 @@ import com.arcadedb.query.sql.executor.ResultInternal;
  * through all of them (issue #6328). This is that one helper, shared by both steps, the way
  * {@link LabelReplacements} is the one place that points a row's aliases at a record a label write <i>replaced</i>.
  * <p>
- * Only the row's own aliases are redirected, not records nested inside a path, a list or a map it carries. That is
- * a deliberate difference from {@link LabelReplacements#redirect}: there the original record is <b>deleted</b>, so
- * a stale reference anywhere in the row is a failure waiting to happen and the descent has to be paid for. Here the
- * original is alive and merely older, which costs a stale read in an unusual shape rather than an error, and the
- * walk would be charged to every row of every {@code SET} in exchange.
+ * The row's own aliases are redirected, and so are the nodes and relationships of the paths it carries: a path variable
+ * is another alias of the nodes it walks, and {@code MATCH p = (a)-[:R]->(b) REMOVE b.k RETURN last(nodes(p))} must
+ * answer with the {@code b} the REMOVE wrote (issue #10513). A path is short, so the walk is charged only to the rows
+ * that carry one. Records nested inside a list or a map are not followed, a deliberate difference from
+ * {@link LabelReplacements#redirect}: there the original record is <b>deleted</b>, so a stale reference anywhere in the
+ * row is a failure waiting to happen and the descent has to be paid for. Here the original is alive and merely older,
+ * which costs a stale read in an unusual shape rather than an error, and a walk of a {@code collect()} list would be
+ * charged to every row of every {@code SET} in exchange.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -68,8 +72,14 @@ public final class RowAliases {
       return;
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
-      if (value instanceof Document other && other != updated && originalRid.equals(other.getIdentity()))
-        ((ResultInternal) row).setProperty(name, updated);
+      if (value instanceof Document other) {
+        if (other != updated && originalRid.equals(other.getIdentity()))
+          ((ResultInternal) row).setProperty(name, updated);
+      } else if (value instanceof TraversalPath path) {
+        final TraversalPath live = path.withRecord(originalRid, updated);
+        if (live != path)
+          ((ResultInternal) row).setProperty(name, live);
+      }
     }
   }
 }

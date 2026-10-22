@@ -21,6 +21,9 @@ package com.arcadedb.utility;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
@@ -28,6 +31,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.text.ParsePosition;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -38,6 +42,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.Temporal;
@@ -103,6 +108,10 @@ public class DateUtils {
    * second to qualify, and an offset only where there is a time for it to offset. A stray
    * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456, and a bare
    * {@code '2024-02-29+01:00'} rather than as midnight in that offset.
+   * <p>
+   * Resolved {@link ResolverStyle#STRICT STRICT}ly, like the ISO formats it follows: a formatter built here does not
+   * inherit the resolver style of the {@link DateTimeFormatter#ISO_LOCAL_DATE} it appends, so it resolved SMARTly and
+   * moved {@code 2021-02-30} to {@code 2021-02-28} instead of refusing it (issue #10206).
    */
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
@@ -118,7 +127,8 @@ public class DateUtils {
       .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)//
       .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)//
       .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)//
-      .toFormatter(Locale.ENGLISH);
+      .toFormatter(Locale.ENGLISH)//
+      .withResolverStyle(ResolverStyle.STRICT);
 
   public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision,
       final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {
@@ -381,9 +391,13 @@ public class DateUtils {
         timestamp = Long.parseLong(string);
       else
         return dateTimeToTimestamp(database, parseDateTime(database, string), precisionToUse);
-    } else
+    } else {
+      // Checked last so the engine's own types pay nothing for it (issue #10441). The recursion is one level deep: the
+      // unwrapped value is always a java.time type, which one of the branches above answers
+      final Object unwrapped = unwrapCypherTemporal(value);
       // UNSUPPORTED
-      return null;
+      return unwrapped != null ? dateTimeToTimestamp(database, unwrapped, precisionToUse) : null;
+    }
 
     return timestamp;
   }
@@ -425,12 +439,32 @@ public class DateUtils {
         case Number number -> numberToEpochUnits(number);
         case String string -> FileUtils.isLong(string) ? Long.parseLong(string) :
             dateTimeToTimestampExact(database, parseDateTime(database, string), precisionToUse);
-        default -> null;
+        default -> {
+          // one level of recursion at most: the unwrapped value is a java.time type a case above answers (issue #10441)
+          final Object unwrapped = unwrapCypherTemporal(value);
+          yield unwrapped != null ? dateTimeToTimestampExact(database, unwrapped, precisionToUse) : null;
+        }
       };
     } catch (final ArithmeticException e) {
       throw new IllegalArgumentException("Date/time value " + value + " is outside the range a " + precisionToUse.toString()
           .toLowerCase(Locale.ENGLISH) + "-precision timestamp can represent");
     }
+  }
+
+  /**
+   * The {@code java.time} value inside an openCypher temporal that names a moment - {@code datetime()},
+   * {@code localdatetime()} and {@code date()} - or {@code null} for anything else, a time of day and a duration
+   * included, since neither is a point on the timeline. Cypher hands its own wrappers to every SQL function it calls,
+   * and a property it wrote reads back as one, so without this every date/time conversion refused the values Cypher
+   * itself produces (issue #10441).
+   */
+  private static Object unwrapCypherTemporal(final Object value) {
+    return switch (value) {
+      case CypherDateTime dateTime -> dateTime.getValue();
+      case CypherLocalDateTime localDateTime -> localDateTime.getValue();
+      case CypherDate date -> date.getValue();
+      default -> null;
+    };
   }
 
   /** Epoch seconds plus a nanosecond fraction as a count of the unit {@code unitsPerSecond} names, refusing an overflow. */
@@ -448,9 +482,10 @@ public class DateUtils {
   /**
    * THE one converter from any of the engine's date/time representations to epoch milliseconds. Accepts everything
    * {@link #dateTimeToTimestamp(Object, ChronoUnit)} accepts - {@link Date}, {@link Calendar}, {@link LocalDateTime},
-   * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number} and a
-   * {@link String} in any format the engine parses - reading a zone-less value at UTC, which is how the engine's own
-   * DATETIME representation is anchored.
+   * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number}, a
+   * {@link String} in any format the engine parses, and the openCypher {@link CypherDateTime},
+   * {@link CypherLocalDateTime} and {@link CypherDate} (issue #10441) - reading a zone-less value at UTC, which is how
+   * the engine's own DATETIME representation is anchored.
    * <p>
    * #8152: three near-copies of this conversion lived in three packages, each covering a different subset of the
    * types, and a {@code return 0} / {@code return Long.MIN_VALUE} fall-through for the rest. When
@@ -574,9 +609,7 @@ public class DateUtils {
    * <ol>
    *   <li>{@link LocalDateTime#parse(CharSequence)} (ISO without zone);</li>
    *   <li>{@link ZonedDateTime#parse(CharSequence)} for ISO inputs ending in {@code Z} or
-   *   with a {@code ±HH:mm} offset - the resulting instant is rebased onto the database's
-   *   configured zone (default {@link ZoneId#systemDefault()}) before stripping the offset,
-   *   so the stored wall-clock follows the database's locale rather than the input's;</li>
+   *   with a {@code ±HH:mm} offset - the instant is converted to UTC before stripping the offset (see below);</li>
    *   <li>the schema's {@code dateTimeFormat};</li>
    *   <li>the schema's {@code dateFormat};</li>
    *   <li>{@link #SPACE_SEPARATED_DATE_TIME}, the SQL-timestamp spelling with an optional fraction and offset
@@ -584,35 +617,51 @@ public class DateUtils {
    *   schema's own patterns already claimed.</li>
    * </ol>
    * When {@code database} is {@code null} the schema patterns are skipped - there is no schema to read them from -
-   * but the ISO and SQL-timestamp formats are still tried, and offset-bearing inputs keep their wall-clock without
-   * rebasing, matching legacy parsing behavior in scopes without a schema.
+   * but the ISO and SQL-timestamp formats are still tried.
+   * <p>
+   * <b>One rule for an offset-bearing input, on every write path (issues #10489, #10498):</b> the instant it names is
+   * stored as the UTC wall clock, the way a {@code LocalDateTime} is stored from a {@link java.util.Date}, a number, an
+   * {@link java.time.Instant}, a {@link ZonedDateTime} or an {@link OffsetDateTime}: the string
+   * {@code 2020-01-02T03:04:05+02:00} gives {@code 2020-01-02T01:04:05}, so a client writing over HTTP or SQL, one writing
+   * over Bolt or Java, and the bulk load ({@code GraphBatch}) store one value for one instant. An input without an offset
+   * has no instant to convert and keeps its wall clock, and so does one in UTC: the {@code Z} Cypher's
+   * {@code datetime('2026-01-01T00:00:00')} renders itself with reads back as the wall clock the query named (issue
+   * #4125). The database's zone plays no part in it: it is how a value is formatted for a reader, not where an instant is
+   * stored, and rebasing onto it (what the bulk path did before #10498) stored a value no other path stores for that
+   * instant, off by the zone's offset, for every database whose zone is not UTC.
    * <p>
    * A step whose format provably cannot match the input is not attempted at all - the order is unchanged, only the
-   * wasted work is gone. See {@link #parseDateTime(Database, String, boolean)}.
+   * wasted work is gone.
    *
    * @throws DateTimeParseException when no format matches. Never answers {@code null}: a datetime that cannot be
    *                                parsed has to fail the write rather than empty the column.
    */
   public static LocalDateTime parseDateTime(final Database database, final String string) {
-    return parseDateTime(database, string, true);
+    return parseDateTime(database, string, OffsetPolicy.CONVERT_TO_UTC);
   }
 
   /**
-   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than rebased: the wall-clock
-   * written is the wall-clock read.
+   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than converted: the wall-clock
+   * written is the wall-clock read. For the callers whose target has no zone to keep, a {@code LocalDate}: the day
+   * written is the day meant.
    * <p>
-   * The two callers of this chain disagree about that, and each disagreement is pinned by its own tests. The bulk
-   * path rebases, so a client in another zone stores the instant it meant. {@code Type.convert} strips, because
-   * Cypher's {@code datetime('2026-01-01T00:00:00')} renders itself as {@code 2026-01-01T00:00Z} and
-   * {@code SET n.t = datetime(...)} has to read back the wall-clock the query named (issue #4125) rather than one
-   * shifted by the server's zone. Reconciling the two changes what existing databases store and is its own issue;
-   * issue #8090 unified only WHICH FORMATS are accepted, which is what was losing data.
+   * A {@code DATETIME} does not read its strings this way: {@link #parseDateTime} stores the instant the text names, as
+   * an {@code OffsetDateTime} value is stored (issues #10489, #10498). Issue #8090 unified WHICH FORMATS the chain
+   * accepts, which is what was losing data.
    */
   public static LocalDateTime parseDateTimeKeepingWallClock(final Database database, final String string) {
-    return parseDateTime(database, string, false);
+    return parseDateTime(database, string, OffsetPolicy.KEEP_WALL_CLOCK);
   }
 
-  private static LocalDateTime parseDateTime(final Database database, final String string, final boolean rebaseOffset) {
+  /** What becomes of the offset of an offset-bearing input once it is parsed into a zone-less {@link LocalDateTime}. */
+  private enum OffsetPolicy {
+    /** Drop the offset: the wall clock written is the wall clock read. */
+    KEEP_WALL_CLOCK,
+    /** Convert the instant to UTC, the way a typed {@code OffsetDateTime} / {@code ZonedDateTime} is stored. */
+    CONVERT_TO_UTC
+  }
+
+  private static LocalDateTime parseDateTime(final Database database, final String string, final OffsetPolicy offsetPolicy) {
     // The order below is the contract; what varies is only whether a step is ATTEMPTED, and a step is skipped only
     // when it provably cannot match. This matters because the chain is now on the hot path: before issue #8090 the
     // literal it exists for never parsed at all, so no client could have been writing at volume through here, and
@@ -627,7 +676,7 @@ public class DateUtils {
         return LocalDateTime.parse(string);
       } catch (final DateTimeParseException e) {
         try {
-          return dropZone(database, ZonedDateTime.parse(string), rebaseOffset);
+          return dropZone(ZonedDateTime.parse(string), offsetPolicy);
         } catch (final DateTimeParseException e2) {
           isoFailure = e2;
         }
@@ -636,7 +685,7 @@ public class DateUtils {
 
     final Temporal parsed = parseSchemaOrSqlTimestamp(database, string, isoFailure);
     return parsed instanceof OffsetDateTime offset ?
-        dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
+        dropZone(offset.toZonedDateTime(), offsetPolicy) :
         (LocalDateTime) parsed;
   }
 
@@ -811,18 +860,13 @@ public class DateUtils {
   }
 
   /**
-   * Turns an offset-bearing value into the local datetime that gets stored. With {@code rebaseOffset} the instant is
-   * moved onto the database's configured zone first, so the stored wall-clock denotes the same moment the client
-   * sent; without it the wall-clock is kept exactly as written. Without a database there is no zone to consult and
-   * the wall-clock is kept either way.
+   * Turns an offset-bearing value into the local datetime that gets stored, as the {@link OffsetPolicy} says. Neither
+   * policy consults the database's zone: an instant is stored as the UTC wall clock or as the wall clock written.
    */
-  private static LocalDateTime dropZone(final Database database, final ZonedDateTime parsed, final boolean rebaseOffset) {
-    if (rebaseOffset && database != null) {
-      final ZoneId zoneId = database.getSchema().getZoneId();
-      if (zoneId != null)
-        return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
-    }
-    return parsed.toLocalDateTime();
+  private static LocalDateTime dropZone(final ZonedDateTime parsed, final OffsetPolicy offsetPolicy) {
+    return offsetPolicy == OffsetPolicy.CONVERT_TO_UTC ?
+        parsed.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime() :
+        parsed.toLocalDateTime();
   }
 
   public static ChronoUnit parsePrecision(final String precision) {
@@ -945,6 +989,51 @@ public class DateUtils {
         || obj instanceof ZonedDateTime || obj instanceof OffsetDateTime || obj instanceof Instant;
   }
 
+  /**
+   * The instant a date/time value denotes, reading a zone-less value at UTC as the engine's DATETIME is anchored, or
+   * {@code null} for a value that is not one (a number, a string).
+   */
+  public static Instant toInstant(final Object value) {
+    return switch (value) {
+      case Date date -> date.toInstant();
+      case Calendar calendar -> calendar.toInstant();
+      case LocalDateTime localDateTime -> localDateTime.toInstant(ZoneOffset.UTC);
+      case LocalDate localDate -> localDate.atStartOfDay(ZoneOffset.UTC).toInstant();
+      case ZonedDateTime zonedDateTime -> zonedDateTime.toInstant();
+      case OffsetDateTime offsetDateTime -> offsetDateTime.toInstant();
+      case Instant instant -> instant;
+      case null, default -> null;
+    };
+  }
+
+  /**
+   * {@code left - right} of two date/time values, exactly. Subtracting their epoch counts at the finer precision of the
+   * two overflowed a {@code long} for a gap past 292 years at nanosecond precision (issue #10206), although a
+   * {@link Duration} holds any gap between two instants.
+   *
+   * @return null when either operand is not a date/time value, for the caller to fall back to its numeric arithmetic
+   */
+  public static Duration difference(final Object left, final Object right) {
+    final Instant leftInstant = toInstant(left);
+    if (leftInstant == null)
+      return null;
+    final Instant rightInstant = toInstant(right);
+    return rightInstant == null ? null : Duration.between(rightInstant, leftInstant);
+  }
+
+  /**
+   * The value a comparison operand takes against {@code other}: a {@link LocalDate} compared with a value that carries a
+   * time of day is that day at midnight, as SQL compares a DATE with a TIMESTAMP. Any other pair answers {@code value}
+   * unchanged.
+   * <p>
+   * The comparison operators convert their right operand to the class of the left one, which narrows a datetime on the
+   * right to its day, so {@code d1 = t1} held for {@code d1 = 2021-02-03} and {@code t1 = 2021-02-03T12:00} while
+   * {@code t1 = d1}, which widens, did not (issue #10206). Widening the date instead makes the two orders agree.
+   */
+  public static Object dateAsMidnightAgainst(final Object value, final Object other) {
+    return value instanceof LocalDate date && !(other instanceof LocalDate) && isDate(other) ? date.atStartOfDay() : value;
+  }
+
   public static ChronoUnit getHigherPrecision(final Object... objs) {
     if (objs == null || objs.length == 0)
       return null;
@@ -994,6 +1083,10 @@ public class DateUtils {
       // anchor used everywhere else in this class (see dateTime() and dateTimeToTimestamp()), so
       // `arcadedb.dateTimeImplementation=java.time.Instant` renders exactly like LocalDateTime.
       return getFormatter(format).format(LocalDateTime.ofInstant(instant, timeZone != null ? ZoneId.of(timeZone) : UTC_ZONE_ID));
+    else if (obj instanceof LocalDate date)
+      // A DATE is the day at midnight, as the java.util.Date implementation of the same type always rendered it, so a
+      // time field formats as 00 instead of throwing UnsupportedTemporalTypeException (issue #10206)
+      return format(date.atStartOfDay(), format, timeZone);
     else if (obj instanceof TemporalAccessor accessor)
       return getFormatter(format).format(accessor);
     return null;
@@ -1008,11 +1101,7 @@ public class DateUtils {
     if (cached != null)
       return cached;
 
-    // A storage format must render and parse the same bytes on every server: the locale is pinned so a textual field
-    // (MMM, EEE) never follows the JVM default, which the cache would otherwise freeze at the first caller's (issue #7112).
-    final DateTimeFormatter formatter = new DateTimeFormatterBuilder().appendPattern(format)
-        .parseDefaulting(ChronoField.HOUR_OF_DAY, 0).parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)
-        .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter(Locale.ENGLISH);
+    final DateTimeFormatter formatter = buildFormatter(format);
 
     // Bounded rather than evicting: the working set is a handful of schema formats that all fit, so an LRU would only
     // add a lock on a hot path to reorder entries nothing ever evicts. A slight overshoot when several threads race
@@ -1021,6 +1110,64 @@ public class DateUtils {
       CACHED_FORMATTERS.putIfAbsent(format, formatter);
 
     return formatter;
+  }
+
+  /**
+   * Builds the formatter of a user or schema pattern.
+   * <ul>
+   *   <li>The locale is pinned, so a storage format renders and parses the same bytes on every server: a textual field
+   *   (MMM, EEE) never follows the JVM default, which the cache would otherwise freeze at the first caller's
+   *   (issue #7112).</li>
+   *   <li>It resolves {@link ResolverStyle#STRICT STRICT}ly: the default SMART resolver moved an impossible date to
+   *   a possible one ({@code 2021-02-30} read as {@code 2021-02-28}, {@code 24:00:00} as midnight of the next day), so
+   *   a typo became a different, valid value instead of a refusal (issue #10206).</li>
+   *   <li>{@code y} (year-of-era) is read as {@code u} (proleptic year) unless the pattern names the era ({@code G}).
+   *   STRICT cannot resolve a year-of-era without an era, and year-of-era has no year 0, so {@code 'yyyy-MM-dd'}
+   *   refused {@code 0000-01-01} that the ISO formats accept, and rendered year 0 as {@code 0001}, which read back
+   *   as a different year. The two letters agree on every year of the common era.</li>
+   *   <li>A missing hour defaults to midnight, as it always did, but only when the pattern has no hour field at all:
+   *   the 12-hour fields ({@code h}, {@code K}) derive the hour of the day from the AM/PM marker, and an unconditional
+   *   default of that same hour conflicted with it, so no pattern with {@code hh ... a} ever parsed. A 12-hour field
+   *   without a marker reads as AM.</li>
+   * </ul>
+   */
+  private static DateTimeFormatter buildFormatter(final String format) {
+    boolean quoted = false;
+    boolean era = false;
+    boolean hourOfDay = false;
+    boolean hourOfAmPm = false;
+    for (int i = 0; i < format.length(); i++) {
+      final char c = format.charAt(i);
+      if (c == '\'')
+        quoted = !quoted;
+      else if (!quoted) {
+        if (c == 'G')
+          era = true;
+        else if (c == 'H' || c == 'k')
+          hourOfDay = true;
+        else if (c == 'h' || c == 'K')
+          hourOfAmPm = true;
+      }
+    }
+
+    String pattern = format;
+    if (!era && format.indexOf('y') >= 0) {
+      final char[] chars = format.toCharArray();
+      quoted = false;
+      for (int i = 0; i < chars.length; i++) {
+        if (chars[i] == '\'')
+          quoted = !quoted;
+        else if (!quoted && chars[i] == 'y')
+          chars[i] = 'u';
+      }
+      pattern = new String(chars);
+    }
+
+    final DateTimeFormatterBuilder builder = new DateTimeFormatterBuilder().appendPattern(pattern);
+    if (!hourOfDay)
+      builder.parseDefaulting(hourOfAmPm ? ChronoField.AMPM_OF_DAY : ChronoField.HOUR_OF_DAY, 0);
+    return builder.parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)
+        .toFormatter(Locale.ENGLISH).withResolverStyle(ResolverStyle.STRICT);
   }
 
   /**

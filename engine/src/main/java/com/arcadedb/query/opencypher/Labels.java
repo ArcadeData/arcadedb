@@ -19,13 +19,16 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -571,8 +574,12 @@ public final class Labels {
       final String label = labels.get(0);
       // A type name that names an edge or document type is not a label: labels and relationship types are separate
       // namespaces in Cypher, so such a pattern matches no node rather than yielding records that are not vertices.
-      if (!(schema.getTypeOrNull(label) instanceof VertexType))
+      final DocumentType type = schema.getTypeOrNull(label);
+      if (!(type instanceof VertexType)) {
+        // ...except a time-series type, whose samples a query asking for them would silently never see (issue #10440)
+        requireNotTimeSeriesType(type, "label");
         return Collections.emptyIterator();
+      }
       return database.iterateType(label, true);
     }
 
@@ -582,6 +589,24 @@ public final class Labels {
     if (types.size() == 1)
       return database.iterateType(types.get(0).getName(), false);
     return new ChainedTypeIterator(database, types);
+  }
+
+  /**
+   * Refuses a node label or relationship type that names a TIMESERIES type (issue #10440). Time-series samples are
+   * stored in their own engine, not as records of the type's buckets, and they are neither vertices nor edges, so a
+   * pattern naming the type can match nothing. Answering that as zero rows reads as "there is no data", while SQL
+   * over the same type returns the samples, so the pattern is an error instead.
+   *
+   * @param type the type the name resolves to, or {@code null} when it names none
+   * @param kind {@code "label"} or {@code "relationship type"}, for the message
+   *
+   * @throws CommandSemanticException when {@code type} is a time-series type
+   */
+  public static void requireNotTimeSeriesType(final DocumentType type, final String kind) {
+    if (type instanceof TimeSeriesType)
+      throw new CommandSemanticException("Cypher cannot match the " + kind + " '" + type.getName() + "', a TIMESERIES type: "
+          + "time-series samples are neither nodes nor relationships. Query it with SQL (SELECT FROM `" + type.getName()
+          + "`) or PromQL instead");
   }
 
   /**
@@ -820,6 +845,38 @@ public final class Labels {
 
     final String compositeTypeName = String.join(LABEL_SEPARATOR, uniqueLabels);
 
+    // ONE SCHEMA PUBLICATION FOR THE WHOLE LABEL SET (issue #10537): every label that is missing and then the composite used to be a
+    // frame of their own, so CREATE (n:A:B) on two new labels shipped three schema entries under Raft, which a follower asking the
+    // leader for the type in a transaction that had already written reads as somebody else's schema change. The frame is opened only
+    // when something is missing: on labels that all exist and whose composite is complete this runs on every CREATE and MERGE, and
+    // must not take the database write lock, nor ask for the right to change the schema, to find that out.
+    if (isCompositeInPlace(schema, uniqueLabels, compositeTypeName)) {
+      createCompositeType(schema, uniqueLabels, compositeTypeName);
+      return compositeTypeName;
+    }
+
+    // The async quiescence OUTSIDE the frame, which holds the database write lock the workers need to commit their batch: linking a
+    // super type that has indexes waits for them to drain. Reentrant, so the builder inside rides on it
+    try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) schema.getEmbedded().getDatabase()).quiesceAsync()) {
+      schema.bulkChange(() -> createCompositeType(schema, uniqueLabels, compositeTypeName));
+    }
+
+    return compositeTypeName;
+  }
+
+  /** True when every label is a type, and so is the composite, which already inherits each of them: nothing to create or link. */
+  private static boolean isCompositeInPlace(final Schema schema, final Set<String> uniqueLabels, final String compositeTypeName) {
+    if (!schema.existsType(compositeTypeName))
+      return false;
+
+    final DocumentType composite = schema.getType(compositeTypeName);
+    for (final String label : uniqueLabels)
+      if (!schema.existsType(label) || !composite.instanceOf(label))
+        return false;
+    return true;
+  }
+
+  private static void createCompositeType(final Schema schema, final Set<String> uniqueLabels, final String compositeTypeName) {
     // Always ensure all base types exist first, regardless of whether
     // the composite type already exists. This fixes GitHub issue #3266
     // where pre-existing composite types would prevent label type creation.
@@ -839,8 +896,6 @@ public final class Labels {
       if (existing == null || !existing.instanceOf(label))
         builder = builder.withSuperType(label);
     builder.create();
-
-    return compositeTypeName;
   }
 
   /**

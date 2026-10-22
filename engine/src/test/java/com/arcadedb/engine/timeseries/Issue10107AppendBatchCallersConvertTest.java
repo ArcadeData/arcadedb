@@ -23,13 +23,15 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,25 +43,38 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is now the ONE way a client-facing path reaches {@code TimeSeriesEngine.appendBatch(long[], Object[][])}:
  * {@link TimeSeriesStorableRows#convert} builds the grid, {@link TimeSeriesStorableRows#appendTo} appends it.
  * <p>
+ * Issue #10381 found a fourth, the embedded async API, which reached the same storage through {@code newRowSource} and
+ * {@code shard.appendSamples} - a pattern this census did not look for - and the census walked the modules one level deep, so a
+ * nested module such as {@code bindings/python} was never scanned. It now looks for EVERY entry point into the engine's storage
+ * ({@code appendBatch}, {@code appendSamples}, {@code newRowSource}) and walks every {@code src/main/java} of the repository.
+ * <p>
  * This is the census of the callers, over the production sources of every module in the shape of {@code LogMessageArityTest}:
- * a fourth endpoint calling {@code appendBatch} with a grid of its own fails here and is sent to the converting entry point,
- * instead of being found by the next user whose file holds a quoted number. Each path is exercised with a text value for a typed
- * column by its own test: {@code Issue9809LineProtocolTemporalValueTest} (line protocol), {@code Issue9972PrometheusTypedTagIT}
- * (Prometheus remote write) and {@code Issue10107JsonlTimeSeriesUnstorableValueTest} (JSONL import).
+ * a new endpoint calling one of them with a grid of its own fails here and is sent to the converting entry points, instead of
+ * being found by the next user whose file holds a quoted number or whose column declares a MAX. Each path is exercised with a text
+ * value for a typed column by its own test: {@code Issue9809LineProtocolTemporalValueTest} (line protocol),
+ * {@code Issue9972PrometheusTypedTagIT} (Prometheus remote write), {@code Issue10107JsonlTimeSeriesUnstorableValueTest} (JSONL
+ * import) and {@code Issue10381AsyncAppendSamplesConstraintsTest} (the async API).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue10107AppendBatchCallersConvertTest {
-  private static final Pattern APPEND_BATCH_CALL = Pattern.compile("\\.\\s*appendBatch\\s*\\(");
+  private static final Pattern ENTRY_POINT = Pattern.compile("\\.\\s*(appendBatch|appendSamples|newRowSource)\\s*\\(");
+
+  /** Directories that hold no production source of the repository, however deep. */
+  private static final Set<String> NOT_SOURCE = Set.of("node_modules", "target", ".git", ".claude", ".idea");
 
   /**
-   * The engine itself, the class that appends the converted grid, and the javadoc example of the row-source form (a
-   * {@code TimeSeriesBatch} the caller fills with typed values, which no client-facing path uses).
+   * The engine itself, the class that appends the converted grid, and the two classes that reach the storage with a source they
+   * hold to the same rules themselves: the SQL step converts and checks the one row of the statement
+   * ({@code SaveElementStep.saveToTimeSeries}), and the async task appends a source the executor converted and checked on the
+   * calling thread before scheduling it ({@code TimeSeriesStorableRows.requireStorable}, either overload).
    */
   private static final Set<String> ALLOWED = Set.of( //
       "engine/src/main/java/com/arcadedb/engine/timeseries/TimeSeriesEngine.java",
+      "engine/src/main/java/com/arcadedb/engine/timeseries/TimeSeriesShard.java",
       "engine/src/main/java/com/arcadedb/engine/timeseries/TimeSeriesStorableRows.java",
-      "engine/src/main/java/com/arcadedb/engine/timeseries/TimeSeriesBatch.java");
+      "engine/src/main/java/com/arcadedb/query/sql/executor/SaveElementStep.java",
+      "engine/src/main/java/com/arcadedb/database/async/DatabaseAsyncAppendSamples.java");
 
   @Test
   void noProductionPathAppendsAGridOfItsOwn() throws IOException {
@@ -67,35 +82,44 @@ class Issue10107AppendBatchCallersConvertTest {
     assertThat(repoRoot).isNotNull();
 
     final List<String> offenders = new ArrayList<>();
-    int scanned = 0;
-    try (final Stream<Path> modules = Files.list(repoRoot)) {
-      for (final Path module : modules.sorted().toList()) {
-        final Path sources = module.resolve("src").resolve("main").resolve("java");
-        if (!Files.isDirectory(sources))
-          continue;
-
-        try (final Stream<Path> files = Files.walk(sources)) {
-          for (final Path file : files.filter(p -> p.toString().endsWith(".java")).sorted().toList()) {
-            scanned++;
-            final String relative = repoRoot.relativize(file).toString().replace('\\', '/');
-            if (!ALLOWED.contains(relative) && APPEND_BATCH_CALL.matcher(read(file)).find())
-              offenders.add(relative);
-          }
-        }
+    final int[] scanned = { 0 };
+    Files.walkFileTree(repoRoot, new SimpleFileVisitor<>() {
+      @Override
+      public FileVisitResult preVisitDirectory(final Path dir, final BasicFileAttributes attrs) {
+        return NOT_SOURCE.contains(String.valueOf(dir.getFileName())) ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
       }
-    }
 
-    assertThat(scanned).as("no production source found under " + repoRoot).isGreaterThan(1000);
+      @Override
+      public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) {
+        final String relative = repoRoot.relativize(file).toString().replace('\\', '/');
+        if (!relative.endsWith(".java") || !(relative.startsWith("src/main/java/") || relative.contains("/src/main/java/")))
+          return FileVisitResult.CONTINUE;
+
+        scanned[0]++;
+        if (!ALLOWED.contains(relative) && callsAnEntryPoint(file))
+          offenders.add(relative);
+        return FileVisitResult.CONTINUE;
+      }
+    });
+
+    assertThat(scanned[0]).as("no production source found under " + repoRoot).isGreaterThan(1000);
     assertThat(offenders)
-        .as("production classes that call TimeSeriesEngine.appendBatch with a grid of their own, bypassing the conversion every "
-            + "client-facing ingestion path shares: build the grid with TimeSeriesStorableRows.convert and append it with "
-            + "TimeSeriesStorableRows.appendTo (issue #10107)")
+        .as("production classes that reach the storage of a time series engine (appendBatch, appendSamples, newRowSource) with a "
+            + "grid of their own, bypassing the conversion and the column constraints every ingestion path shares: build the rows "
+            + "with TimeSeriesStorableRows (convert + appendTo, or requireStorable for the async API) "
+            + "(issues #10107, #10381)")
         .isEmpty();
   }
 
-  private static String read(final Path file) {
+  /** Comment lines are not calls: the javadoc of the engine names these methods all over. */
+  private static boolean callsAnEntryPoint(final Path file) {
     try {
-      return Files.readString(file, StandardCharsets.UTF_8);
+      for (final String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+        final String code = line.stripLeading();
+        if (!code.startsWith("//") && !code.startsWith("*") && !code.startsWith("/*") && ENTRY_POINT.matcher(code).find())
+          return true;
+      }
+      return false;
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }

@@ -26,6 +26,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.mcp.MCPDispatcher.MCPResponse;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.io.BufferedReader;
@@ -43,6 +45,10 @@ import java.util.logging.Level;
 public class MCPStdioServer {
   // What "list queries" names as the client of a tool call: the process at the other end of the pipe has no address (issue #9962)
   static final RunningQuery.Client STDIO_CLIENT = new RunningQuery.Client(null, "stdio");
+
+  static final String MISSING_ROOT_PASSWORD_MESSAGE =
+      GlobalConfiguration.SERVER_ROOT_PASSWORD.getKey() + " or " + GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getKey()
+          + " must be set for MCP stdio mode";
 
   private final MCPDispatcher      dispatcher;
   private final ServerSecurityUser user;
@@ -62,16 +68,46 @@ public class MCPStdioServer {
     final PrintStream mcpOut = System.out;
     System.setOut(System.err);
 
-    final String rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
-    if (rootPassword == null || rootPassword.isEmpty()) {
-      System.err.println("ERROR: arcadedb.server.rootPassword must be set for MCP stdio mode");
+    final ContextConfiguration configuration = new ContextConfiguration();
+    final String rootPassword;
+    try {
+      rootPassword = resolveRootPassword(configuration);
+    } catch (final ServerSecurityException e) {
+      System.err.println("ERROR: " + e.getMessage());
+      System.exit(1);
+      return;
+    }
+    if (rootPassword == null) {
+      System.err.println("ERROR: " + MISSING_ROOT_PASSWORD_MESSAGE);
       System.exit(1);
       return;
     }
 
-    final int status = startup(new ArcadeDBServer(new ContextConfiguration()), rootPassword, System.in, mcpOut);
+    final int status = startup(new ArcadeDBServer(configuration), rootPassword, System.in, mcpOut);
     if (status != 0)
       System.exit(status);
+  }
+
+  /**
+   * The root password this process authenticates with: {@code arcadedb.server.rootPassword}, or - when that is not set - the content of
+   * the file {@code arcadedb.server.rootPasswordPath} names, the way {@code ServerSecurity} reads it to create the root user (issue
+   * #10478). A server configured the recommended way keeps the password in a file (a mounted Secret) so that it never appears on a
+   * command line, and that server must be able to run in this mode too.
+   *
+   * @return the password, or {@code null} when neither setting holds one
+   *
+   * @throws ServerSecurityException if the file is named but cannot be read, or is empty
+   */
+  static String resolveRootPassword(final ContextConfiguration configuration) {
+    final String rootPassword = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
+    if (rootPassword != null && !rootPassword.isEmpty())
+      return rootPassword;
+
+    // An empty path is "not set" here, where the server takes any non-null path as authoritative and fails on an empty one: a launcher
+    // that always passes -Darcadedb.server.rootPasswordPath= (a container entrypoint, a client config) gets the same message as one
+    // that sets neither setting, which names both, instead of an error about a file called ''
+    final String rootPasswordPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH);
+    return rootPasswordPath != null && !rootPasswordPath.isEmpty() ? ServerSecurity.readRootPasswordFile(rootPasswordPath) : null;
   }
 
   /**

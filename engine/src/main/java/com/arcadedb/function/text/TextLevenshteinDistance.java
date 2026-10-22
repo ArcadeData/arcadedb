@@ -62,26 +62,37 @@ public class TextLevenshteinDistance extends AbstractTextFunction {
     if (str1 == null || str2 == null)
       return null;
 
-    // Validate string lengths to prevent excessive computation
-    if (str1.length() > MAX_STRING_LENGTH) {
+    // Validate string lengths, in characters, to prevent excessive computation. The count comes first and allocates nothing, so a huge
+    // string is refused before it is copied
+    final int length1 = str1.codePointCount(0, str1.length());
+    final int length2 = str2.codePointCount(0, str2.length());
+    if (length1 > MAX_STRING_LENGTH) {
       throw new IllegalArgumentException(
-          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + str1.length());
+          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + length1);
     }
-    if (str2.length() > MAX_STRING_LENGTH) {
+    if (length2 > MAX_STRING_LENGTH) {
       throw new IllegalArgumentException(
-          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + str2.length());
+          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + length2);
     }
 
     return (long) levenshteinDistance(str1, str2);
   }
 
   /**
-   * Calculate Levenshtein distance using dynamic programming.
+   * Calculate Levenshtein distance, over the characters of the strings, using dynamic programming.
    * Time complexity: O(n*m), Space complexity: O(m) where n,m are string lengths.
    */
   public static int levenshteinDistance(final String s1, final String s2) {
-    final int len1 = s1.length();
-    final int len2 = s2.length();
+    return levenshteinDistance(codePointsOf(s1), codePointsOf(s2));
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings given as their characters (see {@link #codePointsOf}).
+   * Time complexity: O(n*m), Space complexity: O(m) where n,m are string lengths.
+   */
+  public static int levenshteinDistance(final int[] s1, final int[] s2) {
+    final int len1 = s1.length;
+    final int len2 = s2.length;
 
     // Use space-optimized approach with two rows
     int[] prev = new int[len2 + 1];
@@ -96,7 +107,7 @@ public class TextLevenshteinDistance extends AbstractTextFunction {
     for (int i = 1; i <= len1; i++) {
       curr[0] = i;
       for (int j = 1; j <= len2; j++) {
-        final int cost = s1.charAt(i - 1) == s2.charAt(j - 1) ? 0 : 1;
+        final int cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
         curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
       }
       // Swap rows

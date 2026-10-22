@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
@@ -133,21 +134,25 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
-   * An offset-bearing literal keeps its wall-clock on this path, unchanged by issue #8090: that is what Cypher's
-   * {@code datetime()} round-trip depends on (issue #4125). Only the accepted formats were widened.
+   * The Zulu form keeps its wall-clock, unchanged by issue #8090: that is what Cypher's {@code datetime()} round-trip
+   * depends on (issue #4125). An offset-bearing literal names an instant and is stored as its UTC wall clock, like the
+   * same instant typed as an {@code OffsetDateTime} (issue #10489).
    */
   @Test
-  void offsetAndZuluFormsKeepTheirWallClock() {
+  void zuluKeepsItsWallClockAndAnOffsetIsConvertedToUtc() {
     final DocumentType type = database.getSchema().createDocumentType("Ev8090Zone");
     type.createProperty("ts", Type.DATETIME_MICROS);
 
     final LocalDateTime wallClock = LocalDateTime.of(2024, 2, 29, 13, 45, 10, 123_456_000);
+    final LocalDateTime utcWallClock = LocalDateTime.of(2024, 2, 29, 12, 45, 10, 123_456_000);
 
     database.transaction(() -> {
-      for (final String literal : new String[] { "2024-02-29T13:45:10.123456Z", "2024-02-29T13:45:10.123456+01:00",
-          "2024-02-29 13:45:10.123456+01" }) {
+      final MutableDocument zulu = database.newDocument("Ev8090Zone").set("ts", "2024-02-29T13:45:10.123456Z").save();
+      assertThat(zulu.<LocalDateTime>get("ts")).isEqualTo(wallClock);
+
+      for (final String literal : new String[] { "2024-02-29T13:45:10.123456+01:00", "2024-02-29 13:45:10.123456+01" }) {
         final MutableDocument doc = database.newDocument("Ev8090Zone").set("ts", literal).save();
-        assertThat(doc.<LocalDateTime>get("ts")).as("literal '%s'", literal).isEqualTo(wallClock);
+        assertThat(doc.<LocalDateTime>get("ts")).as("literal '%s'", literal).isEqualTo(utcWallClock);
       }
     });
   }
@@ -186,9 +191,9 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
    */
   @Test
   void everyOffsetWidthDenotesTheSameInstant() {
-    // The bulk path rebases an offset onto the database's zone, so all three widths have to land on one instant.
+    // An offset is stored as the UTC wall clock of its instant (issues #10489, #10498), so all three widths have to land on one instant.
     final LocalDateTime expected = OffsetDateTime.parse("2024-02-29T13:45:10.123456+01:00")
-        .atZoneSameInstant(database.getSchema().getZoneId()).toLocalDateTime();
+        .atZoneSameInstant(ZoneOffset.UTC).toLocalDateTime();
 
     for (final String offset : new String[] { "+01", "+0100", "+01:00" })
       assertThat(DateUtils.parseDateTime(database, "2024-02-29 13:45:10.123456" + offset)).as("offset '%s'", offset)
@@ -513,9 +518,9 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
       assertThat(Type.convert(database, literal, Instant.class)).isEqualTo(expected);
       assertThat(((Date) Type.convert(database, literal, Date.class)).toInstant()).isEqualTo(expected);
 
-      // The LocalDateTime target still drops it, on purpose: it has no zone to keep (issue #4125).
+      // The LocalDateTime target has no zone to keep, so it stores the UTC wall clock of that instant (issue #10489).
       assertThat(Type.convert(database, literal, LocalDateTime.class)).isEqualTo(
-          LocalDateTime.of(2024, 2, 29, 13, 45, 10));
+          LocalDateTime.of(2024, 2, 29, 12, 45, 10));
     } finally {
       database.getSchema().setDateTimeFormat(original);
     }
@@ -613,7 +618,8 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   @Test
   void theReadSideAnswersWhatTheWriteSideWouldStore() {
     final String literal = "2026-01-01T00:00:00+01:00";
-    final LocalDateTime expected = LocalDateTime.of(2026, 1, 1, 0, 0);
+    // the UTC wall clock of the instant the literal names (issue #10489)
+    final LocalDateTime expected = LocalDateTime.of(2025, 12, 31, 23, 0);
 
     // The write path, and the SQL surfaces that read the same string, must not disagree.
     assertThat(Type.convert(database, literal, LocalDateTime.class)).as("write path").isEqualTo(expected);

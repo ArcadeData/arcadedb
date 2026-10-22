@@ -91,6 +91,10 @@ public class GraphQLSchema {
     this.database = database;
   }
 
+  Database getDatabase() {
+    return database;
+  }
+
   public ResultSet execute(final String query) throws ParseException {
     return execute(query, null);
   }

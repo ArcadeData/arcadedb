@@ -159,6 +159,18 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   /**
+   * The refusal of a statement that would rewrite stored samples ({@code UPDATE}), which no storage layer of a TIMESERIES type supports:
+   * the statement used to report 0 rows, and kept every sample (issue #10336). Names what does change the samples of a type: a sample
+   * is deleted - by time range and tags, or all of them - and written again (issue #10342).
+   */
+  public String immutableSamplesRefusal(final String statement) {
+    return "Cannot " + statement + " the samples of the TIMESERIES type '" + getName() + "': a sample cannot be updated once written. To "
+        + "change one, delete it with DELETE FROM " + getName() + " WHERE " + getTimestampColumn() + " = <timestamp> [AND <tag> = <value>"
+        + " ...] and insert it again; DELETE with a time range and TRUNCATE TYPE remove more, and the RETENTION of the type removes the "
+        + "samples older than it";
+  }
+
+  /**
    * Marks this type as registered but without a usable storage engine (issue #6356): {@link #initEngine()} failed
    * during schema load, most commonly because one derived file (a {@code .ts.sealed} sealed store) could not be
    * opened. Package-private: only {@code LocalSchema.readConfiguration()} calls this, on the same path that would
@@ -350,19 +362,20 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
 
   /**
    * Whether a value set on a document of this type under {@code propertyName} must reach the append UNCONVERTED, because
-   * {@link ColumnDefinition#storableValue} is its only conversion (issue #10137). That holds for a non-temporal TAG or FIELD column:
-   * the document layer's {@code Type.convert} would otherwise coerce the value first - a number into a BOOLEAN column to
-   * {@code true}, a number into a STRING column to its text - and {@code storableValue}, which refuses both on the line protocol,
-   * gRPC and Prometheus remote write, would only ever see a value of the right class.
+   * the SQL time series step converts it once, where it can refuse it naming the column (issue #10137). That holds for every TAG
+   * and FIELD column: the document layer's {@code Type.convert} would otherwise coerce the value first - a number into a BOOLEAN
+   * column to {@code true}, a number into a STRING column to its text - and {@link ColumnDefinition#storableValue}, which refuses
+   * both on the line protocol, gRPC and Prometheus remote write, would only ever see a value of the right class.
    * <p>
-   * The TIMESTAMP column and the DATE/DATETIME columns keep the document conversion: a number written by SQL into a datetime is
-   * epoch MILLIS whatever the column's precision, the contract issues #9643 and #9724 pinned, where the other surfaces read it as a
-   * count in the column's own unit. Every other type a column can have ({@code TimeSeriesTypeBuilder} accepts BOOLEAN, STRING and
-   * the numeric types) has its own rule in {@code storableValue}.
+   * A DATE/DATETIME column is no exception (issue #10233): the step applies the document conversion itself, because a number
+   * written by SQL into a datetime is epoch MILLIS whatever the column's precision, the contract issues #9643 and #9724 pinned,
+   * where the other surfaces read it as a count in the column's own unit. Done there, a value the column refuses is refused like
+   * any other, instead of by a bare {@code IllegalArgumentException} out of the document layer. Only the TIMESTAMP column keeps
+   * the document conversion.
    */
   public boolean skipsDocumentConversion(final String propertyName) {
     final ColumnDefinition col = getTsColumn(propertyName);
-    return col != null && col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP && !col.isTemporal();
+    return col != null && col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP;
   }
 
   /**

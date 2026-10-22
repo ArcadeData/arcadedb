@@ -36,6 +36,8 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private       boolean          pending             = false;
   // See EdgeLinkedList.edgeIteratorKnowingEndpoints()
   private final boolean          endpointsFromList;
+  // See skipDeletedSelfLoops()
+  private       DeletedSelfLoops deletedSelfLoops;
 
   public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction) {
     this(current, vertex, direction, false);
@@ -72,6 +74,14 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
           continue;
         }
 
+        if (deletedSelfLoops != null && nextVertexRID.getBucketId() == vertex.getBucketId()
+            && nextVertexRID.getPosition() == vertex.getPosition() && deletedSelfLoops.consume(nextEdgeRID)) {
+          // A SELF-LOOP THE OTHER WALK OF THIS VERTEX'S DELETION ALREADY DELETED, PASSED OVER BEFORE ITS RECORD IS TOUCHED
+          nextEdgeRID = null;
+          nextVertexRID = null;
+          continue;
+        }
+
         // VALIDATE A NON-LIGHTWEIGHT EDGE HERE SO A DANGLING POINTER (edge record removed but the link still in
         // the segment) IS SKIPPED WHILE PEEKING, KEEPING hasNext()/next() CONSISTENT WITH THE Iterator CONTRACT.
         // OTHERWISE next() WOULD SKIP THE RECORD AND THROW NoSuchElementException WHEN THE SEGMENT ENDS - WHICH
@@ -98,6 +108,18 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
     }
 
     return false;
+  }
+
+  /**
+   * Passes over the self-loop entries (the neighbour is the list's own vertex) that {@code deleted} holds, one per occurrence
+   * it holds, and consumes them: the incoming walk of a vertex being deleted, whose outgoing walk deleted those self-loops
+   * already (issues #10369, #10520). Decided on the pointers read from the segment, before the edge record is touched. The
+   * occurrences consumed stay consumed across a {@link #reset()}.
+   *
+   * @param deleted the self-loops to pass over, or {@code null} to pass over none
+   */
+  final void skipDeletedSelfLoops(final DeletedSelfLoops deleted) {
+    this.deletedSelfLoops = deleted;
   }
 
   @Override

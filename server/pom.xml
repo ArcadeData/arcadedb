@@ -38,7 +38,7 @@
     <micrometer.version>1.17.1</micrometer.version>
     <swagger.version>2.2.55</swagger.version>
     <swagger-parser.version>2.1.48</swagger-parser.version>
-    <snappy.version>1.1.10.11</snappy.version>
+    <snappy.version>1.1.10.12</snappy.version>
   </properties>
 
   <profiles>
@@ -125,4 +125,41 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <!-- Issue #10554: the defaults ConfigDirectorySeeder seeds a configuration directory with, and the built-in
+             server groups, are bundled in the jar so a volume mounted over <root>/config (which hides the files the
+             image ships there) still gets them. package/src/main/config stays the single source: the files are copied
+             from it, unfiltered, and Issue10554BundledConfigDefaultsTest fails if a copy drifts or is missing. An
+             execution rather than a <resources> entry, which would replace the parent's list (issue #8058). -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>bundle-shipped-config-defaults</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>copy-resources</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.outputDirectory}/com/arcadedb/server/config/defaults</outputDirectory>
+              <resources>
+                <resource>
+                  <directory>${project.basedir}/../package/src/main/config</directory>
+                  <filtering>false</filtering>
+                  <includes>
+                    <include>server-groups.json</include>
+                    <include>gremlin-server.yaml</include>
+                    <include>gremlin-server.groovy</include>
+                    <include>gremlin-server.properties</include>
+                  </includes>
+                </resource>
+              </resources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>

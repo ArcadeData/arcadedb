@@ -378,7 +378,7 @@ public class MatchExecutionPlanner {
         // Detect a chain of consecutive fusible edges
         final List<EdgeTraversal> chain = collectFusibleChain(sortedEdges, i, context);
         if (chain.size() >= 2) {
-          plan.chain(new MatchGAVFusedStep(context, chain, chain.get(0).gavProvider));
+          plan.chain(new MatchGAVFusedStep(context, chain, chain.get(0).gavProvider, hopTypes(chain), hopBuckets(chain)));
           i += chain.size();
         } else {
           addStepsFor(plan, edge, context, false, correlated);
@@ -412,14 +412,27 @@ public class MatchExecutionPlanner {
       final CommandContext context) {
     final List<EdgeTraversal> chain = new ArrayList<>();
     GraphTraversalProvider sharedProvider = null;
+    // The aliases the chain has bound so far, its start included: a hop that reaches one again closes a cycle the walk does not check
+    final Set<String> aliasesInChain = new HashSet<>();
+    String previousEndpoint = null;
 
     for (int i = startIdx; i < edges.size(); i++) {
       final EdgeTraversal et = edges.get(i);
       if (!isFusibleEdge(et))
         break;
+      final String startAlias = et.out ? et.edge.out.alias : et.edge.in.alias;
+      final String endpointAlias = endpointAlias(et);
+      // THE FUSED WALK IS ONE PATH, EACH HOP LEAVING FROM THE NODE THE HOP BEFORE IT ARRIVED AT. A SCHEDULE OF A PATTERN THAT
+      // BRANCHES (a->b, b->c, c->d IS SCHEDULED c->d THEN a->b, FROM b) HAS CONSECUTIVE HOPS THAT ARE NOT SUCH A PATH, AND WALKING
+      // THEM AS ONE BOUND THE NEIGHBOURS OF THE WRONG VERTEX (ISSUE #10435)
+      if (previousEndpoint != null && !startAlias.equals(previousEndpoint))
+        break;
+      if (!aliasesInChain.isEmpty() && aliasesInChain.contains(endpointAlias))
+        break;
       // THE FUSED CSR WALK BINDS THE ALIASES IT REACHES WITHOUT EVALUATING THEIR where:, SO A FILTERED HOP STAYS ON THE
-      // REGULAR MatchStep, WHICH DOES (AND BINDS $matched FOR IT, ISSUE #7434)
-      if (aliasFilters.get(et.out ? et.edge.in.alias : et.edge.out.alias) != null)
+      // REGULAR MatchStep, WHICH DOES (AND BINDS $matched FOR IT, ISSUE #7434). THE SAME GOES FOR A RID, WHICH IT DOES NOT
+      // COMPARE. THE TYPE AND THE BUCKET IT DOES: SEE MatchGAVFusedStep
+      if (aliasFilters.get(endpointAlias) != null || aliasRids.get(endpointAlias) != null)
         break;
 
       // Find provider for this edge's labels
@@ -437,9 +450,33 @@ public class MatchExecutionPlanner {
 
       et.gavProvider = provider;
       chain.add(et);
+      aliasesInChain.add(startAlias);
+      aliasesInChain.add(endpointAlias);
+      previousEndpoint = endpointAlias;
     }
 
     return chain;
+  }
+
+  /** The alias the traversal of {@code et} binds: the edge's in-side when walked forward, its out-side when walked backwards. */
+  private static String endpointAlias(final EdgeTraversal et) {
+    return et.out ? et.edge.in.alias : et.edge.out.alias;
+  }
+
+  /** Per hop of a fused chain, the type the pattern gives the node it reaches, null where it gives none. */
+  private String[] hopTypes(final List<EdgeTraversal> chain) {
+    final String[] types = new String[chain.size()];
+    for (int i = 0; i < types.length; i++)
+      types[i] = aliasTypes.get(endpointAlias(chain.get(i)));
+    return types;
+  }
+
+  /** Per hop of a fused chain, the bucket the pattern gives the node it reaches, null where it gives none. */
+  private String[] hopBuckets(final List<EdgeTraversal> chain) {
+    final String[] buckets = new String[chain.size()];
+    for (int i = 0; i < buckets.length; i++)
+      buckets[i] = aliasBuckets.get(endpointAlias(chain.get(i)));
+    return buckets;
   }
 
   /**

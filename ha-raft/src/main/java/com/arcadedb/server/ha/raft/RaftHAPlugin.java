@@ -37,7 +37,6 @@ import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
-import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.Methods;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -552,11 +551,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler paths) {
+  public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
     // Every route is declared with its method, so any other method is answered 405 before a handler runs: these
     // operations change the cluster, and GET is the method link prefetchers, crawlers and a browser replaying the
     // operator's cached credentials send (issue #10157).
-    final PluginRoutes routes = new PluginRoutes(paths);
     // Always register the endpoint - it returns 503 when Raft is not yet started.
     // Note: registerAPI is called before configure()/startService() for AFTER_HTTP_ON plugins,
     // so isRaftEnabled() cannot be checked here.
@@ -800,6 +798,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * <li>{@code channel_recovery} (RaftHAServer): abort, each submitter logs what its drop means -
    * {@code tasks.rejected}, plus {@code tasks.coalesced} for the #8491 hand-offs a health tick did not queue because
    * one was already queued or running;</li>
+   * <li>{@code self_dial_probe} (RaftHAServer, issue #10299): abort, a dropped probe releases its slot and the next
+   * refused request queues it again - {@code tasks.rejected};</li>
    * <li>{@code stalled_resync} (RaftHAServer): caller-runs on the lag-monitor thread -
    * {@code tasks.caller_run_fallbacks}.</li>
    * </ul>
@@ -856,6 +856,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
         }, () -> {
           final RaftHAServer s = raftHAServer;
           return s != null ? s.getChannelRecoveryRejections() : 0L;
+        }));
+    haPoolMetrics.add(server.registerExecutorPoolMetrics("self_dial_probe",
+        "RaftHAServer self-dial probe worker", () -> {
+          final RaftHAServer s = raftHAServer;
+          return s != null ? s.getSelfDialProbePoolStats() : IDLE_POOL_STATS;
+        }, null, () -> {
+          final RaftHAServer s = raftHAServer;
+          return s != null ? s.getSelfDialProbeRejections() : 0L;
         }));
     haPoolMetrics.add(server.registerExecutorPoolMetrics("stalled_resync",
         "RaftHAServer leader-driven stalled-replica resync worker", () -> {

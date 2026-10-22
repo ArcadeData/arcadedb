@@ -79,6 +79,25 @@ public class ServerSecurityUser implements SecurityUser {
     return this;
   }
 
+  /**
+   * True when {@link #addDatabase} with the same arguments would change nothing: the user already holds {@code databaseName}
+   * under every one of {@code groups}. Lets a caller that means "make sure the user has this" skip the write.
+   */
+  public boolean holdsDatabaseWithGroups(final String databaseName, final String[] groups) {
+    if (!userConfiguration.has("databases"))
+      return false;
+
+    final JSONObject userDatabases = userConfiguration.getJSONObject("databases");
+    if (!userDatabases.has(databaseName))
+      return false;
+
+    final List<Object> held = getGroupsAsList(userDatabases, databaseName);
+    for (final String group : groups)
+      if (!held.contains(group))
+        return false;
+    return true;
+  }
+
   public ServerSecurityDatabaseUser getDatabaseUser(final Database database) {
     final String databaseName = database.getName();
 

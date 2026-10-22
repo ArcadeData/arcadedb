@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ChannelReopenLog;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
@@ -32,6 +33,7 @@ import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -42,6 +44,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,7 +62,6 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
@@ -193,6 +195,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #retryAfterReopen} instead of leaving the store unreadable until a swap happens to replace the file
    * (issue #9621). Volatile because a reopen runs under the directory READ lock, which orders nothing between two
    * readers.
+   * <p>
+   * The channel is made non-interruptible where the JVM allows it (issue #10372), exactly as every page file is, so on a
+   * server started with {@code --add-opens java.base/java.nio.channels.spi} an interrupt no longer closes it at all and
+   * the recovery below is never entered. Without that option the recovery is split by lock: the operations holding the
+   * directory WRITE lock retry on the shared channel ({@link #retryAfterReopen}, which refuses any other caller), and
+   * the ones holding only the READ lock never depend on it to recover - a block read goes through a handle of its own
+   * ({@link #readAfterChannelClosed}) and the file length is read off the path ({@link #fileLength()}).
    */
   private volatile RandomAccessFile  indexFile;
   private volatile FileChannel       indexChannel;
@@ -218,11 +227,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   static volatile UnaryOperator<FileChannel> TEST_CHANNEL_DECORATOR = null;
 
+  /**
+   * Test seam (issue #10372): when set, the channels this store opens are left interruptible, as they are on a JVM started
+   * without {@code --add-opens java.base/java.nio.channels.spi}, so the tests of the recovery from a channel an interrupt
+   * closed can still drive it with real interrupts. Read once per channel open.
+   */
+  static volatile boolean TEST_INTERRUPTIBLE_CHANNEL = false;
+
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
   // In-memory block directory (loaded at open) — protected by directoryLock
-  private final List<BlockEntry>    blockDirectory = new ArrayList<>();
-  private final ReadWriteLock       directoryLock  = new ReentrantReadWriteLock();
+  private final List<BlockEntry>       blockDirectory = new ArrayList<>();
+  private final ReentrantReadWriteLock directoryLock  = new ReentrantReadWriteLock();
   // Bumped, under the directory write lock, by every change to blockDirectory: what tells a cached view derived from it
   // (see maxTimestampPrefix) that it is stale
   private          int              directoryVersion;
@@ -524,6 +540,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     this.indexFile = new RandomAccessFile(f, "rw");
     this.indexChannel = channelOf(indexFile);
 
+    // Under the WRITE lock although nothing else can see the store yet: it is what lets the load and the first header
+    // write recover a closed channel on the shared one (see retryAfterReopen)
+    directoryLock.writeLock().lock();
     try {
       if (exists && fileLength() >= HEADER_SIZE)
         loadDirectory();
@@ -534,6 +553,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       try { indexChannel.close(); } catch (final IOException ignored) {}
       try { indexFile.close(); } catch (final IOException ignored) {}
       throw e;
+    } finally {
+      directoryLock.writeLock().unlock();
     }
   }
 
@@ -1063,6 +1084,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         combinationColumns.set(idx);
       combinationWidth = columnIndices.length;
     }
+    // the indices of the rows of a block that pass the field filter, reused from block to block
+    int[] selectedRows = null;
 
     // No binary search here any more: the snapshot IS the run of blocks the range can reach, clipped by the two
     // searches snapshotBlockDirectory ran under the lock. The two bound tests below are kept because a block at
@@ -1192,7 +1215,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (coarsened)
         throw new TimeSeriesWalkCoarsenedException(
             "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
-                + "' was replaced by a downsample (or by a merge of small blocks this read could not follow) while this read was in flight, so no"
+                + "' was replaced by a downsample (or by a merge of small blocks this read could not follow, or removed by a delete of"
+                + " samples) while this read was in flight, so no"
                 + " answer it can still produce is a consistent one: the rows already returned came from the old blocks and"
                 + " the rows remaining sit in their replacements. Run the read again to get a whole answer");
 
@@ -1216,13 +1240,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       if (rawCols != null) {
         // Issue #9612: only the rows that pass the field filter are built, from the primitive columns, and the test reads the
-        // decoded columns in place so a rejected row allocates nothing
-        final List<FieldFilter.Condition> conditions = fieldFilter.getConditions();
+        // decoded columns in place so a rejected row allocates nothing. Selected in one pass over the primitive arrays rather than
+        // one call per row, which spent more than the rows it built (issue #10324)
         final int resultCols = rawCols.length + 1;
-        for (int i = start; i < end; i++) {
+        if (selectedRows == null || selectedRows.length < end - start)
+          selectedRows = new int[end - start];
+        final int selectedCount = FieldFilter.select(fieldFilter.getConditions(), fieldCols, start, end, selectedRows);
+        for (int s = 0; s < selectedCount; s++) {
+          final int i = selectedRows[s];
           if (rowFilter != null && !rowFilter.get(i))
-            continue;
-          if (!FieldFilter.matchesAt(conditions, fieldCols, i))
             continue;
           final Object[] row = new Object[resultCols];
           row[0] = ts[i];
@@ -2758,6 +2784,249 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Removes every sample whose timestamp is in {@code [fromTs, toTs]} and whose tags satisfy {@code tagFilter} (issue #10342),
+   * and answers how many it removed. Nothing is rewritten, and no walk in flight is disturbed, when no sample matches.
+   * <p>
+   * What a block costs depends on how much of it the predicate takes, and it is decided on the block's entry whenever the entry
+   * can say:
+   * <ul>
+   * <li>outside the time range, or declaring no value of the filtered tags: copied as it is, like retention copies a block it
+   * keeps;</li>
+   * <li>inside the time range and declaring the filtered tags homogeneous (or no filter at all): dropped, with no read of its
+   * columns - the shape {@code DELETE ... WHERE ts < X} and {@code TRUNCATE TYPE} take for nearly every block;</li>
+   * <li>anything else: its timestamps (and the filtered tag columns, when the block mixes tag values) are decoded to find the rows;
+   * a block that loses all of them is dropped, one that loses none is copied, and one that loses some is REBUILT from the rows that
+   * stay - every column decoded through the codec it was written with and encoded again, its statistics and declared tag values
+   * recomputed from those rows, as a merge of small blocks does ({@link #prepareMerge}).</li>
+   * </ul>
+   * A block is rebuilt in place: it keeps its position in the time order and the granularity marker of a downsampled block, and
+   * takes a fresh identity, since its rows are no longer the rows of the block it replaces.
+   * <p>
+   * The file is rewritten as retention rewrites it ({@link #truncateBefore}), to a temp file swapped in atomically, under the
+   * directory write lock; the caller holds the shard's compaction write lock and its sealed-file mutex
+   * ({@code TimeSeriesShard.runSealedRewrite}). A walk in flight that meets a block this removed fails like one that meets a block
+   * a downsample replaced ({@link TimeSeriesWalkCoarsenedException}): the rows it already handed over came from blocks that no
+   * longer exist, and no answer it can still produce is a whole one.
+   *
+   * @param tagFilter the tag conditions, or {@code null} for any tags
+   */
+  public long deleteSamples(final long fromTs, final long toTs, final TagFilter tagFilter) throws IOException {
+    if (fromTs > toTs)
+      return 0L;
+
+    directoryLock.writeLock().lock();
+    try {
+      final int tsColIdx = findTimestampColumnIndex();
+      final int[] filterColumns = tagFilter != null ? tagFilterColumns(tagFilter) : null;
+
+      final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
+      final RebuildPlan rebuilt = new RebuildPlan(tsColIdx);
+      long deleted = 0L;
+
+      for (final BlockEntry entry : blockDirectory) {
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
+          retained.add(entry);
+          continue;
+        }
+        final BlockMatchResult tagMatch = blockMatchesTagFilter(entry, tagFilter);
+        if (tagMatch == BlockMatchResult.SKIP) {
+          retained.add(entry);
+          continue;
+        }
+        if (tagMatch == BlockMatchResult.FAST_PATH && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
+          deleted += entry.sampleCount;
+          continue;
+        }
+
+        // CRC-checked by the read, and the CRC is the block's: decompressTimestamps validates the metadata and every column before it
+        // decodes one, so a block rebuilt below was whole when it was read. It is written with a fresh CRC, which would launder a
+        // damaged one
+        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+        final BitSet doomed = rowsToDelete(entry, timestamps, tagMatch, tagFilter, filterColumns, fromTs, toTs, tsColIdx);
+        final int doomedCount = doomed.cardinality();
+        if (doomedCount == 0) {
+          retained.add(entry);
+          continue;
+        }
+        deleted += doomedCount;
+        if (doomedCount == timestamps.length)
+          continue;
+
+        rebuilt.add(entry, timestamps, doomed);
+      }
+
+      if (deleted == 0L)
+        return 0L;
+
+      // the rebuilt blocks are built as the rewrite reaches them, one at a time: a delete over a store of blocks that all mix tags
+      // does not hold the store
+      rewriteWithBlocks(retained, rebuilt);
+      // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows. After
+      // the rewrite, so a rewrite that failed does not make a walk fail for a change that never happened; a walk reads the epoch under
+      // the directory read lock, which this write lock excludes until both are done
+      downsampleEpoch++;
+      return deleted;
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * The rows of a block the predicate takes: those in {@code [fromTs, toTs]}, and, when the block mixes tag values
+   * ({@link BlockMatchResult#SLOW_PATH}), those whose tags satisfy the filter, tested the way a scan tests them.
+   */
+  private BitSet rowsToDelete(final BlockEntry entry, final long[] timestamps, final BlockMatchResult tagMatch,
+      final TagFilter tagFilter, final int[] filterColumns, final long fromTs, final long toTs, final int tsColIdx) throws IOException {
+    final BitSet doomed = new BitSet(timestamps.length);
+    final int from = lowerBound(timestamps, fromTs);
+    final int to = upperBound(timestamps, toTs);
+    if (from >= to)
+      return doomed;
+
+    if (tagMatch == BlockMatchResult.FAST_PATH) {
+      doomed.set(from, to);
+      return doomed;
+    }
+
+    final Object[][] tagColumns = decompressColumns(entry, filterColumns, tsColIdx);
+    final Object[] probe = new Object[filterColumns.length + 1];
+    for (int i = from; i < to; i++) {
+      probe[0] = timestamps[i];
+      for (int c = 0; c < tagColumns.length; c++)
+        probe[c + 1] = tagColumns[c][i];
+      if (tagFilter.matchesMapped(probe, filterColumns))
+        doomed.set(i);
+    }
+    return doomed;
+  }
+
+  /**
+   * The blocks a delete rebuilds from the rows that stay, PLANNED and not built: for each, the block it comes from, the rows that go
+   * and the place it takes in the time order, which is all {@link #rewriteWithBlocks} needs to order the file. A block is built when
+   * the rewrite reaches it, so the memory a delete holds is the plan - a bitset of a few bytes per thousand rows for each block - and
+   * one rebuilt block at a time, not every rebuilt block until the file is written.
+   */
+  private final class RebuildPlan implements NewBlocks {
+    private final int             tsColIdx;
+    private final List<BlockEntry> entries = new ArrayList<>();
+    private final List<BitSet>     doomed  = new ArrayList<>();
+    private final List<long[]>     metas   = new ArrayList<>();
+
+    private RebuildPlan(final int tsColIdx) {
+      this.tsColIdx = tsColIdx;
+    }
+
+    /** Plans the block {@code entry} becomes without the rows in {@code doomedRows}, which are not all of them. */
+    void add(final BlockEntry entry, final long[] timestamps, final BitSet doomedRows) {
+      final int first = doomedRows.nextClearBit(0);
+      final int last = doomedRows.previousClearBit(timestamps.length - 1);
+      entries.add(entry);
+      doomed.add(doomedRows);
+      metas.add(new long[] { timestamps[first], timestamps[last], timestamps.length - doomedRows.cardinality() });
+    }
+
+    @Override
+    public int size() {
+      return entries.size();
+    }
+
+    @Override
+    public long[] meta(final int index) {
+      return metas.get(index);
+    }
+
+    @Override
+    public NewBlock build(final int index) throws IOException {
+      final BlockEntry entry = entries.get(index);
+      // Read again, and not kept from the planning: the decoded timestamps of a block are eight bytes a row, more than the block
+      return rebuildWithout(entry, decompressTimestamps(entry, tsColIdx), doomed.get(index), tsColIdx, columns.size());
+    }
+  }
+
+  /**
+   * The blocks a rewrite of the sealed file adds to the ones it keeps. {@link #rewriteWithBlocks} needs the place of every one in the
+   * time order before it writes the first, and a block itself only when it writes it: a source that builds a block when asked holds
+   * none of them for longer than its own write.
+   */
+  private interface NewBlocks {
+    int size();
+
+    /** {@code {minTimestamp, maxTimestamp, sampleCount}} of block {@code index}. */
+    long[] meta(int index);
+
+    NewBlock build(int index) throws IOException;
+  }
+
+  /** A block ready to be written: its compressed columns, statistics, declared tag values and downsampling granularity. */
+  private record NewBlock(byte[][] compressed, BlockStats stats, String[][] tagDistinctValues, long granularityMs) {
+  }
+
+  /** The non-timestamp column indices a tag filter conditions on, ascending and without repeats. */
+  private static int[] tagFilterColumns(final TagFilter tagFilter) {
+    final BitSet columnSet = new BitSet();
+    for (final TagFilter.Condition condition : tagFilter.getConditions())
+      columnSet.set(condition.columnIndex());
+    return columnSet.stream().toArray();
+  }
+
+  /**
+   * The block {@code entry} becomes without the rows in {@code doomed}: every column decoded through the codec it was written with,
+   * the surviving rows picked, and the block's statistics and declared tag values recomputed from them.
+   */
+  private NewBlock rebuildWithout(final BlockEntry entry, final long[] timestamps, final BitSet doomed, final int tsColIdx,
+      final int colCount) throws IOException {
+    final int kept = timestamps.length - doomed.cardinality();
+    final long[] keptTimestamps = new long[kept];
+    int k = 0;
+    for (int i = doomed.nextClearBit(0); i < timestamps.length; i = doomed.nextClearBit(i + 1))
+      keptTimestamps[k++] = timestamps[i];
+
+    // The block's declared values only intern the strings (issue #8793): what the rebuilt block declares is computed below from the rows
+    // that stay, so a value only the deleted rows held is no longer declared. The ONE instance of each, as a merge keeps them
+    final Map<String, String> canonical = new HashMap<>();
+    if (entry.tagDistinctValues != null)
+      for (final String[] declared : entry.tagDistinctValues)
+        if (declared != null)
+          for (final String value : declared)
+            canonical.putIfAbsent(value, value);
+
+    final byte[][] compressedCols = new byte[colCount][];
+    final StatsBuilder stats = new StatsBuilder(columns);
+    final String[][] tagDistinctValues = new String[colCount][];
+    for (int c = 0; c < colCount; c++) {
+      if (c == tsColIdx) {
+        compressedCols[c] = DeltaOfDeltaCodec.encode(keptTimestamps);
+        continue;
+      }
+      final ColumnDefinition column = columns.get(c);
+      final Object[] decoded = decodeColumn(column, readBytes(entry.columnOffsets[c], entry.columnSizes[c]));
+      if (decoded.length != timestamps.length)
+        throw new IOException("Sealed block at offset " + entry.blockStartOffset + " declares " + timestamps.length
+            + " sample(s) but column '" + column.getName() + "' decodes to " + decoded.length);
+      final Object[] values = new Object[kept];
+      k = 0;
+      for (int i = doomed.nextClearBit(0); i < decoded.length; i = doomed.nextClearBit(i + 1))
+        values[k++] = decoded[i];
+
+      compressedCols[c] = compressColumn(column, values);
+      if (hasNumericStats(c))
+        stats.add(c, values);
+      if (column.getRole() == ColumnDefinition.ColumnRole.TAG) {
+        final LinkedHashSet<String> distinct = new LinkedHashSet<>();
+        for (final Object value : values) {
+          final String text = value != null ? value.toString() : "";
+          final String shared = canonical.get(text);
+          distinct.add(shared != null ? shared : text);
+        }
+        tagDistinctValues[c] = distinct.toArray(new String[0]);
+      }
+    }
+
+    // a rebuilt block keeps the granularity of the block it comes from
+    return new NewBlock(compressedCols, stats.build(), tagDistinctValues, entry.downsampledGranularityMs);
+  }
+
+  /**
    * Downsamples blocks older than cutoffTs to the given granularity.
    * Blocks already at the target resolution or coarser are left untouched (idempotency).
    * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
@@ -3298,6 +3567,42 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void rewriteWithBlocks(final List<BlockEntry> retained,
       final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
       final List<String[][]> newTagDistinctValues, final long newBlocksGranularityMs) throws IOException {
+    rewriteWithBlocks(retained, newCompressed, newMeta, newStats, newTagDistinctValues, null, newBlocksGranularityMs);
+  }
+
+  /**
+   * @param newBlocksGranularities the downsampling granularity of each new block, or {@code null} to give all of them
+   *                               {@code newBlocksGranularityMs}: a block rebuilt from a downsampled one is as coarse as it was
+   */
+  private void rewriteWithBlocks(final List<BlockEntry> retained,
+      final List<byte[][]> newCompressed, final List<long[]> newMeta, final List<BlockStats> newStats,
+      final List<String[][]> newTagDistinctValues, final long[] newBlocksGranularities, final long newBlocksGranularityMs)
+      throws IOException {
+    rewriteWithBlocks(retained, new NewBlocks() {
+      @Override
+      public int size() {
+        return newCompressed.size();
+      }
+
+      @Override
+      public long[] meta(final int index) {
+        return newMeta.get(index);
+      }
+
+      @Override
+      public NewBlock build(final int index) {
+        return new NewBlock(newCompressed.get(index), newStats.get(index),
+            newTagDistinctValues != null ? newTagDistinctValues.get(index) : null,
+            newBlocksGranularities != null ? newBlocksGranularities[index] : newBlocksGranularityMs);
+      }
+    });
+  }
+
+  /**
+   * {@link #rewriteWithBlocks(List, List, List, List, List, long[], long)} over a source that builds each new block when the rewrite
+   * reaches it, so it holds it for as long as it takes to write it and no longer.
+   */
+  private void rewriteWithBlocks(final List<BlockEntry> retained, final NewBlocks newBlocks) throws IOException {
 
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
@@ -3306,11 +3611,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // always in ascending order (required by binary search in iterateRange/scanRange).
     // A negative index means a "new" (downsampled) block; non-negative means retained.
     record WriteSpec(long minTs, boolean retained, int idx) {}
-    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newCompressed.size());
+    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newBlocks.size());
     for (int i = 0; i < retained.size(); i++)
       writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
-    for (int b = 0; b < newCompressed.size(); b++)
-      writeOrder.add(new WriteSpec(newMeta.get(b)[0], false, b));
+    for (int b = 0; b < newBlocks.size(); b++)
+      writeOrder.add(new WriteSpec(newBlocks.meta(b)[0], false, b));
     writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
     // Build new directory in a local list — do NOT modify blockDirectory until after the
@@ -3323,12 +3628,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, newDirectory);
         } else {
           final int b = spec.idx();
-          final long[] meta = newMeta.get(b);
-          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
-              newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, newBlockId());
+          final long[] meta = newBlocks.meta(b);
+          final NewBlock block = newBlocks.build(b);
+          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
+              colCount, block.tagDistinctValues(), newBlockId());
           // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
-          entry.downsampledGranularityMs = newBlocksGranularityMs;
+          entry.downsampledGranularityMs = block.granularityMs();
           newDirectory.add(entry);
         }
       }
@@ -5185,6 +5490,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private static FileChannel channelOf(final RandomAccessFile file) {
     final FileChannel channel = file.getChannel();
+    // AN INTERRUPT ON ANY THREAD IN AN I/O ON THE CHANNEL WOULD CLOSE IT FOR EVERY THREAD (issues #9621, #10223, #10372)
+    if (!TEST_INTERRUPTIBLE_CHANNEL)
+      PaginatedComponentFile.doNotCloseOnInterrupt(channel);
     final UnaryOperator<FileChannel> decorator = TEST_CHANNEL_DECORATOR;
     return decorator != null ? decorator.apply(channel) : channel;
   }
@@ -5828,25 +6136,74 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       readExactly(indexChannel, buf, offset, "block data");
     } catch (final ClosedChannelException e) {
-      // THE LAMBDA IS ALLOCATED ON THE RECOVERY PATH ONLY (issue #9621)
-      retryAfterReopen("read", () -> {
-        buf.clear();
-        readExactly(indexChannel, buf, offset, "block data");
-      });
+      // ON THE RECOVERY PATH ONLY (issues #9621, #10223)
+      readAfterChannelClosed(buf.array(), offset);
     }
     return buf.array();
   }
 
+  /**
+   * Completes a read the shared channel failed on because it was found closed (issues #9621, #10223). The shared channel
+   * is repaired first, for the callers that follow, and the read itself goes through a handle of its own.
+   * <p>
+   * Retrying on the shared channel, as {@link #retryAfterReopen} does for the operations that hold the directory WRITE
+   * lock, loses to other readers: an interrupt on ANY thread blocked in an I/O on it closes it for all of them, so a
+   * reader whose reopen is followed by someone else's interrupt before its read fails again, and enough of those in a
+   * row used up the retry budget and surfaced a {@link ClosedChannelException} from a scan no interrupt of its own had
+   * touched. A plain {@link RandomAccessFile} read is not interruptible, so no interrupt, this thread's own included,
+   * can fail it, and the read does not depend on how many times the shared channel is closed meanwhile. The interrupt
+   * flag is left as it is, so the caller still sees the cancellation, as with {@link #retryAfterReopen}.
+   * <p>
+   * The handle is opened read-only, which never re-creates a file that was dropped meanwhile, and only after
+   * {@link #reopenChannel()} has refused a store closed on purpose or whose file is gone. It reads the file at
+   * {@code basePath}, which is the one the shared channel is on because every caller of {@link #readBytes} holds the
+   * directory lock (READ for a scan, WRITE for a rewrite), and a file swap runs under the WRITE lock.
+   * <p>
+   * Cost: one open, seek, read and close per call. While other threads keep closing the shared channel, every
+   * {@link #readBytes} takes this path, so a storm of cancelled queries is one {@code open()} per block read - acceptable
+   * for a path that is rare by construction, and what buys a read that cannot be failed by anyone else's interrupt.
+   */
+  private void readAfterChannelClosed(final byte[] bytes, final long offset) throws IOException {
+    reopenChannel();
+    try (final RandomAccessFile reader = new RandomAccessFile(basePath + FILE_EXTENSION, "r")) {
+      reader.seek(offset);
+      reader.readFully(bytes);
+    } catch (final EOFException e) {
+      throw new IOException("Unexpected end of file in sealed store '" + basePath + "' reading block data at offset " + offset
+          + ": " + bytes.length + " bytes expected", e);
+    }
+    // close() does not wait for readers, and it is what precedes a drop that deletes the file and may put another one at
+    // the same path. A store closed on purpose since reopenChannel() looked must not hand out what this read found, which
+    // can then be another file's bytes: any such file was put there after the close, so the flag is already up.
+    if (closed)
+      throw new FileNotFoundException(
+          "Sealed store '" + basePath + FILE_EXTENSION + "' was closed on purpose while a read was recovering from a closed channel");
+  }
+
 
   /**
-   * The file length, recovering a channel another thread's interrupt closed (issue #9621). {@link RandomAccessFile}
-   * shares its descriptor with the channel, so once the channel is closed every {@code indexFile} call fails with a
-   * plain {@code IOException("Stream Closed")} rather than a {@link ClosedChannelException}: the channel's state, not
-   * the exception type, says whether this is a closed channel. Every path that then writes or reads through
-   * {@code indexFile} ({@link #appendBlock}, {@link #readWholeSealedFile}, {@link #checkIntegrity}) starts here, under a
-   * directory lock that keeps every reader off the channel for the rest of its sequence.
+   * The file length, which no other thread's interrupt can fail (issues #9621, #10372).
+   * <p>
+   * Under the directory READ lock ({@link #getFileSizeBytes}, {@link #readWholeSealedFile}, a reporting
+   * {@link #checkIntegrity}) it is read off the path, not off the shared descriptor: other readers share that descriptor,
+   * and a reopen of theirs followed by another interrupt fails a retry on it as surely as it failed the block reads of
+   * #10223. No file swap can run under the READ lock, so the file at the path is the one the channel is on.
+   * <p>
+   * Under the WRITE lock ({@link #appendBlock}, the open, {@link #installSealedFile}, a repairing {@link #checkIntegrity}
+   * and the directory load they run) no other thread does I/O on the channel, and the caller goes on to write through
+   * {@code indexFile}, so the length comes from the descriptor and a closed channel is recovered on it.
+   * {@link RandomAccessFile} shares its descriptor with the channel, so once the channel is closed every
+   * {@code indexFile} call fails with a plain {@code IOException("Stream Closed")} rather than a
+   * {@link ClosedChannelException}: the channel's state, not the exception type, says whether this is a closed channel,
+   * and under the WRITE lock nobody else can reopen it and change that answer.
+   * <p>
+   * Every caller holds one of the two locks; a caller holding none would get the path read, which is also the safe answer
+   * for it, since nothing would keep other threads off the shared descriptor.
    */
   private long fileLength() throws IOException {
+    if (!directoryLock.isWriteLockedByCurrentThread())
+      return fileLengthOnDisk();
+
     final RandomAccessFile file = indexFile;
     try {
       return file.length();
@@ -5860,16 +6217,44 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * The single recovery policy for a channel found closed (issue #9621), the same as {@code PaginatedComponentFile}'s
-   * (#9306): reopen the channel and repeat {@code operation} from its start, a bounded number of times, because this
-   * thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
-   * so the reopened channel is not closed at once, and restored afterwards so the caller still sees the cancellation.
+   * The length of the file at {@code basePath}, read without any descriptor, for the callers holding only the directory
+   * READ lock (issue #10372). It refuses what a reopen of the shared channel would have refused: a store closed on
+   * purpose, and a file that no longer exists. A failure to read the size is raised, never reported as an empty file,
+   * which the HA ship would send to every follower.
+   */
+  private long fileLengthOnDisk() throws IOException {
+    final File file = new File(basePath + FILE_EXTENSION);
+    if (closed)
+      throw new FileNotFoundException("Sealed store '" + file.getPath() + "' was closed on purpose, refusing to read its length");
+    // Files.size() and not File.length(): the latter answers 0 for an I/O error too, and a 0 the HA ship took at its word
+    // would send an empty sealed store to every follower
+    try {
+      return Files.size(file.toPath());
+    } catch (final NoSuchFileException e) {
+      throw new FileNotFoundException("Sealed store '" + file.getPath() + "' no longer exists on disk");
+    }
+  }
+
+  /**
+   * The recovery policy for a channel found closed by an operation holding the directory WRITE lock (issue #9621), the
+   * same as {@code PaginatedComponentFile}'s (#9306): reopen the channel and repeat {@code operation} from its start, a
+   * bounded number of times, because this thread's OWN interrupt can close the freshly reopened channel again. The
+   * interrupt flag is cleared around the retry so the reopened channel is not closed at once, and restored afterwards so
+   * the caller still sees the cancellation.
    * Only a reopen that is REFUSED - the store was closed on purpose, or its file no longer exists - is a real failure.
    * <p>
    * So an interrupt does NOT cancel a sealed-store read: the read completes and the flag is left set for the caller to
    * act on at its next cancellation point, the same deferral #9306 chose for the page file.
+   * <p>
+   * The WRITE lock is required, not advised (issue #10372): under the READ lock another reader's interrupt can close the
+   * channel between this reopen and the operation, and another reader's reopen can make a closed channel look open to
+   * the check below, which then rethrows on the first attempt. A READ-lock caller recovers without the shared channel
+   * instead ({@link #readAfterChannelClosed}, {@link #fileLengthOnDisk}).
    */
   private void retryAfterReopen(final String operation, final ChannelOperation channelOperation) throws IOException {
+    if (!directoryLock.isWriteLockedByCurrentThread())
+      throw new IllegalStateException(
+          "Sealed store '" + basePath + FILE_EXTENSION + "': the " + operation + " retries on the shared channel without holding the directory WRITE lock");
     boolean wasInterrupted = false;
     try {
       for (int attempt = 1; ; attempt++) {

@@ -30,6 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
@@ -799,6 +800,19 @@ public class TransactionIndexContext {
                 // PROPAGATE THE OLD RID FROM THE PREVIOUS REPLACE OPERATION (e.g. REMOVE → ADD → ADD)
                 v.oldRid = entry.oldRid;
             }
+          } else {
+            // A NON-UNIQUE KEY (or an all-null one, which is exempt from uniqueness) IS TRACKED PER RID, SO THIS ADD IS WHAT
+            // RETIRES A REMOVE OF THE VERY SAME (KEY, RID): A RECORD WHOSE KEY WENT AWAY AND CAME BACK IN THE TRANSACTION
+            // (issue #10269). KEEPING ONLY THE ADD WOULD REPLAY A PUT OF AN ENTRY THE INDEX ALREADY HOLDS, AND AN INDEX THAT
+            // APPENDS A RID WITHOUT ASKING IF IT IS THERE (THE HASH ONE) THEN LISTS THE RECORD TWICE: THE LATER DELETE OR KEY
+            // CHANGE REMOVES ONE ENTRY AND LEAVES THE OTHER UNDER A KEY THE RECORD NO LONGER HOLDS. A REPLACE OF ITS OWN RID
+            // REPLAYS EXACTLY "REMOVE THE ENTRY, THEN PUT IT", WHICH LEAVES ONE WHETHER OR NOT THE COMMITTED INDEX HELD IT, AND
+            // THE READS ALREADY HIDE THE OLD RID OF A REPLACE (PendingIndexRemovals).
+            final IndexKey entry = values.get(v);
+            if (entry != null && entry.operation == IndexKey.IndexKeyOperation.REMOVE) {
+              v.operation = IndexKey.IndexKeyOperation.REPLACE;
+              v.oldRid = rid;
+            }
           }
         } else if (v.operation == IndexKey.IndexKeyOperation.REMOVE && index.isUnique()) {
           // THE REMOVE DISPLACES A REPLACE: KEEP THE COMMITTED RID THE REPLACE WAS GOING TO REMOVE, OR NOTHING LEFT IN THE
@@ -1133,7 +1147,7 @@ public class TransactionIndexContext {
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
-      if (index.isUnique()) {
+      if (index.isUnique() && !isUniqueCheckDeferred(index)) {
         final TypeIndex typeIndex = index.getTypeIndex();
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
@@ -1153,6 +1167,18 @@ public class TransactionIndexContext {
         }
       }
     }
+  }
+
+  /**
+   * Whether the build that is populating this index checks it once, when it has finished, instead of every commit looking each key
+   * up in the index it is filling (issue #10349). That lookup walks every page written so far and nothing compacts an index while it
+   * is built, so a build of a large type took time with the square of its record count. The build owns the database write lock, so
+   * no other transaction commits to the index until its own pass has run.
+   */
+  private boolean isUniqueCheckDeferred(final IndexInternal index) {
+    final String typeName = index.getTypeName();
+    return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
+        && type.isUniqueCheckDeferred(index.getPropertyNames());
   }
 
   private Map<TypeIndex, Map<ComparableKey, Set<RID>>> getTxDeletedEntries() {
