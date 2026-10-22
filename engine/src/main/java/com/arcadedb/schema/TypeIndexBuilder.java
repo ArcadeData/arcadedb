@@ -1154,8 +1154,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * over through {@code refusal} to be raised once the session is over.
    * <p>
    * Left to the restore after the session, as before, when the clean-up of the failed build did not complete (its files are
-   * still there, and publishing them is not the answer) and for the sorted build, which never runs on a replicated database
-   * and writes outside any transaction.
+   * still there, and publishing them is not the answer), for an {@link Error}, and for the sorted build, which never runs on
+   * a replicated database and writes outside any transaction.
    */
   private Callable<Object> restoringReplacedIndexOnFailure(final LocalDocumentType type, final ReplacedIndexDefinition[] replaced,
       final Boolean[] cleanedInSession, final boolean[] deferralHeld, final boolean sortedBuild, final Throwable[] refusal,
@@ -1164,7 +1164,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       try {
         return build.call();
       } catch (final Throwable failure) {
-        if (replaced[0] == null || sortedBuild || !Boolean.TRUE.equals(cleanedInSession[0]))
+        // An Error (out of memory, a stack overflow) is no refusal to answer with another full build inside the session: it
+        // ends the session as before, and the restore after it is the fallback
+        if (failure instanceof Error || replaced[0] == null || sortedBuild || !Boolean.TRUE.equals(cleanedInSession[0]))
           throw failure;
 
         // Given back before the restore, which builds an index on the same properties and must see every commit checked
@@ -1172,6 +1174,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           type.resumeUniqueCheck(metadata.propertyNames);
           deferralHeld[0] = false;
         }
+        // Never throws: a restore that fails is logged and attached to the refusal as suppressed, the refusal stays what the
+        // caller sees, and the session publishes the state this node is left with (the replaced index gone, as without HA)
         restoreReplacedIndex(replaced[0], failure);
         replaced[0] = null;
         refusal[0] = failure;
