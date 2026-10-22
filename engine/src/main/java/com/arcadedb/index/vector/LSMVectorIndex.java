@@ -2315,12 +2315,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
         LogManager.instance().log(this, Level.INFO,
             "PQ not available after graph load, building PQ for index: %s", indexName);
         try {
-          // Create vector values from the loaded vectorIndex for PQ building
+          // Create vector values from the loaded vectorIndex for PQ building. One read of the array: the codes are laid
+          // out by it, and they are recorded as built for the persisted graph only while it is still the very array that
+          // graph was validated against above - which is what the manifest's fingerprint certifies (issue #10584)
+          final int[] pqOrdinals = ordinalToVectorId;
           final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
               metadata.dimensions, vectorProp,
-              snapshotOf(vectorIndex(), ordinalToVectorId), ordinalToVectorId, this,
-              computeGraphBuildCacheCapacity(ordinalToVectorId.length));
-          buildAndPersistPQ(vectors);
+              snapshotOf(vectorIndex(), pqOrdinals), pqOrdinals, this,
+              computeGraphBuildCacheCapacity(pqOrdinals.length));
+          buildAndPersistPQ(vectors,
+              persistedManifest != null && pqOrdinals == rebuiltOrdinalToVectorId ? persistedManifest.fingerprint() : null);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
               "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
@@ -4470,7 +4474,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Only now that the pages are committed may the manifest vouch for them (issue #6106). Written after the
           // commit and never before: a manifest that outlived a persist which did not complete would be the one
           // thing able to certify a graph nobody built.
-          writeGraphManifest(gf, finalActiveVectorIds);
+          final Long certifiedFingerprint = writeGraphManifest(gf, finalActiveVectorIds);
           graphCertified = true;
           // Identity, not a flag: if graphIndex was replaced since publish, admitByDemotingResidentGraph() compares
           // this reference against the then-resident graph and finds no match.
@@ -4514,9 +4518,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // PQ was already computed for accelerated graph build — just persist it
               LogManager.instance().log(this, Level.INFO,
                   "Persisting PQ computed during accelerated graph build for index: %s", indexName);
-              persistProductQuantization(earlyPq, earlyPqVectors);
+              persistProductQuantization(earlyPq, earlyPqVectors, finalActiveVectorIds.length, certifiedFingerprint);
             } else {
-              buildAndPersistPQ(vectors);
+              buildAndPersistPQ(vectors, vectors.size() == finalActiveVectorIds.length ? certifiedFingerprint : null);
             }
           }
         } catch (final Throwable e) {
@@ -4693,10 +4697,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param persistedTo            the component the graph was written to
    * @param graphOrdinalToVectorId ordinal &rarr; vector id array the graph was built with
+   *
+   * @return the fingerprint the manifest now certifies for that array, or {@code null} when nothing was certified
    */
-  private void writeGraphManifest(final LSMVectorIndexGraphFile persistedTo, final int[] graphOrdinalToVectorId) {
+  private Long writeGraphManifest(final LSMVectorIndexGraphFile persistedTo, final int[] graphOrdinalToVectorId) {
     if (persistedTo == null || graphOrdinalToVectorId == null || graphOrdinalToVectorId.length == 0)
-      return;
+      return null;
 
     // The ordinals the build that produced these pages could not link (issue #7190). Read from the field rather
     // than passed in because both callers reach here right after a build published it, and only that build knows
@@ -4711,7 +4717,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // reusePersistedGraphDespiteDeletions()), but with nothing deleted the map is exactly the array its PQ codes were
     // built with, and the reopen reads it to skip the per-vector document walk (issue #8852). An index persisted
     // before this carries no map and is read the walk's way.
-    persistedTo.getManifest().write(graphOrdinalToVectorId, vectorIndex()::getRid, true,
+    return persistedTo.getManifest().write(graphOrdinalToVectorId, vectorIndex()::getRid, true,
         unreachable != null ? unreachable : EMPTY_ORDINALS,
         persistedTo.getLastWrittenGraphBytes());
   }
@@ -4994,20 +5000,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Both callers run under {@link #graphBuildLock} (the post-load PQ build inside
    * {@link #loadPersistedGraphOrDecidePrefix()}, and the persist at the end of a build), which is what keeps two
    * writers of the same PQ file from racing on its temporary and its rename.
+   *
+   * @param graphOrdinals    how many ordinals the graph named by {@code graphFingerprint} has
+   * @param graphFingerprint the fingerprint certified for the ordinal map the codes were built with, or {@code null}
    */
-  private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
+  private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes, final int graphOrdinals,
+      final Long graphFingerprint) {
     try {
-      // Which graph these codes were built for, written into the file: the fingerprint the manifest certified for the
-      // persisted graph - the manifest always precedes the PQ, on every path that writes one - but only when that graph
-      // has exactly one ordinal per code. A graph of another size is a different assignment, and the codes then
-      // carry no identity, which the reopen reads as "walk".
-      // On the initial build (CREATE INDEX over existing data) the graph pages are rewritten inside the build transaction,
-      // which drops the manifest until the build has committed and written it again. That path writes no PQ: the codes
-      // are made by the persist above or by the post-load build, both after the manifest. Issue10568ProductReopenOrdinalMapTest
-      // creates an index over existing data and holds the reopen to the ordinal map for it.
-      final LSMVectorIndexGraphFile gf = graphFile;
-      final LSMVectorIndexGraphManifest.Content certified = gf != null ? gf.getManifest().read() : null;
-      final Long builtFor = certified != null && certified.vectorCount() == codes.count() ? certified.fingerprint() : null;
+      // Which graph these codes were built for, written into the file (issue #10584): the fingerprint certified for the
+      // very ordinal map the caller encoded them with, handed over by the caller rather than re-read from the manifest
+      // on disk, which would only say which graph is persisted NOW. Recorded only with exactly one code per ordinal: any
+      // other pairing is not that graph's, and codes without an identity send the reopen down the walk.
+      final Long builtFor = graphFingerprint != null && graphOrdinals == codes.count() ? graphFingerprint : null;
       pqFile.writePQ(pq, codes, builtFor);
       persistedPQKnownStale = false;
     } catch (final Throwable e) {
@@ -5077,9 +5081,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * subspace to K clusters. This enables approximate search using only in-memory
    * compressed vectors, achieving microsecond-level latency.
    *
-   * @param vectors The vector values to encode with PQ
+   * @param vectors          The vector values to encode with PQ
+   * @param graphFingerprint the fingerprint certified for the ordinal map {@code vectors} is laid out by, recorded with
+   *                         the codes (issue #10584); {@code null} records none
    */
-  private void buildAndPersistPQ(final RandomAccessVectorValues vectors) {
+  private void buildAndPersistPQ(final RandomAccessVectorValues vectors, final Long graphFingerprint) {
     try {
       final int vectorCount = vectors.size();
       if (vectorCount == 0) {
@@ -5140,7 +5146,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           System.currentTimeMillis() - encodeStart, encodedVectors.count());
 
       // Persist PQ data to file and cache it in memory for immediate zero-disk-I/O search
-      persistProductQuantization(pq, encodedVectors);
+      persistProductQuantization(pq, encodedVectors, vectorCount, graphFingerprint);
 
       final long totalTime = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,

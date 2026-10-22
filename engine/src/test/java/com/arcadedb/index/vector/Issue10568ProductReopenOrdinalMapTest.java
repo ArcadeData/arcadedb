@@ -315,6 +315,44 @@ class Issue10568ProductReopenOrdinalMapTest {
     assertPqRecordsItsGraphAndReopenTakesTheMap();
   }
 
+  @Test
+  void aGraphRebuiltForAMissingPqFileRecordsItsGraphWithTheNewCodes() throws IOException {
+    final Built built = build("PRODUCT");
+
+    // No PQ file: the next open rebuilds the graph and the codes together, and the codes have to be recorded as built
+    // for the graph that rebuild certified, not for whichever manifest happens to be on disk
+    assertThat(Files.deleteIfExists(built.pqPath)).as("precondition: there was a PQ file to remove").isTrue();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final List<String> logs = new ArrayList<>();
+        final LSMVectorIndex index = vectorIndex(db);
+        final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
+        assertThat(results).hasSize(10);
+        assertThat(index.getStats().get("graphRebuildCount")).as("graph and codes are rebuilt together").isEqualTo(1L);
+        assertThat(logs).anyMatch(m -> m.contains("there is no usable PQ file"));
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    final LSMVectorIndexPQFile pqFile = pqFileOf(built);
+    assertThat(pqFile.loadPQ()).as("precondition: the rebuild persisted its codes").isTrue();
+    final LSMVectorIndexGraphManifest.Content manifest = new LSMVectorIndexGraphManifest(built.graphPath.toString()).read();
+    assertThat(manifest).isNotNull();
+    assertThat(pqFile.graphFingerprintOf(pqFile.getPQVectors()))
+        .as("the rebuilt codes record the fingerprint certified for the rebuilt graph").isEqualTo(manifest.fingerprint());
+
+    final List<String> logs = new ArrayList<>();
+    reopenAndSearch(logs, (index, results) -> {
+      assertThat(results).hasSize(10);
+      assertThat(index.getStats().get("graphLoadsFromOrdinalMap")).as("so the next reopen takes the ordinal map").isEqualTo(1L);
+      assertThat(index.getStats().get("graphRebuildCount")).isZero();
+      assertThat(logs).as("and not the walk").noneMatch(m -> m.contains(WALK_LINE));
+    });
+  }
+
   private Path pqPathAfterCreate;
   private Path graphPathAfterCreate;
 

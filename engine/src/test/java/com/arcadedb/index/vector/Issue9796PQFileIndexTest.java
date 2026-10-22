@@ -103,11 +103,11 @@ class Issue9796PQFileIndexTest extends TestHelper {
         new Issue9796PQFileAtomicRewriteTest.FailingPQVectors(pq, liveCodes.count(), 64, failure);
 
     final Method persist = LSMVectorIndex.class.getDeclaredMethod("persistProductQuantization", ProductQuantization.class,
-        PQVectors.class);
+        PQVectors.class, int.class, Long.class);
     persist.setAccessible(true);
     Throwable escaped = null;
     try {
-      persist.invoke(index, pq, failing);
+      persist.invoke(index, pq, failing, liveCodes.count(), null);
     } catch (final InvocationTargetException e) {
       escaped = e.getCause();
     }
