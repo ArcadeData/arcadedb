@@ -657,6 +657,11 @@ public class BinarySerializer {
       final boolean applyEncryption) {
     if (value == null)
       return;
+    if (value instanceof Result result)
+      // COMING FROM A QUERY: BinaryTypes.getTypeFromValue() labelled the Result as the record or the map it stands for, and
+      // unwrapping it once here hands every label's branch that thing instead of a Result (issues #10264, #10607)
+      value = BinaryTypes.unwrapResult(result);
+
     final boolean encrypt = applyEncryption && dataEncryption != null;
     Binary content = encrypt ? new Binary() : serialized;
 
@@ -778,10 +783,6 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_RID: {
-      if (value instanceof Result result)
-        // COMING FROM A QUERY
-        value = result.getElement().get();
-
       final RID rid = ((Identifiable) value).getIdentity();
       serialized.putInt(rid.getBucketId());
       serialized.putLong(rid.getPosition());
@@ -840,10 +841,6 @@ public class BinarySerializer {
 
       if (value instanceof JSONObject object)
         value = object.toMap();
-      else if (value instanceof Result result)
-        // COMING FROM A QUERY: BinaryTypes.getTypeFromValue() types a Result that is not a record as a map, and a projected
-        // SELECT subquery hands a list of them to a CREATE MATERIALIZED VIEW or an INSERT ... FROM (issue #10264)
-        value = result.toMap();
 
       final Map<Object, Object> map = (Map<Object, Object>) value;
       final int mapSize = map.size();
