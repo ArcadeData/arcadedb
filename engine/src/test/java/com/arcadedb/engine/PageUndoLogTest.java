@@ -178,6 +178,39 @@ class PageUndoLogTest extends TestHelper {
   }
 
   @Test
+  void aLogReusedForPagesOfDifferentSizesNeverSeesTheBitsOfAnEarlierOne() {
+    final PageUndoLog log = new PageUndoLog();
+    final Random random = new Random(6);
+
+    // A BIG PAGE WRITTEN NEAR ITS END, THE LOG ENDED WITHOUT A RESTORE (THE STATEMENT SUCCEEDED): ITS BITS STAY IN THE LOG
+    final MutablePage big = newPage(random);
+    log.begin(big, null);
+    big.writeLong(PAGE_SIZE - 600, 1L);
+    log.end();
+
+    // A SMALL PAGE: ONLY ITS OWN WORDS COUNT, AND IT COMES BACK
+    final MutablePage small = new MutablePage(new PageId(database, 2, 0), 4096);
+    small.setContentSize(1000);
+    small.writeLong(100, 7L);
+    final byte[] smallBytes = bytesOf(small);
+    log.begin(small, null);
+    small.writeLong(100, 8L);
+    small.writeLong(3000, 9L);
+    log.restore();
+    log.end();
+    assertThat(bytesOf(small)).isEqualTo(smallBytes);
+
+    // A BIG PAGE AGAIN: THE WORDS THE SMALL PAGE DID NOT USE ARE CLEAR, SO THE WRITE NEAR ITS END IS LOGGED AND COMES BACK
+    final byte[] bigBytes = bytesOf(big);
+    log.begin(big, null);
+    big.writeLong(PAGE_SIZE - 600, 2L);
+    assertThat(log.getLoggedGranules()).isEqualTo(1);
+    log.restore();
+    log.end();
+    assertThat(bytesOf(big)).isEqualTo(bigBytes);
+  }
+
+  @Test
   void aLogThatRanOutOfBudgetRefusesToRestoreInsteadOfRestoringHalfAPage() {
     final MutablePage page = newPage(new Random(5));
     final PageUndoLog log = new PageUndoLog();
