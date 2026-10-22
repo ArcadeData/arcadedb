@@ -42,7 +42,10 @@ public final class ColumnBatcher {
   }
 
   /** Wall-clock-consistent epoch millis: naive temporals are read as UTC so
-   * numpy's (naive) datetime64 shows the same wall-clock the record carries. */
+   * numpy's (naive) datetime64 shows the same wall-clock the record carries.
+   * A DATE is its UTC midnight in milliseconds, not a count of days: the column is a datetime64[ms], and it is the
+   * number RowBatcher gets from the engine's JSONObject for the same value (#10522, test_temporal_writers_agree.py).
+   * It is not a JSON writer, so there is nothing for it to disagree with in Result.toJSON(). */
   private static long toEpochMillis(final Object v) {
     if (v instanceof Date d)
       return d.getTime();

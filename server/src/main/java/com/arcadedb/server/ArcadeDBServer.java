@@ -264,14 +264,15 @@ public class ArcadeDBServer {
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
   // exposed via getDatabasesLock() without leaking the registry itself.
   private final       Object                                databasesLock                        = new Object();
-  // Database names an in-flight restore has claimed, guarded by databasesLock (issue #7441). A restore checks its
+  // Database names an in-flight restore has claimed; every change and every check-then-act is guarded by databasesLock, and the set is
+  // concurrent so isDatabaseHeld can read it without that lock (issues #7441, #10553). A restore checks its
   // target up front and replaces it minutes later, in swapRestoredDatabase; without a claim held across that window
   // a database created inside it was dropped and overwritten with no error reported to either caller. Sampling the
   // name a second time would not have helped - the two samples are not atomic with each other either - so the name
   // is reserved in the same databasesLock section as the pre-check and released when the restore ends. Creators are
   // refused, not parked: waiting here would block a create behind a multi-GB download. A client request is refused the
   // same way when it would OPEN the target (issue #10388), but only a request: the restore resolves its own target.
-  private final       Set<String>                           restoringDatabaseNames               = new HashSet<>();
+  private final       Set<String>                           restoringDatabaseNames               = ConcurrentHashMap.newKeySet();
   // The databases whose files a drop is deleting right now (issue #10388). LocalDatabase.drop() closes the instance and
   // only then runs the recursive delete, and until the delete reaches schema.json the directory still holds a database:
   // a request that resolved the name in that window opened the directory being deleted. Set before the drop starts and
@@ -1561,6 +1562,23 @@ public class ArcadeDBServer {
   }
 
   /**
+   * Whether an operator holds {@code databaseName} right now: a restore reserved it, a {@code close database} closed it, or a drop is
+   * deleting its files. Such a database EXISTS and is not registered, so {@link #existsDatabase} cannot tell it from a name that is no
+   * database at all, which is the question a protocol that guesses whether a key prefix names a database has to answer (Redis, issue
+   * #10553); {@link #getDatabaseForClient} refuses it with {@link DatabaseNotAvailableException}.
+   * <p>
+   * Lock-free: three reads of concurrent sets, no {@link #getDatabasesLock()}, because the caller is a command's hot path and the lock
+   * is held across the whole close, swap and reopen of a snapshot install. The answer is a sample, as {@link #existsDatabase} is.
+   * A caller asks {@link #existsDatabase} FIRST and this second: every hold goes up before the registry entry it replaces leaves
+   * (a close command in {@code removeDatabase}, a restore reservation and a drop before they start), so a name that is gone from the
+   * registry is already held.
+   */
+  public boolean isDatabaseHeld(final String databaseName) {
+    return closedByCommand.contains(databaseName) || restoringDatabaseNames.contains(databaseName)
+        || beingDropped.contains(databaseName);
+  }
+
+  /**
    * Refuses to bring a database into existence under a name an in-flight restore has claimed. Called from the two
    * places in this class that reach {@code DatabaseFactory.create()}, both already holding {@link #databasesLock},
    * which is what makes the refusal atomic with the claim rather than another unsynchronised sample.
@@ -1890,11 +1908,14 @@ public class ArcadeDBServer {
   private void removeDatabase(final String databaseName, final boolean keepClosedByCommandMark) {
     final ServerDatabase removed;
     synchronized (databasesLock) {
-      removed = databases.remove(databaseName);
-      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      // The mark goes up BEFORE the entry leaves the registry: isDatabaseHeld() is read without this lock, after existsDatabase(), and a
+      // reader that finds the entry gone then finds the mark. In the other order there was an instant where a database a close command
+      // is closing was neither registered nor held (issue #10553)
       if (keepClosedByCommandMark)
         closedByCommand.add(databaseName);
-      else
+      removed = databases.remove(databaseName);
+      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      if (!keepClosedByCommandMark)
         closedByCommand.remove(databaseName);
     }
 

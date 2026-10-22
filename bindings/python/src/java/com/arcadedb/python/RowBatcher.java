@@ -12,6 +12,16 @@
  * which since 26.7.2 (#4967) serializes primitive arrays like float[] as
  * real JSON arrays natively.
  *
+ * This class has NO temporal encoding of its own (#10522): every date and
+ * date-time is written by JSONObject.put, the writer the engine uses for the
+ * rows of a projection and for the members of a list or a map of any row, and
+ * ColumnBatcher's epoch milliseconds are the same numbers. A DATE is the epoch
+ * milliseconds of its UTC midnight, never a count of days, whatever the JVM
+ * time zone. The one place the engine writes days is the top level of a
+ * record's own toJSON() (Result.to_json() of a SELECT FROM T row), which is
+ * the form fromJSON() reads back for a DATE column; to_json_list() is not that
+ * round trip, and test_temporal_writers_agree.py pins both.
+ *
  * Compiled into arcadedb-python-bridge.jar during the wheel build
  * (scripts/Dockerfile.build and scripts/build-native.sh) and consumed by
  * ResultSet.to_json_list() in the Python bindings. Values carry JSON-native
@@ -23,14 +33,6 @@ package com.arcadedb.python;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
-
-import java.time.LocalDate;
-import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
 
 public final class RowBatcher {
 
@@ -79,49 +81,14 @@ public final class RowBatcher {
 
   private static void appendRow(final StringBuilder sb, final Result row) {
     final JSONObject obj = new JSONObject();
-    for (final String property : row.getPropertyNames())
-      obj.put(property, utcDates(row.getProperty(property)));
+    for (final String property : row.getPropertyNames()) {
+      // No conversion of our own: JSONObject.put anchors a LocalDate at UTC midnight whatever the JVM zone (#9037), writes a
+      // java.util.Calendar as its epoch milliseconds like a Date (#9630), and writes a date past the range of a long of
+      // milliseconds as its ISO text (#10483), where the encoder this replaced threw and failed the whole batch. The members
+      // of a list or a map go the same way
+      final Object value = row.getProperty(property);
+      obj.put(property, value);
+    }
     sb.append(obj);
-  }
-
-  /**
-   * JSONObject.put writes a LocalDate as the epoch milliseconds of midnight in the JVM's default time zone, while
-   * Result.toJSON() and a DATETIME (a UTC wall clock) are written in UTC, so the same row read twice gave two integers
-   * and decoded to the previous day east of UTC. A DATE is written as midnight UTC here, at the top level and inside a
-   * list or map. A collection without a LocalDate is returned as it is.
-   * <p>
-   * A java.util.Calendar (arcadedb.dateTimeImplementation / dateImplementation) is written as its epoch milliseconds, as
-   * a java.util.Date is. The engine's JSONObject wrote it as its toString() before #9630, and this bridge runs against
-   * whatever engine the wheel bundles, so it does not rely on that fix.
-   */
-  private static Object utcDates(final Object value) {
-    if (value instanceof LocalDate date)
-      return date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
-    if (value instanceof Calendar calendar)
-      return calendar.getTimeInMillis();
-    if (value instanceof List<?> list) {
-      List<Object> copy = null;
-      for (int i = 0; i < list.size(); i++) {
-        final Object element = list.get(i);
-        final Object converted = utcDates(element);
-        if (converted != element && copy == null)
-          copy = new ArrayList<>(list);
-        if (copy != null)
-          copy.set(i, converted);
-      }
-      return copy != null ? copy : value;
-    }
-    if (value instanceof Map<?, ?> map) {
-      Map<Object, Object> copy = null;
-      for (final Map.Entry<?, ?> entry : map.entrySet()) {
-        final Object converted = utcDates(entry.getValue());
-        if (converted != entry.getValue() && copy == null)
-          copy = new LinkedHashMap<>(map);
-        if (copy != null)
-          copy.put(entry.getKey(), converted);
-      }
-      return copy != null ? copy : value;
-    }
-    return value;
   }
 }

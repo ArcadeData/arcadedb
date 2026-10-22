@@ -20,8 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CauseChain;
-import com.arcadedb.exception.DatabaseNotAvailableException;
-import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
@@ -239,12 +237,6 @@ public final class GrpcErrorMapper {
     } else if (dup != null) {
       code = Status.Code.ALREADY_EXISTS;
       addDuplicatedKeyTrailers(trailers, dup, conceal);
-    } else if (category == ErrorCategory.SERVER && isHeldDatabase(cause)) {
-      // A database the server HAS but does not serve now: a restore holds its name, a 'close database' closed it, it is being
-      // dropped (issue #10533). Raised at the resolution of the name, before any work of the call, so nothing was applied. Not
-      // INTERNAL, which reads as a server fault and is logged with a stack trace for a refusal an operator asked for; and not
-      // NOT_FOUND, which the client rebuilds as a missing record. A name that is not a database keeps the mapping it had
-      code = Status.Code.UNAVAILABLE;
     } else {
       code = statusCodeFor(category);
     }
@@ -262,12 +254,6 @@ public final class GrpcErrorMapper {
     final String description = redirect != null ? prefixed + ". " + redirect : prefixed;
 
     return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);
-  }
-
-  /** Whether the chain refuses a database that exists: {@link DatabaseNotAvailableException} without its not-found subtype. */
-  private static boolean isHeldDatabase(final Throwable cause) {
-    return CauseChain.contains(cause, DatabaseNotAvailableException.class) && !CauseChain.contains(cause,
-        DatabaseNotFoundException.class);
   }
 
   /**
@@ -300,6 +286,11 @@ public final class GrpcErrorMapper {
       case TIMEOUT -> Status.Code.DEADLINE_EXCEEDED;
       // Stopped on request (issue #9689): gRPC's own word for an operation somebody cancelled, never retried by a client
       case TERMINATED -> Status.Code.CANCELLED;
+      // A database the server HAS but does not serve now: a restore holds its name, a 'close database' closed it, it is being
+      // dropped (issues #10533, #10553). Raised where the name is resolved, before any work of the call, so nothing was applied. Not
+      // INTERNAL, which reads as a server fault and is logged with a stack trace for a refusal an operator asked for; not NOT_FOUND,
+      // which the client rebuilds as a missing record; not ABORTED, which means "retry the transaction"
+      case UNAVAILABLE -> Status.Code.UNAVAILABLE;
       case SERVER -> Status.Code.INTERNAL;
     };
   }

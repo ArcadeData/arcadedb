@@ -217,6 +217,47 @@ class ErrorCategoryTest {
   }
 
   @Test
+  void aDatabaseThatExistsButCannotServeIsUnavailableOnEveryWireProtocol() {
+    // Issue #10553: a restore holds the name, 'close database' closed it, it is being dropped, an HA install left it mid-swap
+    final DatabaseNotAvailableException held = new DatabaseNotAvailableException("Database 'mydb' is not available");
+
+    assertThat(ErrorCategory.of(held)).isEqualTo(ErrorCategory.UNAVAILABLE);
+    assertThat(ErrorCategory.of(new TransactionException("commit failed", held))).isEqualTo(ErrorCategory.UNAVAILABLE);
+    assertThat(ErrorCategory.of(new CommandExecutionException("outer", new TransactionException("inner", held))))
+        .isEqualTo(ErrorCategory.UNAVAILABLE);
+    assertThat(ErrorCategory.classifiedCause(new CommandExecutionException("outer", held))).isSameAs(held);
+  }
+
+  @Test
+  void aWrapperThatParsesDoesNotHideAHeldDatabase() {
+    // GraphQL and the query engines wrap execution failures in a CommandParsingException (see ARITHMETIC): the wrapper must
+    // not relabel a database the server holds as invalid syntax
+    final Throwable wrapped = new CommandParsingException("failed", new DatabaseNotAvailableException("held"));
+
+    assertThat(ErrorCategory.of(wrapped)).isEqualTo(ErrorCategory.UNAVAILABLE);
+  }
+
+  @Test
+  void aNameThatIsNotADatabaseIsNotUnavailable() {
+    // The permanent verdict is the caller's to correct: no retry and no wait makes it succeed. It is a subtype of the transient
+    // one, so the exclusion is what keeps it out, wherever it sits in the chain
+    final DatabaseNotFoundException missing = new DatabaseNotFoundException("Database 'nope' does not exist");
+
+    assertThat(ErrorCategory.of(missing)).isEqualTo(ErrorCategory.SERVER);
+    assertThat(ErrorCategory.of(new CommandExecutionException("outer", missing))).isEqualTo(ErrorCategory.SERVER);
+    assertThat(ErrorCategory.classifiedCause(missing)).isNull();
+    assertThat(ErrorCategory.classifiedCause(new CommandExecutionException("outer", missing))).isNull();
+  }
+
+  @Test
+  void aRetryableConflictWinsOverAHeldDatabase() {
+    final LockTimeoutException conflict = new LockTimeoutException("lock timeout", new DatabaseNotAvailableException("held"));
+
+    assertThat(ErrorCategory.of(conflict)).isEqualTo(ErrorCategory.RETRY);
+    assertThat(ErrorCategory.classifiedCause(conflict)).isSameAs(conflict);
+  }
+
+  @Test
   void theClassifiedCauseFollowsCategoryPriorityNotDepth() {
     final LockTimeoutException conflict = new LockTimeoutException("lock timeout");
     final Throwable retryDeeper = new ArithmeticErrorException("long overflow", conflict);

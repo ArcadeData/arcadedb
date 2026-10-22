@@ -838,7 +838,10 @@ public class BoltNetworkExecutor extends Thread {
         applySystemQueryTail(query, params, stream);
       } catch (final CommandParsingException e) {
         stream.close(this, "RUN failure");
-        sendExecutionFailure(classifyParsingError(e), clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e), e);
+        // Through the category, which keeps a genuine parsing failure's own title (classifyParsingError) and lets a failure that
+        // outranks parsing, wrapped by this exception, say what it is: a held database is not a syntax error (issue #10553)
+        sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
+            clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e), e);
         state = State.FAILED;
         return;
       } catch (final Exception e) {
@@ -942,7 +945,8 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final CommandParsingException e) {
       stream.close(this, "RUN failure");
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendExecutionFailure(classifyParsingError(e), clientMessage(parseMsg, e), e);
+      // Through the category, as the system-query catch does (issue #10553)
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), clientMessage(parseMsg, e), e);
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
@@ -2021,6 +2025,9 @@ public class BoltNetworkExecutor extends Thread {
       case TIMEOUT -> BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
       // Stopped on request (issue #9689): the one Transaction.* title meaning "killed on purpose", which drivers never retry
       case TERMINATED -> BoltErrorCodes.TRANSACTION_TERMINATED_ERROR;
+      // A database the server has and cannot serve now (issue #10553), reached here when it is lost under a statement rather than at
+      // the selection of the database (classifyDatabaseSelectionError): the same title, so the driver reads one thing either way
+      case UNAVAILABLE -> BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR;
       case SERVER -> defaultCode;
     };
   }

@@ -18,9 +18,11 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.ErrorCategory;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,13 +38,24 @@ class Issue10533PostgresHeldDatabaseTest {
 
   @Test
   void aDatabaseTheServerHoldsIsNotADatabaseThatDoesNotExist() {
-    assertThat(PostgresNetworkExecutor.isHeldDatabase(
-        new DatabaseNotAvailableException("Database 'mydb' is not available: a restore of it is in progress"))).isTrue();
+    final DatabaseNotAvailableException held = new DatabaseNotAvailableException(
+        "Database 'mydb' is not available: a restore of it is in progress");
+
+    assertThat(ErrorCategory.of(held)).isEqualTo(ErrorCategory.UNAVAILABLE);
+    assertThat(PostgresNetworkExecutor.sqlStateFor(held)).isEqualTo(PostgresNetworkExecutor.SQLSTATE_CANNOT_CONNECT_NOW);
+  }
+
+  /** Issue #10553: the same verdict reaches a statement of an open session, not only the opening of the connection. */
+  @Test
+  void aDatabaseHeldUnderAStatementIsCannotConnectNowToo() {
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new CommandExecutionException("Error on executing the query",
+        new DatabaseNotAvailableException("Database 'mydb' is not available")))).isEqualTo("57P03");
   }
 
   @Test
   void aNameThatIsNotADatabaseKeepsItsAnswer() {
-    assertThat(PostgresNetworkExecutor.isHeldDatabase(new DatabaseNotFoundException("Database 'nope' does not exist"))).isFalse();
-    assertThat(PostgresNetworkExecutor.isHeldDatabase(new DatabaseOperationException("Error on opening the database"))).isFalse();
+    assertThat(ErrorCategory.of(new DatabaseNotFoundException("Database 'nope' does not exist"))).isNotEqualTo(ErrorCategory.UNAVAILABLE);
+    assertThat(ErrorCategory.of(new DatabaseOperationException("Error on opening the database"))).isNotEqualTo(ErrorCategory.UNAVAILABLE);
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new DatabaseNotFoundException("Database 'nope' does not exist"))).isEqualTo("XX000");
   }
 }

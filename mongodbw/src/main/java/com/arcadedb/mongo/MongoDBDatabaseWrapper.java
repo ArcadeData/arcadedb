@@ -242,7 +242,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the translation into MongoDB's error codes is here. The categories MongoDB has no code for keep the uncoded
    * exception they already had.
    * <p>
-   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals
+   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized, MaxTimeMSExpired and TemporarilyUnavailable are given as literals
    * because the bundled {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
    */
   static MongoServerException wireException(final String message, final Exception e) {
@@ -275,6 +275,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       case TIMEOUT -> new MongoServerError(50, "MaxTimeMSExpired", message, e);
       // Stopped on request (issue #9689): what MongoDB answers for an operation a killOp interrupted
       case TERMINATED -> new MongoServerError(11601, "Interrupted", message, e);
+      // A database the server has and cannot serve now (issue #10553): what MongoDB answers while it cannot take the request, and
+      // the one code a driver may retry later without the topology changing (NotWritablePrimary and the like would have it drop
+      // the server, and with it every other database that is perfectly fine)
+      case UNAVAILABLE -> new MongoServerError(365, "TemporarilyUnavailable", message, e);
       case NOT_FOUND, SERVER -> new MongoServerException(message, e);
     };
   }

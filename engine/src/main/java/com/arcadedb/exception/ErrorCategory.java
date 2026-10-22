@@ -106,9 +106,71 @@ public enum ErrorCategory {
   TERMINATED,
 
   /**
+   * The database exists and cannot serve the request NOW: a restore holds its name, {@code close database} closed it, it is being
+   * dropped, an interrupted HA snapshot install left it mid-swap ({@link DatabaseNotAvailableException}, issue #10553). Raised where the
+   * name is resolved, before any work of the request, so nothing of it ran. The operator caused it and it clears without the caller
+   * changing anything, which is what separates it from the three it is easily mistaken for: not {@link #NOT_FOUND}, because the database
+   * is there (and the gRPC client rebuilds that as a missing record); not {@link #RETRY}, which means "run the transaction again" and
+   * is decided on the conflict of a commit; not {@link #SERVER}, because nothing is broken and it is not worth a stack trace in the log.
+   * <p>
+   * {@link DatabaseNotFoundException}, the name that is no database at all, is its subtype and NOT in this category: it is permanent and the
+   * caller's to correct.
+   */
+  UNAVAILABLE,
+
+  /**
    * Anything else: the server, not the caller, is at fault.
    */
   SERVER;
+
+  /**
+   * The classification as one ordered table: the FIRST rule whose type is found anywhere along the chain decides, so the
+   * order of the rows IS the precedence documented on {@link #of}. A table rather than a ladder of tests so that
+   * {@link #of} and {@link #classifiedCause} read the same rows.
+   */
+  private static final Rule[] RULES = {
+      // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
+      // the rollback ran into - a statement stopped on request must never be reported as something a client retries
+      new Rule(QueryTerminatedException.class, TERMINATED),
+      new Rule(NeedRetryException.class, RETRY),
+      new Rule(DatabaseIsReopeningException.class, RETRY),
+      new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
+      new Rule(QueryHeapBudgetExceededException.class, RETRY),
+      new Rule(QueryAdmissionException.class, RETRY),
+      // After RETRY, which a driver acts on first, and before everything that classifies the CALLER: a wrapper that parses or
+      // validates (GraphQL, the query engines) must not relabel a database the server holds as the caller's mistake (issue #10553)
+      new Rule(DatabaseNotAvailableException.class, UNAVAILABLE, DatabaseNotFoundException.class),
+      new Rule(ArithmeticErrorException.class, ARITHMETIC),
+      new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
+      // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
+      new Rule(AlreadyExistsException.class, ALREADY_EXISTS),
+      new Rule(RecordNotFoundException.class, NOT_FOUND),
+      new Rule(SchemaException.class, SCHEMA),
+      new Rule(SecurityException.class, SECURITY),
+      new Rule(CommandParsingException.class, PARSING),
+      new Rule(FullTextQueryParseException.class, PARSING),
+      new Rule(ValidationException.class, VALIDATION),
+      new Rule(QueryNotIdempotentException.class, VALIDATION),
+      new Rule(InvalidPropertyTypeException.class, VALIDATION),
+      new Rule(IllegalArgumentException.class, VALIDATION),
+      new Rule(TimeoutException.class, TIMEOUT) };
+
+  /**
+   * A type that, found anywhere along a cause chain, decides the chain's category, unless the chain also carries {@code except}: a
+   * narrower type that is the opposite verdict although it extends {@code type} (a {@link DatabaseNotFoundException} is permanent,
+   * the {@link DatabaseNotAvailableException} it extends clears by itself). The chain then falls through to the rules below.
+   */
+  private record Rule(Class<? extends Throwable> type, ErrorCategory category, Class<? extends Throwable> except) {
+    Rule(final Class<? extends Throwable> type, final ErrorCategory category) {
+      this(type, category, null);
+    }
+
+    /** The frame of the chain that makes this rule decide, or {@code null} when the rule does not apply to it. */
+    Throwable find(final Throwable error) {
+      final Throwable found = CauseChain.find(error, type);
+      return found != null && (except == null || !CauseChain.contains(error, except)) ? found : null;
+    }
+  }
 
   /**
    * The category of {@code error}, or {@link #SERVER} when nothing in its cause chain is recognised.
@@ -163,6 +225,10 @@ public enum ErrorCategory {
    * {@link QueryAdmissionException} rides with it too: the query admission gate did not start the query because the
    * server was busy, so nothing of it ran and the same request re-issued later can succeed (issue #9518).
    * <p>
+   * {@link #UNAVAILABLE} is decided right after them and before everything that blames the caller, so a wrapper that parses
+   * or validates cannot relabel a database the server holds. {@link DatabaseNotFoundException} extends the type it is decided on and
+   * is the opposite verdict, so a chain carrying it is left to the rules below (issue #10553).
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -170,38 +236,28 @@ public enum ErrorCategory {
    * nothing worth reclaiming - they run only on a failure path, and each is capped by {@link CauseChain}.
    */
   public static ErrorCategory of(final Throwable error) {
-    // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
-    // the rollback ran into - a statement stopped on request must never be reported as something a client retries
-    if (CauseChain.contains(error, QueryTerminatedException.class))
-      return TERMINATED;
-    if (CauseChain.contains(error, NeedRetryException.class) //
-        || CauseChain.contains(error, DatabaseIsReopeningException.class) //
-        || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class) //
-        || CauseChain.contains(error, QueryHeapBudgetExceededException.class) //
-        || CauseChain.contains(error, QueryAdmissionException.class))
-      return RETRY;
-    if (CauseChain.contains(error, ArithmeticErrorException.class))
-      return ARITHMETIC;
-    if (CauseChain.contains(error, DuplicatedKeyException.class))
-      return DUPLICATED_KEY;
-    if (CauseChain.contains(error, AlreadyExistsException.class))
-      return ALREADY_EXISTS;
-    if (CauseChain.contains(error, RecordNotFoundException.class))
-      return NOT_FOUND;
-    if (CauseChain.contains(error, SchemaException.class))
-      return SCHEMA;
-    if (CauseChain.contains(error, SecurityException.class))
-      return SECURITY;
-    if (CauseChain.contains(error, CommandParsingException.class) //
-        || CauseChain.contains(error, FullTextQueryParseException.class))
-      return PARSING;
-    if (CauseChain.contains(error, ValidationException.class) //
-        || CauseChain.contains(error, QueryNotIdempotentException.class) //
-        || CauseChain.contains(error, InvalidPropertyTypeException.class) //
-        || CauseChain.contains(error, IllegalArgumentException.class))
-      return VALIDATION;
-    if (CauseChain.contains(error, TimeoutException.class))
-      return TIMEOUT;
+    for (final Rule rule : RULES)
+      if (rule.find(error) != null)
+        return rule.category();
     return SERVER;
+  }
+
+  /**
+   * The throwable in {@code error}'s cause chain that decided {@link #of}, or {@code null} when the chain is a
+   * {@link #SERVER} fault (issue #10158). A transport that names the failure to its client - the gRPC
+   * {@code arcadedb-exception-class} trailer a driver rebuilds the engine's type from - names THIS one, not the
+   * outermost wrapper: a {@link SchemaException} under a {@link CommandExecutionException}, named by the wrapper, is
+   * rebuilt from its status code alone, which reads {@code NOT_FOUND} as a missing RECORD.
+   * <p>
+   * The same walk as {@link #of} over the same rules, so the two cannot disagree: {@code of(classifiedCause(e))} is
+   * always {@code of(e)}.
+   */
+  public static Throwable classifiedCause(final Throwable error) {
+    for (final Rule rule : RULES) {
+      final Throwable found = rule.find(error);
+      if (found != null)
+        return found;
+    }
+    return null;
   }
 }

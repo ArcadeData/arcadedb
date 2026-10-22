@@ -221,6 +221,8 @@ class GrpcErrorMapperTest {
         new CommandExecutionException("Error on executing the command", new DatabaseNotAvailableException("held")), null);
 
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    // named by the frame that classified it (issue #10553), as every other classified failure is, not by its wrapper
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DatabaseNotAvailableException.class.getName());
   }
 
   @Test

@@ -529,6 +529,18 @@ class ResultSet:
         floats. Use ``to_list()`` when you want ``date``, ``datetime`` and
         ``Decimal`` values: it costs about the same.
 
+        The encoding is one rule for every row, at the top level and inside a
+        list or a map: a DATE is the epoch milliseconds of its UTC midnight (not
+        a count of days) whatever the JVM time zone, the same number
+        ``to_columns()`` carries as ``datetime64[ms]``. A date too far from 1970
+        for a long of milliseconds (past about year 292 million) arrives as its
+        ISO-8601 text instead of failing the batch.
+
+        This is NOT the form of ``Result.to_json()`` for a record row (``SELECT
+        FROM T``), which is the engine's round-trip JSON of the record: there a
+        DATE column at the top level is epoch DAYS, with the ``@rid``, ``@type``
+        and ``@cat`` metadata. Do not mix the two when decoding a DATE.
+
         Args:
             batch_size: Rows serialized per Java crossing (default 10000)
 
@@ -1302,6 +1314,18 @@ class Result:
     def to_json(self) -> str:
         """
         Convert result to JSON string.
+
+        This is the engine's own JSON of the row. For a record row (``SELECT
+        FROM T``) it is the record's round-trip form, which ``fromJSON`` reads
+        back: it carries the ``@rid``, ``@type`` and ``@cat`` metadata and writes
+        a top-level DATE as epoch DAYS (a DATETIME as epoch milliseconds, or as
+        text when its column keeps microseconds or nanoseconds). A DATE inside a
+        list or a map, and a DATE in a projection row (``SELECT a, b FROM T``),
+        is written as the epoch milliseconds of its UTC midnight, the form
+        ``ResultSet.to_json_list()`` uses everywhere; a DATETIME in a projection
+        row is written as text in the schema's date-time format. The engine's
+        JSON is not one encoding across row shapes, which is why
+        ``to_json_list()`` does not delegate to it.
 
         Returns:
             JSON string representation
