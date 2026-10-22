@@ -190,6 +190,31 @@ already stored are not rewritten: those that came from a client in another time 
 be rewritten if they are to be read as UTC. The bulk path (`GraphBatch`) still rebases onto the database's zone, the same value as
 the rule above for a UTC database (#10498).
 
+### SQL: `asDateTime(format)`, `date(value, format)` and `date.parse()` store the instant a text with an offset names (#10596)
+
+A pattern the caller names is read under the rule of the schema's own, since the instant a text names is what a `DATETIME` holds
+(#10489, #10498): `'2020-01-02T03:04:05+02:00'.asDateTime("yyyy-MM-dd'T'HH:mm:ssXXX")` and
+`date('2020-01-02T03:04:05+02:00', "yyyy-MM-dd'T'HH:mm:ssXXX")` answer `2020-01-02T01:04:05`, as they do without a pattern, and as the
+same pattern does when it is the schema's `dateTimeFormat`. They answered `03:04:05`, the offset the pattern had just read dropped.
+A zone name (`VV`, `z`) is read the same way, and so is the `datetimeFormat` of the importer. `asDate(format)` keeps the day written.
+The `timezone` argument of `date(value, format, timezone)`, which did nothing, is the zone a text that names none was written in:
+`date('2020-01-02 03:04:05', 'yyyy-MM-dd HH:mm:ss', 'Asia/Tokyo')` is `2020-01-01T18:04:05`; without it the text keeps its wall clock,
+and a text that names its own offset ignores it. The functions `date.parse()` and `date.fields()` read the offset of the text too: the
+epoch is the one of the instant it names whatever the JVM's zone, and the fields are those of its own offset (or of the zone asked for).
+
+**Who sees a different answer.** A query that names a pattern with an offset or a zone field and a text that carries a non-zero offset,
+or one that passes a `timezone` to `date()`. Values already stored from such a call are not rewritten.
+
+### SQL: `=`, `<>`, `IN` and `CONTAINS` compare the elements of a list or a map as they compare two scalars (#10595)
+
+Two values `=` reports equal are equal as elements of a list or a map too. `[<java.util.Date>]` is equal to a stored
+`[<LocalDateTime>]` of the same instant, and so are an `Instant`, a `Calendar`, a `java.sql.Timestamp`, an epoch number and an ISO
+string, in a list, a map and a list of lists: they were different values, and `<>` answered the row. A `Timestamp` on the left of `=`
+is equal to the same instant as a `Date` or a `LocalDateTime`, as it already was on the right.
+
+**Who sees a different answer.** A filter that compares a list or a map holding elements of one kind with one holding another kind
+that converts: `[1] = ['1']` is `true`, as `1 = '1'` is. Elements of one kind compare as before.
+
 ### Vector search: a `PRODUCT` index walks on its PQ codes and re-ranks, and its graph file is small (#10514)
 
 SQL `vector.neighbors`, the openCypher procedure `db.index.vector.queryNodes` and the fluent `select().nearestTo()` search a
@@ -214,6 +239,23 @@ what matters.
 
 ## Fixes
 
+- **#10588** A `CREATE INDEX` no longer leaves out a record that another session, or an outer transaction of the caller, had written
+  and not committed. The build indexes the committed state; the writer queued no entry for an index that did not exist when it saved
+  the record, so the record was invisible to every index-backed query and a `UNIQUE` index accepted a duplicate of its key, with the
+  statement reporting success. A transaction that began before an index was bound to a type it wrote to now queues the entries it
+  owes that index when it commits (the create, update or delete of each record, committed or rolled back with the transaction), for
+  `CREATE INDEX`, `buildBucketIndex()` and the index a super type propagates. A key the index had meanwhile given to another record
+  is refused at that commit with a `DuplicatedKeyException`. A transaction that wrote to the same bucket both before and after the
+  index was created cannot tell the entries it queued from the ones it owes, and is refused at its commit with a retryable
+  `ConcurrentModificationException`: the retry finds the index there from its first write. An outer transaction that owes entries,
+  committed while a transaction nested inside it is still open, is refused with a `TransactionException` (commit or roll back the
+  innermost first): the entries are queued on the transaction on top of the thread's stack.
+- **#10589** A `DROP INDEX` refused part way (a file of one bucket's sub-index that cannot be deleted) no longer leaves the index half
+  dropped. The files of every sub-index are probed, and their locks taken, before the first is dropped, as `DROP TYPE` and
+  `ALTER TYPE ... BUCKET` / `SUPERTYPE` do (#10421), and `DROP PROPERTY ... FORCE`, `TRUNCATE TYPE`, `REBUILD INDEX`, the
+  withdrawal of an edge type's `UNIQUE` and a `TypeIndex.drop()` from the Java API go through the same door: the statement is refused
+  with "Nothing was changed". The half-dropped index answered 0 rows for every record of a bucket whose sub-index was gone, across a
+  restart, and a wrapper left with no sub-index failed every later schema change.
 - **#10521** A commit cancelled in the WAL write, which sets the interrupt flag of the thread itself before it raises its
   `TransactionException`, concluded its failed 2nd phase with the flag set: the rollback's file reads (the dictionary, the modified
   records) then closed the shared channel under every thread of the database, and the failed reload was swallowed. The conclusion

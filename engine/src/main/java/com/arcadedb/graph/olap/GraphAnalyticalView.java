@@ -3901,8 +3901,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Returns detailed statistics about this view as a map.
    * Includes vertex/edge counts, memory breakdown, edge types, and overlay state.
+   * <p>
+   * Asking for the statistics of a view whose restore-from-disk is still pending starts it, as the
+   * {@code schema:graphAnalyticalViews} row does ({@link #startPendingRestore}): the view reports BUILDING, with no counts yet,
+   * until the restore settles, and never READY with nothing behind it (issue #10575).
    */
   public Map<String, Object> getStats() {
+    startPendingRestore();
     final Map<String, Object> stats = new HashMap<>();
     stats.put("name", name);
     stats.put("status", getStatus().name());
@@ -4182,6 +4187,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private void triggerDeferredDiskRestoreIfPending() {
     if (pendingDiskRestore)
       dispatchDeferredRestore();
+  }
+
+  /**
+   * Starts the deferred restore-from-disk (see #6632) if one is pending, and returns at once: the view is BUILDING until it
+   * settles, READY with its counts once it has. A no-op for a view that is not waiting for one (a single volatile read).
+   * <p>
+   * For a caller that reads the state of the view rather than using it, such as the {@code schema:graphAnalyticalViews} row
+   * (issue #10575): a pending restore reports {@code status == READY} before a byte is read, with no snapshot behind it, and
+   * nothing else would ever resolve it for a caller that only looks. Asking for the state is an explicit wait, like
+   * {@link #awaitReady}, so it dispatches what that dispatches.
+   */
+  public void startPendingRestore() {
+    triggerDeferredDiskRestoreIfPending();
   }
 
   /**

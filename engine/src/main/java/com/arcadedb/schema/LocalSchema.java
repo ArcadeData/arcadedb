@@ -29,6 +29,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
@@ -41,16 +42,19 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
@@ -2212,6 +2216,21 @@ public class LocalSchema implements Schema {
 
   @Override
   public void dropIndex(final String indexName) {
+    dropIndexes(List.of(indexName));
+  }
+
+  /**
+   * Drops several indexes as ONE statement: a refusal from any of them leaves every one of them in place (issue #10589).
+   * <p>
+   * {@code DROP PROPERTY ... FORCE} and {@code TRUNCATE TYPE} drop the indexes of a type one after the other; asked one at a time,
+   * the verdict of the second came after the first was already gone. The guards are asked of every index, and the files of all of
+   * them are probed and locked once, before the first is dropped.
+   */
+  public void dropIndexes(final Collection<String> indexNames) {
+    if (indexNames.isEmpty())
+      // nothing to drop is no schema change: no session, no save of schema.json, no schema entry shipped by HA
+      return;
+
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // The guard and the drop run in one schema session, under the write lock that orders every other schema change (#9848,
@@ -2219,8 +2238,24 @@ public class LocalSchema implements Schema {
     // concurrent ALTER TYPE ... WITH unique = true changes before the drop gets the lock, and the drop would then remove the
     // index that ALTER had just built.
     recordFileChanges(() -> {
-      checkIndexIsNotBackingAConstraint(indexName);
-      dropIndexInternal(indexName);
+      // issue #10589: dropping a TypeIndex deletes one file per bucket sub-index, and the first file that refused left every
+      // sub-index before it dropped and saved - the wrapper kept covering a subset of the buckets, and the records of the others
+      // were invisible to it. Everything that can refuse is asked before the first change
+      final List<Integer> fileIds = new ArrayList<>();
+      for (final String indexName : indexNames) {
+        checkIndexIsNotBackingAConstraint(indexName);
+        final IndexInternal index = lookupIndex(indexName);
+        if (index != null)
+          fileIds.addAll(index.getFileIds());
+      }
+
+      executeDroppingFiles(
+          indexNames.size() == 1 ? "drop the index '" + indexNames.iterator().next() + "'" : "drop the indexes " + indexNames,
+          fileIds, () -> {
+            for (final String indexName : indexNames)
+              dropIndexInternal(indexName);
+            return null;
+          });
       return null;
     });
   }
@@ -2279,6 +2314,7 @@ public class LocalSchema implements Schema {
             // LocalDocumentType.addBucketInternal(). A plain indexMap.remove() would be a no-op against a staged
             // entry and commitStagedPublication() would then publish the dropped index as live.
             removeIndexDuringLoad(indexName);
+            database.getTransactionManager().indexUnregistered(indexName);
 
             if (index.getTypeName() != null) {
               final LocalDocumentType type = getType(index.getTypeName());
@@ -2470,10 +2506,7 @@ public class LocalSchema implements Schema {
       // #10590: THE DROP OF THE BACKING TYPE IS THE STEP THAT CAN REFUSE, AND IT COMES LAST: EVERYTHING IT WILL ASK IS ASKED, AND
       // THE LOCKS OF ITS INDEX FILES ARE TAKEN, BEFORE THE VIEW STOPS BEING REGISTERED. A refusal after the removal left a view that
       // no longer existed beside a backing type that did, which no statement but DROP TYPE could repair
-      final List<Integer> indexFiles = requireBackingTypeCanBeDropped("drop the materialized view '" + viewName + "'",
-          registered.getBackingTypeName(), registered);
-
-      return database.executeLockingFiles(indexFiles, () -> {
+      return executeDroppingBackingType("drop the materialized view '" + viewName + "'", registered.getBackingTypeName(), registered, () -> {
         final MaterializedViewImpl view;
         final MaterializedViewScheduler scheduler;
         synchronized (this) {
@@ -2592,10 +2625,7 @@ public class LocalSchema implements Schema {
 
     recordFileChanges(() -> {
       // #10590: the refusals of the drop of the backing type are asked before the aggregate stops being registered, see dropMaterializedView
-      final List<Integer> indexFiles = requireBackingTypeCanBeDropped("drop the continuous aggregate '" + name + "'",
-          ca.getBackingTypeName(), ca);
-
-      return database.executeLockingFiles(indexFiles, () -> {
+      return executeDroppingBackingType("drop the continuous aggregate '" + name + "'", ca.getBackingTypeName(), ca, () -> {
         synchronized (this) {
           if (continuousAggregates.remove(name) == null)
             throw new SchemaException("Continuous aggregate '" + name + "' not found");
@@ -3083,9 +3113,10 @@ public class LocalSchema implements Schema {
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
         // (and saved): the file of an index that cannot be deleted, the lock of a file another thread holds. The files are
         // probed here, and the locks of the index files taken once, up front, so the drops below re-acquire what is held
-        final List<Integer> indexFilesOfTheDrop = requireFilesOfTheDropCanBeDeleted("drop the type '" + type.getName() + "'", type);
-
-        database.executeLockingFiles(indexFilesOfTheDrop, () -> {
+        final List<Integer> filesOfTheDrop = new ArrayList<>();
+        final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+        collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
+        executeDroppingFiles("drop the type '" + type.getName() + "'", filesOfTheDrop, indexFilesOfTheDrop, () -> {
           dropTypeInternal(type, typeName, canonicalTypeName);
           return null;
         });
@@ -3104,35 +3135,28 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Asks, before a statement that drops {@code type} changes anything, whether the files of the drop can be deleted (issue #10421).
-   *
-   * @return the index files of the drop, whose locks the statement takes once, up front
-   */
-  private List<Integer> requireFilesOfTheDropCanBeDeleted(final String statement, final LocalDocumentType type) {
-    final List<Integer> filesOfTheDrop = new ArrayList<>();
-    final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
-    collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
-    requireFilesCanBeDeleted(statement, filesOfTheDrop);
-    return indexFilesOfTheDrop;
-  }
-
-  /**
-   * Asks, for a statement that unregisters {@code owner} - a materialized view or a continuous aggregate - and then drops its
-   * backing type, everything the drop of that type is going to ask: another dependant built from the backing type, a file that
-   * cannot be deleted (issue #10590). {@link #dropType} asks the same, but it is the LAST step of those statements, so a refusal
-   * from it came after the owner was no longer registered, with its refresh scheduler cancelled and its listeners off the source
-   * types, while the message claimed that nothing was changed. The owner is left out of the dependants: it is the one going.
+   * Runs {@code mutation}, the unregistration of {@code owner} - a materialized view or a continuous aggregate - and the drop of
+   * its backing type, after everything the drop of that type is going to ask has been asked: another dependant built from the
+   * backing type, a file that cannot be deleted, the locks of the index files (issue #10590). {@link #dropType} asks the same, but
+   * it is the LAST step of those statements, so a refusal from it came after the owner was no longer registered, with its refresh
+   * scheduler cancelled and its listeners off the source types, while the message claimed that nothing was changed. The owner is
+   * left out of the dependants: it is the one going.
    * <p>
    * Called under the database write lock, which every registration of a view or an aggregate takes too, so no dependant can be
-   * added between this verdict and the drop that follows it.
+   * added between this verdict and the mutation that follows it.
    *
-   * @return the index files of the drop of the backing type, whose locks the statement takes once, up front
+   * @param statement what the statement does, for the refusal message: "drop the materialized view 'V'"
    */
-  private List<Integer> requireBackingTypeCanBeDropped(final String statement, final String backingTypeName,
-      final TypeNameDependant owner) {
+  private <RET> RET executeDroppingBackingType(final String statement, final String backingTypeName, final TypeNameDependant owner,
+      final Callable<RET> mutation) {
     checkTypeHasNoDependants(backingTypeName, owner);
+
+    final List<Integer> filesOfTheDrop = new ArrayList<>();
+    final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
     final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
-    return backingType != null ? requireFilesOfTheDropCanBeDeleted(statement, backingType) : List.of();
+    if (backingType != null)
+      collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
   }
 
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
@@ -3248,6 +3272,85 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Makes up, for a transaction that is about to commit, the entries of every bucket index bound to its type after the transaction
+   * began and covering a bucket it wrote (issue #10588).
+   * <p>
+   * An index build scans the committed state. What a transaction has written and not committed is out of its reach whoever holds
+   * it - another session, or an outer frame of the builder's own stack - and the transaction queued no entry for the index when it
+   * saved the record, because there was no index to queue it for. Nothing the builder can do about a transaction on another thread
+   * is safe (its pages are being written by that thread), so the transaction itself is asked, at the one moment its thread is
+   * holding the database read lock a {@code CREATE INDEX} excludes: the schema cannot move under it, and the committed state it
+   * reads is the one the build indexed. The result is the one the record would have had if it had been saved after the index was
+   * bound: the same entries, queued on the same transaction, committed or rolled back with it.
+   * <p>
+   * The transaction must be {@code BEGUN} on the calling thread, which is the only state an index queues instead of writing.
+   *
+   * @param sequence the registration sequence the transaction took when it began, see {@link TransactionManager#getIndexRegistrationSequence}
+   */
+  public void reconcileIndexesRegisteredSince(final TransactionContext tx, final long sequence) {
+    List<IndexInternal> owed = null;
+    for (final Map.Entry<String, Long> registration : database.getTransactionManager().getIndexesRegisteredSince(sequence).entrySet()) {
+      final String indexName = registration.getKey();
+      final IndexInternal index = lookupIndex(indexName);
+      if (index == null || index.getAssociatedBucketId() < 0 || tx.isIndexReconciled(indexName))
+        continue;
+
+      // Owed an entry only for what was written before the index was bound: a bucket the transaction first wrote to after it had
+      // its entries queued as they were written
+      if (!tx.wroteToBucketBefore(index.getAssociatedBucketId(), registration.getValue()))
+        continue;
+
+      // A transaction that wrote to the bucket on BOTH sides of the registration has queued the entries of what it wrote after it
+      // already, and cannot tell them from the ones it owes: queueing the owed ones from the committed state would queue those
+      // again. Idempotent for an index keyed by (key, record), not for one that counts what it is given (the corpus counters of a
+      // full-text index): it is refused, retryably, and the retry finds the index there from its first write
+      if (tx.hasQueuedIndexEntriesIn(index.getFileIds()))
+        throw new ConcurrentModificationException(
+            "The index '" + (index.getTypeIndex() != null ? index.getTypeIndex().getName() : indexName) + "' was created on type '"
+                + index.getTypeName() + "' while this transaction was writing to it. Please retry the transaction");
+
+      if (owed == null)
+        owed = new ArrayList<>(2);
+      owed.add(index);
+    }
+
+    if (owed == null)
+      return;
+
+    // The entries are queued on the transaction on top of the calling thread's stack, through the indexer. Queueing the ones this
+    // transaction owes from underneath another would put them in the wrong transaction, and skipping them would publish records the
+    // new index does not know: it is refused instead, and the commit of the transaction on top has to come first
+    if (database.getTransactionIfExists() != tx)
+      throw new TransactionException("Cannot commit a transaction that owes the entries of the index '" + owed.getFirst().getName()
+          + "', created after it began, while another transaction is open on top of it: commit or roll back the innermost one first");
+
+    for (final IndexInternal index : owed)
+      IndexBuildCallerChanges.apply(database, tx, index, null, 0L);
+  }
+
+  /**
+   * The one way a statement that deletes component files runs its mutation (issues #10421, #10589): the files are probed
+   * ({@link #requireFilesCanBeDeleted}) and their locks taken once, and only then does the mutation start. The probe is private and
+   * this is its only door, so reaching a file delete without asking whether it can be done is not expressible - it was easy to
+   * forget, and {@code DROP INDEX} did.
+   *
+   * @param statement what the statement does, for the refusal message: "drop the index 'T[p]'"
+   */
+  public <RET> RET executeDroppingFiles(final String statement, final Collection<Integer> fileIds, final Callable<RET> mutation) {
+    return executeDroppingFiles(statement, fileIds, fileIds, mutation);
+  }
+
+  /**
+   * As {@link #executeDroppingFiles(String, Collection, Callable)} for a statement whose set of files to probe is wider than the
+   * one whose locks it takes up front: {@code DROP TYPE} probes the buckets too, and locks the index files only.
+   */
+  public <RET> RET executeDroppingFiles(final String statement, final Collection<Integer> filesToProbe,
+      final Collection<Integer> filesToLock, final Callable<RET> mutation) {
+    requireFilesCanBeDeleted(statement, filesToProbe);
+    return database.executeLockingFiles(filesToLock, mutation);
+  }
+
+  /**
    * Refuses, before a statement changes anything, a file it is going to delete that cannot be (issue #10421): one that is not a
    * regular file, or sits in a directory that cannot be written. The delete of such a file fails after the statement has changed
    * the files and the schema graph in front of it, and what it leaves behind is neither the schema it found nor the one it meant to
@@ -3260,7 +3363,7 @@ public class LocalSchema implements Schema {
    *
    * @param statement what the statement does, for the message: "drop the type 'T'"
    */
-  void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
+  private void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
     final FileManager fileManager = database.getFileManager();
     for (final Integer fileId : fileIds) {
       final ComponentFile file = fileManager.getFileIfExists(fileId);
@@ -3428,22 +3531,36 @@ public class LocalSchema implements Schema {
         // associatedBucketId=-1, and breaks REBUILD INDEX * (getBucketById(-1)) as well as its own toJSON().
         // Dropping the indexes first leaves at worst a bucket with no index, which is fully recoverable with a
         // plain REBUILD/CREATE INDEX. Both directions still need schema.json saved (finally) to be complete.
-        for (final Index idx : new ArrayList<>(indexMap.values())) {
-          if (idx.getAssociatedBucketId() == bucket.getFileId())
-            dropIndexInternal(idx.getName());
-        }
+        //
+        // issue #10589: the files of the indexes and of the bucket are probed before the first index is dropped
+        final List<String> indexNames = new ArrayList<>();
+        final List<Integer> indexFileIds = new ArrayList<>();
+        for (final IndexInternal idx : new ArrayList<>(indexMap.values()))
+          if (idx.getAssociatedBucketId() == bucket.getFileId()) {
+            indexNames.add(idx.getName());
+            indexFileIds.addAll(idx.getFileIds());
+          }
 
-        database.getPageManager().deleteFile(database, bucket.getFileId());
-        try {
-          database.getFileManager().dropFile(bucket.getFileId());
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
-        }
-        removeFile(bucket.getFileId());
+        final List<Integer> filesOfTheDrop = new ArrayList<>(indexFileIds);
+        filesOfTheDrop.add(bucket.getFileId());
 
-        removeBucketDuringLoad(bucketName);
-        // it can be a bucket a type involves without owning it (an edge-list, external or stripe bucket)
-        bucketMembershipChanged();
+        executeDroppingFiles("drop the bucket '" + bucketName + "'", filesOfTheDrop, indexFileIds, () -> {
+          for (final String indexName : indexNames)
+            dropIndexInternal(indexName);
+
+          database.getPageManager().deleteFile(database, bucket.getFileId());
+          try {
+            database.getFileManager().dropFile(bucket.getFileId());
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
+          }
+          removeFile(bucket.getFileId());
+
+          removeBucketDuringLoad(bucketName);
+          // it can be a bucket a type involves without owning it (an edge-list, external or stripe bucket)
+          bucketMembershipChanged();
+          return null;
+        });
 
         return null;
 
@@ -5370,8 +5487,11 @@ public class LocalSchema implements Schema {
     LogManager.instance().log(this, Level.FINE, "Index '%s' renamed to '%s'", null, oldName, newName);
 
     indexMap.put(newName, index);
-    if (oldName != null)
+    if (oldName != null) {
       indexMap.remove(oldName, index);
+      // The registration follows the index: a transaction that wrote before it was bound still owes it entries after a rename of its type
+      database.getTransactionManager().indexRenamed(oldName, newName);
+    }
   }
 
   public boolean isDirty() {
@@ -5788,6 +5908,11 @@ public class LocalSchema implements Schema {
       // or a DROP TYPE in between looked for the sub-index under the wrong type
       bindBucketIndexToItsOwner(type, getBucketOwner(bucket.getFileId()), index, bucket.getFileId(), propertyNames, propIndex);
 
+      // From here every write queues its entry for the index. A transaction that began before this line and has written to the
+      // bucket is not one of them: the build scans the committed state and cannot see its pages, so it owes the index those entries
+      // and makes them up when it commits (issue #10588). AFTER the binding, see TransactionManager#indexRegistered
+      database.getTransactionManager().indexRegistered(indexName);
+
       // Re-set metadata after addIndexInternal populated propertyNames, to propagate
       // caseInsensitiveKeys to the underlying mutable/compacted indexes.
       index.setMetadata(index.getMetadata());
@@ -5863,6 +5988,23 @@ public class LocalSchema implements Schema {
   protected void updateSecurity() {
     if (security != null)
       security.updateSchema(database);
+  }
+
+  /** Refuses the rename of a type when per-type permissions grant the old and the new name different access. */
+  void checkTypeRenameKeepsAccess(final String oldName, final String newName) {
+    if (security != null)
+      security.checkTypeRename(database, oldName, newName);
+  }
+
+  /**
+   * Refuses detaching a bucket that holds records from {@code typeName} when per-type permissions restrict the type: a bucket
+   * of no type is restricted by none. An empty bucket opens no record, so it is never refused.
+   */
+  void checkBucketDetachKeepsAccess(final Bucket bucket, final String typeName) {
+    // THE CACHED COUNTER, NOT count(): THAT ONE ASKS THE CALLER FOR THE READ GRANT THIS CHECK IS ABOUT. AN UNKNOWN COUNT (-1)
+    // IS TAKEN AS RECORDS
+    if (security != null && !(bucket instanceof LocalBucket localBucket && localBucket.getCachedRecordCount() == 0))
+      security.checkBucketDetach(database, bucket.getName(), typeName);
   }
 
   /**

@@ -97,6 +97,13 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("requester", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("statement", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("pooledStatement", NOT_STATEMENT_STATE);
+    // Issue #10588. bucketFirstWriteSequences: when the transaction first wrote to a bucket, to know which indexes bound since owe
+    // the writes an entry. A statement taken back leaves the note of a write it undid, which can only be EARLY: the commit then asks
+    // for a reconciliation that finds nothing to queue, or refuses retryably a transaction that wrote after the index, never queues
+    // a wrong entry. indexesReconciled: the indexes a build already queued the transaction's writes for; the build is DDL, which a
+    // statement taken back does not undo, and a build that fails drops its index, so a stale name matches no index
+    CLASSIFICATION.put("bucketFirstWriteSequences", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("indexesReconciled", NOT_STATEMENT_STATE);
   }
 
   @Test

@@ -110,6 +110,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
+  /** The record access a group's {@code types} entry can grant, which is everything a bucket of no type is open to. */
+  private static final Set<String>                     ALL_RECORD_ACCESS    = Set.of("createRecord", "readRecord",
+      "updateRecord", "deleteRecord");
+  private static final String                          NO_CONSOLE_FOR_ROOT_PASSWORD =
+      "The 'root' user has no password and there is no console input to ask for one: set `arcadedb.server.rootPassword` "
+          + "(or `arcadedb.server.rootPasswordPath`) and start the server again";
   public static final  int                             SALT_SIZE            = 32;
 
   // Backoff bounds for the seed retry of issue #7521. Short first wait, because the common failure is an
@@ -273,6 +279,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   @Override
   public void startService() {
+    // THE FIRST LOAD BELONGS TO THE START: IT MAY FALL BACK TO THE DEFAULT GROUPS AND WRITE THEM OVER A FILE IT CANNOT USE,
+    // WHICH IS RIGHT FOR A FIRST RUN AND WRONG FOR AN EDIT MADE ON A RUNNING SERVER. LEFT TO THE FIRST READER, IT RAN
+    // WHENEVER A DATABASE WAS FIRST OPENED OR A USER FIRST AUTHENTICATED, AND AN OPERATOR'S EDIT MADE BEFORE THAT WAS TAKEN
+    // AS A FIRST RUN
+    groupRepository.getGroups();
     groupRepository.startWatching();
   }
 
@@ -378,6 +389,28 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       final Map<String, ServerSecurityUser> previous = inForceAtLoad;
       // Not kept past this load: it would pin a replaced map in memory until the next one.
       inForceAtLoad = null;
+
+      // THE PROMPT FOR A ROOT PASSWORD IS FOR A FIRST RUN: A FILE EDITED ON A RUNNING SERVER THAT LEAVES ROOT WITHOUT ONE, WITH
+      // NO PASSWORD CONFIGURED TO GIVE IT, IS REFUSED. ASKING WOULD BLOCK THE WATCHER, WITH THE POLICY'S LOCK HELD, ON A
+      // CONSOLE A SERVICE DOES NOT HAVE
+      final boolean firstLoad = previous == null || previous.isEmpty();
+      if (!firstLoad && rootHasNoPassword(newUsers)) {
+        String configured;
+        try {
+          configured = configuredRootPassword();
+        } catch (final ServerSecurityException e) {
+          // A PASSWORD FILE THAT CANNOT BE READ GIVES NO PASSWORD
+          configured = null;
+        }
+        if (configured == null) {
+          LogManager.instance().log(ServerSecurity.this, Level.SEVERE,
+              "File '%s' leaves the 'root' user without a password, and none is configured to give it: not applied, keeping "
+                  + "the %d users in force. Give 'root' a password in the file, or change it through the server",
+              file.getName(), previous.size());
+          return false;
+        }
+      }
+
       // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the previous
       // complete map or this one, never an empty intermediate state.
       if (!USERS.compareAndSet(ServerSecurity.this, previous, newUsers)) {
@@ -395,13 +428,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // to still resolve. Same comparison the replicated path makes. A no-op at startup, when no session exists yet.
       invalidateAuthSessionsOfRevokedPrincipals(previous, newUsers);
 
-      if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
+      if (rootHasNoPassword(newUsers))
         try {
           askForRootPassword();
         } catch (final IOException e) {
           throw new ServerException("Error on starting Security service", e);
         }
       return true;
+    }
+
+    private static boolean rootHasNoPassword(final Map<String, ServerSecurityUser> users) {
+      return users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null);
     }
 
     /**
@@ -428,8 +465,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     /** The repository's own lock, which also serializes the preservation with its saves. */
     @Override
-    protected void preserve(final Exception failure, final String outcome) {
-      usersRepository.saveInError(failure, outcome);
+    protected boolean preserve(final Exception failure, final String outcome) {
+      return usersRepository.saveInError(failure, outcome);
     }
 
     @Override
@@ -1147,6 +1184,112 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       for (final ServerSecurityUser user : users.values())
         user.refreshDatabaseConfiguration(database, groupConfiguration);
     }
+  }
+
+  /**
+   * Per-type permissions are keyed by type NAME, so a rename hands the type's records to whatever the configuration grants
+   * under the new name: a user allowed to change the schema but denied a type could rename it out of its own restriction. The
+   * rename is refused unless every group, and every API token, of the database grants the two names the same access. The way
+   * to rename a restricted type is to give the new name the same access first.
+   */
+  @Override
+  public void checkTypeRename(final DatabaseInternal database, final String oldName, final String newName) {
+    final String grant = firstGrantResolvingDifferently(database.getName(), oldName, newName);
+    if (grant != null)
+      throw new SecurityException("Cannot rename type '" + oldName + "' to '" + newName + "' because " + grant
+          + " grants the two names different access, and the records of the type would take the access of the new name. Give '"
+          + newName + "' the same access as '" + oldName + "' in the security configuration first");
+  }
+
+  /**
+   * Per-bucket permissions follow the type that owns the bucket, and a bucket of no type is restricted by none: detaching a
+   * bucket of records from a type would open them to everybody. Refused unless every group, and every API token, of the
+   * database grants the type every record access. Attaching a bucket of no type to a type can only narrow who can read it,
+   * so it is not checked.
+   */
+  @Override
+  public void checkBucketDetach(final DatabaseInternal database, final String bucketName, final String typeName) {
+    final String grant = firstGrantResolvingDifferently(database.getName(), typeName, null);
+    if (grant != null)
+      throw new SecurityException("Cannot detach the bucket '" + bucketName + "' from the type '" + typeName + "' because "
+          + grant + " restricts the type, and a bucket of no type is restricted by none: its records would be open to every "
+          + "user of the database. Move the records out of the bucket first, or lift the restriction");
+  }
+
+  /**
+   * The first group, or API token, of {@code databaseName}'s configuration that grants the type names {@code first} and
+   * {@code second} different access, described for a message, or null when none does. A null name stands for no type at all,
+   * which every principal may access.
+   */
+  private String firstGrantResolvingDifferently(final String databaseName, final String first, final String second) {
+    if (Objects.equals(first, second))
+      return null;
+
+    final JSONObject groups = getDatabaseGroupsConfiguration(databaseName);
+    // WITH NO "*" GROUP A PRINCIPAL NO GROUP DECIDES FOR GETS NO ACCESS TO A TYPE, BUT EVERY ACCESS TO A BUCKET OF NO TYPE
+    if (groups != null && !groups.has(SecurityManager.ANY) && (first == null) != (second == null))
+      return "the default group (none is configured, which grants no access to a type)";
+    if (groups != null)
+      for (final String groupName : groups.keySet())
+        if (groups.get(groupName) instanceof JSONObject group && !sameTypeAccess(group.getJSONObject("types", null), first,
+            second))
+          return "the security group '" + groupName + "'";
+
+    if (apiTokenConfig != null)
+      for (final JSONObject token : apiTokenConfig.listTokens()) {
+        final String tokenDatabase = token.getString("database", null);
+        if (!databaseName.equals(tokenDatabase) && !SecurityManager.ANY.equals(tokenDatabase))
+          continue;
+        // A TOKEN'S PERMISSIONS ARE ITS ONE GROUP, WITH NO DEFAULT GROUP BEHIND IT: A NAME IT DOES NOT DECIDE GETS NO ACCESS
+        final JSONObject permissions = token.getJSONObject("permissions", null);
+        final JSONObject types = permissions != null ? permissions.getJSONObject("types", null) : null;
+        final Set<String> firstAccess = typeAccessOrNone(types, first);
+        if (!firstAccess.equals(typeAccessOrNone(types, second)))
+          return "the API token '" + token.getString("name", "") + "'";
+      }
+    return null;
+  }
+
+  /**
+   * Whether a group's {@code types} object grants the two names the same access. A group that decides neither name leaves
+   * both to the next group or to the default one, the same under both names.
+   */
+  private static boolean sameTypeAccess(final JSONObject types, final String first, final String second) {
+    if (first == null || second == null) {
+      // NO TYPE IS EVERY ACCESS: THE GROUP MUST GRANT THE OTHER NAME EVERYTHING, OR LEAVE IT TO A DEFAULT THAT IS COMPARED TOO
+      final Set<String> other = typeAccess(types, first == null ? second : first);
+      return other == null || other.equals(ALL_RECORD_ACCESS);
+    }
+    return Objects.equals(typeAccess(types, first), typeAccess(types, second));
+  }
+
+  private static Set<String> typeAccessOrNone(final JSONObject types, final String typeName) {
+    if (typeName == null)
+      return ALL_RECORD_ACCESS;
+    final Set<String> access = typeAccess(types, typeName);
+    return access != null ? access : Set.of();
+  }
+
+  /**
+   * The record access {@code types} grants {@code typeName}: its own entry, or the {@code "*"} entry, or null when the
+   * object decides neither (or there is no object).
+   */
+  private static Set<String> typeAccess(final JSONObject types, final String typeName) {
+    if (types == null)
+      return null;
+    final JSONObject entry = types.has(typeName) ?
+        types.getJSONObject(typeName) :
+        types.has(SecurityManager.ANY) ? types.getJSONObject(SecurityManager.ANY) : null;
+    if (entry == null)
+      return null;
+
+    final Set<String> access = new HashSet<>();
+    final JSONArray array = entry.getJSONArray("access", null);
+    if (array != null)
+      for (int i = 0; i < array.length(); i++)
+        if (ALL_RECORD_ACCESS.contains(array.getString(i)))
+          access.add(array.getString(i));
+    return access;
   }
 
   /**
@@ -2462,19 +2605,22 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return rootPassword;
   }
 
-  protected void askForRootPassword() throws IOException {
-    String rootPassword = server != null ?
+  /** The root password the configuration gives, directly or through a file, or null when only a prompt could. */
+  private String configuredRootPassword() {
+    final String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
         GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+    if (rootPassword != null)
+      return rootPassword;
 
-    if (rootPassword == null) {
-      final String rootPasswordPath = server != null ?
-          server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
-          GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
+    final String rootPasswordPath = server != null ?
+        server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH) :
+        GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.getValueAsString();
+    return rootPasswordPath != null ? readRootPasswordFile(rootPasswordPath) : null;
+  }
 
-      if (rootPasswordPath != null)
-        rootPassword = readRootPasswordFile(rootPasswordPath);
-    }
+  protected void askForRootPassword() throws IOException {
+    String rootPassword = configuredRootPassword();
 
     if (rootPassword == null) {
       if (server != null ?
@@ -2510,6 +2656,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       do {
         System.out.print(AnsiCode.format("\n$ANSI{yellow Root password [BLANK=auto generate it]: }"));
         rootPassword = console.readPassword();
+        // THE END OF THE INPUT, NOT A BLANK LINE: NOBODY CAN ANSWER, AND ASKING AGAIN WOULD LOOP FOREVER, PRINTING A FRESHLY
+        // GENERATED PASSWORD ON EVERY TURN
+        if (rootPassword == null)
+          throw new ServerSecurityException(NO_CONSOLE_FOR_ROOT_PASSWORD);
 
         if (rootPassword != null) {
           rootPassword = rootPassword.trim();
@@ -2528,7 +2678,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               AnsiCode.format("$ANSI{yellow Please type the root password for confirmation (copy and paste will not work): }"));
 
           String rootConfirmPassword = console.readPassword();
-          if (rootConfirmPassword != null) {
+          if (rootConfirmPassword == null)
+            throw new ServerSecurityException(NO_CONSOLE_FOR_ROOT_PASSWORD);
+          else {
             rootConfirmPassword = rootConfirmPassword.trim();
             if (rootConfirmPassword.isEmpty())
               rootConfirmPassword = null;
@@ -2714,6 +2866,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     @Override
     public void updateSchema(final DatabaseInternal database) {
       delegate.updateSchema(database);
+    }
+
+    @Override
+    public void checkTypeRename(final DatabaseInternal database, final String oldName, final String newName) {
+      delegate.checkTypeRename(database, oldName, newName);
+    }
+
+    @Override
+    public void checkBucketDetach(final DatabaseInternal database, final String bucketName, final String typeName) {
+      delegate.checkBucketDetach(database, bucketName, typeName);
     }
 
     /**

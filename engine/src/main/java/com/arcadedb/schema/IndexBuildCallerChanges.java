@@ -67,13 +67,29 @@ final class IndexBuildCallerChanges {
    */
   static void apply(final DatabaseInternal database, final IndexInternal index, final Index.BuildIndexCallback callback,
       final long indexedSoFar) {
-    final TransactionContext tx = database.getTransactionIfExists();
+    apply(database, database.getTransactionIfExists(), index, callback, indexedSoFar);
+  }
+
+  /**
+   * As {@link #apply(DatabaseInternal, IndexInternal, Index.BuildIndexCallback, long)} for a transaction the caller names, which
+   * must be the one the calling thread holds on top of its stack, still {@code BEGUN}: the entries are queued on it through the
+   * indexer, which queues on the thread's current transaction and only while that one is begun. The commit of a transaction that
+   * began before the index existed is the other caller (issue #10588, {@code LocalSchema#reconcileIndexesRegisteredSince}).
+   * <p>
+   * Safe to run over records the transaction has already queued entries of this index for, those it wrote after the index was
+   * bound: the entries are keyed by key and record, so queueing the same ones again leaves the queue as it was.
+   */
+  static void apply(final DatabaseInternal database, final TransactionContext tx, final IndexInternal index,
+      final Index.BuildIndexCallback callback, final long indexedSoFar) {
     if (tx == null || !tx.isActive())
       return;
 
     final IntHashSet bucketIds = new IntHashSet();
     bucketIds.add(index.getAssociatedBucketId());
     final List<RID> written = tx.getWrittenRecordIdsIn(bucketIds);
+    // Whatever the transaction wrote to the bucket up to here is queued by the pass below, and what it writes from here on is
+    // queued as it is written: its commit owes this index nothing more
+    tx.indexReconciled(index.getName());
     if (written.isEmpty())
       return;
 

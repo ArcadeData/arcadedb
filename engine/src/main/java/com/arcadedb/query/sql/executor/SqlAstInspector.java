@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.AlterTypeStatement;
 import com.arcadedb.query.sql.parser.CaseAlternative;
@@ -32,6 +33,7 @@ import com.arcadedb.query.sql.parser.NamedParameter;
 import com.arcadedb.query.sql.parser.OrderByItem;
 import com.arcadedb.query.sql.parser.Pattern;
 import com.arcadedb.query.sql.parser.PositionalParameter;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
 
@@ -48,6 +50,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
+import java.util.logging.Level;
 
 /**
  * Answers questions about everything a parsed SQL fragment can run - every function and method call, every nested
@@ -94,6 +97,23 @@ public final class SqlAstInspector {
       JsonItem.class, Pattern.class, AlterTypeStatement.Item.class, CreateIndexStatement.Property.class,
       CreateTimeSeriesTypeStatement.ColumnDef.class);
 
+  /**
+   * Whether the fields of the parse tree can be read reflectively at all. A GraalVM native image answers
+   * {@code getDeclaredFields()} with an empty array for a class it did not register for reflection, and a walk over such a
+   * tree visits the root alone and reports it complete: a write nested in a SELECT would then pass every read-only gate. So
+   * a node that is known to hold other nodes is asked once, and when it reports no field every walk answers "incomplete",
+   * which each caller already treats as the worst case. Declared after {@link #AST_HOLDER_CLASSES}, which the field lookup
+   * reads. Non-final for the test that pins that answer.
+   */
+  static volatile boolean astFieldsReadable = AST_FIELDS.get(SelectStatement.class).length > 0;
+
+  static {
+    if (!astFieldsReadable)
+      LogManager.instance().log(SqlAstInspector.class, Level.SEVERE,
+          "The fields of the SQL parse tree cannot be read reflectively (a native image built without their reflection "
+              + "metadata?): every statement that may nest another one is treated as a write and refused by the read-only paths");
+  }
+
   private static boolean isAstClass(final Class<?> type) {
     return SimpleNode.class.isAssignableFrom(type) || AST_HOLDER_CLASSES.contains(type);
   }
@@ -107,6 +127,8 @@ public final class SqlAstInspector {
    * {@code test}. A {@code null} root trivially does.
    */
   public static boolean allNodesMatch(final Object root, final Predicate<SimpleNode> test) {
+    if (root != null && !astFieldsReadable)
+      return false;
     return allNodesMatch(root, test, new IdentityHashMap<>());
   }
 
@@ -156,6 +178,8 @@ public final class SqlAstInspector {
    * worst, as {@link #allNodesMatch} does by answering false
    */
   public static boolean forEachNestedStatement(final Statement root, final BiPredicate<Statement, Statement> visitor) {
+    if (!astFieldsReadable)
+      return false;
     final IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
     final ArrayDeque<Object> nodes = new ArrayDeque<>();
     final ArrayDeque<Statement> enclosing = new ArrayDeque<>();

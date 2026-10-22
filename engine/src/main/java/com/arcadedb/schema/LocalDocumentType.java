@@ -554,9 +554,7 @@ public class LocalDocumentType implements DocumentType {
       if (orphan != null)
         fileIds.addAll(orphan.getFileIds());
     }
-    schema.requireFilesCanBeDeleted("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds);
-
-    ((DatabaseInternal) schema.getDatabase()).executeLockingFiles(fileIds, () -> {
+    schema.executeDroppingFiles("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds, () -> {
       dropping[0] = true;
       for (final String indexName : orphans)
         schema.dropIndex(indexName);
@@ -672,6 +670,8 @@ public class LocalDocumentType implements DocumentType {
     final String oldName = name;
     // BEFORE ANYTHING MOVES: A VIEW OR AN AGGREGATE THAT THE RENAME WOULD LEAVE NAMING A TYPE THAT NO LONGER EXISTS REFUSES IT (#10096)
     schema.checkTypeRenameKeepsDependants(this, newName);
+    // PER-TYPE PERMISSIONS ARE KEYED BY NAME: A RENAME MUST NOT MOVE THE TYPE'S RECORDS UNDER A DIFFERENT GRANT
+    schema.checkTypeRenameKeepsAccess(oldName, newName);
 
     final DatabaseInternal database = ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance();
     // Best effort: leadership or the peer set can still change before the session opens. A refusal from the session is
@@ -1698,6 +1698,10 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public DocumentType removeBucket(final Bucket bucket) {
     checkForSchemaMutation();
+    // A BUCKET OF NO TYPE IS GOVERNED BY NO TYPE'S PERMISSIONS: DETACHING ONE THAT HOLDS RECORDS MUST NOT OPEN THEM. A DROP OF
+    // THE TYPE DETACHES ITS BUCKETS TO DROP THEM, RECORDS AND ALL, SO IT OPENS NOTHING
+    if (buckets.contains(bucket) && !schema.isTypeBeingDropped())
+      schema.checkBucketDetachKeepsAccess(bucket, name);
     recordFileChanges(() -> {
       removeBucketInternal(bucket);
       return null;
@@ -2761,9 +2765,7 @@ public class LocalDocumentType implements DocumentType {
       for (final IndexInternal subIndex : idx.getIndexesOnBuckets())
         if (subIndex.getAssociatedBucketId() == bucket.getFileId())
           subIndexFiles.addAll(subIndex.getFileIds());
-    schema.requireFilesCanBeDeleted("remove the bucket '" + bucket.getName() + "' from the type '" + name + "'", subIndexFiles);
-
-    ((DatabaseInternal) schema.getDatabase()).executeLockingFiles(subIndexFiles, () -> {
+    schema.executeDroppingFiles("remove the bucket '" + bucket.getName() + "' from the type '" + name + "'", subIndexFiles, () -> {
       detachBucketAndDropItsSubIndexes(bucket);
       return null;
     });
