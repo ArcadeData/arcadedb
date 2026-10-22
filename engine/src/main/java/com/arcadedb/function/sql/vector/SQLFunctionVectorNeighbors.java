@@ -89,7 +89,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       final double asDouble = n.doubleValue();
       if (Double.isNaN(asDouble) || Double.isInfinite(asDouble))
         throw new CommandSQLParsingException(NAME + " rerank must be an integer >= 0, got " + value);
-      exact = new BigDecimal(asDouble);
+      exact = BigDecimal.valueOf(asDouble);
     } else
       try {
         exact = BigDecimal.valueOf(Integer.parseInt(value.toString().trim()));
