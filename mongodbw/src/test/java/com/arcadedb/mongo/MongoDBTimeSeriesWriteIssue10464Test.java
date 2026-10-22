@@ -106,16 +106,17 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
 
   @Test
   void deleteManyByTimeRangeRemovesTheSamplesInTheRange() {
-    assertThat(collection.deleteMany(Filters.lt("ts", T1)).getDeletedCount()).isEqualTo(1);
+    assertThat(collection.deleteMany(Filters.lt("ts", new Date(T1))).getDeletedCount()).isEqualTo(1);
     assertThat(values()).containsExactlyInAnyOrder(2.0, 3.0);
 
-    assertThat(collection.deleteMany(Filters.and(Filters.gte("ts", T1), Filters.lte("ts", T1))).getDeletedCount()).isEqualTo(1);
+    assertThat(collection.deleteMany(Filters.and(Filters.gte("ts", new Date(T1)), Filters.lte("ts", new Date(T1)))).getDeletedCount())
+        .isEqualTo(1);
     assertThat(values()).containsExactly(3.0);
   }
 
   @Test
   void deleteManyByTimeRangeAndTagRemovesOnlyTheirIntersection() {
-    assertThat(collection.deleteMany(Filters.and(Filters.gt("ts", T0), Filters.eq("k", "a"))).getDeletedCount()).isEqualTo(1);
+    assertThat(collection.deleteMany(Filters.and(Filters.gt("ts", new Date(T0)), Filters.eq("k", "a"))).getDeletedCount()).isEqualTo(1);
     assertThat(values()).containsExactlyInAnyOrder(1.0, 3.0);
   }
 
@@ -191,32 +192,23 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
     assertThat(collection.countDocuments()).isEqualTo(3);
 
     // two entries both accepted are both applied
-    assertThat(collection.bulkWrite(List.of(new DeleteManyModel<>(Filters.eq("k", "b")), new DeleteManyModel<>(Filters.lt("ts", T1))))
-        .getDeletedCount()).isEqualTo(2);
+    assertThat(collection.bulkWrite(
+        List.of(new DeleteManyModel<>(Filters.eq("k", "b")), new DeleteManyModel<>(Filters.lt("ts", new Date(T1))))).getDeletedCount())
+        .isEqualTo(2);
     assertThat(values()).containsExactly(2.0);
   }
 
   @Test
   void deleteManyAcceptsNestedAndAndBothBoundsInOneOperatorDocument() {
     assertThat(collection.deleteMany(new Document("$and", List.of(new Document("$and", List.of(new Document("k", "a"))),
-        new Document("ts", new Document("$gt", T0).append("$lt", T2))))).getDeletedCount()).isEqualTo(1);
+        new Document("ts", new Document("$gt", new Date(T0)).append("$lt", new Date(T2)))))).getDeletedCount()).isEqualTo(1);
     assertThat(values()).containsExactlyInAnyOrder(1.0, 3.0);
   }
 
   @Test
-  void deleteManyAcceptsAWholeDoubleTimestamp() {
-    assertThat(collection.deleteMany(Filters.lte("ts", (double) T1)).getDeletedCount()).isEqualTo(2);
-    assertThat(values()).containsExactly(3.0);
-  }
-
-  @Test
-  void deleteManyRefusesATimestampSqlWouldNarrow() {
-    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", T1 + 0.5))).isInstanceOf(MongoException.class)
-        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
-    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", 1e30))).isInstanceOf(MongoException.class)
-        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
-    // whole, inside a long, but past 2^53: the double may already be a neighbour of the millisecond the client meant
-    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", 1e17))).isInstanceOf(MongoException.class)
+  void deleteManyRefusesANumberOnTheTimestampAndAnEmptyAnd() {
+    // a number is not a date to find and count (#10598), see Issue10598MongoTimeSeriesFilterAgreementTest
+    assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", T1))).isInstanceOf(MongoException.class)
         .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
     assertThatThrownBy(() -> collection.deleteMany(new Document("$and", List.of()))).isInstanceOf(MongoException.class)
         .hasMessageContaining("TIMESERIES type 'Ev' with the condition on '$and'");
