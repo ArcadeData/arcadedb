@@ -7362,7 +7362,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
                                           final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
-    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
+    // #10547: a transaction that asked to append skips the search, which runs under the bucket-wide monitor below
+    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal() && !database.getTransaction().isAppendOnlyInserts()) {
       synchronized (freeSpaceInPages) {
         relistQueuedPages();
         if (freeSpaceInPages.isEmpty())
