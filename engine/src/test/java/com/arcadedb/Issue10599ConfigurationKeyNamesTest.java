@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -105,6 +106,18 @@ class Issue10599ConfigurationKeyNamesTest {
     GlobalConfiguration.readConfiguration();
 
     assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(7);
+  }
+
+  @Test
+  void theOldSpellingIsAcceptedByTheBulkSetter() {
+    GlobalConfiguration.setConfiguration(Map.of(LEGACY_KEY, 6));
+    assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(6);
+
+    // the current key and the enum name keep working
+    GlobalConfiguration.setConfiguration(Map.of(KEY, 4));
+    assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(4);
+    GlobalConfiguration.setConfiguration(Map.of("SERVER_HTTP_IO_THREADS", 3));
+    assertThat(GlobalConfiguration.SERVER_HTTP_IO_THREADS.getValueAsInteger()).isEqualTo(3);
   }
 
   @Test

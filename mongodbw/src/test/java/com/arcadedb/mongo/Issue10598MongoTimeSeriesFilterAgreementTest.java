@@ -25,6 +25,7 @@ import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
 import com.mongodb.MongoException;
 import com.mongodb.ServerAddress;
+import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
 import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
@@ -216,7 +217,9 @@ public class Issue10598MongoTimeSeriesFilterAgreementTest extends BaseMongoServe
   private static int assertDeleteAgreesWithReads(final MongoCollection<Document> collection, final String label, final Document filter,
       final Runnable refill, final int samples) {
     refill.run();
-    final long found = collection.find(filter).into(new ArrayList<>()).size();
+    final List<Double> allValues = valuesOf(collection.find());
+    final List<Double> foundValues = valuesOf(collection.find(filter));
+    final long found = foundValues.size();
     assertThat(collection.count(filter)).as("count of %s", label).isEqualTo(found);
     assertThat(collection.countDocuments(filter)).as("countDocuments of %s", label).isEqualTo(found);
 
@@ -229,7 +232,19 @@ public class Issue10598MongoTimeSeriesFilterAgreementTest extends BaseMongoServe
     }
     assertThat(deleted).as("deleteMany of %s removes what find shows", label).isEqualTo(found);
     assertThat(collection.countDocuments()).as("what is left after %s", label).isEqualTo(samples - found);
+    // the samples removed are the ones find showed, not other ones of the same number
+    final List<Double> expectedLeft = new ArrayList<>(allValues);
+    expectedLeft.removeAll(foundValues);
+    assertThat(valuesOf(collection.find())).as("the samples left after %s", label).containsExactlyInAnyOrderElementsOf(expectedLeft);
     return 1;
+  }
+
+  /** The {@code v} of every sample a find answers: each sample of the census holds a value of its own. */
+  private static List<Double> valuesOf(final FindIterable<Document> samples) {
+    final List<Double> values = new ArrayList<>();
+    for (final Document sample : samples)
+      values.add(((Number) sample.get("v")).doubleValue());
+    return values;
   }
 
   private void refillEvents() {

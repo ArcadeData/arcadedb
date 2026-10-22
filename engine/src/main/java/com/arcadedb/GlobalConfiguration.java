@@ -3997,8 +3997,8 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Changes the configuration values in one shot by passing a Map of values. Keys can be the Java ENUM names or the string
-   * representation of configuration values
+   * Changes the configuration values in one shot by passing a Map of values. Keys can be the Java ENUM names, the string
+   * representation of configuration values, or the key a setting was renamed from (issue #10599)
    */
   public static void setConfiguration(final Map<String, Object> iConfig) {
     for (final Map.Entry<String, Object> config : iConfig.entrySet()) {
@@ -4007,6 +4007,13 @@ public enum GlobalConfiguration {
           v.setValue(config.getValue());
           break;
         } else if (BinaryComparator.equalsString(v.name(), config.getKey())) {
+          v.setValue(config.getValue());
+          break;
+        }
+
+        final String formerKey = FORMER_KEYS.get(v);
+        if (formerKey != null && BinaryComparator.equalsString(formerKey, config.getKey())) {
+          reportFormerKey(v);
           v.setValue(config.getValue());
           break;
         }
