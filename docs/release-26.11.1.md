@@ -99,7 +99,8 @@ transaction commits.
 
 A statement that owns its transaction (auto-transaction mode) pays nothing and rolls back whole, as before. A `sqlscript` that handles
 its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) is unchanged. The events a statement already fired (listeners,
-triggers, what an external system was told) cannot be taken back.
+triggers, what an external system was told) cannot be taken back, and neither can a schema change: it takes effect at once, outside the
+transaction, as it always did.
 
 **When the statement cannot be taken back exactly it is not taken back at all**, and the transaction is refused its commit as in
 #10194: `commit()` throws a `TransactionException` ("Transaction cannot be committed: a statement failed after part of its records
