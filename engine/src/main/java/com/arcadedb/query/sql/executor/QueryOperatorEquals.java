@@ -91,6 +91,11 @@ public class QueryOperatorEquals {
       return Type.numbersEqual(number, number1);
     }
 
+    // A NUMBER AGAINST A DATETIME: EPOCH MILLISECONDS, EXACTLY, ON WHICHEVER SIDE THE NUMBER STANDS (ISSUE #10560)
+    final int order = DateUtils.compareNumberAndTemporal(left, right);
+    if (order != DateUtils.NOT_NUMBER_AND_TEMPORAL)
+      return order == 0;
+
     // ALL OTHER CASES
     try {
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",

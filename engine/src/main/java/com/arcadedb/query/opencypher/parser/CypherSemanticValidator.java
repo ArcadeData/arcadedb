@@ -601,9 +601,12 @@ public class CypherSemanticValidator {
       switch (entry.getType()) {
         case MATCH:
           final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.hasPathPatterns())
+          if (matchClause.hasPathPatterns()) {
             for (final PathPattern path : matchClause.getPathPatterns())
               addBoundVarsFromPattern(path, scope);
+            for (final PathPattern path : matchClause.getPathPatterns())
+              checkGroupWhereScope(path, scope);
+          }
           // Validate WHERE clause references against scope
           if (matchClause.getWhereClause() != null)
             checkBooleanExpressionScope(matchClause.getWhereClause().getConditionExpression(), scope);
@@ -1293,6 +1296,19 @@ public class CypherSemanticValidator {
         checkExpressionScope((Expression) value, scope);
   }
 
+  /**
+   * The inner {@code WHERE} of a quantified path pattern is held to the scope of the clause it is written in, as the {@code WHERE} of
+   * the clause is: the variables the groups write, the ones of the rest of the pattern and the ones of the earlier clauses. A name
+   * outside all of them used to evaluate as null, so the typo answered no row instead of an error (issue #10559).
+   */
+  private void checkGroupWhereScope(final PathPattern path, final Set<String> scope) {
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel instanceof QuantifiedPathPattern group) {
+        checkBooleanExpressionScope(group.getInnerWhere(), scope);
+        checkGroupWhereScope(group.getInnerPattern(), scope);
+      }
+  }
+
   private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
     if (setClause == null || setClause.isEmpty())
       return;
@@ -1456,6 +1472,9 @@ public class CypherSemanticValidator {
           final MatchClause matchClause = entry.getTypedClause();
           if (matchClause.hasWhereClause())
             checkAggregationInWhere(matchClause.getWhereClause());
+          if (matchClause.hasPathPatterns())
+            for (final PathPattern path : matchClause.getPathPatterns())
+              checkAggregationInGroupWhere(path);
         } else if (entry.getType() == ClauseEntry.ClauseType.WITH) {
           final WithClause withClause = entry.getTypedClause();
           if (withClause.getWhereClause() != null)
@@ -1616,6 +1635,15 @@ public class CypherSemanticValidator {
     if (whereClause == null || whereClause.getConditionExpression() == null)
       return;
     checkAggregationInBooleanExpression(whereClause.getConditionExpression());
+  }
+
+  /** The inner {@code WHERE} of a quantified path pattern filters rows like the one of the clause: no aggregate (issue #10559). */
+  private void checkAggregationInGroupWhere(final PathPattern path) {
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel instanceof QuantifiedPathPattern group) {
+        checkAggregationInBooleanExpression(group.getInnerWhere());
+        checkAggregationInGroupWhere(group.getInnerPattern());
+      }
   }
 
   private void checkAggregationInBooleanExpression(final BooleanExpression boolExpr) {

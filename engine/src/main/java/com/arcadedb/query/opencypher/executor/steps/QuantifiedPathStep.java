@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -346,7 +347,10 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       final String[] types = relationshipTypes[hop];
 
       // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
-      final Iterator<Edge> candidates = IncomingEdgeLookup.getEdges(context, from, direction.toArcadeDirection(), types);
+      final Iterator<Edge> lookup = IncomingEdgeLookup.getEdges(context, from, direction.toArcadeDirection(), types);
+      // An undirected hop reaches a self-loop from both lists of its vertex: it is one relationship, and the plain and the
+      // variable-length patterns match it once (issue #10559)
+      final Iterator<Edge> candidates = direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(lookup) : lookup;
 
       while (candidates.hasNext()) {
         guard.check();
