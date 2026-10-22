@@ -247,7 +247,9 @@ what matters.
   `CREATE INDEX`, `buildBucketIndex()` and the index a super type propagates. A key the index had meanwhile given to another record
   is refused at that commit with a `DuplicatedKeyException`. A transaction that wrote to the same bucket both before and after the
   index was created cannot tell the entries it queued from the ones it owes, and is refused at its commit with a retryable
-  `ConcurrentModificationException`: the retry finds the index there from its first write.
+  `ConcurrentModificationException`: the retry finds the index there from its first write. An outer transaction that owes entries,
+  committed while a transaction nested inside it is still open, is refused with a `TransactionException` (commit or roll back the
+  innermost first): the entries are queued on the transaction on top of the thread's stack.
 - **#10589** A `DROP INDEX` refused part way (a file of one bucket's sub-index that cannot be deleted) no longer leaves the index half
   dropped. The files of every sub-index are probed, and their locks taken, before the first is dropped, as `DROP TYPE` and
   `ALTER TYPE ... BUCKET` / `SUPERTYPE` do (#10421), and `DROP PROPERTY ... FORCE`, `TRUNCATE TYPE`, `REBUILD INDEX`, the
