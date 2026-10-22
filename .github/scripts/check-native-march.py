@@ -36,14 +36,14 @@ Three things are enforced:
   2. No resolved baseline, and no workflow or build script, uses `native`. -march=native targets the
      CPU of the machine running the build, so a CI-built binary would require whatever the runner
      happened to have and refuse to start on a CPU with less.
-  3. docs/native-image.md names every resolved baseline, so the documented CPU requirement cannot
-     drift away from the one the binary is built for.
+  3. The table in docs/native-image.md's "CPU requirements" section names every resolved baseline,
+     so the documented CPU requirement cannot drift away from the one the binary is built for.
 
 Usage:
   check-native-march.py [pom] [docs] [file-to-scan ...]
 
 With no arguments it checks the repository's own native/pom.xml and docs/native-image.md, and scans
-native-image.yml and the native build scripts for -march=native.
+every workflow, the native build scripts and the native Dockerfiles for -march=native.
 """
 
 import re
@@ -65,6 +65,8 @@ ARCHES = {
     "x86_64": re.compile(r"^(compatibility|x86-64(-v[1-4])?)$"),
     "aarch64": re.compile(r"^(compatibility|armv8(\.[1-9])?-a(\+[a-z]+)*)$"),
 }
+
+DOCS_SECTION = "CPU requirements"
 
 NATIVE_MARCH = re.compile(r"(-march=native|native\.march=native)\b")
 
@@ -154,15 +156,29 @@ def check_pom(pom, problems):
     return resolved
 
 
+def cpu_requirements_table(documentation):
+    """Returns the table rows of the CPU requirements section, from its heading to the next heading."""
+    rows, inside, fenced = [], False, False
+    for line in documentation.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif fenced:
+            continue  # a shell comment in a code block is not a heading
+        elif line.startswith("#"):
+            inside = line.lstrip("#").strip() == DOCS_SECTION
+        elif inside and line.lstrip().startswith("|"):
+            rows.append(line)
+    return rows
+
+
 def main(argv):
     root = Path(__file__).resolve().parents[2]
     pom = Path(argv[1]) if len(argv) > 1 else root / "native" / "pom.xml"
     docs = Path(argv[2]) if len(argv) > 2 else root / "docs" / "native-image.md"
-    scanned = [Path(p) for p in argv[3:]] if len(argv) > 3 else [
-        root / ".github" / "workflows" / "native-image.yml",
-        root / "native" / "scripts" / "build-native.sh",
-        root / "native" / "scripts" / "build-native-docker.sh",
-    ]
+    scanned = [Path(p) for p in argv[3:]] if len(argv) > 3 else sorted(
+        [*(root / ".github" / "workflows").glob("*.yml"),
+         *(root / "native" / "scripts").glob("*.sh"),
+         *(root / "native" / "src" / "main" / "docker").glob("Dockerfile*")])
 
     for path in [pom, docs, *scanned]:
         if not path.is_file():
@@ -172,13 +188,18 @@ def main(argv):
     problems = []
     resolved = check_pom(pom, problems)
 
-    documentation = docs.read_text()
+    # Only the rows of the CPU requirements table count: the same section also names lower baselines
+    # in its override examples (x86-64-v2, compatibility), which must not satisfy the check for a pom
+    # that has been lowered or raised to one of them.
+    table = cpu_requirements_table(docs.read_text())
+    if not table:
+        problems.append(f"{docs}: has no table under a '{DOCS_SECTION}' heading to state the CPU baselines in.")
     for value in sorted(set(resolved.values())):
-        if f"`{value}`" not in documentation:
+        if table and not any(f"`{value}`" in row for row in table):
             arches = ", ".join(a for a, v in resolved.items() if v == value)
             problems.append(
-                f"{docs}: does not name `{value}`, the CPU baseline {pom} builds the {arches} binary for. "
-                f"Users whose CPU lacks it get a startup error and need to find out why."
+                f"{docs}: the '{DOCS_SECTION}' table does not name `{value}`, the CPU baseline {pom} builds the "
+                f"{arches} binary for. Users whose CPU lacks it get a startup error and need to find out why."
             )
 
     for path in scanned:

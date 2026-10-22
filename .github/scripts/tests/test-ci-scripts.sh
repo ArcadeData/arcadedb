@@ -1619,7 +1619,7 @@ XML
 }
 
 mkdir -p "$work/march"
-printf '## CPU requirements\n\n`x86-64-v3` on amd64, `armv8.1-a` on arm64.\n' >"$work/march/docs.md"
+printf '## CPU requirements\n\n| Arch | -march |\n|---|---|\n| amd64 | `x86-64-v3` |\n| arm64 | `armv8.1-a` |\n\nOverride: `-Dnative.march=x86-64-v2`.\n\n## Next\n\n| `x86-64-v4` |\n' >"$work/march/docs.md"
 printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.static=true package\n' >"$work/march/clean.yml"
 
 march_pom "$work/march/ok-pom.xml" '-march=${native.march}' compatibility
@@ -1657,6 +1657,18 @@ march_pom "$work/march/v4-pom.xml" '-march=${native.march}' compatibility no-pro
     '<profile><id>a</id><activation><os><arch>amd64</arch></os></activation><properties><native.march>x86-64-v4</native.march></properties></profile>'
 expect "rejects a baseline the docs do not name" 1 'does not name `x86-64-v4`' \
     "$NATIVEMARCH" "$work/march/v4-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# A baseline the section names only in an override example, or a table under another heading,
+# states no requirement: lowering the pom to x86-64-v2 must not pass on the strength of an example.
+march_pom "$work/march/v2-pom.xml" '-march=${native.march}' compatibility no-profiles \
+    '<profile><id>a</id><activation><os><arch>amd64</arch></os></activation><properties><native.march>x86-64-v2</native.march></properties></profile>'
+expect "rejects a baseline the docs name only outside the CPU requirements table" 1 "table does not name \`x86-64-v2\`" \
+    "$NATIVEMARCH" "$work/march/v2-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+expect "rejects a baseline only a table under another heading names" 1 "table does not name \`x86-64-v4\`" \
+    "$NATIVEMARCH" "$work/march/v4-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+printf '# Native\n\nno table here\n' >"$work/march/no-section.md"
+expect "reports docs without a CPU requirements table" 1 "has no table under a 'CPU requirements' heading" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/no-section.md" "$work/march/clean.yml"
 
 # The repository's own pom, docs, workflow and scripts must pass.
 expect "the repository's own native CPU baseline is explicit and documented" 0 "explicit and documented" \
