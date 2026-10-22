@@ -25,6 +25,7 @@ import com.arcadedb.database.TrackableBinary;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
@@ -101,7 +102,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
   // pending ack - letting the close-time ack gate delete a WAL that still holds unflushed committed data.
-  private final        java.util.concurrent.atomic.AtomicReference<WALFile> walFile = new java.util.concurrent.atomic.AtomicReference<>();
+  // Holds the WALFile, or WAL_ACK_TAKEN once the ack was taken: a group commit writes its WAL record after the page was
+  // published (#10509), and a page released before that must not be attached to the file the record lands in
+  private final        AtomicReference<Object> walFile = new AtomicReference<>();
+  private static final Object  WAL_ACK_TAKEN              = new Object();
   // The group-commit ticket of the WAL write that describes this page, 0 when that write was flushed before the page was
   // published (arcadedb.txWalGroupCommit): the page is not written to its data file before the WAL is durable up to it. Set
   // before the page is published, and the publication hands it to the flush thread through the flush queue, which is
@@ -530,11 +534,19 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public WALFile getWALFile() {
-    return walFile.get();
+    return walFile.get() instanceof WALFile file ? file : null;
   }
 
   public void setWALFile(final WALFile WALFile) {
     this.walFile.set(WALFile);
+  }
+
+  /**
+   * Attaches the WAL file the page's record was written to, unless the page already has one or its ack was already taken:
+   * answers whether it did, which is whether the page now owes the file an ack.
+   */
+  public boolean attachWALFile(final WALFile file) {
+    return walFile.compareAndSet(null, file);
   }
 
   /**
@@ -543,7 +555,7 @@ public class MutablePage extends BasePage implements TrackableContent {
    * here first. Returns {@code null} for every caller but the first.
    */
   public WALFile takeWALFile() {
-    return walFile.getAndSet(null);
+    return walFile.getAndSet(WAL_ACK_TAKEN) instanceof WALFile file ? file : null;
   }
 
   /** See {@link TransactionManager#awaitWALDurable(long)}: 0 when the WAL write that describes this page was already flushed. */
