@@ -2854,6 +2854,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
       final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
+      // The record table summary of the page (see getFreeSpaceInPage) stays true across a plain append to the end of a
+      // page it described, or to a brand-new page: the table writes below drop it, the append re-states it.
+      final int recordCountBefore = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final boolean keepsPackedScan = packedAppend && availablePositionIndex == recordCountBefore
+              && (createNewPage ? recordCountBefore == 0 : selectedPage.hasPackedScan(recordCountBefore));
       try {
         // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
         selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
@@ -2890,6 +2895,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
                   bufferSize);
           updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
+          if (keepsPackedScan)
+            selectedPage.rememberPackedScan(recordCountBefore + 1, newRecordPositionInPage,
+                    PAGE_RECORD_TABLE_OFFSET + (recordCountBefore + 1) * INT_SERIALIZED_SIZE);
         }
       } finally {
         if (packedAppend)
@@ -7316,9 +7324,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     pageAnalysis.lastRecordPositionInPage = -1;
     pageAnalysis.newRecordPositionInPage = -1;
 
+    // A page this transaction keeps appending to has no hole and no write touched its record table since the last
+    // walk (or the last append, which recorded what it wrote): answer from that instead of walking every slot again.
+    final MutablePage ownPage = pageAnalysis.page instanceof MutablePage mp ? mp : null;
+    if (ownPage != null && ownPage.hasPackedScan(pageAnalysis.totalRecordsInPage)) {
+      pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
+      pageAnalysis.lastRecordPositionInPage = ownPage.getPackedScanLastPosition();
+      pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
+      pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
+      return;
+    }
+
+    boolean sawHole = false;
     for (int i = 0; i < pageAnalysis.totalRecordsInPage; i++) {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
+        sawHole = true;
         // Check if this position was deleted in the current transaction
         final RID potentialRID = new RID(file.getFileId(),
                 ((long) pageAnalysis.page.getPageId().getPageNumber()) * maxRecordsInPage + i);
@@ -7335,6 +7356,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (pageAnalysis.availablePositionIndex == -1)
       // USE NEW POSITION
       pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
+
+    if (ownPage != null && !sawHole && pageAnalysis.lastRecordPositionInPage > -1)
+      ownPage.rememberPackedScan(pageAnalysis.totalRecordsInPage, pageAnalysis.lastRecordPositionInPage,
+              PAGE_RECORD_TABLE_OFFSET + pageAnalysis.totalRecordsInPage * INT_SERIALIZED_SIZE);
 
     pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
     pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
