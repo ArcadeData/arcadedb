@@ -5807,6 +5807,23 @@ public class LocalSchema implements Schema {
       security.updateSchema(database);
   }
 
+  /** Refuses the rename of a type when per-type permissions grant the old and the new name different access. */
+  void checkTypeRenameKeepsAccess(final String oldName, final String newName) {
+    if (security != null)
+      security.checkTypeRename(database, oldName, newName);
+  }
+
+  /**
+   * Refuses detaching a bucket that holds records from {@code typeName} when per-type permissions restrict the type: a bucket
+   * of no type is restricted by none. An empty bucket opens no record, so it is never refused.
+   */
+  void checkBucketDetachKeepsAccess(final Bucket bucket, final String typeName) {
+    // THE CACHED COUNTER, NOT count(): THAT ONE ASKS THE CALLER FOR THE READ GRANT THIS CHECK IS ABOUT. AN UNKNOWN COUNT (-1)
+    // IS TAKEN AS RECORDS
+    if (security != null && !(bucket instanceof LocalBucket localBucket && localBucket.getCachedRecordCount() == 0))
+      security.checkBucketDetach(database, bucket.getName(), typeName);
+  }
+
   /**
    * Logs, once per opened database and per type, a LIGHTWEIGHT edge type whose schema declares a MANDATORY or default-valued
    * property it inherits but can never apply (issue #9975). The load accepts the combination on purpose - a database written

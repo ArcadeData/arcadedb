@@ -69,6 +69,8 @@ abstract class ReloadableSecurityArtifact<T> {
   private volatile long   fileLastUpdated = 0L;
   // VOLATILE for the tick's stale-instance check; written under the lock only. See stop() for why the lock and not this.
   private volatile Timer  watcher;
+  // Set by stop(), for good: see stop() for how it closes the race with startWatching() without the lock.
+  private volatile boolean stopped;
   // Test seam (issue #10460): run after read() and before publish(), so a test can land a concurrent change in that window
   // deterministically instead of racing for it. Null outside tests.
   volatile         Runnable afterRead;
@@ -156,7 +158,12 @@ abstract class ReloadableSecurityArtifact<T> {
    * </ul>
    */
   protected T onFirstLoadFailure(final Exception failure) {
-    preserve(failure, fallingBack());
+    // THE FALLBACK IS WRITTEN OVER THE FILE: WITHOUT A COPY OF IT, THAT WOULD DESTROY THE ONLY ONE THERE IS. THE COPY AND THE
+    // OVERWRITE FAIL TOGETHER WHEN THE CAUSE IS THE FILE ITSELF (UNREADABLE AFTER A UID CHANGE, SAY), NOT ITS CONTENT
+    if (!preserve(failure, fallingBack()))
+      throw new ServerSecurityException(
+          "File '" + file.getPath() + "' cannot be loaded (" + failure + ") and cannot be preserved as '" + errorFile.getPath()
+              + "', so it is not replaced by the default configuration: fix the file, or its permissions, and start again");
     return fallback();
   }
 
@@ -183,9 +190,13 @@ abstract class ReloadableSecurityArtifact<T> {
     return file.exists() && file.lastModified() > fileLastUpdated;
   }
 
-  /** Preserves the file as {@link #errorFile} and logs the failure with {@code outcome}. Called under the lock. */
-  protected void preserve(final Exception failure, final String outcome) {
-    SecurityUserFileRepository.preserveInError(owner, file, errorFile, failure, outcome);
+  /**
+   * Preserves the file as {@link #errorFile} and logs the failure with {@code outcome}. Called under the lock.
+   *
+   * @return whether nothing of the file can be lost any more: it was copied, or it is no longer there
+   */
+  protected boolean preserve(final Exception failure, final String outcome) {
+    return SecurityUserFileRepository.preserveInError(owner, file, errorFile, failure, outcome);
   }
 
   /**
@@ -235,12 +246,28 @@ abstract class ReloadableSecurityArtifact<T> {
    *         when what is in force was kept (or a first load published nothing, or what it read was superseded)
    */
   final boolean reload() {
+    return reload(true);
+  }
+
+  /**
+   * @param mayLoadFirst whether, with nothing in force, this may be the first load. The watcher passes {@code false}: a
+   *                     first load may fall back to the default and WRITE it, which a running server must never do because
+   *                     a file changed - whoever loads the store first (its startup, or its first reader) does that load
+   */
+  private boolean reload(final boolean mayLoadFirst) {
     synchronized (lock) {
       // BEFORE hasInForce(): a first load reached from here must compare against what was in force when this decided it
       // was one, or an install landing in between would be published over.
       beginLoad();
-      if (!hasInForce())
-        return loadFirst();
+      if (!hasInForce()) {
+        if (mayLoadFirst)
+          return loadFirst();
+        // SEEN, SO THE NEXT TICK DOES NOT REPORT IT AGAIN: THE FIRST LOAD READS THE FILE AS IT IS THEN, WHATEVER ITS STAMP
+        fileLastUpdated = file.lastModified();
+        LogManager.instance().log(owner, Level.INFO, "File '%s' changed before it was first loaded: it is read by its first load",
+            file.getName());
+        return false;
+      }
 
       final String refusal = refusal();
       if (refusal != null) {
@@ -297,7 +324,7 @@ abstract class ReloadableSecurityArtifact<T> {
    */
   final void startWatching(final int checkEveryMs) {
     synchronized (lock) {
-      if (watcher != null || checkEveryMs <= 0)
+      if (watcher != null || stopped || checkEveryMs <= 0)
         return;
 
       if (fileLastUpdated == 0L && file.exists())
@@ -305,6 +332,11 @@ abstract class ReloadableSecurityArtifact<T> {
 
       final Timer timer = new Timer(watcherName + "[" + file.getPath() + "]", true);
       watcher = timer;
+      // A stop() that ran after the check above saw no timer to cancel, but set the flag first: cancelled here instead
+      if (stopped) {
+        timer.cancel();
+        return;
+      }
       timer.schedule(new TimerTask() {
         @Override
         public void run() {
@@ -315,7 +347,7 @@ abstract class ReloadableSecurityArtifact<T> {
           try {
             if (fileChanged()) {
               LogManager.instance().log(owner, Level.INFO, "%s changed, reloading it...", description);
-              if (reload())
+              if (reload(false))
                 onReloaded();
             }
           } catch (final Throwable e) {
@@ -327,16 +359,19 @@ abstract class ReloadableSecurityArtifact<T> {
   }
 
   /**
-   * Cancels the watcher. Under the lock, and it has to be: the check and the cancel are one action against
-   * {@link #startWatching}, which is check-then-act too. A {@code stop()} that read the field between that method's null
-   * check and its assignment would see {@code null}, return without cancelling, and leave the timer created a moment
-   * later polling a stopped store for the life of the JVM. {@code volatile} does not close that window; only the lock
-   * does. It cannot stall a shutdown: {@link Timer#cancel()} discards the queue without waiting for a running task.
+   * Cancels the watcher, without taking the lock: a reload holds it for as long as its read and its publish take, and a
+   * shutdown must not wait for one, let alone for one that never ends. {@link Timer#cancel()} discards the queue without
+   * waiting for a running task either.
+   * <p>
+   * {@link #startWatching} is check-then-act, and a {@code stop()} landing between its check and its assignment would see no
+   * timer to cancel. The two {@code volatile} fields close that window in the Dekker way: this sets {@link #stopped} BEFORE
+   * reading {@link #watcher}, and {@code startWatching} assigns {@code watcher} BEFORE reading {@code stopped}, so at least
+   * one of the two sees the other's write and cancels the timer.
    */
   final void stop() {
-    synchronized (lock) {
-      if (watcher != null)
-        watcher.cancel();
-    }
+    stopped = true;
+    final Timer timer = watcher;
+    if (timer != null)
+      timer.cancel();
   }
 }
