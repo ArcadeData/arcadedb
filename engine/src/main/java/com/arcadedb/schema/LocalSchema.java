@@ -2459,30 +2459,45 @@ public class LocalSchema implements Schema {
     // BACKING TYPE - RUNS UNDER THE WRITE LOCK, SO IT CANNOT INTERLEAVE WITH A CREATE OR AN ALTER OF THE SAME VIEW
     // THAT IS STILL INSTALLING ITS REFRESH RESOURCES: WHAT IS TORN DOWN HERE IS WHAT THE VIEW REMOVED HERE OWNED
     recordFileChanges(() -> {
-      final MaterializedViewImpl view;
-      final MaterializedViewScheduler scheduler;
+      final MaterializedViewImpl registered;
       synchronized (this) {
         // Two drops of the same view can both pass the check above: the second loses here
-        view = materializedViews.remove(viewName);
-        if (view == null)
-          throw new SchemaException("Materialized view '" + viewName + "' not found");
-        scheduler = materializedViewScheduler;
+        registered = materializedViews.get(viewName);
       }
+      if (registered == null)
+        throw new SchemaException("Materialized view '" + viewName + "' not found");
 
-      // Cancel periodic scheduler if active
-      if (scheduler != null)
-        scheduler.cancel(viewName);
+      // #10590: THE DROP OF THE BACKING TYPE IS THE STEP THAT CAN REFUSE, AND IT COMES LAST: EVERYTHING IT WILL ASK IS ASKED, AND
+      // THE LOCKS OF ITS INDEX FILES ARE TAKEN, BEFORE THE VIEW STOPS BEING REGISTERED. A refusal after the removal left a view that
+      // no longer existed beside a backing type that did, which no statement but DROP TYPE could repair
+      final List<Integer> indexFiles = requireBackingTypeCanBeDropped("drop the materialized view '" + viewName + "'",
+          registered.getBackingTypeName(), registered);
 
-      // Unregister incremental listeners from source types
-      if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-        MaterializedViewBuilder.unregisterListeners(this, view);
+      return database.executeLockingFiles(indexFiles, () -> {
+        final MaterializedViewImpl view;
+        final MaterializedViewScheduler scheduler;
+        synchronized (this) {
+          view = materializedViews.remove(viewName);
+          if (view == null)
+            throw new SchemaException("Materialized view '" + viewName + "' not found");
+          scheduler = materializedViewScheduler;
+        }
 
-      // Drop the backing type (which drops buckets and indexes)
-      if (existsType(view.getBackingTypeName()))
-        dropType(view.getBackingTypeName());
+        // Cancel periodic scheduler if active
+        if (scheduler != null)
+          scheduler.cancel(viewName);
 
-      saveConfiguration();
-      return null;
+        // Unregister incremental listeners from source types
+        if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+          MaterializedViewBuilder.unregisterListeners(this, view);
+
+        // Drop the backing type (which drops buckets and indexes)
+        if (existsType(view.getBackingTypeName()))
+          dropType(view.getBackingTypeName());
+
+        saveConfiguration();
+        return null;
+      });
     });
   }
 
@@ -2576,16 +2591,22 @@ public class LocalSchema implements Schema {
     }
 
     recordFileChanges(() -> {
-      synchronized (this) {
-        if (continuousAggregates.remove(name) == null)
-          throw new SchemaException("Continuous aggregate '" + name + "' not found");
-      }
+      // #10590: the refusals of the drop of the backing type are asked before the aggregate stops being registered, see dropMaterializedView
+      final List<Integer> indexFiles = requireBackingTypeCanBeDropped("drop the continuous aggregate '" + name + "'",
+          ca.getBackingTypeName(), ca);
 
-      if (existsType(ca.getBackingTypeName()))
-        dropType(ca.getBackingTypeName());
+      return database.executeLockingFiles(indexFiles, () -> {
+        synchronized (this) {
+          if (continuousAggregates.remove(name) == null)
+            throw new SchemaException("Continuous aggregate '" + name + "' not found");
+        }
 
-      saveConfiguration();
-      return null;
+        if (existsType(ca.getBackingTypeName()))
+          dropType(ca.getBackingTypeName());
+
+        saveConfiguration();
+        return null;
+      });
     });
   }
 
@@ -3062,10 +3083,7 @@ public class LocalSchema implements Schema {
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
         // (and saved): the file of an index that cannot be deleted, the lock of a file another thread holds. The files are
         // probed here, and the locks of the index files taken once, up front, so the drops below re-acquire what is held
-        final List<Integer> filesOfTheDrop = new ArrayList<>();
-        final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
-        collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
-        requireFilesCanBeDeleted("drop the type '" + type.getName() + "'", filesOfTheDrop);
+        final List<Integer> indexFilesOfTheDrop = requireFilesOfTheDropCanBeDeleted("drop the type '" + type.getName() + "'", type);
 
         database.executeLockingFiles(indexFilesOfTheDrop, () -> {
           dropTypeInternal(type, typeName, canonicalTypeName);
@@ -3083,6 +3101,35 @@ public class LocalSchema implements Schema {
       }
       return null;
     });
+  }
+
+  /**
+   * Asks, before a statement that drops {@code type} changes anything, whether the files of the drop can be deleted (issue #10421).
+   *
+   * @return the index files of the drop, whose locks the statement takes once, up front
+   */
+  private List<Integer> requireFilesOfTheDropCanBeDeleted(final String statement, final LocalDocumentType type) {
+    final List<Integer> filesOfTheDrop = new ArrayList<>();
+    final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+    collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
+    requireFilesCanBeDeleted(statement, filesOfTheDrop);
+    return indexFilesOfTheDrop;
+  }
+
+  /**
+   * Asks, for a statement that unregisters {@code owner} - a materialized view or a continuous aggregate - and then drops its
+   * backing type, everything the drop of that type is going to ask: another dependant built from the backing type, a file that
+   * cannot be deleted (issue #10590). {@link #dropType} asks the same, but it is the LAST step of those statements, so a refusal
+   * from it came after the owner was no longer registered, with its refresh scheduler cancelled and its listeners off the source
+   * types, while the message claimed that nothing was changed. The owner is left out of the dependants: it is the one going.
+   *
+   * @return the index files of the drop of the backing type, whose locks the statement takes once, up front
+   */
+  private List<Integer> requireBackingTypeCanBeDropped(final String statement, final String backingTypeName,
+      final TypeNameDependant owner) {
+    checkTypeHasNoDependants(backingTypeName, owner);
+    final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
+    return backingType != null ? requireFilesOfTheDropCanBeDeleted(statement, backingType) : List.of();
   }
 
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
@@ -3247,12 +3294,20 @@ public class LocalSchema implements Schema {
    * @return the canonical name of the type
    */
   private String checkTypeHasNoDependants(final String typeName) {
+    return checkTypeHasNoDependants(typeName, null);
+  }
+
+  /**
+   * @param owner the dependant whose own statement drops the type, which does not refuse it, or {@code null} (issue #10590)
+   */
+  private String checkTypeHasNoDependants(final String typeName, final TypeNameDependant owner) {
     final LocalDocumentType resolvedType = getTypeOrNull(typeName);
     final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
 
     synchronized (this) {
       for (final TypeNameDependant dependant : getTypeNameDependants())
-        dependant.checkTypeDrop(this, typeName, canonicalTypeName);
+        if (dependant != owner)
+          dependant.checkTypeDrop(this, typeName, canonicalTypeName);
     }
     return canonicalTypeName;
   }

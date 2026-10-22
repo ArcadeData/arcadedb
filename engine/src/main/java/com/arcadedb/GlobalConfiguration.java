@@ -35,6 +35,7 @@ import java.io.PrintStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -236,8 +237,9 @@ public enum GlobalConfiguration {
       loses a transaction other clients may already have read, while the client that committed it has not been answered \
       yet. Set it to false to make a transaction visible only once its WAL is on disk, at the cost of serializing the \
       commits on the same type behind the flush. Applies to the commits of a database that is not replicated (embedded, \
-      or served by a single server) with the asynchronous page flush (the default): the commits of an HA cluster go \
-      through the replication log and are not affected. The background page flush may wait for, or run, a WAL flush \
+      or served by a single server) with the asynchronous page flush (the default), and to the internal commits of a \
+      replicated database (compaction, schema saves): the replicated commits of an HA cluster go through the \
+      replication log and are not affected. The background page flush may wait for, or run, a WAL flush \
       before it writes a page, so on a slow disk the page flush follows the WAL flush latency""",
       Boolean.class, true),
 
@@ -1919,7 +1921,9 @@ public enum GlobalConfiguration {
       "TCP/IP port number used for incoming HTTPS connections. Specify a single port or a range `<from-<to>`. Default is 2490-2499 to accept a range of ports in case they are occupied.",
       String.class, "2490-2499"),
 
-  SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", SCOPE.SERVER,
+  // Declared "httpsIoThreads" until issue #10599, which named an HTTP-server setting after the HTTPS-only one above it: the old
+  // spelling is still read, see FORMER_KEYS
+  SERVER_HTTP_IO_THREADS("arcadedb.server.httpIoThreads", SCOPE.SERVER,
       "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
       Integer.class, 0, null, value -> Runtime.getRuntime().availableProcessors()),
 
@@ -3529,6 +3533,25 @@ public enum GlobalConfiguration {
    */
   private static final Map<String, GlobalConfiguration> BY_KEY;
 
+  /**
+   * The key a setting was declared with before it was renamed (issue #10599), so a deployment that found the old spelling does not
+   * lose its value on upgrade. A setting's key has to name the setting, because the key is the only handle a user has: the old
+   * {@code arcadedb.server.httpsIoThreads} named the HTTP server's IO threads after the HTTPS-only setting declared above it.
+   * <p>
+   * The former key is read from a system property or an environment variable when the current one is absent, resolved by
+   * {@link #findByKey(String)} for every route that names a setting by its key (the server configuration file, the settings
+   * commands), and reported once. Never use it for a new setting: a key that was never declared needs no alias.
+   * <p>
+   * Built in the static block, before {@link #readConfiguration()}, which is itself a reader.
+   */
+  private static final Map<GlobalConfiguration, String> FORMER_KEYS;
+
+  /** {@link #FORMER_KEYS} the other way round, by the lower-cased former key. */
+  private static final Map<String, GlobalConfiguration> BY_FORMER_KEY;
+
+  /** The former keys already reported, so each is reported once however many routes resolve it. */
+  private static final Set<String> FORMER_KEYS_REPORTED;
+
   static {
     TIMER = new Timer(true);
 
@@ -3536,6 +3559,17 @@ public enum GlobalConfiguration {
     for (final GlobalConfiguration v : values())
       byKey.put(v.key.toLowerCase(Locale.ENGLISH), v);
     BY_KEY = Collections.unmodifiableMap(byKey);
+
+    final Map<GlobalConfiguration, String> formerKeys = new EnumMap<>(GlobalConfiguration.class);
+    formerKeys.put(SERVER_HTTP_IO_THREADS, "arcadedb.server.httpsIoThreads");
+    FORMER_KEYS = Collections.unmodifiableMap(formerKeys);
+
+    final Map<String, GlobalConfiguration> byFormerKey = new HashMap<>();
+    for (final Map.Entry<GlobalConfiguration, String> former : formerKeys.entrySet())
+      byFormerKey.put(former.getValue().toLowerCase(Locale.ENGLISH), former.getKey());
+    BY_FORMER_KEY = Collections.unmodifiableMap(byFormerKey);
+
+    FORMER_KEYS_REPORTED = ConcurrentHashMap.newKeySet();
 
     readConfiguration();
   }
@@ -3807,7 +3841,25 @@ public enum GlobalConfiguration {
     String key = iKey.toLowerCase(Locale.ENGLISH);
     if (!key.startsWith(PREFIX))
       key = PREFIX + key;
-    return BY_KEY.get(key);
+    final GlobalConfiguration setting = BY_KEY.get(key);
+    if (setting != null)
+      return setting;
+
+    // the key a setting was renamed from (issue #10599) still names it
+    final GlobalConfiguration renamed = BY_FORMER_KEY.get(key);
+    if (renamed != null)
+      reportFormerKey(renamed);
+    return renamed;
+  }
+
+  /**
+   * Says once that {@code setting} is being named by the key it was renamed from (issue #10599).
+   */
+  private static void reportFormerKey(final GlobalConfiguration setting) {
+    final String formerKey = FORMER_KEYS.get(setting);
+    if (FORMER_KEYS_REPORTED.add(formerKey) && LogManager.instance() != null)
+      LogManager.instance().log(setting, Level.WARNING, "The setting '%s' was renamed '%s': the old name is still read, switch to the new one",
+          formerKey, setting.key);
   }
 
   /**
@@ -3984,6 +4036,19 @@ public enum GlobalConfiguration {
         if (prop == null) {
           prop = System.getenv(config.key);
           source = "environment variable";
+        }
+
+        // the key the setting was renamed from (issue #10599), only where the current one carries nothing
+        final String formerKey = FORMER_KEYS.get(config);
+        if (prop == null && formerKey != null) {
+          prop = System.getProperty(formerKey);
+          source = "system property";
+          if (prop == null) {
+            prop = System.getenv(formerKey);
+            source = "environment variable";
+          }
+          if (prop != null)
+            reportFormerKey(config);
         }
 
         config.applyConfigurationSource(prop, source);
