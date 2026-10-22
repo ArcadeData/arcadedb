@@ -102,6 +102,16 @@ public final class FullTextCorpusDeltas {
       tx.setAttachment(ATTACHMENT_KEY, deltas);
     }
     deltas.add(metadata, indexName, docs, length);
+    // A statement that fails moves them back (issue #10346)
+    tx.noteCorpusDelta(deltas, metadata, indexName, docs, length);
+  }
+
+  /**
+   * Moves the counters back by what a statement of the transaction moved them, because the statement was taken back (issue #10346).
+   * The index keeps its entry, with whatever net is left, which is what a transaction that indexed and removed a document has.
+   */
+  public void retract(final FullTextIndexMetadata metadata, final String indexName, final int docs, final long length) {
+    add(metadata, indexName, -docs, -length);
   }
 
   /**

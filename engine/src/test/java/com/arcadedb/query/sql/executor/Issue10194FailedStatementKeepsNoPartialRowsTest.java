@@ -33,10 +33,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #10194, third point: a multi-row statement that failed midway inside a transaction left the rows it had written before the
- * error, and a caller that caught the error and committed published them: half a statement. The engine has no savepoints, so the
- * transaction can no longer be committed once a statement fails after part of its writes completed (as it already cannot after a
- * half-applied delete, #9305), while a statement that failed having written nothing - every single-row refusal, which
- * retracts its own record - leaves the transaction usable.
+ * error, and a caller that caught the error and committed published them: half a statement. The fix of #10194 refused the commit of
+ * such a transaction, there being no savepoint to take the statement back to. Statement savepoints (#10346) take it back: the rows
+ * the statement wrote before its error are gone, and the transaction goes on. The commit is still refused where the engine cannot take
+ * a statement back exactly, which is pinned by the tests of #10379 and #10482.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -70,19 +70,20 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
   }
 
   @Test
-  void aCaughtMultiRowInsertCannotBeCommittedHalfApplied() {
+  void aCaughtMultiRowInsertIsTakenBackAndTheTransactionCommits() {
     final AtomicReference<Throwable> caught = new AtomicReference<>();
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         database.command("sql", "INSERT INTO T (id, k) VALUES (30, 23), (31, 23)").close();
       } catch (final DuplicatedKeyException e) {
         caught.set(e);
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+      database.command("sql", "INSERT INTO T SET id = 5, k = 5").close();
+    }, false, 0);
 
     assertThat(caught.get()).isInstanceOf(DuplicatedKeyException.class);
-    assertThat(rows()).isZero();
+    assertThat(rows()).isEqualTo(1);
   }
 
   @Test
@@ -105,14 +106,14 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
   }
 
   @Test
-  void aCaughtMultiRowUpdateCannotBeCommittedHalfApplied() {
+  void aCaughtMultiRowUpdateIsTakenBackAndTheTransactionCommits() {
     database.transaction(() -> {
       database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
       database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
       database.command("sql", "INSERT INTO T SET id = 3, k = 5").close();
     });
 
-    assertThatThrownBy(() -> runCaughtAndCommit("UPDATE T SET k = 5 WHERE id < 3")).isInstanceOf(TransactionException.class);
+    assertThat(runCaughtAndCommit("UPDATE T SET k = 5 WHERE id < 3")).isInstanceOf(DuplicatedKeyException.class);
 
     try (final ResultSet rs = database.query("sql", "SELECT k FROM T ORDER BY id")) {
       assertThat(rs.next().<Number>getProperty("k").intValue()).isEqualTo(1);
@@ -156,17 +157,29 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
   }
 
   @Test
-  void aTransactionThatSawAnEarlierFailedStatementStaysBlockedUntilRollback() {
-    assertThatThrownBy(() -> database.transaction(() -> {
+  void aStatementThatChangedWhatAnEarlierOneUpdatedIsTakenBackAndTheEarlierUpdateStands() {
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, k = 1").close();
+      database.command("sql", "INSERT INTO T SET id = 2, k = 2").close();
+    });
+
+    database.transaction(() -> {
+      // UPDATED, NOT WRITTEN YET: THE NEXT STATEMENT FINDS THE ONLY COPY OF WHAT THIS ONE DID, AND CHANGES IT
+      database.command("sql", "UPDATE T SET k = 10 WHERE id = 1").close();
       try {
-        database.command("sql", "INSERT INTO T (id, k) VALUES (30, 23), (31, 23)").close();
+        database.command("sql", "UPDATE T SET k = 7 WHERE id <= 2").close();
       } catch (final DuplicatedKeyException e) {
         // carried on, as the caller of the reproducer does
       }
       database.command("sql", "INSERT INTO T SET id = 5, k = 5").close();
-    }, false, 0)).isInstanceOf(TransactionException.class);
+    }, false, 0);
 
-    assertThat(rows()).isZero();
+    assertThat(rows()).isEqualTo(3);
+    try (final ResultSet rs = database.query("sql", "SELECT k FROM T ORDER BY id")) {
+      assertThat(rs.next().<Number>getProperty("k").intValue()).isEqualTo(10);
+      assertThat(rs.next().<Number>getProperty("k").intValue()).isEqualTo(2);
+      assertThat(rs.next().<Number>getProperty("k").intValue()).isEqualTo(5);
+    }
   }
 
   @Test
@@ -180,32 +193,32 @@ class Issue10194FailedStatementKeepsNoPartialRowsTest extends TestHelper {
     // INSERT ... FROM SELECT runs to the end inside command(): the error is raised there, where the guard sees it, and the
     // result set that comes back holds what the statement already did
     final AtomicReference<Throwable> caught = new AtomicReference<>();
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         database.command("sql", "INSERT INTO T FROM SELECT id, k FROM Src ORDER BY id").close();
       } catch (final DuplicatedKeyException e) {
         caught.set(e);
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(caught.get()).isInstanceOf(DuplicatedKeyException.class);
     assertThat(rows()).isZero();
   }
 
   @Test
-  void aWriteRunThroughAnalyzeIsGuardedLikeCommand() {
+  void aWriteRunThroughAnalyzeIsTakenBackLikeCommand() {
     // analyze().execute() is the entry the MCP command tool runs writes through, and it takes no CommandContext
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze("INSERT INTO T (id, k) VALUES (30, 23), (31, 23)");
     assertThat(analyzed.isIdempotent()).isFalse();
 
     final AtomicReference<Throwable> caught = new AtomicReference<>();
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         analyzed.execute(Map.of()).close();
       } catch (final DuplicatedKeyException e) {
         caught.set(e);
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(caught.get()).isInstanceOf(DuplicatedKeyException.class);
     assertThat(rows()).isZero();

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.TransactionException;
@@ -38,7 +39,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Issue #10482: two gaps in the guard that stops a caller from committing half of a failed statement (#10194, #10379).
+ * Issue #10482: two gaps in the guard that stops a caller from committing half of a failed statement (#10194, #10379). Since
+ * statement savepoints (#10346) a statement is taken back whole when the engine can, so the tests of the second gap check that the
+ * transaction commits with no trace of the statement, and the ones of the first gap, where the engine cannot (the instance an earlier
+ * statement queued is the only copy of what it did), still check that the commit is refused.
  * <ol>
  *   <li>a refused UPDATE of a record the same transaction already updated left the refused values on the instance the transaction
  *   had queued for the commit, and the guard saw no completed write, so the commit stored them;</li>
@@ -90,10 +94,14 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
         Arguments.of("opencypher", "MATCH (m:U {u: 1}) SET m.s = 'A'", "MATCH (m:U {u: 1}) SET m.s = 'B'", true));
   }
 
-  /** The refused value must never reach the disk, and the commit that would have published it is refused instead. */
+  /**
+   * The refused value must never reach the disk. The refusal comes after the statement set it on the object the transaction queued for
+   * its commit: the statement is taken back to the content that object held before it, so the earlier update stands and the refused
+   * value is gone (#10346; the commit was refused instead before).
+   */
   @ParameterizedTest(name = "{0}: {2}")
   @MethodSource("refusedSecondUpdates")
-  void aRefusedUpdateOfARecordAlreadyUpdatedByTheTransactionIsNotCommitted(final String language, final String first,
+  void aRefusedUpdateOfARecordAlreadyUpdatedByTheTransactionKeepsTheEarlierUpdateOnly(final String language, final String first,
       final String second, final boolean byListener) {
     database.begin();
     database.command(language, first).close();
@@ -104,10 +112,10 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
       refuse = false;
     }
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
-    assertThat(rowOf(1)).isEqualTo("w=0,s=s");
+    assertThat(rowOf(1)).isEqualTo("w=0,s=A");
+    assertDatabaseIsConsistent();
   }
 
   /** A listener that answers false skips the record: the update it skipped must not be committed either, whatever the language. */
@@ -184,28 +192,32 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     }
   }
 
-  /** The take-back gives back what the statement did to the records it took back, and nothing else. */
+  /**
+   * The statement is taken back to its savepoint (#10346), so what it left beside the records it took back itself goes too. Before
+   * savepoints the take-back gave back only what the statement did to those records, and the transaction was refused its commit.
+   */
   @Test
-  void anEdgeBetweenTwoExistingRecordsThatStandsStillRefusesTheCommit() {
+  void anEdgeBetweenTwoExistingRecordsIsTakenBackWithTheRestOfTheStatement() {
     database.begin();
     database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
-    // the edge between the two T stays when the V created next to it is taken back at the end of the statement
+    // the edge between the two T would stand when the V created next to it is taken back at the end of the statement
     assertRefusedWith(() -> database.command("opencypher",
         "MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:R {w: 1}]->(n) CREATE (:V {k: 8})").close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
     assertThat(count("R")).isZero();
-    assertThat(rowOf(1)).isEqualTo("w=0,s=s");
+    assertThat(count("V")).isZero();
+    assertThat(rowOf(1)).isEqualTo("w=0,s=A");
+    assertDatabaseIsConsistent();
   }
 
   /**
-   * A lightweight edge is an entry in the edge lists of its two vertices and no record: the one between two existing vertices stands
-   * when the provisional record is taken back, and the writes counted for the vertices are what refuses the commit.
+   * A lightweight edge is an entry in the edge lists of its two vertices and no record: the one between two existing vertices would
+   * stand when the provisional record is taken back. The edge lists are pages, and come back with the statement.
    */
   @Test
-  void aLightweightEdgeBetweenTwoExistingRecordsThatStandsStillRefusesTheCommit() {
+  void aLightweightEdgeBetweenTwoExistingRecordsIsTakenBackWithTheRestOfTheStatement() {
     database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
     // the two vertices have an edge list already, so the lightweight edge only appends to it: updates that assign no property
     database.command("opencypher", "MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:R {w: 0}]->(n)").close();
@@ -215,92 +227,116 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
     assertRefusedWith(() -> database.command("opencypher",
         "CREATE (v:V {k: 10}) WITH v MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:L]->(n)").close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
-    assertThat(rowOf(1)).isEqualTo("w=0,s=s");
+    assertThat(rowOf(1)).isEqualTo("w=0,s=A");
     try (final ResultSet rs = database.query("opencypher", "MATCH (:T)-[r:L]->(:T) RETURN count(r) AS c")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:T)-[r:R]->(:T) RETURN count(r) AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
+    }
+    assertDatabaseIsConsistent();
   }
 
   /**
-   * The journal follows a bounded number of records. A statement that writes more beside its provisional record than it holds gives it
-   * up and gives back nothing but what the provisional record itself counted, which keeps the commit refused rather than risk giving
-   * back a write that stands.
+   * A statement that writes more than the savepoint journals cannot be taken back exactly, so it is not taken back at all: the commit is
+   * refused, as it was before savepoints, rather than risk giving back part of what it wrote.
    */
   @Test
-  void aStatementThatWritesPastTheLimitOfTheJournalKeepsTheCommitRefused() {
-    database.begin();
-    database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
-    // 5,000 edges is more records than the journal follows; all of them are taken back with the vertex they leave from and arrive at
-    assertRefusedWith(() -> database.command("opencypher",
-        "CREATE (v:V {k: 11}) WITH v UNWIND range(1, 5000) AS i CREATE (v)-[:R {w: i}]->(v)").close(), ValidationException.class);
+  void aStatementThatWritesPastTheLimitOfTheSavepointKeepsTheCommitRefused() {
+    database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES, 100);
+    try {
+      database.begin();
+      database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
+      // 5,000 edges are more entries than the savepoint holds; all of them are taken back with the vertex they leave from and arrive at
+      assertRefusedWith(() -> database.command("opencypher",
+          "CREATE (v:V {k: 11}) WITH v UNWIND range(1, 5000) AS i CREATE (v)-[:R {w: i}]->(v)").close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+      database.rollback();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
+          GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES.getDefValue());
+    }
 
     assertThat(rowOf(1)).isEqualTo("w=0,s=s");
     assertThat(count("V")).isZero();
     assertThat(count("R")).isZero();
   }
 
-  /**
-   * The property is written while the provisional record is pending, so the journal sees the write: it is a property assigned, not the
-   * maintenance of an edge list, and it stays when the edge that was taken back is gone.
-   */
+  /** The same statement within the limit is taken back whole: 5,000 edges, their segments, their vertex. */
   @Test
-  void aPropertyWrittenWhileTheProvisionalRecordIsPendingStillRefusesTheCommit() {
+  void aStatementThatWritesThousandsOfRecordsIsTakenBackWhole() {
+    database.begin();
+    database.command("sql", "UPDATE U SET s = 'A' WHERE u = 1").close();
+    assertRefusedWith(() -> database.command("opencypher",
+        "CREATE (v:V {k: 11}) WITH v UNWIND range(1, 5000) AS i CREATE (v)-[:R {w: i}]->(v)").close(), ValidationException.class);
+
+    database.commit();
+
+    assertThat(rowOf(1)).isEqualTo("w=0,s=A");
+    assertThat(count("V")).isZero();
+    assertThat(count("R")).isZero();
+    assertDatabaseIsConsistent();
+  }
+
+  /** The property is written while the provisional record is pending: it goes with the statement. */
+  @Test
+  void aPropertyWrittenWhileTheProvisionalRecordIsPendingIsTakenBack() {
     database.begin();
     assertRefusedWith(() -> database.command("opencypher",
         "CREATE (v:V {k: 15}) WITH v MATCH (m:T {k: 1}) SET m.note = 'x' CREATE (m)-[:R {w: 1}]->(v)").close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
     try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE note = 'x'")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
     assertThat(count("V")).isZero();
     assertThat(count("R")).isZero();
+    assertDatabaseIsConsistent();
   }
 
   /**
    * The edge between two existing vertices that have no edge list yet makes the statement create their edge segments, while the
-   * provisional record is pending: they hold the edge that stands, so they are not empty and nothing of them is given back.
+   * provisional record is pending: the segments, the edge and the vertex records pointing at them all go with the statement.
    */
   @Test
-  void aStandingEdgeSegmentCreatedBesideTheProvisionalRecordIsNeverGivenBack() {
+  void anEdgeSegmentCreatedBesideTheProvisionalRecordIsTakenBack() {
     database.begin();
     assertRefusedWith(() -> database.command("opencypher",
         "CREATE (v:V {k: 17}) WITH v MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:R {w: 1}]->(n)").close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
     assertThat(count("V")).isZero();
     assertThat(count("R")).isZero();
+    // THE VERTICES CAN TAKE AN EDGE AGAIN: THE POINTERS TO A SEGMENT THAT NO LONGER EXISTS ARE GONE
+    database.transaction(() -> database.command("opencypher", "MATCH (m:T {k: 1}), (n:T {k: 2}) CREATE (m)-[:R {w: 2}]->(n)").close());
+    assertThat(count("R")).isEqualTo(1L);
+    assertDatabaseIsConsistent();
   }
 
-  /** A record the statement deletes is a write that stands, whatever happens to the provisional record created beside it. */
+  /** A record the statement deletes is given back with the rest of the statement. */
   @Test
-  void aDeleteOfAnExistingRecordBesideTheTakenBackRecordStillRefusesTheCommit() {
+  void aDeleteOfAnExistingRecordBesideTheTakenBackRecordIsTakenBack() {
     database.begin();
     assertRefusedWith(() -> database.command("opencypher", "CREATE (v:V {k: 16}) WITH v MATCH (m:T {k: 2}) DELETE m").close(),
         ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
     try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE k = 2")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
     }
     assertThat(count("V")).isZero();
+    assertDatabaseIsConsistent();
   }
 
-  /** The conservative paths together: a lightweight edge and a property on existing vertices stand beside a regular edge that is taken back. */
+  /** Every conservative path of the old take-back together: a lightweight edge and a property stand beside a regular edge. */
   @Test
-  void aMixedStatementWhoseWritesPartlyStandStillRefusesTheCommit() {
+  void aMixedStatementWhoseWritesPartlyWouldStandIsTakenBackWhole() {
     database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
 
     database.begin();
@@ -308,19 +344,22 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
         "CREATE (v:V {k: 12}) WITH v MATCH (m:T {k: 1}), (n:T {k: 2}) SET m.note = 'x' CREATE (m)-[:L]->(n) CREATE (m)-[:R {w: 1}]->(v)")
         .close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
     assertThat(count("V")).isZero();
     assertThat(count("R")).isZero();
     try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE note = 'x'")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:T)-[r:L]->(:T) RETURN count(r) AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
+    assertDatabaseIsConsistent();
   }
 
-  /** What a statement that crossed the limit of the journal left in the scope is gone with it: the next statement journals again. */
+  /** A statement after one that was taken back journals as if nothing had happened. */
   @Test
-  void aStatementAfterOneThatCrossedTheLimitOfTheJournalIsJournaledAgain() {
+  void aStatementAfterOneThatWasTakenBackIsJournaledAgain() {
     database.begin();
     assertRefusedWith(() -> database.command("opencypher",
         "CREATE (v:V {k: 13}) WITH v UNWIND range(1, 5000) AS i CREATE (v)-[:R {w: i}]->(v)").close(), ValidationException.class);
@@ -337,16 +376,22 @@ class Issue10482StatementGuardGapsTest extends TestHelper {
   }
 
   @Test
-  void aPropertyWrittenOnAnExistingRecordBesideTheTakenBackEdgeStillRefusesTheCommit() {
+  void aPropertyWrittenOnAnExistingRecordBesideTheTakenBackEdgeIsTakenBack() {
     database.begin();
     assertRefusedWith(() -> database.command("opencypher",
         "MATCH (m:T {k: 1}) SET m.note = 'x' CREATE (m)-[:R {w: 1}]->(:V {k: 9})").close(), ValidationException.class);
 
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
 
     try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T WHERE note = 'x'")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
+    }
+    assertDatabaseIsConsistent();
+  }
+
+  private void assertDatabaseIsConsistent() {
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+      assertThat(rs.next().<Number>getProperty("totalErrors").longValue()).isZero();
     }
   }
 

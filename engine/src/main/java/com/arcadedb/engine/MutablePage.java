@@ -116,6 +116,30 @@ public class MutablePage extends BasePage implements TrackableContent {
   // before the page is published, and the publication hands it to the flush thread through the flush queue, which is
   // the happens-before edge the flush thread's read relies on
   private              long    walSyncTicket              = 0;
+  // #10346: set while a statement of the caller's transaction journals what it writes to this page, to take it back if the statement
+  // fails. Every write passes through updateModifiedRange(), which is where the bytes are logged, before they change
+  private              PageUndoLog undoLog;
+  // #10346: the statement that created this page in its transaction or started to journal it, -1 when none did. Lets the transaction
+  // tell a page that came with the statement (dropped to take it back) from one it must journal (restored)
+  private              long    undoEpoch                  = -1L;
+
+  /**
+   * The bookkeeping of a page that is not part of its bytes, saved by a {@link PageUndoLog} and given back with them.
+   */
+  static final class State {
+    private final int[]   modifiedRanges = new int[(MAX_MODIFIED_RANGES + 1) * 2];
+    private       int     modifiedRangeCount;
+    private       int     contentSize;
+    private       int     declaredCoverage;
+    private       int     uncoveredMechanisms;
+    private       int     freeSpaceClaim;
+    private       boolean freeSpaceClaimIsExact;
+    private       boolean packedWriteInProgress;
+    private       boolean unpackedWrite;
+    private       int     packedScanEnd;
+    private       int     packedScanRecords;
+    private       int     packedScanLastPosition;
+  }
 
   static {
     ZERO_BYTES_ARRAY = new byte[GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger()];
@@ -150,6 +174,60 @@ public class MutablePage extends BasePage implements TrackableContent {
   @Override
   public MutablePage modify() {
     return this;
+  }
+
+  /** Saves the bookkeeping this page keeps about its own modifications into {@code target}, for {@link PageUndoLog}. */
+  void captureState(final State target) {
+    System.arraycopy(modifiedRanges, 0, target.modifiedRanges, 0, modifiedRanges.length);
+    target.modifiedRangeCount = modifiedRangeCount;
+    target.contentSize = content.size();
+    target.declaredCoverage = declaredCoverage;
+    target.uncoveredMechanisms = uncoveredMechanisms;
+    target.freeSpaceClaim = freeSpaceClaim;
+    target.freeSpaceClaimIsExact = freeSpaceClaimIsExact;
+    target.packedWriteInProgress = packedWriteInProgress;
+    target.unpackedWrite = unpackedWrite;
+    target.packedScanEnd = packedScanEnd;
+    target.packedScanRecords = packedScanRecords;
+    target.packedScanLastPosition = packedScanLastPosition;
+  }
+
+  /** Gives the page back the bookkeeping {@link #captureState} saved. The bytes are the log's to restore. */
+  void restoreState(final State source) {
+    System.arraycopy(source.modifiedRanges, 0, modifiedRanges, 0, modifiedRanges.length);
+    modifiedRangeCount = source.modifiedRangeCount;
+    content.size(source.contentSize);
+    declaredCoverage = source.declaredCoverage;
+    uncoveredMechanisms = source.uncoveredMechanisms;
+    freeSpaceClaim = source.freeSpaceClaim;
+    freeSpaceClaimIsExact = source.freeSpaceClaimIsExact;
+    packedWriteInProgress = source.packedWriteInProgress;
+    unpackedWrite = source.unpackedWrite;
+    packedScanEnd = source.packedScanEnd;
+    packedScanRecords = source.packedScanRecords;
+    packedScanLastPosition = source.packedScanLastPosition;
+  }
+
+  void setUndoLog(final PageUndoLog undoLog) {
+    this.undoLog = undoLog;
+  }
+
+  /**
+   * The log this page journals its writes into, or null when no statement does (#10346). Internal: the statement savepoint of the
+   * transaction context is the only caller.
+   */
+  public PageUndoLog getUndoLog() {
+    return undoLog;
+  }
+
+  /** The statement that created this page or started to journal it, -1 when none did (#10346). Internal, like {@link #getUndoLog()}. */
+  public long getUndoEpoch() {
+    return undoEpoch;
+  }
+
+  /** Internal, like {@link #getUndoLog()}. */
+  public void setUndoEpoch(final long undoEpoch) {
+    this.undoEpoch = undoEpoch;
   }
 
   /**
@@ -494,6 +572,10 @@ public class MutablePage extends BasePage implements TrackableContent {
     if (start < 0 || end >= getPhysicalSize())
       throw new IllegalArgumentException(
           "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
+
+    // #10346: every write passes here BEFORE it changes the bytes, so a statement that has to be taken back finds them as they were
+    if (undoLog != null)
+      undoLog.beforeWrite(start, end);
 
     if (start < packedScanEnd)
       packedScanEnd = -1;
