@@ -252,6 +252,16 @@ public class TransactionContext implements Transaction {
    */
   private       Boolean                              useWALOverride;
   /**
+   * When true, the space this transaction allocates in a bucket (a new record, or the chunk a growing record spills) is
+   * taken from the last page of the bucket or a new page, as {@code arcadedb.bucketReuseSpaceMode=low} does, instead of
+   * from the free-space search, for THIS transaction only (issue #10547). That search runs under a bucket-wide monitor
+   * and probes the pages its statistics list, which costs little to one writer and serializes several concurrent
+   * writers of the same bucket: a {@code GraphBatch} that connected one bucket's edges on 8 async threads ran no faster
+   * than on one. The pages such a transaction writes still update the statistics, so the room it leaves can be
+   * reused by a later transaction that searches. Cleared by {@link #reset()}, so it cannot outlive its transaction.
+   */
+  private       boolean                              appendOnlyInserts;
+  /**
    * Milliseconds this transaction's commit waits for its file locks, overriding
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} when set; {@code null} to use the configured value.
    * <p>
@@ -797,6 +807,19 @@ public class TransactionContext implements Transaction {
    */
   public Boolean getUseWALForThisTransaction() {
     return useWALOverride;
+  }
+
+  /**
+   * Makes the space this transaction allocates in a bucket skip the free-space search and append, for THIS transaction
+   * only. See the {@code appendOnlyInserts} field.
+   */
+  public void setAppendOnlyInserts(final boolean appendOnlyInserts) {
+    this.appendOnlyInserts = appendOnlyInserts;
+  }
+
+  /** @return whether the space this transaction allocates in a bucket is appended, see {@link #setAppendOnlyInserts(boolean)} */
+  public boolean isAppendOnlyInserts() {
+    return appendOnlyInserts;
   }
 
   /**
@@ -2330,6 +2353,7 @@ public class TransactionContext implements Transaction {
     snapshotRecordContents = null;
     commitLockTimeout = null;
     useWALOverride = null;
+    appendOnlyInserts = false;
   }
 
   /**
@@ -3371,6 +3395,7 @@ public class TransactionContext implements Transaction {
     clientManaged = false;
     commitLockTimeout = null;
     useWALOverride = null;
+    appendOnlyInserts = false;
     txId = -1;
   }
 
