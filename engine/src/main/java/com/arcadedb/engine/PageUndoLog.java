@@ -45,6 +45,7 @@ public final class PageUndoLog {
   static final int GRANULE_SHIFT = 8;
   static final int GRANULE_SIZE  = 1 << GRANULE_SHIFT;
   private static final int MAX_RETAINED_BYTES = 1 << 20;
+  private static final int MAX_RETAINED_WORDS = 1 << 10;
 
   /** What the logs of one statement share, so a statement that rewrites the whole transaction cannot copy all of it. */
   public interface GrainBudget {
@@ -93,6 +94,8 @@ public final class PageUndoLog {
       data = new byte[4 * GRANULE_SIZE];
       granules = new int[16];
     }
+    if (logged.length > MAX_RETAINED_WORDS)
+      logged = new long[8];
   }
 
   public MutablePage getPage() {

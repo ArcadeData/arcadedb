@@ -371,6 +371,8 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
    * statement did already.
    */
   void touchPage(final MutablePage page) {
+    // One log per page the statement re-touches, taken from the pool below and handed back when the statement ends: a transaction that
+    // keeps running statements allocates them once, up to the most pages one statement re-touched (and no more than MAX_RETAINED_LOGS)
     if (page.getUndoEpoch() == epoch)
       return;
     page.setUndoEpoch(epoch);

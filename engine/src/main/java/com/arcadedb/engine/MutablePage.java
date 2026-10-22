@@ -203,16 +203,20 @@ public class MutablePage extends BasePage implements TrackableContent {
     this.undoLog = undoLog;
   }
 
-  /** The log this page journals its writes into, or null when no statement does (#10346). */
+  /**
+   * The log this page journals its writes into, or null when no statement does (#10346). Internal: the statement savepoint of the
+   * transaction context is the only caller.
+   */
   public PageUndoLog getUndoLog() {
     return undoLog;
   }
 
-  /** The statement that created this page or started to journal it, -1 when none did (#10346). */
+  /** The statement that created this page or started to journal it, -1 when none did (#10346). Internal, like {@link #getUndoLog()}. */
   public long getUndoEpoch() {
     return undoEpoch;
   }
 
+  /** Internal, like {@link #getUndoLog()}. */
   public void setUndoEpoch(final long undoEpoch) {
     this.undoEpoch = undoEpoch;
   }
