@@ -19,12 +19,15 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.Profiler;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -33,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -70,6 +74,19 @@ class WALGroupCommitTest extends TestHelper {
     assertThat(stat("groupCommits") - commitsBefore).isEqualTo(50);
     assertThat(stat("groupCommitSyncs") - syncsBefore).isBetween(1L, 50L);
     assertThat(database.countType(TYPE, false)).isEqualTo(50);
+  }
+
+  /** Group commit is the default: a database that only asks for a WAL flush gets it. */
+  @Test
+  void aWALFlushIsGroupCommittedByDefault() throws Exception {
+    assertThat(GlobalConfiguration.TX_WAL_GROUP_COMMIT.getDefValue()).isEqualTo(true);
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_GROUP_COMMIT, GlobalConfiguration.TX_WAL_GROUP_COMMIT.getDefValue());
+    final long commitsBefore = stat("groupCommits");
+
+    runInThreads(2, 10);
+
+    assertThat(stat("groupCommits") - commitsBefore).isEqualTo(20);
+    assertThat(database.countType(TYPE, false)).isEqualTo(20);
   }
 
   /** The full flush (txWalFlush 2) goes through the same shared flush, with the file's metadata. */
@@ -288,6 +305,130 @@ class WALGroupCommitTest extends TestHelper {
     }
 
     assertThat(syncsAtPageWrite).isNotEmpty().allMatch(completedFlushes -> completedFlushes >= 1);
+  }
+
+  /**
+   * Issue #10509: the WAL write of a group commit happens after the commit released its file locks, so the next commit on the
+   * same type does not queue behind a write that the shared flush can slow down. Every WAL write of this commit must find no
+   * file locked. Writing under the locks, as before, makes it fail.
+   */
+  @Test
+  void aGroupCommitWritesItsWALOutsideTheFileLocks() throws Exception {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    final List<Integer> locksHeldAtWALWrite = Collections.synchronizedList(new ArrayList<>());
+    final Callable<Void> probe = () -> {
+      locksHeldAtWALWrite.add(transactionManager.getLockStats().size());
+      return null;
+    };
+    ((DatabaseInternal) database).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, probe);
+    try {
+      runInThreads(1, 5);
+    } finally {
+      ((DatabaseInternal) database).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, probe);
+    }
+
+    assertThat(locksHeldAtWALWrite).hasSize(5).allMatch(held -> held == 0);
+  }
+
+  /**
+   * A WAL write that fails is retried by the next flush pass, never skipped: no commit may report success while a transaction
+   * it may have read was lost. Every commit that succeeded must be found after the reopen.
+   */
+  @Test
+  void aFailedWALWriteNeverLetsALaterCommitSucceedWithoutIt() throws Exception {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    final AtomicInteger writes = new AtomicInteger();
+    transactionManager.walSyncFaultInjector = new TransactionManager.WALSyncFaultInjector() {
+      @Override
+      public void beforeSync(final WALFile file) {
+      }
+
+      @Override
+      public void beforeWrite(final long txId) throws IOException {
+        // the third WAL write fails once
+        if (writes.incrementAndGet() == 3)
+          throw new IOException("injected WAL write failure");
+      }
+    };
+    final List<String> committed = Collections.synchronizedList(new ArrayList<>());
+    final AtomicInteger failed = new AtomicInteger();
+    final List<Thread> workers = new ArrayList<>();
+    try {
+      for (int t = 0; t < 4; t++) {
+        final int thread = t;
+        final Thread worker = new Thread(() -> {
+          for (int i = 0; i < 5; i++) {
+            final String id = "write-" + thread + "-" + i;
+            try {
+              database.transaction(() -> database.newDocument(TYPE).set("id", id).save());
+              committed.add(id);
+            } catch (final Throwable e) {
+              failed.incrementAndGet();
+            }
+          }
+        });
+        workers.add(worker);
+        worker.start();
+      }
+      for (final Thread worker : workers) {
+        worker.join(30_000);
+        assertThat(worker.isAlive()).as("a commit stayed parked on a failed WAL write").isFalse();
+      }
+    } finally {
+      transactionManager.walSyncFaultInjector = null;
+    }
+
+    assertThat(failed.get()).isPositive();
+    assertThat(((DatabaseInternal) database).isFencedForRecovery()).isTrue();
+
+    database.close();
+    database = factory.open();
+    database.transaction(() -> {
+      for (final String id : committed)
+        assertThat(database.lookupByKey(TYPE, "id", id).hasNext()).as("committed " + id).isTrue();
+    });
+  }
+
+  /**
+   * A group commit's WAL record is written after its pages were published, so the flush pipeline can release a page (its file
+   * was dropped) before the record reaches the WAL. The write must not count that page as waiting for its flush: nothing
+   * would ever acknowledge it, and every later clean close would keep the WAL for recovery.
+   */
+  @Test
+  void aPageReleasedBeforeItsWALRecordIsWrittenIsNotCounted() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final WALFile walFile = new WALFile(new File(getDatabasePath(), "released-page.wal").getAbsolutePath());
+    try {
+      final int pageSize = 65_536;
+      // a file id no file has: the flush pipeline releases the page as the page of a dropped file
+      final MutablePage page = new MutablePage(new PageId(db, 999_999, 0), pageSize, new byte[pageSize], 0, 0);
+      page.writeByteArray(0, new byte[] { 1, 2, 3 });
+      final Binary buffer = WALFile.writeTransactionToBuffer(List.of(page), 1);
+
+      PageManager.INSTANCE.flushPage(page);
+      walFile.writeTransactionToFile(db, List.of(page), WALFile.FlushType.NO, walFile, 1, buffer);
+
+      assertThat(walFile.getPendingPagesToFlush()).isZero();
+    } finally {
+      walFile.drop();
+    }
+  }
+
+  /**
+   * Issue #10509: the group commit and the commit file locks are visible from the profiler (server metrics, Studio), not only
+   * from {@code TransactionManager.getStats()}. Lower bounds: the profiler sums every database of the JVM.
+   */
+  @Test
+  void theGroupCommitAndTheCommitLocksReachTheProfiler() throws Exception {
+    runInThreads(4, 10);
+
+    final JSONObject json = Profiler.INSTANCE.toJSON();
+    assertThat(json.getJSONObject("walGroupCommits").getLong("count")).isGreaterThanOrEqualTo(40);
+    assertThat(json.getJSONObject("walGroupCommitSyncs").getLong("count")).isPositive();
+    assertThat(json.getJSONObject("commitLockHolds").getLong("count")).isGreaterThanOrEqualTo(40);
+    assertThat(json.getJSONObject("commitLockHoldTime").getLong("count")).isPositive();
+    assertThat(json.getJSONObject("commitLockHandOffs").getLong("count")).isNotNegative();
+    assertThat(json.getJSONObject("commitLockHandOffTime").getLong("count")).isNotNegative();
   }
 
   /** A thread with the synchronous page flush never defers: its pages would reach their data files inside the commit. */

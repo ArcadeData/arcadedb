@@ -781,10 +781,11 @@ public class WALFile extends LockContext {
 
     // WRITE ALL PAGES SEGMENTS
     for (final MutablePage newPage : pages) {
-      // SET THE WAL FILE TO NOTIFY LATER WHEN THE PAGE HAS BEEN FLUSHED
-      newPage.setWALFile(file);
-
-      pagesToFlush.incrementAndGet();
+      // SET THE WAL FILE TO NOTIFY LATER WHEN THE PAGE HAS BEEN FLUSHED. NOT WHEN THE PAGE ALREADY HAS ONE (A GROUP COMMIT'S
+      // RECORD WRITTEN AGAIN AFTER A FAILURE) OR WAS ALREADY RELEASED (A GROUP COMMIT WRITES ITS RECORD AFTER PUBLISHING THE
+      // PAGE, #10509): NOTHING WOULD ACKNOWLEDGE IT
+      if (newPage.attachWALFile(file))
+        pagesToFlush.incrementAndGet();
       statsPagesWritten++;
     }
 
@@ -878,20 +879,40 @@ public class WALFile extends LockContext {
     // channel's own size is the right place to start.
     long startPos = -1;
     try {
-      startPos = channel.size();
-      appendAt(buffer, startPos);
-    } catch (final ClosedChannelException e) {
-      // #7768: a thread interrupt closed the channel mid-append. Reopen it and write the record again from
-      // the offset the first attempt started at - NOT from the reopened channel's size(), which already
-      // counts however many bytes the interrupted write managed to put down. Restarting past them would
-      // leave that torn prefix in the log ahead of the complete record, which is exactly the corruption the
-      // #4508 gap detector reports. Rewriting over them is safe: these are positional writes into a region
-      // no committed record has ever claimed.
-      final long retryFrom = startPos;
-      retryAfterReopen(e, "append", () -> {
-        appendAt(buffer, retryFrom >= 0 ? retryFrom : channel.size());
-        return null;
-      });
+      try {
+        startPos = channel.size();
+        appendAt(buffer, startPos);
+      } catch (final ClosedChannelException e) {
+        // #7768: a thread interrupt closed the channel mid-append. Reopen it and write the record again from
+        // the offset the first attempt started at - NOT from the reopened channel's size(), which already
+        // counts however many bytes the interrupted write managed to put down. Restarting past them would
+        // leave that torn prefix in the log ahead of the complete record, which is exactly the corruption the
+        // #4508 gap detector reports. Rewriting over them is safe: these are positional writes into a region
+        // no committed record has ever claimed.
+        final long retryFrom = startPos;
+        retryAfterReopen(e, "append", () -> {
+          appendAt(buffer, retryFrom >= 0 ? retryFrom : channel.size());
+          return null;
+        });
+      }
+    } catch (final IOException e) {
+      // #10509 review: any other failure (a full disk) can come after part of the record was written. Cut it off, or the
+      // next append - a group commit writes the same record again on the next flush pass - lands behind a torn prefix
+      discardTornAppend(startPos, e);
+      throw e;
+    }
+  }
+
+  private void discardTornAppend(final long startPos, final IOException cause) {
+    if (startPos < 0)
+      // channel.size() failed before the first write, so this attempt wrote nothing. A retry after a reopen that started from
+      // the reopened size and failed too is not cut: where it started is not known, so cutting could remove committed records
+      return;
+    try {
+      if (channel.size() > startPos)
+        channel.truncate(startPos);
+    } catch (final IOException e) {
+      cause.addSuppressed(e);
     }
   }
 
