@@ -22,10 +22,16 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10346: the log a statement keeps of what it overwrote on a page its transaction had already modified. The page has to come
@@ -169,5 +175,89 @@ class PageUndoLogTest extends TestHelper {
     log.restore();
     log.end();
     assertThat(bytesOf(second)).isEqualTo(secondBytes);
+  }
+
+  @Test
+  void aLogThatRanOutOfBudgetRefusesToRestoreInsteadOfRestoringHalfAPage() {
+    final MutablePage page = newPage(new Random(5));
+    final PageUndoLog log = new PageUndoLog();
+
+    log.begin(page, () -> false);
+    page.writeLong(40, 1L);
+    assertThat(log.isOverflowed()).isTrue();
+
+    assertThatThrownBy(log::restore).isInstanceOf(IllegalStateException.class).hasMessageContaining("cannot restore");
+    log.end();
+  }
+
+  /**
+   * The log is only right if a write declares its range before it changes the bytes. A write method added to the page that goes around
+   * the declaration is found here: every public {@code write*} method and {@code move} of {@link MutablePage} is called by reflection
+   * over bytes that all differ from what the call writes, and the page has to come back from each of them.
+   */
+  @Test
+  void everyWriteMethodOfAPageIsLogged() throws ReflectiveOperationException {
+    final List<Method> writers = new ArrayList<>();
+    for (final Method method : MutablePage.class.getMethods())
+      if (!Modifier.isStatic(method.getModifiers()) && method.getDeclaringClass() == MutablePage.class && (method.getName().startsWith(
+          "write") || method.getName().equals("move")))
+        writers.add(method);
+    assertThat(writers).as("the write methods of MutablePage").hasSizeGreaterThan(10);
+
+    final PageUndoLog log = new PageUndoLog();
+    for (final Method method : writers) {
+      final MutablePage page = new MutablePage(new PageId(database, 1, 0), PAGE_SIZE);
+      page.setContentSize(1000);
+      // EVERY BYTE DIFFERS FROM WHAT A CALL BELOW WRITES (SMALL VALUES) AND FROM THE BYTES AROUND IT
+      for (int i = 0; i < 400; i++)
+        page.writeByte(i, (byte) (100 + i % 100));
+      final byte[] bytes = bytesOf(page);
+      final int[] ranges = rangesOf(page);
+      final int contentSize = page.getContentSize();
+
+      log.begin(page, null);
+      try {
+        method.invoke(page, argumentsOf(method));
+      } catch (final InvocationTargetException e) {
+        throw new AssertionError("Cannot call " + method + " to check that it is logged: " + e.getCause(), e.getCause());
+      }
+      assertThat(bytesOf(page)).as("%s changed the page", method).isNotEqualTo(bytes);
+      log.restore();
+      log.end();
+
+      assertThat(bytesOf(page)).as("bytes after %s", method).isEqualTo(bytes);
+      assertThat(page.getContentSize()).as("content size after %s", method).isEqualTo(contentSize);
+      assertThat(rangesOf(page)).as("modified ranges after %s", method).isEqualTo(ranges);
+    }
+  }
+
+  /** The first int is the position (past the bytes that are all different), the others lengths and offsets that fit the arrays. */
+  private static Object[] argumentsOf(final Method method) {
+    final Class<?>[] types = method.getParameterTypes();
+    final Object[] arguments = new Object[types.length];
+    boolean positionGiven = false;
+    for (int i = 0; i < types.length; i++) {
+      final Class<?> type = types[i];
+      if (type == int.class) {
+        arguments[i] = positionGiven ? 4 : 200;
+        positionGiven = true;
+      } else if (type == long.class)
+        arguments[i] = 7L;
+      else if (type == short.class)
+        arguments[i] = (short) 7;
+      else if (type == byte.class)
+        arguments[i] = (byte) 7;
+      else if (type == float.class)
+        arguments[i] = 7F;
+      else if (type == double.class)
+        arguments[i] = 7D;
+      else if (type == byte[].class)
+        arguments[i] = new byte[] { 7, 7, 7, 7, 7, 7, 7, 7 };
+      else if (type == String.class)
+        arguments[i] = "seven";
+      else
+        throw new AssertionError("Teach this test to give an argument of type " + type + " to " + method);
+    }
+    return arguments;
   }
 }

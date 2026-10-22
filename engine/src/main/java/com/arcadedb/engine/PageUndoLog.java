@@ -146,6 +146,8 @@ public final class PageUndoLog {
    * is the statement's no more.
    */
   public void restore() {
+    if (overflowed)
+      throw new IllegalStateException("The log of page " + page.getPageId() + " ran out of its budget, so it cannot restore the page");
     final byte[] array = page.content.getContent();
     final int base = page.content.getContentBeginOffset();
     int offset = 0;
