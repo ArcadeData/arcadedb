@@ -4338,6 +4338,14 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * {@link #isDeletedInTransaction(RID)} for a record given by its bucket and position, which spares the RID a caller probing
+   * every hole of a page would allocate for each (issue #10612).
+   */
+  public boolean isDeletedInTransaction(final int bucketId, final long position) {
+    return deletedRecordsInTx.contains(bucketId, position);
+  }
+
+  /**
    * One lightweight edge entry of the edge list of {@code vertex} in direction OUT ({@code out}) or IN: the entries of
    * one lightweight edge and of all its twins share it (#10302).
    */

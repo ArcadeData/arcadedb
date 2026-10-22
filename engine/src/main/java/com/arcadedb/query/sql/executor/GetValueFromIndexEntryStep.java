@@ -253,7 +253,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    */
   @Override
   public ParallelTypeScan planParallelAggregation(final CommandContext context) {
-    if (strategy != null || scanFallback == null || !ParallelTypeScan.isAllowed(context.getDatabase()))
+    if (strategy != null || scanFallback == null || !ParallelTypeScan.isAllowed(context))
       return null;
 
     chooseStrategy(context, checkForPrevious());
@@ -295,7 +295,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final int entriesPerUnit = ParallelTypeScan.entriesPerUnit(database, fetcher.getBufferedRids());
     // Counted before the units are built: building them hands the entries that are not record addresses over, which
     // a sequential load then would not serve
-    if (first && (!ParallelTypeScan.isAllowed(database)
+    if (first && (!ParallelTypeScan.isAllowed(context)
         || fetcher.slices(entriesPerUnit, null) + (fetcher.hasPassThrough() ? 1 : 0) < 2))
       return null;
 

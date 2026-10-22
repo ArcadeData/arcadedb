@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #6391: three {@code vector.*} sparse/ANN functions threw raw
@@ -95,18 +97,18 @@ class Issue6391VectorSparseAnnGuardsTest extends TestHelper {
     }
   }
 
-  // 3. vector.neighbors(k <= 0) must return empty, matching rerank/recommend/discover/sparseNeighbors,
-  //    instead of reaching a negative-capacity ArrayList allocation deep in LSMVectorIndex.
+  // 3. vector.neighbors(k <= 0) must not reach a negative-capacity ArrayList allocation deep in LSMVectorIndex. k = 0 is an
+  //    empty request; a negative k is refused with a typed error (issue #10611) rather than answered with no rows, which
+  //    would read as "no neighbours".
   @Test
-  void neighborsWithNonPositiveKReturnsEmptyInsteadOfThrowing() {
+  void neighborsWithNegativeKIsRefusedAndZeroReturnsEmpty() {
     final SQLFunctionVectorNeighbors function = new SQLFunctionVectorNeighbors();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
-    @SuppressWarnings("unchecked")
-    final List<Map<String, Object>> negative = (List<Map<String, Object>>) function.execute(null, null, null,
-        new Object[] { "Doc[embedding]", new float[] { 1.0f, 0.0f, 0.0f }, -1 }, context);
-    assertThat(negative).isNotNull().isEmpty();
+    assertThatThrownBy(() -> function.execute(null, null, null,
+        new Object[] { "Doc[embedding]", new float[] { 1.0f, 0.0f, 0.0f }, -1 }, context))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("k must not be negative");
 
     @SuppressWarnings("unchecked")
     final List<Map<String, Object>> zero = (List<Map<String, Object>>) function.execute(null, null, null,
