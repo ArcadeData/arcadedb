@@ -109,7 +109,11 @@ were written (...), and could not be taken back: ...") naming the reason. That i
 - a statement that changed more than `arcadedb.txStatementSavepointMaxEntries` entries of the transaction (100,000 by default; `0`
   disables statement savepoints altogether), so a bulk load pays no memory for a journal it could not use;
 - a statement that changed records a Graph Analytical View follows, or that dropped a file;
-- a record with an `EXTERNAL` property that an earlier statement updated and a later one changed again;
+- a record with an `EXTERNAL` property that an earlier statement updated and a later one changed again, or any record an earlier
+  statement updated that cannot be kept or that the statement changed without reading it through the transaction;
+- state that the statement attached to the transaction (other than the full-text counters, which are taken back), a page of the
+  transaction that it replaced or created again, a record that an earlier statement created and that this one retracted, an index lane
+  that it dropped or replaced, or the transaction ending under it;
 - a statement run by another one (a function, a trigger) that failed after writing, whose failure the outer statement swallowed: the
   outer one succeeded, so there is nothing to take back to;
 - a Gremlin traversal, which runs while its result is read, after the call has returned.

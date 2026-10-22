@@ -117,6 +117,7 @@ public final class PageUndoLog {
       return;
     final byte[] array = page.content.getContent();
     final int base = page.content.getContentBeginOffset();
+    // Defensive: the page has checked the range against its physical size before it declares it
     final int last = Math.min(end, array.length - base - 1) >>> GRANULE_SHIFT;
     for (int granule = start >>> GRANULE_SHIFT; granule <= last; granule++) {
       final int word = granule >>> 6;
