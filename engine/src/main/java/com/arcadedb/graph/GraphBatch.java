@@ -3469,6 +3469,11 @@ public class GraphBatch implements AutoCloseable {
    * (see {@link #sharesBucketWithSiblingTask}); the in-page updates of segments that already existed are what
    * {@link GlobalConfiguration#TX_PAGE_SLOT_MERGE} reconciles at commit, and a conflict it cannot is retried by the async
    * transaction like any other.
+   * <p>
+   * What appending trades: each task of a shared bucket leaves at most its last page partly filled per flush, which a
+   * free-space search would have filled. The pages still update the statistics, so a later searching transaction can reuse
+   * that room. Measured on 4M edges into one bucket over 8 tasks and 8 flushes: 1,761 edge-list pages, against 1,746 with
+   * one task per bucket.
    *
    * @param index     the sort index the partition was built into
    * @param positions vertex position per buffer row, read through {@code index}
