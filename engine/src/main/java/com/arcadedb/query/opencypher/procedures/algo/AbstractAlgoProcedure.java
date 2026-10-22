@@ -899,6 +899,26 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * About how many adjacency entries a walk of {@code maxDepth} hops reads at {@code meanDegree} entries per node: the
+   * geometric sum of the hops, saturating. {@link Long#MAX_VALUE} for an unbounded walk or an unknown degree, which then
+   * reads the whole graph or does not know better. What a walk that reads the nodes it reaches (BFS, DFS) hands
+   * {@link GraphData#neighborViewForVisits} to decide between a packed neighbour view and a read per node (issues #10539,
+   * #10580).
+   */
+  protected static long expectedVisits(final double meanDegree, final int maxDepth) {
+    if (maxDepth == Integer.MAX_VALUE || !(meanDegree >= 0))
+      return Long.MAX_VALUE;
+    if (maxDepth <= 0)
+      return 0;
+    // At most one entry per hop below a mean of one, then the closed form of the geometric sum: no loop over the hops,
+    // which a caller sets
+    final double total = meanDegree <= 1.0 ?
+        maxDepth :
+        meanDegree * (Math.pow(meanDegree, maxDepth) - 1.0) / (meanDegree - 1.0);
+    return total >= Long.MAX_VALUE || Double.isNaN(total) ? Long.MAX_VALUE : (long) total;
+  }
+
+  /**
    * The edges of {@code vertex} in {@code direction} over {@code edgeTypes} (all when null or empty), completed with the
    * incoming edges of the unidirectional types among them (issue #8629): an algorithm asks about the graph, not about
    * what a vertex happens to store, and answers the same whichever way an edge type is stored.
