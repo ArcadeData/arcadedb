@@ -399,7 +399,9 @@ public class TransactionManager {
       final File f = lastTxIdFile();
       if (f != null && f.exists())
         f.delete();
-    } else {
+    } else if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+      // Not for a READ_ONLY handle: its lastTxId is the one of its open, so a read-write process that committed since would
+      // have its marker rewound (#10507)
       writePersistedLastTransactionId();
     }
 
@@ -440,7 +442,9 @@ public class TransactionManager {
           null, database.getName(), recoveryInputUnreplayed ?
               "a replay of this WAL did not complete" :
               preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
-    } else {
+    } else if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+      // Not for a READ_ONLY handle: it owns no WAL, so a .wal file it finds is a writer's, or a crashed writer's that a read-write
+      // open has to replay, and a handle that does not own the directory must not delete from it (#10507)
       // DELETE ALL THE WAL FILES AT OS-LEVEL. By this point every file THIS instance's own pool tracked
       // has already been dropped one by one above; anything a directory scan still finds here is, under
       // normal single-process operation, a genuine orphan this same database left behind on an earlier
