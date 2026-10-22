@@ -5241,6 +5241,10 @@ public class CypherExecutionPlan {
     // At least one side must have a variable
     if (sourceVar == null && targetVar == null)
       return null;
+    // The same node at both ends, (a)-[:R]->(a), asks for the edges that close on a, its self-loops; the step counts every
+    // edge of the anchor (issue #10182, the grouped sibling of #8941)
+    if (sourceVar != null && sourceVar.equals(targetVar))
+      return null;
 
     // Target node must not have property filters (would need filtering)
     if (targetNode.getProperties() != null && !targetNode.getProperties().isEmpty())
