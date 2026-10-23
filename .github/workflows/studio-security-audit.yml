@@ -142,7 +142,7 @@ jobs:
           # fail (issue #10626), and that also counted devDependencies, which are not shipped. license-checker stays
           # below as an informational summary of the shipped tree only.
           node --test test/dependency-licenses.test.js
-          npx --yes license-checker --summary --production --excludePrivatePackages || true
+          npx --yes license-checker@25.0.1 --summary --production --excludePrivatePackages || true
 
       - name: "Security Summary"
         if: always()

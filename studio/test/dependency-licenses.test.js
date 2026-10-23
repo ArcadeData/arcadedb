@@ -40,6 +40,8 @@ const ALLOWED = new Set(["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "I
 // CLAUDE.md allows these only for fonts and other non-code assets shipped unmodified (CC-BY-4.0 with the attribution
 // it requires, in ATTRIBUTIONS.md). A lock file cannot tell an asset from code, so they count as allowed only for the
 // packages below, which ship nothing else under them: a JavaScript library under CC-BY-4.0 still fails.
+// Adding a package here is a licence decision, not a test fix: it needs a maintainer's sign-off and the attribution
+// entry in ATTRIBUTIONS.md that CC-BY-4.0 requires.
 const ASSET_ONLY = new Set(["OFL-1.1", "CC-BY-4.0"]);
 const ASSET_PACKAGES = new Set([
   // icons CC-BY-4.0, webfonts OFL-1.1, CSS and JS MIT: Font Awesome Free's own split
@@ -134,6 +136,11 @@ test("the font and icon licences pass for Font Awesome, whatever its licence tex
   };
   assert.deepEqual(offenders(lock), ['some-chart-lib@1.0.0: "CC-BY-4.0"', 'some-font-lib@1.0.0: "(MIT AND OFL-1.1)"']);
   assert.equal(Object.prototype.hasOwnProperty.call(REVIEWED, "@fortawesome/fontawesome-free"), false);
+});
+
+test("an asset licence offered as an OR alternative does not let a code package through", () => {
+  const lock = { packages: { "node_modules/some-lib": { version: "1.0.0", license: "(CC-BY-4.0 OR GPL-3.0-only)" } } };
+  assert.deepEqual(offenders(lock), ['some-lib@1.0.0: "(CC-BY-4.0 OR GPL-3.0-only)"']);
 });
 
 test("Font Awesome still fails on a licence outside both lists", () => {
