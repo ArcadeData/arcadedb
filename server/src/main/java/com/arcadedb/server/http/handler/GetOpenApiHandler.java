@@ -85,12 +85,29 @@ public class GetOpenApiHandler extends AbstractServerHttpHandler {
       synchronized (this) {
         if (cachedSpec == null) {
           final OpenAPI openAPI = specGenerator.generateSpec();
-          cachedSpec = Json.mapper().writeValueAsString(openAPI);
+          cachedSpec = requireSerializedDocument(Json.mapper().writeValueAsString(openAPI));
           LogManager.instance().log(this, Level.INFO, "Generated and cached OpenAPI specification");
         }
       }
     }
     return cachedSpec;
+  }
+
+  /**
+   * Jackson finds the properties of the swagger models by reflection. Where it cannot see them (a native image without
+   * their reflection registration, #10573) it writes every model as an empty bean and the whole document comes out as
+   * {@code {}}. That is a server fault, not a document: answer it as one, and do not cache it.
+   * <p>
+   * The check is {@code contains}, not {@code startsWith}: Jackson orders bean properties by the order of
+   * {@code getDeclaredMethods()}, which neither the JVM nor the native image specifies, so {@code "openapi"} is not
+   * guaranteed to be the first key; it is present whenever the document is whole.
+   */
+  static String requireSerializedDocument(final String json) {
+    if (!json.contains("\"openapi\""))
+      throw new IllegalStateException(
+          "The OpenAPI document serialized without its properties (" + (json.length() > 64 ? json.substring(0, 64) + "..." : json)
+              + "): the swagger models are not visible to Jackson by reflection");
+    return json;
   }
 
   /**
