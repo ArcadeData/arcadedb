@@ -4899,6 +4899,16 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Runs {@code change} of the refresh state of the continuous aggregates (the range of samples appended behind a watermark) inside
+   * a schema recording session, so that under HA the followers receive it as well and a follower promoted to leader refreshes with
+   * it (issue #10634). The state a refresh writes is not shipped this way: see {@code ContinuousAggregateRefresher}. Takes the
+   * database write lock: never call it from code running under the read lock, such as an after-commit callback.
+   */
+  public void recordContinuousAggregateChange(final Runnable change) {
+    recordChange(change);
+  }
+
+  /**
    * The close's save, run by the database while it is still open, as the last step before it marks itself closed: a
    * schema serialized once the database reports itself closed cannot resolve its buckets, because the indexes name theirs
    * through the checked schema accessor (issue #10059). Writes a schema whose save a transaction or {@code multipleUpdate}

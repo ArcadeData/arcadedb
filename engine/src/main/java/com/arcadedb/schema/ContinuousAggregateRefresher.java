@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -29,6 +30,7 @@ import com.arcadedb.utility.DateUtils;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
@@ -103,6 +105,8 @@ public class ContinuousAggregateRefresher {
     try {
       final String backingTypeName = ca.getBackingTypeName();
       final String bucketColumn = ca.getBucketColumn();
+      // #10634: rows in the backing type beside a watermark never set (see adoptWatermarkFromBackingRows). Before the read below
+      final boolean adoptedWatermark = !ca.isWatermarkSet() && !ca.needsCleanRebuild() && adoptWatermarkFromBackingRows(database, ca);
       // ONE read of the pair: the flag decides whether to delete and the timestamp decides what, so reading them
       // through two separate getters could straddle a concurrent advance (found in review).
       final ContinuousAggregateImpl.Watermark startWatermark = ca.currentWatermark();
@@ -194,7 +198,7 @@ public class ContinuousAggregateRefresher {
       // so the next refresh re-processes the same window (delete-first design makes it safe).
       // A clean rebuild must persist even if it found no rows to advance the watermark with, so the repair is not
       // repeated on every restart.
-      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null) {
+      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null || adoptedWatermark) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();
@@ -223,6 +227,50 @@ public class ContinuousAggregateRefresher {
           "Error refreshing continuous aggregate '%s': %s", e, ca.getName(), e.getMessage());
       throw e;
     }
+  }
+
+  /**
+   * Takes the newest bucket of the backing type as the watermark of an aggregate whose watermark is not set while its backing type
+   * holds rows (issue #10634), and tells whether it did. A refresh from an unset watermark runs the whole defining query and deletes
+   * nothing, which is right only for a backing type that is empty: with rows in it, every bucket they hold was added a second time.
+   * <p>
+   * The watermark is saved with a plain schema save after each refresh, outside the schema session that ships the schema to the
+   * followers under HA, while the rows of the refresh are replicated with its transaction. A follower can therefore hold the rows
+   * beside a watermark that was never set (an aggregate created over a source that was empty then, refreshed later), and refresh
+   * from it once promoted to leader. A schema save that failed after the refresh committed leaves the same state on a single node.
+   * <p>
+   * The newest bucket of the backing type is the watermark the refresh that wrote it installed: a refresh advances the watermark to
+   * the newest bucket it wrote. A watermark that is set but older than the rows (the same two causes) needs nothing: the refresh
+   * deletes the buckets at or after it and computes them again.
+   */
+  private static boolean adoptWatermarkFromBackingRows(final Database database, final ContinuousAggregateImpl ca) {
+    final String backingTypeName = ca.getBackingTypeName();
+    final String bucketColumn = ca.getBucketColumn();
+    if (!database.getSchema().existsType(backingTypeName))
+      return false; // refused with its message by the refresh
+    // Read through the records rather than a query: the refresh that follows the creation runs under the write lock of the creation's
+    // schema session, where a parallel scan would wait for workers that need the read lock. Only reached while the watermark is not
+    // set, when the backing type is empty or holds what the refresh is about to rebuild on top of
+    boolean found = false;
+    long newest = 0L;
+    final Iterator<Record> records = database.iterateType(backingTypeName, false);
+    while (records.hasNext()) {
+      final Object value = records.next().asDocument().get(bucketColumn);
+      if (value == null)
+        continue;
+      final long bucket = toEpochMs(value, bucketColumn, ca.getName());
+      if (!found || bucket > newest) {
+        newest = bucket;
+        found = true;
+      }
+    }
+    if (!found)
+      return false;
+    ca.setWatermarkTs(newest);
+    LogManager.instance().log(ContinuousAggregateRefresher.class, Level.INFO,
+        "Continuous aggregate '%s' had no watermark while its backing type holds rows: resuming from its newest bucket", null,
+        ca.getName());
+    return true;
   }
 
   /**

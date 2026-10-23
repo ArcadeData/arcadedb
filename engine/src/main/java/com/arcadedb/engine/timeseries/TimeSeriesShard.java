@@ -430,7 +430,11 @@ public class TimeSeriesShard implements AutoCloseable {
    * append and record nothing: an aggregate outlives the raw samples it summarized.
    * <p>
    * Under HA a follower receives the samples as the replicated pages of this commit, not through this method, so it runs on the
-   * leader only and the follower writes no schema; the record is saved on the leader alone, like the watermark (issue #10634).
+   * leader only. The leader saves the record in a schema recording session, which ships it to the followers (issue #10634): a
+   * follower promoted to leader then recomputes the buckets of those samples, instead of never aggregating them. The session is a
+   * replication round trip under the database write lock, paid once per bucket a stream of late samples reaches. It follows the
+   * commit of the samples rather than being part of it, so a leader lost between the two loses the record with it, as it loses an
+   * append it had not acknowledged yet. Off HA the plain schema save is kept: there is nobody to ship it to.
    */
   private void invalidateContinuousAggregatesBehindWatermark(final TimeSeriesRowSource source) {
     final int size = source.size();
@@ -464,18 +468,35 @@ public class TimeSeriesShard implements AutoCloseable {
       if (impl.invalidateLateSamples(minTs, maxTs))
         changed = true;
     }
-    if (changed)
-      // the samples are committed: a failure to save the record must not report the append as failed. The record stays in memory,
-      // so the next refresh of this process applies it; a later schema save writes it
+    if (!changed)
+      return;
+
+    // the samples are committed: a failure to save the record must not report the append as failed. The record stays in memory,
+    // so the next refresh of this process applies it; a later schema save writes it, and under HA a later schema session ships it
+    if (database.getWrappedDatabaseInstance().isReplicated())
       try {
-        schema.saveConfiguration();
+        schema.recordContinuousAggregateChange(NO_SCHEMA_CHANGE);
+        return;
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Could not save the schema recording the samples appended to the TIMESERIES type '%s' behind the watermark of a continuous "
-                + "aggregate: the next refresh of this process still recomputes their buckets, a restart before a schema save forgets them",
-            e, typeName);
+            "Could not ship to the replicas the schema recording the samples appended to the TIMESERIES type '%s' behind the "
+                + "watermark of a continuous aggregate: this server still recomputes their buckets at its next refresh, a replica "
+                + "promoted to leader before a later schema change reaches it does not", e, typeName);
       }
+
+    try {
+      schema.saveConfiguration();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not save the schema recording the samples appended to the TIMESERIES type '%s' behind the watermark of a continuous "
+              + "aggregate: the next refresh of this process still recomputes their buckets, a restart before a schema save forgets them",
+          e, typeName);
+    }
   }
+
+  /** The change of a session that only ships the record {@link #invalidateContinuousAggregatesBehindWatermark} already applied. */
+  private static final Runnable NO_SCHEMA_CHANGE = () -> {
+  };
 
   /**
    * Scans both sealed and mutable layers, merging results by timestamp.
