@@ -58,7 +58,13 @@ import static org.assertj.core.api.Assertions.within;
  */
 class Issue7089NaNTransparentSumAvgTest extends TestHelper {
 
-  private static final String TEST_DIR = "target/databases/Issue7089NaNTransparentSumAvgTest";
+  /**
+   * Where the stand-alone sealed stores of the format tests live. It must not be {@link #getDatabasePath()}: the
+   * {@code tearDown} below runs before {@link TestHelper#afterTest()}, so wiping the database directory there deleted the
+   * engine's own sealed files under the still-open database, and the post-test integrity check, which reads a sealed
+   * store's length from disk since #10372, reported them missing (issue #10638).
+   */
+  private static final String TEST_DIR = "target/databases/Issue7089NaNTransparentSumAvgTest-stores";
   private static final long   HOUR     = 3_600_000L;
 
   private List<ColumnDefinition> columns;
