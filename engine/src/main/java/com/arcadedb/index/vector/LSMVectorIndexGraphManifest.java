@@ -261,8 +261,11 @@ public class LSMVectorIndexGraphManifest {
    *
    * @param unreachableOrdinals see {@link Content#unreachableOrdinals()}; {@code null} is read as none
    * @param graphBytes          see {@link Content#graphBytes()}; {@code 0} records none
+   *
+   * @return the fingerprint just recorded, so a caller pairing something else with this graph (its PQ codes, issue
+   * #10584) can name the graph by the value certified for it rather than by re-reading this file later
    */
-  public void write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector,
+  public long write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector,
       final boolean recordOrdinalMap, final int[] unreachableOrdinals, final long graphBytes) {
     // The map first, the certificate second: a manifest is what makes the pages usable, so it must never be on disk
     // vouching for a generation whose map is still the previous one (issue #7842). The reverse order - map after
@@ -281,6 +284,7 @@ public class LSMVectorIndexGraphManifest {
       fingerprint = fingerprintOf(ordinalToVectorId, ridOfVector);
     }
     write(ordinalToVectorId.length, fingerprint, null, false, unreachableOrdinals, graphBytes);
+    return fingerprint;
   }
 
   /**
