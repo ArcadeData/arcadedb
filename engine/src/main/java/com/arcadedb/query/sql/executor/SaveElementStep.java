@@ -388,12 +388,10 @@ public class SaveElementStep extends AbstractExecutionStep {
    */
   private void scheduleContinuousAggregateRefresh(final CommandContext context, final LocalTimeSeriesType tsType) {
     final DatabaseInternal database = context.getDatabase();
-    if (database.getSchema().getContinuousAggregates().length == 0)
-      return;
-
     if (database.isTransactionActive())
+      // registers each refresh once per transaction (keyed), and returns at once when there is no aggregate
       ContinuousAggregateRefresher.refreshAggregatesOver(database, tsType.getName());
-    else {
+    else if (database.getSchema().getContinuousAggregates().length > 0) {
       if (typesToRefreshAtClose == null)
         typesToRefreshAtClose = new HashSet<>(2);
       typesToRefreshAtClose.add(tsType.getName());
