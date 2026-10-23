@@ -144,6 +144,42 @@
             linux/arm64 uses a different build mode than linux/amd64's native.static.
         -->
         <native.mostlystatic>false</native.mostlystatic>
+        <!--
+            The CPU baseline the binary is compiled for, passed to native-image as -march (#10581).
+            A binary built for a level the host CPU lacks does not start: it exits at once with
+            "The current machine does not support all of the following CPU features that are
+            required by the image". So this value IS the native image's minimum CPU requirement,
+            and it is written down here rather than inherited from whatever GraalVM's default is
+            for the builder in use.
+
+            The value is chosen per architecture by the native-march-* profiles below, which pin
+            GraalVM 25's own defaults so that stating them changes no published binary:
+
+              amd64 / x86_64  x86-64-v3   AVX, AVX2, BMI1, BMI2, FMA, F16C, LZCNT, MOVBE
+                                          (Intel Haswell 2013+, AMD Excavator/Zen 2015+)
+              aarch64         armv8.1-a   ASIMD + CRC32 + LSE atomics
+                                          (excludes ARMv8.0 cores such as the Raspberry Pi 4's Cortex-A72)
+
+            These are kept, rather than lowered to compatibility, until what that costs has been
+            measured: the 26.10.2 amd64 binary carries AVX2/FMA/BMI2 code throughout (the issue
+            counted 8,098 ymm operands, 46 FMA and 25,482 BMI2 instructions), and on aarch64 LSE
+            turns each CAS into one instruction instead of an LL/SC loop. A compatibility-built
+            image for older CPUs is tracked separately.
+
+            This default is the fallback for an architecture none of those profiles names, and
+            `compatibility` is valid on every architecture native-image supports. Override it
+            on the command line to build for an older or a specific CPU:
+
+              -Dnative.march=compatibility   runs on any CPU of the architecture
+              -Dnative.march=x86-64-v2       SSE4.2/POPCNT, no AVX
+
+            NEVER build a binary that is published or shipped in an image with
+            -Dnative.march=native: it targets the CPU of the machine that ran the build, so a
+            CI-built binary would require whatever the runner happened to have.
+            .github/scripts/check-native-march.py (lint job) fails on that, and on this pom
+            losing its -march build arg or docs/native-image.md naming different baselines.
+        -->
+        <native.march>compatibility</native.march>
     </properties>
 
     <dependencyManagement>
@@ -338,6 +374,8 @@
                     </metadataRepository>
                     <buildArgs>
                         <buildArg>--no-fallback</buildArg>
+                        <!-- Minimum CPU the binary runs on; see the native.march property and #10581. -->
+                        <buildArg>-march=${native.march}</buildArg>
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                         <buildArg>--enable-url-protocols=http,https</buildArg>
                         <buildArg>--add-modules=jdk.incubator.vector</buildArg>
@@ -527,6 +565,48 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!--
+            Pin the native image's CPU baseline per architecture (#10581). See the native.march
+            property above for what each value requires of the host CPU and why it was chosen.
+            Activated by the BUILD machine's os.arch, which is also the target's: native-image
+            cannot cross-compile. Java reports amd64 on Linux/Windows and x86_64 on macOS for the
+            same architecture, hence two profiles for it. A -Dnative.march=... on the command
+            line still wins over all three: user properties take precedence over profile ones.
+        -->
+        <profile>
+            <id>native-march-amd64</id>
+            <activation>
+                <os>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.march>x86-64-v3</native.march>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-march-x86_64</id>
+            <activation>
+                <os>
+                    <arch>x86_64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.march>x86-64-v3</native.march>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-march-aarch64</id>
+            <activation>
+                <os>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.march>armv8.1-a</native.march>
+            </properties>
         </profile>
     </profiles>
 </project>
