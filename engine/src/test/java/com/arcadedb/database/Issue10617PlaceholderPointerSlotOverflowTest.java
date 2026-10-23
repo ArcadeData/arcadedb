@@ -45,8 +45,9 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
   /**
    * The issue's first shape: a slot smaller than a pointer that is NOT the last record, on a page with no free tail
-   * at all. The missing bytes cannot come from anywhere on the page, so the update must be refused - and the record
-   * after it must survive untouched.
+   * at all. The pointer must not be written past the slot - and, since #10637, the missing bytes come from another
+   * record of the page that moves behind a pointer of its own, so the update succeeds and the record after it survives
+   * untouched.
    */
   @Test
   void aSmallSlotOnASealedPageIsNotOverwrittenPastItsEnd() {
@@ -65,12 +66,12 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
     final long countBefore = countRecordsFromCounter("Sealed10617");
 
-    assertRefused(() -> database.transaction(() -> grow(empty[0])));
+    database.transaction(() -> grow(empty[0]));
 
     assertIntact("Sealed10617", countBefore);
     database.transaction(() -> {
       assertThat(neighbour[0].asDocument(true).getString("v")).isEqualTo("neighbour");
-      assertThat(empty[0].asDocument(true).getPropertyNames()).isEmpty();
+      assertThat(empty[0].asDocument(true).getString("v")).isEqualTo(BIG);
     });
   }
 
@@ -108,8 +109,9 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
   }
 
   /**
-   * A refusal in the middle of a commit takes the whole transaction back: an update of another record, applied to its
-   * page before the refused one, must not survive it.
+   * A refusal in the middle of a commit takes the whole transaction back: an update of another record, applied before
+   * the refused one, must not survive it. Since #10637 a refusal needs a page where NO other record can give the
+   * missing bytes - here the small slot shares its page only with the head chunk of a record that spilled and sealed it.
    */
   @Test
   void aRefusedUpdateRollsBackTheOtherWritesOfItsTransaction() {
@@ -117,11 +119,11 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
     final RID[] other = new RID[1];
     database.transaction(() -> {
       database.getSchema().createDocumentType("Rollback10617", 1).createProperty("v", Type.STRING);
-      other[0] = database.newDocument("Rollback10617").set("v", "before").save().getIdentity();
+      database.getSchema().createDocumentType("RollbackOther10617", 1).createProperty("v", Type.STRING);
+      other[0] = database.newDocument("RollbackOther10617").set("v", "before").save().getIdentity();
       empty[0] = database.newDocument("Rollback10617").save().getIdentity();
-      database.newDocument("Rollback10617").set("v", "neighbour").save();
     });
-    sealFirstPage("Rollback10617");
+    sealWithASpilledNeighbour("Rollback10617");
     assertThat(freeTailOfPageOf(empty[0])).as("the premise: the page has no free tail").isZero();
 
     final long countBefore = countRecordsFromCounter("Rollback10617");
@@ -143,18 +145,18 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
   /**
    * The issue's second shape: the small slot is the LAST record of its page and the free tail is one byte short of
-   * what the pointer is missing. The pointer used to run past the page's content area; now the update is refused.
+   * what the pointer is missing. The pointer used to run past the page's content area; since #10637 a record before it
+   * releases the bytes, the small slot moves left with everything after the donor, and the pointer fits.
    */
   @Test
   void aSmallLastSlotIsNotWrittenPastTheContentArea() {
     final RID empty = lastEmptyDocumentWithFreeTail("Last10617", -1);
     final long countBefore = countRecordsFromCounter("Last10617");
 
-    assertRefused(() -> database.transaction(() -> grow(empty)));
+    database.transaction(() -> grow(empty));
 
     assertIntact("Last10617", countBefore);
-    assertThat(freeTailOfPageOf(empty)).as("the refused update must leave the page as it was")
-        .isEqualTo(POINTER_FOOTPRINT - footprintOf(empty) - 1);
+    database.transaction(() -> assertThat(empty.asDocument(true).getString("v")).isEqualTo(BIG));
   }
 
   /**
@@ -217,6 +219,18 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
     leaveFreeTail(first, POINTER_FOOTPRINT - footprint + tailBeyondMissing);
     return empty[0];
+  }
+
+  /**
+   * Seals page 0 of {@code typeName} with a record inserted after the ones already there and grown until it spills: its
+   * head chunk takes the whole free tail, and the page is left with no plain record that could move behind a pointer.
+   */
+  private void sealWithASpilledNeighbour(final String typeName) {
+    final RID[] sealer = new RID[1];
+    database.transaction(() -> sealer[0] = database.newDocument(typeName).set("v", "s").save().getIdentity());
+    database.transaction(() -> sealer[0].asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
+    assertThat((Long) bucketStats(typeName).get("totalMultiPageRecords")).as("the sealing record must have spilled")
+        .isEqualTo(1L);
   }
 
   /** Grows {@code rid}'s string value by exactly the bytes that leave its page with {@code tail} free bytes. */
