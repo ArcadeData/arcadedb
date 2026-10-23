@@ -283,6 +283,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
     final RunningQuery runningQuery = admission != null ? registerRunningQuery(channel, databaseName, statement, user) : null;
     try {
       final DatabaseInternal database = (DatabaseInternal) databaseForClient(databaseName);
+      // THE WRAPPER THE LIBRARY CACHES FOR THIS NAME SERVES THE INSTANCE JUST RESOLVED, NOT ONE A RESTORE, A CLOSE + OPEN OR A
+      // DROP + CREATE HAS SINCE REPLACED AND CLOSED (ISSUE #10562). THE NAME IS A DATABASE THE LINE ABOVE JUST RESOLVED, SO THIS
+      // NEVER BUILDS A WRAPPER FOR A NAME THAT IS NOT ONE
+      if (resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper)
+        wrapper.bind(database);
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
       ctx.setCurrentUser(user.getDatabaseUser(database));
       try {
