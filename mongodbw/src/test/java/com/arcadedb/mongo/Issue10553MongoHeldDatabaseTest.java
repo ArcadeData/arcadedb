@@ -117,12 +117,16 @@ public class Issue10553MongoHeldDatabaseTest extends BaseMongoServerTest {
 
   @Test
   void aNameThatIsNotADatabaseKeepsItsAnswer() {
-    assertThatThrownBy(() -> client.getDatabase("mongonothing10553").runCommand(new Document("ping", 1)))
+    assertThatThrownBy(() -> client.getDatabase("mongonothing10553").runCommand(new Document("find", "C")))
         .isInstanceOfSatisfying(MongoCommandException.class, e -> assertThat(e.getErrorCode()).isNotEqualTo(TEMPORARILY_UNAVAILABLE));
   }
 
+  /**
+   * A command that reads the database (a find on a collection). Not {@code ping}: the library answers that one itself without resolving any database, and
+   * since #10619 the backend lets it through before authorization too, so it never reaches the database a restore holds.
+   */
   private Document ping() {
-    return client.getDatabase(HELD).runCommand(new Document("ping", 1));
+    return client.getDatabase(HELD).runCommand(new Document("find", "C"));
   }
 
   /** Leaves {@link #HELD} on disk, closed and deregistered: what an {@code overwrite} restore finds on its target. */

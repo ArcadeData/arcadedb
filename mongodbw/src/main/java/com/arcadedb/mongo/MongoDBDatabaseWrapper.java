@@ -83,7 +83,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
 
-  protected final Database                           database;
+  // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
+  protected volatile Database                        database;
   protected final MongoDBProtocolPlugin              plugin;
   protected final MongoBackend                       backend;
   protected final Map<String, MongoCollection<Long>> collections    = new ConcurrentHashMap();
@@ -94,6 +95,32 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     this.database = database;
     this.plugin = plugin;
     this.backend = backend;
+  }
+
+  /**
+   * Points this wrapper at {@code live}, the instance the server serves under this name now (issue #10562). The backend caches
+   * one wrapper per name for as long as it runs, while the server replaces the instance behind the name on a restore with
+   * {@code overwrite}, on a {@code close database} followed by {@code open database} and on a {@code drop database} followed by
+   * a {@code create database}: a wrapper that kept the instance it was built around answered every later command with
+   * {@code DatabaseIsClosedException} until the server restarted. The backend calls this with the instance it resolved for the
+   * request, before the request runs.
+   * <p>
+   * The collection wrappers and the {@code _id} index bookkeeping are kept per instance and are dropped with the old one; the
+   * index bookkeeping is keyed by the database path, which the new instance shares. Costs a volatile read when nothing changed.
+   */
+  void bind(final Database live) {
+    if (database == live)
+      return;
+    synchronized (this) {
+      final Database previous = database;
+      if (previous == live)
+        return;
+      // FORGOTTEN BEFORE THE NEW INSTANCE IS PUBLISHED: A REQUEST THAT SEES IT MUST NOT TAKE AN _id INDEX LOCK THIS THEN DISCARDS
+      MongoDBCollectionWrapper.forgetIdIndexes(previous);
+      database = live;
+      // CLEARED AFTER: A COLLECTION WRAPPER CACHED MEANWHILE WAS BUILT AROUND ONE OF THE TWO, AND GOES EITHER WAY
+      collections.clear();
+    }
   }
 
   /**
