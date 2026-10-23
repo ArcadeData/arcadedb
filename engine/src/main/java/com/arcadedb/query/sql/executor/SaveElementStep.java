@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesColumnConstraints;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -37,10 +37,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.schema.ContinuousAggregate;
-import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.ContinuousAggregateRefresher;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -52,7 +49,9 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -62,6 +61,9 @@ public class SaveElementStep extends AbstractExecutionStep {
   private final Identifier bucket;
   private final boolean    createAlways;
   private final boolean    skipDuplicateKey;
+  // the TIMESERIES types this statement appended samples to with no transaction open: their continuous aggregates are refreshed
+  // once, when the statement ends (see close()), instead of once per row (issue #10632). Null until the first such append
+  private Set<String>      typesToRefreshAtClose;
 
   public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways) {
     this(context, bucket, createAlways, false);
@@ -377,27 +379,43 @@ public class SaveElementStep extends AbstractExecutionStep {
         "the value " + text) + ": " + violation);
   }
 
+  /**
+   * Inside a transaction the continuous aggregates over the type are refreshed once it commits, as an after-commit callback
+   * registered once per aggregate. With no transaction open there is no commit to wait for, and a callback registered on the
+   * inactive transaction context would never run at the end of the statement: it would stay there and run at the next, unrelated,
+   * commit of the thread (issue #10632). The type is remembered instead, and its aggregates refreshed by {@link #close()}, once per
+   * statement however many rows it appended.
+   */
   private void scheduleContinuousAggregateRefresh(final CommandContext context, final LocalTimeSeriesType tsType) {
-    final LocalSchema schema = (LocalSchema) context.getDatabase().getSchema();
-    final ContinuousAggregate[] aggregates = schema.getContinuousAggregates();
-    if (aggregates.length == 0)
+    final DatabaseInternal database = context.getDatabase();
+    if (database.getSchema().getContinuousAggregates().length == 0)
       return;
 
-    final String typeName = tsType.getName();
-    final TransactionContext tx = context.getDatabase().getTransaction();
+    if (database.isTransactionActive())
+      ContinuousAggregateRefresher.refreshAggregatesOver(database, tsType.getName());
+    else {
+      if (typesToRefreshAtClose == null)
+        typesToRefreshAtClose = new HashSet<>(2);
+      typesToRefreshAtClose.add(tsType.getName());
+    }
+  }
 
-    for (final ContinuousAggregate ca : aggregates) {
-      if (typeName.equals(ca.getSourceTypeName())) {
-        final String callbackKey = "ca-refresh:" + ca.getName();
-        final ContinuousAggregateImpl caImpl = (ContinuousAggregateImpl) ca;
-        tx.addAfterCommitCallbackIfAbsent(callbackKey, () -> {
-          try {
-            ContinuousAggregateRefresher.incrementalRefresh(context.getDatabase(), caImpl);
-          } catch (final Exception e) {
-            LogManager.instance().log(SaveElementStep.class, Level.WARNING,
-                "Error refreshing continuous aggregate '%s' after commit: %s", e, ca.getName(), e.getMessage());
-          }
-        });
+  /**
+   * Refreshes the continuous aggregates over the TIMESERIES types this statement appended to with no transaction open (issue #10632).
+   * Also on the exception path: with no transaction the samples appended before the failure are stored, and their aggregates owe
+   * them a refresh. A failing refresh is logged by {@link ContinuousAggregateRefresher#refreshAggregatesOver}, never raised.
+   */
+  @Override
+  public void close() {
+    try {
+      super.close();
+    } finally {
+      final Set<String> types = typesToRefreshAtClose;
+      if (types != null) {
+        typesToRefreshAtClose = null;
+        final DatabaseInternal database = context.getDatabase();
+        for (final String typeName : types)
+          ContinuousAggregateRefresher.refreshAggregatesOver(database, typeName);
       }
     }
   }
