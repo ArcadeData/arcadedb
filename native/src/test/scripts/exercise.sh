@@ -107,6 +107,15 @@ grep -qi "arcadedb" <<<"$OUT" || {
   exit 1
 }
 
+# Jackson serializes the swagger OpenAPI models by introspecting their getters, so without the reflection registration
+# of OpenApiModelReflectionFeature every model came out as an empty bean and this answered 200 {} (#10573)
+echo "[exercise] OpenAPI document"
+OUT="$(req "http://$HOST:$HTTP/api/v1/openapi.json")" || true
+grep -q '"openapi":"3.0.3"' <<<"$OUT" && grep -q '"/api/v1/query/{database}"' <<<"$OUT" || {
+  echo "[exercise] FAIL: OpenAPI document, got $(head -c 300 <<<"$OUT")"
+  exit 1
+}
+
 echo "[exercise] create DB"
 req -X POST "http://$HOST:$HTTP/api/v1/server" -d "{\"command\":\"create database $DB\"}" >/dev/null
 
