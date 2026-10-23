@@ -312,6 +312,10 @@ public class MutablePage extends BasePage implements TrackableContent {
     return slotScanEnd >= 0 && slotScanRecords == recordCount;
   }
 
+  /**
+   * @return the highest record offset of the page as {@link #rememberSlotScan} stored it; only meaningful while
+   * {@link #hasSlotScan} is true for the page's current record count
+   */
   int getSlotScanLastPosition() {
     return slotScanLastPosition;
   }

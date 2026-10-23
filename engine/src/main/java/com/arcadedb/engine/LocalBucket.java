@@ -2867,7 +2867,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // The record table summary of the page (see getFreeSpaceInPage) stays true across a plain insert into the slot it pointed
       // at, be it a hole or the end of the table, of a page it described, or into a brand-new page: the table writes below drop
       // it, the insert re-states it.
-      final int recordCountBefore = selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final int recordCountBefore = packedAppend ? selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET) : 0;
       final boolean keepsSlotScan = packedAppend && (createNewPage ? recordCountBefore == 0 && availablePositionIndex == 0
               : selectedPage.hasSlotScan(recordCountBefore) && availablePositionIndex == selectedPage.getSlotScanFirstFreeSlot());
       try {
