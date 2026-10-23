@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.ContinuousAggregate;
 import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.RetryBackoff;
 
 import java.io.IOException;
@@ -1384,7 +1385,10 @@ public class TimeSeriesEngine implements AutoCloseable {
     boolean invalidated = false;
     for (final ContinuousAggregate aggregate : schema.getContinuousAggregates())
       // a range inside the one already recorded changes nothing the schema holds: no write for it
-      if (aggregate instanceof ContinuousAggregateImpl impl && typeName.equals(impl.getSourceTypeName()) && impl.invalidate(fromTs, toTs))
+      // by the engine and not by name: this engine keeps the name its type was created with, an aggregate follows a rename (#10096)
+      if (aggregate instanceof ContinuousAggregateImpl impl
+          && schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType && sourceType.getEngine() == this
+          && impl.invalidate(fromTs, toTs))
         invalidated = true;
     if (invalidated)
       schema.saveConfiguration();
