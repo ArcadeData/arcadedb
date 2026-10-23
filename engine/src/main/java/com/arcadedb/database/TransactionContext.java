@@ -3370,6 +3370,9 @@ public class TransactionContext implements Transaction {
       }
 
       // UPDATE RECORD COUNT
+      // #10618: this runs after publishPages and outside the lock a page snapshot takes, so for a moment a reader
+      // can scan a committed record that countType() does not count yet. The cached count catches up here; it is
+      // not a bound that matches the published pages, and a test comparing the two must allow the commits in flight
       bucketRecordDelta.forEach((bucketId, delta) -> {
         // THE BUCKET/FILE COULD HAVE BEEN REMOVED IN THE CURRENT TRANSACTION
         final LocalBucket bucket = (LocalBucket) database.getSchema().getFileByIdIfExists(bucketId);
