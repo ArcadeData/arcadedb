@@ -55,6 +55,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private             LSMTreeIndexCompacted subIndex            = null;
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
+  private final       PageIdCache           pageIds             = new PageIdCache(this);
 
   /**
    * Called at creation time.
@@ -413,12 +414,14 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     for (int p = totalPages - 1; p > -1; --p) {
-      final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), p), pageSize);
-      final Binary currentPageBuffer = new Binary(currentPage.slice());
+      // #10654: THE PAGEID IS THE ONE THIS INDEX HANDED OUT BEFORE, AND THE BUFFER IS BUILT ONLY FOR A PAGE THAT HAS ENTRIES
+      final BasePage currentPage = database.getTransaction().getPage(pageIds.get(p), pageSize);
       final int count = getCount(currentPage);
 
       if (count < 1)
         continue;
+
+      final Binary currentPageBuffer = new Binary(currentPage.slice());
 
       if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
           removedKeys, deletedRIDs))
