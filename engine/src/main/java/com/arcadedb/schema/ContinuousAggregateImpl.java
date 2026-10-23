@@ -299,12 +299,32 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * the widening costs nothing, and it makes the later samples of a bucket already recorded change nothing the schema holds: a
    * stream of late samples saves the schema once per bucket it reaches, not once per batch.
    *
+   * <p>
+   * While a refresh runs, every sample is recorded, whatever the watermark (issue #10633). The refresh may have read the source
+   * before this commit, and installs a watermark only when it ends: one past the bucket of a sample it did not read would leave that
+   * sample behind it for good. The watermark of before the refresh cannot say which samples those are, so the range is not clipped
+   * to it; the refresh that applies the record recomputes only the buckets behind its own watermark. The refresh in progress clears
+   * only the record it read (by identity), so the next refresh applies this one. The flag is read BEFORE the watermark: a refresh
+   * that is over by then installed its watermark first, and one that begins after it reads the source after this commit.
+   *
    * @return {@code false} when no sample is behind the watermark, or the buckets were already recorded
    */
   public boolean invalidateLateSamples(final long minTs, final long maxTs) {
+    if (minTs > maxTs)
+      return false;
+    final boolean refreshing = refreshInProgress.get();
     final Watermark current = watermark;
+    if (refreshing) {
+      // no watermark yet (the first refresh is the one running): no grid to widen the range on, the refresh that applies it has one
+      if (!current.set() || bucketIntervalMs <= 0)
+        return invalidate(minTs, maxTs);
+      final long anchor = current.timestamp();
+      final long lastStart = bucketStart(maxTs, anchor, bucketIntervalMs);
+      return invalidate(bucketStart(minTs, anchor, bucketIntervalMs),
+          lastStart > Long.MAX_VALUE - (bucketIntervalMs - 1) ? Long.MAX_VALUE : lastStart + (bucketIntervalMs - 1));
+    }
     // never refreshed: the first refresh reads every sample
-    if (!current.set() || minTs >= current.timestamp() || minTs > maxTs)
+    if (!current.set() || minTs >= current.timestamp())
       return false;
     final long watermarkTs = current.timestamp();
     final long lastLate = Math.min(maxTs, watermarkTs - 1);
