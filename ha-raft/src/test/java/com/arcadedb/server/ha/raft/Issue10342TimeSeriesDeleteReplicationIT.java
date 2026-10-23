@@ -218,12 +218,84 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
    */
   @Test
   void aDeleteShipsTheRangeItInvalidatedOnTheContinuousAggregatesWithIt() throws Exception {
+    deleteShipsTheInvalidatedRange(false);
+  }
+
+  /**
+   * Issue #10677: the same delete over samples a compaction has sealed. The unit it ships then carries the sealed bytes of the shards
+   * it rewrote and no file, which the follower took for a compaction that changes no schema, so it never applied the schema the unit
+   * carried, and with it the range the delete invalidated. The samples of the test above are sealed by the maintenance scheduler
+   * whenever the delete comes more than five seconds after the type was created, which is how that test failed once on a loaded run.
+   */
+  @Test
+  void aDeleteOfSealedSamplesShipsTheRangeItInvalidatedOnTheContinuousAggregatesWithIt() throws Exception {
+    deleteShipsTheInvalidatedRange(true);
+  }
+
+  /**
+   * Issue #10677: {@code TRUNCATE TYPE} over sealed samples records the whole timeline as invalidated, and ships the record with the
+   * sealed bytes it rewrote, as a delete does.
+   */
+  @Test
+  void aTruncateOfSealedSamplesShipsTheRangeItInvalidatedOnTheContinuousAggregatesWithIt() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
     final int followerIndex = 1 - leaderIndex;
 
+    final ContinuousAggregateImpl aggregate = createAggregateOverThreeHours(leaderIndex, followerIndex, true);
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    try {
+      leaderDb.command("sql", "TRUNCATE TYPE sensor").close();
+      waitForAllServers();
+
+      assertThat(awaitValue(Long.MAX_VALUE, () -> invalidatedOn(followerIndex, "invalidatedToTs")))
+          .as(() -> "the follower holds the range the truncate invalidated, shipped with it; its aggregate: " + aggregateOn(followerIndex))
+          .isEqualTo(Long.MAX_VALUE);
+    } finally {
+      aggregate.endRefresh();
+    }
+
+    leaderDb.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
+    waitForAllServers();
+    assertThat(awaitValue(0L, () -> aggregateRows(leaderIndex))).as("leader").isZero();
+    assertThat(awaitValue(0L, () -> aggregateRows(followerIndex))).as("follower").isZero();
+  }
+
+  private void deleteShipsTheInvalidatedRange(final boolean sealed) throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final ContinuousAggregateImpl aggregate = createAggregateOverThreeHours(leaderIndex, followerIndex, sealed);
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    final long base = hourAlignedBase();
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    try {
+      leaderDb.command("sql", "DELETE FROM sensor WHERE ts = " + base).close();
+      waitForAllServers();
+
+      assertThat(awaitValue(base, () -> invalidatedOn(followerIndex, "invalidatedFromTs")))
+          .as(() -> "the follower holds the range the delete invalidated, shipped with the delete; its aggregate: " + aggregateOn(
+              followerIndex)).isEqualTo(base);
+    } finally {
+      aggregate.endRefresh();
+    }
+
+    leaderDb.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
+    waitForAllServers();
+    assertThat(awaitValue(2L, () -> aggregateRows(leaderIndex))).as("leader").isEqualTo(2L);
+    assertThat(awaitValue(2L, () -> aggregateRows(followerIndex))).as("follower").isEqualTo(2L);
+  }
+
+  /**
+   * A TIMESERIES type with one sample in each of three hours, and an hourly aggregate over it refreshed on the leader and replicated.
+   * With {@code sealed} the samples are then sealed by a compaction on the leader, and the follower holds the sealed blocks.
+   */
+  private ContinuousAggregateImpl createAggregateOverThreeHours(final int leaderIndex, final int followerIndex, final boolean sealed)
+      throws Exception {
     final long hour = 3_600_000L;
-    final long base = BASE - (BASE % hour);
+    final long base = hourAlignedBase();
     final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
     leaderDb.command("sql", "CREATE TIMESERIES TYPE sensor TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2").close();
     leaderDb.command("sql",
@@ -235,22 +307,17 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     waitForAllServers();
     assertThat(awaitValue(3L, () -> aggregateRows(followerIndex))).as("the follower holds the three buckets").isEqualTo(3L);
 
-    final ContinuousAggregateImpl aggregate = (ContinuousAggregateImpl) leaderDb.getSchema().getContinuousAggregate("hourly");
-    assertThat(aggregate.tryBeginRefresh()).isTrue();
-    try {
-      leaderDb.command("sql", "DELETE FROM sensor WHERE ts = " + base).close();
+    if (sealed) {
+      engine(leaderIndex).compactAll();
       waitForAllServers();
-
-      assertThat(awaitValue(base, () -> invalidatedFromOn(followerIndex)))
-          .as("the follower holds the range the delete invalidated, shipped with the delete").isEqualTo(base);
-    } finally {
-      aggregate.endRefresh();
+      assertThat(sealedSamples(leaderIndex)).as("the leader sealed the samples").isEqualTo(3L);
+      assertThat(awaitValue(3L, () -> sealedSamples(followerIndex))).as("the follower holds the sealed blocks").isEqualTo(3L);
     }
+    return (ContinuousAggregateImpl) leaderDb.getSchema().getContinuousAggregate("hourly");
+  }
 
-    leaderDb.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
-    waitForAllServers();
-    assertThat(awaitValue(2L, () -> aggregateRows(leaderIndex))).as("leader").isEqualTo(2L);
-    assertThat(awaitValue(2L, () -> aggregateRows(followerIndex))).as("follower").isEqualTo(2L);
+  private static long hourAlignedBase() {
+    return BASE - (BASE % 3_600_000L);
   }
 
   private long aggregateRows(final int serverIndex) {
@@ -260,11 +327,15 @@ class Issue10342TimeSeriesDeleteReplicationIT extends BaseRaftHATest {
     }
   }
 
-  /** The start of the range the aggregate records as invalidated on that server, or {@code Long.MIN_VALUE} when it records none. */
-  private long invalidatedFromOn(final int serverIndex) {
+  /** A bound of the range the aggregate records as invalidated on that server, or {@code Long.MIN_VALUE} when it records none. */
+  private long invalidatedOn(final int serverIndex, final String bound) {
+    return aggregateOn(serverIndex).getLong(bound, Long.MIN_VALUE);
+  }
+
+  /** The definition of the aggregate as that server's schema holds it. */
+  private JSONObject aggregateOn(final int serverIndex) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    final JSONObject definition = db.getSchema().getEmbedded().toJSON().getJSONObject("continuousAggregates").getJSONObject("hourly");
-    return definition.getLong("invalidatedFromTs", Long.MIN_VALUE);
+    return db.getSchema().getEmbedded().toJSON().getJSONObject("continuousAggregates").getJSONObject("hourly");
   }
 
   private void insert(final Database db, final int from, final int to) {

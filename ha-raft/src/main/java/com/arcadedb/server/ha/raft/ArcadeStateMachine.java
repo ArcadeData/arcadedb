@@ -44,10 +44,12 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.FullSchemaLoadReason;
 import com.arcadedb.schema.IncrementalLoadRefusal;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -1057,6 +1059,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // longer than this means something is not releasing, and failing the apply loudly is better than installing
   // a sealed store that a copy in flight can pair with the wrong page image.
   private static final long              SEALED_INSTALL_LOCK_TIMEOUT_MS    = 120_000L;
+  /** The keys of the range a continuous aggregate records as invalidated, in the schema JSON (see ContinuousAggregateImpl.toJSON). */
+  private static final String            INVALIDATED_FROM_KEY              = "invalidatedFromTs";
+  private static final String            INVALIDATED_TO_KEY                = "invalidatedToTs";
 
   // The transactions this node originated that are in flight between replication and the publication of their
   // pages, and the page versions the Raft log has assigned but this node has not applied yet (issue #6965).
@@ -4208,9 +4213,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // it from walOnlyEntry below: the change is carried OUTSIDE schemaJson, so an entry holding one does publish
     // a schema change and does need the reload. No producer ships both today - the compaction path always
     // carries the whole document - and this keeps that from becoming a silent skip if one ever does.
+    // Issue #10677: a delete of sealed samples ships the same shape, and DOES change the schema - the range it invalidated on the
+    // continuous aggregates over the type (issue #10428), which a follower promoted to leader refreshes them with. Taken for a
+    // compaction, the entry's schema was never applied and the follower never held the record
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
         && isEmptyMap(decoded.filesToRename()) && decoded.schemaDelta() == null
-        && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()));
+        && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()))
+        && !carriesAContinuousAggregateRecordNotHeldHere(db, decoded.schemaJson());
 
     // A non-final chunk of a schema change split across several entries (see
     // RaftTransactionBroker.splitSchemaEntry) only DELIVERS pages: the change is published by the last
@@ -5030,6 +5039,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private static String decodedDbName(final DatabaseInternal db) {
     return db != null ? db.getName() : "?";
+  }
+
+  /**
+   * Whether {@code schemaJson} records, on a continuous aggregate, a range of invalidated samples that this node does not hold as
+   * its schema does (issue #10677). A TimeSeries delete writes that record inside the replication session that ships the sealed bytes
+   * it rewrote, so its entry looks like a compaction's, which changes no schema; the record is what tells them apart. A compaction's
+   * schema carries one only while a range is pending, and then this node holds it already, so it still skips the reload.
+   * <p>
+   * The common case - no record anywhere in the document - costs one scan of the string and no parse.
+   */
+  static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
+    if (schemaJson == null || !schemaJson.contains(INVALIDATED_FROM_KEY))
+      return false;
+    final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
+    if (aggregates == null)
+      return false;
+    final Schema schema = db.getSchema();
+    for (final String name : aggregates.keySet()) {
+      final JSONObject definition = aggregates.getJSONObject(name);
+      if (!definition.has(INVALIDATED_FROM_KEY) || !definition.has(INVALIDATED_TO_KEY))
+        continue;
+      if (!schema.existsContinuousAggregate(name)
+          || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
+        return true;
+      final ContinuousAggregateImpl.Invalidation record = held.getInvalidation();
+      if (record == null || record.fromTs() != definition.getLong(INVALIDATED_FROM_KEY)
+          || record.toTs() != definition.getLong(INVALIDATED_TO_KEY))
+        return true;
+    }
+    return false;
   }
 
   private static boolean isEmptyMap(final Map<?, ?> map) {
