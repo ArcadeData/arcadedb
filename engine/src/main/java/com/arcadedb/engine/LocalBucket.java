@@ -2777,7 +2777,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
     final Binary buffer = database.getSerializer().serialize(database, record);
+    final RID rid = createRecordInternal(buffer, isPlaceHolder);
+    if (!discardRecordAfter)
+      ((RecordInternal) record).setBuffer(buffer.getNotReusable());
+    return rid;
+  }
 
+  /**
+   * Writes an already serialized record into the first page that can host it, padding {@code buffer} in place as
+   * described below. Split from {@link #createRecordInternal(Record, boolean, boolean)} so a record that already lives
+   * on a page can be moved behind a placeholder pointer from its raw bytes, without a {@link Record} to serialize
+   * (#10637, {@link #relocateANeighbourOffPage}).
+   */
+  private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder) {
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
@@ -2943,9 +2955,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex,
                   Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
       }
-
-      if (!discardRecordAfter)
-        ((RecordInternal) record).setBuffer(buffer.getNotReusable());
 
       return rid;
 
@@ -4413,15 +4422,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // #10617: the pointer is a marker plus an 8-byte position, more than the smallest slot holds (a record is
             // padded to MINIMUM_RECORD_SIZE only). Writing it into a smaller slot overwrote the start of the next
             // record, or ran past the content area when the slot was the page's last. Ask the page for the missing
-            // bytes through the same in-page shift the chunk head uses; when it cannot spare them nothing is written.
-            final int pointerEnlargement = slotEnlargementForChunkHead(PLACEHOLDER_POINTER_FOOTPRINT,
-                    availableSpaceInCurrentPage, freeTailInPage, lastRecordPositionInPage == recordPositionInPage);
+            // bytes through the same in-page shift the chunk head uses.
+            int pointerPositionInPage = recordPositionInPage;
+            int pointerRoom = availableSpaceInCurrentPage;
+            int pointerPageOccupiedInBytes = pageOccupiedInBytes;
+            int pointerFreeTailInPage = freeTailInPage;
+            int pointerEnlargement = slotEnlargementForChunkHead(PLACEHOLDER_POINTER_FOOTPRINT, pointerRoom,
+                    pointerFreeTailInPage, lastRecordPositionInPage == recordPositionInPage);
+
+            if (pointerEnlargement < 0) {
+              // #10637: the page cannot spare the missing bytes as it stands, and it will not on a retry either - the
+              // shape is a 6-8 byte slot on a page whose free tail is gone (typically taken by the head chunk of a
+              // record that spilled). Have ANOTHER record of the page give them: a plain record big enough is moved
+              // behind a placeholder pointer of its own, which releases its footprint minus the pointer's into the
+              // free tail. One byte more than missing, so the arithmetic below holds whether this slot is the last
+              // record of the page (the tail is part of its room) or not (the shift must leave a byte spare).
+              final int bytesNeeded = PLACEHOLDER_POINTER_FOOTPRINT - pointerRoom + 1;
+              if (relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded,
+                      pageOccupiedInBytes, freeTailInPage)) {
+                if (slotCandidate)
+                  slotTx.poisonSlotRebasePage(fileId, pageId);
+
+                // The records after the donor moved left, possibly this one too: re-derive the page from itself.
+                pointerPositionInPage = getRecordPositionInPage(page, positionInPage);
+                final int newLastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+                pointerPageOccupiedInBytes = getPageOccupiedInBytes(page, newLastRecordPositionInPage, pointerPositionInPage,
+                        recordSize);
+                pointerFreeTailInPage = page.getMaxContentSize() - pointerPageOccupiedInBytes;
+                final boolean isLast = newLastRecordPositionInPage == pointerPositionInPage;
+                pointerRoom = slotFootprint + (isLast ? pointerFreeTailInPage : 0);
+                pointerEnlargement = slotEnlargementForChunkHead(PLACEHOLDER_POINTER_FOOTPRINT, pointerRoom,
+                        pointerFreeTailInPage, isLast);
+              }
+            }
+
+            // When no record of the page can give the bytes either, nothing at all is written.
             if (pointerEnlargement < 0)
               throw new DatabaseOperationException(
                       "Cannot update record " + rid + ": it no longer fits page " + pageId + " of bucket '" + componentName
-                              + "', and its slot of " + availableSpaceInCurrentPage + " bytes cannot host a placeholder pointer ("
-                              + PLACEHOLDER_POINTER_FOOTPRINT + " bytes) with only " + freeTailInPage
-                              + " bytes left free in the page");
+                              + "', and its slot of " + pointerRoom + " bytes cannot host a placeholder pointer ("
+                              + PLACEHOLDER_POINTER_FOOTPRINT + " bytes) with only " + pointerFreeTailInPage
+                              + " bytes left free in the page and no other record of the page able to release them");
 
             // The slot becomes a placeholder POINTER to a record created on another page: two pages change together
             // and the slot stops holding record content at all, so no merge can replay it from this page alone.
@@ -4431,15 +4472,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (pointerEnlargement > 0) {
               // Declared under no coverage span: the poison above already keeps every merge off this page, shift
               // included, so unlike the chunk-head enlargement below there is no replay to reproduce it.
-              shiftFollowingRecordsRight(page, recordCountInPage, recordPositionInPage + slotFootprint, pageOccupiedInBytes,
-                      pointerEnlargement);
-              updatePageStatistics(page, freeTailInPage, -pointerEnlargement);
-            }
+              shiftFollowingRecordsRight(page, recordCountInPage, pointerPositionInPage + slotFootprint,
+                      pointerPageOccupiedInBytes, pointerEnlargement);
+              updatePageStatistics(page, pointerFreeTailInPage, -pointerEnlargement);
+            } else if (pointerRoom > slotFootprint && slotFootprint != PLACEHOLDER_POINTER_FOOTPRINT)
+              // The LAST record of the page: the pointer ends where the page's content now ends, so the free tail moves
+              // by the difference between the pointer and the slot it replaces - into the tail for a slot smaller than
+              // a pointer, back out of it for a bigger one. Reported, so the free-space claim keeps describing the page.
+              updatePageStatistics(page, pointerFreeTailInPage, slotFootprint - PLACEHOLDER_POINTER_FOOTPRINT);
 
-            final int bytesWritten = page.writeNumber(recordPositionInPage, RECORD_PLACEHOLDER_POINTER);
+            final int bytesWritten = page.writeNumber(pointerPositionInPage, RECORD_PLACEHOLDER_POINTER);
 
             final RID realRID = createRecordInternal(record, true, false);
-            page.writeLong(recordPositionInPage + bytesWritten, realRID.getPosition());
+            page.writeLong(pointerPositionInPage + bytesWritten, realRID.getPosition());
 
             if (LogManager.instance().isLoggable(this, Level.FINE))
               LogManager.instance()
@@ -7302,6 +7347,83 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         assert nextRecordPosInPage + additionalSpaceNeeded < page.getMaxContentSize();
       }
     }
+  }
+
+  /**
+   * Releases at least {@code bytesNeeded} bytes into the free tail of {@code page} by moving one of its plain records
+   * behind a placeholder POINTER (#10637): the record's content is re-created as placeholder content on another page,
+   * its slot keeps its RID and now holds the 9-byte pointer, and everything stored after it moves left by the bytes
+   * the slot no longer needs. The donor is the SMALLEST plain record that can release enough, so the fewest bytes leave
+   * the page; the record at {@code excludedRecordPositionInPage} - the one the caller is making room for - is never
+   * picked, and neither is a record that already lives behind a pointer, a pointer, or a chunk.
+   * <p>
+   * This is the shape every reader already understands: it is what an update spilling a small record writes, and the
+   * reads follow the pointer. The caller must poison the page for the commit-time merges when this returns true, and
+   * must re-derive every offset it holds on the page - the records after the donor, possibly its own, have moved.
+   *
+   * @param page                         the page to release bytes on.
+   * @param recordCountInPage            number of slot-table entries.
+   * @param excludedRecordPositionInPage content offset of the record that needs the bytes.
+   * @param bytesNeeded                  the bytes the free tail must gain.
+   * @param pageOccupiedInBytes          the byte at which the page's used content ends.
+   * @param freeTailInPage               the page's free tail before the release.
+   *
+   * @return true when a record was moved and the free tail grew by at least {@code bytesNeeded}; false when no record
+   * of the page could release them, in which case nothing has been written.
+   */
+  private boolean relocateANeighbourOffPage(final MutablePage page, final short recordCountInPage,
+                                            final int excludedRecordPositionInPage, final int bytesNeeded,
+                                            final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+    int donorPositionInPage = -1;
+    long[] donorSize = null;
+    int donorFootprint = Integer.MAX_VALUE;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long[] candidateSize = page.readNumberAndSize(candidatePositionInPage);
+      if (candidateSize[0] <= 0)
+        // DELETED, A POINTER, A CHUNK OR SOMEBODY ELSE'S PLACEHOLDER CONTENT: NOTHING THAT CAN MOVE BEHIND A POINTER
+        continue;
+
+      final int footprint = (int) (candidateSize[0] + candidateSize[1]);
+      if (footprint - PLACEHOLDER_POINTER_FOOTPRINT >= bytesNeeded && footprint < donorFootprint) {
+        donorPositionInPage = candidatePositionInPage;
+        donorSize = candidateSize;
+        donorFootprint = footprint;
+      }
+    }
+
+    if (donorPositionInPage < 0)
+      return false;
+
+    // Created BEFORE this page changes: the page has less free tail than the donor's content, so it cannot land here
+    final byte[] donorContent = new byte[(int) donorSize[0]];
+    page.readByteArray((int) (donorPositionInPage + donorSize[1]), donorContent, 0, donorContent.length);
+    final RID contentRID = createRecordInternal(new Binary(donorContent), true);
+
+    final int markerSize = page.writeNumber(donorPositionInPage, RECORD_PLACEHOLDER_POINTER);
+    page.writeLong(donorPositionInPage + markerSize, contentRID.getPosition());
+
+    final int released = donorFootprint - markerSize - LONG_SERIALIZED_SIZE;
+    final int from = donorPositionInPage + donorFootprint;
+    if (pageOccupiedInBytes > from)
+      page.move(from, from - released, pageOccupiedInBytes - from);
+
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int recordPositionInPage = getRecordPositionInPage(page, pos);
+      if (recordPositionInPage >= from && recordPositionInPage < pageOccupiedInBytes)
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage - released);
+    }
+
+    updatePageStatistics(page, freeTailInPage, released);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Moved the record at offset %d of page %s behind a placeholder pointer to release %d bytes (threadId=%d)",
+              donorPositionInPage, page, released, Thread.currentThread().threadId());
+    return true;
   }
 
   /**
