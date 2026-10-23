@@ -158,6 +158,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = chunkFootprint(CHUNK_MARKER_BUDGET, 0);
   /**
+   * Bytes a {@link #RECORD_PLACEHOLDER_POINTER} takes in its slot: the marker plus the 8-byte position of the content
+   * record. The same 1 + 8 every page walk charges a pointer slot ({@code getPageOccupiedInBytes}), and more than the
+   * smallest slot holds, which is why the spill that writes one has to make room for it first (#10617).
+   */
+  private static final   int                       PLACEHOLDER_POINTER_FOOTPRINT    =
+          Binary.getNumberSpace(RECORD_PLACEHOLDER_POINTER) + LONG_SERIALIZED_SIZE;
+  /**
    * No fingerprint could be taken of the part of a record that lives off its own page: see
    * {@link #offPageContentFingerprint(RID, BasePage, boolean)}.
    */
@@ -4403,10 +4410,31 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           // TODO: LOOK FOR 1/2 OF THE RECORD SIZE
           if (availableSpaceInCurrentPage < MINIMUM_SPACE_FOR_FIRST_CHUNK) {
+            // #10617: the pointer is a marker plus an 8-byte position, more than the smallest slot holds (a record is
+            // padded to MINIMUM_RECORD_SIZE only). Writing it into a smaller slot overwrote the start of the next
+            // record, or ran past the content area when the slot was the page's last. Ask the page for the missing
+            // bytes through the same in-page shift the chunk head uses; when it cannot spare them nothing is written.
+            final int pointerEnlargement = slotEnlargementForChunkHead(PLACEHOLDER_POINTER_FOOTPRINT,
+                    availableSpaceInCurrentPage, freeTailInPage, lastRecordPositionInPage == recordPositionInPage);
+            if (pointerEnlargement < 0)
+              throw new DatabaseOperationException(
+                      "Cannot update record " + rid + ": it no longer fits page " + pageId + " of bucket '" + componentName
+                              + "', and its slot of " + availableSpaceInCurrentPage + " bytes cannot host a placeholder pointer ("
+                              + PLACEHOLDER_POINTER_FOOTPRINT + " bytes) with only " + freeTailInPage
+                              + " bytes left free in the page");
+
             // The slot becomes a placeholder POINTER to a record created on another page: two pages change together
             // and the slot stops holding record content at all, so no merge can replay it from this page alone.
             if (slotCandidate)
               slotTx.poisonSlotRebasePage(fileId, pageId);
+
+            if (pointerEnlargement > 0) {
+              // Declared under no coverage span: the poison above already keeps every merge off this page, shift
+              // included, so unlike the chunk-head enlargement below there is no replay to reproduce it.
+              shiftFollowingRecordsRight(page, recordCountInPage, recordPositionInPage + slotFootprint, pageOccupiedInBytes,
+                      pointerEnlargement);
+              updatePageStatistics(page, freeTailInPage, -pointerEnlargement);
+            }
 
             final int bytesWritten = page.writeNumber(recordPositionInPage, RECORD_PLACEHOLDER_POINTER);
 
