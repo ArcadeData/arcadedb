@@ -2808,6 +2808,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
+      // Issue #10569: the pages of files this session created and dropped again go nowhere - no node is told to create them
+      dropWalOfCancelledFiles(proxied.getFileManager().getCancelledCreates(), walEntries, bucketDeltas);
 
       // Send schema changes via Raft so replicas have the files before WAL pages arrive.
       // Embedded walEntries carry the initial page writes (e.g. index root pages) so
@@ -3113,9 +3115,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *   <li>a failure of the callback itself: only when a commit it made is still sitting unshipped in the buffer with a
    *       page in a file this node still has, or when it dropped a file the session did not create (issue #10506: a
    *       replacing index build drops the index it replaces before it fails, and every other node still holds that
-   *       file). A callback that failed before committing anything, or whose engine code dropped what it had built (a
-   *       failed index build drops its index, inside the session), left nothing behind, and quarantining it would turn
-   *       every refused DDL into a resync.</li>
+   *       file; since issue #10569 that build puts the index back inside the session and publishes, so this is left to
+   *       a restore that could not run there). A callback that failed before committing anything, or whose engine code
+   *       dropped what it had built (a failed index build drops its index, inside the session), left nothing behind, and
+   *       quarantining it would turn every refused DDL into a resync.</li>
    * </ul>
    */
   private Throwable unpublishedSchemaChange(final SchemaInstalmentState state, final Throwable sessionFailure,
@@ -3143,6 +3146,52 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (!change.create)
           return true;
     return false;
+  }
+
+  /**
+   * Leaves out of a session's final entry the buffered WAL that wrote only into files the session created and dropped again
+   * (issue #10569): a refused index build that the session outlives - a replacing build puts the replaced index back inside
+   * it - committed batches into files that are gone, and that no other node is ever told to create. A follower would skip
+   * every such page, one log line each, after carrying them through the log. An entry that also wrote into a file that is
+   * still there is kept whole. Costs nothing on a session that cancelled no create, the usual case; one that did decodes every
+   * buffered WAL image once, which for a large refused build is one pass over pages the leader is about to drop anyway.
+   */
+  // @VisibleForTesting
+  static void dropWalOfCancelledFiles(final Set<Integer> cancelledCreates, final List<byte[]> walEntries,
+      final List<Map<Integer, Integer>> bucketDeltas) {
+    if (cancelledCreates == null || cancelledCreates.isEmpty() || walEntries.isEmpty())
+      return;
+    // The two buffers are filled in step, one delta per WAL image. Lists that disagree are not stripped at all: removing by
+    // index would pair every later delta with the wrong WAL image, where shipping a few useless pages costs only bytes
+    if (bucketDeltas.size() != walEntries.size()) {
+      LogManager.instance().log(RaftReplicatedDatabase.class, Level.WARNING,
+          "Schema session buffered %d WAL entries but %d bucket deltas: shipping them whole", walEntries.size(),
+          bucketDeltas.size());
+      return;
+    }
+
+    for (int i = walEntries.size() - 1; i >= 0; i--) {
+      final WALFile.WALTransaction tx;
+      try {
+        tx = ArcadeStateMachine.deserializeWalTransaction(walEntries.get(i));
+      } catch (final RuntimeException e) {
+        // Unreadable here means unreadable to nobody's benefit: shipped as it is, as before
+        continue;
+      }
+      if (onlyWritesInto(tx, cancelledCreates)) {
+        walEntries.remove(i);
+        bucketDeltas.remove(i);
+      }
+    }
+  }
+
+  private static boolean onlyWritesInto(final WALFile.WALTransaction tx, final Set<Integer> fileIds) {
+    if (tx.pages == null || tx.pages.length == 0)
+      return false;
+    for (final WALFile.WALPage page : tx.pages)
+      if (!fileIds.contains(page.fileId))
+        return false;
+    return true;
   }
 
   /**

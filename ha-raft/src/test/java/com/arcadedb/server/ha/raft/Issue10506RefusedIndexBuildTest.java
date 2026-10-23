@@ -23,8 +23,10 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -38,6 +40,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,8 +55,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the leader's whole database.
  * <p>
  * The clean-up now runs inside the session: what the build created is gone by the time the session decides, and nothing is
- * quarantined. A refused REPLACING build is the exception, and stays quarantined on purpose: it dropped the index it replaces
- * inside the session, a file every other node still holds.
+ * quarantined. A refused REPLACING build dropped the index it replaces inside the session, a file every other node still holds:
+ * since issue #10569 it builds that index again inside the same session and publishes the net state instead of quarantining.
  */
 class Issue10506RefusedIndexBuildTest {
   private static final int RECORDS = 500;
@@ -127,22 +131,111 @@ class Issue10506RefusedIndexBuildTest {
 
   /**
    * The same refusal when the build REPLACES an index (withReplaceIfIncompatible): the replaced index was dropped inside the
-   * session, so its file is gone here and still on every other node. That change is unpublished, whatever the clean-up of the
-   * new index does, and the node must still be quarantined. Making this refusal cost no resync either is issue #10569.
+   * session, a file every other node still holds. Issue #10569: the replaced index is now built again inside the same session,
+   * which publishes the net state - the replaced files removed, the restored ones added - and costs the caller only an error.
    */
   @Test
-  void aRefusedReplacingBuildDroppedAnIndexOtherNodesStillHoldAndIsQuarantined() {
+  void aRefusedReplacingBuildRestoresTheReplacedIndexInsideTheSessionAndPublishesIt() {
     populateWithADuplicateAtTheEnd(1);
     db.getSchema().getType("Work").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
     final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     final RaftReplicatedDatabase replicated = replicated(leader(broker));
+    final Set<Integer> replacedFiles = indexFileIds();
+    final Set<Integer> filesBefore = fileIds();
 
     final TypeIndexBuilder builder = replicated.getSchema().buildTypeIndex("Work", new String[] { "id" });
     builder.withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withReplaceIfIncompatible(true).withBatchSize(50);
 
-    assertThatThrownBy(builder::create).isInstanceOf(RuntimeException.class);
+    assertThatThrownBy(builder::create).satisfiesAnyOf(
+        e -> assertThat(e).isInstanceOf(DuplicatedKeyException.class),
+        e -> assertThat(e).isInstanceOf(IndexException.class).hasRootCauseInstanceOf(DuplicatedKeyException.class));
 
-    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+    assertReplacedIndexRestoredAndPublished(broker, replacedFiles, filesBefore);
+  }
+
+  /** As above, refused by the pass over the finished index (issue #10349) after every bucket was built. */
+  @Test
+  void aReplacingBuildRefusedByTheDeferredUniquenessCheckRestoresTheReplacedIndexInsideTheSession() {
+    db.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 100L);
+    populateWithADuplicateAtTheEnd(3);
+    db.getSchema().getType("Work").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+    final Set<Integer> replacedFiles = indexFileIds();
+    final Set<Integer> filesBefore = fileIds();
+
+    final TypeIndexBuilder builder = replicated.getSchema().buildTypeIndex("Work", new String[] { "id" });
+    builder.withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withReplaceIfIncompatible(true);
+
+    assertThatThrownBy(builder::create).isInstanceOf(IndexException.class).hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    assertReplacedIndexRestoredAndPublished(broker, replacedFiles, filesBefore);
+  }
+
+  /** The replacing build users actually reach: a Cypher UNIQUE constraint over a plain index, on data that violates it. */
+  @Test
+  void aRefusedCypherUniqueConstraintOverAPlainIndexRestoresThePlainIndexInsideTheSession() {
+    final DocumentType type = db.getSchema().buildVertexType().withName("Work").withTotalBuckets(1).create();
+    type.createProperty("id", Type.STRING);
+    db.transaction(() -> {
+      for (int i = 0; i < RECORDS; i++)
+        db.newVertex("Work").set("id", "k" + i).save();
+      db.newVertex("Work").set("id", "k0").save();
+    });
+    type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+    final Set<Integer> replacedFiles = indexFileIds();
+    final Set<Integer> filesBefore = fileIds();
+
+    assertThatThrownBy(() -> replicated.command("opencypher", "CREATE CONSTRAINT FOR (n:Work) REQUIRE n.id IS UNIQUE"))
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    assertReplacedIndexRestoredAndPublished(broker, replacedFiles, filesBefore);
+  }
+
+  @SuppressWarnings("unchecked")
+  private void assertReplacedIndexRestoredAndPublished(final FakeRaftTransactionBroker broker, final Set<Integer> replacedFiles,
+      final Set<Integer> filesBefore) {
+    assertThat(stateMachine.isDatabaseDiverged(db.getName())).as("a refused replacing CREATE INDEX does not quarantine the leader")
+        .isFalse();
+    assertThat(stateMachine.quarantineCause(db.getName())).isNull();
+    assertThat(db.getFileManager().getRecordedChanges()).as("the recording session is released").isNull();
+
+    // The replaced definition is back, complete: one entry per record, the duplicate key included
+    final TypeIndex restored = db.getSchema().getType("Work").getIndexByProperties("id");
+    assertThat(restored).as("the replaced index is restored").isNotNull();
+    assertThat(restored.isUnique()).isFalse();
+    assertThat(restored.countEntries()).isEqualTo(RECORDS + 1L);
+
+    final Set<Integer> restoredFiles = indexFileIds();
+    final Set<Integer> expectedFiles = new HashSet<>(filesBefore);
+    expectedFiles.removeAll(replacedFiles);
+    expectedFiles.addAll(restoredFiles);
+    assertThat(fileIds()).as("no file of the failed build is left").isEqualTo(expectedFiles);
+
+    // ONE schema entry publishes the net state: the replaced files removed, the restored ones added
+    final List<List<Object>> published = broker.calls("replicateSchema");
+    assertThat(published).hasSize(1);
+    final List<Object> entry = published.getFirst();
+    assertThat(((Map<Integer, String>) entry.get(3)).keySet()).as("filesToRemove").isEqualTo(replacedFiles);
+    assertThat(((Map<Integer, String>) entry.get(2)).keySet()).as("filesToAdd").isEqualTo(restoredFiles);
+
+    // ... and none of its WAL names a file of the failed build, which no other node was ever told to create
+    final List<byte[]> walEntries = (List<byte[]>) entry.get(4);
+    final List<Map<Integer, Integer>> bucketDeltas = (List<Map<Integer, Integer>>) entry.get(5);
+    assertThat(bucketDeltas).hasSameSizeAs(walEntries);
+    assertThat(walEntries).as("the restored index's pages are shipped").isNotEmpty();
+    for (final byte[] wal : walEntries)
+      for (final WALFile.WALPage page : ArcadeStateMachine.deserializeWalTransaction(wal).pages)
+        assertThat(db.getFileManager().existsFile(page.fileId)).as("WAL page of file %d", page.fileId).isTrue();
+
+    // The type still takes writes, including the duplicate key the unique index refused
+    db.transaction(() -> db.command("sql", "INSERT INTO Work SET id = 'k0'"));
+  }
+
+  private Set<Integer> indexFileIds() {
+    return new HashSet<>(db.getSchema().getType("Work").getIndexByProperties("id").getFileIds());
   }
 
   private void assertRefusedWithNothingLeftBehind(final FakeRaftTransactionBroker broker, final Set<Integer> filesBefore) {
