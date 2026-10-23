@@ -84,6 +84,15 @@ public class CachedPage {
     return new ImmutablePage(pageId, size, content.getContent(), version, content.size());
   }
 
+  /**
+   * The byte {@code readByte(index)} answers on a view of this page ({@link #useAsImmutable()}), without building the view.
+   * It reads the backing array, which a view wraps whole, so it neither depends on nor moves the position of the shared buffer
+   * and is safe from many threads at once. For a reader that reads single values at absolute positions (#10654).
+   */
+  public byte readByte(final int index) {
+    return content.getContent()[BasePage.PAGE_HEADER_SIZE + index];
+  }
+
   public MutablePage useAsMutable() {
     final byte[] array = this.content.getByteBuffer().array();
     // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
