@@ -19,15 +19,19 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -84,6 +88,125 @@ class BucketPackedScanTest extends TestHelper {
     reopenDatabase();
     verifyModel();
     checkDatabaseIntegrity();
+  }
+
+  /**
+   * A transaction appends (which builds the summary of the page's record table), deletes a slot in the middle of the
+   * page, appends again and then rolls back. The model alone cannot see a stale summary here: the walk skips a slot
+   * deleted in the current transaction, so the inserts after the delete append at new slots whether or not the summary
+   * was dropped. The test therefore asserts the summary of the transaction's page directly: present after the appends,
+   * dropped by the delete, rebuilt by the next insert with the hole skipped (a slot deleted in the transaction is not
+   * reused by it, #10629), gone with the rolled back transaction and rebuilt by the first append of the next one.
+   */
+  @Test
+  void appendAfterInTransactionDeleteOfAMiddleSlotThenRollback() {
+    database.getSchema().createDocumentType("T", 1);
+    final Random rnd = new Random(7);
+    database.transaction(() -> {
+      for (int i = 0; i < 200; i++)
+        insert(rnd, 0);
+    });
+    verifyModel();
+
+    final Map<Integer, String> modelBefore = new HashMap<>(model);
+    final Map<Integer, RID> ridsBefore = new HashMap<>(rids);
+    final int nextIdBefore = nextId;
+    final RID middle = rids.get(100);
+
+    database.begin();
+    for (int i = 0; i < 20; i++)
+      insert(rnd, 0);
+    // all 220 records are on the first page of the bucket, and the transaction's own copy of it holds the summary
+    assertThat(transactionPage(middle).hasSlotScan(220)).isTrue();
+    database.deleteRecord(database.lookupByRID(middle, true));
+    model.remove(100);
+    rids.remove(100);
+    // the delete wrote a slot of the record table below the summarized end: the summary must be gone
+    assertThat(transactionPage(middle).hasSlotScan(220)).isFalse();
+    for (int i = 0; i < 20; i++)
+      insert(rnd, 0);
+    // the first insert after the delete re-read the table and rebuilt the summary; the hole the transaction deleted is not
+    // its to reuse, so the appends went to slots 220..239 and the summary points past them, not at the hole
+    assertThat(transactionPage(middle).hasSlotScan(240)).isTrue();
+    assertThat(transactionPage(middle).getSlotScanFirstFreeSlot()).isEqualTo(240);
+    assertThat(database.countType("T", true)).isEqualTo(model.size());
+    verifyModel();
+    database.rollback();
+
+    model.clear();
+    model.putAll(modelBefore);
+    rids.clear();
+    rids.putAll(ridsBefore);
+    nextId = nextIdBefore;
+    verifyModel();
+
+    // a new transaction starts from the committed page: no summary until it appends, then one that matches the page
+    database.begin();
+    assertThat(transactionPage(middle).hasSlotScan(200)).isFalse();
+    insert(rnd, 0);
+    assertThat(transactionPage(middle).hasSlotScan(201)).isTrue();
+    database.rollback();
+    model.clear();
+    model.putAll(modelBefore);
+    rids.clear();
+    rids.putAll(ridsBefore);
+    nextId = nextIdBefore;
+
+    // the next transaction appends to the same page again, and all of it survives a reopen
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        insert(rnd, 0);
+    });
+    verifyModel();
+    reopenDatabase();
+    verifyModel();
+    checkDatabaseIntegrity();
+  }
+
+  /** The transaction's own copy of the page that holds {@code rid}. */
+  private MutablePage transactionPage(final RID rid) {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+    final PageId pageId = new PageId((DatabaseInternal) database, bucket.getFileId(),
+        (int) (rid.getPosition() / bucket.getMaxRecordsInPage()));
+    try {
+      return ((DatabaseInternal) database).getTransaction().getPageToModify(pageId, bucket.getPageSize(), false);
+    } catch (final IOException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * The summary stands on one invariant: every mutation of a page passes updateModifiedRange. Drive every public
+   * write path of MutablePage over a page that holds a summary and check that each one drops it, so an existing
+   * writer that stops passing updateModifiedRange (a direct content.put*) fails here instead of leaving a stale
+   * summary behind. The list below is explicit: a NEW write method of MutablePage is covered only once it is added
+   * here, so add new writers to this test.
+   */
+  @Test
+  void everyMutablePageWritePathDropsTheSummary() {
+    final int pageSize = 4_096;
+    final List<Consumer<MutablePage>> writers = List.of(
+        p -> p.writeNumber(8, 1L), p -> p.writeLong(8, 1L), p -> p.writeInt(8, 1), p -> p.writeUnsignedInt(8, 1L),
+        p -> p.writeShort(8, (short) 1), p -> p.writeUnsignedShort(8, 1), p -> p.writeFloat(8, 1f), p -> p.writeDouble(8, 1d),
+        p -> p.writeByte(8, (byte) 1), p -> p.writeBytes(8, new byte[] { 1, 2 }), p -> p.writeByteArray(8, new byte[] { 1, 2 }),
+        p -> p.writeByteArray(8, new byte[] { 1, 2, 3 }, 1, 2), p -> p.writeZeros(8, 4), p -> p.writeString(8, "x"),
+        p -> p.move(16, 8, 4));
+    for (int i = 0; i < writers.size(); i++) {
+      final MutablePage page = new MutablePage(new PageId((DatabaseInternal) database, 1, 0), pageSize, new byte[pageSize], 0,
+          pageSize - BasePage.PAGE_HEADER_SIZE);
+      page.rememberSlotScan(3, 100, 3, 32);
+      assertThat(page.hasSlotScan(3)).isTrue();
+      // a write past the summarized part of the record table leaves it alone
+      page.writeInt(2_000, 1);
+      assertThat(page.hasSlotScan(3)).as("write beyond the table, writer %d", i).isTrue();
+      writers.get(i).accept(page);
+      assertThat(page.hasSlotScan(3)).as("writer %d drops the summary", i).isFalse();
+    }
+    final MutablePage cleared = new MutablePage(new PageId((DatabaseInternal) database, 1, 0), pageSize, new byte[pageSize], 0,
+        pageSize - BasePage.PAGE_HEADER_SIZE);
+    cleared.rememberSlotScan(3, 100, 3, 32);
+    cleared.clearContent();
+    assertThat(cleared.hasSlotScan(3)).isFalse();
   }
 
   /** kind 0 = tiny, 1 = a few hundred bytes, 2 = larger than a page, so it is stored as a chunk chain */
