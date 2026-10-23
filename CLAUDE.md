@@ -28,7 +28,9 @@ General design principles:
     license implications. CI enforces this allow-list on the Maven graph
     (`.github/scripts/check-license-allowlist.py`, run from `license-compliance.yml`) and on the npm packages Studio
     ships (`studio/test/dependency-licenses.test.js`, run by `npm test` in the Maven build and by
-    `studio-security-audit.yml`)
+    `studio-security-audit.yml`). Zlib, BlueOak-1.0.0, OFL-1.1 and CC-BY-4.0 are so far only in the npm check: the
+    Maven script matches exact clause spellings and fails closed, so the first Maven dependency under one of them
+    adds its spelling to `ALLOWED_CLAUSES`
   - When adding a dependency, you MUST update ATTRIBUTIONS.md and, if Apache-licensed with a NOTICE file, incorporate required notices into the main NOTICE file
 - for Studio (webapp), limit to jquery and bootstrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
 - always bear in mind PERFORMANCE. It must be always your mantra: performance and lightweight on garbage collector. If you can, prefer using arrays of primitives to List of Objects
