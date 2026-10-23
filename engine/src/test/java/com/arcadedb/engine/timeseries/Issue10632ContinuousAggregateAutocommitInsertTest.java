@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.ContinuousAggregateImpl;
+import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10632: a SQL {@code INSERT} into a TIMESERIES type registered the refresh of the continuous aggregates over the type as an
@@ -146,16 +148,66 @@ class Issue10632ContinuousAggregateAutocommitInsertTest extends TestHelper {
   @Test
   void anAutocommitInsertLeavesNoCallbackForTheNextUnrelatedCommit() {
     createSourceAndAggregate();
+    // the type the unrelated commit below writes to: created before the INSERT, so that its schema change is not that commit
     database.command("sql", "CREATE DOCUMENT TYPE Other");
 
     insert(H0 + 1_000, "a", 10);
     final long afterInsert = aggregate().getRefreshCount();
 
-    assertThat(((DatabaseInternal) database).getTransaction().hasCallbackKey("ca-refresh:A")).isFalse();
+    assertThat(((DatabaseInternal) database).getTransaction()
+        .hasCallbackKey(ContinuousAggregateRefresher.refreshCallbackKey("A"))).isFalse();
 
     // a commit that touches nothing of S must not refresh the aggregate
     database.transaction(() -> database.newDocument("Other").set("x", 1).save());
 
     assertThat(aggregate().getRefreshCount()).isEqualTo(afterInsert);
+  }
+
+  // ---- the other statement shapes that reach the same step
+
+  /** With no transaction the samples appended before a failing row are stored, and their aggregate owes them a refresh. */
+  @Test
+  void anAutocommitInsertThatFailsAfterAppendingStillRefreshesTheAggregate() {
+    createSourceAndAggregate();
+    final long before = aggregate().getRefreshCount();
+
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO S CONTENT [" //
+        + "{\"ts\": " + (H0 + 1_000) + ", \"h\": \"a\", \"v\": 1}," //
+        + "{\"ts\": \"not a timestamp\", \"h\": \"a\", \"v\": 2}]").close()).isInstanceOf(RuntimeException.class);
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(aggregate().getRefreshCount()).isEqualTo(before + 1);
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1));
+  }
+
+  @Test
+  void anAutocommitInsertFromASelectRefreshesOncePerStatement() {
+    createSourceAndAggregate();
+    database.command("sql", "CREATE DOCUMENT TYPE Src");
+    database.transaction(() -> {
+      database.newDocument("Src").set("ts", H0 + 1_000).set("h", "a").set("v", 1.0).save();
+      database.newDocument("Src").set("ts", H0 + 2_000).set("h", "a").set("v", 2.0).save();
+      database.newDocument("Src").set("ts", H0 + HOUR + 1_000).set("h", "b").set("v", 4.0).save();
+    });
+    final long before = aggregate().getRefreshCount();
+
+    database.command("sql", "INSERT INTO S FROM SELECT ts, h, v FROM Src").close();
+
+    assertThat(aggregate().getRefreshCount()).isEqualTo(before + 1);
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3), new Bucket(H0 + HOUR, "b", 4));
+  }
+
+  /** A script without BEGIN runs each INSERT with no transaction open: each refreshes the aggregate when it ends. */
+  @Test
+  void eachInsertOfAScriptWithNoTransactionRefreshesTheAggregate() {
+    createSourceAndAggregate();
+    final long before = aggregate().getRefreshCount();
+
+    database.command("sqlscript", //
+        "INSERT INTO S SET ts = " + (H0 + 1_000) + ", h = 'a', v = 1;" //
+            + "INSERT INTO S SET ts = " + (H0 + HOUR + 1_000) + ", h = 'a', v = 2;").close();
+
+    assertThat(aggregate().getRefreshCount()).isEqualTo(before + 2);
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1), new Bucket(H0 + HOUR, "a", 2));
   }
 }
