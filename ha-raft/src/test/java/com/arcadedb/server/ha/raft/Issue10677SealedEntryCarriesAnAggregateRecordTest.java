@@ -56,7 +56,7 @@ class Issue10677SealedEntryCarriesAnAggregateRecordTest {
   }
 
   @Test
-  void aSchemaWithNoRecordIsACompactions() {
+  void aSchemaWithNoRecordIsACompaction() {
     assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isFalse();
     assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, null)).isFalse();
     assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, "")).isFalse();

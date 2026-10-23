@@ -5053,12 +5053,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (schemaJson == null || !schemaJson.contains(INVALIDATED_FROM_KEY))
       return false;
     final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
+    // the key elsewhere in the document (a property or type named after it) is no record: the entry stays a compaction's
     if (aggregates == null)
       return false;
     final Schema schema = db.getSchema();
     for (final String name : aggregates.keySet()) {
-      final JSONObject definition = aggregates.getJSONObject(name);
-      if (!definition.has(INVALIDATED_FROM_KEY) || !definition.has(INVALIDATED_TO_KEY))
+      final JSONObject definition = aggregates.getJSONObject(name, null);
+      if (definition == null || !definition.has(INVALIDATED_FROM_KEY) || !definition.has(INVALIDATED_TO_KEY))
         continue;
       if (!schema.existsContinuousAggregate(name)
           || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
