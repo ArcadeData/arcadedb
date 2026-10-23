@@ -69,6 +69,9 @@ public class TimeSeriesShard implements AutoCloseable {
    * Stateless, hence one instance rather than a lambda captured per call.
    */
   private static final TimeSeriesRowVisitor STOP_AT_THE_FIRST_ROW = row -> false;
+  /** The change of a session that only ships the record {@link #invalidateContinuousAggregatesBehindWatermark} already applied. */
+  private static final Runnable             NO_SCHEMA_CHANGE      = () -> {
+  };
 
   private final int                    shardIndex;
   private final String                 typeName;
@@ -473,17 +476,23 @@ public class TimeSeriesShard implements AutoCloseable {
 
     // the samples are committed: a failure to save the record must not report the append as failed. The record stays in memory,
     // so the next refresh of this process applies it; a later schema save writes it, and under HA a later schema session ships it
-    if (database.getWrappedDatabaseInstance().isReplicated())
-      try {
-        schema.recordContinuousAggregateChange(NO_SCHEMA_CHANGE);
-        return;
-      } catch (final RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Could not ship to the replicas the schema recording the samples appended to the TIMESERIES type '%s' behind the "
-                + "watermark of a continuous aggregate: this server still recomputes their buckets at its next refresh, a replica "
-                + "promoted to leader before a later schema change reaches it does not", e, typeName);
-      }
+    if (!database.getWrappedDatabaseInstance().isReplicated()) {
+      saveLateSampleRecordLocally(schema);
+      return;
+    }
+    try {
+      schema.recordContinuousAggregateChange(NO_SCHEMA_CHANGE);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not ship to the replicas the schema recording the samples appended to the TIMESERIES type '%s' behind the "
+              + "watermark of a continuous aggregate: this server still recomputes their buckets at its next refresh, a replica "
+              + "promoted to leader before a later schema change reaches it does not", e, typeName);
+      saveLateSampleRecordLocally(schema);
+    }
+  }
 
+  /** Saves the late-sample record in this server's schema file only, logging rather than throwing: the samples are committed. */
+  private void saveLateSampleRecordLocally(final LocalSchema schema) {
     try {
       schema.saveConfiguration();
     } catch (final RuntimeException e) {
@@ -493,10 +502,6 @@ public class TimeSeriesShard implements AutoCloseable {
           e, typeName);
     }
   }
-
-  /** The change of a session that only ships the record {@link #invalidateContinuousAggregatesBehindWatermark} already applied. */
-  private static final Runnable NO_SCHEMA_CHANGE = () -> {
-  };
 
   /**
    * Scans both sealed and mutable layers, merging results by timestamp.
