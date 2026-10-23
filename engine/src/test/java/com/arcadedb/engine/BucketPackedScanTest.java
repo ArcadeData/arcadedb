@@ -95,8 +95,8 @@ class BucketPackedScanTest extends TestHelper {
    * page, appends again and then rolls back. The model alone cannot see a stale summary here: the walk skips a slot
    * deleted in the current transaction, so the inserts after the delete append at new slots whether or not the summary
    * was dropped. The test therefore asserts the summary of the transaction's page directly: present after the appends,
-   * dropped by the delete, still dropped after the next append (the page now has a hole), gone with the rolled back
-   * transaction and rebuilt by the first append of the next one.
+   * dropped by the delete, rebuilt by the next insert with the hole skipped (a slot deleted in the transaction is not
+   * reused by it, #10629), gone with the rolled back transaction and rebuilt by the first append of the next one.
    */
   @Test
   void appendAfterInTransactionDeleteOfAMiddleSlotThenRollback() {
@@ -117,16 +117,18 @@ class BucketPackedScanTest extends TestHelper {
     for (int i = 0; i < 20; i++)
       insert(rnd, 0);
     // all 220 records are on the first page of the bucket, and the transaction's own copy of it holds the summary
-    assertThat(transactionPage(middle).hasPackedScan(220)).isTrue();
+    assertThat(transactionPage(middle).hasSlotScan(220)).isTrue();
     database.deleteRecord(database.lookupByRID(middle, true));
     model.remove(100);
     rids.remove(100);
     // the delete wrote a slot of the record table below the summarized end: the summary must be gone
-    assertThat(transactionPage(middle).hasPackedScan(220)).isFalse();
+    assertThat(transactionPage(middle).hasSlotScan(220)).isFalse();
     for (int i = 0; i < 20; i++)
       insert(rnd, 0);
-    // the appends went to slots 220..239, and the page still has the hole of the deleted slot: no summary describes it
-    assertThat(transactionPage(middle).hasPackedScan(240)).isFalse();
+    // the first insert after the delete re-read the table and rebuilt the summary; the hole the transaction deleted is not
+    // its to reuse, so the appends went to slots 220..239 and the summary points past them, not at the hole
+    assertThat(transactionPage(middle).hasSlotScan(240)).isTrue();
+    assertThat(transactionPage(middle).getSlotScanFirstFreeSlot()).isEqualTo(240);
     assertThat(database.countType("T", true)).isEqualTo(model.size());
     verifyModel();
     database.rollback();
@@ -140,9 +142,9 @@ class BucketPackedScanTest extends TestHelper {
 
     // a new transaction starts from the committed page: no summary until it appends, then one that matches the page
     database.begin();
-    assertThat(transactionPage(middle).hasPackedScan(200)).isFalse();
+    assertThat(transactionPage(middle).hasSlotScan(200)).isFalse();
     insert(rnd, 0);
-    assertThat(transactionPage(middle).hasPackedScan(201)).isTrue();
+    assertThat(transactionPage(middle).hasSlotScan(201)).isTrue();
     database.rollback();
     model.clear();
     model.putAll(modelBefore);
