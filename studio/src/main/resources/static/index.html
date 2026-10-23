@@ -20,7 +20,6 @@
     <link rel="stylesheet" href="dist/css/show-hint.css" />
     <link rel="stylesheet" href="dist/css/neo.css" />
     <link rel="stylesheet" href="dist/css/fontawesome.min.css" />
-    <link rel="stylesheet" href="dist/css/apexcharts.css" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -67,10 +66,12 @@
     <script src="dist/js/cytoscape-cxtmenu.js"></script>
     <script src="dist/js/cytoscape-graphml.js"></script>
     <script src="dist/js/cytoscape-node-html-label.min.js"></script>
-    <script src="dist/js/apexcharts.min.js"></script>
+    <!-- Charts: Apache ECharts (Apache-2.0), drawn through js/studio-charts.js (issue #10579) -->
+    <script src="dist/js/echarts.min.js"></script>
 
     <!-- Delegated data-on-* handlers: the Content-Security-Policy refuses inline on*="..." attributes (issue #9681) -->
     <script src="js/studio-actions.js"></script>
+    <script src="js/studio-charts.js"></script>
 
     <!-- COMPATIBILITY LAYER -->
     <script src="js/studio-notify.js"></script>

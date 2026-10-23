@@ -163,7 +163,7 @@ updates:
       ui-visualization:
         patterns:
           - "cytoscape*"
-          - "apexcharts"
+          - "echarts"
           - "codemirror"
           - "notyf"
           - "clipboard"

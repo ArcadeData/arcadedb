@@ -23,7 +23,6 @@
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.1",
     "@popperjs/core": "^2.11.8",
-    "apexcharts": "^8.3.0",
     "bootstrap": "^5.3.8",
     "codemirror": "^5.65.21",
     "cytoscape": "^3.34.3",
@@ -39,6 +38,7 @@
     "datatables.net-responsive-bs5": "^4.1.1",
     "datatables.net-select": "^4.1.1",
     "datatables.net-select-bs5": "^4.1.1",
+    "echarts": "^6.1.0",
     "jquery": "^4.0.0",
     "jszip": "^3.10.2",
     "pdfmake": "^0.3.11",

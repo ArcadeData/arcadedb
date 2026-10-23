@@ -28,9 +28,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-const src = fs.readFileSync(path.join(__dirname, "..", "src", "main", "resources", "static", "js", "studio-ai-chart.js"), "utf8");
+const JS_DIR = path.join(__dirname, "..", "src", "main", "resources", "static", "js");
 const ctx = vm.createContext({});
-vm.runInContext(src, ctx);
+// studio-charts.js first, as index.html loads it: the option builders format numbers with its helper
+vm.runInContext(fs.readFileSync(path.join(JS_DIR, "studio-charts.js"), "utf8"), ctx);
+vm.runInContext(fs.readFileSync(path.join(JS_DIR, "studio-ai-chart.js"), "utf8"), ctx);
 
 const plain = (v) => JSON.parse(JSON.stringify(v));
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
@@ -116,7 +118,7 @@ test("labels are text: nested values become short JSON, nulls a marker, long tex
   assert.equal(m.categories[0], "{\u201da\u201d:1}"); // the quotes are look-alikes (see aiChartLabel)
   assert.equal(m.categories[1], "(none)");
   assert.ok(m.categories[2].length <= 60);
-  // ApexCharts writes some texts (a pie's legend, the tooltip) as HTML: no label may contain a character that forms a tag or leaves an attribute
+  // a chart library can write some texts (a legend, the tooltip) as HTML: no label may contain a character that forms a tag or leaves an attribute
   assert.ok(m.categories.every((c) => !/[<>"']/.test(c)));
   assert.equal(m.categories[3], "\u2039img src=x onerror=alert(1)\u203a");
 });
@@ -132,23 +134,40 @@ test("rows that are not objects, or no rows, give an empty model", () => {
   assert.equal(ctx.aiChartModel([1, "x", null], valid()).categories.length, 0);
 });
 
-test("the options: a bar, a horizontal bar, a line and a pie, in the light and the dark theme", () => {
+test("the options: a bar, a horizontal bar, a line, an area and a donut", () => {
   const model = ctx.aiChartModel([{ s: "a", n: 1 }, { s: "b", n: 2 }], valid());
-  const bar = ctx.aiChartOptions(valid(), model, false);
-  assert.equal(bar.chart.type, "bar");
-  assert.equal(bar.theme.mode, "light");
-  assert.deepEqual(plain(bar.xaxis.categories), ["a", "b"]);
-  assert.equal(bar.plotOptions, undefined);
-  const horizontal = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model, true);
-  assert.equal(horizontal.chart.type, "bar");
-  assert.equal(horizontal.plotOptions.bar.horizontal, true);
-  assert.equal(horizontal.theme.mode, "dark");
-  assert.equal(ctx.aiChartOptions(Object.assign(valid(), { type: "line" }), model, false).chart.type, "line");
-  assert.equal(ctx.aiChartOptions(Object.assign(valid(), { type: "area" }), model, false).stroke.width, 2);
-  const pie = ctx.aiChartOptions(Object.assign(valid(), { type: "donut" }), ctx.aiChartModel([{ s: "a", n: 1 }], Object.assign(valid(), { type: "donut" })), false);
-  assert.equal(pie.chart.type, "donut");
-  assert.deepEqual(plain(pie.series), [1]);
-  assert.deepEqual(plain(pie.labels), ["a"]);
+  const bar = ctx.aiChartOptions(valid(), model);
+  assert.equal(bar.series[0].type, "bar");
+  assert.deepEqual(plain(bar.series[0].data), [1, 2]);
+  assert.deepEqual(plain(bar.xAxis.data), ["a", "b"]);
+  assert.equal(bar.yAxis.type, "value");
+  assert.equal(bar.legend.show, false); // one measure: no legend to read
+  const horizontal = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model);
+  assert.equal(horizontal.series[0].type, "bar");
+  assert.equal(horizontal.xAxis.type, "value");
+  assert.deepEqual(plain(horizontal.yAxis.data), ["a", "b"]);
+  assert.equal(horizontal.yAxis.inverse, true); // the first row on top
+  const line = ctx.aiChartOptions(Object.assign(valid(), { type: "line" }), model);
+  assert.equal(line.series[0].type, "line");
+  assert.equal(line.series[0].areaStyle, undefined);
+  const area = ctx.aiChartOptions(Object.assign(valid(), { type: "area" }), model);
+  assert.equal(area.series[0].type, "line");
+  assert.ok(area.series[0].areaStyle);
+  const donutSpec = Object.assign(valid(), { type: "donut" });
+  const donut = ctx.aiChartOptions(donutSpec, ctx.aiChartModel([{ s: "a", n: 1 }, { s: "b", n: 3 }], donutSpec));
+  assert.equal(donut.series[0].type, "pie");
+  assert.deepEqual(plain(donut.series[0].radius), ["40%", "65%"]);
+  assert.deepEqual(plain(donut.series[0].data), [{ name: "a", value: 1 }, { name: "b", value: 3 }]);
+  const pieSpec = Object.assign(valid(), { type: "pie" });
+  assert.equal(ctx.aiChartOptions(pieSpec, ctx.aiChartModel([{ s: "a", n: 1 }], pieSpec)).series[0].radius, "65%");
+});
+
+test("a horizontal bar chart grows with its categories, the others keep one height", () => {
+  const rows = Array.from({ length: 20 }, (_, i) => ({ s: "c" + i, n: i }));
+  const model = ctx.aiChartModel(rows, valid());
+  assert.equal(ctx.aiChartHeight(valid(), model), 320);
+  assert.equal(ctx.aiChartHeight(Object.assign(valid(), { type: "horizontalBar" }), model), 60 + 20 * 30);
+  assert.equal(ctx.aiChartHeight(Object.assign(valid(), { type: "horizontalBar" }), ctx.aiChartModel([{ s: "a", n: 1 }], valid())), 240);
 });
 
 // ===== result tables =====
@@ -271,18 +290,18 @@ test("no columns at all (an empty result) is an empty model, not an error", () =
 
 test("a horizontal chart gets an explicit category axis, so labels are never read as numbers", () => {
   const model = ctx.aiChartModel([{ s: "a", n: 1 }], valid());
-  const options = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model, false);
-  assert.equal(options.xaxis.type, "category");
+  const options = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model);
+  assert.equal(options.yAxis.type, "category");
 });
 
 test("a number formatter is on the axis that shows numbers: a horizontal chart's category names are never turned into NaN", () => {
   const model = ctx.aiChartModel([{ s: "American-Style Pale Ale", n: 1.234567 }], valid());
-  const horizontal = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model, false);
-  const yFormat = horizontal.yaxis && horizontal.yaxis.labels && horizontal.yaxis.labels.formatter;
-  assert.ok(!yFormat || yFormat("American-Style Pale Ale") === "American-Style Pale Ale"); // the y axis carries the names
-  assert.equal(horizontal.xaxis.labels.formatter(1.234567), 1.2346);
-  assert.equal(horizontal.xaxis.labels.formatter("text"), "text");
-  const vertical = ctx.aiChartOptions(Object.assign(valid(), { type: "bar" }), model, false);
-  assert.equal(vertical.yaxis.labels.formatter(2.5), 2.5);
-  assert.equal(vertical.yaxis.labels.formatter(null), "");
+  const horizontal = ctx.aiChartOptions(Object.assign(valid(), { type: "horizontalBar" }), model);
+  assert.equal(horizontal.yAxis.axisLabel.formatter, undefined); // the y axis carries the names
+  assert.equal(horizontal.xAxis.axisLabel.formatter(1.234567), "1.2346");
+  assert.equal(horizontal.xAxis.axisLabel.formatter("text"), "text");
+  const vertical = ctx.aiChartOptions(Object.assign(valid(), { type: "bar" }), model);
+  assert.equal(vertical.xAxis.axisLabel.formatter, undefined);
+  assert.equal(vertical.yAxis.axisLabel.formatter(2.5), "2.5");
+  assert.equal(vertical.yAxis.axisLabel.formatter(null), "");
 });

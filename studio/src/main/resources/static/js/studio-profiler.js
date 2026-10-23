@@ -499,36 +499,45 @@ function profilerShowDetail(index) {
 
   // Step chart (horizontal bar). Only the timed steps are plotted: a step with no measured sample would
   // otherwise draw a zero-length bar, which reads as "instant" and contradicts the "not timed" row above.
+  var stepChart = document.querySelector("#profilerStepChart");
+  if (typeof echarts !== "undefined" && stepChart) studioChartDispose(echarts.getInstanceByDom(stepChart));
   jQuery("#profilerStepChart").empty();
   var timedSteps = [];
   for (var t = 0; t < steps.length; t++)
     if (!profilerIsStepUntimed(steps[t]))
       timedSteps.push(steps[t]);
-  if (timedSteps.length > 0 && typeof ApexCharts !== "undefined") {
-    var categories = [];
-    var avgData = [];
-    var maxData = [];
-    for (var k = 0; k < timedSteps.length; k++) {
-      categories.push(timedSteps[k].name);
-      avgData.push(timedSteps[k].avgCostMs);
-      maxData.push(timedSteps[k].maxCostMs);
-    }
-    var chart = new ApexCharts(document.querySelector("#profilerStepChart"), {
-      chart: { type: "bar", height: Math.max(150, timedSteps.length * 40) },
-      plotOptions: { bar: { horizontal: true, barHeight: "60%" } },
-      series: [
-        { name: "Avg (ms)", data: avgData },
-        { name: "Max (ms)", data: maxData }
-      ],
-      xaxis: { categories: categories, title: { text: "Time (ms)" } },
-      colors: ["#3b82f6", "#ef4444"],
-      legend: { position: "top" },
-      tooltip: { y: { formatter: function(val) { return val + " ms"; } } }
-    });
-    chart.render();
-  }
+  if (timedSteps.length > 0)
+    studioChartDraw(stepChart, profilerStepChartOption(timedSteps), Math.max(150, 60 + timedSteps.length * 40));
 
   jQuery("#profilerQueryDetail").show();
+}
+
+/** The ECharts option of the step chart: the average and the maximum time of each timed step, one row per step, in order. */
+function profilerStepChartOption(timedSteps) {
+  var names = [];
+  var avgData = [];
+  var maxData = [];
+  for (var k = 0; k < timedSteps.length; k++) {
+    names.push(timedSteps[k].name);
+    avgData.push(timedSteps[k].avgCostMs);
+    maxData.push(timedSteps[k].maxCostMs);
+  }
+  var ms = function (val) {
+    return val + " ms";
+  };
+  return {
+    animation: false,
+    color: ["#3b82f6", "#ef4444"],
+    legend: { top: 0 },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: ms },
+    grid: { left: 16, right: 24, top: 32, bottom: 32 },
+    xAxis: { type: "value", name: "Time (ms)", nameLocation: "middle", nameGap: 24 },
+    yAxis: { type: "category", data: names, inverse: true },
+    series: [
+      { name: "Avg (ms)", type: "bar", barCategoryGap: "40%", data: avgData },
+      { name: "Max (ms)", type: "bar", data: maxData }
+    ]
+  };
 }
 
 function profilerBackToList() {

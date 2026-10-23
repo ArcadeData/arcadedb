@@ -44,7 +44,7 @@ Tabs: Query | Database | Server | Cluster | API | Info | Logout
 
 All modules are loaded via `<script>` tags in `index.html` (no ES modules, no imports). **Order matters**:
 
-1. Vendor libraries (jQuery, Bootstrap, SweetAlert2, CodeMirror, DataTables, Cytoscape, ApexCharts)
+1. Vendor libraries (jQuery, Bootstrap, SweetAlert2, CodeMirror, DataTables, Cytoscape, Apache ECharts + `studio-charts.js`)
 2. Compatibility shims (Bootstrap 4 -> 5 data attribute mapping, Toast init)
 3. `studio-utils.js` - Must load first (other modules depend on its globals)
 4. `studio-database.js` - Database operations
