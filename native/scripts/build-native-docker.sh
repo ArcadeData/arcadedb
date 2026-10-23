@@ -62,6 +62,11 @@ set -euo pipefail
 #   --builder-parallelism <n>  Cap the threads native-image compiles with (--parallelism). Each
 #                          compile thread costs heap: CI's runners have 4 CPUs, a 12-core Mac gives the
 #                          builder 12 and can run out of memory where CI does not.
+#   --march <baseline>     CPU baseline to compile for (native-image -march), e.g. compatibility
+#                          for a binary that runs on any CPU of the architecture. Default: the
+#                          native.march baseline native/pom.xml sets for the arch (x86-64-v3 /
+#                          armv8.1-a), the one the published images use. See docs/native-image.md,
+#                          "CPU requirements".
 #   --allow-low-memory     Proceed even though Docker has less memory than this build needs.
 #   --rebuild-builder      Rebuild the builder image even if it already exists locally.
 #   --allow-emulation      Permit --arch different from the host's (QEMU; expect hours, not minutes).
@@ -90,6 +95,7 @@ ALLOW_EMULATION=0
 ALLOW_LOW_MEMORY=0
 BUILDER_MEMORY=""
 BUILDER_PARALLELISM=""
+MARCH=""
 
 log()  { echo "[native-docker] $*"; }
 fail() { echo "[native-docker] ERROR: $*" >&2; exit 1; }
@@ -110,6 +116,9 @@ while [ $# -gt 0 ]; do
     --builder-memory=*) BUILDER_MEMORY="${1#*=}"; shift ;;
     --builder-parallelism)   BUILDER_PARALLELISM="${2:-}"; shift 2 ;;
     --builder-parallelism=*) BUILDER_PARALLELISM="${1#*=}"; shift ;;
+    --march)            [ $# -ge 2 ] || fail "--march requires a value (e.g. compatibility)"
+                        MARCH="$2"; shift 2 ;;
+    --march=*)          MARCH="${1#*=}"; shift ;;
     --allow-low-memory) ALLOW_LOW_MEMORY=1; shift ;;
     --rebuild-builder)  REBUILD_BUILDER=1; shift ;;
     --allow-emulation)  ALLOW_EMULATION=1; shift ;;
@@ -316,6 +325,13 @@ if [ -n "$BUILDER_PARALLELISM" ]; then
 fi
 [ -z "$NI_VALUE" ] || NI_OPTS=(-e "NATIVE_IMAGE_OPTIONS=$NI_VALUE")
 
+# Without --march the pom's per-arch native.march baseline applies, the one the published image uses.
+MARCH_ARGS=()
+if [ -n "$MARCH" ]; then
+  MARCH_ARGS=("-Dnative.march=$MARCH")
+  log "compiling for CPU baseline -march=$MARCH instead of the published image's"
+fi
+
 if [ "$SKIP_BINARY" = "0" ]; then
   mkdir -p "$M2_DIR"
   log "building the linux/$ARCH binary in the container (this is the slow part)"
@@ -337,7 +353,8 @@ if [ "$SKIP_BINARY" = "0" ]; then
     ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"} \
     -w /workspace \
     "$BUILDER_IMAGE" \
-    ./mvnw -B -ntp -Pnative -pl :arcadedb-native -am -DskipTests "$MODE_ARG" package
+    ./mvnw -B -ntp -Pnative -pl :arcadedb-native -am -DskipTests "$MODE_ARG" \
+    ${MARCH_ARGS[@]+"${MARCH_ARGS[@]}"} package
 else
   log "--skip-binary-build: reusing whatever is already in native/target"
 fi
