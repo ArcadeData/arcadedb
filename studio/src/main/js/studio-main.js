@@ -59,8 +59,8 @@ cytoscape.use(cxtmenu);
 cytoscape.use(nodeHtmlLabel);
 window.cytoscape = cytoscape;
 
-import ApexCharts from 'apexcharts';
-window.ApexCharts = ApexCharts;
+import * as echarts from 'echarts';
+window.echarts = echarts;
 
 import CodeMirror from 'codemirror';
 import 'codemirror/mode/sql/sql';

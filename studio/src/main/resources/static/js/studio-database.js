@@ -5978,21 +5978,43 @@ function displayDatabaseStats(stats) {
     stats.deleteRecord || 0
   ];
 
-  if (_dbMetricsCrudChart) {
-    _dbMetricsCrudChart.updateSeries(crudData);
-  } else {
-    _dbMetricsCrudChart = new ApexCharts(document.querySelector("#dbStatCrudChart"), {
-      chart: { type: "donut", height: 200 },
-      series: crudData,
-      labels: ["Create", "Read", "Update", "Delete"],
-      colors: ["#28a745", "#00aeee", "#ffc107", "#dc3545"],
-      legend: { position: "bottom", fontSize: "11px" },
-      plotOptions: { pie: { donut: { size: "50%" } } },
-      dataLabels: { enabled: true, formatter: function (val) { return val.toFixed(0) + "%"; } },
-      noData: { text: "No CRUD operations yet" }
-    });
-    _dbMetricsCrudChart.render();
-  }
+  _dbMetricsCrudChart = studioChartDraw(document.querySelector("#dbStatCrudChart"), dbCrudChartOption(crudData), 200, _dbMetricsCrudChart);
+}
+
+/**
+ * The ECharts option of the CRUD donut: `counts` are the create, read, update and delete operations, each slice labelled
+ * with its share. With no operation at all there is nothing to divide, so the chart says so instead of drawing a ring.
+ */
+function dbCrudChartOption(counts) {
+  var total = 0;
+  for (var i = 0; i < counts.length; i++) total += counts[i];
+  if (total === 0)
+    return { title: { text: "No CRUD operations yet", left: "center", top: "middle", textStyle: { fontSize: 13, fontWeight: "normal" } }, series: [] };
+  var names = ["Create", "Read", "Update", "Delete"];
+  return {
+    animation: false,
+    color: ["#28a745", "#00aeee", "#ffc107", "#dc3545"],
+    tooltip: { trigger: "item" },
+    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    series: [
+      {
+        name: "CRUD",
+        type: "pie",
+        radius: ["35%", "70%"],
+        center: ["50%", "42%"],
+        stillShowZeroSum: false,
+        label: {
+          position: "inside",
+          formatter: function (params) {
+            return params.percent > 0 ? Math.round(params.percent) + "%" : "";
+          }
+        },
+        data: names.map(function (name, index) {
+          return { name: name, value: counts[index] };
+        })
+      }
+    ]
+  };
 }
 
 function mvStatusBadge(status) {

@@ -149,13 +149,11 @@ module.exports = {
           from: 'node_modules/cytoscape/dist/cytoscape.min.js',
           to: 'js/cytoscape.min.js',
         },
+        // Apache ECharts, the "common" build: line, bar, pie and scatter charts with the grid, legend, tooltip, toolbox and
+        // dataZoom components, which is every chart Studio draws (issue #10579)
         {
-          from: 'node_modules/apexcharts/dist/apexcharts.min.js',
-          to: 'js/apexcharts.min.js',
-        },
-        {
-          from: 'node_modules/apexcharts/dist/apexcharts.css',
-          to: 'css/apexcharts.css',
+          from: 'node_modules/echarts/dist/echarts.common.min.js',
+          to: 'js/echarts.min.js',
         },
         {
           from: 'node_modules/codemirror/lib/codemirror.js',

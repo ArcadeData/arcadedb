@@ -260,6 +260,20 @@ plugin; not on the core/server compile classpath.
 | org.jetbrains.kotlin | kotlin-stdlib | 2.2.21 | Apache 2.0 | https://kotlinlang.org/ |
 | org.jetbrains | annotations | 13.0 | Apache 2.0 | https://github.com/JetBrains/java-annotations |
 
+### Studio (Web UI) Charting
+
+Studio's charts are drawn with Apache ECharts, bundled in the `arcadedb-studio` jar as `static/dist/js/echarts.min.js`
+(the library's "common" build, which includes ZRender and tslib). It replaced ApexCharts in 26.11.1: ApexCharts is no
+longer open source from 5.1.0 on (issue #10579).
+
+| npm package | Version | License | Homepage |
+|-------------|---------|---------|----------|
+| echarts | 6.1.0 | Apache 2.0 | https://echarts.apache.org/ |
+| zrender (bundled in echarts) | 6.1.0 | BSD 3-Clause | https://github.com/ecomfe/zrender |
+| tslib (bundled in echarts) | 2.3.0 | 0BSD | https://github.com/microsoft/tslib |
+
+ECharts also includes code derived from d3 (Copyright 2010-2016 Mike Bostock, BSD 3-Clause).
+
 ### Transitive Dependencies Found by the #5651 License Audit
 
 Not declared directly in any module's `pom.xml`; pulled in transitively and missing from this

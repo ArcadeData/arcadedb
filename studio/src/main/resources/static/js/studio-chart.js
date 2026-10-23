@@ -201,6 +201,59 @@ function chartRecordsFromPromQL(response) {
   return null;
 }
 
+/**
+ * The ECharts option that draws a chartBuildSeries model as a "line", "area" or "bar" chart. A time axis can be zoomed; a
+ * category axis lists every x of every series once, in the order they first appear. A null measure is a gap in the line.
+ */
+function chartOption(model, type) {
+  var timed = model.xType === "datetime";
+  var categories = [];
+  if (!timed) {
+    var seen = {};
+    for (var s = 0; s < model.series.length; s++)
+      for (var p = 0; p < model.series[s].data.length; p++) {
+        var x = model.series[s].data[p].x;
+        if (Object.prototype.hasOwnProperty.call(seen, x)) continue;
+        seen[x] = true;
+        categories.push(x);
+      }
+  }
+  var bars = type === "bar";
+  var option = {
+    animation: false,
+    tooltip: { trigger: "axis" },
+    legend: { type: "scroll", bottom: 0 },
+    grid: { left: 16, right: 24, top: 40, bottom: timed ? 80 : 48 },
+    toolbox: { feature: { dataZoom: { yAxisIndex: "none" }, restore: {}, saveAsImage: {} } },
+    xAxis: timed ? { type: "time" } : { type: "category", data: categories, axisLabel: { rotate: 45, hideOverlap: true } },
+    yAxis: {
+      type: "value",
+      axisLabel: {
+        formatter: function (val) {
+          return studioChartNumber(val, 4);
+        }
+      }
+    },
+    series: model.series.map(function (serie) {
+      var out = {
+        name: serie.name,
+        type: bars ? "bar" : "line",
+        data: serie.data.map(function (point) {
+          return [point.x, point.y];
+        })
+      };
+      if (!bars) {
+        out.smooth = true;
+        out.lineStyle = { width: 2 };
+      }
+      if (type === "area") out.areaStyle = { opacity: 0.3 };
+      return out;
+    })
+  };
+  if (timed) option.dataZoom = [{ type: "inside" }, { type: "slider", bottom: 32, height: 20 }];
+  return option;
+}
+
 // ===== DOM handlers =====
 
 /** Shows the PromQL range and step controls instead of Auto Limit while the PromQL language is selected. */
@@ -326,10 +379,8 @@ function renderQueryChart() {
   }
   chartFillControls(columns, chartSpec);
 
-  if (chartInstance) {
-    chartInstance.destroy();
-    chartInstance = null;
-  }
+  studioChartDispose(chartInstance);
+  chartInstance = null;
   var model = chartBuildSeries(records, chartSpec);
   var hasPoints = model.series.some(function (s) {
     return s.data.length > 0;
@@ -343,18 +394,7 @@ function renderQueryChart() {
     return;
   }
 
-  var options = {
-    chart: { type: chartType, height: 380, zoom: { enabled: model.xType === "datetime" }, toolbar: { show: true } },
-    series: model.series,
-    xaxis: model.xType === "datetime" ? { type: "datetime", labels: { datetimeUTC: false } } : { type: "category", labels: { rotate: -45, trim: true } },
-    yaxis: { labels: { formatter: function (val) { return val != null ? Number(val.toFixed(4)) : ""; } } },
-    stroke: { curve: "smooth", width: chartType === "bar" ? 0 : 2 },
-    dataLabels: { enabled: false },
-    tooltip: { x: { format: "yyyy-MM-dd HH:mm:ss" } },
-    theme: { mode: document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light" }
-  };
-  chartInstance = new ApexCharts(document.querySelector("#queryChart"), options);
-  chartInstance.render();
+  chartInstance = studioChartDraw(document.querySelector("#queryChart"), chartOption(model, chartType), 380);
 }
 
 function chartSetType(type) {
