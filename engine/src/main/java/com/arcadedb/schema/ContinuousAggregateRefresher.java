@@ -261,11 +261,11 @@ public class ContinuousAggregateRefresher {
    * query over the samples of exactly those buckets. Only the buckets behind the watermark are looked at, the ones at or after it
    * are deleted and recomputed by the refresh anyway.
    * <p>
-   * The buckets are found in the backing type rather than computed from the interval: it holds the start of every bucket the grid of
-   * the aggregate produced, whatever origin, offset or timezone its {@code ts.timeBucket()} gives it, and a bucket start worked out
-   * from the interval alone would be unaligned on any grid but the epoch's, and recompute its first bucket from a part of its
-   * samples. A bucket that has no row has nothing to correct: a delete cannot add samples to it. The buckets a range reaches are
-   * consecutive on the grid, so the rows between the first and the last are all of them.
+   * The buckets are computed on the grid the watermark is a start of, not from the interval alone: a bucket start worked out from the
+   * interval would be unaligned on any grid but the epoch's (an origin, an offset or a time zone of {@code ts.timeBucket()}), and
+   * recompute its first bucket from a part of its samples. A bucket with no row is recomputed too, since an append behind the
+   * watermark can add samples to it (issue #10502). A range that reaches back to the first instants is bounded by the rows of the
+   * backing type instead, as #10428 did for every range: a bucket that has no row there has nothing a delete could correct.
    * <p>
    * It runs in the transaction of the refresh, so the buckets of a very wide range (two deletes far apart in time are one range, the
    * hull of both) are one transaction of the size of that range.
@@ -291,6 +291,22 @@ public class ContinuousAggregateRefresher {
       params.add(new Date(invalidated.fromTs() - interval));
     }
 
+    // #10502: the buckets an append behind the watermark reached may have no row yet (a bucket no sample was in, one older than every
+    // bucket), and a delete may not be the only thing the range holds. Every bucket of the grid the range reaches is recomputed then:
+    // the grid is the one the watermark is a start of, since every bucket is `interval` wide. The backing type still bounds the start
+    // of a range that reaches back to the first instants (a TRUNCATE, a delete with no lower bound), whose buckets are not on any
+    // grid a query could write. The cutoff only tells such a sentinel bound (Long.MIN_VALUE, what a delete with no lower bound
+    // records) from a timestamp: half of it is about 146 million years before the epoch, below any sample a column can hold, and far
+    // enough from Long.MIN_VALUE that the bucket start and the range query literal cannot overflow
+    if (interval > 0 && invalidated.fromTs() > Long.MIN_VALUE / 2) {
+      final long first = ContinuousAggregateImpl.bucketStart(invalidated.fromTs(), watermark, interval);
+      final long last = ContinuousAggregateImpl.bucketStart(Math.min(invalidated.toTs(), watermark - 1), watermark, interval);
+      if (first > last)
+        return;
+      recomputeBuckets(database, ca, first, last, Math.min(last + interval, watermark));
+      return;
+    }
+
     final long first;
     final long last;
     try (final ResultSet rs = database.query("sql",
@@ -306,10 +322,18 @@ public class ContinuousAggregateRefresher {
       last = toEpochMs(lastValue, bucketColumn, ca.getName());
     }
 
+    recomputeBuckets(database, ca, first, last,
+        interval > 0 && last <= Long.MAX_VALUE - interval ? Math.min(last + interval, watermark) : watermark);
+  }
+
+  /** Replaces the rows of the buckets starting in {@code [first, last]} with the defining query over the samples of {@code [first, end)}. */
+  private static void recomputeBuckets(final Database database, final ContinuousAggregateImpl ca, final long first, final long last,
+      final long end) {
+    final String backingTypeName = ca.getBackingTypeName();
+    final String bucketColumn = ca.getBucketColumn();
     database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?",
         new Date(first), new Date(last));
 
-    final long end = interval > 0 && last <= Long.MAX_VALUE - interval ? Math.min(last + interval, watermark) : watermark;
     try (final ResultSet rs = database.query("sql", buildRangeQuery(ca, first, end))) {
       while (rs.hasNext())
         saveRow(database, backingTypeName, rs.next());
