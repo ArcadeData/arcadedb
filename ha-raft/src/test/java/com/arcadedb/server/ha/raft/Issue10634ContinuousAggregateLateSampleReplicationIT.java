@@ -91,6 +91,42 @@ class Issue10634ContinuousAggregateLateSampleReplicationIT extends BaseRaftHATes
     assertThat(aggregateRows(followerIndex)).isEqualTo(3L);
   }
 
+  /**
+   * The same append made inside a transaction the caller opened (found in review): the append commits a transaction of its own
+   * (#7410) and the caller's holds no database lock, so the schema session can still be opened and the record still reaches the
+   * follower, instead of falling back to a save on the leader alone.
+   */
+  @Test
+  void aLateSampleInsertedInsideATransactionShipsItsRecordToTheFollower() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = 1 - leaderIndex;
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE TIMESERIES TYPE sensor TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 1").close();
+    leaderDb.command("sql",
+        "CREATE CONTINUOUS AGGREGATE hourly AS SELECT ts.timeBucket('1h', ts) AS hr, sum(v) AS total FROM sensor GROUP BY hr").close();
+    waitForAllServers();
+    for (int h = 0; h < 3; h++)
+      leaderDb.command("sql", "INSERT INTO sensor SET ts = ?, host = 'h0', v = 1", H0 + h * HOUR).close();
+    leaderDb.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
+    waitForAllServers();
+
+    final ContinuousAggregateImpl aggregate = (ContinuousAggregateImpl) leaderDb.getSchema().getContinuousAggregate("hourly");
+    assertThat(aggregate.tryBeginRefresh()).isTrue();
+    try {
+      leaderDb.transaction(() -> leaderDb.command("sql", "INSERT INTO sensor SET ts = ?, host = 'h0', v = 5", H0 + HOUR + 60_000L)
+          .close());
+      waitForAllServers();
+
+      assertThat(awaitValue(H0 + HOUR, () -> invalidatedFromOn(followerIndex)))
+          .as("the follower holds the record of the late sample appended inside a transaction").isEqualTo(H0 + HOUR);
+      assertThat(definitionOn(followerIndex).getLong("invalidatedToTs", Long.MIN_VALUE)).isEqualTo(H0 + 2 * HOUR - 1);
+    } finally {
+      aggregate.endRefresh();
+    }
+  }
+
   private long aggregateRows(final int serverIndex) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
     try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM hourly")) {

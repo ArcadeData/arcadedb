@@ -242,6 +242,9 @@ public class ContinuousAggregateRefresher {
    * The newest bucket of the backing type is the watermark the refresh that wrote it installed: a refresh advances the watermark to
    * the newest bucket it wrote. A watermark that is set but older than the rows (the same two causes) needs nothing: the refresh
    * deletes the buckets at or after it and computes them again.
+   * <p>
+   * A read of every row of the backing type, done once: the watermark is set by it, and by any refresh that finds a bucket. Only a
+   * backing type whose rows all lack the bucket column, which no refresh writes, is read again by every refresh.
    */
   private static boolean adoptWatermarkFromBackingRows(final Database database, final ContinuousAggregateImpl ca) {
     final String backingTypeName = ca.getBackingTypeName();

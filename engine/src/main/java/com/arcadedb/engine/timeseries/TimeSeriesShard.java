@@ -70,8 +70,7 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   private static final TimeSeriesRowVisitor STOP_AT_THE_FIRST_ROW = row -> false;
   /** The change of a session that only ships the record {@link #invalidateContinuousAggregatesBehindWatermark} already applied. */
-  private static final Runnable             NO_SCHEMA_CHANGE      = () -> {
-  };
+  private static final Runnable             NO_SCHEMA_CHANGE      = () -> { };
 
   private final int                    shardIndex;
   private final String                 typeName;
