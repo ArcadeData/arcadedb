@@ -137,16 +137,12 @@ jobs:
       - name: "License Compliance Check"
         run: |
           echo "🏷️ Checking license compliance..."
-          # Use npx for license-checker
-          if npx license-checker --version &> /dev/null; then
-            echo "Running license compliance check with npx..."
-            npx license-checker --summary --excludePrivatePackages
-
-            # Check for problematic licenses
-            npx license-checker --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD" || echo "⚠️ Non-standard licenses detected - review required"
-          else
-            echo "ℹ️ license-checker not available, skipping detailed license analysis"
-          fi
+          # The gate: every package Studio ships (package-lock.json, non-dev entries) must be under a licence on the
+          # root CLAUDE.md allow-list. This step used to be `license-checker --onlyAllow ... || echo`, which could never
+          # fail (issue #10626), and that also counted devDependencies, which are not shipped. license-checker stays
+          # below as an informational summary of the shipped tree only.
+          node --test test/dependency-licenses.test.js
+          npx --yes license-checker --summary --production --excludePrivatePackages || true
 
       - name: "Security Summary"
         if: always()

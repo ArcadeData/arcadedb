@@ -274,6 +274,23 @@ longer open source from 5.1.0 on (issue #10579).
 
 ECharts also includes code derived from d3 (Copyright 2010-2016 Mike Bostock, BSD 3-Clause).
 
+### Studio (Web UI) Icons, Fonts and Export Libraries
+
+Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-list since issue #10626; the
+`studio/test/dependency-licenses.test.js` unit test checks every package Studio ships against that list.
+
+| npm package | Version | License | Pulled in via | Homepage |
+|-------------|---------|---------|---------------|----------|
+| @fortawesome/fontawesome-free | 7.3.1 | Icons CC-BY-4.0, fonts OFL-1.1, code MIT | direct dependency | https://fontawesome.com/ |
+| pako | 1.0.11 | MIT AND Zlib | jszip | https://github.com/nodeca/pako |
+| sax | 1.6.1 | BlueOak-1.0.0 | pdfmake (xmldoc) | https://github.com/isaacs/sax-js |
+| png-js | 2.0.0 | MIT (LICENSE file; no `license` field in its package.json) | pdfmake | https://github.com/devongovett/png.js |
+
+**Font Awesome attribution (required by CC-BY-4.0):** Studio's icons are Font Awesome Free by Fonticons, Inc.
+(https://fontawesome.com), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). The webfonts are
+licensed under the SIL Open Font License 1.1 (https://openfontlicense.org/) and the CSS under MIT. Full terms:
+https://fontawesome.com/license/free. Both are shipped unmodified.
+
 ### Transitive Dependencies Found by the #5651 License Audit
 
 Not declared directly in any module's `pom.xml`; pulled in transitively and missing from this
