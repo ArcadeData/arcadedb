@@ -5042,12 +5042,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Whether {@code schemaJson} records, on a continuous aggregate, a range of invalidated samples that this node does not hold as
-   * its schema does (issue #10677). A TimeSeries delete writes that record inside the replication session that ships the sealed bytes
-   * it rewrote, so its entry looks like a compaction's, which changes no schema; the record is what tells them apart. A compaction's
-   * schema carries one only while a range is pending, and then this node holds it already, so it still skips the reload.
+   * Whether {@code schemaJson} records, on a continuous aggregate, a range of invalidated samples that differs from the one this node
+   * holds, or that this node does not hold at all (issue #10677). A TimeSeries delete writes that record inside the replication session
+   * that ships the sealed bytes it rewrote, so its entry looks like a compaction's, which changes no schema; the record is what tells
+   * them apart. A compaction's schema carries one only while a range is pending, and then this node holds it already, so it still
+   * skips the reload. Any difference counts, a narrower range included: the reload it costs is the one a delete over mutable samples
+   * always takes, and the leader's record is the one to hold.
    * <p>
-   * The common case - no record anywhere in the document - costs one scan of the string and no parse.
+   * The common case - no record anywhere in the document - costs one scan of the string and no parse. The document is parsed only
+   * for a sealed entry while a range is pending on the leader, which lasts until its next refresh.
    */
   static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
     if (schemaJson == null || !schemaJson.contains(INVALIDATED_FROM_KEY))
