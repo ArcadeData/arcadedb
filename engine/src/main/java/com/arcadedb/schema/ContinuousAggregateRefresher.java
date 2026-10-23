@@ -47,6 +47,15 @@ public class ContinuousAggregateRefresher {
    */
   private static final String[] CLAUSES_AFTER_WHERE = { "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" };
 
+  /**
+   * The key the after-commit refresh of a continuous aggregate is registered under in a transaction
+   * ({@code TransactionContext.addAfterCommitCallbackIfAbsent}), so that every change of its source in one transaction asks for one
+   * refresh at commit.
+   */
+  public static String refreshCallbackKey(final String aggregateName) {
+    return "ca-refresh:" + aggregateName;
+  }
+
   /** How many times a caller runs the refresh again for the requests that arrived while it ran, see {@link #incrementalRefresh}. */
   private static final int MAX_FOLLOW_UP_REFRESHES = 5;
 
@@ -302,7 +311,7 @@ public class ContinuousAggregateRefresher {
         }
       };
       if (inTransaction)
-        database.getTransaction().addAfterCommitCallbackIfAbsent("ca-refresh:" + impl.getName(), refresh);
+        database.getTransaction().addAfterCommitCallbackIfAbsent(refreshCallbackKey(impl.getName()), refresh);
       else
         refresh.run();
     }
