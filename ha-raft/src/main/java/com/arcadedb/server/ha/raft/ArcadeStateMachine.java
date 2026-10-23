@@ -5068,10 +5068,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
           || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
         return true;
       final ContinuousAggregateImpl.Invalidation record = held.getInvalidation();
-      if (record == null || record.fromTs() != definition.getLong(INVALIDATED_FROM_KEY)
-          || record.toTs() != definition.getLong(INVALIDATED_TO_KEY))
+      if (record == null || record.fromTs() != definition.getLong(INVALIDATED_FROM_KEY, Long.MIN_VALUE)
+          || record.toTs() != definition.getLong(INVALIDATED_TO_KEY, Long.MIN_VALUE))
         return true;
     }
+    // A record this node holds and the document does not is left alone: the leader cleared it with a refresh, whose plain schema save
+    // is not shipped (issue #10634), and a promoted leader holding it only recomputes those buckets once more
     return false;
   }
 

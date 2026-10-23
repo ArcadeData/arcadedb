@@ -63,6 +63,16 @@ class Issue10677SealedEntryCarriesAnAggregateRecordTest {
   }
 
   @Test
+  void theKeyOutsideTheAggregatesIsNoRecord() {
+    // a property named as the record's key puts it in the document: the document is parsed, and finds no record
+    leader.command("sql", "CREATE DOCUMENT TYPE Doc").close();
+    leader.command("sql", "CREATE PROPERTY Doc.invalidatedFromTs LONG").close();
+    leader.command("sql", "CREATE PROPERTY Doc.invalidatedToTs LONG").close();
+    assertThat(schemaOf(leader)).contains("invalidatedFromTs");
+    assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isFalse();
+  }
+
+  @Test
   void aRecordTheFollowerDoesNotHoldIsASchemaChange() {
     aggregateOf(leader).invalidate(100L, 200L);
     assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isTrue();
