@@ -70,7 +70,9 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * <p>
    * Part of the definition in the schema, unlike {@link #needsCleanRebuild}: a restart must not forget it, and under HA it has to
    * reach the followers in the replication unit of the delete (a follower promoted to leader would otherwise refresh without it).
-   * The record of a late append is saved on the leader alone for now, like the watermark (issue #10634).
+   * The record of a late append is shipped by a schema session of its own, right after the append commits (issue #10634). The
+   * refresh that clears the record does not ship the clearing: a follower keeping a cleared record recomputes those buckets once
+   * more if promoted, which gives the rows they hold, and every compaction, retention or schema change ships the leader's state.
    */
   private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
