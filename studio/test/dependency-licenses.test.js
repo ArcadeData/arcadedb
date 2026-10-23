@@ -34,31 +34,35 @@ const path = require("node:path");
 
 const LOCK = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package-lock.json"), "utf8"));
 
-// The npm subset of the ALLOWED row in the root CLAUDE.md
-const ALLOWED = new Set(["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "CC0-1.0", "Unlicense"]);
+// The npm subset of the ALLOWED row in the root CLAUDE.md. Zlib and BlueOak-1.0.0 joined it with issue #10626.
+const ALLOWED = new Set(["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "CC0-1.0", "Unlicense", "Zlib", "BlueOak-1.0.0"]);
 
-// Shipped packages whose recorded licence the expression check above cannot pass, each pinned to the EXACT text npm
-// recorded: a new version that changes it fails again and has to be looked at. These predate #10579; the ones outside
-// the CLAUDE.md allow-list wait for a maintainer's sign-off (issue #10626).
+// CLAUDE.md allows these only for fonts and other non-code assets shipped unmodified (CC-BY-4.0 with the attribution
+// it requires, in ATTRIBUTIONS.md). A lock file cannot tell an asset from code, so they count as allowed only for the
+// packages below, which ship nothing else under them: a JavaScript library under CC-BY-4.0 still fails.
+// Adding a package here is a licence decision, not a test fix: it needs a maintainer's sign-off and the attribution
+// entry in ATTRIBUTIONS.md that CC-BY-4.0 requires.
+const ASSET_ONLY = new Set(["OFL-1.1", "CC-BY-4.0"]);
+const ASSET_PACKAGES = new Set([
+  // icons CC-BY-4.0, webfonts OFL-1.1, CSS and JS MIT: Font Awesome Free's own split
+  "@fortawesome/fontawesome-free"
+]);
+
+// Shipped packages whose recorded licence the expression check above cannot read, each pinned to the EXACT text npm
+// recorded: a new version that changes it fails again and has to be looked at.
 const REVIEWED = {
-  // icons CC-BY-4.0, fonts OFL-1.1, code MIT: Font Awesome Free's own split
-  "@fortawesome/fontawesome-free": "(CC-BY-4.0 AND OFL-1.1 AND MIT)",
-  // pako 1.x carries zlib's permissive licence for its port of the zlib sources
-  "pako": "(MIT AND Zlib)",
-  // png-js (a pdfmake dependency) declares no licence field; its LICENSE file is MIT
-  "png-js": undefined,
-  // sax (a pdfmake dependency) moved to the permissive Blue Oak Model License
-  "sax": "BlueOak-1.0.0"
+  // png-js (a pdfmake dependency) declares no licence field; the LICENSE file in its tarball is MIT
+  "png-js": undefined
 };
 
 /** True when an SPDX expression is satisfied by the allow-list: every AND term allowed, any one OR alternative allowed. */
-function allowed(expression) {
+function allowed(expression, assets = false) {
   if (typeof expression !== "string") return false;
   const text = expression.trim().replace(/^\((.*)\)$/, "$1");
   if (/\(/.test(text)) return false; // nested expressions are reviewed by hand
-  if (/ OR /.test(text)) return text.split(/ OR /).some((alt) => allowed(alt));
-  if (/ AND /.test(text)) return text.split(/ AND /).every((term) => allowed(term));
-  return ALLOWED.has(text);
+  if (/ OR /.test(text)) return text.split(/ OR /).some((alt) => allowed(alt, assets));
+  if (/ AND /.test(text)) return text.split(/ AND /).every((term) => allowed(term, assets));
+  return ALLOWED.has(text) || (assets && ASSET_ONLY.has(text));
 }
 
 /** Every package Studio ships: `{name, version, license}`, from the lock file entries not marked dev. */
@@ -73,7 +77,7 @@ function shippedPackages(lock) {
 
 function offenders(lock) {
   return shippedPackages(lock)
-    .filter((p) => !allowed(p.license))
+    .filter((p) => !allowed(p.license, ASSET_PACKAGES.has(p.name)))
     .filter((p) => !(Object.prototype.hasOwnProperty.call(REVIEWED, p.name) && REVIEWED[p.name] === p.license))
     .map((p) => p.name + "@" + p.version + ": " + JSON.stringify(p.license));
 }
@@ -108,6 +112,40 @@ test("an expression passes on an allowed alternative or on all-allowed terms, ne
   assert.equal(allowed("(MIT AND GPL-3.0-only)"), false);
   assert.equal(allowed("SSPL-1.0"), false);
   assert.equal(allowed(undefined), false);
+});
+
+test("Zlib and BlueOak-1.0.0 are allowed for any package, with no reviewed exception (#10626)", () => {
+  const lock = {
+    packages: {
+      "node_modules/pako": { version: "1.0.11", license: "(MIT AND Zlib)" },
+      "node_modules/sax": { version: "1.6.1", license: "BlueOak-1.0.0" }
+    }
+  };
+  assert.deepEqual(offenders(lock), []);
+  assert.equal(Object.prototype.hasOwnProperty.call(REVIEWED, "pako"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(REVIEWED, "sax"), false);
+});
+
+test("the font and icon licences pass for Font Awesome, whatever its licence text becomes, but not for code (#10626)", () => {
+  const lock = {
+    packages: {
+      "node_modules/@fortawesome/fontawesome-free": { version: "8.0.0", license: "(OFL-1.1 AND CC-BY-4.0 AND MIT)" },
+      "node_modules/some-chart-lib": { version: "1.0.0", license: "CC-BY-4.0" },
+      "node_modules/some-font-lib": { version: "1.0.0", license: "(MIT AND OFL-1.1)" }
+    }
+  };
+  assert.deepEqual(offenders(lock), ['some-chart-lib@1.0.0: "CC-BY-4.0"', 'some-font-lib@1.0.0: "(MIT AND OFL-1.1)"']);
+  assert.equal(Object.prototype.hasOwnProperty.call(REVIEWED, "@fortawesome/fontawesome-free"), false);
+});
+
+test("an asset licence offered as an OR alternative does not let a code package through", () => {
+  const lock = { packages: { "node_modules/some-lib": { version: "1.0.0", license: "(CC-BY-4.0 OR GPL-3.0-only)" } } };
+  assert.deepEqual(offenders(lock), ['some-lib@1.0.0: "(CC-BY-4.0 OR GPL-3.0-only)"']);
+});
+
+test("Font Awesome still fails on a licence outside both lists", () => {
+  const lock = { packages: { "node_modules/@fortawesome/fontawesome-free": { version: "9.0.0", license: "(CC-BY-NC-4.0 AND MIT)" } } };
+  assert.equal(offenders(lock).length, 1);
 });
 
 test("a reviewed exception holds for the exact licence it was reviewed with, not for a changed one", () => {
