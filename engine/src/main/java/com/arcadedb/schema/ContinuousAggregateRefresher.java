@@ -55,8 +55,9 @@ public class ContinuousAggregateRefresher {
    * used to be dropped, and the one running may have read the aggregate before the change that asked (a delete recording the range
    * of buckets to recompute): the change then waited for the next refresh, which nothing may ask for. When a range is waiting to be
    * recomputed, the request is remembered and the refresh in progress runs again when it ends. A request that finds no range keeps
-   * the cheap skip it always had: the rows an append adds are at or after the watermark, and the refresh in progress or the next
-   * append picks them up.
+   * the cheap skip it always had: an append that commits while a refresh runs records its samples whatever the watermark (issue
+   * #10633, see {@link ContinuousAggregateImpl#invalidateLateSamples}), so an append that finds no range has none the refresh in
+   * progress could leave behind its new watermark, and the next refresh picks its rows up.
    * <p>
    * The request is made BEFORE the second attempt to begin, so one that arrives as the refresh in progress ends is either seen by
    * it (it looks again after releasing the aggregate) or finds the aggregate free.
