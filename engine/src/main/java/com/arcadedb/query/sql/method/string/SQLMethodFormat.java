@@ -53,17 +53,20 @@ public class SQLMethodFormat extends AbstractSQLMethod {
     // USE STATIC ONE WHEN THE FIELD DOES NOT RESOLVE
     final String format = resolved != null ? resolved.toString() : params[0].toString();
 
+    final String timeZone = params.length > 1 ? (String) params[1] : null;
+
     if (isCollectionOfDates(value)) {
       final List<String> result = new ArrayList<String>();
       final Iterator<?> iterator = MultiValue.getMultiValueIterator(value);
 
+      // every element is rendered in the requested zone, as a single value is (issue #10676)
       while (iterator.hasNext())
-        result.add(DateUtils.format(iterator.next(), format));
+        result.add(DateUtils.format(iterator.next(), format, timeZone));
 
       return result;
 
     } else if (DateUtils.isDate(value)) {
-      return DateUtils.format(value, format, params.length > 1 ? (String) params[1] : null);
+      return DateUtils.format(value, format, timeZone);
     }
     return value != null ? StringUtils.format(NAME, format, value) : null;
   }

@@ -1223,11 +1223,18 @@ public class DateUtils {
     else if (obj instanceof Calendar calendar)
       return getFormatter(format).format(millisToLocalDateTime(calendar.getTimeInMillis(), timeZone));
     else if (obj instanceof LocalDateTime time) {
+      // A DATETIME is held as the UTC wall clock, so it denotes an instant: convert it into the requested zone rather than
+      // attaching the zone to the same wall clock, which rendered UTC fields as if they were local ones (issue #10676)
       if (timeZone != null)
-        return time.atZone(ZoneId.of(timeZone)).format(getFormatter(format));
+        return time.atZone(UTC_ZONE_ID).withZoneSameInstant(ZoneId.of(timeZone)).format(getFormatter(format));
       else
         return getFormatter(format).format(time);
-    } else if (obj instanceof Instant instant)
+    } else if (obj instanceof ZonedDateTime time)
+      // the requested zone used to be ignored here, through the generic TemporalAccessor branch (issue #10676)
+      return getFormatter(format).format(timeZone != null ? time.withZoneSameInstant(ZoneId.of(timeZone)) : time);
+    else if (obj instanceof OffsetDateTime time)
+      return getFormatter(format).format(timeZone != null ? time.atZoneSameInstant(ZoneId.of(timeZone)) : time);
+    else if (obj instanceof Instant instant)
       // An Instant carries no date/time fields on its own, so a pattern like `yyyy-MM-dd HH:mm:ss`
       // throws UnsupportedTemporalTypeException unless it is first anchored to a zone. UTC is the
       // anchor used everywhere else in this class (see dateTime() and dateTimeToTimestamp()), so
@@ -1235,8 +1242,10 @@ public class DateUtils {
       return getFormatter(format).format(LocalDateTime.ofInstant(instant, timeZone != null ? ZoneId.of(timeZone) : UTC_ZONE_ID));
     else if (obj instanceof LocalDate date)
       // A DATE is the day at midnight, as the java.util.Date implementation of the same type always rendered it, so a
-      // time field formats as 00 instead of throwing UnsupportedTemporalTypeException (issue #10206)
-      return format(date.atStartOfDay(), format, timeZone);
+      // time field formats as 00 instead of throwing UnsupportedTemporalTypeException (issue #10206). A day is not an instant, so
+      // the requested zone is attached to its midnight, not converted into: a zone west of UTC must not move it to the day
+      // before (issue #10676)
+      return getFormatter(format).format(timeZone != null ? date.atStartOfDay(ZoneId.of(timeZone)) : date.atStartOfDay());
     else if (obj instanceof TemporalAccessor accessor)
       return getFormatter(format).format(accessor);
     return null;
