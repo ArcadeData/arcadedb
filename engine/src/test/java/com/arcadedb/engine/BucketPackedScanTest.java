@@ -177,8 +177,10 @@ class BucketPackedScanTest extends TestHelper {
 
   /**
    * The summary stands on one invariant: every mutation of a page passes updateModifiedRange. Drive every public
-   * write path of MutablePage over a page that holds a summary and check that each one drops it, so a new writer
-   * that bypasses the invariant (a direct content.put*) fails here instead of leaving a stale summary behind.
+   * write path of MutablePage over a page that holds a summary and check that each one drops it, so an existing
+   * writer that stops passing updateModifiedRange (a direct content.put*) fails here instead of leaving a stale
+   * summary behind. The list below is explicit: a NEW write method of MutablePage is covered only once it is added
+   * here, so add new writers to this test.
    */
   @Test
   void everyMutablePageWritePathDropsTheSummary() {
