@@ -58,7 +58,10 @@ class Issue10655PositionalParameterKeyTest extends TestHelper {
       params.put(String.valueOf(number + 1), "other");
 
       assertThat(parameter.getValue(params)).as("getValue %d", number).isEqualTo("v" + number);
-      assertThat(parameter.bindFromInputParams(params)).as("bind %d", number).isNotSameAs(parameter);
+      // bind returns the parsed tree of the value under this number's key, never the neighbour's
+      assertThat(String.valueOf(parameter.bindFromInputParams(params))).as("bind %d", number)
+          .isEqualTo(String.valueOf(parameter.toParsedTree("v" + number)))
+          .doesNotContain("other");
       assertThat(parameter.getValue(new HashMap<>())).as("absent %d", number).isNull();
       assertThat(parameter.getValue(null)).isNull();
       assertThat(parameter.bindFromInputParams(null)).isSameAs(parameter);
