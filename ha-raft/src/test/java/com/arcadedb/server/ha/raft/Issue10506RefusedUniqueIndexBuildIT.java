@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -79,6 +80,42 @@ class Issue10506RefusedUniqueIndexBuildIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       final long entries = withResyncRetry(i, db -> db.getSchema().getType("Work").getIndexByProperties("id").countEntries());
       assertThat(entries).as("server %d", i).isEqualTo(RECORDS);
+    }
+  }
+
+  /**
+   * Issue #10569: the same refusal when the build REPLACES a plain index on the same property. The replaced index is built again
+   * inside the schema session and the net state is published: no node is quarantined, and every node ends with the plain index
+   * back, complete.
+   */
+  @Test
+  void aRefusedReplacingIndexBuildQuarantinesNoNodeAndRestoresTheReplacedIndexEverywhere() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a Raft leader").isGreaterThanOrEqualTo(0);
+    final Database leader = getServerDatabase(leaderIndex, getDatabaseName());
+    populate(leader);
+    final String duplicatedKey = key(RECORDS / 2);
+    final String twinBucket = otherBucketThanTheOneHolding(leader, duplicatedKey);
+    leader.transaction(() -> leader.newDocument("Work").set("id", duplicatedKey).save(twinBucket));
+    leader.command("sql", "CREATE INDEX ON Work (id) NOTUNIQUE").close();
+    assertClusterConsistency();
+
+    assertThatThrownBy(() -> leader.getSchema().buildTypeIndex("Work", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true).withReplaceIfIncompatible(true).create()).hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getRaftPlugin(i).getRaftHAServer().getStateMachine().quarantineCause(getDatabaseName()))
+          .as("server %d is not quarantined by a refused replacing CREATE INDEX", i).isNull();
+    assertThat(findLeaderIndex()).as("the leader keeps its leadership").isEqualTo(leaderIndex);
+
+    assertClusterConsistency();
+    for (int i = 0; i < getServerCount(); i++) {
+      final int serverIndex = i;
+      final boolean unique = withResyncRetry(serverIndex, db -> db.getSchema().getType("Work").getIndexByProperties("id").isUnique());
+      assertThat(unique).as("server %d has the replaced, non-unique index back", serverIndex).isFalse();
+      final long entries = withResyncRetry(serverIndex,
+          db -> db.getSchema().getType("Work").getIndexByProperties("id").countEntries());
+      assertThat(entries).as("server %d", serverIndex).isEqualTo(RECORDS + 1L);
     }
   }
 
