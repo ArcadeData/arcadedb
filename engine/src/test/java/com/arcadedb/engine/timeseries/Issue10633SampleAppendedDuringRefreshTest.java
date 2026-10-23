@@ -196,6 +196,44 @@ class Issue10633SampleAppendedDuringRefreshTest extends TestHelper {
     assertThat(aggregate().getInvalidation()).isNull();
   }
 
+  /**
+   * One batch during a refresh: a sample behind the old watermark, one at it, and one after the watermark the refresh installs. The
+   * record spans all of them; the next refresh recomputes the buckets behind its own watermark and reads the newer one as usual.
+   */
+  @Test
+  void aBatchAcrossSeveralBucketsDuringARefreshReachesEveryBucket() throws Exception {
+    createSourceAndAggregate();
+    append(H0 + 1_000, 10);
+    append(H0 + 2 * HOUR + 1_000, 20);
+    refresh();
+    append(H0 + 3 * HOUR + 1_000, 30);
+
+    duringARefresh(() -> engine().appendSamples(new long[] { H0 + 2_000, H0 + 2 * HOUR + 2_000, H0 + 4 * HOUR + 2_000 },
+        new Object[] { "a", "a", "a" }, new Object[] { 1.0, 2.0, 4.0 }));
+    assertThat(aggregate().getWatermarkTs()).isEqualTo(H0 + 3 * HOUR);
+
+    refresh();
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 11), new Bucket(H0 + 2 * HOUR, "a", 22),
+        new Bucket(H0 + 3 * HOUR, "a", 30), new Bucket(H0 + 4 * HOUR, "a", 4));
+    assertThat(aggregate().getInvalidation()).isNull();
+  }
+
+  /** A sample behind the watermark of before the refresh is recorded during a refresh as it is outside one (#10502). */
+  @Test
+  void aSampleBehindTheOldWatermarkDuringARefreshReachesItsBucket() throws Exception {
+    createSourceAndAggregate();
+    append(H0 + 1_000, 10);
+    append(H0 + 2 * HOUR + 1_000, 20);
+    refresh();
+    append(H0 + 3 * HOUR + 1_000, 30);
+
+    duringARefresh(() -> append(H0 + HOUR + 2_000, 7));
+
+    refresh();
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 10), new Bucket(H0 + HOUR, "a", 7), new Bucket(H0 + 2 * HOUR, "a", 20),
+        new Bucket(H0 + 3 * HOUR, "a", 30));
+  }
+
   /** Outside a refresh, a sample at or after the watermark is still recorded nowhere: the next refresh reads it. */
   @Test
   void aSampleAtTheWatermarkOutsideARefreshRecordsNothing() throws Exception {
