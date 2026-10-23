@@ -49,17 +49,29 @@ public class PositionalParameter extends InputParameter {
     }
   }
 
+  private static final String[] SMALL_KEYS = new String[64];
+
+  static {
+    for (int i = 0; i < SMALL_KEYS.length; i++)
+      SMALL_KEYS[i] = String.valueOf(i);
+  }
+
+  // THE LOOKUP KEY IS BUILT ONCE PER NUMBER, NOT ONCE PER EVALUATION (A FILTER EVALUATES IT FOR EVERY ROW OF A SCAN)
+  private String key() {
+    return paramNumber >= 0 && paramNumber < SMALL_KEYS.length ? SMALL_KEYS[paramNumber] : String.valueOf(paramNumber);
+  }
+
   public Object getValue(final Map<String, Object> params) {
     Object result = null;
     if (params != null) {
-      result = params.get(String.valueOf(paramNumber));
+      result = params.get(key());
     }
     return result;
   }
 
   public Object bindFromInputParams(final Map<String, Object> params) {
     if (params != null) {
-      final Object value = params.get(String.valueOf(paramNumber));
+      final Object value = params.get(key());
       final Object result = toParsedTree(value);
       return result;
     }
