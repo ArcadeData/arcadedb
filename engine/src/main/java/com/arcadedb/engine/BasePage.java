@@ -174,11 +174,10 @@ public abstract class BasePage {
    */
   public ByteBuffer slice() {
     final ByteBuffer buffer = content.getByteBuffer();
-    // Use duplicate() to create a new ByteBuffer with independent position/limit
+    // slice(index, length) creates a new ByteBuffer with independent position/limit
     // This prevents concurrent threads from interfering with each other's buffer position
-    final ByteBuffer duplicate = buffer.duplicate();
-    duplicate.position(PAGE_HEADER_SIZE);
-    return duplicate.slice();
+    // #10654: ONE BUFFER, WHERE duplicate().position(PAGE_HEADER_SIZE).slice() BUILT TWO (THE SAME BYTES, THE SAME LIMIT)
+    return buffer.slice(PAGE_HEADER_SIZE, buffer.limit() - PAGE_HEADER_SIZE);
   }
 
   public int getBufferPosition() {

@@ -168,6 +168,22 @@ public class BufferBloomFilter {
     return true;
   }
 
+  /**
+   * The same probe, reading the bytes of a {@link CachedPage} without building a view of it (#10654). Repeats the loop of the
+   * {@link BasePage} one for the same reason that one repeats {@link #testHashBits}; {@code theCachedPageProbeAgreesWithTheViewOne}
+   * pins the two to the same answer.
+   */
+  public static boolean mightContainHash(final CachedPage page, final int slots, final int probes, final long hash) {
+    final int first = (int) (hash >>> 32);
+    final int step = (int) hash | 1;
+    for (int i = 0; i < probes; i++) {
+      final int bit = (int) Math.floorMod(first + (long) i * step, slots);
+      if (((page.readByte(bit / 8) >> (bit % 8)) & 1) == 0)
+        return false;
+    }
+    return true;
+  }
+
   public int getSlots() {
     return capacity;
   }
