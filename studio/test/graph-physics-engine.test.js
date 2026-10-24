@@ -66,7 +66,11 @@ function jqueryStub(state) {
     val: () => chain,
     text: () => chain,
   };
-  return () => chain;
+  // A ready callback runs, like jQuery does when the document is parsed
+  return (ready) => {
+    if (typeof ready === "function") ready();
+    return chain;
+  };
 }
 
 /**
@@ -75,8 +79,8 @@ function jqueryStub(state) {
  * The engine runs in this realm (not a vm context) on purpose: Cytoscape recognises a plain object by its
  * constructor, and an object made in another realm is not one, so the positions would silently be dropped.
  */
-function buildPage(elements, settings) {
-  const state = { buttonActive: null, buttonPressed: null, checkboxChecked: null, saved: null };
+function buildPage(elements, settings, stored) {
+  const state = { buttonActive: null, buttonPressed: null, checkboxChecked: null, saved: null, stored: stored };
 
   const globals = Object.assign(
     {
@@ -85,6 +89,7 @@ function buildPage(elements, settings) {
       saveGraphGlobalSettings: () => {
         state.saved = true;
       },
+      globalStorageLoad: (key, fallback) => (key === "graphGlobalSettings" && state.stored != null ? state.stored : fallback),
       $: jqueryStub(state),
       d3,
     },
@@ -319,6 +324,26 @@ test("the settings of the graph keep the physics ones", () => {
   // A settings file without the physics keys leaves the defaults in place
   sandbox.physicsLoadSettings({ graphSpacing: 50 });
   assert.equal(sandbox.physicsRepulsionSetting(), 11, "what was there stays there");
+});
+
+test("the toolbar shows the stored setting before any graph is rendered", () => {
+  const { state } = buildPage([{ data: { id: "a", size: 25 } }], { physics: true }, JSON.stringify({ physics: false }));
+
+  assert.equal(state.buttonActive, false, "the toolbar button shows the stored setting");
+  assert.equal(state.buttonPressed, "false");
+  assert.equal(state.checkboxChecked, false, "the settings checkbox shows it is off");
+});
+
+test("a corrupt setting cannot put anything but a number in the settings panel", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], {
+    physicsRepulsion: '8" onmouseover="alert(1)',
+    physicsGravity: "not a number",
+  });
+
+  assert.equal(sandbox.physicsRepulsionSetting(), 8, "the repulsion is the number the setting starts with");
+  assert.equal(sandbox.physicsGravitySetting(), 5, "the gravity falls back to the default");
+  assert.equal(typeof sandbox.physicsRepulsionSetting(), "number");
+  assert.equal(typeof sandbox.physicsGravitySetting(), "number");
 });
 
 test("physics turned on during a layout waits for the layout to finish", () => {

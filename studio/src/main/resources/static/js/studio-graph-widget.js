@@ -322,7 +322,6 @@ function initGraph() {
   });
 
   physicsAttach();
-  physicsUpdateControls();
   globalCy.layout(globalLayout).run();
 }
 

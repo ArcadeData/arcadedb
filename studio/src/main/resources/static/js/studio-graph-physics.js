@@ -41,14 +41,26 @@ function physicsEnabled() {
   return globalGraphSettings.physics !== false;
 }
 
-/** The repulsion the graph runs with: the setting, or the default when it was never saved. */
+/**
+ * The repulsion the graph runs with: the setting, or the default when it was never saved.
+ *
+ * The value is a number, always: the settings can be replaced wholesale by an imported file, and the number goes
+ * straight into the settings panel markup.
+ */
 function physicsRepulsionSetting() {
-  return globalGraphSettings.physicsRepulsion != null ? globalGraphSettings.physicsRepulsion : PHYSICS_DEFAULT_REPULSION;
+  let value = parseInt(globalGraphSettings.physicsRepulsion);
+  return isNaN(value) ? PHYSICS_DEFAULT_REPULSION : value;
 }
 
-/** The gravity the graph runs with: the setting, or the default when it was never saved. */
+/**
+ * The gravity the graph runs with: the setting, or the default when it was never saved.
+ *
+ * The value is a number, always: the settings can be replaced wholesale by an imported file, and the number goes
+ * straight into the settings panel markup.
+ */
 function physicsGravitySetting() {
-  return globalGraphSettings.physicsGravity != null ? globalGraphSettings.physicsGravity : PHYSICS_DEFAULT_GRAVITY;
+  let value = parseInt(globalGraphSettings.physicsGravity);
+  return isNaN(value) ? PHYSICS_DEFAULT_GRAVITY : value;
 }
 
 /**
@@ -148,9 +160,9 @@ function physicsStart() {
   let eles = globalCy.nodes();
   if (eles.length == 0) return;
 
-  let built = physicsBuildNodes(eles, {});
-  let nodes = built.nodes;
-  let byId = built.byId;
+  let nodeSet = physicsBuildNodes(eles, {});
+  let nodes = nodeSet.nodes;
+  let byId = nodeSet.byId;
   let links = physicsLinks(globalCy.edges(), byId);
 
   // THE CENTRE OF THE GRAPH: WHAT THE GRAVITY PULLS TOWARDS
@@ -223,6 +235,9 @@ function physicsTick() {
 
   // ONE OBJECT FOR THE WHOLE FRAME: Cytoscape copies the values out of it before the next node is written, so
   // there is no need to make a new one for every node of every frame
+  //
+  // THE POSITIONS ARE WRITTEN WITH THE EVENTS ON: THE RENDERER NEEDS THE NOTIFICATION TO REDRAW, AND THE HTML
+  // LABELS OF THE GRAPH FOLLOW THE 'position' AND 'bounds' EVENTS OF THE NODES
   let position = { x: 0, y: 0 };
 
   globalPhysics.eles.positions(function (ele, i) {
@@ -253,9 +268,9 @@ function physicsSync() {
     return;
   }
 
-  let built = physicsBuildNodes(eles, globalPhysics.byId);
-  let nodes = built.nodes;
-  let byId = built.byId;
+  let nodeSet = physicsBuildNodes(eles, globalPhysics.byId);
+  let nodes = nodeSet.nodes;
+  let byId = nodeSet.byId;
   let links = physicsLinks(globalCy.edges(), byId);
 
   let sim = globalPhysics.sim;
@@ -332,7 +347,7 @@ function physicsAttach() {
     let pos = event.target.position();
     // THE NODE IS HELD WHILE IT IS DRAGGED, AND THE STATE IT HAD BEFORE IS REMEMBERED: A CLICK ON A PINNED NODE
     // MUST NOT UNPIN IT
-    node.grabbed = { x: pos.x, y: pos.y, pinned: event.target.hasClass(PHYSICS_PINNED_CLASS) };
+    node.grab = { x: pos.x, y: pos.y, pinned: event.target.hasClass(PHYSICS_PINNED_CLASS) };
     node.fx = pos.x;
     node.fy = pos.y;
     globalPhysics.sim.alphaTarget(0.3).restart();
@@ -354,8 +369,8 @@ function physicsAttach() {
     if (node == null) return;
 
     let pos = event.target.position();
-    let grab = node.grabbed;
-    delete node.grabbed;
+    let grab = node.grab;
+    delete node.grab;
     globalPhysics.sim.alphaTarget(0);
 
     // A CLICK THAT NEVER MOVED THE NODE IS NOT A DRAG: THE NODE KEEPS THE STATE IT HAD BEFORE THE CLICK
@@ -424,9 +439,9 @@ function togglePhysics() {
 /** The physics part of the settings, in the shape the settings store keeps them. */
 function physicsSettings() {
   return {
-    physics: globalGraphSettings.physics,
-    physicsRepulsion: globalGraphSettings.physicsRepulsion,
-    physicsGravity: globalGraphSettings.physicsGravity,
+    physics: physicsEnabled(),
+    physicsRepulsion: physicsRepulsionSetting(),
+    physicsGravity: physicsGravitySetting(),
   };
 }
 
@@ -436,3 +451,19 @@ function physicsLoadSettings(parsed) {
   if (parsed.physicsRepulsion != null) globalGraphSettings.physicsRepulsion = parsed.physicsRepulsion;
   if (parsed.physicsGravity != null) globalGraphSettings.physicsGravity = parsed.physicsGravity;
 }
+
+// THE TOOLBAR BUTTON IS PART OF THE PAGE FROM THE START, BUT THIS SCRIPT RUNS BEFORE THE MARKUP IS PARSED: THE
+// CONTROLS ARE SYNCED AS SOON AS THE PAGE IS READY, SO A GRAPH IS NOT NEEDED FOR THE BUTTON TO SHOW THE SETTING.
+// THE STORED SETTINGS ARE OTHERWISE ONLY READ WHEN A GRAPH IS RENDERED, SO THE PHYSICS PART IS READ HERE TOO.
+$(function () {
+  let stored = globalStorageLoad("graphGlobalSettings", null);
+  if (stored != null) {
+    try {
+      physicsLoadSettings(JSON.parse(stored));
+    } catch (e) {
+      /* ignore corrupt data */
+    }
+  }
+
+  physicsUpdateControls();
+});
