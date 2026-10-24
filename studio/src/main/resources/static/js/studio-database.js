@@ -3047,9 +3047,9 @@ function populateSettingsPanel() {
   let nodeSizeVal = globalGraphSettings ? (globalGraphSettings.nodeSize || 25) : 25;
   let defaultLabelVal = globalGraphSettings ? (globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "") : "";
   let maxLabelVal = globalGraphSettings ? (globalGraphSettings.maxLabelLength || 45) : 45;
-  let physicsChecked = globalGraphSettings == null || globalGraphSettings.physics !== false ? "checked" : "";
-  let physicsRepulsionVal = globalGraphSettings && globalGraphSettings.physicsRepulsion != null ? globalGraphSettings.physicsRepulsion : 8;
-  let physicsGravityVal = globalGraphSettings && globalGraphSettings.physicsGravity != null ? globalGraphSettings.physicsGravity : 5;
+  let physicsChecked = physicsEnabled() ? "checked" : "";
+  let physicsRepulsionVal = physicsRepulsionSetting();
+  let physicsGravityVal = physicsGravitySetting();
 
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Graph Settings</div>";
@@ -3066,11 +3066,11 @@ function populateSettingsPanel() {
   html += "<div class='settings-row'><label>Graph Spacing: <span id='settingGraphSpacingVal'>" + spacingVal + "</span></label>";
   html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='150' step='10' value='" + spacingVal + "'" + studioAction("applyGraphSpacing", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Live Physics</label>";
-  html += "<input type='checkbox' class='form-check-input' id='settingPhysics' " + physicsChecked + studioAction("applyPhysics", [STUDIO_ARG_CHECKED], "change") + "></div>";
+  html += "<input type='checkbox' class='form-check-input' id='settingPhysics' " + physicsChecked + studioAction("physicsSetEnabled", [STUDIO_ARG_CHECKED], "change") + "></div>";
   html += "<div class='settings-row'><label>Repulsion: <span id='settingPhysicsRepulsionVal'>" + physicsRepulsionVal + "</span></label>";
-  html += "<input type='range' class='form-range' id='settingPhysicsRepulsion' min='0' max='20' step='1' value='" + physicsRepulsionVal + "'" + studioAction("applyPhysicsRepulsion", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<input type='range' class='form-range' id='settingPhysicsRepulsion' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsRepulsionVal + "'" + studioAction("applyPhysicsRepulsion", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Gravity: <span id='settingPhysicsGravityVal'>" + physicsGravityVal + "</span></label>";
-  html += "<input type='range' class='form-range' id='settingPhysicsGravity' min='0' max='20' step='1' value='" + physicsGravityVal + "'" + studioAction("applyPhysicsGravity", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<input type='range' class='form-range' id='settingPhysicsGravity' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsGravityVal + "'" + studioAction("applyPhysicsGravity", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Cumulative Selection</label>";
   html += "<input type='checkbox' class='form-check-input' id='settingCumulativeSelection' " + cumulativeChecked + studioAction("applyCumulativeSelection", [STUDIO_ARG_CHECKED], "change") + "></div>";
   html += "</div>";
@@ -3113,28 +3113,23 @@ function applyCumulativeSelection(checked) {
   saveGraphGlobalSettings();
 }
 
-function applyPhysics(checked) {
-  physicsSetEnabled(checked);
-}
-
 function applyPhysicsRepulsion(value) {
-  globalGraphSettings.physicsRepulsion = parseInt(value);
-  $("#settingPhysicsRepulsionVal").text(value);
-  saveGraphGlobalSettings();
-  if (globalPhysics != null) {
-    physicsApplyForces();
-    globalPhysics.sim.alpha(0.3).restart();
-  }
+  applyPhysicsLevel("physicsRepulsion", value, "#settingPhysicsRepulsionVal");
 }
 
 function applyPhysicsGravity(value) {
-  globalGraphSettings.physicsGravity = parseInt(value);
-  $("#settingPhysicsGravityVal").text(value);
+  applyPhysicsLevel("physicsGravity", value, "#settingPhysicsGravityVal");
+}
+
+/**
+ * A live physics slider: the value is stored, shown and handed to the simulation, which starts moving again with
+ * the new forces.
+ */
+function applyPhysicsLevel(setting, value, labelSelector) {
+  globalGraphSettings[setting] = parseInt(value);
+  $(labelSelector).text(value);
   saveGraphGlobalSettings();
-  if (globalPhysics != null) {
-    physicsApplyForces();
-    globalPhysics.sim.alpha(0.3).restart();
-  }
+  physicsReheat();
 }
 
 function applyNodeSize(value) {

@@ -17,13 +17,7 @@ function renderGraph() {
   let maxLabelVal = globalGraphSettings.maxLabelLength || 45;
   $("#settingMaxLabel").val(maxLabelVal);
   $("#settingMaxLabelVal").text(maxLabelVal == 0 ? "off" : maxLabelVal);
-  $("#settingPhysics").prop("checked", physicsEnabled());
-  let physicsRepulsionVal = globalGraphSettings.physicsRepulsion != null ? globalGraphSettings.physicsRepulsion : 8;
-  $("#settingPhysicsRepulsion").val(physicsRepulsionVal);
-  $("#settingPhysicsRepulsionVal").text(physicsRepulsionVal);
-  let physicsGravityVal = globalGraphSettings.physicsGravity != null ? globalGraphSettings.physicsGravity : 5;
-  $("#settingPhysicsGravity").val(physicsGravityVal);
-  $("#settingPhysicsGravityVal").text(physicsGravityVal);
+  physicsUpdateControls();
 
   let elements = [];
   globalRenderedVerticesRID = {};
@@ -127,7 +121,7 @@ function renderGraph() {
 
   // PINNED BY LIVE PHYSICS (dragged nodes stay where released); BEFORE :selected SO SELECTION STILL WINS
   styles.push({
-    selector: "node.physics-pinned",
+    selector: "node." + PHYSICS_PINNED_CLASS,
     style: { "border-width": 3, "border-style": "dashed", "border-color": "#555" },
   });
 
@@ -328,7 +322,7 @@ function initGraph() {
   });
 
   physicsAttach();
-  physicsUpdateToggleButton();
+  physicsUpdateControls();
   globalCy.layout(globalLayout).run();
 }
 
@@ -1047,16 +1041,13 @@ function saveGraphTypeStyles() {
 }
 
 function saveGraphGlobalSettings() {
-  globalStorageSave("graphGlobalSettings", JSON.stringify({
+  globalStorageSave("graphGlobalSettings", JSON.stringify(Object.assign({
     nodeSize: globalGraphSettings.nodeSize,
     defaultLabel: globalGraphSettings.defaultLabel,
     graphSpacing: globalGraphSettings.graphSpacing,
     cumulativeSelection: globalGraphSettings.cumulativeSelection,
-    maxLabelLength: globalGraphSettings.maxLabelLength,
-    physics: globalGraphSettings.physics,
-    physicsRepulsion: globalGraphSettings.physicsRepulsion,
-    physicsGravity: globalGraphSettings.physicsGravity
-  }));
+    maxLabelLength: globalGraphSettings.maxLabelLength
+  }, physicsSettings())));
 }
 
 function loadGraphTypeStyles() {
@@ -1069,9 +1060,7 @@ function loadGraphTypeStyles() {
       if (parsed.graphSpacing != null) globalGraphSettings.graphSpacing = parsed.graphSpacing;
       if (parsed.cumulativeSelection != null) globalGraphSettings.cumulativeSelection = parsed.cumulativeSelection;
       if (parsed.maxLabelLength != null) globalGraphSettings.maxLabelLength = parsed.maxLabelLength;
-      if (parsed.physics != null) globalGraphSettings.physics = parsed.physics;
-      if (parsed.physicsRepulsion != null) globalGraphSettings.physicsRepulsion = parsed.physicsRepulsion;
-      if (parsed.physicsGravity != null) globalGraphSettings.physicsGravity = parsed.physicsGravity;
+      physicsLoadSettings(parsed);
     } catch (e) { /* ignore corrupt data */ }
   }
 

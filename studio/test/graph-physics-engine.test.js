@@ -22,8 +22,8 @@
 //
 // What is checked here is the wiring, not the constants (those are in graph-physics.test.js): that the simulation
 // starts on the nodes the graph has, that it moves them, that a node added later joins it, that a node removed
-// later leaves it, that a dragged node stays where it was dropped and a double-clicked one floats again, and that
-// the toolbar switch stops and starts the whole thing.
+// later leaves it, that a dragged node stays where it was dropped, that a double-clicked one floats again and
+// that the toolbar switch stops and starts the whole thing.
 //
 //     node --test studio/test/graph-physics-engine.test.js
 
@@ -35,9 +35,18 @@ const path = require("node:path");
 const STUDIO = path.join(__dirname, "..");
 const SRC_DIR = path.join(STUDIO, "src", "main", "resources", "static", "js");
 const PHYSICS_SRC = fs.readFileSync(path.join(SRC_DIR, "studio-graph-physics.js"), "utf8");
+const GRAPH_SRC = fs.readFileSync(path.join(SRC_DIR, "studio-graph.js"), "utf8");
 
 const cytoscape = require(path.join(STUDIO, "node_modules", "cytoscape"));
 const d3 = require(path.join(STUDIO, "node_modules", "d3-force"));
+
+// The defaults and the pinned class live in the settings model (js/studio-graph.js): the engine reads them from
+// there, so the page below has to have them too.
+const constants = {};
+for (const declaration of GRAPH_SRC.match(/var PHYSICS_[A-Z_]+ = [^;]+;/g)) {
+  const name = declaration.match(/var ([A-Z_]+)/)[1];
+  constants[name] = eval(declaration.replace(/^var /, ""));
+}
 
 /** A jQuery stub: the engine only reads and writes a handful of controls through it. */
 function jqueryStub(state) {
@@ -69,15 +78,18 @@ function jqueryStub(state) {
 function buildPage(elements, settings) {
   const state = { buttonActive: null, buttonPressed: null, checkboxChecked: null, saved: null };
 
-  const globals = {
-    globalGraphSettings: Object.assign({ graphSpacing: 50, physics: true, physicsRepulsion: 8, physicsGravity: 5 }, settings),
-    globalCy: null,
-    saveGraphGlobalSettings: () => {
-      state.saved = true;
+  const globals = Object.assign(
+    {
+      globalGraphSettings: Object.assign({ graphSpacing: 50, physics: true }, settings),
+      globalCy: null,
+      saveGraphGlobalSettings: () => {
+        state.saved = true;
+      },
+      $: jqueryStub(state),
+      d3,
     },
-    $: jqueryStub(state),
-    d3,
-  };
+    constants
+  );
 
   // The engine is a plain script that reads the page globals; `with` gives it exactly those, and the objects it
   // makes are the ones this realm made, which is what Cytoscape checks for.
@@ -86,9 +98,9 @@ function buildPage(elements, settings) {
     "with (__globals) {" +
       PHYSICS_SRC +
       "\nreturn { physicsEnabled, physicsForceParameters, physicsStart, physicsStop, physicsTick, physicsSync," +
-      " physicsScheduleSync, physicsAttach, physicsSetEnabled, physicsUpdateToggleButton, togglePhysics," +
-      " get globalPhysics() { return globalPhysics; }," +
-      " get globalPhysicsGrab() { return globalPhysicsGrab; } }; }"
+      " physicsScheduleSync, physicsAttach, physicsSetEnabled, physicsUpdateControls, physicsReheat," +
+      " physicsSettings, physicsLoadSettings, physicsRepulsionSetting, physicsGravitySetting, togglePhysics," +
+      " get globalPhysics() { return globalPhysics; } }; }"
   );
 
   const engine = factory(globals);
@@ -119,6 +131,12 @@ function positions(sandbox) {
   const out = {};
   sandbox.globalPhysics.nodes.forEach((n) => (out[n.id] = { x: n.x, y: n.y }));
   return out;
+}
+
+/** d3 keeps the charge strength as a function (it can be a different one per node), so the number is read through it. */
+function chargeStrength(sandbox) {
+  const strength = sandbox.globalPhysics.sim.force("charge").strength();
+  return typeof strength === "function" ? strength() : strength;
 }
 
 test("the simulation starts on the nodes of the graph and moves them", () => {
@@ -176,13 +194,13 @@ test("a node dropped after a drag stays where it was dropped", () => {
   const simNode = sandbox.globalPhysics.byId["a"];
   assert.equal(simNode.fx, 300, "the node is pinned where it was dropped");
   assert.equal(simNode.fy, 200);
-  assert.ok(node.hasClass("physics-pinned"), "the node shows it is pinned");
+  assert.ok(node.hasClass(constants.PHYSICS_PINNED_CLASS), "the node shows it is pinned");
 
   // A double click unpins it
   node.emit("dbltap");
   assert.equal(simNode.fx, undefined, "the node floats again");
   assert.equal(simNode.fy, undefined);
-  assert.ok(!node.hasClass("physics-pinned"), "the node no longer shows it is pinned");
+  assert.ok(!node.hasClass(constants.PHYSICS_PINNED_CLASS), "the node no longer shows it is pinned");
 });
 
 test("a click that does not move the node leaves it floating", () => {
@@ -197,7 +215,30 @@ test("a click that does not move the node leaves it floating", () => {
 
   const simNode = sandbox.globalPhysics.byId["a"];
   assert.equal(simNode.fx, undefined, "a click is not a drag");
-  assert.ok(!node.hasClass("physics-pinned"));
+  assert.ok(!node.hasClass(constants.PHYSICS_PINNED_CLASS));
+});
+
+test("a click on a pinned node keeps it pinned", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  const node = sandbox.globalCy.getElementById("a");
+
+  // Drag it and let it go: it stays where it was dropped
+  node.emit("grab");
+  node.position({ x: 300, y: 200 });
+  node.emit("drag");
+  node.emit("free");
+  const simNode = sandbox.globalPhysics.byId["a"];
+  assert.equal(simNode.fx, 300);
+
+  // A click that does not move it must not unpin it: only a double click does that
+  node.emit("grab");
+  node.emit("free");
+  assert.equal(simNode.fx, 300, "the node is still pinned");
+  assert.equal(simNode.fy, 200);
+  assert.ok(node.hasClass(constants.PHYSICS_PINNED_CLASS), "the node still shows it is pinned");
 });
 
 test("the simulation writes its positions back to the graph", () => {
@@ -236,13 +277,84 @@ test("the switch turns the simulation off and on again", () => {
 });
 
 test("the switch keeps the nodes where they were", () => {
-  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+  const { sandbox } = buildPage([
+    { data: { id: "a", size: 25 }, position: { x: -100, y: 0 } },
+    { data: { id: "b", size: 25 }, position: { x: 100, y: 0 } },
+  ]);
 
   sandbox.physicsStart();
   settle(sandbox, 300);
+  // THE SIMULATED POSITIONS ARE WRITTEN BACK TO THE GRAPH, SO THE SWITCH COMPARES WHAT IS ON SCREEN
+  sandbox.physicsTick();
   const before = sandbox.globalCy.getElementById("a").position();
+  assert.notDeepEqual(before, { x: -100, y: 0 }, "the simulation moved the node before the switch");
 
   sandbox.physicsSetEnabled(false);
   const after = sandbox.globalCy.getElementById("a").position();
   assert.deepEqual(after, before, "the graph did not move when the simulation stopped");
+});
+
+test("a new setting reaches the running simulation", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  const before = chargeStrength(sandbox);
+
+  sandbox.globalGraphSettings.physicsRepulsion = 15;
+  sandbox.physicsReheat();
+
+  const after = chargeStrength(sandbox);
+  assert.notEqual(after, before, "the repulsion changed");
+  assert.equal(after, -15 * 50, "the new repulsion is the one the slider asks for");
+});
+
+test("the settings of the graph keep the physics ones", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], { physicsRepulsion: 11, physicsGravity: 3 });
+
+  assert.equal(sandbox.physicsSettings().physicsRepulsion, 11);
+  assert.equal(sandbox.physicsSettings().physicsGravity, 3);
+  assert.equal(sandbox.physicsRepulsionSetting(), 11);
+  assert.equal(sandbox.physicsGravitySetting(), 3);
+
+  // A settings file without the physics keys leaves the defaults in place
+  sandbox.physicsLoadSettings({ graphSpacing: 50 });
+  assert.equal(sandbox.physicsRepulsionSetting(), 11, "what was there stays there");
+});
+
+test("physics turned on during a layout waits for the layout to finish", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsAttach();
+
+  // A LAYOUT TAKES THE NODES OVER
+  sandbox.globalCy.emit("layoutstart");
+  assert.equal(sandbox.globalPhysics, null, "the simulation is not running during a layout");
+
+  // TURNING THE PHYSICS ON IN THE MIDDLE OF THE LAYOUT MUST NOT START IT: THE LAYOUT OWNS THE NODES
+  sandbox.physicsSetEnabled(true);
+  assert.equal(sandbox.globalPhysics, null, "the simulation waits for the layout");
+
+  // WHEN THE LAYOUT ENDS, THE SIMULATION TAKES OVER
+  sandbox.globalCy.emit("layoutstop");
+  assert.ok(sandbox.globalPhysics != null, "the simulation started with the layout");
+});
+
+test("physics turned off during a layout leaves the layout in charge", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  assert.ok(sandbox.globalPhysics != null, "the simulation runs");
+
+  sandbox.globalCy.emit("layoutstart");
+  sandbox.physicsSetEnabled(false);
+  assert.equal(sandbox.globalPhysics, null, "the simulation stopped");
+  assert.equal(sandbox.globalGraphSettings.physics, false, "the setting was remembered");
+
+  // THE LAYOUT IS STILL RUNNING: TURNING THE PHYSICS ON MUST WAIT FOR IT
+  sandbox.physicsSetEnabled(true);
+  assert.equal(sandbox.globalPhysics, null, "the simulation waits for the layout");
+
+  sandbox.globalCy.emit("layoutstop");
+  assert.ok(sandbox.globalPhysics != null, "the simulation started with the layout");
 });

@@ -30,9 +30,6 @@ var globalPhysics = null;
 /** Handle of the pending debounced rebuild of the simulation (the burst of 'add'/'remove' events of one change). */
 var globalPhysicsSyncTimer = null;
 
-/** Where the node being dragged was grabbed: { id, x, y }. A click that never moves the node is not a drag. */
-var globalPhysicsGrab = null;
-
 /** True while a Cytoscape layout is moving the nodes: the layout owns the positions until it stops. */
 var globalPhysicsLayoutRunning = false;
 
@@ -41,7 +38,17 @@ var globalPhysicsLayoutTimer = null;
 
 /** True when live physics is enabled: absent, or anything but false, means on. */
 function physicsEnabled() {
-  return globalGraphSettings == null || globalGraphSettings.physics !== false;
+  return globalGraphSettings.physics !== false;
+}
+
+/** The repulsion the graph runs with: the setting, or the default when it was never saved. */
+function physicsRepulsionSetting() {
+  return globalGraphSettings.physicsRepulsion != null ? globalGraphSettings.physicsRepulsion : PHYSICS_DEFAULT_REPULSION;
+}
+
+/** The gravity the graph runs with: the setting, or the default when it was never saved. */
+function physicsGravitySetting() {
+  return globalGraphSettings.physicsGravity != null ? globalGraphSettings.physicsGravity : PHYSICS_DEFAULT_GRAVITY;
 }
 
 /**
@@ -52,11 +59,15 @@ function physicsEnabled() {
  * cheap. The values are clamped so a corrupt setting can never produce a NaN force.
  */
 function physicsForceParameters(settings) {
-  if (settings == null) settings = { graphSpacing: 50 };
-
   let spacing = Math.min(150, Math.max(10, parseInt(settings.graphSpacing) || 50));
-  let repulsion = settings.physicsRepulsion == null ? 8 : Math.min(20, Math.max(0, parseInt(settings.physicsRepulsion) || 0));
-  let gravity = settings.physicsGravity == null ? 5 : Math.min(20, Math.max(0, parseInt(settings.physicsGravity) || 0));
+  let repulsion =
+    settings.physicsRepulsion == null
+      ? PHYSICS_DEFAULT_REPULSION
+      : Math.min(PHYSICS_MAX_LEVEL, Math.max(0, parseInt(settings.physicsRepulsion) || 0));
+  let gravity =
+    settings.physicsGravity == null
+      ? PHYSICS_DEFAULT_GRAVITY
+      : Math.min(PHYSICS_MAX_LEVEL, Math.max(0, parseInt(settings.physicsGravity) || 0));
   return {
     linkDistance: spacing * 3, // same as fcose idealEdgeLength
     chargeStrength: -repulsion * spacing, // default -400 (Neo4j Browser's order of magnitude)
@@ -70,14 +81,21 @@ function physicsForceParameters(settings) {
 function physicsApplyForces() {
   if (globalPhysics == null) return;
 
-  let p = physicsForceParameters(globalGraphSettings);
+  let parameters = physicsForceParameters(globalGraphSettings);
   let sim = globalPhysics.sim;
 
-  sim.force("link").distance(p.linkDistance);
-  sim.force("charge").strength(p.chargeStrength).distanceMax(p.chargeDistanceMax);
-  sim.force("collide").radius(d => d.r + p.collidePadding);
-  sim.force("x").strength(p.gravityStrength);
-  sim.force("y").strength(p.gravityStrength);
+  sim.force("link").distance(parameters.linkDistance);
+  sim.force("charge").strength(parameters.chargeStrength).distanceMax(parameters.chargeDistanceMax);
+  sim.force("collide").radius(d => d.r + parameters.collidePadding);
+  sim.force("x").strength(parameters.gravityStrength);
+  sim.force("y").strength(parameters.gravityStrength);
+}
+
+/** Gives the simulation a nudge: the current settings are applied and the graph starts moving again. */
+function physicsReheat() {
+  if (globalPhysics == null) return;
+  physicsApplyForces();
+  globalPhysics.sim.alpha(0.3).restart();
 }
 
 /**
@@ -96,6 +114,31 @@ function physicsLinks(edges, byId) {
   return links;
 }
 
+/**
+ * The simulation nodes, built from the graph nodes. A node that is still on the graph keeps its simulation object,
+ * so it keeps its velocity and its pin; a new one joins where the graph put it.
+ */
+function physicsBuildNodes(eles, previousById) {
+  let nodes = [];
+  let byId = {};
+  for (let i = 0; i < eles.length; i++) {
+    let ele = eles[i];
+    let pos = ele.position();
+    let node = previousById[ele.id()];
+    if (node == null) {
+      node = { id: ele.id(), x: pos.x, y: pos.y, r: (ele.data("size") || 25) / 2 };
+    } else {
+      // THE POSITION COMES FROM THE GRAPH (A LAYOUT MAY HAVE MOVED IT), THE MOTION FROM THE SIMULATION
+      node.x = pos.x;
+      node.y = pos.y;
+      node.r = (ele.data("size") || 25) / 2;
+    }
+    nodes.push(node);
+    byId[node.id] = node;
+  }
+  return { nodes: nodes, byId: byId };
+}
+
 /** Starts a simulation on the current graph, warm-started from the positions fcose left behind. */
 function physicsStart() {
   if (globalCy == null || !physicsEnabled() || typeof d3 === "undefined") return;
@@ -105,24 +148,18 @@ function physicsStart() {
   let eles = globalCy.nodes();
   if (eles.length == 0) return;
 
-  let nodes = [];
-  let byId = {};
-  for (let i = 0; i < eles.length; i++) {
-    let ele = eles[i];
-    let pos = ele.position();
-    let node = { id: ele.id(), x: pos.x, y: pos.y, r: (ele.data("size") || 25) / 2 };
-    nodes.push(node);
-    byId[node.id] = node;
-  }
-
+  let built = physicsBuildNodes(eles, {});
+  let nodes = built.nodes;
+  let byId = built.byId;
   let links = physicsLinks(globalCy.edges(), byId);
 
   // THE CENTRE OF THE GRAPH: WHAT THE GRAVITY PULLS TOWARDS
-  let bb = globalCy.nodes().boundingBox();
+  let bb = eles.boundingBox();
   let cx = (bb.x1 + bb.x2) / 2;
   let cy = (bb.y1 + bb.y2) / 2;
 
-  let sim = d3.forceSimulation(nodes)
+  let sim = d3
+    .forceSimulation(nodes)
     .force("link", d3.forceLink(links).id(d => d.id))
     .force("charge", d3.forceManyBody())
     .force("collide", d3.forceCollide())
@@ -136,7 +173,7 @@ function physicsStart() {
   // A NODE PINNED BEFORE THE SIMULATION RESTARTED STAYS WHERE IT WAS LEFT
   for (let i = 0; i < eles.length; i++) {
     let ele = eles[i];
-    if (!ele.hasClass("physics-pinned")) continue;
+    if (!ele.hasClass(PHYSICS_PINNED_CLASS)) continue;
     let node = byId[ele.id()];
     if (node == null) continue;
     let pos = ele.position();
@@ -147,8 +184,13 @@ function physicsStart() {
   physicsApplyForces();
 }
 
-/** Stops the simulation and forgets it. The nodes keep the positions they had. */
-function physicsStop() {
+/**
+ * Stops the simulation and forgets it. The nodes keep the positions they had.
+ *
+ * `preserveLayout` keeps the bookkeeping of a layout that is still running (its flag and its fallback timer): the
+ * simulation is stopped, but the layout keeps the right to hand the nodes over when it ends.
+ */
+function physicsStop(preserveLayout) {
   if (globalPhysics != null) {
     globalPhysics.sim.stop();
     globalPhysics = null;
@@ -159,12 +201,14 @@ function physicsStop() {
     globalPhysicsSyncTimer = null;
   }
 
-  if (globalPhysicsLayoutTimer != null) {
-    clearTimeout(globalPhysicsLayoutTimer);
-    globalPhysicsLayoutTimer = null;
-  }
+  if (!preserveLayout) {
+    if (globalPhysicsLayoutTimer != null) {
+      clearTimeout(globalPhysicsLayoutTimer);
+      globalPhysicsLayoutTimer = null;
+    }
 
-  globalPhysicsLayoutRunning = false;
+    globalPhysicsLayoutRunning = false;
+  }
 }
 
 /** One simulation step: the new node positions are written back to Cytoscape. */
@@ -177,11 +221,17 @@ function physicsTick() {
     return;
   }
 
+  // ONE OBJECT FOR THE WHOLE FRAME: Cytoscape copies the values out of it before the next node is written, so
+  // there is no need to make a new one for every node of every frame
+  let position = { x: 0, y: 0 };
+
   globalPhysics.eles.positions(function (ele, i) {
     if (ele.removed()) return null; // gone from the graph: the rebuild will drop it
     if (ele.grabbed()) return null; // the user is dragging it: Cytoscape owns that position
     let n = globalPhysics.nodes[i];
-    return { x: n.x, y: n.y };
+    position.x = n.x;
+    position.y = n.y;
+    return position;
   });
 }
 
@@ -203,25 +253,9 @@ function physicsSync() {
     return;
   }
 
-  let oldById = globalPhysics.byId;
-  let nodes = [];
-  let byId = {};
-  for (let i = 0; i < eles.length; i++) {
-    let ele = eles[i];
-    let pos = ele.position();
-    let node = oldById[ele.id()];
-    if (node == null) {
-      node = { id: ele.id(), x: pos.x, y: pos.y, r: (ele.data("size") || 25) / 2 };
-    } else {
-      // THE POSITION COMES FROM THE GRAPH (A LAYOUT MAY HAVE MOVED IT), THE MOTION FROM THE SIMULATION
-      node.x = pos.x;
-      node.y = pos.y;
-      node.r = (ele.data("size") || 25) / 2;
-    }
-    nodes.push(node);
-    byId[node.id] = node;
-  }
-
+  let built = physicsBuildNodes(eles, globalPhysics.byId);
+  let nodes = built.nodes;
+  let byId = built.byId;
   let links = physicsLinks(globalCy.edges(), byId);
 
   let sim = globalPhysics.sim;
@@ -234,8 +268,7 @@ function physicsSync() {
   globalPhysics.eles = eles;
   globalPhysics.byId = byId;
 
-  physicsApplyForces();
-  sim.alpha(0.3).restart();
+  physicsReheat();
 }
 
 /** Rebuilds the simulation once, after the burst of 'add'/'remove' events of a single change has settled. */
@@ -297,9 +330,11 @@ function physicsAttach() {
     if (node == null) return;
 
     let pos = event.target.position();
+    // THE NODE IS HELD WHILE IT IS DRAGGED, AND THE STATE IT HAD BEFORE IS REMEMBERED: A CLICK ON A PINNED NODE
+    // MUST NOT UNPIN IT
+    node.grabbed = { x: pos.x, y: pos.y, pinned: event.target.hasClass(PHYSICS_PINNED_CLASS) };
     node.fx = pos.x;
     node.fy = pos.y;
-    globalPhysicsGrab = { id: event.target.id(), x: pos.x, y: pos.y };
     globalPhysics.sim.alphaTarget(0.3).restart();
   });
 
@@ -319,21 +354,22 @@ function physicsAttach() {
     if (node == null) return;
 
     let pos = event.target.position();
+    let grab = node.grabbed;
+    delete node.grabbed;
     globalPhysics.sim.alphaTarget(0);
 
-    // A CLICK THAT NEVER MOVED THE NODE IS NOT A DRAG: THE NODE GOES BACK TO FLOATING
-    let dragged = globalPhysicsGrab != null && globalPhysicsGrab.id === event.target.id() && (globalPhysicsGrab.x !== pos.x || globalPhysicsGrab.y !== pos.y);
-    globalPhysicsGrab = null;
+    // A CLICK THAT NEVER MOVED THE NODE IS NOT A DRAG: THE NODE KEEPS THE STATE IT HAD BEFORE THE CLICK
+    let dragged = grab != null && (grab.x !== pos.x || grab.y !== pos.y);
 
     if (dragged) {
       // THE NODE STAYS WHERE IT WAS RELEASED, UNTIL IT IS DOUBLE-CLICKED
       node.fx = pos.x;
       node.fy = pos.y;
-      event.target.addClass("physics-pinned");
-    } else {
+      event.target.addClass(PHYSICS_PINNED_CLASS);
+    } else if (grab == null || !grab.pinned) {
       delete node.fx;
       delete node.fy;
-      event.target.removeClass("physics-pinned");
+      event.target.removeClass(PHYSICS_PINNED_CLASS);
     }
   });
 
@@ -341,11 +377,11 @@ function physicsAttach() {
     if (globalPhysics == null || globalPhysics.cy !== globalCy) return;
     let node = globalPhysics.byId[event.target.id()];
     if (node == null) return;
-    if (!event.target.hasClass("physics-pinned")) return;
+    if (!event.target.hasClass(PHYSICS_PINNED_CLASS)) return;
 
     delete node.fx;
     delete node.fy;
-    event.target.removeClass("physics-pinned");
+    event.target.removeClass(PHYSICS_PINNED_CLASS);
     globalPhysics.sim.alpha(0.3).restart();
   });
 }
@@ -354,24 +390,49 @@ function physicsAttach() {
 function physicsSetEnabled(enabled) {
   globalGraphSettings.physics = enabled;
   saveGraphGlobalSettings();
-  physicsUpdateToggleButton();
+  physicsUpdateControls();
 
   if (enabled) {
-    physicsSync();
+    // A LAYOUT IS STILL MOVING THE NODES: IT OWNS THEM UNTIL IT STOPS, AND IT STARTS THE SIMULATION THEN
+    if (!globalPhysicsLayoutRunning) physicsSync();
   } else {
-    physicsStop();
-    if (globalCy != null) globalCy.nodes(".physics-pinned").removeClass("physics-pinned");
+    // THE LAYOUT THAT IS RUNNING KEEPS ITS PLACE: ONLY THE SIMULATION GOES AWAY
+    physicsStop(globalPhysicsLayoutRunning);
+    if (globalCy != null) globalCy.nodes("." + PHYSICS_PINNED_CLASS).removeClass(PHYSICS_PINNED_CLASS);
   }
 }
 
-/** Keeps the toolbar button and the settings checkbox in step with the setting. */
-function physicsUpdateToggleButton() {
+/** Keeps the toolbar button, the settings checkbox and the sliders in step with the settings. */
+function physicsUpdateControls() {
   $("#togglePhysicsBtn").toggleClass("active", physicsEnabled());
   $("#togglePhysicsBtn").attr("aria-pressed", physicsEnabled() ? "true" : "false");
   $("#settingPhysics").prop("checked", physicsEnabled());
+
+  let repulsion = physicsRepulsionSetting();
+  $("#settingPhysicsRepulsion").val(repulsion);
+  $("#settingPhysicsRepulsionVal").text(repulsion);
+  let gravity = physicsGravitySetting();
+  $("#settingPhysicsGravity").val(gravity);
+  $("#settingPhysicsGravityVal").text(gravity);
 }
 
 /** The toolbar button: live physics on or off. */
 function togglePhysics() {
   physicsSetEnabled(!physicsEnabled());
+}
+
+/** The physics part of the settings, in the shape the settings store keeps them. */
+function physicsSettings() {
+  return {
+    physics: globalGraphSettings.physics,
+    physicsRepulsion: globalGraphSettings.physicsRepulsion,
+    physicsGravity: globalGraphSettings.physicsGravity,
+  };
+}
+
+/** Applies the physics part of a settings object that was loaded from the store. */
+function physicsLoadSettings(parsed) {
+  if (parsed.physics != null) globalGraphSettings.physics = parsed.physics;
+  if (parsed.physicsRepulsion != null) globalGraphSettings.physicsRepulsion = parsed.physicsRepulsion;
+  if (parsed.physicsGravity != null) globalGraphSettings.physicsGravity = parsed.physicsGravity;
 }

@@ -32,8 +32,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const STUDIO = path.join(__dirname, "..");
-const SRC_PATH = path.join(STUDIO, "src", "main", "resources", "static", "js", "studio-graph-physics.js");
-const src = fs.readFileSync(SRC_PATH, "utf8");
+const JS_DIR = path.join(STUDIO, "src", "main", "resources", "static", "js");
+const src = fs.readFileSync(path.join(JS_DIR, "studio-graph-physics.js"), "utf8");
+const graphSrc = fs.readFileSync(path.join(JS_DIR, "studio-graph.js"), "utf8");
 
 function extractFn(name) {
   const start = src.indexOf("function " + name + "(");
@@ -50,22 +51,32 @@ function extractFn(name) {
   return src.substring(start, i);
 }
 
+// The defaults live in the settings model (js/studio-graph.js), so the test reads them from there: the numbers it
+// pins are the numbers the graph really starts with.
+const constants = graphSrc.match(/var PHYSICS_[A-Z_]+ = [^;]+;/g);
+assert.ok(constants && constants.length > 0, "studio-graph.js declares the physics constants");
+eval(constants.join("\n"));
+
 eval(extractFn("physicsForceParameters"));
 
 /** The same simulation the engine builds in physicsStart(), with the given parameters and node positions. */
 function buildSimulation(d3, parameters, nodes, links) {
+  const xs = nodes.map((n) => n.x);
+  const ys = nodes.map((n) => n.y);
+  const centre = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+
   const simulation = d3
     .forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(d => d.id))
+    .force("link", d3.forceLink(links).id((d) => d.id))
     .force("charge", d3.forceManyBody())
     .force("collide", d3.forceCollide())
-    .force("x", d3.forceX(0))
-    .force("y", d3.forceY(0))
+    .force("x", d3.forceX(centre.x))
+    .force("y", d3.forceY(centre.y))
     .alpha(0.3);
 
   simulation.force("link").distance(parameters.linkDistance);
   simulation.force("charge").strength(parameters.chargeStrength).distanceMax(parameters.chargeDistanceMax);
-  simulation.force("collide").radius(d => d.r + parameters.collidePadding);
+  simulation.force("collide").radius((d) => d.r + parameters.collidePadding);
   simulation.force("x").strength(parameters.gravityStrength);
   simulation.force("y").strength(parameters.gravityStrength);
 
@@ -109,7 +120,7 @@ test("a repulsion of zero is honoured, not turned back into the default", () => 
 test("the repulsion is clamped to what the slider can produce", () => {
   const p = physicsForceParameters({ graphSpacing: 50, physicsRepulsion: 99 });
 
-  assert.equal(p.chargeStrength, -20 * 50);
+  assert.equal(p.chargeStrength, -PHYSICS_MAX_LEVEL * 50);
 });
 
 test("a corrupt setting cannot produce a NaN force", () => {
@@ -119,57 +130,41 @@ test("a corrupt setting cannot produce a NaN force", () => {
   for (const value of Object.values(p)) assert.ok(!Number.isNaN(value), "no NaN in " + JSON.stringify(p));
 });
 
-test("the repulsion pushes two nodes apart", () => {
+test("the simulation pushes the graph apart, holds the edges and brings the strays back", () => {
   const d3 = require(path.join(STUDIO, "node_modules", "d3-force"));
   const p = physicsForceParameters({ graphSpacing: 50 });
 
+  // Two nodes on top of each other, a linked pair and a node far away from everything
   const nodes = [
     { id: "a", x: 0, y: 0, r: 12.5 },
     { id: "b", x: 10, y: 0, r: 12.5 },
+    { id: "c", x: 2000, y: 0, r: 12.5 },
+    { id: "d", x: 0, y: 100, r: 12.5 },
+    { id: "e", x: 0, y: 110, r: 12.5 },
   ];
+  const links = [{ source: "d", target: "e" }];
 
-  const simulation = buildSimulation(d3, p, nodes, []);
+  const simulation = buildSimulation(d3, p, nodes, links);
   simulation.tick(300);
 
-  assert.ok(distance(nodes[0], nodes[1]) > 2 * p.collidePadding + 25, "the nodes ended " + distance(nodes[0], nodes[1]) + " apart");
-});
+  const apart = distance(nodes[0], nodes[1]);
+  assert.ok(apart > 2 * p.collidePadding, "the nodes that started on top of each other ended " + apart + " apart");
 
-test("the link spring holds an edge at the link distance", () => {
-  const d3 = require(path.join(STUDIO, "node_modules", "d3-force"));
-  const p = physicsForceParameters({ graphSpacing: 50 });
+  const edge = distance(nodes[3], nodes[4]);
+  assert.ok(edge >= 0.5 * p.linkDistance && edge <= 1.5 * p.linkDistance, "the edge ended " + edge + " long");
 
-  const nodes = [
-    { id: "a", x: 0, y: 100, r: 12.5 },
-    { id: "b", x: 0, y: 110, r: 12.5 },
-  ];
-
-  const simulation = buildSimulation(d3, p, nodes, [{ source: "a", target: "b" }]);
-  simulation.tick(300);
-
-  const d = distance(nodes[0], nodes[1]);
-  assert.ok(d >= 0.5 * p.linkDistance && d <= 1.5 * p.linkDistance, "the edge ended " + d + " long");
-});
-
-test("the gravity brings a node that drifted away back to the centre", () => {
-  const d3 = require(path.join(STUDIO, "node_modules", "d3-force"));
-  const p = physicsForceParameters({ graphSpacing: 50 });
-
-  const nodes = [{ id: "a", x: 2000, y: 0, r: 12.5 }];
-
-  const simulation = buildSimulation(d3, p, nodes, []);
-  simulation.tick(300);
-
-  assert.ok(Math.abs(nodes[0].x) < 2000, "the node ended at " + nodes[0].x);
+  assert.ok(Math.abs(nodes[2].x) < 2000, "the node that drifted away ended at x=" + nodes[2].x);
 });
 
 test("without gravity a node that drifted away stays where it is", () => {
   const d3 = require(path.join(STUDIO, "node_modules", "d3-force"));
   const p = physicsForceParameters({ graphSpacing: 50, physicsGravity: 0 });
 
-  const nodes = [{ id: "a", x: 2000, y: 0, r: 12.5 }];
+  const nodes = [{ id: "c", x: 2000, y: 0, r: 12.5 }];
 
   const simulation = buildSimulation(d3, p, nodes, []);
   simulation.tick(300);
 
-  assert.equal(nodes[0].x, 2000);
+  assert.equal(nodes[0].x, 2000, "the node stayed where it was");
+  assert.equal(nodes[0].y, 0);
 });
