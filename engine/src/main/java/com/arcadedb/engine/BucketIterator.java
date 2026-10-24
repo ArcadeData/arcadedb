@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -284,7 +285,9 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         // DELETED, OR THE CONTENT/CHUNK OF ANOTHER RECORD: NOT A RECORD OF ITS OWN
         return;
 
-      final RID rid = new RID(bucket.fileId,
+      // BOUND TO THE DATABASE THE RECORD WILL BELONG TO, SO BaseRecord.upgradeRID KEEPS IT INSTEAD OF COPYING A BARE RID
+      // INTO A SECOND OBJECT FOR EVERY ROW OF A SCAN (#10655). IT EQUALS AND HASHES AS THE BARE RID DOES
+      final RID rid = new DatabaseRID(recordDatabase, bucket.fileId,
           ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
       // COUNTED HERE, BEFORE ANY EVENT CAN FILTER IT, AS lookupByRID() COUNTS EVERY LOOKUP ON ENTRY
       ++recordsRead;
