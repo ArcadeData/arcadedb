@@ -5,6 +5,7 @@ var globalSelected = null;
 function renderGraph() {
   if (globalResultset == null) return;
 
+  physicsStop();
   globalCy = null;
 
   loadGraphTypeStyles();
@@ -16,6 +17,13 @@ function renderGraph() {
   let maxLabelVal = globalGraphSettings.maxLabelLength || 45;
   $("#settingMaxLabel").val(maxLabelVal);
   $("#settingMaxLabelVal").text(maxLabelVal == 0 ? "off" : maxLabelVal);
+  $("#settingPhysics").prop("checked", physicsEnabled());
+  let physicsRepulsionVal = globalGraphSettings.physicsRepulsion != null ? globalGraphSettings.physicsRepulsion : 8;
+  $("#settingPhysicsRepulsion").val(physicsRepulsionVal);
+  $("#settingPhysicsRepulsionVal").text(physicsRepulsionVal);
+  let physicsGravityVal = globalGraphSettings.physicsGravity != null ? globalGraphSettings.physicsGravity : 5;
+  $("#settingPhysicsGravity").val(physicsGravityVal);
+  $("#settingPhysicsGravityVal").text(physicsGravityVal);
 
   let elements = [];
   globalRenderedVerticesRID = {};
@@ -116,6 +124,12 @@ function renderGraph() {
   ];
 
   assignStyles(styles);
+
+  // PINNED BY LIVE PHYSICS (dragged nodes stay where released); BEFORE :selected SO SELECTION STILL WINS
+  styles.push({
+    selector: "node.physics-pinned",
+    style: { "border-width": 3, "border-style": "dashed", "border-color": "#555" },
+  });
 
   // ADD SELECTED STYLES TO GET PRIORITY OVER OTHER STYLES
   styles.push({
@@ -313,6 +327,8 @@ function initGraph() {
     if (tooltipEl) tooltipEl.style.display = "none";
   });
 
+  physicsAttach();
+  physicsUpdateToggleButton();
   globalCy.layout(globalLayout).run();
 }
 
@@ -1036,7 +1052,10 @@ function saveGraphGlobalSettings() {
     defaultLabel: globalGraphSettings.defaultLabel,
     graphSpacing: globalGraphSettings.graphSpacing,
     cumulativeSelection: globalGraphSettings.cumulativeSelection,
-    maxLabelLength: globalGraphSettings.maxLabelLength
+    maxLabelLength: globalGraphSettings.maxLabelLength,
+    physics: globalGraphSettings.physics,
+    physicsRepulsion: globalGraphSettings.physicsRepulsion,
+    physicsGravity: globalGraphSettings.physicsGravity
   }));
 }
 
@@ -1050,6 +1069,9 @@ function loadGraphTypeStyles() {
       if (parsed.graphSpacing != null) globalGraphSettings.graphSpacing = parsed.graphSpacing;
       if (parsed.cumulativeSelection != null) globalGraphSettings.cumulativeSelection = parsed.cumulativeSelection;
       if (parsed.maxLabelLength != null) globalGraphSettings.maxLabelLength = parsed.maxLabelLength;
+      if (parsed.physics != null) globalGraphSettings.physics = parsed.physics;
+      if (parsed.physicsRepulsion != null) globalGraphSettings.physicsRepulsion = parsed.physicsRepulsion;
+      if (parsed.physicsGravity != null) globalGraphSettings.physicsGravity = parsed.physicsGravity;
     } catch (e) { /* ignore corrupt data */ }
   }
 

@@ -45,6 +45,9 @@ var globalSelected = null;
 var globalEnableElementPanel = true;
 var globalGraphSettings = {
   graphSpacing: 50,
+  physics: true,
+  physicsRepulsion: 8,
+  physicsGravity: 5,
   cumulativeSelection: false,
   nodeSize: 25,
   defaultLabel: "",
