@@ -105,7 +105,7 @@ function buildPage(elements, settings, stored) {
       "\nreturn { physicsEnabled, physicsForceParameters, physicsStart, physicsStop, physicsTick, physicsSync," +
       " physicsScheduleSync, physicsAttach, physicsSetEnabled, physicsUpdateControls, physicsReheat," +
       " physicsSettings, physicsLoadSettings, physicsRepulsionSetting, physicsGravitySetting, togglePhysics," +
-      " get globalPhysics() { return globalPhysics; } }; }"
+      " physicsLinks, get globalPhysics() { return globalPhysics; } }; }"
   );
 
   const engine = factory(globals);
@@ -121,6 +121,13 @@ function buildPage(elements, settings, stored) {
     get: () => engine.globalPhysics,
     set: (v) => {
       engine.globalPhysics = v;
+    },
+  });
+  // The graph the engine works on: a test can put another graph in its place, the way a new query does.
+  Object.defineProperty(sandbox, "globalCy", {
+    get: () => globals.globalCy,
+    set: (v) => {
+      globals.globalCy = v;
     },
   });
 
@@ -382,4 +389,81 @@ test("physics turned off during a layout leaves the layout in charge", () => {
 
   sandbox.globalCy.emit("layoutstop");
   assert.ok(sandbox.globalPhysics != null, "the simulation started with the layout");
+});
+
+test("a link to a node the simulation does not know is left out", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }]);
+  const edge = (source, target) => ({ data: (key) => (key === "source" ? source : target) });
+
+  // d3 refuses a link to a node it does not know, and it would take the whole simulation down with it
+  const links = sandbox.physicsLinks([edge("a", "a"), edge("a", "not-on-the-graph")], { a: { id: "a" } });
+
+  assert.equal(links.length, 1, "the link to the unknown node was left out");
+  assert.equal(links[0].source, "a");
+  assert.equal(links[0].target, "a");
+});
+
+test("a node with an edge to itself does not break the simulation", () => {
+  const { sandbox } = buildPage([
+    { data: { id: "a", size: 25 } },
+    { data: { id: "e1", source: "a", target: "a" } },
+  ]);
+
+  sandbox.physicsStart();
+  assert.ok(sandbox.globalPhysics != null, "the simulation started");
+
+  settle(sandbox, 50);
+  assert.equal(sandbox.globalPhysics.nodes.length, 1, "the node is still in the simulation");
+});
+
+test("the simulation does not take a node away from the user who is dragging it", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  settle(sandbox, 50);
+
+  const node = sandbox.globalCy.getElementById("a");
+  // The renderer sets this flag when the mouse takes hold of the node
+  node[0]._private.grabbed = true;
+
+  // THE SIMULATION WANTS THE NODE SOMEWHERE ELSE: THE USER HAS IT
+  sandbox.globalPhysics.byId["a"].x = 9999;
+  sandbox.physicsTick();
+
+  assert.notEqual(node.position("x"), 9999, "the node stayed where the user is holding it");
+});
+
+test("the simulation of a graph that is no longer on screen stops", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }]);
+
+  sandbox.physicsStart();
+  assert.ok(sandbox.globalPhysics != null, "the simulation runs");
+
+  // A new query put another graph in its place
+  sandbox.globalCy = null;
+  sandbox.physicsTick();
+
+  assert.equal(sandbox.globalPhysics, null, "the orphaned simulation stopped");
+});
+
+test("no simulation runs while the physics is off", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], { physics: false });
+
+  sandbox.physicsStart();
+  assert.equal(sandbox.globalPhysics, null, "the simulation did not start");
+
+  sandbox.physicsSync();
+  assert.equal(sandbox.globalPhysics, null, "the simulation did not start on a sync either");
+});
+
+test("a layout that never announces its end still hands the nodes to the simulation", async () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }]);
+
+  sandbox.physicsAttach();
+  sandbox.globalCy.emit("layoutstart");
+  assert.equal(sandbox.globalPhysics, null, "the layout has the nodes");
+
+  // A TAB IN THE BACKGROUND NEVER FINISHES AN ANIMATION: THE FALLBACK TIMER HANDS THE NODES OVER
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  assert.ok(sandbox.globalPhysics != null, "the simulation took the nodes over");
 });
