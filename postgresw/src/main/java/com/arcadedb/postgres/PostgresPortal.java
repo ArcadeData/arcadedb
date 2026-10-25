@@ -151,6 +151,15 @@ public class PostgresPortal {
    */
   public List<Result>              fullResultSet;
   /**
+   * Live result cursor used by Execute-only fetches when the result columns can be established without scanning
+   * the complete result. This is connection-thread confined and closed when the portal is closed, rebound, or
+   * its transaction ends (issue #6659). Describe('P') retains the bounded materialization path for sparse rows,
+   * whose complete column union cannot otherwise be known before RowDescription.
+   */
+  public com.arcadedb.query.sql.executor.ResultSet streamingResultSet;
+  /** True when this Execute is paging a live ResultSet rather than a materialized list. */
+  public boolean streamingResultSetActive = false;
+  /**
    * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
    * far (issue #6458). The next Execute's slice starts here.
    */
