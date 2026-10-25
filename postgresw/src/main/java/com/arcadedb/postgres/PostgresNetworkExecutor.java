@@ -1082,14 +1082,37 @@ public class PostgresNetworkExecutor extends Thread {
         // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
         // populated - by this same method on an earlier call, or by describeCommand() - and only needs the
         // next slice, never a re-run of the statement.
-        if (portal.isExpectingResult && portal.fullResultSet != null) {
+        if (portal.isExpectingResult && portal.streamingResultSetActive) {
+          // Pull only the rows requested by this Execute and keep the source ResultSet open if the portal suspends.
+          // The safety cap applies cumulatively to rows consumed by this portal, not to the server-side batch size.
+          final int maxRows = server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS);
+          final List<Result> batch = new ArrayList<>(limit > 0 ? limit : 16);
+          while ((limit <= 0 || batch.size() < limit) && portal.streamingResultSet.hasNext()) {
+            final Result row = portal.streamingResultSet.next();
+            if (row != null) {
+              batch.add(row);
+              portal.resultCursor++;
+              if (maxRows > 0 && portal.resultCursor > maxRows)
+                throw new CommandExecutionException(
+                    "Result set exceeds the configured limit of " + maxRows + " rows streamed for the Postgres wire protocol ("
+                        + GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.getKey()
+                        + "); narrow the statement with a WHERE or LIMIT clause, or raise the limit");
+            }
+          }
+          portal.cachedResultSet = batch;
+          portal.suspended = limit > 0 && batch.size() == limit && portal.streamingResultSet.hasNext();
+          if (!portal.suspended) {
+            closePortalResult(portal);
+            portal.streamingResultSetActive = false;
+          }
+        } else if (portal.isExpectingResult && portal.fullResultSet != null) {
           final int total = portal.fullResultSet.size();
           final int start = portal.resultCursor;
           final int end = limit > 0 ? Math.min(start + limit, total) : total;
           portal.cachedResultSet = start < end ? new ArrayList<>(portal.fullResultSet.subList(start, end)) : Collections.emptyList();
           portal.resultCursor = end;
           // The protocol allows exactly one terminator after the data rows: PortalSuspended when this slice
-          // stopped on the row-limit with rows still left, CommandComplete once the portal is fully drained.
+          // stopped on the row-limit with rows left, CommandComplete once the portal is fully drained.
           portal.suspended = limit > 0 && end < total;
         }
 
