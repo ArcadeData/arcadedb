@@ -1049,7 +1049,12 @@ public class PostgresNetworkExecutor extends Thread {
                   ? (portal.columns != null && !portal.columns.isEmpty() ? portal.columns
                       : getColumnsFromQuerySchema(portal.query, portal.sqlStatement))
                   : null;
-              if (limit > 0 && schemaColumns != null && !schemaColumns.isEmpty()
+              final boolean explicitProjection = portal.sqlStatement instanceof SelectStatement select
+                  && select.getProjection() != null && select.getProjection().getItems() != null
+                  && !select.getProjection().getItems().isEmpty()
+                  && !select.getProjection().isExpand()
+                  && select.getProjection().getItems().stream().noneMatch(item -> item.isAll() || item.exclude || item.getExpression() == null);
+              if (limit > 0 && explicitProjection && schemaColumns != null && !schemaColumns.isEmpty()
                   && portal.sqlStatement instanceof SelectStatement
                   && !portal.catalogQuery && portal.showName == null) {
                 portal.columns = schemaColumns;
