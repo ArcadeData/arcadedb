@@ -76,6 +76,8 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
     database.transaction(() -> {
       if (!database.getSchema().existsType(TYPE))
         database.getSchema().createDocumentType(TYPE);
+      if (!database.getSchema().getType(TYPE).existsProperty("id"))
+        database.getSchema().getType(TYPE).createProperty("id", com.arcadedb.schema.Type.INTEGER);
       for (int i = 0; i < count; i++)
         database.newDocument(TYPE).set("id", i).save();
     });
@@ -122,8 +124,8 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
-  @DisplayName("[#7034] the first Execute of a never-Described portal whose result exceeds the cap is refused")
-  void unDescribedPortalOverTheCapIsRefused() throws Exception {
+  @DisplayName("[#6659] an Execute-only portal streams a result larger than the per-batch cap")
+  void undescribedPortalOverTheCapStreamsAcrossExecuteBatches() throws Exception {
     createRows(ROW_CAP + 10);
 
     try (final Socket socket = new Socket()) {
@@ -133,26 +135,31 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-        sendParse(out, "SELECT FROM " + TYPE);
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
+        sendParse(out, "SELECT id FROM " + TYPE + " ORDER BY id");
         sendBind(out, "P1");
-        sendExecute(out, "P1", 2);
-        sendSync(out);
-        final List<WireMessage> response = readUntilReadyForQuery(in);
 
-        assertThat(messageTypesOf(response)).startsWith('1', '2', 'E');
-        assertThat(messageTypesOf(response)).doesNotContain('T', 'D', 'C', 's');
-        assertThat(readyForQueryStatusOf(response)).isEqualTo('I');
+        int fetched = 0;
+        while (fetched < ROW_CAP + 10) {
+          sendExecute(out, "P1", 2);
+          sendSync(out);
+          final List<WireMessage> response = readUntilReadyForQuery(in);
+          assertThat(messageTypesOf(response)).as("streamed fetch must not be rejected").doesNotContain('E');
+          final int rows = (int) response.stream().filter(m -> m.type() == 'D').count();
+          assertThat(rows).isEqualTo(Math.min(2, ROW_CAP + 10 - fetched));
+          fetched += rows;
+          if (fetched < ROW_CAP + 10)
+            assertThat(messageTypesOf(response)).as("remaining rows keep the portal suspended").contains('s').doesNotContain('C');
+          else
+            assertThat(messageTypesOf(response)).as("last batch completes the portal").contains('C').doesNotContain('s');
+        }
 
-        // A refused portal is not left looking like a drained one: executing it again refuses again rather than
-        // answering an empty CommandComplete
-        sendExecute(out, "P1", 2);
-        sendSync(out);
-        final List<WireMessage> again = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(again)).startsWith('E').doesNotContain('D', 'C');
+        sendSimpleQuery(out, "ROLLBACK");
+        readUntilReadyForQuery(in);
       });
     }
   }
-
   @Test
   @DisplayName("[#7034] a portal within the cap is still paginated by the Execute row limit exactly as before")
   void portalWithinTheCapIsPaginatedNormally() throws Exception {
