@@ -1040,9 +1040,9 @@ public class PostgresNetworkExecutor extends Thread {
           final long engineStart = System.nanoTime();
           if (portal.isExpectingResult) {
             // Only stream when a positive Execute limit asks for a bounded page and the complete column layout
-            // can be fixed before fetching rows. Describe('P') still uses the bounded materialization path because
-            // sparse documents may introduce new columns later in the result. Execute(maxRows=0) drains in one
-            // round trip, so it remains on the configured bounded materialization path too.
+            // can be fixed from an explicit projection before fetching rows. Wildcard/implicit projections and
+            // Describe('P') retain bounded materialization because sparse documents may introduce new columns later.
+            // Execute(maxRows=0) drains in one round trip, so its initial execution also stays bounded/materialized.
             try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
                 final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
               final Map<String, PostgresType> schemaColumns = !portal.catalogQuery && portal.showName == null
