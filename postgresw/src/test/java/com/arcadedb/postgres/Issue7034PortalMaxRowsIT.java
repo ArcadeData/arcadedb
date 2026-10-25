@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -77,7 +78,7 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
       if (!database.getSchema().existsType(TYPE))
         database.getSchema().createDocumentType(TYPE);
       if (!database.getSchema().getType(TYPE).existsProperty("id"))
-        database.getSchema().getType(TYPE).createProperty("id", com.arcadedb.schema.Type.INTEGER);
+        database.getSchema().getType(TYPE).createProperty("id", Type.INTEGER);
       for (int i = 0; i < count; i++)
         database.newDocument(TYPE).set("id", i).save();
     });
