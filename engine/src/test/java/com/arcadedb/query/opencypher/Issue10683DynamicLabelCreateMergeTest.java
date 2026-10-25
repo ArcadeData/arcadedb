@@ -19,11 +19,13 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -115,6 +117,18 @@ class Issue10683DynamicLabelCreateMergeTest extends TestHelper {
     assertThat(database.getSchema().existsType(Labels.NO_LABEL_TYPE)).as("no node was created").isFalse();
   }
 
+  @Test
+  void aDynamicLabelThatIsNullContributesNothingAndLeavesTheNodeInTheNoLabelType() {
+    // the same contract as SET n:$(null): null adds no label, so with no static label the node lands in ~NO_LABEL~
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n:$(null) {uuid: 'cn'})").close();
+      database.command("opencypher", "MERGE (n:$(null) {uuid: 'mn'})").close();
+    });
+
+    assertThat(noLabelUuids()).containsExactlyInAnyOrder("cn", "mn");
+    assertThat(schemaTypeNames()).noneMatch(name -> name.contains("$("));
+  }
+
   private List<Object> firstColumn(final String query, final Map<String, Object> params) {
     final List<Object> out = new ArrayList<>();
     database.transaction(() -> {
@@ -138,6 +152,14 @@ class Issue10683DynamicLabelCreateMergeTest extends TestHelper {
         out.add(row.getProperty("uuid"));
       }
     }
+    return out;
+  }
+
+  private List<String> noLabelUuids() {
+    final List<String> out = new ArrayList<>();
+    final Iterator<Record> it = database.iterateType(Labels.NO_LABEL_TYPE, false);
+    while (it.hasNext())
+      out.add(it.next().asVertex().getString("uuid"));
     return out;
   }
 
