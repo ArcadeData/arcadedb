@@ -1092,6 +1092,33 @@ public class PostgresNetworkExecutor extends Thread {
           return;
         }
 
+        // Execute(maxRows=0) drains the rest of a live cursor without materializing it. Send bounded chunks
+        // directly to the socket and write the single CommandComplete only after the cursor is exhausted.
+        if (portal.isExpectingResult && portal.streamingResultSetActive && limit == 0) {
+          final long serStart = System.nanoTime();
+          final int configuredBatch = server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS);
+          final int chunkSize = configuredBatch > 0 ? configuredBatch : 256;
+          try {
+            while (portal.streamingResultSet != null && portal.streamingResultSet.hasNext()) {
+              final List<Result> chunk = new ArrayList<>(chunkSize);
+              while (chunk.size() < chunkSize && portal.streamingResultSet.hasNext()) {
+                final Result row = portal.streamingResultSet.next();
+                if (row != null) {
+                  chunk.add(row);
+                  portal.resultCursor++;
+                }
+              }
+              if (!chunk.isEmpty())
+                writeDataRows(chunk, portal.columns, portal.resultFormats);
+            }
+          } finally {
+            closePortalResult(portal);
+          }
+          writeCommandComplete(portal.query, portal.resultCursor);
+          profile.addSerializationNanos(System.nanoTime() - serStart);
+          return;
+        }
+
         // Computes this Execute's slice of the portal's materialized result (issue #6458). Runs on every
         // Execute, not only the one that just populated fullResultSet above: a follow-up Execute continuing a
         // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
