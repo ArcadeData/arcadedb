@@ -54,6 +54,8 @@ final class PageIdCache {
       final int totalPages = pageNumber >= 0 ? component.getTotalPages() : 0;
       if (pageNumber < 0 || pageNumber >= totalPages)
         return new PageId(component.getDatabase(), component.getFileId(), pageNumber);
+      // Growing to the page count copies the whole array for each new page. That is on purpose: the copy is negligible next to
+      // creating the page, and sizing the array to the page count keeps it from ever growing past it. Do not "optimize" it.
       cached = Arrays.copyOf(cached, totalPages);
       ids = cached;
     }

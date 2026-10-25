@@ -88,6 +88,9 @@ public class CachedPage {
    * The byte {@code readByte(index)} answers on a view of this page ({@link #useAsImmutable()}), without building the view.
    * It reads the backing array, which a view wraps whole, so it neither depends on nor moves the position of the shared buffer
    * and is safe from many threads at once. For a reader that reads single values at absolute positions (#10654).
+   * <p>
+   * There is no bounds check beyond the array's own {@link ArrayIndexOutOfBoundsException}. The one caller, the bloom filter
+   * probe, catches every failure and answers "might contain" (TRUE), so an index out of range never hides a key.
    */
   public byte readByte(final int index) {
     return content.getContent()[BasePage.PAGE_HEADER_SIZE + index];

@@ -414,7 +414,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     for (int p = totalPages - 1; p > -1; --p) {
-      // #10654: THE PAGEID IS THE ONE THIS INDEX HANDED OUT BEFORE, AND THE BUFFER IS BUILT ONLY FOR A PAGE THAT HAS ENTRIES
+      // #10654: the PageId is the one this index handed out before, and the buffer is built only for a page that has entries
       final BasePage currentPage = database.getTransaction().getPage(pageIds.get(p), pageSize);
       final int count = getCount(currentPage);
 
