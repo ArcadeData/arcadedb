@@ -1078,7 +1078,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
 
         if (portal.promisedNoData() && portal.isExpectingResult
-            && ((portal.fullResultSet != null && !portal.fullResultSet.isEmpty())
+            && ((portal.fullyMaterialized && portal.fullResultSet != null && !portal.fullResultSet.isEmpty())
                 || (portal.streamingResultSetActive && portal.streamingResultSet != null && portal.streamingResultSet.hasNext()))) {
           closePortalResult(portal);
           answerDescribedNoData(portal);
