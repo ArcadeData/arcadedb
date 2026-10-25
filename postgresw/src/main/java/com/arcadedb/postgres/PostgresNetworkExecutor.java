@@ -545,6 +545,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
       } finally {
         ACTIVE_SESSIONS.remove(processId, this);
+        dropPortals();
         rollbackPendingTransaction();
       }
 
