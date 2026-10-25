@@ -715,6 +715,7 @@ public class PostgresNetworkExecutor extends Thread {
           try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
               final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
             portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+            portal.fullyMaterialized = true;
             portal.executed = true;
             resolvePortalColumns(portal, true);
           }
@@ -1056,6 +1057,7 @@ public class PostgresNetworkExecutor extends Thread {
                 portal.executed = true;
               } else {
                 portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+                portal.fullyMaterialized = true;
                 portal.executed = true;
                 if (!portal.columnsDescribed) {
                   final long serStart = System.nanoTime();
