@@ -1129,7 +1129,7 @@ public class PostgresNetworkExecutor extends Thread {
         // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
         // populated - by this same method on an earlier call, or by describeCommand() - and only needs the
         // next slice, never a re-run of the statement.
-        if (portal.isExpectingResult && portal.streamingResultSetActive) {
+        if (portal.isExpectingResult && portal.streamingResultSetActive && limit > 0) {
           // Drain only the current Execute batch. POSTGRES_QUERY_MAX_ROWS bounds server-side buffering per
           // network round trip, not the total cursor cardinality; the cursor can be fetched over many Executes.
           final int maxRows = server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS);
