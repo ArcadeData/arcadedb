@@ -1102,8 +1102,9 @@ public class PostgresNetworkExecutor extends Thread {
               portal.resultCursor++;
             }
             portal.cachedResultSet = batch;
-            portal.suspended = batch.size() == batchLimit && portal.streamingResultSet.hasNext();
-            if (!portal.suspended) {
+            final boolean moreRows = portal.streamingResultSet.hasNext();
+            portal.suspended = moreRows && batch.size() == batchLimit;
+            if (!moreRows) {
               // Keep streamingResultSetActive set after EOF so a stray repeated Execute cannot replay the last batch.
               portal.streamingResultSet.close();
               portal.streamingResultSet = null;
