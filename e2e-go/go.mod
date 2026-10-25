@@ -6,7 +6,7 @@ module arcadedb.com/e2e-go
 go 1.26.0
 
 require (
-	github.com/neo4j/neo4j-go-driver/v5 v5.28.5
+	github.com/neo4j/neo4j-go-driver/v5 v5.28.6
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 )
