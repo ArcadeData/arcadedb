@@ -1097,9 +1097,10 @@ public class PostgresNetworkExecutor extends Thread {
           if (portal.streamingResultSet != null) {
             while (batch.size() < batchLimit && portal.streamingResultSet.hasNext()) {
               final Result row = portal.streamingResultSet.next();
-              if (row != null)
+              if (row != null) {
                 batch.add(row);
-              portal.resultCursor++;
+                portal.resultCursor++;
+              }
             }
             portal.cachedResultSet = batch;
             final boolean moreRows = portal.streamingResultSet.hasNext();
