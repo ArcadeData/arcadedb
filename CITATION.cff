@@ -26,7 +26,6 @@ repository-code: "https://github.com/ArcadeData/arcadedb"
 url: "https://arcadedb.com"
 abstract: Play With Data!
 license: Apache-2.0
-copyright: Copyright (c) 2021 Arcade Data Ltd
 keywords:
   - Multi-Model
   - NoSQL
