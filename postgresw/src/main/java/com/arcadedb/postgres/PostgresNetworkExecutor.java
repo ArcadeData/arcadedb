@@ -1050,6 +1050,7 @@ public class PostgresNetworkExecutor extends Thread {
                       : getColumnsFromQuerySchema(portal.query, portal.sqlStatement))
                   : null;
               if (limit > 0 && schemaColumns != null && !schemaColumns.isEmpty()
+                  && portal.sqlStatement instanceof SelectStatement
                   && !portal.catalogQuery && portal.showName == null) {
                 portal.columns = schemaColumns;
                 portal.streamingResultSet = runPortalQuery(portal);
