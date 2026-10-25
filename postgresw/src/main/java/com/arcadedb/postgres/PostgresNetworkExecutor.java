@@ -1037,31 +1037,30 @@ public class PostgresNetworkExecutor extends Thread {
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           if (portal.isExpectingResult) {
-            // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
-            // never Described this portal first (it already knows the row shape) reaches this branch instead,
-            // and every Execute on this portal from here on - including this one - slices fullResultSet by its
-            // own row-limit below rather than re-running the statement. Bounded by the same cap as the
-            // simple-query path (issue #7034): the Execute's own row limit bounds what is SENT, not what is
-            // held here.
-            // The query admission slot (issue #9518) covers the query and its column resolution, as in Describe
+            // Streaming is safe when the column contract can be established without inspecting every result row.
+            // Describe('P') keeps the bounded materialization path because sparse documents need a complete
+            // row/column union before RowDescription. Execute-only SQL portals use schema-derived columns where
+            // available and retain the live ResultSet across Execute messages (#6659).
             try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
                 final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
-              portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
-              portal.executed = true;
-              profile.addEngineNanos(System.nanoTime() - engineStart);
-              // Execute never answers with a RowDescription (issue #8244): PostgreSQL's protocol reserves it for
-              // Describe, and a client that bound a statement it already knows the shape of sends Bind/Execute/Sync
-              // with no Describe - pgjdbc once prepareThreshold promotes a statement - and reads a RowDescription it
-              // did not ask for as the answer to a Describe it never sent, which desynchronizes the connection. The
-              // columns are still resolved here, since the data rows are encoded from them. portal.columnsDescribed
-              // means a real Describe('S') already told the client this exact shape/OIDs - and, for a schemaless
-              // type, a client that negotiated binary transfer off that promise cannot have it silently swapped for a
-              // differently-typed one here (issue #6725): keep the promised columns.
-              if (!portal.columnsDescribed) {
-                final long serStart = System.nanoTime();
-                resolvePortalColumns(portal, false);
-                profile.addSerializationNanos(System.nanoTime() - serStart);
+              final Map<String, PostgresType> schemaColumns = !portal.columnsDescribed && portal.columns == null
+                  && !portal.catalogQuery ? getColumnsFromQuerySchema(portal.query, portal.sqlStatement) : null;
+              if (!portal.columnsDescribed && schemaColumns != null && !schemaColumns.isEmpty() && portal.showName == null
+                  && !portal.catalogQuery) {
+                portal.columns = schemaColumns;
+                portal.streamingResultSet = runPortalQuery(portal);
+                portal.streamingResultSetActive = true;
+                portal.executed = true;
+              } else {
+                portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+                portal.executed = true;
+                if (!portal.columnsDescribed) {
+                  final long serStart = System.nanoTime();
+                  resolvePortalColumns(portal, false);
+                  profile.addSerializationNanos(System.nanoTime() - serStart);
+                }
               }
+              profile.addEngineNanos(System.nanoTime() - engineStart);
             }
           } else {
             try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
