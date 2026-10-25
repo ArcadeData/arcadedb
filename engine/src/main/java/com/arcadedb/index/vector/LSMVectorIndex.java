@@ -200,6 +200,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private static final double MIN_UNIT_MAGNITUDE_SQUARED = (1.0 - UNIT_MAGNITUDE_TOLERANCE) * (1.0 - UNIT_MAGNITUDE_TOLERANCE);
   private static final double MAX_UNIT_MAGNITUDE_SQUARED = (1.0 + UNIT_MAGNITUDE_TOLERANCE) * (1.0 + UNIT_MAGNITUDE_TOLERANCE);
 
+  /**
+   * The narrowest beam a search uses when neither the query nor the index metadata sets {@code efSearch}. It used to be 100 up
+   * to 10,000 vectors and {@code max(2k, 20)} from there, so a 10-neighbour query on a graph of 100,000 vectors walked a beam
+   * of 20: SIFT 100k recall@10 0.929 against 0.998 at a beam of 100, and a random 1024-d stored vector found itself as the
+   * first neighbour in 174 of 300 probes (issue #10704). The beam still grows as {@code 2k} for a larger {@code k}.
+   */
+  static final int DEFAULT_SEARCH_BEAM_FLOOR = 100;
+
   // Ceiling on how far findNeighborsFromVectorGrouped will resume a search that has not yet opened `limit` distinct
   // groups, expressed in beams (issue #5761). How far it *needs* to go is a property of the data - a group whose
   // members are all closer to the query than any other group's nearest member has to be walked past before a second
@@ -8647,9 +8655,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final int graphSize = graphIndex.size();
             final int initialEfSearch;
             if (graphSize < 10_000)
-              initialEfSearch = Math.max(k, 100);
+              initialEfSearch = Math.max(k, DEFAULT_SEARCH_BEAM_FLOOR);
             else
-              initialEfSearch = Math.max(k * 2, 20);
+              initialEfSearch = Math.max(k * 2, DEFAULT_SEARCH_BEAM_FLOOR);
 
             searchResult = searcher.search(ssp, k, initialEfSearch, 0.0f, 0.0f, bitsFilter);
           }
@@ -9174,8 +9182,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // index's own vector count, so it can only overflow on an index past ~1.07e9 vectors in one
             // bucket, but the long is free and the alternative is a negative beam width.
             effectiveEfSearch = graphSize < 10_000 ?
-                Math.max(maxRows, 100) :
-                (int) Math.min(Integer.MAX_VALUE, Math.max((long) maxRows * 2, 20));
+                Math.max(maxRows, DEFAULT_SEARCH_BEAM_FLOOR) :
+                (int) Math.min(Integer.MAX_VALUE, Math.max((long) maxRows * 2, DEFAULT_SEARCH_BEAM_FLOOR));
 
           final int candidateBudget = Math.min(graphSize,
               (int) Math.min(Integer.MAX_VALUE, (long) effectiveEfSearch * GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR));
