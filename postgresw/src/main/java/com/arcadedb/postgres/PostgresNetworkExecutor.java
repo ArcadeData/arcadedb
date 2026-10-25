@@ -1087,27 +1087,30 @@ public class PostgresNetworkExecutor extends Thread {
         // populated - by this same method on an earlier call, or by describeCommand() - and only needs the
         // next slice, never a re-run of the statement.
         if (portal.isExpectingResult && portal.streamingResultSetActive) {
-          // Pull only the rows requested by this Execute and keep the source ResultSet open if the portal suspends.
-          // The safety cap applies cumulatively to rows consumed by this portal, not to the server-side batch size.
+          // Drain only the current Execute batch. POSTGRES_QUERY_MAX_ROWS bounds server-side buffering per
+          // network round trip, not the total cursor cardinality; the cursor can be fetched over many Executes.
           final int maxRows = server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS);
-          final List<Result> batch = new ArrayList<>(limit > 0 ? limit : 16);
-          while ((limit <= 0 || batch.size() < limit) && portal.streamingResultSet.hasNext()) {
-            final Result row = portal.streamingResultSet.next();
-            if (row != null) {
-              batch.add(row);
+          final int batchLimit = maxRows > 0 ? Math.min(limit, maxRows) : limit;
+          final List<Result> batch = new ArrayList<>(Math.max(1, batchLimit));
+          if (portal.streamingResultSet != null) {
+            while (batch.size() < batchLimit && portal.streamingResultSet.hasNext()) {
+              final Result row = portal.streamingResultSet.next();
+              if (row != null)
+                batch.add(row);
               portal.resultCursor++;
-              if (maxRows > 0 && portal.resultCursor > maxRows)
-                throw new CommandExecutionException(
-                    "Result set exceeds the configured limit of " + maxRows + " rows streamed for the Postgres wire protocol ("
-                        + GlobalConfiguration.POSTGRES_QUERY_MAX_ROWS.getKey()
-                        + "); narrow the statement with a WHERE or LIMIT clause, or raise the limit");
             }
-          }
-          portal.cachedResultSet = batch;
-          portal.suspended = limit > 0 && batch.size() == limit && portal.streamingResultSet.hasNext();
-          if (!portal.suspended) {
-            closePortalResult(portal);
-            portal.streamingResultSetActive = false;
+            portal.cachedResultSet = batch;
+            portal.suspended = batch.size() == batchLimit && portal.streamingResultSet.hasNext();
+            if (!portal.suspended) {
+              // Keep streamingResultSetActive set after EOF so a stray repeated Execute cannot replay the last batch.
+              portal.streamingResultSet.close();
+              portal.streamingResultSet = null;
+            }
+          } else {
+            // A completed live cursor has no more rows. Keep the portal in the streaming mode rather than re-slicing
+            // a previous batch, and answer the repeated Execute with an empty CommandComplete.
+            portal.cachedResultSet = Collections.emptyList();
+            portal.suspended = false;
           }
         } else if (portal.isExpectingResult && portal.fullResultSet != null) {
           final int total = portal.fullResultSet.size();
