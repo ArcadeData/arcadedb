@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
 
@@ -156,7 +157,7 @@ public class PostgresPortal {
    * its transaction ends (issue #6659). Describe('P') retains the bounded materialization path for sparse rows,
    * whose complete column union cannot otherwise be known before RowDescription.
    */
-  public com.arcadedb.query.sql.executor.ResultSet streamingResultSet;
+  public ResultSet              streamingResultSet;
   /** True when this Execute is paging a live ResultSet rather than a materialized list. */
   public boolean streamingResultSetActive = false;
   /**
