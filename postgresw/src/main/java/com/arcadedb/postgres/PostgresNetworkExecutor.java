@@ -1083,6 +1083,12 @@ public class PostgresNetworkExecutor extends Thread {
           closePortalResult(portal);
           answerDescribedNoData(portal);
           return;
+        } else if (portal.promisedNoData() && portal.streamingResultSetActive) {
+          // The live stream has no rows, but this statement was described as NoData. Drain/close it and preserve the
+          // promised Execute response instead of emitting DataRow without a RowDescription.
+          closePortalResult(portal);
+          writeCommandComplete(portal.query, 0);
+          return;
         }
 
         // Computes this Execute's slice of the portal's materialized result (issue #6458). Runs on every
