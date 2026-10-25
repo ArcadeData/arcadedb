@@ -149,6 +149,8 @@ public class PostgresPortal {
   public ResultSet                 streamingResultSet;
   /** True after this portal starts a live cursor; stays true after EOF to prevent a repeated Execute replaying a batch. */
   public boolean                   streamingResultSetActive = false;
+  /** True after a Describe('P') has forced full materialization, even for an empty result. */
+  public boolean                   fullyMaterialized = false;
   /**
    * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
    * far (issue #6458). The next Execute's slice starts here.
