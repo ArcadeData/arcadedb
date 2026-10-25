@@ -134,32 +134,21 @@ public class PostgresPortal {
    */
   public String                    showName;
   /**
-   * The complete materialized result of this portal's statement (issue #6458), set once - by whichever of a
-   * Describe('P') or the first Execute runs the statement first - and read by every Execute after that to
-   * hand out {@code limit}-sized slices via {@link #resultCursor}. {@link #cachedResultSet} holds only the
-   * current slice (what the in-flight Execute is about to write to the wire), matching what every existing
-   * reader of that field already expects; this field is what makes a second slice possible without re-running
-   * the statement or losing the rows a Describe already had to materialize to discover the row's columns.
-   * <p>
-   * <b>Known limitation</b> (tracked as issue #6659): this is eager, in-memory pagination over a fully
-   * materialized list, not a true streaming cursor - the whole result is pulled into memory (and retained for
-   * the portal's whole lifetime) before the first row goes out, regardless of the client's row-limit. A client
-   * that always Describes first (pgjdbc, notably) already got this treatment before #6458, since
-   * {@code describeCommand()} has to read every row to discover a sparse document's full column set - but a
-   * raw wire-protocol client that skips Describe and relies on Execute's row-limit to bound server-side memory
-   * over a large result no longer gets that bound. Real streaming would need the source {@code ResultSet} kept
-   * open across Execute calls instead of closed immediately by {@code browseAndCacheResultSet}.
+   * The complete materialized result of this portal's statement, used where the whole row set is needed to fix
+   * RowDescription (notably Describe('P') over sparse documents), for SHOW/catalog synthetic rows, and for
+   * Execute(maxRows=0). Ordinary Execute-only portals with a stable schema can retain a live
+   * {@link ResultSet} instead via {@link #streamingResultSet}, avoiding eager materialization (issue #6659).
    */
   public List<Result>              fullResultSet;
   /**
-   * Live result cursor used by Execute-only fetches when the result columns can be established without scanning
-   * the complete result. This is connection-thread confined and closed when the portal is closed, rebound, or
-   * its transaction ends (issue #6659). Describe('P') retains the bounded materialization path for sparse rows,
-   * whose complete column union cannot otherwise be known before RowDescription.
+   * Live source cursor for incremental Execute fetching when columns can be established before rows are read.
+   * It is connection-thread confined and closed at EOF or when the portal closes, is rebound, its transaction ends,
+   * or the connection disconnects. A Describe('P') continues to use {@link #fullResultSet}, because a document
+   * may introduce a new property in a later row and PostgreSQL's RowDescription must precede every DataRow.
    */
-  public ResultSet              streamingResultSet;
-  /** True when this Execute is paging a live ResultSet rather than a materialized list. */
-  public boolean streamingResultSetActive = false;
+  public ResultSet                 streamingResultSet;
+  /** True after this portal starts a live cursor; stays true after EOF to prevent a repeated Execute replaying a batch. */
+  public boolean                   streamingResultSetActive = false;
   /**
    * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
    * far (issue #6458). The next Execute's slice starts here.
