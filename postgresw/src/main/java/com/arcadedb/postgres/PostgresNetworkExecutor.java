@@ -1038,10 +1038,10 @@ public class PostgresNetworkExecutor extends Thread {
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           if (portal.isExpectingResult) {
-            // A live cursor is safe for Execute-only fetches when the result shape can be fixed from the statement
-            // before reading rows. Describe('P') still materializes within the configured cap because arbitrary
-            // sparse documents can introduce columns late in the result. Execute(maxRows=0) also retains the
-            // bounded materialization path: it explicitly asks to drain the portal in one round trip.
+            // Only stream when a positive Execute limit asks for a bounded page and the complete column layout
+            // can be fixed before fetching rows. Describe('P') still uses the bounded materialization path because
+            // sparse documents may introduce new columns later in the result. Execute(maxRows=0) drains in one
+            // round trip, so it remains on the configured bounded materialization path too.
             try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
                 final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
               final Map<String, PostgresType> schemaColumns = !portal.catalogQuery && portal.showName == null
