@@ -620,9 +620,11 @@ public class PostgresNetworkExecutor extends Thread {
     // it ends no transaction command and touches no data - and a client cleaning up its portals while it
     // recovers is owed the CloseComplete it is waiting for.
 
-    if (closeType == 'P')
-      getPortal(prepStatementOrPortal, true);
-    else if (closeType == 'S')
+    if (closeType == 'P') {
+      final PostgresPortal closed = getPortal(prepStatementOrPortal, true);
+      if (closed != null)
+        closePortalResult(closed);
+    } else if (closeType == 'S')
       preparedStatements.remove(prepStatementOrPortal);
 
     if (DEBUG)
@@ -3109,8 +3111,11 @@ public class PostgresNetworkExecutor extends Thread {
       // failed one leaves no portal under it; the only exception is skip-until-Sync, where PostgreSQL DISCARDS
       // the message unread and it must leave the name exactly as it found it - the same boundary parseCommand()
       // draws. skipUntilSync cannot change while the rest of this message is read, so it is safe to test here.
-      if (!skipUntilSync)
-        portals.remove(portalName);
+      if (!skipUntilSync) {
+        final PostgresPortal previous = portals.remove(portalName);
+        if (previous != null)
+          closePortalResult(previous);
+      }
 
       // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
       // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
@@ -4996,8 +5001,23 @@ public class PostgresNetworkExecutor extends Thread {
    * abandoned in memory until the connection closed. Prepared statements are session-scoped and are not touched.
    */
   private void dropPortals() {
-    if (!portals.isEmpty())
+    if (!portals.isEmpty()) {
+      for (final PostgresPortal portal : portals.values())
+        closePortalResult(portal);
       portals.clear();
+    }
+  }
+
+  /** Closes an Execute portal's live engine cursor on every portal-lifecycle exit (issue #6659). */
+  private static void closePortalResult(final PostgresPortal portal) {
+    if (portal.streamingResultSet != null) {
+      try {
+        portal.streamingResultSet.close();
+      } finally {
+        portal.streamingResultSet = null;
+        portal.streamingResultSetActive = false;
+      }
+    }
   }
 
   /**
