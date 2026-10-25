@@ -4595,6 +4595,7 @@ public class PostgresNetworkExecutor extends Thread {
   private void createResultSet(final PostgresPortal portal, final Object... elements) {
     portal.executed = true;
     portal.fullResultSet = createResultSet(elements);
+    portal.fullyMaterialized = true;
     portal.columns = getColumns(portal.fullResultSet);
   }
 
