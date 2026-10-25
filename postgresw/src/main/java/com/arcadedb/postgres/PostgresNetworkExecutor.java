@@ -1118,42 +1118,33 @@ public class PostgresNetworkExecutor extends Thread {
 
         if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
           final long serStart = System.nanoTime();
-          // Query returned results - send them
-          final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal),
-              resolveAliasToSourceProperty(portal));
+          // Live query cursors use the schema-derived/previously-described layout, so future sparse rows cannot
+          // silently change the DataRow width after the first batch. Materialized paths preserve row-based inference.
+          final Map<String, PostgresType> dataRowColumns = portal.streamingResultSetActive || portal.streamingResultSet != null
+              || portal.columnsDescribed ? portal.columns
+                  : getColumns(portal.cachedResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
 
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO,
                 "PSQL: executeCommand columns - portal.columns=%s, dataRowColumns=%s, resultSize=%d (thread=%s)",
                 portal.columns != null ? portal.columns.keySet() : "null",
-                dataRowColumns.keySet(),
+                dataRowColumns != null ? dataRowColumns.keySet() : "null",
                 portal.cachedResultSet.size(),
                 Thread.currentThread().threadId());
 
-          // A portal materialized before this Execute (a SHOW/system/catalog answer fixed at Parse, or one a
-          // Describe('P') ran) already carries its columns; a RowDescription is never sent from here (issue #8244).
+          // A portal materialized before this Execute already carries its columns; Execute never sends RowDescription.
           if (portal.columns == null)
             portal.columns = dataRowColumns;
 
-          // Verify column count matches what was sent in RowDescription
-          if (portal.columns != null && portal.columns.size() != dataRowColumns.size()) {
-            // Column count mismatch - use the original columns from DESCRIBE
-            // This can happen if sample query returned different properties than actual query
+          if (portal.columns != null && dataRowColumns != null && portal.columns.size() != dataRowColumns.size()) {
             if (DEBUG)
               LogManager.instance().log(this, Level.WARNING,
                   "PSQL: Column count mismatch - RowDesc=%d, DataRow=%d (thread=%s)",
                   portal.columns.size(), dataRowColumns.size(), Thread.currentThread().threadId());
           }
 
-          // Use the columns that were sent in RowDescription for consistency
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
           writeDataRows(portal.cachedResultSet, columnsToUse, portal.resultFormats);
-          // Exactly one terminator after the data rows (issue #6458), never both, and always after the rows
-          // rather than before them: PortalSuspended when this slice stopped short of fullResultSet with the
-          // row-limit reached, CommandComplete once the portal is fully drained - tagged with resultCursor,
-          // the running total across every slice this portal has sent (matching PostgreSQL's own convention),
-          // when this portal is the paginated fullResultSet-backed kind. Every portal that produces rows is that
-          // kind, including the ones answered at Parse (SHOW, system and catalog answers, issue #8708).
           if (portal.suspended)
             portalSuspendedResponse();
           else
