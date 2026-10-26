@@ -87,17 +87,22 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
   /** A declared peer is known without reading anything: the handler thread must not touch the division at all. */
   @Test
   void aDeclaredPeerIsClassifiedWithoutReadingTheLiveConfiguration() throws Exception {
-    final RaftHAServer raft = detachedServer(blockingRatis());
+    final AtomicInteger probes = new AtomicInteger();
+    final RaftHAServer raft = detachedServer(blockingRatis(), probes);
 
     returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("appendEntries", RaftPeerId.valueOf("localhost_2435"),
         raft.getLocalPeerId(), FROM_THIS_HOST, NO_PROBE));
 
-    assertThat(raft.getMisdirectedRaftRequestsRefused()).isEqualTo(1L);
     // Neither the handler thread nor the recovery task has a reason to ask: the declared list answers. The task is waited
     // for, or the count would be read before it had a chance to ask
     Awaitility.await("the recovery task completed").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining("This node sent a Raft appendEntries meant for peer 'localhost_2435'") == 1);
     assertThat(divisionReads.get()).isZero();
+    // The refusal under test, plus the self-dial probe that call queued: the node claimed itself as the requestor, so the
+    // recovery task sent a probe whose loop-back arrives at this same listener (issue #10299) and is counted too. The probe
+    // is sent before the task logs the line awaited above, so by now the count is settled; read any earlier, it is 1 or more
+    // depending on which thread got there first (issue #10706)
+    assertThat(raft.getMisdirectedRaftRequestsRefused()).isEqualTo(1L + probes.get());
   }
 
   /** An id nobody declared is the case the live read existed for: it must not park the handler thread either. */
@@ -235,6 +240,11 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
   }
 
   private static RaftHAServer detachedServer(final RaftServer ratis) throws Exception {
+    return detachedServer(ratis, new AtomicInteger());
+  }
+
+  /** As {@link #detachedServer(RaftServer)}, counting into {@code probes} the self-dial probes this node sends to itself. */
+  private static RaftHAServer detachedServer(final RaftServer ratis, final AtomicInteger probes) throws Exception {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
     final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
@@ -244,7 +254,7 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
     field.setAccessible(true);
     field.set(raft, ratis);
     // The stand-in Raft server has no channels: this node's own requests come back to it (issue #10299)
-    SelfDialChannels.leadBackToItself(raft);
+    raft.setSelfDialProbeTransportForTesting(SelfDialChannels.leadingBackTo(raft, probes));
     return raft;
   }
 }
