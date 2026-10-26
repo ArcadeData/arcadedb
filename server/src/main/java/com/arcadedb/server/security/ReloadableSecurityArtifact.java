@@ -24,6 +24,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -71,6 +72,10 @@ abstract class ReloadableSecurityArtifact<T> {
   private volatile Timer  watcher;
   // Set by stop(), for good: see stop() for how it closes the race with startWatching() without the lock.
   private volatile boolean stopped;
+
+  // The watcher ticks running now, counted under {@code idle} so that awaitIdle() can wait for them after stop() (issue #10707)
+  private final Object idle = new Object();
+  private       int    running;
   // Test seam (issue #10460): run after read() and before publish(), so a test can land a concurrent change in that window
   // deterministically instead of racing for it. Null outside tests.
   volatile         Runnable afterRead;
@@ -344,14 +349,29 @@ abstract class ReloadableSecurityArtifact<T> {
           // IDENTITY on purpose: the question is whether this is the very Timer instance in force, not an equal one.
           if (watcher != timer)
             return;
+          // Issue #10707: counted in, and the stop flag read, under one monitor. stop() sets the flag first and awaitIdle() reads
+          // the count after, so a tick either is counted when awaitIdle() looks or finds the flag here and does nothing
+          synchronized (idle) {
+            if (stopped)
+              return;
+            ++running;
+          }
           try {
             if (fileChanged()) {
               LogManager.instance().log(owner, Level.INFO, "%s changed, reloading it...", description);
-              if (reload(false))
+              // Re-checked after the reload, which can take a while: onReloaded() is the part that reaches out (the groups store
+              // sweeps the databases of the server from it), and a store that was stopped meanwhile belongs to a server that
+              // is closing them (issue #10707)
+              if (reload(false) && !stopped)
                 onReloaded();
             }
           } catch (final Throwable e) {
             LogManager.instance().log(owner, Level.SEVERE, "Error on reloading file '%s' after was changed", e, file.getName());
+          } finally {
+            synchronized (idle) {
+              if (--running == 0)
+                idle.notifyAll();
+            }
           }
         }
       }, checkEveryMs, checkEveryMs);
@@ -373,5 +393,31 @@ abstract class ReloadableSecurityArtifact<T> {
     final Timer timer = watcher;
     if (timer != null)
       timer.cancel();
+  }
+
+  /**
+   * Waits until no watcher tick is running, for at most {@code timeoutMs}. Called after {@link #stop()}: a tick that began
+   * before it is not interrupted by {@link Timer#cancel()}, and a tick that begins after it does nothing, so once this
+   * returns {@code true} the watcher cannot reach {@link #onReloaded()} any more (issue #10707). It takes no lock of the
+   * store, which the tick being waited for may hold while it reloads. An interrupt ends the wait early and is restored.
+   *
+   * @return whether no tick was running when the wait ended
+   */
+  final boolean awaitIdle(final long timeoutMs) {
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+    synchronized (idle) {
+      while (running > 0) {
+        final long left = deadline - System.nanoTime();
+        if (left <= 0L)
+          break;
+        try {
+          TimeUnit.NANOSECONDS.timedWait(idle, left);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+      return running == 0;
+    }
   }
 }
