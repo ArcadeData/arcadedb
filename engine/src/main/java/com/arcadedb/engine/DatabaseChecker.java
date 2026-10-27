@@ -228,6 +228,11 @@ public class DatabaseChecker {
     // per-direction detail behind it plus the half-linked edges that are still reachable from one side.
 
     result.put("unreachableEdgeRecords", 0L);
+    // Issue #10741: how many of them a plain FIX linked back into their vertices' lists (their entries are counted in
+    // reconnectedEdges too, one or two per record by direction)
+    result.put("relinkedOrphanEdgeRecords", 0L);
+    // and how many a run left for the next one, to bound the memory of its relink plan
+    result.put("orphanEdgeRecordsLeftToRelink", 0L);
     result.put("edgesMissingOutReference", 0L);
     result.put("edgesMissingInReference", 0L);
     result.put("unreachableEdgeRecordsFound", new LinkedHashSet<RID>());
@@ -1438,6 +1443,12 @@ public class DatabaseChecker {
    * adjacency and the thing {@code RESTORE VERTEX} rebuilds it from, so a repair that deletes them by default
    * would turn a recoverable database into an unrecoverable one. Reporting is therefore always on; removing is
    * always asked for.
+   * <p>
+   * Without this opt-in a plain {@code FIX} RELINKS them instead (issue #10741): an orphan's {@code @out} and
+   * {@code @in} name live vertices, so the record goes back into the OUT list of the first and, for a bidirectional
+   * type, the IN list of the second. That is right in both cases the detection cannot tell apart - the committed edges of
+   * a {@code GraphBatch} killed before {@code close()} linked them, and the edges of a vertex that lost its head-chunk
+   * pointer - and loses nothing even for garbage, which {@code countType()} and a scan of the type already return.
    */
   public DatabaseChecker setDeleteOrphanEdgeRecords(final boolean deleteOrphanEdgeRecords) {
     this.deleteOrphanEdgeRecords = deleteOrphanEdgeRecords;
