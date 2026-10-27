@@ -24,7 +24,6 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
-import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.*;
 
@@ -434,7 +433,7 @@ public class CypherSemanticValidator {
   private static List<String> resolveYieldAllFieldNames(final CallClause callClause) {
     if (!callClause.isYieldAll())
       return null;
-    final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+    final CypherProcedure procedure = callClause.resolveProcedure();
     return procedure != null ? procedure.getYieldFields() : null;
   }
 
