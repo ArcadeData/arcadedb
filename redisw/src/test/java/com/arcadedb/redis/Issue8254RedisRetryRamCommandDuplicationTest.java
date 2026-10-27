@@ -106,30 +106,35 @@ public class Issue8254RedisRetryRamCommandDuplicationTest extends BaseRedisServe
   }
 
   /**
-   * PR #8309 review: the overlay used to store the raw key, but {@code setGlobalVariable}/{@code
-   * getGlobalVariable} strip a leading {@code $} before touching the real map. {@code SET $seq 1} followed by
-   * {@code GET seq} in the same block missed the buffered write, since {@code "$seq"} and {@code "seq"} were two
-   * different overlay entries. Both spellings must now agree, inside the block and after it publishes.
+   * PR #8309 review: an overlay entry and the real map must name a key by the same string, or a buffered write is
+   * missed by a later read in the same block. Issue #10694: that string is the client's key verbatim - {@code $seq} and
+   * {@code seq} are two keys, as in Redis - so {@code SET $seq 1} is seen by {@code GET $seq} in the same block and once
+   * published, and by {@code GET seq} in neither.
    */
   @Test
-  void dollarPrefixedKeyIsVisibleToAPlainGetInTheSameBlock() {
+  void dollarPrefixedKeyIsVisibleUnderItsOwnNameInTheSameBlock() {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     final String transaction = """
         MULTI
         SET $seq 1
+        GET $seq
         GET seq
         EXEC
         """;
 
     try (final ResultSet rs = database.command("redis", transaction)) {
       final List<?> replies = (List<?>) rs.next().getProperty("value");
-      assertThat(replies).hasSize(2);
-      assertThat(replies.get(1)).as("GET seq must see the SET $seq buffered earlier in the same block").isEqualTo("1");
+      assertThat(replies).hasSize(3);
+      assertThat(replies.get(1)).as("GET $seq must see the SET $seq buffered earlier in the same block").isEqualTo("1");
+      assertThat(replies.get(2)).as("seq is a different key from $seq").isNull();
     }
 
+    try (final ResultSet rs = database.command("redis", "GET $seq")) {
+      assertThat(rs.next().<Object>getProperty("value")).as("published under the client's key \"$seq\"").isEqualTo("1");
+    }
     try (final ResultSet rs = database.command("redis", "GET seq")) {
-      assertThat(rs.next().<Object>getProperty("value")).as("published under the normalized key, not the raw \"$seq\"").isEqualTo("1");
+      assertThat(rs.hasNext() ? rs.next().<Object>getProperty("value") : null).isNull();
     }
   }
 
