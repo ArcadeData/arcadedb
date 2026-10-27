@@ -73,6 +73,7 @@ public class DropIndexStatement extends DDLStatement {
         final ResultInternal result = new ResultInternal(db);
         result.setProperty("operation", "drop index");
         result.setProperty("indexName", idx.getName());
+        // kept for the clients that read it before indexName was added: it is the index name, not a bucket's
         result.setProperty("bucketName", idx.getName());
         rs.add(result);
       }

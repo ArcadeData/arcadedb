@@ -2487,7 +2487,8 @@ public class LocalDocumentType implements DocumentType {
       // callers that did not supply a manual name.
       final String customName = index.getMetadata().typeIndexName;
       final String derivedName = name + Arrays.toString(propertyNames).replace(" ", "");
-      // A REBUILD hands the derived name back as the custom one, and it is no manual name: a rename of the type has to move it
+      // A REBUILD hands the derived name back as the custom one, and it is no manual name: a rename of the type has to move it. A
+      // user who spelled out the derived name (CREATE INDEX `Foo[a]` ON Foo (a)) gets the same, which is the name it already had
       final boolean manualName = customName != null && !customName.isEmpty() && !customName.equals(derivedName);
       propIndex = new TypeIndex(manualName ? customName : derivedName, this, manualName);
       // Staged while a schema load is in flight (issue #7213): this wrapper is the name a query resolves, and

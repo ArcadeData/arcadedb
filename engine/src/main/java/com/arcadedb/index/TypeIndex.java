@@ -51,8 +51,9 @@ import java.util.logging.Level;
  * @author Luca Garulli
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
-  // Assigned only by rename(), which re-keys the schema's index map in the same step (issue #10751)
-  private       String              logicName;
+  // Assigned only by rename(), which re-keys the schema's index map in the same step (issue #10751). The rename runs under the
+  // schema change of the type rename, and a query reads the name without a lock: volatile so it sees the new name once it is set
+  private volatile String             logicName;
   // A name the user chose (CREATE INDEX <name> ON ...): it is not derived from the type, so a type rename leaves it alone
   private final boolean             manualName;
   // Copy-on-write: a query plans and reads while DDL on the same type adds, removes or clears sub-indexes

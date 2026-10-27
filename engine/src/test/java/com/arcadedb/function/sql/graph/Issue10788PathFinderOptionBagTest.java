@@ -20,12 +20,16 @@ package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.index.fulltext.MoreLikeThisConfig;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -103,6 +107,19 @@ class Issue10788PathFinderOptionBagTest extends TestHelper {
   @ValueSource(strings = { "parallel: 'yes'", "tieBreaker: 'ture'", "dFactor: 'abc'" })
   void anAstarOnlyOptionOfTheWrongKindIsRefused(final String option) {
     assertRefused("astar", option, option.substring(0, option.indexOf(':')));
+  }
+
+  /** The option reader is shared by every function option bag: a boolean option of a non-graph function is held to the same rule. */
+  @Test
+  void aBooleanOptionOfAnotherFunctionIsHeldToTheSameRule() {
+    assertThatThrownBy(() -> MoreLikeThisConfig.fromOptions(
+        new FunctionOptions("search_index_more", Map.of("excludeSource", "yes"), MoreLikeThisConfig.OPTION_KEYS))).hasMessageContaining(
+        "Option 'excludeSource'").hasMessageContaining("must be a boolean");
+    assertThatThrownBy(() -> MoreLikeThisConfig.fromOptions(
+        new FunctionOptions("search_index_more", Map.of("boostByScore", 1), MoreLikeThisConfig.OPTION_KEYS))).hasMessageContaining(
+        "Option 'boostByScore'");
+    assertThat(MoreLikeThisConfig.fromOptions(
+        new FunctionOptions("search_index_more", Map.of("excludeSource", "FALSE"), MoreLikeThisConfig.OPTION_KEYS)).isExcludeSource()).isFalse();
   }
 
   // ---- helpers

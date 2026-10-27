@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.parser.RefreshMaterializedViewStatement;
 import com.arcadedb.query.sql.parser.TruncateBucketStatement;
 import com.arcadedb.query.sql.parser.TruncateTypeStatement;
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -185,7 +186,9 @@ class Issue10734RefusedDdlChangesNothingCensusTest extends TestHelper {
         .containsExactlyInAnyOrderElementsOf(classified);
   }
 
+  // one fixture per statement and per index file it can be refused by: several seconds in all
   @Test
+  @Tag("slow")
   void aRefusedStatementThatDeletesIndexFilesChangesNothing() throws IOException {
     for (final List<Scenario> scenarios : DELETES_INDEX_FILES.values())
       for (final Scenario scenario : scenarios) {
