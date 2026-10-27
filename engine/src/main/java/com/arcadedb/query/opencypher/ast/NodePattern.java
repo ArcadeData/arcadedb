@@ -176,6 +176,21 @@ public class NodePattern implements PatternElement {
   }
 
   /**
+   * Returns a copy of this node pattern whose labels are {@code resolvedLabels} and that has no dynamic label expression left,
+   * preserving every other attribute. A write clause ({@code CREATE}, {@code MERGE}) builds it per input row, once the
+   * {@code $(expression)} labels of the pattern have been evaluated, so the rest of the clause works on static labels only
+   * (issue #10683).
+   *
+   * @param resolvedLabels the static labels of the pattern followed by what its dynamic labels evaluated to
+   *
+   * @return a new node pattern
+   */
+  public NodePattern withResolvedLabels(final List<String> resolvedLabels) {
+    return new NodePattern(variable, resolvedLabels, null, explicitProperties ? properties : null, propertiesParameterName,
+        labelDisjunction, whereExpression);
+  }
+
+  /**
    * Returns a copy of this node pattern bound to another variable, preserving every other attribute. Used when a
    * pass-through {@code WITH x AS y} is folded away and the {@code y} written after it is the {@code x} written before
    * (issue #9597).
