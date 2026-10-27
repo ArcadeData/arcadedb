@@ -315,6 +315,14 @@ public abstract class BooleanExpression extends SimpleNode {
     return false;
   }
 
+  /**
+   * True when the rows an index lookup returns for this condition are a superset of the rows it matches, so the planner keeps the
+   * condition as a filter on them instead of dropping it: a {@code CONTAINSALL} is looked up by one of its items (issue #10757).
+   */
+  public boolean needsRecheckAfterIndexLookup() {
+    return false;
+  }
+
   public Expression resolveKeyFrom(BinaryCondition additional) {
     throw new UnsupportedOperationException("Cannot execute index query with " + this);
   }
