@@ -24,12 +24,13 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collection;
 import java.util.Date;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -64,9 +65,11 @@ public class QueryOperatorEquals {
     // equal are equal as elements of a list or a map too (issues #10448, #10595). The comparator's own element rule knows numbers,
     // BigDecimal scale and one temporal pair, and nothing else: the instant of a stored LocalDateTime was not equal to the same
     // instant as a java.util.Date, an Instant, a Calendar or a Timestamp inside a list, and "<>" answered the row. This arm stands
-    // before the same-class one for that reason: two ArrayLists are a same-class pair
-    if (left instanceof List<?> list && right instanceof List<?> list1)
-      return BinaryComparator.listsEqual(list, list1, QueryOperatorEquals::elementsEqual);
+    // before the same-class one for that reason: two ArrayLists are a same-class pair. It takes every collection and every array but
+    // a byte[] (a BINARY scalar), not only a java.util.List: a Set fell past a List-only arm to the conversion below and was compared
+    // with the comparator's element rule (issue #10736)
+    if (isSequence(left) && isSequence(right))
+      return sequencesEqual(left, right);
     if (left instanceof Map<?, ?> map && right instanceof Map<?, ?> map1)
       return BinaryComparator.mapsEqual(map, map1, QueryOperatorEquals::elementsEqual);
 
@@ -124,10 +127,34 @@ public class QueryOperatorEquals {
       if (left instanceof byte[] bytes && right instanceof byte[] bytes1) {
         return Arrays.equals(bytes, bytes1);
       }
+      // A conversion into a collection (a value into the list it is compared with) is compared by the collection arms above, so
+      // the comparator's own element rule is never reached with a pair of collections (issue #10736)
+      if ((isSequence(left) && isSequence(right)) || (left instanceof Map && right instanceof Map))
+        return equals(left, right);
       return BinaryComparator.equals(left, right);
     } catch (final Exception ignore) {
       return false;
     }
+  }
+
+  /** A collection, or an array that is a sequence of values: any array but a {@code byte[]}, which is a BINARY scalar. */
+  private static boolean isSequence(final Object value) {
+    return value instanceof Collection<?> || MultiValue.isSequenceArray(value);
+  }
+
+  /**
+   * Two collections or arrays under the element rule of {@code =}: two sets hold no order and are equal when their elements pair off,
+   * any other pair is compared in iteration order, a set against a list in the order the set iterates, as when it was converted into
+   * a list before (issue #10736).
+   */
+  private static boolean sequencesEqual(final Object left, final Object right) {
+    if (left instanceof Set<?> set && right instanceof Set<?> set1)
+      return BinaryComparator.setsEqual(set, set1, QueryOperatorEquals::elementsEqual);
+    return BinaryComparator.listsEqual(asCollection(left), asCollection(right), QueryOperatorEquals::elementsEqual);
+  }
+
+  private static Collection<?> asCollection(final Object value) {
+    return value instanceof Collection<?> collection ? collection : CollectionUtils.arrayToList(value);
   }
 
   /** A pair of elements of two lists or maps: {@code =} itself, except that {@code null} is equal to {@code null} as it is in a list. */

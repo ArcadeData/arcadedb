@@ -51,7 +51,7 @@ class MaxMinFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, true, context);
+      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, true, null, context);
 
       final ResultSet result = step.syncPull(context, 1);
       assertThat(result.hasNext()).isTrue();
@@ -77,7 +77,7 @@ class MaxMinFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, false, context);
+      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, false, null, context);
 
       final ResultSet result = step.syncPull(context, 1);
       assertThat(result.hasNext()).isTrue();
@@ -97,7 +97,7 @@ class MaxMinFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, true, context);
+      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, true, null, context);
 
       final ResultSet result = step.syncPull(context, 1);
       assertThat(result.hasNext()).isTrue();
@@ -115,7 +115,7 @@ class MaxMinFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, true, context);
+      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, true, null, context);
 
       final String prettyPrint = step.prettyPrint(0, 2);
       assertThat(prettyPrint).contains("MAX FROM INDEX");
@@ -132,7 +132,7 @@ class MaxMinFromIndexStepTest {
 
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
-      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, false, context);
+      final MaxMinFromIndexStep step = new MaxMinFromIndexStep((RangeIndex) index, ALIAS, false, null, context);
 
       final String prettyPrint = step.prettyPrint(0, 2);
       assertThat(prettyPrint).contains("MIN FROM INDEX");

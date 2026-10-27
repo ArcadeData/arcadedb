@@ -19,12 +19,19 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
@@ -34,28 +41,42 @@ import java.util.NoSuchElementException;
  * <p>
  * This is an optimization for queries like "SELECT MAX(indexed_field) FROM type"
  * that avoids a full table scan when an index is available.
+ * <p>
+ * The aggregate is over the records of the target type only. The index of a subtype is routinely the one declared on an ancestor,
+ * which holds the entries of the ancestor and of every sibling subtype too, so the step reads the sub-indexes of the target's own
+ * buckets, and skips an entry of any other bucket whatever index it is handed (issue #10748).
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/3304">Issue #3304</a>
  */
 public class MaxMinFromIndexStep extends AbstractExecutionStep {
 
   private final RangeIndex index;
-  private final String alias;
-  private final boolean max; // true for MAX, false for MIN
+  private final String     alias;
+  private final boolean    max; // true for MAX, false for MIN
+  /** The buckets of the target type, its subtypes included, sorted; null to read the whole index. */
+  private final int[]      bucketIds;
 
   private boolean executed = false;
 
   /**
-   * @param index   The range index to read from
-   * @param alias   The alias for the result property
-   * @param max     true for MAX, false for MIN
-   * @param context The command context
+   * @param index     The range index to read from
+   * @param alias     The alias for the result property
+   * @param max       true for MAX, false for MIN
+   * @param bucketIds the buckets of the target type, its subtypes included: the entries of any other bucket are not read. Null
+   *                  to read the whole index
+   * @param context   The command context
    */
-  public MaxMinFromIndexStep(final RangeIndex index, final String alias, final boolean max, final CommandContext context) {
+  public MaxMinFromIndexStep(final RangeIndex index, final String alias, final boolean max, final int[] bucketIds,
+      final CommandContext context) {
     super(context);
     this.index = index;
     this.alias = alias;
     this.max = max;
+    if (bucketIds != null) {
+      this.bucketIds = bucketIds.clone();
+      Arrays.sort(this.bucketIds);
+    } else
+      this.bucketIds = null;
   }
 
   @Override
@@ -82,15 +103,18 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
           Object resultValue = null;
 
           // For MAX: iterate descending (false), for MIN: iterate ascending (true)
-          // The first non-null key is the result
-          final IndexCursor cursor = index.iterator(!max);
+          // The first non-null key of a record of the target is the result
+          final IndexCursor cursor = openCursor();
 
           try {
-            while (cursor.hasNext()) {
+            while (cursor != null && cursor.hasNext()) {
               // #5635: the cursor answers hasNext() exactly, so this entry is live and the key it leaves behind is a
               // key that still has a record. While hasNext() was optimistic, a fully tombstoned end of the key space
               // let the loop consume a null and read the DELETED key it had stepped over.
-              cursor.next(); // advance to get the key
+              final Identifiable entry = cursor.next(); // advance to get the key
+              if (bucketIds != null && Arrays.binarySearch(bucketIds, entry.getIdentity().getBucketId()) < 0)
+                // a record of another type than the target, which an ancestor's index holds (issue #10748)
+                continue;
               final Object key = cursor.getKeys();
 
               if (key != null) {
@@ -109,7 +133,8 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
           } finally {
             // MIN/MAX stops on the FIRST entry, so the scan is abandoned by design: a compacted-series cursor left
             // registered here would keep a retired file alive until the next database restart.
-            cursor.close();
+            if (cursor != null)
+              cursor.close();
           }
 
           executed = true;
@@ -128,6 +153,20 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
         MaxMinFromIndexStep.this.reset();
       }
     };
+  }
+
+  /**
+   * The cursor over the target's entries: of a type index, the merge of the sub-indexes on the target's buckets only, so the entries
+   * of a sibling type are not even walked. Null when the index has no sub-index on any of them: the target holds no entry.
+   */
+  private IndexCursor openCursor() {
+    if (bucketIds == null || !(index instanceof TypeIndex typeIndex))
+      return index.iterator(!max);
+    final List<IndexInternal> onTargetBuckets = new ArrayList<>();
+    for (final IndexInternal subIndex : typeIndex.getIndexesOnBuckets())
+      if (Arrays.binarySearch(bucketIds, subIndex.getAssociatedBucketId()) >= 0)
+        onTargetBuckets.add(subIndex);
+    return onTargetBuckets.isEmpty() ? null : new MultiIndexCursor(onTargetBuckets, !max, -1);
   }
 
   @Override
