@@ -19,21 +19,27 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
+import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -255,6 +261,143 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
       }
       engine = null;
     }
+  }
+
+  /**
+   * The rename steps of a TIMESERIES type (issue #10749): the document part, then the files of the engine, which hold every sample
+   * and are named after the type - per shard a mutable bucket and the sealed file beside it, and one tag dictionary. The rename used
+   * to move the document part only: the session kept reading the engine still open on the old files, and the next open built an
+   * empty engine under the new name, stranding every sample. Refused before anything moves when a file the engine would move to is
+   * already there; a failure moves back what was moved. Runs with {@link #renameLock} held, forward and to roll back.
+   */
+  @Override
+  protected void renameFiles(final String newName) {
+    final String oldName = name;
+    // a target name taken by a type is refused by the document part, as a collision of names, before any file is looked at
+    if (!schema.existsType(newName))
+      checkEngineFilesCanMove(oldName, newName);
+
+    // the old name stays this type's until the engine's files, which still carry it, have moved: a type created under it meanwhile
+    // would find them and take them
+    renameDocumentPartKeepingOldName(newName);
+    try {
+      final TimeSeriesEngine current = engine;
+      if (current != null)
+        current.renameFiles(oldName, newName);
+      else
+        renameFilesWithoutEngine(oldName, newName);
+    } catch (final IOException | RuntimeException e) {
+      try {
+        restoreReservedName(oldName);
+      } catch (final RuntimeException rollback) {
+        e.addSuppressed(rollback);
+      }
+      throw new SchemaException("Error on renaming the files of the TIMESERIES type '" + oldName + "' to '" + newName + "'", e);
+    }
+    releaseReservedName(oldName);
+  }
+
+  /**
+   * The rename is published: the engine names the type by its new name in what it ships to the followers from now on, and its
+   * maintenance follows the name, or a type created later under the old one would cancel it (issue #10749).
+   */
+  @Override
+  protected void renamePublished(final String oldName) {
+    final TimeSeriesEngine current = engine;
+    if (current != null)
+      current.setTypeName(name);
+
+    final TimeSeriesMaintenanceScheduler scheduler = schema.getTimeSeriesMaintenanceScheduler();
+    if (scheduler.isScheduled(oldName)) {
+      scheduler.cancel(oldName);
+      scheduler.schedule(schema.getDatabase(), this);
+    }
+  }
+
+  /** The engine's components: the mutable bucket of each shard and the tag dictionary (issue #10749). */
+  @Override
+  protected void collectOwnedComponentFiles(final Collection<Integer> fileIds) {
+    final TimeSeriesEngine current = engine;
+    if (current != null) {
+      for (int i = 0; i < current.getShardCount(); i++)
+        fileIds.add(current.getShard(i).getMutableBucket().getFileId());
+      if (current.getTagDictionary() != null)
+        fileIds.add(current.getTagDictionary().getFileId());
+      return;
+    }
+    // no engine (issue #6356): the components the engine would be built on, found by the names it would look them up by
+    for (final String componentName : engineComponentNames(name))
+      if (schema.getFileByName(componentName) instanceof PaginatedComponent component)
+        fileIds.add(component.getFileId());
+  }
+
+  /**
+   * Refuses a rename whose target names a file already there: a component or a sealed file left under that name by another type
+   * would be adopted by this type's engine at the next open, or overwritten.
+   */
+  private void checkEngineFilesCanMove(final String oldName, final String newName) {
+    for (final String componentName : engineComponentNames(newName))
+      if (schema.getFileByName(componentName) != null)
+        throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the component '"
+            + componentName + "' its samples would move to already exists. Nothing was changed");
+    final String directory = schema.getDatabase().getDatabasePath() + File.separator;
+    for (int i = 0; i < engineShardCount(); i++) {
+      final File sealed = new File(directory + TimeSeriesSealedStore.sealedFileNameFor(newName, i));
+      if (sealed.exists())
+        throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the sealed file '"
+            + sealed.getName() + "' its samples would move to already exists. Nothing was changed");
+    }
+  }
+
+  /**
+   * The files of a type whose engine could not start (issue #6356) are moved through their components all the same: nothing rewrites
+   * them, and a retry of the engine, or the next open, looks them up by the type's name.
+   */
+  private void renameFilesWithoutEngine(final String oldName, final String newName) throws IOException {
+    final String directory = schema.getDatabase().getDatabasePath() + File.separator;
+    final List<String> oldNames = engineComponentNames(oldName);
+    final List<String> newNames = engineComponentNames(newName);
+    // the index of each name moved, in order: a component (a shard's bucket carries its sealed file), or a bare sealed file
+    final List<Integer> moved = new ArrayList<>();
+    try {
+      for (int i = 0; i < oldNames.size(); i++) {
+        if (schema.getFileByName(oldNames.get(i)) instanceof PaginatedComponent paginated) {
+          paginated.rename(newNames.get(i));
+          moved.add(i);
+        } else if (i < engineShardCount()) {
+          // a shard with no bucket component left can still have a sealed file; the last name, the tag dictionary, has none
+          TimeSeriesSealedStore.renameFile(directory + oldNames.get(i), directory + newNames.get(i));
+          moved.add(i);
+        }
+      }
+    } catch (final IOException | RuntimeException e) {
+      for (int m = moved.size() - 1; m >= 0; m--) {
+        final int i = moved.get(m);
+        try {
+          if (schema.getFileByName(newNames.get(i)) instanceof PaginatedComponent paginated)
+            paginated.rename(oldNames.get(i));
+          else
+            TimeSeriesSealedStore.renameFile(directory + newNames.get(i), directory + oldNames.get(i));
+        } catch (final IOException | RuntimeException rollback) {
+          e.addSuppressed(rollback);
+        }
+      }
+      throw e;
+    }
+  }
+
+  /** The component names of the engine of a type named {@code typeName}: one bucket per shard, then the tag dictionary. */
+  private List<String> engineComponentNames(final String typeName) {
+    final int shards = engineShardCount();
+    final List<String> names = new ArrayList<>(shards + 1);
+    for (int i = 0; i < shards; i++)
+      names.add(typeName + "_shard_" + i);
+    names.add(typeName + TimeSeriesTagDictionary.NAME_SUFFIX);
+    return names;
+  }
+
+  private int engineShardCount() {
+    return shardCount > 0 ? shardCount : 1;
   }
 
   @Override
