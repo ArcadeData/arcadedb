@@ -808,6 +808,18 @@ public class LocalDocumentType implements DocumentType {
 
     final String oldName = name;
 
+    // A default-named index takes the name derived from the new type name, which a manually named index of another type may hold
+    // already: refused here, before anything changes, rather than taking the name over and leaving that index unreachable by it
+    // (issue #10751)
+    for (final TypeIndex idx : getAllIndexes(false)) {
+      final String indexName = idx.nameUnderType(newName);
+      final IndexInternal holder = schema.lookupIndex(indexName);
+      if (holder != null && holder != idx)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+            "Cannot rename type '" + oldName + "' to '" + newName + "': its index '" + idx.getName() + "' would be named '" + indexName
+                + "', which is the name of an index of type '" + holder.getTypeName() + "'");
+    }
+
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
     final List<TypeIndex> renamedInheritedIndexes = new ArrayList<>();

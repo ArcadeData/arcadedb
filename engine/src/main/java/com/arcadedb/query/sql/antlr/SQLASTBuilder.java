@@ -3070,6 +3070,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Map entry visitor - handles key: value.
    * Grammar: mapEntry : (identifier | MAXDEPTH | STRING_LITERAL | mapKeyword) COLON expression | INDEX_COLON expression
+   * | (BUCKET_NUMBER_IDENTIFIER | BUCKET_IDENTIFIER | SCHEMA_IDENTIFIER)
    */
   @Override
   public JsonItem visitMapEntry(final SQLParser.MapEntryContext ctx) {
@@ -3085,6 +3086,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (ctx.INDEX_COLON() != null) {
         final String token = ctx.INDEX_COLON().getText();
         item.leftIdentifier = new Identifier(token.substring(0, token.length() - 1));
+      } else if (ctx.expression() == null) {
+        // {bucket:1}, {bucket:x}, {schema:x}: the lexer took key, colon and value for one target token. The value is parsed as the
+        // expression it would have been with a space after the colon
+        final String token = ctx.getStart().getText();
+        final int colon = token.indexOf(':');
+        item.leftIdentifier = new Identifier(token.substring(0, colon));
+        item.right = new SQLAntlrParser(null).parseExpression(token.substring(colon + 1));
+        return item;
       } else if (ctx.MAXDEPTH() != null) {
         // the keyword is case-insensitive but the option consumers look the key up as spelled: normalise it
         item.leftIdentifier = new Identifier("maxDepth");

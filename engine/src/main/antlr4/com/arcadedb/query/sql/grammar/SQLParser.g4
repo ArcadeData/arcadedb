@@ -1574,6 +1574,8 @@ mapEntry
     : (identifier | MAXDEPTH | STRING_LITERAL | mapKeyword) COLON expression
     // "index:" is one token (the target of SELECT FROM index:...), so {index: 1} reaches here as that token and the value
     | INDEX_COLON expression
+    // so are "bucket:1", "bucket:x" and "schema:x" written without a space: one token holding the key and the value
+    | (BUCKET_NUMBER_IDENTIFIER | BUCKET_IDENTIFIER | SCHEMA_IDENTIFIER)
     ;
 
 /**

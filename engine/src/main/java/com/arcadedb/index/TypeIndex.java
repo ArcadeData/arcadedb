@@ -754,8 +754,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public void updateTypeName(final String newTypeName) {
     if (!manualName)
-      rename(newTypeName + getPropertyNames().toString().replace(" ", ""));
+      rename(nameUnderType(newTypeName));
     updateTypeNameOfSubIndexesOn(type, newTypeName);
+  }
+
+  /** The name this index answers to once its type is named {@code typeName}: unchanged for a manual name, derived otherwise. */
+  public String nameUnderType(final String typeName) {
+    return manualName ? logicName : typeName + getPropertyNames().toString().replace(" ", "");
   }
 
   /**

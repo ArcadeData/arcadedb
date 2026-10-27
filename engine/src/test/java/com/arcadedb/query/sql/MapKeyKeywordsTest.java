@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.grammar.SQLLexer;
 import org.junit.jupiter.api.Test;
@@ -79,6 +80,18 @@ class MapKeyKeywordsTest extends TestHelper {
     // the shape of the "index:" token (SELECT FROM index:...) without a space is a key too
     try (final ResultSet rs = database.query("sql", "SELECT {index:3} AS m")) {
       assertThat(rs.next().<Map<String, Object>>getProperty("m")).containsEntry("index", 3);
+    }
+  }
+
+  /** "bucket:1", "bucket:x" and "schema:x" without a space are one target token for the lexer: in a map they are a key and a value. */
+  @Test
+  void aKeyTheLexerJoinsWithItsValueIsStillAKeyAndAValue() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.transaction(() -> database.newDocument("T").set("x", 7).save());
+    try (final ResultSet rs = database.query("sql", "SELECT {bucket:1, schema:x, other: 2} AS m, {bucket:x} AS n FROM T")) {
+      final Result row = rs.next();
+      assertThat(row.<Map<String, Object>>getProperty("m")).containsEntry("bucket", 1).containsEntry("schema", 7).containsEntry("other", 2);
+      assertThat(row.<Map<String, Object>>getProperty("n")).containsEntry("bucket", 7);
     }
   }
 }

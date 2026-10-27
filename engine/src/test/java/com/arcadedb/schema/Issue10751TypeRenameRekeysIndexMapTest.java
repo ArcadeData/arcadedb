@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -152,6 +153,35 @@ class Issue10751TypeRenameRekeysIndexMapTest extends TestHelper {
     assertThat(database.getSchema().existsIndex("Foo[a]")).isTrue();
     assertThat(database.getSchema().existsIndex("Bar[a]")).isFalse();
     assertEveryIndexResolvesToItself();
+  }
+
+  /**
+   * The name a default-named index would take is held by a manually named index of another type: the rename is refused before it
+   * changes anything, instead of taking the name over and leaving the other index unreachable by it.
+   */
+  @Test
+  void aRenameWhoseIndexNameIsTakenIsRefusedAndChangesNothing() {
+    database.command("sql", "CREATE DOCUMENT TYPE X");
+    database.command("sql", "CREATE PROPERTY X.a STRING");
+    database.command("sql", "CREATE INDEX `Bar[a]` ON X (a) UNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE Foo");
+    database.command("sql", "CREATE PROPERTY Foo.a STRING");
+    database.command("sql", "CREATE INDEX ON Foo (a) UNIQUE");
+    final Index taken = database.getSchema().getIndexByName("Bar[a]");
+    final Index fooIndex = database.getSchema().getIndexByName("Foo[a]");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Foo NAME Bar")).isInstanceOf(AlreadyExistsException.class)
+        .hasMessageContaining("Bar[a]");
+
+    assertThat(database.getSchema().existsType("Foo")).isTrue();
+    assertThat(database.getSchema().existsType("Bar")).isFalse();
+    assertThat(database.getSchema().getIndexByName("Bar[a]")).isSameAs(taken);
+    assertThat(database.getSchema().getIndexByName("Foo[a]")).isSameAs(fooIndex);
+    assertEveryIndexResolvesToItself();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getIndexByName("Bar[a]").getTypeName()).isEqualTo("X");
+    assertThat(database.getSchema().getIndexByName("Foo[a]").getTypeName()).isEqualTo("Foo");
   }
 
   /** A rename refused after the type index took its new name puts the map back under the old one (the rollback of the rename). */

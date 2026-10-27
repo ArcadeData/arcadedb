@@ -5496,6 +5496,12 @@ public class LocalSchema implements Schema {
     if (newName == null || newName.equals(oldName))
       return;
 
+    // Never over another index: the map is the only way to reach it (issue #10751). A type rename refuses this before it starts
+    final IndexInternal holder = indexMap.get(newName);
+    if (holder != null && holder != index)
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+          "Cannot rename index '" + oldName + "' to '" + newName + "': an index with that name already exists");
+
     LogManager.instance().log(this, Level.FINE, "Index '%s' renamed to '%s'", null, oldName, newName);
 
     indexMap.put(newName, index);
