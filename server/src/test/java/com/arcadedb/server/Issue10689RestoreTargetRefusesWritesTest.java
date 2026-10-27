@@ -30,6 +30,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -118,6 +124,40 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
     assertThat(count(session)).isEqualTo(1L);
   }
 
+  /**
+   * A commit that passed the refusal's check just before the claim put it up is still writing: the restore waits for it before it
+   * goes on, so it cannot complete during the download and be destroyed by the swap. A commit holds the database's shared lock
+   * from its check to its last page, which is what the commit in flight stands for here.
+   */
+  @Test
+  void theRestoreWaitsForACommitAlreadyPastTheCheck() throws Exception {
+    final LocalDatabase local = (LocalDatabase) server.getDatabase(NAME).getEmbedded();
+    final CountDownLatch inFlight = new CountDownLatch(1);
+    final CountDownLatch finish = new CountDownLatch(1);
+    final ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      final Future<?> commit = pool.submit(() -> local.executeInReadLock(() -> {
+        inFlight.countDown();
+        assertThat(finish.await(30, TimeUnit.SECONDS)).isTrue();
+        return null;
+      }));
+      assertThat(inFlight.await(30, TimeUnit.SECONDS)).isTrue();
+
+      server.reserveDatabaseNameForRestore(NAME);
+      final Future<?> drain = pool.submit(() -> server.awaitCommitsInFlightOn(NAME));
+
+      assertThatThrownBy(() -> drain.get(300, TimeUnit.MILLISECONDS)).as("the commit in flight is waited for")
+          .isInstanceOf(TimeoutException.class);
+
+      finish.countDown();
+      commit.get(30, TimeUnit.SECONDS);
+      drain.get(30, TimeUnit.SECONDS);
+    } finally {
+      finish.countDown();
+      pool.shutdownNow();
+    }
+  }
+
   /** The operator's own step may open the target while the claim stands: what it opens refuses writes as well. */
   @Test
   void aTargetOpenedWhileTheRestoreHoldsItRefusesWrites() {
@@ -175,7 +215,7 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
   }
 
   private static long count(final ServerDatabase database) {
-    return database.query("sql", "SELECT count(*) AS c FROM T").next().<Number>getProperty("c").longValue();
+    return database.query("sql", "SELECT count(@rid) AS c FROM T").next().<Number>getProperty("c").longValue();
   }
 
   private static RuntimeException catchWrite(final ServerDatabase database) {

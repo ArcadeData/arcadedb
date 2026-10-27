@@ -1899,7 +1899,8 @@ public class BoltNetworkExecutor extends Thread {
    * reconnect to. Before issue #9870 each of seven arms appended the redirect by hand, and a new arm could skip it.
    */
   private void sendExecutionFailure(final String code, final String failureText, final Throwable error) throws IOException {
-    final String text = withUnavailableReason(failureText, error);
+    // A concealing server sends no engine text, the refusal's own sentence included
+    final String text = ErrorConcealment.isConcealing(server) ? failureText : withUnavailableReason(failureText, error);
     sendFailure(code, withLeaderRedirect(text, error));
   }
 

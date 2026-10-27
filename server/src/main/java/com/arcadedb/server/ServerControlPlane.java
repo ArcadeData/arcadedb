@@ -2379,6 +2379,9 @@ public class ServerControlPlane {
 
       server.reserveDatabaseNameForRestore(databaseName);
     }
+    // Out of the registry lock: an existing target now refuses writes, and the commits already past that check are waited for,
+    // so none of them is acknowledged during the download and destroyed by the swap (issue #10689)
+    server.awaitCommitsInFlightOn(databaseName);
   }
 
   /**

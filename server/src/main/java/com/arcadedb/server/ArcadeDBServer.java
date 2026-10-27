@@ -1552,11 +1552,25 @@ public class ArcadeDBServer {
       // The target an 'overwrite' restore replaces stays open and keeps its readers until the swap, and accepts no write from now
       // on (issue #10689): one acknowledged meanwhile would be destroyed by the swap. Refused in the database itself, at every
       // commit and schema change, so a client that resolved it before the claim - a Postgres session, a Bolt connection, a
-      // transaction begun earlier - is refused as well as one that resolves it now
+      // transaction begun earlier - is refused as well as one that resolves it now. A commit that passed the check just before
+      // the refusal went up is waited for by awaitCommitsInFlightOn, which the restore calls once it has left this lock
       final ServerDatabase target = databases.get(databaseName);
       if (target != null)
         refuseWritesWhileRestoring(target);
     }
+  }
+
+  /**
+   * Waits for every commit to {@code databaseName} that was already running when the restore claimed it (issue #10689): one
+   * that passed the write refusal's check just before the refusal went up would otherwise complete during the download, be
+   * acknowledged, and be destroyed by the swap. Called by the restore right after {@link #reserveDatabaseNameForRestore}, and
+   * NOT under {@link #getDatabasesLock()}: the wait lasts as long as the slowest commit in flight, and every open on this
+   * server contends on that monitor.
+   */
+  public void awaitCommitsInFlightOn(final String databaseName) {
+    final ServerDatabase target = databases.get(databaseName);
+    if (target != null && target.isOpen() && target.getEmbedded() instanceof LocalDatabase local)
+      local.awaitCommitsInFlight();
   }
 
   /**

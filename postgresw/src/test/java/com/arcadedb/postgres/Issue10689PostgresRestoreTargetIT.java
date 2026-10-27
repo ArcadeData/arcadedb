@@ -68,7 +68,7 @@ public class Issue10689PostgresRestoreTargetIT extends PostgresWireProtocolTestB
   }
 
   private static long count(final Statement statement) throws SQLException {
-    try (final ResultSet resultSet = statement.executeQuery("SELECT count(*) AS c FROM " + TYPE)) {
+    try (final ResultSet resultSet = statement.executeQuery("SELECT count(@rid) AS c FROM " + TYPE)) {
       assertThat(resultSet.next()).isTrue();
       return resultSet.getLong(1);
     }

@@ -4628,6 +4628,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
+  /**
+   * Returns once every commit that was already running has ended. A commit checks the write refusal and writes its pages under
+   * the shared lock, so taking the exclusive one waits exactly for the commits that may have passed the check before a
+   * {@link #refuseWrites} and are still writing: after this, no commit can complete that did not see the refusal (issue
+   * #10689). An HA leader replicates between its two commit phases, outside this lock, so a commit already replicating is not
+   * waited for. Must not be called holding the shared lock.
+   */
+  public void awaitCommitsInFlight() {
+    executeInWriteLock(() -> null);
+  }
+
   /** The reason of the first refusal {@link #refuseWrites(String)} put in place, or {@code null} when this database accepts writes. */
   public String getWriteRefusal() {
     final WriteRefusal[] current = writeRefusals;
