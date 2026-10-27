@@ -1376,7 +1376,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // DatabaseIsReopeningException subtype. A concurrent DROP/CLOSE DATABASE admin action, or a shutdown, raises the
     // plain DatabaseIsClosedException on a still in-flight request, and that close is permanent: answered as the 404
     // below, the same verdict the retry it used to be given ended in once it re-resolved the name (issues #6778,
-    // #8199). ErrorCategory draws the same line for every other wire protocol.
+    // #8199). ErrorCategory draws the same line between the two for every other wire protocol: RETRY for the reopen, and
+    // UNAVAILABLE, not a server fault, for the plain close (issue #10692).
     final DatabaseIsReopeningException databaseReopening = firstOf(e, cause, DatabaseIsReopeningException.class);
     if (databaseReopening != null) {
       return retryable(databaseReopening);

@@ -108,7 +108,8 @@ public enum ErrorCategory {
   /**
    * The database exists and cannot serve the request NOW: a restore holds its name, {@code close database} closed it, it is being
    * dropped, an interrupted HA snapshot install left it mid-swap ({@link DatabaseNotAvailableException}, issue #10553). Raised where the
-   * name is resolved, before any work of the request, so nothing of it ran. The operator caused it and it clears without the caller
+   * name is resolved, before any work of the request, so nothing of it ran. Also the handle a request had already resolved being closed
+   * under it ({@link DatabaseIsClosedException}, issue #10692), except the HA reinstall's close-for-reopen, which is {@link #RETRY}. The operator caused it and it clears without the caller
    * changing anything, which is what separates it from the three it is easily mistaken for: not {@link #NOT_FOUND}, because the database
    * is there (and the gRPC client rebuilds that as a missing record); not {@link #RETRY}, which means "run the transaction again" and
    * is decided on the conflict of a commit; not {@link #SERVER}, because nothing is broken and it is not worth a stack trace in the log.
@@ -140,6 +141,9 @@ public enum ErrorCategory {
       // After RETRY, which a driver acts on first, and before everything that classifies the CALLER: a wrapper that parses or
       // validates (GraphQL, the query engines) must not relabel a database the server holds as the caller's mistake (issue #10553)
       new Rule(DatabaseNotAvailableException.class, UNAVAILABLE, DatabaseNotFoundException.class),
+      // After DatabaseIsReopeningException, its subtype, which stays RETRY: a handle closed under a request by a CLOSE DATABASE, a
+      // restore, a DROP or a shutdown is a database the server takes away and gives back, not a server fault (issue #10692)
+      new Rule(DatabaseIsClosedException.class, UNAVAILABLE),
       new Rule(ArithmeticErrorException.class, ARITHMETIC),
       new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
       // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
@@ -215,7 +219,11 @@ public enum ErrorCategory {
    * {@link DatabaseIsReopeningException} rides with them too: the handle the request was using was closed so the same
    * database could be reopened under its name (an HA snapshot reinstall), so the request re-issued resolves the reopened
    * database and succeeds. Only that subtype: a plain {@link DatabaseIsClosedException} is a {@code DROP}, a
-   * {@code CLOSE DATABASE} or a shutdown, which no retry fixes, and stays {@link #SERVER} (issue #8199).
+   * {@code CLOSE DATABASE}, a restore or a shutdown, which an immediate retry of the same transaction does not fix (issue #8199).
+   * It is {@link #UNAVAILABLE} instead (issue #10692): the operator took the database away and an {@code open database}, the end
+   * of the restore or the server coming back gives it back, without the caller changing anything. It used to fall through to
+   * {@link #SERVER}, so a Postgres client was told {@code XX000} internal_error, with the text concealed in production mode,
+   * for an operator's cold backup, while Bolt answered {@code DatabaseUnavailable} for the same handle.
    * <p>
    * {@link QueryHeapBudgetExceededException} rides with them for the same reason: the query was refused heap because
    * the queries running at the same time hold the budget they all share, and fits it on its own, so the same request

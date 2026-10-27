@@ -76,15 +76,19 @@ class Issue7624BoltErrorCategoryCoverageTest {
   /**
    * Issue #8199: a database an HA snapshot reinstall closed out from under a statement is transient - the same statement
    * re-run sees the reinstalled database - and HTTP has answered it with a 503 since #6770, but Bolt reported it as a
-   * DatabaseError. A database closed for good (DROP, CLOSE DATABASE, shutdown) stays a DatabaseError.
+   * DatabaseError. A database closed by a DROP, a CLOSE DATABASE or a shutdown is DatabaseUnavailable (issue #10692), the answer the
+   * selection of the database already gave for the same closed handle.
    */
   @Test
-  void aDatabaseClosedForReopenIsTransientAndOneClosedForGoodIsNot() {
+  void aDatabaseClosedForReopenIsTransientAndOneClosedByTheOperatorIsUnavailable() {
     assertThat(BoltNetworkExecutor.classifyExecutionError(new DatabaseIsReopeningException("db"), BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).startsWith("Neo.TransientError.");
+    // Issue #10692: closed under a statement is the DatabaseUnavailable the selection of the database answers for the same handle
     assertThat(BoltNetworkExecutor.classifyExecutionError(new DatabaseIsClosedException("db"), BoltErrorCodes.DATABASE_ERROR))
-        .isEqualTo(BoltErrorCodes.DATABASE_ERROR);
+        .isEqualTo(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new DatabaseIsClosedException("db"), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltNetworkExecutor.classifyDatabaseSelectionError(new DatabaseIsClosedException("db")));
   }
 
   /**
