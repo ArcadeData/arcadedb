@@ -75,7 +75,8 @@ public abstract class GraphTraverser {
    */
   protected CommandContext context;
   private   Boolean        incomingLookup;
-  // GRAPH_GHOST_EDGE_PROBE of the database walked, read once by the first walk that asks (issue #10658)
+  // GRAPH_GHOST_EDGE_PROBE of the database walked, read once by the first walk that asks (issue #10658). A traverser walks one
+  // database, as incomingLookup above assumes too: one reused across databases would keep the first one's value
   private   Boolean        ghostProbe;
 
   /**
