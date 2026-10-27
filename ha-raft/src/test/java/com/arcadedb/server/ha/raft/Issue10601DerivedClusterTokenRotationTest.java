@@ -125,6 +125,8 @@ class Issue10601DerivedClusterTokenRotationTest {
     final ClusterTokenProvider provider = fileDerived(passwordFile);
     Files.delete(passwordFile);
     assertThat(provider.rootPasswordFileChangedSinceDerivation()).isTrue();
+    // Reported as unreadable, not as rewritten: the file may be only temporarily unreadable.
+    assertThat(provider.clusterTokenRefusalReport("peer")).contains("can no longer be read").doesNotContain("has been rewritten");
   }
 
   @Test

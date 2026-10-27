@@ -186,35 +186,51 @@ class ClusterTokenProvider {
   /**
    * Whether the file this node's token was derived from no longer holds the password it held when the token was derived
    * (issue #10601), which is the moment the cause of a token mismatch is still visible: a rotated Secret. False for any
-   * token not derived from a file. A file that can no longer be read counts as changed.
+   * token not derived from a file. A file that can no longer be read counts as changed: this node cannot confirm it.
    */
   boolean rootPasswordFileChangedSinceDerivation() {
+    return rootPasswordFileChange() != null;
+  }
+
+  /**
+   * The sentence a refusal report adds about the root password file, or null when the token is not derived from a file
+   * or the file still holds the password the token was derived from. A file that cannot be read is reported as such,
+   * not as rewritten: it may be only temporarily unreadable.
+   */
+  private String rootPasswordFileChange() {
     if (source != Source.DERIVED_FILE)
-      return false;
+      return null;
+    final String current;
     try {
-      return !MessageDigest.isEqual(rootPasswordDigest, sha256(ServerSecurity.readRootPasswordFile(rootPasswordPath)));
+      current = ServerSecurity.readRootPasswordFile(rootPasswordPath);
     } catch (final ServerSecurityException e) {
-      return true;
+      return " The file at arcadedb.server.rootPasswordPath ('" + rootPasswordPath + "') can no longer be read (" + e.getMessage()
+          + "), so this node cannot confirm it still holds the password its token was derived from";
     }
+    if (MessageDigest.isEqual(rootPasswordDigest, sha256(current)))
+      return null;
+    return " The file at arcadedb.server.rootPasswordPath ('" + rootPasswordPath
+        + "') no longer holds the password this node derived its token from: it has been rewritten since this node "
+        + "started (e.g. a rotated Kubernetes Secret), so nodes started before and after the rewrite hold different "
+        + "tokens. Restore the previous password, or set arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath "
+        + "explicitly on every node and restart all nodes";
   }
 
   /**
    * Builds the line a refused cluster-token hop logs on this node (issue #10601): that the caller's token does not
-   * match this node's, where this node's came from, and - for a token derived from a file that has since been
-   * rewritten - that the rewrite is the likely cause.
+   * match this node's, where this node's came from, and - for a token derived from a since-rewritten file - that the
+   * rewrite is the likely cause. Worded for every caller of the hook: on the snapshot endpoint a request whose token is
+   * refused may still authenticate with Basic credentials, so the line speaks of the token, not of the request.
    */
   String clusterTokenRefusalReport(final String caller) {
-    final StringBuilder sb = new StringBuilder("Refused a request from ")
+    final StringBuilder sb = new StringBuilder("Refused the cluster token of a request from ")
         .append(caller != null ? caller : "an unknown caller")
-        .append(" with 401 'Invalid cluster token': the caller's cluster token does not match this node's, which was ")
+        .append(": the caller's cluster token does not match this node's, which was ")
         .append(describeSource())
         .append('.');
-    if (rootPasswordFileChangedSinceDerivation())
-      sb.append(" The file at arcadedb.server.rootPasswordPath ('").append(rootPasswordPath).append(
-              "') no longer holds the password this node derived its token from: it has been rewritten since this node "
-                  + "started (e.g. a rotated Kubernetes Secret), so nodes started before and after the rewrite hold different "
-                  + "tokens. Restore the previous password, or set arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath "
-                  + "explicitly on every node and restart all nodes");
+    final String fileChange = rootPasswordFileChange();
+    if (fileChange != null)
+      sb.append(fileChange);
     else if (source == Source.DERIVED_INLINE || source == Source.DERIVED_FILE)
       sb.append(" The caller may run with a different arcadedb.ha.clusterName or root password");
     else
@@ -229,6 +245,9 @@ class ClusterTokenProvider {
    * Callers reach this before the request is authenticated (the token check IS the authentication, in
    * {@code AbstractServerHttpHandler} and {@code SnapshotHttpHandler}), so any client can trigger it: the interval gate
    * is what bounds the file read and the log line an unauthenticated caller can cause, and must stay in front of both.
+   * The gate is one per node, not one per caller: a client sending bad tokens can use the window up and hide the line a
+   * misconfigured peer would have produced in it. The next window reports again, which is enough for a peer that keeps
+   * being refused, and a per-caller map would be state an unauthenticated caller could grow.
    *
    * @return whether this call logged
    */
@@ -269,8 +288,14 @@ class ClusterTokenProvider {
       // token, so it is treated as absent rather than as a rotation.
       final String recorded = Files.exists(path) ? Files.readString(path, StandardCharsets.UTF_8).strip() : "";
       if (!recorded.isEmpty()) {
-        if (recorded.equals(fingerprint))
+        if (recorded.equals(fingerprint)) {
+          if (allowRotation)
+            LogManager.instance().log(this, Level.WARNING,
+                "arcadedb.ha.clusterTokenAllowRotation is set and the derived cluster token has not changed: remove the "
+                    + "setting once every node runs on the rotated token, as it keeps the check against an in-place rewrite of "
+                    + "'%s' off for every start", rootPasswordPath);
           return;
+        }
         if (!allowRotation)
           throw new ConfigurationException("""
               Refusing to start: the cluster token this node derives from arcadedb.ha.clusterName and the root password \

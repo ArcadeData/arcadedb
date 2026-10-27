@@ -2534,9 +2534,8 @@ public enum GlobalConfiguration {
       arcadedb.server.rootPasswordPath); the derived token is never stored, so changing either input changes the token \
       at the next start of each node, and nodes holding different tokens refuse each other's requests. \
       SECURITY: set an explicit high-entropy value in production. The derivation uses a fixed public salt, so a weak \
-      root password plus a \
-      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
-      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
+      root password plus a reachable replication HTTP port could let an attacker forge the token and impersonate the \
+      root user via forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
@@ -2553,7 +2552,9 @@ public enum GlobalConfiguration {
       the one it last ran with. A node records a fingerprint of that derived token beside its Raft storage and, by \
       default, refuses to start when the file now derives a different one: the file was rewritten in place (e.g. a \
       rotated Kubernetes Secret), and a node starting with the new token is refused by every peer still on the old one. \
-      Set to true on every node only to rotate the token deliberately, with a full-cluster restart.""",
+      Set to true on every node only to rotate the token deliberately, with a full-cluster restart, then remove it. \
+      The check needs persisted Raft storage (arcadedb.ha.raftPersistStorage): a node that discards its storage at every \
+      start keeps no record and is not protected.""",
       Boolean.class, false),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
