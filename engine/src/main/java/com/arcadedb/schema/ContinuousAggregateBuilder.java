@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -201,48 +202,63 @@ public class ContinuousAggregateBuilder {
     final String finalBucketAlias = bucketAlias;
     final String finalTsColumn = tsColumnInQuery;
 
-    return schema.recordFileChanges(() -> {
-      // AGAIN UNDER THE WRITE LOCK, WHICH DROP TYPE TAKES TOO (#9978): a source type dropped after the check above would
-      // otherwise be registered as the one this aggregate reads, and one recreated under the same name need not be a
-      // TimeSeries type any more
-      if (!(schema.getTypeOrNull(sourceTypeName) instanceof LocalTimeSeriesType))
-        throw new SchemaException("Source type '" + sourceTypeName + "' does not exist or is no longer a TimeSeries type");
+    // The async quiescence is taken OUTSIDE the write lock of the frame, for the build of the index on the bucket column: an index
+    // build waits for the async workers to drain, and they need that lock to commit their batch (issue #10537)
+    try (final AsyncQuiesce asyncPaused = databaseInternal.quiesceAsync()) {
+      return schema.recordFileChanges(() -> createInFrame(databaseInternal, schema, sourceTypeName, bucketIntervalMs,
+          finalBucketAlias, finalTsColumn));
+    }
+  }
 
-      // Create backing document type
-      schema.buildDocumentType().withName(name).create();
+  /** The creation proper, inside the schema frame of {@link #create()}. */
+  private ContinuousAggregate createInFrame(final DatabaseInternal databaseInternal, final LocalSchema schema,
+      final String sourceTypeName, final long bucketIntervalMs, final String finalBucketAlias, final String finalTsColumn) {
+    // AGAIN UNDER THE WRITE LOCK, WHICH DROP TYPE TAKES TOO (#9978): a source type dropped after the check above would
+    // otherwise be registered as the one this aggregate reads, and one recreated under the same name need not be a
+    // TimeSeries type any more
+    if (!(schema.getTypeOrNull(sourceTypeName) instanceof LocalTimeSeriesType))
+      throw new SchemaException("Source type '" + sourceTypeName + "' does not exist or is no longer a TimeSeries type");
 
-      // Create and register the continuous aggregate
-      final ContinuousAggregateImpl ca = new ContinuousAggregateImpl(
-          databaseInternal, name, query, name, sourceTypeName,
-          bucketIntervalMs, finalBucketAlias, finalTsColumn);
-      ca.setStatus(MaterializedViewStatus.BUILDING);
-      // THE MONITOR GUARDS THE MAP AGAINST THE synchronized ACCESSORS, TAKEN UNDER THE WRITE LOCK THIS CALLBACK HOLDS -
-      // THE ORDER EVERY SCHEMA SAVE USES (#7457)
+    // Create backing document type
+    final DocumentType backingType = schema.buildDocumentType().withName(name).create();
+    // Issue #10804: indexed on the bucket column. Every refresh replaces the rows of the buckets at or after the watermark, and the
+    // recompute of a range those of the range, which without an index is a scan of every row the aggregate ever wrote: measured, 400
+    // times the cost of the append that triggers it once the aggregate holds 100k rows. The bucket is the LocalDateTime
+    // ts.timeBucket() answers, a DATETIME as a property with no declared type stores it, so declaring it changes nothing stored
+    backingType.createProperty(finalBucketAlias, Type.DATETIME);
+    backingType.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, finalBucketAlias);
+
+    // Create and register the continuous aggregate
+    final ContinuousAggregateImpl ca = new ContinuousAggregateImpl(
+        databaseInternal, name, query, name, sourceTypeName,
+        bucketIntervalMs, finalBucketAlias, finalTsColumn);
+    ca.setStatus(MaterializedViewStatus.BUILDING);
+    // THE MONITOR GUARDS THE MAP AGAINST THE synchronized ACCESSORS, TAKEN UNDER THE WRITE LOCK THIS CALLBACK HOLDS -
+    // THE ORDER EVERY SCHEMA SAVE USES (#7457)
+    synchronized (schema) {
+      schema.continuousAggregates.put(name, ca);
+    }
+    schema.saveConfiguration();
+
+    // Perform initial full refresh (watermark=0 means all data)
+    try {
+      ContinuousAggregateRefresher.incrementalRefresh(databaseInternal, ca);
+    } catch (final Exception e) {
       synchronized (schema) {
-        schema.continuousAggregates.put(name, ca);
+        schema.continuousAggregates.remove(name);
       }
-      schema.saveConfiguration();
-
-      // Perform initial full refresh (watermark=0 means all data)
       try {
-        ContinuousAggregateRefresher.incrementalRefresh(databaseInternal, ca);
-      } catch (final Exception e) {
-        synchronized (schema) {
-          schema.continuousAggregates.remove(name);
-        }
-        try {
-          schema.dropType(name);
-        } catch (final Exception dropEx) {
-          LogManager.instance().log(ContinuousAggregateBuilder.class, Level.WARNING,
-              "Failed to clean up backing type '%s' after continuous aggregate creation failure: %s",
-              dropEx, name, dropEx.getMessage());
-        }
-        throw e;
+        schema.dropType(name);
+      } catch (final Exception dropEx) {
+        LogManager.instance().log(ContinuousAggregateBuilder.class, Level.WARNING,
+            "Failed to clean up backing type '%s' after continuous aggregate creation failure: %s",
+            dropEx, name, dropEx.getMessage());
       }
-      schema.saveConfiguration();
+      throw e;
+    }
+    schema.saveConfiguration();
 
-      return ca;
-    });
+    return ca;
   }
 
   private static void validateQueryStructure(final String query) {

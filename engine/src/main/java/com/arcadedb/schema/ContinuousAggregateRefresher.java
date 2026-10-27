@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
@@ -28,10 +29,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.format.DateTimeParseException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 
@@ -154,14 +158,15 @@ public class ContinuousAggregateRefresher {
         if (invalidated != null && watermarkSet && !cleanRebuild)
           recomputeInvalidatedBuckets(database, ca, invalidated, watermark);
 
-        // Delete rows in the current (possibly incomplete) bucket and all newer buckets. #8152: the guard used to be
-        // `watermark > 0`, which skipped the delete for an aggregate legitimately anchored at the epoch and let that
-        // one bucket gain a duplicate on every refresh.
-        if (cleanRebuild)
+        // Replace the rows of the current (possibly incomplete) bucket and of all newer buckets. #8152: the guard used to be
+        // `watermark > 0`, which skipped the replacement for an aggregate legitimately anchored at the epoch and let that one bucket
+        // gain a duplicate on every refresh. Issue #10804: replaced in place, not deleted and inserted again, see ReplacedRows
+        final ReplacedRows replaced;
+        if (cleanRebuild) {
           database.command("sql", "DELETE FROM `" + backingTypeName + "`");
-        else if (watermarkSet)
-          database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ?",
-              new Date(watermark));
+          replaced = null;
+        } else
+          replaced = watermarkSet ? ReplacedRows.select(database, ca, bucketsFromSelect(ca), new Date(watermark)) : null;
 
         // Build the filtered query: append WHERE clause with watermark filter on the source timestamp
         final String filteredQuery = buildFilteredQuery(ca, watermark, watermarkSet && !cleanRebuild);
@@ -172,7 +177,6 @@ public class ContinuousAggregateRefresher {
         try (final ResultSet rs = database.query("sql", filteredQuery)) {
           while (rs.hasNext()) {
             final Result result = rs.next();
-            saveRow(database, backingTypeName, result);
 
             // Track maximum bucket timestamp for advancing watermark
             final Object bucketVal = result.getProperty(bucketColumn);
@@ -182,9 +186,13 @@ public class ContinuousAggregateRefresher {
                 maxBucketTs = bucketMs;
                 maxBucketSeen = true;
               }
-            }
+              saveRow(database, backingTypeName, result, replaced != null ? replaced.take(bucketMs) : null);
+            } else
+              saveRow(database, backingTypeName, result, null);
           }
         }
+        if (replaced != null)
+          replaced.deleteTheRest();
 
         // The watermark advances to the max bucket boundary found. The FIRST bucket ever seen installs it even when
         // it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
@@ -392,17 +400,82 @@ public class ContinuousAggregateRefresher {
       final long end) {
     final String backingTypeName = ca.getBackingTypeName();
     final String bucketColumn = ca.getBucketColumn();
-    database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?",
-        new Date(first), new Date(last));
+    final ReplacedRows replaced = ReplacedRows.select(database, ca, bucketRangeSelect(ca), new Date(first), new Date(last));
 
     try (final ResultSet rs = database.query("sql", buildRangeQuery(ca, first, end))) {
-      while (rs.hasNext())
-        saveRow(database, backingTypeName, rs.next());
+      while (rs.hasNext()) {
+        final Result result = rs.next();
+        final Object bucketVal = result.getProperty(bucketColumn);
+        saveRow(database, backingTypeName, result,
+            bucketVal != null ? replaced.take(toEpochMs(bucketVal, bucketColumn, ca.getName())) : null);
+      }
+    }
+    replaced.deleteTheRest();
+  }
+
+  /**
+   * The rows of the buckets at or after a watermark, the parameter. Served by the index on the bucket column (issue #10804): without
+   * one it reads every row the aggregate ever wrote, on every refresh.
+   */
+  static String bucketsFromSelect(final ContinuousAggregateImpl ca) {
+    return "SELECT FROM `" + ca.getBackingTypeName() + "` WHERE `" + ca.getBucketColumn() + "` >= ?";
+  }
+
+  /** The rows of the buckets starting between the two parameters, both included. Served by the same index as {@link #bucketsFromSelect}. */
+  static String bucketRangeSelect(final ContinuousAggregateImpl ca) {
+    final String bucketColumn = ca.getBucketColumn();
+    return "SELECT FROM `" + ca.getBackingTypeName() + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?";
+  }
+
+  /**
+   * The rows a refresh replaces, by the start of their bucket (issue #10804). A refresh used to delete them and insert the recomputed
+   * ones, and an ingest request triggers one: the open bucket's rows were deleted and inserted again by every request, under the same
+   * bucket key. That leaves a tombstone and a new entry per request on one key of the index on the bucket column, which every later
+   * lookup of the bucket walks (measured: 35 ms a request after 20k requests into one 1h bucket, from 0.3 ms without the index), and a
+   * hole per request in the pages of the backing type. A recomputed row takes over a replaced row of its own bucket instead: the key
+   * does not change, so the index is not written at all, and the record is rewritten in place. A recomputed row with no replaced row
+   * left in its bucket is inserted, and the replaced rows nothing took over are deleted.
+   */
+  private static final class ReplacedRows {
+    private final Map<Long, ArrayDeque<Document>> byBucket = new HashMap<>();
+
+    static ReplacedRows select(final Database database, final ContinuousAggregateImpl ca, final String select, final Object... params) {
+      final ReplacedRows rows = new ReplacedRows();
+      final String bucketColumn = ca.getBucketColumn();
+      try (final ResultSet rs = database.query("sql", select, params)) {
+        while (rs.hasNext()) {
+          final Document row = rs.next().toElement();
+          final Object bucket = row.get(bucketColumn);
+          rows.byBucket.computeIfAbsent(toEpochMs(bucket, bucketColumn, ca.getName()), k -> new ArrayDeque<>(2)).add(row);
+        }
+      }
+      return rows;
+    }
+
+    /** A replaced row of the bucket starting at {@code bucketMs} for a recomputed row to take over, or {@code null} when none is left. */
+    MutableDocument take(final long bucketMs) {
+      final ArrayDeque<Document> rows = byBucket.get(bucketMs);
+      final Document row = rows != null ? rows.poll() : null;
+      return row != null ? row.modify() : null;
+    }
+
+    void deleteTheRest() {
+      for (final ArrayDeque<Document> rows : byBucket.values())
+        for (final Document row : rows)
+          row.delete();
+      byBucket.clear();
     }
   }
 
-  private static void saveRow(final Database database, final String backingTypeName, final Result result) {
-    final MutableDocument doc = database.newDocument(backingTypeName);
+  /** Writes a recomputed row: into {@code replaced}, a row of the same bucket it takes over (issue #10804), or as a new one. */
+  private static void saveRow(final Database database, final String backingTypeName, final Result result,
+      final MutableDocument replaced) {
+    final MutableDocument doc = replaced != null ? replaced : database.newDocument(backingTypeName);
+    if (replaced != null)
+      // what the row it replaces held and the recomputed row does not, the defining query had no value for
+      for (final String prop : new ArrayList<>(replaced.getPropertyNames()))
+        if (!result.hasProperty(prop))
+          replaced.remove(prop);
     for (final String prop : result.getPropertyNames()) {
       if (!prop.startsWith("@"))
         doc.set(prop, result.getProperty(prop));
