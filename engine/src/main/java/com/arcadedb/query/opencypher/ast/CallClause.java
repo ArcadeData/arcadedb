@@ -18,6 +18,9 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -96,6 +99,16 @@ public class CallClause {
   public String getNamespace() {
     final int lastDot = procedureName.lastIndexOf('.');
     return lastDot >= 0 ? procedureName.substring(0, lastDot) : "";
+  }
+
+  /**
+   * The registered procedure this CALL runs, or null when the name resolves to none (a function, a custom
+   * {@code DEFINE FUNCTION}, an SQL function or an unknown name). Every reader of a CALL's procedure asks here rather than
+   * at the registry, so a clause that carries its own procedure (the {@code SEARCH} subclause, issue #10776) is run,
+   * validated and planned as the procedure it carries.
+   */
+  public CypherProcedure resolveProcedure() {
+    return CypherProcedureRegistry.get(procedureName);
   }
 
   public List<Expression> getArguments() {

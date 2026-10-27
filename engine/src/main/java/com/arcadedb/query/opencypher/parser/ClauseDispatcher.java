@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
@@ -106,7 +107,12 @@ class ClauseDispatcher {
 
   private void handleMatch(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                            final CypherASTBuilder astBuilder) {
-    builder.addMatch(astBuilder.visitMatchClause(ctx.matchClause()));
+    final Cypher25Parser.MatchClauseContext matchCtx = ctx.matchClause();
+    final MatchClause match = astBuilder.visitMatchClause(matchCtx);
+    // A SEARCH subclause runs in front of its MATCH, binding the variable the MATCH then reads (issue #10776)
+    if (matchCtx.searchClause() != null)
+      builder.addCall(astBuilder.buildSearchClause(matchCtx.searchClause(), match));
+    builder.addMatch(match);
   }
 
   private void handleCreate(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
