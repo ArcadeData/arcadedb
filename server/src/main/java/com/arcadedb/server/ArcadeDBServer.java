@@ -1442,8 +1442,8 @@ public class ArcadeDBServer {
    * <p>
    * A database that is already open is served as before, with no lock: one a restore holds keeps its readers until the swap and
    * refuses every write in the database itself, so a handle resolved before the restore began is refused too (issue #10689).
-   * Unlike {@link #getDatabaseForRequest} this does not look
-   * at the disk first: a name that is neither open nor on disk fails in the open, as it always did for these protocols.
+   * Unlike {@link #getDatabaseForRequest} this does not look at the disk first: a name that is neither open nor on disk fails in
+   * the open, as it always did for these protocols.
    */
   public ServerDatabase getDatabaseForClient(final String databaseName) {
     return getDatabase(databaseName, false, true, false, true);

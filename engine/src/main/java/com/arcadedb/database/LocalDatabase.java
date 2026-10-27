@@ -52,8 +52,8 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
@@ -4585,7 +4585,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Refuses every commit carrying changes, and every schema change, with a retryable {@link NeedRetryException}
-   * naming {@code reason}, until {@link #acceptWrites()} is called. Reads are unaffected.
+   * naming {@code reason}, until {@link #acceptWrites(String)} lifts it. Reads are unaffected.
    */
   public void refuseWrites(final String reason) {
     refuseWrites(reason, false);
@@ -4595,7 +4595,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * As {@link #refuseWrites(String)}, and with {@code unavailable} set the refusal is a {@link DatabaseNotAvailableException}
    * instead: the database is taken away for as long as an operator's operation lasts (a restore replacing it, issue #10689), which
    * a client must read as "not available", not as a conflict to retry at once. A refusal already standing for the same reason is
-   * not added twice.
+   * not added twice, and keeps the {@code unavailable} it was first given: a reason is one refusal, owned by whoever lifts it with
+   * {@link #acceptWrites(String)}, so callers pass a constant.
    */
   public void refuseWrites(final String reason, final boolean unavailable) {
     synchronized (writeRefusalLock) {
@@ -4607,11 +4608,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       updated[current.length] = new WriteRefusal(reason, unavailable);
       writeRefusals = updated;
     }
-  }
-
-  /** Lifts every {@link #refuseWrites(String)} refusal. */
-  public void acceptWrites() {
-    writeRefusals = NO_WRITE_REFUSAL;
   }
 
   /**
@@ -4638,15 +4634,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return current.length == 0 ? null : current[0].reason();
   }
 
-  /** Throws the refusal of {@link #refuseWrites(String)}, if one is in place: retryable, or not available when it was given so. */
+  /**
+   * Throws the refusal of {@link #refuseWrites(String)}, if one is in place: retryable, or not available when it was given so. A
+   * not-available refusal wins over a retryable one standing beside it, so a client is not told to retry at once into an outage
+   * that lasts as long as an operator's operation.
+   */
   public void checkWritesAccepted() {
     final WriteRefusal[] current = writeRefusals;
     if (current.length == 0)
       return;
-    final WriteRefusal refusal = current[0];
-    if (refusal.unavailable())
-      throw new DatabaseNotAvailableException("Database '" + name + "' does not accept writes: " + refusal.reason());
-    throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + refusal.reason());
+    for (final WriteRefusal refusal : current)
+      if (refusal.unavailable())
+        throw new DatabaseNotAvailableException("Database '" + name + "' does not accept writes: " + refusal.reason());
+    throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + current[0].reason());
   }
 
   protected void checkDatabaseIsOpen() {

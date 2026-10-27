@@ -156,6 +156,8 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
     try {
       local.refuseWrites(other);
       server.reserveDatabaseNameForRestore(NAME);
+      assertThatThrownBy(local::checkWritesAccepted).as("the restore's 'not available' wins over a retryable refusal put first")
+          .isInstanceOf(DatabaseNotAvailableException.class);
 
       local.acceptWrites(other);
       assertThat(local.getWriteRefusal()).as("the restore's refusal outlives the other one").isEqualTo(ArcadeDBServer.RESTORE_WRITE_REFUSAL);
