@@ -20,6 +20,8 @@ package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
@@ -118,6 +120,29 @@ public class Issue10567RedisDatabaseOnDiskTest extends BaseRedisServerTest {
       assertThat(server.existsDatabase(ON_DISK)).as("a dropped database is not opened again").isFalse();
       assertThat(jedis.get(ON_DISK + ".k")).isEqualTo("plain");
     } finally {
+      dropIfPresent(server);
+    }
+  }
+
+  /**
+   * A user that may not access the database is refused with {@code NOPERM}, as for an open database, and the database is not opened
+   * for it. Its prefix is not taken for part of a plain key either: what {@code <name>.<key>} names must not depend on who asks.
+   */
+  @Test
+  void aUserWithoutAccessIsRefusedAndTheDatabaseIsNotOpened() {
+    final ArcadeDBServer server = getServer(0);
+    onDiskNotOpen(server);
+    final var security = server.getSecurity();
+    security.createUser(new JSONObject().put("name", "limited10567").put("password", security.encodePassword("limitedPassword1"))
+        .put("databases", new JSONObject().put("otherdb", new JSONArray().put("admin"))));
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
+      jedis.auth("limited10567", "limitedPassword1");
+      assertThatThrownBy(() -> jedis.set(ON_DISK + ".k", "v")).isInstanceOf(JedisDataException.class).hasMessageStartingWith("NOPERM");
+      assertThatThrownBy(() -> jedis.sendCommand(Protocol.Command.SELECT, ON_DISK)).isInstanceOf(JedisDataException.class)
+          .hasMessageStartingWith("NOPERM");
+      assertThat(server.existsDatabase(ON_DISK)).as("not opened for a user that may not access it").isFalse();
+    } finally {
+      security.dropUser("limited10567");
       dropIfPresent(server);
     }
   }

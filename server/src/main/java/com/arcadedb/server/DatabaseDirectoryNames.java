@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.log.LogManager;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -26,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
+import java.util.logging.Level;
 
 /**
  * The names of the databases in the database directory, open or not, answered from memory (issue #10567).
@@ -113,6 +116,11 @@ final class DatabaseDirectoryNames {
     final Set<String> names = new HashSet<>();
     final List<File> candidates = new ArrayList<>();
     final File[] children = directory.listFiles(File::isDirectory);
+    if (children == null && directory.exists())
+      // an I/O error: until the next check the databases on disk that are not open look absent, so a prefix that names one is a
+      // plain key again. Said where an operator looks
+      LogManager.instance().log(this, Level.WARNING, "Cannot list the database directory '%s': the databases that are not open "
+          + "are not recognized as such until it can be listed again", directory);
     if (children != null)
       for (final File child : children) {
         if (isReserved.test(child.getName()))
