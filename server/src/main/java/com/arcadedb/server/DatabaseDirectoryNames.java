@@ -64,6 +64,8 @@ final class DatabaseDirectoryNames {
   /** Taken by the one caller that runs a due re-check. */
   private final AtomicBoolean     checking   = new AtomicBoolean();
   private volatile Listing        listing;
+  /** Whether the last listing failed, so a failure that lasts is logged once. */
+  private volatile boolean        listingFailed;
 
   /**
    * @param names            the databases found
@@ -125,11 +127,16 @@ final class DatabaseDirectoryNames {
     final Set<String> names = new HashSet<>();
     final List<File> candidates = new ArrayList<>();
     final File[] children = directory.listFiles(File::isDirectory);
-    if (children == null && directory.exists())
+    if (children == null && directory.exists()) {
       // an I/O error: until the next check the databases on disk that are not open look absent, so a prefix that names one is a
-      // plain key again. Said where an operator looks
-      LogManager.instance().log(this, Level.WARNING, "Cannot list the database directory '%s': the databases that are not open "
-          + "are not recognized as such until it can be listed again", directory);
+      // plain key again. Said where an operator looks, once per failure and not at every re-listing while it lasts
+      if (!listingFailed) {
+        listingFailed = true;
+        LogManager.instance().log(this, Level.WARNING, "Cannot list the database directory '%s': the databases that are not open "
+            + "are not recognized as such until it can be listed again", directory);
+      }
+    } else
+      listingFailed = false;
     if (children != null)
       for (final File child : children) {
         if (isReserved.test(child.getName()))
