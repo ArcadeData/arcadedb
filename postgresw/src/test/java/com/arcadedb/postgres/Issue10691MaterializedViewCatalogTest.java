@@ -43,9 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code information_schema.views}: the first two hold kinds 'r' and 'v', the last two the kinds 'r', 'v', 'f' and 'p'.
  */
 class Issue10691MaterializedViewCatalogTest {
-  private static final String DATABASE_PATH  = "./target/databases/Issue10691MaterializedViewCatalogTest";
-  private static final String USER           = "root";
-  private static final String VIEW_QUERY     = "SELECT name FROM Person";
+  private static final String DATABASE_PATH   = "./target/databases/Issue10691MaterializedViewCatalogTest";
+  private static final String USER            = "root";
+  private static final String VIEW_QUERY      = "SELECT name FROM Person";
   private static final String AGGREGATE_QUERY = "SELECT ts.timeBucket('1h', ts) AS h, sum(v) AS s FROM Reading GROUP BY h";
 
   private Database database;
@@ -175,6 +175,14 @@ class Issue10691MaterializedViewCatalogTest {
 
     final PostgresCatalog.Answer table = resolve("select pg_catalog.pg_get_viewdef(c.oid) as def from pg_class c where c.relname = 'Person'");
     assertThat(column(table, "def")).containsExactly((Object) null);
+
+    // the name of the relation, rather than its OID: the view's query, and NULL for a table or a name that is no relation
+    assertThat(column(resolve("select pg_catalog.pg_get_viewdef('AggView') as def from pg_class where relname = 'Person'"), "def"))
+        .containsExactly(AGGREGATE_QUERY);
+    assertThat(column(resolve("select pg_catalog.pg_get_viewdef('Person') as def from pg_class where relname = 'Person'"), "def"))
+        .containsExactly((Object) null);
+    assertThat(column(resolve("select pg_catalog.pg_get_viewdef('Nothing') as def from pg_class where relname = 'Person'"), "def"))
+        .containsExactly((Object) null);
   }
 
   /** A join between the class and the view row of one relation reads both off the same row, whichever is named first. */
