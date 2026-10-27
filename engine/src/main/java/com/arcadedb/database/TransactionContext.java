@@ -1756,16 +1756,7 @@ public class TransactionContext implements Transaction {
    * Looks for the page in the TX context first, then delegates to the database.
    */
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
-    BasePage page = null;
-
-    if (modifiedPages != null)
-      page = modifiedPages.get(pageId);
-
-    if (page == null && newPages != null)
-      page = newPages.get(pageId);
-
-    if (page == null)
-      page = immutablePages.get(pageId);
+    BasePage page = getPageHeldByTransaction(pageId);
 
     if (page == null) {
       // NOT FOUND, DELEGATES TO THE DATABASE
@@ -1813,6 +1804,15 @@ public class TransactionContext implements Transaction {
     if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
       return getPage(pageId, size);
 
+    final BasePage page = getPageHeldByTransaction(pageId);
+    return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
+   * The page this transaction holds for {@code pageId}, looked up in the order both {@link #getPage} and
+   * {@link #getPageForAbsoluteReads} rely on: modified, new, then the immutable pages it keeps. {@code null} when it holds none.
+   */
+  private BasePage getPageHeldByTransaction(final PageId pageId) {
     BasePage page = null;
 
     if (modifiedPages != null)
@@ -1823,9 +1823,6 @@ public class TransactionContext implements Transaction {
 
     if (page == null)
       page = immutablePages.get(pageId);
-
-    if (page == null)
-      page = database.getPageManager().getSharedImmutablePage(pageId, size);
 
     return page;
   }

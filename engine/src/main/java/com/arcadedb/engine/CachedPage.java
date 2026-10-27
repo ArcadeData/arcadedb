@@ -38,7 +38,10 @@ public class CachedPage {
   private final int    size;
   private       int    version;
   private       long   lastAccessed = System.currentTimeMillis();
-  // #10654: built on first use, after loadMetadata(), the last write to the version and the content size of a cached page
+  // #10654: built on first use, and it captures the version and the content size then. That holds because a cached page never
+  // changes them after it is published: loadMetadata() runs in PageManager.loadPage BEFORE the page enters the read cache, and the
+  // CachedPage(page, false) constructor, which shares the MutablePage's Binary instead of copying it, is used only by the
+  // synchronous flush, after which that page is never modified. A new writer of either breaks the shared view.
   private volatile ImmutablePage sharedView;
 
   public CachedPage(final MutablePage page, final boolean copyBuffer) {
