@@ -84,6 +84,19 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
       "metrics", "reads server state to publish gauges, serves no client",
       "tracing", "reads the protocol tag to attribute trace spans, serves no client");
 
+  /**
+   * The server module's own sources that resolve a database through the entry point that sees past the marks, each the operator's
+   * own step (issue #10690). The census above walks only the modules that declare {@code arcadedb-server} as provided, which by
+   * construction leaves out the server module - the one with the most client surfaces (HTTP, {@code /ws}, the AI handlers, the
+   * schema reader MCP shares). Every other source of the module is held to {@code getDatabaseForClient}, so a new handler cannot
+   * pass by picking the shortest name. Paths are relative to {@code server/src/main/java}.
+   */
+  private static final Map<String, String> SERVER_OPERATOR_STEPS = Map.of(
+      "com/arcadedb/server/ServerControlPlane.java",
+      "the operator's commands: open, close, drop, restore and import database, and the cluster-wide steps they replicate",
+      "com/arcadedb/server/security/ServerSecurity.java",
+      "the security refresh, which updates the schema of every database the server holds");
+
   @Test
   void aClientDuringARestoreDoesNotOpenTheTargetItIsAboutToReplace() {
     final ArcadeDBServer server = getServer(0);
@@ -181,6 +194,38 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
         + "which refuses a name an operator has taken away (a restore in progress, a 'close database'). getDatabase(String) is "
         + "the operator's own entry point and sees past those marks. If the module serves no client, add it to "
         + "NOT_A_CLIENT_SURFACE with the reason").isEmpty();
+  }
+
+  /**
+   * Issue #10690: the census above never walked the server module, and a {@code /ws} SUBSCRIBE frame resolved its database through
+   * {@code getDatabase(String)}: one frame reopened a database an operator had closed, and cleared the mark for every client.
+   */
+  @Test
+  void noClientSurfaceOfTheServerModuleResolvesADatabaseThroughTheEntryPointThatSeesPastTheMarks() throws IOException {
+    final Path sources = REACTOR_ROOT.resolve("server").resolve("src/main/java");
+    assertThat(sources).as("the server module's sources, seen from the module surefire runs in").isDirectory();
+
+    final List<String> found = new ArrayList<>();
+    collectOffenders(sources, found);
+
+    final List<String> offenders = new ArrayList<>();
+    final TreeSet<String> stepsSeen = new TreeSet<>();
+    for (final String offender : found) {
+      final String relative = sources.relativize(Path.of(offender.substring(0, offender.indexOf(".java:") + 5))).toString()
+          .replace(File.separatorChar, '/');
+      if (SERVER_OPERATOR_STEPS.containsKey(relative))
+        stepsSeen.add(relative);
+      else
+        offenders.add(offender);
+    }
+
+    assertThat(offenders).as("a server handler or listener must resolve the database a client names through "
+        + "ArcadeDBServer.getDatabaseForClient() (or getDatabaseForRequest() for HTTP), which refuses a name an operator has taken "
+        + "away. getDatabase(String) is the operator's own entry point and sees past those marks. A source that holds only the "
+        + "operator's own steps goes in SERVER_OPERATOR_STEPS with the reason").isEmpty();
+    assertThat(stepsSeen).as("every source named as an operator step still resolves through the operator's entry point: drop "
+        + "the ones that no longer do, so the list cannot hide a new client surface").containsExactlyInAnyOrderElementsOf(
+        SERVER_OPERATOR_STEPS.keySet());
   }
 
   /** The census is only as good as its pattern: the gRPC service names its server field {@code arcadeServer}, not {@code server}. */
