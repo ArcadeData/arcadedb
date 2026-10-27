@@ -47,7 +47,11 @@ found=0
 for f in "$@"; do
     [ -f "$f" ] || continue
     found=1
-    jq -r "$program" "$f"
+    # The step runs under if: always(), so one unreadable report must not hide the ones after it.
+    if ! out="$(jq -r "$program" "$f" 2>/dev/null)"; then
+        out="### HA chaos: unreadable summary \`$f\`"
+    fi
+    printf '%s\n\n' "$out"
 done
 if [ "$found" = 0 ]; then
     echo "### HA chaos: no summary written (build or setup failed)"

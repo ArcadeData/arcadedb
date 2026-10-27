@@ -2292,6 +2292,14 @@ else
     fail "renders one section per summary file"
 fi
 
+printf '{ "result": ' >"$work/chaos/broken.json"
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/broken.json" "$work/chaos/run1/summary.json" 2>&1)" && chaos_status=0 || chaos_status=$?
+if [[ $chaos_status -eq 0 ]] && grep -qF 'unreadable summary' <<<"$chaos_out" && grep -qxF '### HA chaos: PASS' <<<"$chaos_out"; then
+    pass "an unreadable summary does not hide the ones after it"
+else
+    fail "an unreadable summary does not hide the ones after it" "$chaos_out"
+fi
+
 # The workflow must render through the script, not through a hand-written key list again.
 if grep -q 'chaos-run-summary.sh' .github/workflows/ha-chaos-tests.yml && ! grep -qF '\(.seed)' .github/workflows/ha-chaos-tests.yml; then
     pass "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
