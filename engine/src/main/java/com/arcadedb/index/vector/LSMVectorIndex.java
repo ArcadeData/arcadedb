@@ -2300,7 +2300,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // question, but its "no" only sends the open here, and without asking again the walk paired that same graph with
       // the very codes the question had refused. The identity is the one the manifest certifies for the array just
       // rebuilt (the comparison above proved them equal), or, for a graph persisted without a manifest, the fingerprint
-      // of that array computed here: the same value a manifest would carry for it.
+      // of that array computed here: the same value a manifest would carry for it. That computation is one location
+      // lookup per ordinal, O(N), paid only by a PRODUCT index persisted without a manifest, on top of the walk above
+      // that already read every vector's document.
       final long graphFingerprint = productQuantized ?
           persistedManifest != null ? persistedManifest.fingerprint() :
               LSMVectorIndexGraphManifest.fingerprintOf(rebuiltOrdinalToVectorId, validationLocations::getRid) : 0L;
@@ -4992,6 +4994,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Whether {@code codes} can be paired with a graph of {@code graphOrdinals} ordinals whose ordinal map has the
    * fingerprint {@code graphFingerprint}: one code per ordinal, recorded as built for that very map (issues #10584,
    * #10698). A count says how many, not which, so codes that record no graph cannot vouch for this one either.
+   * <p>
+   * Only for a PRODUCT-quantized index: the caller has already established that {@link #pqFile} is not {@code null}.
    *
    * @return {@code null} when they can, otherwise why not, worded to follow "PQ codes of index X"
    */
@@ -5003,7 +5007,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final Long builtFor = pqFile.graphFingerprintOf(codes);
     if (builtFor == null)
       return "record no graph they were built for";
-    if (builtFor != graphFingerprint)
+    if (builtFor.longValue() != graphFingerprint)
       return "were built for another graph than the persisted one";
     return null;
   }
