@@ -216,6 +216,7 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
+    statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     if (lookup.parameters() != null)
       return executeGuarded(statement, database, lookup.mergeParameters(positionalParameters(parameters)));
@@ -266,6 +267,7 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
+    statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);

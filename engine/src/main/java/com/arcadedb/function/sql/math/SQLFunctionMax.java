@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
@@ -47,8 +48,9 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
     // consider both collection of parameters and collection in each parameter
     Object max = null;
     for (Object item : params) {
-      if (item instanceof Collection<?> collection) {
-        for (Object subitem : collection) {
+      // an ARRAY_OF_* value is a collection here as a LIST is, the set of its elements; a byte[] is the BINARY scalar (issue #10697)
+      if (item instanceof Collection<?> || MultiValue.isSequenceArray(item)) {
+        for (Object subitem : MultiValue.getMultiValueIterable(item)) {
           if (subitem instanceof Number subNumber && max instanceof Number maxNumber &&//
               !subitem.getClass().equals(max.getClass())) {
             final Number[] converted = Type.castComparableNumber(subNumber, maxNumber);

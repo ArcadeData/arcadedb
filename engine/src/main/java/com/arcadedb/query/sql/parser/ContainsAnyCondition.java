@@ -74,7 +74,7 @@ public class ContainsAnyCondition extends BooleanExpression {
   private static boolean containsAny(final Collection<?> leftCollection, Object right) {
     if (right instanceof Iterable<?> iterable)
       right = iterable.iterator();
-    else if (right != null && right.getClass().isArray() && !(right instanceof byte[]))
+    else if (MultiValue.isSequenceArray(right))
       right = MultiValue.getMultiValueIterator(right);
 
     if (right instanceof Iterator<?> iterator) {

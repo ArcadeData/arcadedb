@@ -42,7 +42,7 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean execute(final Object left, Object right) {
-    if (isArray(right) && !(right instanceof byte[]))
+    if (MultiValue.isSequenceArray(right))
       // Normalize an array right-hand side - the result of a second split(), a parameter bound to a Java array -
       // to a List, so it is answered exactly as the equivalent List right-hand side is. An array satisfies neither
       // `instanceof Collection` nor `instanceof Iterable`, so it used to skip every branch below and be compared as
