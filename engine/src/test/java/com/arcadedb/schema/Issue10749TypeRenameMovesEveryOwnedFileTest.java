@@ -310,7 +310,10 @@ class Issue10749TypeRenameMovesEveryOwnedFileTest extends TestHelper {
     Files.delete(stray.toPath());
   }
 
-  /** The engine stays open through a rename: samples appended while the files move are all there, after a reopen too. */
+  /**
+   * The engine stays open through a rename: samples appended, compactions sealing them and reads of them while the files move go on,
+   * and every sample is there, after a reopen too.
+   */
   @Test
   @Timeout(value = 120, unit = TimeUnit.SECONDS) // a hang detector for the waits on the appender, not a latency bound
   void samplesAppendedWhileTheTypeIsRenamedAreKept() throws Exception {
@@ -330,7 +333,11 @@ class Issue10749TypeRenameMovesEveryOwnedFileTest extends TestHelper {
         while (!stop.get()) {
           engine.appendSamples(new long[] { ts }, new Object[] { "h" + (ts % 3) }, new Object[] { (double) ts });
           ++ts;
-          appended.incrementAndGet();
+          final long total = appended.incrementAndGet();
+          if (total % 20 == 0) {
+            engine.compactAll();
+            assertThat(engine.countSamples()).isEqualTo(total);
+          }
         }
       } catch (final Throwable t) {
         failure.set(t);

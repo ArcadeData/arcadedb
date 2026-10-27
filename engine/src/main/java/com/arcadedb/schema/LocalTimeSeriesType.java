@@ -360,6 +360,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
           paginated.rename(newNames.get(i));
           moved.add(i);
         } else if (i < engineShardCount()) {
+          // a shard with no bucket component left can still have a sealed file; the last name, the tag dictionary, has none
           TimeSeriesSealedStore.renameFile(directory + oldNames.get(i), directory + newNames.get(i));
           moved.add(i);
         }

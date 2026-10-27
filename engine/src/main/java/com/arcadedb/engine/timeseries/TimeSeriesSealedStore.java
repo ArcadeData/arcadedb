@@ -5357,12 +5357,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           return;
         }
 
+        // a header that cannot be written leaves the store as it was: nothing is closed yet
         if (headerDirty) {
           rewriteHeader();
           headerDirty = false;
         }
-        indexChannel.close();
-        indexFile.close();
+        try {
+          indexChannel.close();
+          indexFile.close();
+        } catch (final IOException closeEx) {
+          reopenAfterFailedRename(oldFile, closeEx);
+          throw closeEx;
+        }
         try {
           moveFile(oldFile, newFile);
         } catch (final IOException moveEx) {
@@ -5419,6 +5425,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private static void moveFile(final File from, final File to) throws IOException {
     if (!from.exists())
       return;
+    // The only guard against replacing a file: ATOMIC_MOVE replaces an existing target on some platforms. The callers hold the type's
+    // rename lock, and the type refuses a target name already in the directory before anything moves
     if (to.exists())
       throw new IOException("Cannot move the sealed store '" + from.getAbsolutePath() + "' to '" + to.getAbsolutePath()
           + "': a file with that name already exists");
