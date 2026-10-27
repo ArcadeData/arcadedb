@@ -66,6 +66,8 @@ final class DatabaseDirectoryNames {
   private volatile Listing        listing;
   /** Whether the last listing failed, so a failure that lasts is logged once. */
   private volatile boolean        listingFailed;
+  /** The names of the last listing that succeeded: what a listing that fails answers. */
+  private volatile Set<String>    lastListedNames = Set.of();
 
   /**
    * @param names            the databases found
@@ -128,15 +130,20 @@ final class DatabaseDirectoryNames {
     final List<File> candidates = new ArrayList<>();
     final File[] children = directory.listFiles(File::isDirectory);
     if (children == null && directory.exists()) {
-      // an I/O error: until the next check the databases on disk that are not open look absent, so a prefix that names one is a
-      // plain key again. Said where an operator looks, once per failure and not at every re-listing while it lasts
+      // An I/O error. An empty answer would make every database that is not open a plain key again, and, the directory's time being
+      // unchanged, the next checks would renew it without listing again. So the last names that WERE listed keep answering, and the
+      // result is untrusted: the next due check lists again. Said where an operator looks, once per failure
       if (!listingFailed) {
         listingFailed = true;
         LogManager.instance().log(this, Level.WARNING, "Cannot list the database directory '%s': the databases that are not open "
-            + "are not recognized as such until it can be listed again", directory);
+            + "are answered from its last listing until it can be listed again", directory);
       }
-    } else
-      listingFailed = false;
+      final Listing failed = new Listing(lastListedNames, List.of(), modified, false, startedAt,
+          System.nanoTime() + RECHECK_INTERVAL_NANOS);
+      publish(failed);
+      return failed;
+    }
+    listingFailed = false;
     if (children != null)
       for (final File child : children) {
         if (isReserved.test(child.getName()))
@@ -149,6 +156,7 @@ final class DatabaseDirectoryNames {
     final boolean trusted = System.currentTimeMillis() - modified >= MODIFIED_TIME_GRANULARITY_MS;
     final Listing fresh = new Listing(Set.copyOf(names), List.copyOf(candidates), modified, trusted, startedAt,
         System.nanoTime() + RECHECK_INTERVAL_NANOS);
+    lastListedNames = fresh.names;
     publish(fresh);
     return fresh;
   }

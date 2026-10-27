@@ -25,10 +25,13 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * Issue #10567: the in-memory listing of the database directory {@code isDatabaseOfServer} answers from. A change the server makes
@@ -102,6 +105,30 @@ class DatabaseDirectoryNamesTest {
 
     holder[0].contains("a");
     assertThat(holder[0].contains("c")).as("the listing that began before the invalidation is not the current one").isTrue();
+  }
+
+  /**
+   * A listing that fails (an I/O error, here a directory that cannot be read) answers the last names that were listed, not "no
+   * database", and is listed again once the directory can be read, although its modification time did not move since.
+   */
+  @Test
+  void aListingThatFailsKeepsTheLastNamesAndIsRetried() throws IOException {
+    database("a");
+    final DatabaseDirectoryNames names = new DatabaseDirectoryNames(directory, holdsMarker(), name -> false);
+    assertThat(names.contains("a")).isTrue();
+    database("b");
+
+    assertThat(directory.setReadable(false)).isTrue();
+    try {
+      assumeFalse(directory.list() != null, "the directory can still be listed (running as a privileged user)");
+      names.invalidate();
+      assertThat(names.contains("a")).as("the last listing keeps answering").isTrue();
+      assertThat(names.contains("b")).isFalse();
+    } finally {
+      assertThat(directory.setReadable(true)).isTrue();
+    }
+
+    await().atMost(10, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).until(() -> names.contains("b"));
   }
 
   private Predicate<File> holdsMarker() {
