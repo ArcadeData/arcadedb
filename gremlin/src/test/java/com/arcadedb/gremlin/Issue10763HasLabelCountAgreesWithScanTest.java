@@ -122,10 +122,16 @@ class Issue10763HasLabelCountAgreesWithScanTest {
   }
 
   @Test
-  void aBucketCreatedEarlierInTheSameTraversalIsCounted() {
-    // THE COUNT STEP RESOLVES THE LABEL WHEN IT RUNS, NOT WHEN IT IS COMPILED (#9335)
+  void aBucketCreatedAfterTheCountIsCompiledIsCounted() {
+    // THE COUNT STEP RESOLVES THE LABEL WHEN IT RUNS, NOT WHEN IT IS COMPILED (#9335): COMPILED WHILE THE BUCKET DOES NOT EXIST,
+    // EXECUTED ONCE IT DOES
+    final GraphTraversal<?, Long> counted = graph.traversal().V().hasLabel("bucket:Late_0").count();
+    assertThat(stepsAfterStrategies(counted)).anyMatch(s -> s instanceof ArcadeCountGlobalStep);
+
     database.command("sql", "CREATE VERTEX TYPE Late").close();
-    assertThat(countOf("g.addV('bucket:Late_0').V().hasLabel('bucket:Late_0').count()")).isEqualTo(1L);
+    database.transaction(() -> graph.addVertex("bucket:Late_0"));
+
+    assertThat(counted.next()).isEqualTo(1L);
   }
 
   @Test

@@ -892,33 +892,50 @@ public class SourceDiscovery {
 
   private Source getSourceFromContent(final InputStream in, final long totalSize, final String resource,
       final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) throws IOException {
-    in.mark(0);
-
-    final ZipInputStream zip = new ZipInputStream(in);
-    final ZipEntry entry = zip.getNextEntry();
-    if (entry != null) {
-      // ZIPPED FILE
-      if (resource != null)
-        // SEARCH FOR THE RIGHT ENTRY
-        seekZipEntry(zip, entry, resource);
-
-      return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
-    }
-
-    in.reset();
-    in.mark(in.available());
-
     try {
-      final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
-      return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
-    } catch (final IOException e) {
-      // NOT GZIP
+      in.mark(0);
+
+      final ZipInputStream zip = new ZipInputStream(in);
+      final ZipEntry entry = zip.getNextEntry();
+      if (entry != null) {
+        // ZIPPED FILE
+        if (resource != null)
+          // SEARCH FOR THE RIGHT ENTRY
+          seekZipEntry(zip, entry, resource);
+
+        return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
+      }
+
+      in.reset();
+      in.mark(in.available());
+
+      try {
+        final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
+        return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
+      } catch (final IOException e) {
+        // NOT GZIP
+      }
+
+      in.reset();
+
+      // ANALYZE THE INPUT AS TEXT
+      return new Source(url, in, totalSize, false, resetCallback, closeCallback);
+
+    } catch (final IOException | RuntimeException e) {
+      // NO Source REACHES THE CALLER, SO NO SCOPE OWNS WHAT WAS OPENED FOR IT: A ZIP WITHOUT THE REQUESTED ENTRY LEFT THE FILE
+      // OPEN, OR THE REMOTE CONNECTION CONNECTED (ISSUE #10772)
+      try {
+        in.close();
+      } catch (final IOException closeFailure) {
+        e.addSuppressed(closeFailure);
+      }
+      try {
+        closeCallback.call();
+      } catch (final Exception callbackFailure) {
+        e.addSuppressed(callbackFailure);
+      }
+      throw e;
     }
-
-    in.reset();
-
-    // ANALYZE THE INPUT AS TEXT
-    return new Source(url, in, totalSize, false, resetCallback, closeCallback);
   }
 
   /**

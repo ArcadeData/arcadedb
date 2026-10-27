@@ -21,19 +21,29 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+import com.sun.management.UnixOperatingSystemMXBean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #10772: an import held its source in one field that each of its four phases (url, documents, vertices, edges)
@@ -134,12 +144,83 @@ class Issue10772ImporterSourceLifetimeTest {
   }
 
   @Test
+  void anOrientDBImportClosesTheStreamOfEachOfItsPasses() throws Exception {
+    final URL export = Issue10772ImporterSourceLifetimeTest.class.getClassLoader().getResource("orientdb-export-small.gz");
+    final List<boolean[]> passes = new ArrayList<>();
+
+    final OrientDBImporter importer = new OrientDBImporter(("-i " + export.getFile() + " -d " + DB_PATH + " -o").split(" ")) {
+      @Override
+      public GZIPInputStream openInputStream() throws IOException {
+        final boolean[] closed = new boolean[1];
+        passes.add(closed);
+        return new GZIPInputStream(new FileInputStream(export.getFile())) {
+          @Override
+          public void close() throws IOException {
+            closed[0] = true;
+            super.close();
+          }
+        };
+      }
+    };
+    importer.run().close();
+    assertThat(importer.isError()).isFalse();
+
+    // THE FILE IS READ ONCE TO COUNT, ONCE FOR THE SCHEMA AND ONCE FOR THE EDGES
+    assertThat(passes).hasSize(3);
+    for (final boolean[] closed : passes)
+      assertThat(closed[0]).isTrue();
+  }
+
+  @Test
   void closingASourceTwiceIsHarmless() throws Exception {
     final Source source = new SourceDiscovery(write("twice.csv", "Id", "0")).getSource();
     assertThat(source.isClosed()).isFalse();
     source.close();
     source.close();
     assertThat(source.isClosed()).isTrue();
+  }
+
+  @Test
+  void theReleaseCallbackRunsWhenTheStreamFailsToClose() {
+    final boolean[] released = new boolean[1];
+    final Source source = new Source("test", new ByteArrayInputStream(new byte[0]) {
+      @Override
+      public void close() throws IOException {
+        throw new IOException("cannot close");
+      }
+    }, 0, false, null, () -> {
+      released[0] = true;
+      return null;
+    });
+
+    source.close();
+
+    assertThat(source.isClosed()).isTrue();
+    assertThat(released[0]).isTrue();
+  }
+
+  @Test
+  void aZipWithoutTheRequestedEntryLeavesNoFileOpen() throws Exception {
+    assumeTrue(ManagementFactory.getOperatingSystemMXBean() instanceof UnixOperatingSystemMXBean,
+        "counts the open file descriptors of the process");
+    final UnixOperatingSystemMXBean os = (UnixOperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+
+    final File zipFile = new File(dataDir, "archive.zip");
+    try (final ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(zipFile))) {
+      zip.putNextEntry(new ZipEntry("present.csv"));
+      zip.write("Id\n0\n".getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+    }
+    final String url = zipFile.getAbsolutePath() + ":::absent.csv";
+
+    // NO Source REACHES THE CALLER, SO THE STREAM OPENED FOR IT HAS TO BE CLOSED WHERE IT WAS OPENED. EACH LEAKED ATTEMPT HOLDS
+    // ONE DESCRIPTOR UNTIL A GC RUNS ITS CLEANER, SO A LEAK SHOWS AS A GROWTH CLOSE TO THE NUMBER OF ATTEMPTS
+    final int attempts = 200;
+    final long before = os.getOpenFileDescriptorCount();
+    for (int i = 0; i < attempts; i++)
+      assertThatThrownBy(() -> new SourceDiscovery(url).getSource()).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("absent.csv");
+    assertThat(os.getOpenFileDescriptorCount() - before).isLessThan(attempts / 2);
   }
 
   private void assertEveryOpenedSourceIsClosed() {
