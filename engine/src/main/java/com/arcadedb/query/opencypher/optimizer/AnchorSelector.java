@@ -469,9 +469,12 @@ public class AnchorSelector {
       // per-root subtree counts are not otherwise collected for a disjunction's roots.
       final long estimatedRows = allUniqueWholeKey ? seeks.size() : Math.max(seeks.size(), (long) (totalRows * 0.1));
 
+      // Each root's seek is costed with the selectivity of its own index and bound key prefix, the rule every other seek
+      // follows, so two predicates whose seeks bind prefixes of different length do not tie at a flat 10%
       double totalCost = 0;
       for (final AnchorSelection.DisjunctionIndexSeek seek : seeks) {
-        final double selectivity = allUniqueWholeKey ? 1.0 / Math.max(1, statisticsProvider.getCardinality(seek.typeName())) : 0.1;
+        final double selectivity = seekSelectivity(seek.index(), seek.keyValues().size(),
+            statisticsProvider.getCardinality(seek.typeName()));
         totalCost += costModel.estimateIndexSeekCost(seek.typeName(), propertyName, selectivity);
       }
 

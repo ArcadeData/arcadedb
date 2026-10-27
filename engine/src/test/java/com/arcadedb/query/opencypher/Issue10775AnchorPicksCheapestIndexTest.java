@@ -71,6 +71,22 @@ class Issue10775AnchorPicksCheapestIndexTest extends TestHelper {
       for (int i = 0; i < ROWS; i++)
         database.newVertex("E10775").set("uid", "id" + i).set("cat", i % 2 == 0 ? "even" : "odd").set("seq", i).save();
     });
+
+    // Two disjunction roots with a non-unique composite (a, b) and a non-unique single-property index on c
+    for (final String typeName : new String[] { "F10775", "G10775" }) {
+      database.transaction(() -> {
+        final VertexType type = database.getSchema().createVertexType(typeName);
+        type.createProperty("a", Integer.class);
+        type.createProperty("b", Integer.class);
+        type.createProperty("c", Integer.class);
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a", "b");
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "c");
+      });
+      database.transaction(() -> {
+        for (int i = 0; i < ROWS; i++)
+          database.newVertex(typeName).set("a", i % 10).set("b", i % 100).set("c", i % 5).save();
+      });
+    }
   }
 
   private void createType(final String typeName, final String uniqueProperty, final String plainProperty) {
@@ -234,14 +250,24 @@ class Issue10775AnchorPicksCheapestIndexTest extends TestHelper {
     assertThat(values(byGrp, Map.of())).containsExactly("id1", "id1");
   }
 
+  @Test
+  void aLabelDisjunctionCostsEachSeekWithTheKeyPrefixItBinds() {
+    // c is written first, but the (a, b) seek binds two key columns and reads a tenth of what the c seek reads
+    final String query = "MATCH (r:F10775|G10775) WHERE r.c = 2 AND r.a = 7 AND r.b = 17 RETURN r.b AS e";
+    final String plan = plan(query, Map.of());
+    assertThat(plan).contains("NodeByLabelDisjunctionIndexSeek").contains("index=F10775[a,b]").contains("index=G10775[a,b]");
+    // i % 10 = 7, i % 100 = 17 and i % 5 = 2: i = 17, 117, ... on each of the two roots
+    assertThat(values(query, Map.of())).hasSize(2 * ROWS / 100).containsOnly(17);
+  }
+
   private String plan(final String query, final Map<String, Object> params) {
     try (final ResultSet result = database.query("opencypher", "EXPLAIN " + query, params)) {
       return result.getExecutionPlan().get().prettyPrint(0, 2);
     }
   }
 
-  private List<String> values(final String query, final Map<String, Object> params) {
-    final List<String> values = new ArrayList<>();
+  private List<Object> values(final String query, final Map<String, Object> params) {
+    final List<Object> values = new ArrayList<>();
     try (final ResultSet result = database.query("opencypher", query, params)) {
       while (result.hasNext()) {
         final Result row = result.next();
