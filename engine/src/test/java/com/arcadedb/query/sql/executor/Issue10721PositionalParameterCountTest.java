@@ -99,6 +99,13 @@ class Issue10721PositionalParameterCountTest extends TestHelper {
     assertThat(query("SELECT FROM V WHERE k = :a OR k = :b", 1, 2)).isEqualTo(2);
     assertThat(query("SELECT FROM V WHERE k IN (SELECT k FROM V WHERE k > ?) AND k < ?", 0, 2)).isEqualTo(1);
     assertThat(query("SELECT FROM V")).isEqualTo(3);
+    // every place a placeholder can stand is counted: a function argument, a LET, a projection, a nested sub-query
+    assertThat(query("SELECT FROM V WHERE k = abs(?)", -1)).isEqualTo(1);
+    assertRefused(() -> query("SELECT FROM V WHERE k = abs(?)"), 1, 0);
+    assertThat(query("SELECT $a FROM V LET $a = ? WHERE k = ?", "x", 1)).isEqualTo(1);
+    assertRefused(() -> query("SELECT $a FROM V LET $a = ? WHERE k = ?", "x"), 2, 1);
+    assertThat(query("SELECT ? AS p FROM V WHERE k IN (SELECT k FROM V WHERE k IN (SELECT k FROM V WHERE k = ?))", "x", 2)).isEqualTo(1);
+    assertRefused(() -> query("SELECT ? AS p FROM V WHERE k IN (SELECT k FROM V WHERE k IN (SELECT k FROM V WHERE k = ?))", "x"), 2, 1);
     // an explicit null is a value
     assertThat(query("SELECT FROM V WHERE k = ? OR k = ?", 1, null)).isEqualTo(1);
     // the Postgres-style $N reads the value at its position, and a lower position may be left unread, as in Postgres
