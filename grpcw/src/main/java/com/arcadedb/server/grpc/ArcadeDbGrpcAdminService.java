@@ -1310,8 +1310,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // reproduces that gate. Found along the cause chain, as the mapper does: the engine wraps what it raises (issue
     // #10089). And a statement stopped on request is CANCELLED and named as a QueryTerminatedException whatever else the
     // chain carries (issue #9689): decided before the table, whose NeedRetryException arm would otherwise answer the
-    // conflict its rollback ran into as a retryable UNAVAILABLE
-    if (ServerIsNotTheLeaderException.refusalIn(e) != null || ErrorCategory.of(e) == ErrorCategory.TERMINATED) {
+    // conflict its rollback ran into as a retryable UNAVAILABLE. A database named by the operation that is no database, or that the
+    // server holds (a restore, a 'close database', a drop in progress), is answered as the data plane answers it, NOT_FOUND or
+    // UNAVAILABLE named by its class (issue #10795): no arm of the table knows either, and the catch-all answered both INTERNAL, a
+    // server fault, for an 'open database' or a backup of a mistyped name
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (ServerIsNotTheLeaderException.refusalIn(e) != null || category == ErrorCategory.TERMINATED
+        || category == ErrorCategory.DATABASE_NOT_FOUND || category == ErrorCategory.UNAVAILABLE) {
       final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }

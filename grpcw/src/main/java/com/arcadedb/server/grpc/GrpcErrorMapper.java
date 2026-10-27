@@ -291,6 +291,10 @@ public final class GrpcErrorMapper {
       // INTERNAL, which reads as a server fault and is logged with a stack trace for a refusal an operator asked for; not NOT_FOUND,
       // which the client rebuilds as a missing record; not ABORTED, which means "retry the transaction"
       case UNAVAILABLE -> Status.Code.UNAVAILABLE;
+      // A name that is no database (issue #10795): gRPC's own word for a requested entity that is not there. It used to be INTERNAL.
+      // The class-name trailer names the DatabaseNotFoundException, so the client rebuilds it rather than reading NOT_FOUND as a
+      // missing record, which is what a client that predates the type falls back to (still the caller's, unlike INTERNAL)
+      case DATABASE_NOT_FOUND -> Status.Code.NOT_FOUND;
       case SERVER -> Status.Code.INTERNAL;
     };
   }

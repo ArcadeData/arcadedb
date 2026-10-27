@@ -240,13 +240,14 @@ class ErrorCategoryTest {
   @Test
   void aNameThatIsNotADatabaseIsNotUnavailable() {
     // The permanent verdict is the caller's to correct: no retry and no wait makes it succeed. It is a subtype of the transient
-    // one, so the exclusion is what keeps it out, wherever it sits in the chain
+    // one, so its own rule above the transient one is what keeps it out, wherever it sits in the chain; and it is the caller's,
+    // not a server fault (issue #10795)
     final DatabaseNotFoundException missing = new DatabaseNotFoundException("Database 'nope' does not exist");
 
-    assertThat(ErrorCategory.of(missing)).isEqualTo(ErrorCategory.SERVER);
-    assertThat(ErrorCategory.of(new CommandExecutionException("outer", missing))).isEqualTo(ErrorCategory.SERVER);
-    assertThat(ErrorCategory.classifiedCause(missing)).isNull();
-    assertThat(ErrorCategory.classifiedCause(new CommandExecutionException("outer", missing))).isNull();
+    assertThat(ErrorCategory.of(missing)).isEqualTo(ErrorCategory.DATABASE_NOT_FOUND);
+    assertThat(ErrorCategory.of(new CommandExecutionException("outer", missing))).isEqualTo(ErrorCategory.DATABASE_NOT_FOUND);
+    assertThat(ErrorCategory.classifiedCause(missing)).isSameAs(missing);
+    assertThat(ErrorCategory.classifiedCause(new CommandExecutionException("outer", missing))).isSameAs(missing);
   }
 
   @Test
