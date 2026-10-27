@@ -19,7 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.Component;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
@@ -353,26 +352,30 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
     final String directory = schema.getDatabase().getDatabasePath() + File.separator;
     final List<String> oldNames = engineComponentNames(oldName);
     final List<String> newNames = engineComponentNames(newName);
-    final List<PaginatedComponent> moved = new ArrayList<>();
-    final List<String> movedFrom = new ArrayList<>();
+    // the index of each name moved, in order: a component (a shard's bucket carries its sealed file), or a bare sealed file
+    final List<Integer> moved = new ArrayList<>();
     try {
       for (int i = 0; i < oldNames.size(); i++) {
-        final Component component = schema.getFileByName(oldNames.get(i));
-        if (component instanceof PaginatedComponent paginated) {
-          // a shard's bucket carries its sealed file
+        if (schema.getFileByName(oldNames.get(i)) instanceof PaginatedComponent paginated) {
           paginated.rename(newNames.get(i));
-          moved.add(paginated);
-          movedFrom.add(oldNames.get(i));
-        } else if (i < engineShardCount())
+          moved.add(i);
+        } else if (i < engineShardCount()) {
           TimeSeriesSealedStore.renameFile(directory + oldNames.get(i), directory + newNames.get(i));
+          moved.add(i);
+        }
       }
     } catch (final IOException | RuntimeException e) {
-      for (int i = moved.size() - 1; i >= 0; i--)
+      for (int m = moved.size() - 1; m >= 0; m--) {
+        final int i = moved.get(m);
         try {
-          moved.get(i).rename(movedFrom.get(i));
+          if (schema.getFileByName(newNames.get(i)) instanceof PaginatedComponent paginated)
+            paginated.rename(oldNames.get(i));
+          else
+            TimeSeriesSealedStore.renameFile(directory + newNames.get(i), directory + oldNames.get(i));
         } catch (final IOException | RuntimeException rollback) {
           e.addSuppressed(rollback);
         }
+      }
       throw e;
     }
   }

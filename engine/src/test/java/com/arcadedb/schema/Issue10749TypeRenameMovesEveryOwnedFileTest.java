@@ -28,8 +28,10 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.nio.file.Files;
@@ -39,6 +41,10 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -277,6 +283,77 @@ class Issue10749TypeRenameMovesEveryOwnedFileTest extends TestHelper {
     assertThat(filesNaming(OLD)).isNotEmpty();
     assertThat(count(OLD)).isEqualTo(1);
     Files.delete(stray.toPath());
+  }
+
+  /**
+   * The sealed file cannot move (a file already holds the target name): the component is moved back, the sealed file stays where it
+   * was and the open store goes on reading it there.
+   */
+  @Test
+  void aSealedFileThatCannotMoveTakesTheBucketBack() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE " + OLD + " TIMESTAMP ts PRECISION MILLISECOND TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 1");
+    for (int i = 0; i < 4; i++)
+      insert(OLD, 1000L * (i + 1), "h1", i);
+    engineOf(OLD).compactAll();
+    final TimeSeriesShard shard = engineOf(OLD).getShard(0);
+    final File stray = new File(database.getDatabasePath(), NEW + "_shard_0.ts.sealed");
+    Files.write(stray.toPath(), new byte[] { 1, 2, 3 });
+
+    assertThatThrownBy(() -> shard.getMutableBucket().rename(NEW + "_shard_0")).isInstanceOf(IOException.class)
+        .hasMessageContaining("already exists");
+
+    assertThat(shard.getMutableBucket().getName()).isEqualTo(OLD + "_shard_0");
+    assertThat(new File(database.getDatabasePath(), OLD + "_shard_0.ts.sealed")).exists();
+    assertThat(shard.countSamples()).isEqualTo(4);
+    assertThat(count(OLD)).isEqualTo(4);
+    Files.delete(stray.toPath());
+  }
+
+  /** The engine stays open through a rename: samples appended while the files move are all there, after a reopen too. */
+  @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS) // a hang detector for the waits on the appender, not a latency bound
+  void samplesAppendedWhileTheTypeIsRenamedAreKept() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE " + OLD + " TIMESTAMP ts PRECISION MILLISECOND TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2");
+    final TimeSeriesEngine engine = engineOf(OLD);
+    for (int i = 0; i < 50; i++)
+      engine.appendSamples(new long[] { 1L + i }, new Object[] { "h" + (i % 3) }, new Object[] { (double) i });
+    engine.compactAll();
+
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicLong appended = new AtomicLong(50);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread appender = new Thread(() -> {
+      long ts = 10_000;
+      try {
+        while (!stop.get()) {
+          engine.appendSamples(new long[] { ts }, new Object[] { "h" + (ts % 3) }, new Object[] { (double) ts });
+          ++ts;
+          appended.incrementAndGet();
+        }
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    appender.start();
+    try {
+      while (appended.get() < 100 && failure.get() == null)
+        Thread.onSpinWait();
+      database.command("sql", "ALTER TYPE " + OLD + " NAME " + NEW);
+      final long atRename = appended.get();
+      while (appended.get() < atRename + 50 && failure.get() == null)
+        Thread.onSpinWait();
+    } finally {
+      stop.set(true);
+      appender.join();
+    }
+
+    assertThat(failure.get()).as("an append failed while the type was renamed").isNull();
+    assertThat(count(NEW)).isEqualTo(appended.get());
+    reopenDatabase();
+    assertThat(count(NEW)).isEqualTo(appended.get());
+    assertThat(filesNaming(OLD)).isEmpty();
   }
 
   @Test

@@ -5366,16 +5366,45 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         try {
           moveFile(oldFile, newFile);
         } catch (final IOException moveEx) {
-          indexFile = new RandomAccessFile(oldFile, "rw");
-          indexChannel = channelOf(indexFile);
+          reopenAfterFailedRename(oldFile, moveEx);
           throw moveEx;
         }
-        basePath = newBasePath;
-        indexFile = new RandomAccessFile(newFile, "rw");
-        indexChannel = channelOf(indexFile);
+        try {
+          reopenAt(newFile);
+          basePath = newBasePath;
+        } catch (final IOException reopenEx) {
+          // the file moved but cannot be opened where it is now: back where it was, where the store is still named
+          try {
+            moveFile(newFile, oldFile);
+          } catch (final IOException moveBackEx) {
+            reopenEx.addSuppressed(moveBackEx);
+          }
+          reopenAfterFailedRename(oldFile, reopenEx);
+          throw reopenEx;
+        }
       }
     } finally {
       directoryLock.writeLock().unlock();
+    }
+  }
+
+  private void reopenAt(final File file) throws IOException {
+    indexFile = new RandomAccessFile(file, "rw");
+    indexChannel = channelOf(indexFile);
+  }
+
+  /**
+   * Reopens the file where the store is still named after a rename that failed. A store that cannot reopen even there is marked
+   * closed, so every later read fails naming the file instead of on a channel closed under it.
+   */
+  private void reopenAfterFailedRename(final File file, final IOException failure) {
+    try {
+      reopenAt(file);
+    } catch (final IOException reopenEx) {
+      closed = true;
+      failure.addSuppressed(reopenEx);
+      LogManager.instance().log(this, Level.SEVERE, "Sealed store '%s' could not be reopened after a failed rename", reopenEx,
+          file.getAbsolutePath());
     }
   }
 
