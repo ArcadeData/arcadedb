@@ -333,7 +333,7 @@ public class JSONImporterFormat implements FormatImporter {
         attributeValue = reader.nextString();
         break;
       case NUMBER:
-        attributeValue = reader.nextDouble();
+        attributeValue = JSONObject.parseNumber(reader.nextString());
         break;
       case BOOLEAN:
         attributeValue = reader.nextBoolean();
@@ -620,7 +620,7 @@ public class JSONImporterFormat implements FormatImporter {
         entryValue = reader.nextString();
         break;
       case NUMBER:
-        entryValue = reader.nextDouble();
+        entryValue = JSONObject.parseNumber(reader.nextString());
         break;
       case BOOLEAN:
         entryValue = reader.nextBoolean();

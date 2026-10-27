@@ -29,9 +29,14 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -78,6 +83,39 @@ class JSONImporterIT {
       assertThat(db.countType("Food", true)).isEqualTo(2);
     }
 
+  }
+
+  @Test
+  void importedNumbersKeepTheirExactValuesAndTypes(@TempDir final Path tempDir) throws Exception {
+    final String source = """
+        {
+          "integer": 42,
+          "long": 9007199254740993,
+          "bigInteger": 18446744073709551617,
+          "double": 1.5,
+          "decimal": 1.234567890123456789,
+          "values": [42, 9007199254740993, 18446744073709551617, 1.5, 1.234567890123456789]
+        }
+        """;
+    final Path sourcePath = tempDir.resolve("numbers.json");
+    final Path databasePath = tempDir.resolve("database");
+    Files.writeString(sourcePath, source);
+
+    new Importer(new String[] { "-url", sourcePath.toUri().toString(), "-database", databasePath.toString(), "-documentType", "Numbers",
+        "-forceDatabaseCreate", "true" }).load();
+
+    try (final Database db = new DatabaseFactory(databasePath.toString()).open()) {
+      final Document document = db.iterateType("Numbers", true).next().asDocument(true);
+      final BigDecimal bigInteger = new BigDecimal("18446744073709551617");
+      final BigDecimal decimal = new BigDecimal("1.234567890123456789");
+
+      assertThat(document.get("integer")).isEqualTo(42);
+      assertThat(document.get("long")).isEqualTo(9007199254740993L);
+      assertThat(document.get("bigInteger")).isEqualTo(bigInteger);
+      assertThat(document.get("double")).isEqualTo(1.5);
+      assertThat(document.get("decimal")).isEqualTo(decimal);
+      assertThat(document.get("values")).isEqualTo(List.of(42, 9007199254740993L, bigInteger, 1.5, decimal));
+    }
   }
 
   @Test
