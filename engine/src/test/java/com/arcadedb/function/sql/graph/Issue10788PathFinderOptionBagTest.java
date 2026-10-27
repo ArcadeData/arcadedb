@@ -122,6 +122,17 @@ class Issue10788PathFinderOptionBagTest extends TestHelper {
         new FunctionOptions("search_index_more", Map.of("excludeSource", "FALSE"), MoreLikeThisConfig.OPTION_KEYS)).isExcludeSource()).isFalse();
   }
 
+  /** shortestPath() reads maxDepth as an int: a null one is no bound, as for astar() and dijkstra(), and a negative one is refused. */
+  @Test
+  void aShortestPathMaxDepthIsNullForNoBoundAndNeverNegative() {
+    assertThat(shortestPath("{maxDepth: null}")).hasSize(4);
+    assertThat(shortestPath("{maxDepth: 3}")).hasSize(4);
+    assertThat(shortestPath("{maxDepth: 2}")).isEmpty();
+    assertThatThrownBy(() -> shortestPath("{maxDepth: -1}")).hasMessageContaining("Option 'maxDepth'").hasMessageContaining("negative");
+    assertThatThrownBy(() -> shortestPath("{maxDepth: 2.5}")).hasMessageContaining("Option 'maxDepth'");
+    assertThatThrownBy(() -> shortestPath("{edge: 'yes'}")).hasMessageContaining("Option 'edge'");
+  }
+
   // ---- helpers
 
   private void assertRefused(final String function, final String option, final String optionName) {
@@ -133,6 +144,12 @@ class Issue10788PathFinderOptionBagTest extends TestHelper {
     final String options = "{direction: 'OUT', edgeTypeNames: ['E']" + (function.equals("astar") ? ", vertexAxisNames: []" : "") + ", "
         + option + "}";
     try (final ResultSet resultSet = database.query("sql", "SELECT " + function + "(?, ?, 'w', " + options + ") AS p", source, target)) {
+      return resultSet.next().getProperty("p");
+    }
+  }
+
+  private List<?> shortestPath(final String options) {
+    try (final ResultSet resultSet = database.query("sql", "SELECT shortestPath(?, ?, 'OUT', 'E', " + options + ") AS p", source, target)) {
       return resultSet.next().getProperty("p");
     }
   }
