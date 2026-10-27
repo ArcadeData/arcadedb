@@ -270,13 +270,12 @@ public class TruncateTypeStatement extends DDLStatement {
   private ResultSet truncateTimeSeries(final CommandContext context, final LocalTimeSeriesType tsType) {
     final long deleted;
     try {
+      // the engine tells the continuous aggregates over the type that every sample is gone (issue #10428) and refreshes them (#10686)
       deleted = tsType.requireEngine(SecurityDatabaseUser.ACCESS.DELETE_RECORD).truncate();
     } catch (final IOException e) {
       throw new CommandExecutionException("Error truncating the TIMESERIES type '" + tsType.getName() + "': some of the samples may "
           + "already be deleted, and running the statement again deletes the rest", e);
     }
-
-    // the engine told the continuous aggregates over the type that every sample is gone (issue #10428), and refreshed them (#10686)
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "truncate type");

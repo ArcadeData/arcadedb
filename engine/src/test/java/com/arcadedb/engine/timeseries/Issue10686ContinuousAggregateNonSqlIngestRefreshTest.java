@@ -238,6 +238,30 @@ class Issue10686ContinuousAggregateNonSqlIngestRefreshTest extends TestHelper {
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1), new Bucket(H0 + HOUR, "a", 2));
   }
 
+  /**
+   * The shard append commits its own transaction and leaves the worker's batch transaction open, so the refresh each task asks for
+   * is registered on that batch once per aggregate and runs once when it commits: not once per task.
+   */
+  @Test
+  void asyncAppendsOfOneBatchRefreshOnceAtItsCommit() {
+    createSourceAndAggregate(1);
+    final long before = aggregate().getRefreshCount();
+    final int previousCommitEvery = database.async().getCommitEvery();
+    database.async().setCommitEvery(1_000);
+    try {
+      // one shard: every task lands on the same worker, so in the same batch
+      for (int i = 0; i < 5; i++)
+        database.async().appendSamples("S", new long[] { H0 + i * HOUR + 1_000 }, new Object[] { "a" }, new Object[] { 1.0 });
+      database.async().waitCompletion();
+    } finally {
+      database.async().setCommitEvery(previousCommitEvery);
+    }
+
+    assertThat(aggregate().getRefreshCount()).isEqualTo(before + 1);
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1), new Bucket(H0 + HOUR, "a", 1), new Bucket(H0 + 2 * HOUR, "a", 1),
+        new Bucket(H0 + 3 * HOUR, "a", 1), new Bucket(H0 + 4 * HOUR, "a", 1));
+  }
+
   // ---- scoped to the aggregates over the type appended to
 
   @Test

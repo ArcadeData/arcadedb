@@ -289,9 +289,17 @@ public class TimeSeriesEngine implements AutoCloseable {
       return;
     try {
       appendBatchToShards(source);
-    } finally {
-      refreshContinuousAggregates();
+    } catch (final IOException | RuntimeException | Error e) {
+      // the parts the other shards wrote are stored and owe their refresh; a failure of the refresh itself (it logs the refresh's
+      // own failures, so only a lookup could throw here) must not hide the failure of the append
+      try {
+        refreshContinuousAggregates();
+      } catch (final RuntimeException refreshFailure) {
+        e.addSuppressed(refreshFailure);
+      }
+      throw e;
     }
+    refreshContinuousAggregates();
   }
 
   private void appendBatchToShards(final TimeSeriesRowSource source) throws IOException {
