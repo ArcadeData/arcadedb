@@ -649,34 +649,7 @@ public class JSONObject implements Map<String, Object> {
         final Number value = primitive.getAsNumber();
         if (!(value instanceof LazilyParsedNumber))
           return value;
-        final String strValue = primitive.getAsString();
-
-        // Efficient check to determine the appropriate type
-        if (strValue.contains(".") || strValue.contains("e") || strValue.contains("E")) {
-          // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
-          final double doubleVal = primitive.getAsDouble();
-          if (mayLoseDigits(strValue, doubleVal) && !isExactDouble(strValue, doubleVal)) {
-            if (!isSafeBigNumber(strValue))
-              throw new JSONException("Number token too large: " + strValue.length() + " characters or an exponent beyond " + MAX_BIG_NUMBER_EXPONENT);
-            return new BigDecimal(strValue);
-          }
-          return doubleVal;
-        } else {
-          // Check if it fits in an Integer or a Long. LazilyParsedNumber.longValue() would silently keep the low 64 bits of a
-          // bigger number, so the value is parsed from its text (issue #9004)
-          try {
-            final long longVal = Long.parseLong(strValue);
-            if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
-              return (int) longVal;
-            return longVal;
-
-          } catch (NumberFormatException e) {
-            // beyond the long range: keep every digit, unless the token is one only a hostile payload writes
-            if (!isSafeBigNumber(strValue))
-              throw new JSONException("Number token too large: " + strValue.length() + " characters");
-            return new BigDecimal(strValue);
-          }
-        }
+        return parseNumber(primitive.getAsString());
       } else if (primitive.isString())
         return primitive.getAsString();
       else if (primitive.isBoolean())
@@ -688,6 +661,37 @@ public class JSONObject implements Map<String, Object> {
       return new JSONArray(element.getAsJsonArray());
 
     throw new IllegalArgumentException("Element " + element + " not supported");
+  }
+
+  /**
+   * Parses a JSON number token without narrowing integers or exact decimals to a {@code double}.
+   */
+  public static Number parseNumber(final String value) {
+    if (value.contains(".") || value.contains("e") || value.contains("E")) {
+      // Contains decimal point or scientific notation: a double, unless it carries more digits than a double holds
+      final double doubleVal = Double.parseDouble(value);
+      if (mayLoseDigits(value, doubleVal) && !isExactDouble(value, doubleVal)) {
+        if (!isSafeBigNumber(value))
+          throw new JSONException("Number token too large: " + value.length() + " characters or an exponent beyond " + MAX_BIG_NUMBER_EXPONENT);
+        return new BigDecimal(value);
+      }
+      return doubleVal;
+    }
+
+    // Check if it fits in an Integer or a Long. LazilyParsedNumber.longValue() would silently keep the low 64 bits of a
+    // bigger number, so the value is parsed from its text (issue #9004)
+    try {
+      final long longVal = Long.parseLong(value);
+      if (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
+        return (int) longVal;
+      return longVal;
+
+    } catch (NumberFormatException e) {
+      // beyond the long range: keep every digit, unless the token is one only a hostile payload writes
+      if (!isSafeBigNumber(value))
+        throw new JSONException("Number token too large: " + value.length() + " characters");
+      return new BigDecimal(value);
+    }
   }
 
   // 17 significant digits identify one double (what %.17g and the C family print), so a token up to there is a double, not a BigDecimal
