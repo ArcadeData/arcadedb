@@ -46,6 +46,7 @@ import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
 import com.arcadedb.redis.RedisRecords;
+import com.arcadedb.redis.RedisVariableKeys;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -386,7 +387,7 @@ public class RedisQueryEngine implements QueryEngine {
 
     void publishTo(final DatabaseInternal database) {
       for (final Map.Entry<String, Object> entry : values.entrySet())
-        database.setGlobalVariable(entry.getKey(), entry.getValue());
+        database.setGlobalVariable(RedisVariableKeys.toVariableName(entry.getKey()), entry.getValue());
     }
   }
 
@@ -564,32 +565,28 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * The single normalization point for a RAM key (PR #8309 review): {@code LocalDatabase.getGlobalVariable}/
-   * {@code setGlobalVariable}/{@code computeGlobalVariable} all strip a leading {@code $} and refuse a reserved
-   * name via {@code SQLQueryEngine.validateVariableName}. Called once per command, on the raw key from the
-   * parsed command, before it ever reaches the transaction's {@link RamOverlay} or the real map - so both agree on
-   * the same key (an overlay entry stored under the raw {@code "$seq"} would never be found by a later
-   * {@code GET seq} in the same transaction) and a reserved name is refused at the point the offending command runs,
-   * which rolls back the rest of its block, rather than when the overlay is published after the commit.
+   * The key a writing RAM command (SET/GETDEL/INCR/DECR) uses: the client's key, unchanged, so the transaction's
+   * {@link RamOverlay} and the real map agree on it. A Redis key is opaque client data, so {@code $seq} and {@code seq}
+   * are two keys (issue #10694; PR #8309 had made them one by stripping the {@code $} here, matching what the map's
+   * accessors did to an unescaped name). {@link RedisVariableKeys#toVariableName} turns it into the map's name at every
+   * call that reaches the map. A name the map refuses as reserved - {@code SQLQueryEngine.validateVariableName} on the
+   * name it would store, which is this key - is refused here, at the point the offending command runs, which rolls back
+   * the rest of its block, rather than when the overlay is published after the commit.
    */
-  private String normalizeRamKey(final String key) {
-    return SQLQueryEngine.validateVariableName(key);
+  private static String normalizeRamKey(final String key) {
+    SQLQueryEngine.validateVariableName(key);
+    return key;
   }
 
   /**
-   * The key a read-only RAM command (GET/EXISTS) looks up: the leading {@code $} stripped as {@link #normalizeRamKey}
-   * does, but a reserved name is not refused, since it can never hold a value. Answering it as absent is what
-   * {@code LocalDatabase.getGlobalVariable} and the RESP wire path do, so both surfaces agree on the same read.
+   * Reads a RAM key: the active transaction's own write first (a buffered null is GETDEL's delete, not "absent"). A
+   * read of a reserved name is not refused, it answers absent, since such a name can never hold a value - as the RESP
+   * wire path does.
    */
-  private static String normalizeRamReadKey(final String key) {
-    return key.startsWith("$") ? key.substring(1) : key;
-  }
-
-  /** Reads a RAM key: the active transaction's own write first (a buffered null is GETDEL's delete, not "absent"). */
   private Object readRamVariable(final String key, final RamOverlay overlay) {
     if (overlay != null && overlay.hasKey(key))
       return overlay.get(key);
-    return database.getGlobalVariable(key);
+    return database.getGlobalVariable(RedisVariableKeys.toVariableName(key));
   }
 
   /**
@@ -607,7 +604,7 @@ public class RedisQueryEngine implements QueryEngine {
       overlay.set(key, newValue);
       return newValue;
     }
-    final Object newValue = database.computeGlobalVariable(key, remapping);
+    final Object newValue = database.computeGlobalVariable(RedisVariableKeys.toVariableName(key), remapping);
     return slot != null ? slot.reserve(newValue) : newValue;
   }
 
@@ -618,12 +615,12 @@ public class RedisQueryEngine implements QueryEngine {
     if (overlay != null)
       overlay.set(key, value);
     else
-      database.setGlobalVariable(key, value);
+      database.setGlobalVariable(RedisVariableKeys.toVariableName(key), value);
     return "OK";
   }
 
   private Object get(final List<String> parts) {
-    return readRamVariable(normalizeRamReadKey(parts.get(1)), ramOverlay());
+    return readRamVariable(parts.get(1), ramOverlay());
   }
 
   /** See {@link #computeRamVariable} for when GETDEL stays in the transaction and when it claims from the shared map. */
@@ -639,7 +636,7 @@ public class RedisQueryEngine implements QueryEngine {
     }
     // setGlobalVariable atomically returns the previous value - the same reason GETDEL needs it that INCR needs
     // computeGlobalVariable (issue #8248): two concurrent GETDEL calls on the same key must not both read it.
-    final Object previous = database.setGlobalVariable(key, null);
+    final Object previous = database.setGlobalVariable(RedisVariableKeys.toVariableName(key), null);
     return slot != null ? slot.reserve(previous) : previous;
   }
 
@@ -647,7 +644,7 @@ public class RedisQueryEngine implements QueryEngine {
     final RamOverlay overlay = ramOverlay();
     int count = 0;
     for (int i = 1; i < parts.size(); i++) {
-      if (readRamVariable(normalizeRamReadKey(parts.get(i)), overlay) != null) {
+      if (readRamVariable(parts.get(i), overlay) != null) {
         count++;
       }
     }
