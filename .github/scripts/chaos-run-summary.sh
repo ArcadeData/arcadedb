@@ -30,11 +30,13 @@
 
 set -euo pipefail
 
-# Values sit in a double-backtick code span so a single backtick in a message cannot break it, and
-# line breaks are folded so a multi-line message stays on its own bullet.
+# Values sit in a code span whose fence is one backtick longer than the longest backtick run in the
+# value, so no message can close it early, and line breaks are folded so a multi-line message stays
+# on its own bullet.
 # shellcheck disable=SC2016
 program='
-def cell: tostring | gsub("[\r\n]+"; " ") | "`` \(.) ``";
+def cell: tostring | gsub("[\r\n]+"; " ") | (([scan("`+") | length] | max // 1) + 1) as $n | ("`" * $n) as $fence
+  | "\($fence) \(.) \($fence)";
 "### HA chaos: \(.result // "UNKNOWN")",
 "",
 ( del(.result)

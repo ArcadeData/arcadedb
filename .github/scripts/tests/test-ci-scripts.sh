@@ -2292,6 +2292,14 @@ else
     fail "renders one section per summary file"
 fi
 
+printf '{ "result": "PASS", "message": "a``b`" }' >"$work/chaos/ticks.json"
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/ticks.json" 2>&1)" || true
+if grep -qxF -- '- message: ``` a``b` ```' <<<"$chaos_out"; then
+    pass "fences a value longer than any backtick run inside it"
+else
+    fail "fences a value longer than any backtick run inside it" "$chaos_out"
+fi
+
 printf '{ "result": ' >"$work/chaos/broken.json"
 chaos_out="$("$CHAOSSUMMARY" "$work/chaos/broken.json" "$work/chaos/run1/summary.json" 2>&1)" && chaos_status=0 || chaos_status=$?
 if [[ $chaos_status -eq 0 ]] && grep -qF 'unreadable summary' <<<"$chaos_out" && grep -qxF '### HA chaos: PASS' <<<"$chaos_out"; then
