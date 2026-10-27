@@ -30,6 +30,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.Type;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -137,6 +138,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
   // a cold open builds a column-less stub through the component factory, and the shard supplies both
   // the columns and the dictionary once the type is known.
   private TimeSeriesTagDictionary tagDictionary;
+  // The sealed store of the shard this bucket is the mutable layer of, set by the shard, or null while no shard is open on it: a
+  // rename of this component moves the sealed file named after it, which is not a component (issue #10749)
+  private volatile TimeSeriesSealedStore sealedStore;
   // The type's mutable row format version: whether a row carries a null bitmap (VERSION_NULL_BITMAP) is decided by it.
   private int                     formatVersion = CURRENT_VERSION;
   // Where the first value column starts inside a row: past the timestamp and the null bitmap, if any.
@@ -273,6 +277,40 @@ public class TimeSeriesBucket extends PaginatedComponent {
     this.tagDictionary = tagDictionary;
     this.formatVersion = formatVersion;
     resolveLayout(columns);
+  }
+
+  /** Binds the sealed store of the shard built on this bucket, the one {@link #rename} moves with it (issue #10749). */
+  void setSealedStore(final TimeSeriesSealedStore sealedStore) {
+    this.sealedStore = sealedStore;
+  }
+
+  /**
+   * Renames the component and the sealed file of its shard with it (issue #10749). A shard's sealed blocks are kept in a file named
+   * after this component, {@code <component>.ts.sealed}, which is not a component and so has no rename of its own: moving the bucket
+   * alone left the sealed blocks under the old name, where the shard opened under the new one never looked. Every route that moves
+   * the component moves both, the rename of the type on the leader and the move by file id a follower applies from the rename
+   * recorded in the schema entry. The sealed file is moved through the open store when there is one, so it goes on reading it; a
+   * failure moves the component back.
+   */
+  @Override
+  public void rename(final String newComponentName) throws IOException {
+    final String oldComponentName = componentName;
+    super.rename(newComponentName);
+    try {
+      final String directory = database.getDatabasePath() + File.separator;
+      final TimeSeriesSealedStore store = sealedStore;
+      if (store != null)
+        store.rename(directory + newComponentName);
+      else
+        TimeSeriesSealedStore.renameFile(directory + oldComponentName, directory + newComponentName);
+    } catch (final IOException | RuntimeException e) {
+      try {
+        super.rename(oldComponentName);
+      } catch (final IOException | RuntimeException rollback) {
+        e.addSuppressed(rollback);
+      }
+      throw e;
+    }
   }
 
   /**
