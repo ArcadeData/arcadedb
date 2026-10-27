@@ -399,9 +399,9 @@ public class AnchorSelector {
    * Attempts to cost a label disjunction as a union of per-root index seeks (issue #6397's suggested shape).
    * Every equality predicate on the disjunction's own variable is costed and the cheapest one is kept, a tie going to
    * the one written first - mirroring the plain (non-disjunction) branch of {@link #evaluateNode} - so which predicate
-   * a disjunction with several of them seeks does not depend on hash-iteration order (issue #10775). An IN-list or a range predicate on a
-   * disjunction anchor is a separate, still-unaddressed limitation the issue calls out but does not ask this fix
-   * to close.
+   * a disjunction with several of them seeks does not depend on hash-iteration order (issue #10775). An IN-list or a
+   * range predicate on a disjunction anchor is a separate, still-unaddressed limitation the issue calls out but does
+   * not ask this fix to close.
    * <p>
    * All-or-nothing per predicate: a predicate with even one non-indexed root is skipped in favour of the next
    * candidate predicate, matching the rule {@code IndexSelectionRule} enforces when it builds the operator. Only

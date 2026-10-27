@@ -206,6 +206,22 @@ class Issue10775AnchorPicksCheapestIndexTest extends TestHelper {
   }
 
   @Test
+  void aUniqueEqualityBeatsAUniqueInOverAParameterOfTheSameEstimate() {
+    // Both are one seek of one row as far as the planner can tell ($ids is one list it cannot size): the tie goes to the
+    // equality, which is one key for certain, whichever of the two is written first
+    final Map<String, Object> params = Map.of("u", "id1", "ids", List.of("id1", "id2", "id3"));
+
+    final String inFirst = "MATCH (r:T10775_0) WHERE r.uid IN $ids AND r.uid = $u RETURN r.uid AS e";
+    assertThat(plan(inFirst, params)).contains("index=T10775_0[uid]").doesNotContain("uid=IN");
+    assertThat(values(inFirst, params)).containsExactly("id1");
+
+    final String bothUnique = "MATCH (r:E10775) WHERE r.uid IN $ids AND r.cat = 'odd' AND r.seq = $s RETURN r.uid AS e";
+    final Map<String, Object> seqParams = Map.of("ids", List.of("id1", "id3"), "s", 1);
+    assertThat(plan(bothUnique, seqParams)).contains("index=E10775[cat,seq]");
+    assertThat(values(bothUnique, seqParams)).containsExactly("id1");
+  }
+
+  @Test
   void aLabelDisjunctionAnchorsOnTheUniqueIndexWhateverTheNames() {
     final String byUid = "MATCH (r:A10775|B10775) WHERE r.grp = 'A' AND r.uid = 'id1' RETURN r.uid AS e";
     final String uidPlan = plan(byUid, Map.of());
