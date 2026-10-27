@@ -273,6 +273,13 @@ public class ArcadeDBServer {
   // refused, not parked: waiting here would block a create behind a multi-GB download. A client request is refused the
   // same way when it would OPEN the target (issue #10388), but only a request: the restore resolves its own target.
   private final       Set<String>                           restoringDatabaseNames               = ConcurrentHashMap.newKeySet();
+  // Why a database whose name a restore holds refuses writes (issue #10689), and why one opened before the HA plugin wrapped it does
+  // (issue #8270). Each is lifted by its own reason, so ending one never ends the other
+  static final        String                                RESTORE_WRITE_REFUSAL                =
+      "a restore is replacing it with a backup, and a write made now would be discarded by the swap. Retry once the restore has ended";
+  private static final String                               HA_NOT_ACTIVE_WRITE_REFUSAL          =
+      "the server is starting and high availability is not active yet, so a write here would not be replicated. Retry once the "
+          + "server is online";
   // The databases whose files a drop is deleting right now (issue #10388). LocalDatabase.drop() closes the instance and
   // only then runs the recursive delete, and until the delete reaches schema.json the directory still holds a database:
   // a request that resolved the name in that window opened the directory being deleted. Set before the drop starts and
@@ -1433,7 +1440,9 @@ public class ArcadeDBServer {
    * database} command closed stays closed until {@code open database}, and one a restore holds is not opened for a client, whose
    * writes the swap of the restore would discard. A name being dropped is refused to every caller.
    * <p>
-   * A database that is already open is served as before, with no lock. Unlike {@link #getDatabaseForRequest} this does not look
+   * A database that is already open is served as before, with no lock: one a restore holds keeps its readers until the swap and
+   * refuses every write in the database itself, so a handle resolved before the restore began is refused too (issue #10689).
+   * Unlike {@link #getDatabaseForRequest} this does not look
    * at the disk first: a name that is neither open nor on disk fails in the open, as it always did for these protocols.
    */
   public ServerDatabase getDatabaseForClient(final String databaseName) {
@@ -1540,18 +1549,39 @@ public class ArcadeDBServer {
   public void reserveDatabaseNameForRestore(final String databaseName) {
     synchronized (databasesLock) {
       restoringDatabaseNames.add(databaseName);
+      // The target an 'overwrite' restore replaces stays open and keeps its readers until the swap, and accepts no write from now
+      // on (issue #10689): one acknowledged meanwhile would be destroyed by the swap. Refused in the database itself, at every
+      // commit and schema change, so a client that resolved it before the claim - a Postgres session, a Bolt connection, a
+      // transaction begun earlier - is refused as well as one that resolves it now
+      final ServerDatabase target = databases.get(databaseName);
+      if (target != null)
+        refuseWritesWhileRestoring(target);
     }
   }
 
   /**
    * Releases the claim {@link #reserveDatabaseNameForRestore} took. Always call it from a {@code finally}: a claim
    * leaked by a failed restore would refuse every later create of that name until the server restarts, turning one
-   * bad URL into an outage.
+   * bad URL into an outage. The write refusal the claim put on the database registered under the name - the target a failed
+   * restore left in place, or the copy a successful one swapped in - ends with it.
    */
   public void releaseDatabaseNameReservedForRestore(final String databaseName) {
     synchronized (databasesLock) {
       restoringDatabaseNames.remove(databaseName);
+      final ServerDatabase registered = databases.get(databaseName);
+      if (registered != null && registered.getEmbedded() instanceof LocalDatabase local)
+        local.acceptWrites(RESTORE_WRITE_REFUSAL);
     }
+  }
+
+  /**
+   * Puts the refusal of a restore in progress on {@code database}: reads go on, every write is answered "not available". Called
+   * under {@link #databasesLock}, where the claim changes, for the database registered when the claim is taken and for one opened
+   * while it stands (the operator's own steps may open it: {@code open database}, the restore dropping its target).
+   */
+  private static void refuseWritesWhileRestoring(final ServerDatabase database) {
+    if (database.getEmbedded() instanceof LocalDatabase local)
+      local.refuseWrites(RESTORE_WRITE_REFUSAL, true);
   }
 
   /** Whether a restore on this server currently holds {@code databaseName}. */
@@ -1820,6 +1850,8 @@ public class ArcadeDBServer {
       if (databases.containsKey(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
       serverDatabase = new ServerDatabase(this, wrapForHA(database));
+      if (restoringDatabaseNames.contains(databaseName))
+        refuseWritesWhileRestoring(serverDatabase);
       databases.put(databaseName, serverDatabase);
       closedByCommand.remove(databaseName);
     }
@@ -2025,8 +2057,7 @@ public class ArcadeDBServer {
       return wrapper.apply(local);
 
     if (awaiting && database instanceof LocalDatabase local)
-      local.refuseWrites("the server is starting and high availability is not active yet, so a write here would not "
-          + "be replicated. Retry once the server is online");
+      local.refuseWrites(HA_NOT_ACTIVE_WRITE_REFUSAL);
     return database;
   }
 
@@ -2038,7 +2069,7 @@ public class ArcadeDBServer {
       awaitingHAWrapper = false;
       for (final ServerDatabase serverDb : databases.values())
         if (serverDb.getWrappedDatabaseInstance() instanceof LocalDatabase local)
-          local.acceptWrites();
+          local.acceptWrites(HA_NOT_ACTIVE_WRITE_REFUSAL);
     }
   }
 
@@ -2074,8 +2105,8 @@ public class ArcadeDBServer {
         final ServerDatabase newServerDb = new ServerDatabase(this, newWrapped);
         databases.put(entry.getKey(), newServerDb);
         // Writes now go through the replicated wrapper, so the refusal wrapForHA() put on the plain database while
-        // it waited for this is lifted (issue #8270).
-        localDb.acceptWrites();
+        // it waited for this is lifted (issue #8270). Only that one: a restore in progress keeps its own (issue #10689).
+        localDb.acceptWrites(HA_NOT_ACTIVE_WRITE_REFUSAL);
         LogManager.instance().log(this, Level.INFO, "Re-wrapped database '%s' with HA wrapper", entry.getKey());
       }
     }
@@ -2358,6 +2389,10 @@ public class ArcadeDBServer {
         embDatabase = wrapForHA(embDatabase);
 
         db = new ServerDatabase(this, embDatabase);
+        // Opened by an operator's step while a restore holds the name: readable, and refusing writes like the target the claim found
+        // open (issue #10689)
+        if (restoringDatabaseNames.contains(databaseName))
+          refuseWritesWhileRestoring(db);
 
         databases.put(databaseName, db);
         closedByCommand.remove(databaseName);

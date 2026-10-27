@@ -2965,7 +2965,8 @@ public class TransactionContext implements Transaction {
     // Issue #8270: a database opened by an HA server before it is wrapped for replication refuses anything that
     // would change it, and so does a transaction that BEGAN while it did, whatever has happened since. Same
     // placement as the rollback-only refusal above and for the same reason: the status has not moved yet, so the
-    // caller's error handling can still roll the transaction back. A read-only transaction commits as usual.
+    // caller's error handling can still roll the transaction back. A read-only transaction commits as usual. A restore
+    // replacing the database refuses the same way (issue #10689), so a transaction begun before it cannot commit into it.
     if (database instanceof LocalDatabase local && (begunUnderWriteRefusal != null || local.getWriteRefusal() != null)
         && (updatedRecords != null || hasChanges())) {
       local.checkWritesAccepted();
