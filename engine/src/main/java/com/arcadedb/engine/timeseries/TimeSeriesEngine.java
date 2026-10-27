@@ -213,6 +213,11 @@ public class TimeSeriesEngine implements AutoCloseable {
    * makes the per-batch call of the async executor cheap: its batch commits once every {@code commitEvery} tasks.
    * <p>
    * Free when the database has no continuous aggregate. A failing refresh is logged, never raised: the samples are stored.
+   * <p>
+   * <b>Cost:</b> with no transaction open the refresh runs on the calling thread before the append returns, once per call for every
+   * aggregate over the type: an incremental refresh re-reads the source from the watermark, i.e. the open bucket. A caller appending
+   * one sample per call pays it per sample; batch the samples ({@link #appendBatch(TimeSeriesRowSource)}) or append inside a
+   * transaction, which refreshes once at its commit. An autocommit SQL {@code INSERT} pays the same, once per statement.
    */
   public void refreshContinuousAggregates() {
     ContinuousAggregateRefresher.refreshAggregatesOver(database.getWrappedDatabaseInstance(), this);
@@ -289,7 +294,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       return;
     try {
       appendBatchToShards(source);
-    } catch (final IOException | RuntimeException | Error e) {
+    } catch (final IOException | RuntimeException e) {
       // the parts the other shards wrote are stored and owe their refresh; a failure of the refresh itself (it logs the refresh's
       // own failures, so only a lookup could throw here) must not hide the failure of the append
       try {
