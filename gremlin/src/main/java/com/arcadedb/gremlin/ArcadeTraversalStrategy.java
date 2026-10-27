@@ -25,10 +25,7 @@ import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinaryComparator;
-import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -155,14 +152,12 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             // ONLY USE AN INDEX WHEN THE LABEL MATCHES THE TRAVERSAL ELEMENT KIND (g.V() -> vertex type, g.E() -> edge type).
             // OTHERWISE A WRONG-KIND INDEX SCAN WOULD RETURN ELEMENTS OF THE OPPOSITE CATEGORY (ISSUE #5223). THE EMPTY
             // indexCursors LIST THEN FALLS THROUGH TO ArcadeFilterByTypeStep/ArcadeCountGlobalStep, WHICH RETURN NOTHING.
-            final boolean kindMatches;
-            if (graph.database.getSchema().existsType(typeNameToMatch)) {
-              final DocumentType type = graph.database.getSchema().getType(typeNameToMatch);
-              kindMatches = Vertex.class.isAssignableFrom(prevStepGraph.getReturnClass()) ?
-                  type instanceof VertexType :
-                  type instanceof EdgeType;
-            } else
-              kindMatches = false;
+            // A 'bucket:' LABEL IS NEVER ANSWERED FROM AN INDEX: THE INDEX SPANS THE WHOLE TYPE, NOT THE ONE BUCKET. THE LABEL IS
+            // RESOLVED BY THE SAME ArcadeLabels THE STEPS BUILT BELOW USE (#10763)
+            final DocumentType labelType = ArcadeLabels.bucketName(typeNameToMatch) == null ?
+                ArcadeLabels.typeOf(graph.database.getSchema(), typeNameToMatch, prevStepGraph.getReturnClass()) :
+                null;
+            final boolean kindMatches = labelType != null;
 
             // PICK ONE INDEXED CONTAINER TO GENERATE THE CANDIDATES FROM, PREFERRING A UNIQUE EQUALITY, THEN ANY EQUALITY,
             // THEN A RANGE. EVERY has() CONTAINER, THE CHOSEN ONE INCLUDED, STAYS IN THE HasStep AND IS RE-CHECKED ON EACH
@@ -177,7 +172,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
                   continue;
                 // WALKS UP THE HIERARCHY: A SUPER TYPE'S INDEX SPANS ITS SIBLING SUB-TYPES TOO, WHICH THE STEP FILTERS
                 // OUT BY BUCKET (#8249)
-                final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
+                final TypeIndex index = labelType.getPolymorphicIndexByProperties(key);
                 // EXACT KEY, ORDERED AND UNFOLDED FOR A RANGE, AND USABLE NOW: AN INDEX A CONCURRENT DDL IS CREATING OR
                 // DROPPING IS NOT A CANDIDATE, AND ITS METADATA IS NOT READ AGAIN BELOW (#9651)
                 if (!ArcadeFilterByIndexStep.canAnswer(index, c.getBiPredicate()))

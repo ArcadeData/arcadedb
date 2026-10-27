@@ -320,18 +320,10 @@ public class ArcadeGraph implements Graph, Closeable {
       throw Vertex.Exceptions.userSuppliedIdsNotSupported();
     this.tx().readWrite();
 
-    String typeName = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
-
-    final String bucketName;
-    if (typeName.startsWith("bucket:")) {
-      bucketName = typeName.substring("bucket:".length());
-      final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
-      if (type == null)
-        typeName = null;
-      else
-        typeName = type.getName();
-    } else
-      bucketName = null;
+    final String label = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
+    // A 'bucket:' LABEL NAMING A BUCKET THAT DOES NOT EXIST, OR THAT NO TYPE OWNS, IS REFUSED BY NAME (#10763)
+    final String bucketName = ArcadeLabels.bucketName(label);
+    final String typeName = ArcadeLabels.typeNameForWrite(database.getSchema(), label);
 
     // getOrCreate: two traversals adding the first vertex of a label concurrently both end with the type (issue #10145)
     if (!this.database.getSchema().existsType(typeName))

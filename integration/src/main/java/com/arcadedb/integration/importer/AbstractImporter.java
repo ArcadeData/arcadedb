@@ -43,6 +43,7 @@ public abstract class AbstractImporter {
   protected ImporterSettings settings                       = new ImporterSettings();
   protected ImporterContext  context                        = new ImporterContext();
   protected DatabaseInternal database;
+  /** The source being read, for the progress report. Not its owner: the scope that opened it closes it (issue #10772). */
   protected Source           source;
   protected Timer            timer;
   protected boolean          databaseCreatedDuringImporting = true;
@@ -96,11 +97,6 @@ public abstract class AbstractImporter {
     if (timer != null)
       timer.cancel();
     printProgress();
-  }
-
-  protected void closeInputFile() {
-    if (source != null)
-      source.close();
   }
 
   protected void closeDatabase() {

@@ -571,6 +571,11 @@ public class ArcadeGremlin extends ArcadeQuery {
     if (result instanceof GraphTraversal<?,?> traversal)
       return traversal;
 
-    return Set.of(result).iterator();
+    // THE VALUE OF AN EAGER TERMINAL STEP (next(), toList(), ...) IS ONE ROW, AS IT IS WITHOUT THE STEP, AND NULL IS A VALUE A ROW
+    // CARRIES THERE: Set.of() REFUSED IT, SO A TRAVERSAL ENDING IN A NULL WAS ANSWERED AS A SERVER FAULT (#10770). tryNext() ANSWERS
+    // AN Optional, WHICH IS THE ROW IT HOLDS OR NO ROW, AS THE SAME TRAVERSAL LIMITED TO ONE ELEMENT WOULD
+    if (result instanceof Optional<?> optional)
+      return optional.isPresent() ? Collections.singletonList(optional.get()).iterator() : Collections.emptyIterator();
+    return Collections.singletonList(result).iterator();
   }
 }

@@ -40,8 +40,10 @@ public class OrientDBImporterFormat extends AbstractImporterFormat {
       new OrientDBImporter(database, settings) {
         @Override
         public GZIPInputStream openInputStream() throws IOException {
-          sourceSchema.getSource().reset();
-          return (GZIPInputStream) sourceSchema.getSource().inputStream;
+          // THE SOURCE OF THE LOAD, WHICH THE IMPORTER CLOSES WHEN THE LOAD ENDS, AND NOT THE ONE OF THE ANALYSIS, WHICH IS CLOSED
+          // ALREADY: RE-OPENING THAT ONE LEFT A STREAM NOTHING WOULD CLOSE (ISSUE #10772)
+          parser.getSource().reset();
+          return (GZIPInputStream) parser.getSource().inputStream;
         }
       }.setContext(context).run();
 
