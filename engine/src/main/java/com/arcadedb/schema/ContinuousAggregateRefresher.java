@@ -481,11 +481,21 @@ public class ContinuousAggregateRefresher {
   private static void saveRow(final Database database, final String backingTypeName, final Result result,
       final MutableDocument replaced) {
     final MutableDocument doc = replaced != null ? replaced : database.newDocument(backingTypeName);
-    if (replaced != null)
-      // what the row it replaces held and the recomputed row does not, the defining query had no value for
-      for (final String prop : new ArrayList<>(replaced.getPropertyNames()))
-        if (!result.hasProperty(prop))
+    if (replaced != null) {
+      // what the row it replaces held and the recomputed row does not, the defining query had no value for. Collected first (a removal
+      // inside the walk would change the set walked), and only when there is one: the ingest refresh rewrites a row whose properties
+      // are the same every time, and must not pay a copy of them per request
+      List<String> stale = null;
+      for (final String prop : replaced.getPropertyNames())
+        if (!result.hasProperty(prop)) {
+          if (stale == null)
+            stale = new ArrayList<>(2);
+          stale.add(prop);
+        }
+      if (stale != null)
+        for (final String prop : stale)
           replaced.remove(prop);
+    }
     for (final String prop : result.getPropertyNames()) {
       if (!prop.startsWith("@"))
         doc.set(prop, result.getProperty(prop));
