@@ -273,9 +273,13 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   @Override
   protected void renameFiles(final String newName) {
     final String oldName = name;
-    checkEngineFilesCanMove(oldName, newName);
+    // a target name taken by a type is refused by the document part, as a collision of names, before any file is looked at
+    if (!schema.existsType(newName))
+      checkEngineFilesCanMove(oldName, newName);
 
-    renameDocumentPart(newName);
+    // the old name stays this type's until the engine's files, which still carry it, have moved: a type created under it meanwhile
+    // would find them and take them
+    renameDocumentPartKeepingOldName(newName);
     try {
       final TimeSeriesEngine current = engine;
       if (current != null)
@@ -284,12 +288,13 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         renameFilesWithoutEngine(oldName, newName);
     } catch (final IOException | RuntimeException e) {
       try {
-        renameDocumentPart(oldName);
+        restoreReservedName(oldName);
       } catch (final RuntimeException rollback) {
         e.addSuppressed(rollback);
       }
       throw new SchemaException("Error on renaming the files of the TIMESERIES type '" + oldName + "' to '" + newName + "'", e);
     }
+    releaseReservedName(oldName);
   }
 
   /**

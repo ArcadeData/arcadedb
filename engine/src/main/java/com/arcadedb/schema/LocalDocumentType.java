@@ -646,10 +646,38 @@ public class LocalDocumentType implements DocumentType {
    * is no enclosing rename there, so the files would move and nothing would ever publish them.
    */
   protected final void renameDocumentPart(final String newName) {
+    checkInsideRename();
+    renameInternal(newName);
+  }
+
+  /**
+   * As {@link #renameDocumentPart}, keeping the old name reserved for this type (issue #10749): for a subclass that moves files of its
+   * own afterwards, still under the old name, which a type created under that name would otherwise find and take. The subclass
+   * releases it with {@link #releaseReservedName} once its files moved, or goes back to it with {@link #restoreReservedName}.
+   */
+  protected final void renameDocumentPartKeepingOldName(final String newName) {
+    checkInsideRename();
+    renameInternal(newName, false, false);
+  }
+
+  /** The rollback of {@link #renameDocumentPartKeepingOldName}: back to the old name, which this type still holds. */
+  protected final void restoreReservedName(final String oldName) {
+    checkInsideRename();
+    renameInternal(oldName, true, true);
+  }
+
+  /** Gives up a name this type no longer answers to, if it still holds it (the two-argument remove never evicts another type). */
+  protected final void releaseReservedName(final String oldName) {
+    if (oldName.equals(name))
+      return;
+    ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()
+        .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
+  }
+
+  private void checkInsideRename() {
     if (!renameLock.isHeldByCurrentThread())
       throw new IllegalStateException("The document part of type '" + name + "' can only be renamed from inside a rename "
           + "of the type: call rename(), which publishes it");
-    renameInternal(newName);
   }
 
   /**
@@ -765,7 +793,18 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private void renameInternal(final String newName) {
-    if (schema.existsType(newName))
+    renameInternal(newName, true, false);
+  }
+
+  /**
+   * @param releaseOldName         whether the old name is released once the document part is renamed. A subclass with files of
+   *                               its own to move after it keeps the name reserved until they moved (issue #10749), so that no type
+   *                               can be created under it and take those files while they still carry it
+   * @param targetIsOwnReservation the rollback of such a rename: the target is the old name this type still holds, which is not a
+   *                               collision, and is not given up if the rollback fails
+   */
+  private void renameInternal(final String newName, final boolean releaseOldName, final boolean targetIsOwnReservation) {
+    if (schema.existsType(newName) && !(targetIsOwnReservation && schema.typeMap().get(newName) == this))
       throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type with name '" + newName + "' already exists");
 
     final String oldName = name;
@@ -798,7 +837,8 @@ public class LocalDocumentType implements DocumentType {
       // wait for the whole database's page flush queue to drain. Refusing here unwinds through the catch below,
       // which puts the buckets renamed above back under their old names.
       ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
-        if (schema.typeMap().putIfAbsent(newName, this) != null)
+        final DocumentType holder = schema.typeMap().putIfAbsent(newName, this);
+        if (holder != null && !(targetIsOwnReservation && holder == this))
           throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type with name '" + newName + "' already exists");
 
         name = newName;
@@ -835,8 +875,8 @@ public class LocalDocumentType implements DocumentType {
       // concurrent CREATE TYPE on the old name is refused while the rename may still come back, and a reader
       // resolving the old name gets this type rather than nothing. schema.json is unaffected either way -
       // saveConfiguration() keys each entry by t.getName(), so two keys onto one type collapse into one entry.
-      ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()
-          .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
+      if (releaseOldName)
+        releaseReservedName(oldName);
 
       // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the buckets
       // already renamed on disk with a schema.json that still names the old files.
@@ -844,8 +884,10 @@ public class LocalDocumentType implements DocumentType {
       name = oldName;
       // ONLY OUR RESERVATION GOES, and nothing is restored: the old name was never released above, so it still
       // maps to this type. The two-argument remove() is what keeps a refusal - the putIfAbsent losing to whoever
-      // already holds the new name - from evicting that winner's entry (#7918).
-      schema.typeMap().remove(newName, this);
+      // already holds the new name - from evicting that winner's entry (#7918). A target this type held already, the old name a
+      // rollback goes back to, stays held.
+      if (!targetIsOwnReservation)
+        schema.typeMap().remove(newName, this);
 
       boolean corrupted = false;
 

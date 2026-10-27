@@ -226,7 +226,8 @@ final class MongoTimeSeriesWrites {
   }
 
   private static String confirmUnitStatement(final TimeSeriesType type) {
-    return "ALTER TIMESERIES TYPE " + type.getName() + " PRECISION " + TimeSeriesType.MILLISECOND_PRECISION;
+    // quoted: the statement is one the user runs as it is, whatever the type is named
+    return "ALTER TIMESERIES TYPE " + Identifier.quote(type.getName()) + " PRECISION " + TimeSeriesType.MILLISECOND_PRECISION;
   }
 
   private static MongoServerError unsupported(final TimeSeriesType type, final String key) {

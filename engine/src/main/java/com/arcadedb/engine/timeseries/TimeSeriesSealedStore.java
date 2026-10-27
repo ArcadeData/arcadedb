@@ -5378,7 +5378,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         try {
           reopenAt(newFile);
           basePath = newBasePath;
-        } catch (final IOException reopenEx) {
+        } catch (final IOException | RuntimeException reopenEx) {
           // the file moved but cannot be opened where it is now: back where it was, where the store is still named
           try {
             moveFile(newFile, oldFile);
@@ -5403,10 +5403,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Reopens the file where the store is still named after a rename that failed. A store that cannot reopen even there is marked
    * closed, so every later read fails naming the file instead of on a channel closed under it.
    */
-  private void reopenAfterFailedRename(final File file, final IOException failure) {
+  private void reopenAfterFailedRename(final File file, final Exception failure) {
     try {
       reopenAt(file);
-    } catch (final IOException reopenEx) {
+    } catch (final IOException | RuntimeException reopenEx) {
       closed = true;
       failure.addSuppressed(reopenEx);
       LogManager.instance().log(this, Level.SEVERE, "Sealed store '%s' could not be reopened after a failed rename", reopenEx,
@@ -5423,7 +5423,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private static void moveFile(final File from, final File to) throws IOException {
-    if (!from.exists())
+    if (from.equals(to) || !from.exists())
       return;
     // The only guard against replacing a file: ATOMIC_MOVE replaces an existing target on some platforms. The callers hold the type's
     // rename lock, and the type refuses a target name already in the directory before anything moves

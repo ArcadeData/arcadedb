@@ -57,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class Issue10740MongoTimeSeriesLegacyPrecisionDeleteTest extends BaseMongoServerTest {
   private static final long   T0    = 1792396800000L;
   private static final long   T1    = 1792396860000L;
-  private static final String ALTER = "ALTER TIMESERIES TYPE Leg PRECISION MILLISECOND";
+  private static final String ALTER = "ALTER TIMESERIES TYPE `Leg` PRECISION MILLISECOND";
 
   private MongoClient               client;
   private MongoCollection<Document> confirmed;
