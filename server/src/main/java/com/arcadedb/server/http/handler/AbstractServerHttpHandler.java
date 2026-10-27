@@ -717,8 +717,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
+          // Says which side of the comparison failed, and leaves where this node's token came from to its own log
+          // (issue #10601): the cluster name and the password file path are not for an unauthenticated caller.
+          HAServerPlugin.reportClusterTokenRefusal(httpServer.getServer(), String.valueOf(exchange.getSourceAddress()));
           exchange.setStatusCode(401);
-          sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+          sendErrorResponse(exchange, 401, INVALID_CLUSTER_TOKEN_MESSAGE, null, null);
           return;
         }
 
@@ -2154,6 +2157,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Resolved through {@link HAServerPlugin#effectiveClusterToken}, the same helper the sending side uses, so
    * the two ends of a forwarded hop cannot disagree about which token is current.
    */
+  /**
+   * The body of a 401 answered to a request whose cluster token does not match this node's (issue #10601). It starts
+   * with the string issue #9554 was filed about, so existing log searches still match.
+   */
+  static final String INVALID_CLUSTER_TOKEN_MESSAGE =
+      "Invalid cluster token: the caller's cluster token does not match this node's. See this node's log for where its "
+          + "token comes from";
+
   private boolean isValidClusterToken(final String providedToken) {
     final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
     return clusterToken != null && !clusterToken.isBlank() && constantTimeEquals(clusterToken, providedToken);

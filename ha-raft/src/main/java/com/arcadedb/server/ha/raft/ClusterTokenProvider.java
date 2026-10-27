@@ -27,12 +27,16 @@ import com.arcadedb.server.security.ServerSecurityException;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -48,8 +52,33 @@ class ClusterTokenProvider {
   private static final int PBKDF2_ITERATIONS      = 100_000;
   private static final int PBKDF2_KEY_LENGTH_BITS = 256;
 
+  /**
+   * At most one refusal report per this many milliseconds (issue #10601): a peer on another token is refused on every
+   * hop it makes, and one line naming the cause is enough.
+   */
+  static final long REFUSAL_REPORT_INTERVAL_MS = 60_000L;
+
+  /** Where the token this node authenticates with came from (issue #10601). */
+  enum Source {
+    /** {@code arcadedb.ha.clusterToken}. */
+    EXPLICIT,
+    /** The file at {@code arcadedb.ha.clusterTokenPath}. */
+    EXPLICIT_FILE,
+    /** Derived from {@code arcadedb.ha.clusterName} and {@code arcadedb.server.rootPassword}. */
+    DERIVED_INLINE,
+    /** Derived from {@code arcadedb.ha.clusterName} and the file at {@code arcadedb.server.rootPasswordPath}. */
+    DERIVED_FILE
+  }
+
   private final    ContextConfiguration configuration;
+  private final    AtomicLong           lastRefusalReportMs = new AtomicLong(Long.MIN_VALUE);
   private volatile String               clusterToken;
+  private volatile Source               source;
+  private volatile String               clusterName;
+  // Only for Source.DERIVED_FILE: the path the password was read from, and the SHA-256 of what was read there, so a
+  // refusal can tell whether the file has been rewritten since this node derived its token.
+  private volatile String               rootPasswordPath;
+  private volatile byte[]               rootPasswordDigest;
 
   ClusterTokenProvider(final ContextConfiguration configuration) {
     this.configuration = configuration;
@@ -73,6 +102,8 @@ class ClusterTokenProvider {
       return;
     final String resolved = resolveExplicitToken(configuration);
     if (resolved != null) {
+      final String inline = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+      this.source = inline != null && !inline.isEmpty() ? Source.EXPLICIT : Source.EXPLICIT_FILE;
       this.clusterToken = resolved;
       return;
     }
@@ -93,13 +124,182 @@ class ClusterTokenProvider {
           "HA cluster is using the default cluster name '%s'. For stronger token domain separation, set arcadedb.ha.clusterName to a unique value or provide an explicit arcadedb.ha.clusterToken",
           clusterName);
 
+    this.clusterName = clusterName;
+    if (nonEmptyValue(configuration, GlobalConfiguration.SERVER_ROOT_PASSWORD) != null)
+      this.source = Source.DERIVED_INLINE;
+    else {
+      this.source = Source.DERIVED_FILE;
+      this.rootPasswordPath = nonEmptyValue(configuration, GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH);
+      this.rootPasswordDigest = sha256(rootPasswordStr);
+    }
     this.clusterToken = deriveTokenInternal(clusterName, rootPasswordStr);
 
     if ("production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE)))
-      LogManager.instance().log(this, Level.WARNING,
-          """
-          Using auto-derived cluster token. Changing root password does NOT rotate this token. \
-          To explicitly rotate, set arcadedb.ha.clusterToken=<new-value> and restart all nodes""");
+      LogManager.instance().log(this, Level.WARNING, derivedTokenWarning(source));
+  }
+
+  /**
+   * The startup warning of a node whose token is derived (issue #10601). Before it, the warning said that changing the
+   * root password does NOT rotate the token, which is the opposite of what happens: the token is derived from the
+   * password at every start and never stored, so a changed password - including a file at
+   * {@code arcadedb.server.rootPasswordPath} rewritten in place - is a changed token at the next start of each node.
+   */
+  static String derivedTokenWarning(final Source source) {
+    final String passwordSource = source == Source.DERIVED_FILE ?
+        "the content of the file at arcadedb.server.rootPasswordPath" :
+        "arcadedb.server.rootPassword";
+    return "Using a cluster token derived from arcadedb.ha.clusterName and the root password (" + passwordSource
+        + "). The token is derived again at every start and never stored: changing either input - including rewriting "
+        + "the root password file in place, as rotating a mounted Kubernetes Secret does - changes the token at the next "
+        + "start of each node, and nodes holding different tokens refuse each other's requests with 401 'Invalid cluster "
+        + "token'. Rewriting the file does not change the password of an existing root user either. To decouple the "
+        + "token from the root password, set arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath to the same value "
+        + "on every node and restart all nodes";
+  }
+
+  /**
+   * Where this node's token came from, as an operator reads it in the log: the settings, and for a derived token the
+   * cluster name and the password file path. Never the token or the password. Null before the token is resolved.
+   */
+  String describeSource() {
+    final Source s = source;
+    if (s == null)
+      return null;
+    return switch (s) {
+      case EXPLICIT -> "set explicitly by arcadedb.ha.clusterToken";
+      case EXPLICIT_FILE -> "read from the file at arcadedb.ha.clusterTokenPath ('"
+          + configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH) + "')";
+      case DERIVED_INLINE -> "derived from arcadedb.ha.clusterName ('" + clusterName
+          + "') and the root password set by arcadedb.server.rootPassword";
+      case DERIVED_FILE -> "derived from arcadedb.ha.clusterName ('" + clusterName
+          + "') and the root password read from the file at arcadedb.server.rootPasswordPath ('" + rootPasswordPath
+          + "') when this node started";
+    };
+  }
+
+  Source getSource() {
+    return source;
+  }
+
+  /**
+   * Whether the file this node's token was derived from no longer holds the password it held when the token was derived
+   * (issue #10601), which is the moment the cause of a token mismatch is still visible: a rotated Secret. False for any
+   * token not derived from a file. A file that can no longer be read counts as changed.
+   */
+  boolean rootPasswordFileChangedSinceDerivation() {
+    if (source != Source.DERIVED_FILE)
+      return false;
+    try {
+      return !MessageDigest.isEqual(rootPasswordDigest, sha256(ServerSecurity.readRootPasswordFile(rootPasswordPath)));
+    } catch (final ServerSecurityException e) {
+      return true;
+    }
+  }
+
+  /**
+   * Builds the line a refused cluster-token hop logs on this node (issue #10601): that the caller's token does not
+   * match this node's, where this node's came from, and - for a token derived from a file that has since been
+   * rewritten - that the rewrite is the likely cause.
+   */
+  String clusterTokenRefusalReport(final String caller) {
+    final StringBuilder sb = new StringBuilder("Refused a request from ")
+        .append(caller != null ? caller : "an unknown caller")
+        .append(" with 401 'Invalid cluster token': the caller's cluster token does not match this node's, which was ")
+        .append(describeSource())
+        .append('.');
+    if (rootPasswordFileChangedSinceDerivation())
+      sb.append(" The file at arcadedb.server.rootPasswordPath ('").append(rootPasswordPath).append(
+              "') no longer holds the password this node derived its token from: it has been rewritten since this node "
+                  + "started (e.g. a rotated Kubernetes Secret), so nodes started before and after the rewrite hold different "
+                  + "tokens. Restore the previous password, or set arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath "
+                  + "explicitly on every node and restart all nodes");
+    else if (source == Source.DERIVED_INLINE || source == Source.DERIVED_FILE)
+      sb.append(" The caller may run with a different arcadedb.ha.clusterName or root password");
+    else
+      sb.append(" The caller may run with a different explicit cluster token");
+    return sb.toString();
+  }
+
+  /**
+   * Logs a refused cluster-token hop at WARNING, at most once per {@link #REFUSAL_REPORT_INTERVAL_MS} so a peer on
+   * another token cannot flood the log (or make this node re-read the password file) with one line per request.
+   *
+   * @return whether this call logged
+   */
+  boolean reportClusterTokenRefusal(final String caller, final long nowMs) {
+    final long last = lastRefusalReportMs.get();
+    if (last != Long.MIN_VALUE && nowMs - last < REFUSAL_REPORT_INTERVAL_MS)
+      return false;
+    if (!lastRefusalReportMs.compareAndSet(last, nowMs))
+      return false;
+    LogManager.instance().log(this, Level.WARNING, clusterTokenRefusalReport(caller));
+    return true;
+  }
+
+  /**
+   * Holds a node whose token is derived from the root password file to the token it last ran with (issue #10601).
+   * <p>
+   * The derived token is never stored, so a file rewritten in place (a rotated Kubernetes Secret) makes each node pick
+   * up a new token at its next restart, one pod at a time, and a rolling restart leaves the two halves of the cluster
+   * answering each other 401. This records a fingerprint of the derived token in {@code fingerprintFile} - a sibling of
+   * the Raft storage directory - and refuses to start when the file now derives a different one, unless
+   * {@code allowRotation} says the operator is rotating deliberately. The fingerprint is a SHA-256 of the token, never
+   * the token or the password.
+   * <p>
+   * A token that is not derived from a file has nothing to hold: the record is removed, so switching back to a file
+   * later starts from that file rather than from a stale record.
+   *
+   * @throws ConfigurationException when the recorded fingerprint differs and rotation is not allowed
+   */
+  void verifyDerivedTokenFingerprint(final File fingerprintFile, final boolean allowRotation) {
+    final Path path = fingerprintFile.toPath();
+    try {
+      if (getSource() != Source.DERIVED_FILE) {
+        Files.deleteIfExists(path);
+        return;
+      }
+      final String fingerprint = tokenFingerprint(getClusterToken());
+      if (Files.exists(path)) {
+        final String recorded = Files.readString(path, StandardCharsets.UTF_8).strip();
+        if (recorded.equals(fingerprint))
+          return;
+        if (!allowRotation)
+          throw new ConfigurationException("""
+              Refusing to start: the cluster token this node derives from arcadedb.ha.clusterName and the root password \
+              file at arcadedb.server.rootPasswordPath ('%s') differs from the one it last ran with (recorded in '%s'). \
+              The file has been rewritten since this node last started (e.g. a rotated Kubernetes Secret); a node starting \
+              with the new token is refused with 401 'Invalid cluster token' by every peer still holding the old one. \
+              Restore the previous password, or rotate deliberately: set arcadedb.ha.clusterTokenAllowRotation=true on \
+              every node and restart all of them together, or decouple the token from the root password with an explicit \
+              arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath""".formatted(rootPasswordPath,
+              fingerprintFile.getAbsolutePath()));
+        LogManager.instance().log(this, Level.WARNING,
+            "The cluster token derived from the root password file at '%s' changed since this node last started, and "
+                + "arcadedb.ha.clusterTokenAllowRotation is set: starting with the new token. Every node must restart with the "
+                + "new password, or the nodes still on the old token refuse this one", rootPasswordPath);
+      }
+      // On the first start of a node the Raft storage, and so the directory this record sits in, does not exist yet.
+      final Path parent = path.toAbsolutePath().getParent();
+      if (parent != null)
+        Files.createDirectories(parent);
+      Files.writeString(path, fingerprint, StandardCharsets.UTF_8);
+    } catch (final IOException e) {
+      throw new ConfigurationException(
+          "Cannot read or write the cluster token fingerprint at '" + fingerprintFile.getAbsolutePath() + "'", e);
+    }
+  }
+
+  /** A SHA-256 of the token under a fixed domain prefix: identifies a token without being usable as one. */
+  static String tokenFingerprint(final String token) {
+    return HexFormat.of().formatHex(sha256("arcadedb-cluster-token-fingerprint:" + token));
+  }
+
+  private static byte[] sha256(final String value) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 not available", e);
+    }
   }
 
   /**

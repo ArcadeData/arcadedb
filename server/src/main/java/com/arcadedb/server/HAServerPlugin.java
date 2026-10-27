@@ -446,6 +446,28 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Called when a request carrying a cluster token that does not match this node's is refused, so the HA implementation
+   * can log, rate-limited, where this node's token came from and why the two may differ (issue #10601). {@code caller}
+   * is the remote address, for the log line only. The default does nothing.
+   */
+  default void onClusterTokenRefused(final String caller) {
+  }
+
+  /**
+   * Reports a refused cluster-token hop to {@code server}'s HA plugin, looked up as {@link #effectiveClusterToken}
+   * looks it up (issue #10601).
+   */
+  static void reportClusterTokenRefusal(final ArcadeDBServer server, final String caller) {
+    if (server == null)
+      return;
+    HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      ha = registeredHAPlugin(server);
+    if (ha != null)
+      ha.onClusterTokenRefused(caller);
+  }
+
+  /**
    * The token {@code server}'s peers actually accept: the HA plugin's own, and the raw
    * {@link GlobalConfiguration#HA_CLUSTER_TOKEN} setting only when the plugin has none (HA not active, or a
    * non-Raft implementation that does not derive one).

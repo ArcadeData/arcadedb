@@ -790,6 +790,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         }
         return rootUser;
       }
+      HAServerPlugin.reportClusterTokenRefusal(server, String.valueOf(exchange.getSourceAddress()));
     }
 
     final HeaderValues authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);
