@@ -39,6 +39,11 @@ import java.util.logging.Level;
  * for it. This step used to carry a second "column projection push-down" phase that pre-extracted the SELECT-listed
  * columns into the row instead; it was unreachable by construction and has been removed - see issue #5756 and the note
  * on {@code SelectExecutionPlanner#handleTypeAsTarget}.
+ * <p>
+ * A candidate the WHERE clause rejects is pointed at the next record instead of being replaced (issue #10655), so an
+ * expression evaluated by the clause - a custom SQL function included - must not keep the row it is given (or
+ * {@code $current}) past its own evaluation: a row kept that way would answer a later record. Values read from it are
+ * unaffected.
  */
 public class ScanWithFilterStep extends AbstractExecutionStep {
 
@@ -53,6 +58,10 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   private       int         toPage        = -1;
 
   private Iterator<Record> iterator;
+  // #10655: the last candidate the WHERE clause rejected, which the next record reuses instead of a new ResultInternal.
+  // This relies on WHERE evaluation not keeping a reference to the row ($current) past its own evaluation: whatever
+  // kept one would see the next record once the row is re-pointed. Values read from the row are unaffected
+  private ResultInternal   rejectedCandidate;
 
   public ScanWithFilterStep(final int bucketId, final WhereClause whereClause, final CommandContext context) {
     super(context);
@@ -105,8 +114,12 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
             final Record record = iterator.next();
             totalFetched++;
 
-            // Evaluate WHERE on the document itself: every field access is lazily deserialized on demand
-            final ResultInternal candidate = new ResultInternal(record);
+            // Evaluate WHERE on the document itself: every field access is lazily deserialized on demand. A candidate the
+            // clause rejected is pointed at this record rather than replaced (#10655): only a match leaves the scan
+            ResultInternal candidate = rejectedCandidate;
+            if (candidate == null || !candidate.rewrapElement(record))
+              candidate = new ResultInternal(record);
+            rejectedCandidate = null;
 
             // Set $current before WHERE evaluation so method calls (e.g. split()) resolve correctly
             context.setVariable("current", candidate);
@@ -119,11 +132,14 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
                 return;
               }
               totalFiltered++;
+              rejectedCandidate = candidate;
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - filterBegin;
             }
           }
+          // THE SCAN IS OVER: A FINISHED STEP DOES NOT KEEP THE LAST REJECTED RECORD REACHABLE
+          rejectedCandidate = null;
           warnIfRecordsSkipped();
         }
 
