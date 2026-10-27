@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.logging.Level;
@@ -60,6 +61,8 @@ final class DatabaseDirectoryNames {
   private final Predicate<String> isReserved;
   /** Moved by every invalidation: a listing that began before one is not published as current. */
   private final AtomicLong        generation = new AtomicLong();
+  /** Taken by the one caller that runs a due re-check. */
+  private final AtomicBoolean     checking   = new AtomicBoolean();
   private volatile Listing        listing;
 
   /**
@@ -86,8 +89,14 @@ final class DatabaseDirectoryNames {
     final long now = System.nanoTime();
     if (current == null || current.generation != generation.get())
       current = list();
-    else if (now - current.nextCheckNanos >= 0)
-      current = check(current, now);
+    else if (now - current.nextCheckNanos >= 0 && checking.compareAndSet(false, true))
+      // one caller re-checks, the others answer from the listing in force meanwhile: a busy port would otherwise stat the
+      // directory once per concurrent command at every due check
+      try {
+        current = check(current, now);
+      } finally {
+        checking.set(false);
+      }
     return current.names.contains(name);
   }
 
