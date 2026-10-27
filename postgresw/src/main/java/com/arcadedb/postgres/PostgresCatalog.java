@@ -23,8 +23,12 @@ import com.arcadedb.postgres.PostgresCatalogSyntax.FromEntry;
 import com.arcadedb.postgres.PostgresCatalogSyntax.Join;
 import com.arcadedb.postgres.PostgresCatalogSyntax.SetOperation;
 import com.arcadedb.postgres.PostgresCatalogSyntax.Statement;
+import com.arcadedb.schema.ContinuousAggregate;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.MaterializedView;
+import com.arcadedb.schema.MaterializedViewStatus;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -111,6 +115,14 @@ public class PostgresCatalog {
   private static final int OID_SPACE      = 1_000_000;
   /** The OID PostgreSQL gives the {@code heap} table access method, which every table here is. */
   private static final int HEAP_ACCESS_METHOD_OID = 2;
+  /** {@code pg_class.relkind} of an ordinary table, which every type is unless it holds the rows of a materialized relation. */
+  private static final String RELKIND_TABLE             = "r";
+  /** {@code pg_class.relkind} of a materialized view: the backing type of one, or of a continuous aggregate (issue #10691). */
+  private static final String RELKIND_MATERIALIZED_VIEW = "m";
+
+  /** What the catalog says of a type that holds the rows of a materialized view or a continuous aggregate (issue #10691). */
+  private record MaterializedRelation(String definition, boolean populated) {
+  }
   /**
    * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
    * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
@@ -244,6 +256,8 @@ public class PostgresCatalog {
   /** The families of rows a catalog query can be about. */
   private enum Family {
     SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS, TYPES, ATTRDEFS,
+    /** pg_matviews: the materialized views and the continuous aggregates, which are relations of kind 'm' (issue #10691). */
+    MATVIEWS,
     /** pg_class: the types, and the indexes (issue #10473), which PostgreSQL keeps in the same relation. pg_tables is TABLES. */
     CLASSES,
     /** pg_attribute: the columns of the types, and the key columns of their indexes (issue #10473). */
@@ -300,6 +314,8 @@ public class PostgresCatalog {
     relation("pg_views", Family.VIEWS, "schemaname", "viewname", "viewowner", "definition");
     relation("information_schema.views", Family.VIEWS, "table_catalog", "table_schema", "table_name", "view_definition",
         "check_option", "is_updatable", "is_insertable_into");
+    relation("pg_matviews", Family.MATVIEWS, "schemaname", "matviewname", "matviewowner", "tablespace", "hasindexes",
+        "ispopulated", "definition");
 
     // pg_type is both: on its own it is a query about the types this protocol can produce (issue #7178), and
     // joined to pg_attribute it decorates a column row with that column's type. Which of the two a query is
@@ -1297,7 +1313,7 @@ public class PostgresCatalog {
    * their relations. A tie broken by FROM order used to change the answer - a ROLES row had no pg_database
    * columns - and now cannot.
    * <p>
-   * TYPES still loses to TABLES, VIEWS and COLUMNS, which is the half of the old ranking that was right, and
+   * TYPES still loses to TABLES, VIEWS, MATVIEWS and COLUMNS, which is the half of the old ranking that was right, and
    * beats the single-row families: pg_type joined to pg_roles reads an owner for each type, so it qualifies.
    * <p>
    * ATTRDEFS (issue #10228) is one row per column default, so it constrains a table query - one row per default
@@ -1309,7 +1325,7 @@ public class PostgresCatalog {
       case SCHEMAS -> 0;
       case ROLES, DATABASES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -> 1;
       case TYPES -> 2;
-      case TABLES, VIEWS, CLASSES -> 3;
+      case TABLES, VIEWS, MATVIEWS, CLASSES -> 3;
       case ATTRDEFS -> 4;
       case COLUMNS, ATTRIBUTES -> 5;
     };
@@ -1408,6 +1424,8 @@ public class PostgresCatalog {
 
     private Map<Integer, String>      namesByOid;
     private Map<String, DocumentType> typesByFoldedName;
+    /** The types that hold the rows of a materialized view or a continuous aggregate, by name (issue #10691). */
+    private Map<String, MaterializedRelation> materializedRelations;
     /**
      * The rows of each family, built at most once per statement. A correlated sub-select is resolved once per
      * row of the query around it, and building its rows means walking the schema: psql's {@code \d} asks for each
@@ -1459,6 +1477,35 @@ public class PostgresCatalog {
         }
       }
       return indexes;
+    }
+
+    /**
+     * The one function that classifies a relation of this catalog (issue #10691): a type holding the rows of a materialized view or
+     * of a continuous aggregate is a materialized view, kind 'm', and every other type is a table, kind 'r'. Every relation that
+     * names a type - pg_class, pg_tables, pg_matviews, information_schema.tables and .columns - follows from this answer.
+     */
+    String relkindOf(final String typeName) {
+      return materializedRelation(typeName) == null ? RELKIND_TABLE : RELKIND_MATERIALIZED_VIEW;
+    }
+
+    /** The materialized relation a type holds the rows of, or null for a table. Read off the schema at most once per statement. */
+    MaterializedRelation materializedRelation(final String typeName) {
+      if (materializedRelations == null) {
+        final Schema schema = database.getSchema();
+        final Map<String, MaterializedRelation> relations = new HashMap<>();
+        // the backing type of a view and of an aggregate carries the view's own name: both builders create it that way
+        for (final MaterializedView view : schema.getMaterializedViews())
+          relations.put(view.getName(), new MaterializedRelation(view.getQuery(), isPopulated(view.getStatus())));
+        for (final ContinuousAggregate aggregate : schema.getContinuousAggregates())
+          relations.put(aggregate.getName(), new MaterializedRelation(aggregate.getQuery(), isPopulated(aggregate.getStatus())));
+        materializedRelations = relations;
+      }
+      return materializedRelations.get(typeName);
+    }
+
+    /** A view still BUILDING its first refresh holds no rows yet; one STALE or in ERROR still holds the rows of its last one. */
+    private static boolean isPopulated(final String status) {
+      return !MaterializedViewStatus.BUILDING.name().equals(status);
     }
 
     boolean hasIndexes(final String typeName) {
@@ -1643,13 +1690,15 @@ public class PostgresCatalog {
       // a ROLES row carried no pg_database, so `SELECT r.rolname, d.datname FROM pg_roles r, pg_database d` read
       // datname out of the null fill while the same query with the FROM order swapped answered it.
       case SCHEMAS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -> List.of(singletonRow(context).complete());
-      case TABLES -> tableRows(context);
-      case COLUMNS -> columnRows(context);
+      case TABLES -> relationRows(context, RELKIND_TABLE);
+      case MATVIEWS -> relationRows(context, RELKIND_MATERIALIZED_VIEW);
+      case COLUMNS -> columnRows(context, true);
       case CLASSES -> classRows(context);
       case ATTRIBUTES -> attributeRows(context);
       case TYPES -> typeRows(context);
       case ATTRDEFS -> defaultRows(context);
-      // ArcadeDB has no relation that a PostgreSQL client would render as a view.
+      // pg_views and information_schema.views list the relations of kind 'v', a view that stores nothing, and ArcadeDB has none:
+      // a materialized view is kind 'm', which PostgreSQL lists in pg_matviews and in neither of these (issue #10691)
       case VIEWS -> List.of();
     };
   }
@@ -1768,47 +1817,74 @@ public class PostgresCatalog {
             "collation_name", "default", "pad_attribute", "NO PAD");
   }
 
-  private static List<Row> tableRows(final Context context) {
+  /**
+   * The relations of the schema of one kind, or of every kind for a null {@code relkind}, in name order: each type is one, of
+   * the kind {@link Context#relkindOf} says it is (issue #10691).
+   */
+  private static List<Row> relationRows(final Context context, final String relkind) {
     final List<DocumentType> types = sortedTypes(context);
     final List<Row> rows = new ArrayList<>(types.size());
 
     for (final DocumentType type : types)
-      rows.add(tableRow(context, type).complete());
+      if (relkind == null || relkind.equals(context.relkindOf(type.getName())))
+        rows.add(relationRow(context, type).complete());
 
     return rows;
   }
 
-  private static Row tableRow(final Context context, final DocumentType type) {
+  /**
+   * The row of a type as a relation. Which relations name it follows from its kind alone, so that no two of them can describe it in
+   * two ways (issue #10691): a table is in {@code pg_tables} and {@code information_schema.tables}, a materialized view - or the
+   * backing type of a continuous aggregate - is in {@code pg_matviews} and in neither of those, as PostgreSQL lists one.
+   */
+  private static Row relationRow(final Context context, final DocumentType type) {
     final String schema = context.schema();
-    final int oid = oidOf(type.getName());
+    final String name = type.getName();
+    final int oid = oidOf(name);
+    final MaterializedRelation view = context.materializedRelation(name);
 
     // relhasindex and hasindexes follow pg_index (issue #10473): psql's \d reads the flag before it lists the indexes of a table
-    final boolean hasIndexes = context.hasIndexes(type.getName());
-    return singletonRow(context)//
-        .with("pg_class", "oid", oid, "relname", type.getName(), "relnamespace", SCHEMA_OID, "relowner", OWNER_OID,//
-            "relkind", "r", "relpersistence", "p", "relnatts", type.getPropertyNames().size(),//
+    final boolean hasIndexes = context.hasIndexes(name);
+    final Row row = singletonRow(context)//
+        .with("pg_class", "oid", oid, "relname", name, "relnamespace", SCHEMA_OID, "relowner", OWNER_OID,//
+            "relkind", view == null ? RELKIND_TABLE : RELKIND_MATERIALIZED_VIEW, "relpersistence", "p", "relnatts",
+            type.getPropertyNames().size(),//
             "relhasindex", hasIndexes, "relhasrules", Boolean.FALSE,//
             "relhastriggers", Boolean.FALSE, "relhassubclass", !type.getSubTypes().isEmpty(),//
-            "relispartition", Boolean.FALSE, "relisshared", Boolean.FALSE, "relispopulated", Boolean.TRUE,//
+            "relispartition", Boolean.FALSE, "relisshared", Boolean.FALSE, "relispopulated", view == null || view.populated(),//
             "relrowsecurity", Boolean.FALSE, "relforcerowsecurity", Boolean.FALSE, "relchecks", 0,//
             // -1 is PostgreSQL's own "never analysed, count unknown", which is honest here: counting the
             // records of every type to answer a table list would turn a metadata query into a full scan.
             "reltuples", -1, "relpages", 0, "relam", HEAP_ACCESS_METHOD_OID, "reltype", 0, "relfilenode", oid,
             "reltablespace", 0, "reloftype", 0, "reltoastrelid", 0, "relreplident", "d", "relrewrite", 0)//
         .with("pg_am", "oid", HEAP_ACCESS_METHOD_OID, "amname", "heap", "amhandler", "heap_tableam_handler",
-            "amtype", "t")//
-        .with("pg_tables", "schemaname", schema, "tablename", type.getName(), "tableowner", context.userName(),//
+            "amtype", "t");
+
+    if (view != null)
+      return row.with("pg_matviews", "schemaname", schema, "matviewname", name, "matviewowner", context.userName(),//
+          "hasindexes", hasIndexes, "ispopulated", view.populated(), "definition", view.definition());
+
+    return row//
+        .with("pg_tables", "schemaname", schema, "tablename", name, "tableowner", context.userName(),//
             "hasindexes", hasIndexes, "hasrules", Boolean.FALSE, "hastriggers", Boolean.FALSE,//
             "rowsecurity", Boolean.FALSE)//
         .with("information_schema.tables", "table_catalog", schema, "table_schema", schema, "table_name",
-            type.getName(), "table_type", "BASE TABLE", "is_insertable_into", "YES", "is_typed", "NO");
+            name, "table_type", "BASE TABLE", "is_insertable_into", "YES", "is_typed", "NO");
   }
 
-  private static List<Row> columnRows(final Context context) {
+  /**
+   * The columns of the relations, each carrying its relation's row. {@code information_schema.columns} lists the columns of the
+   * relations {@code information_schema.tables} does, so with {@code onlyTables} a materialized view's are left out, as PostgreSQL
+   * leaves them out; {@code pg_attribute} has the columns of every relation (issue #10691).
+   */
+  private static List<Row> columnRows(final Context context, final boolean onlyTables) {
     final String schema = context.schema();
     final List<Row> rows = new ArrayList<>();
 
     for (final DocumentType type : sortedTypes(context)) {
+      final boolean table = RELKIND_TABLE.equals(context.relkindOf(type.getName()));
+      if (onlyTables && !table)
+        continue;
       int ordinal = 0;
       for (final Property property : sortedProperties(type)) {
         ++ordinal;
@@ -1816,10 +1892,11 @@ public class PostgresCatalog {
         final Object defaultValue = property.getDefaultValueDefinition();
         final boolean notNull = property.isNotNull() || property.isMandatory();
 
-        final Row row = tableRow(context, type)//
+        final Row row = relationRow(context, type)//
             .with("pg_attribute", attributeValues(oidOf(type.getName()), property.getName(), ordinal, pgType, notNull,
-                defaultValue != null))//
-            .with("information_schema.columns", "table_catalog", schema, "table_schema", schema, "table_name",
+                defaultValue != null));
+        if (table)
+          row.with("information_schema.columns", "table_catalog", schema, "table_schema", schema, "table_name",
                 type.getName(), "column_name", property.getName(), "ordinal_position", ordinal,//
                 "column_default", defaultValue == null ? null : defaultValue.toString(),//
                 // data_type is the SQL standard name and udt_name the pg_type one: PostgreSQL keeps the two apart, and an
@@ -1926,7 +2003,7 @@ public class PostgresCatalog {
    * (issue #10473). An index row carries the access method of the index as its {@code pg_am}.
    */
   private static List<Row> classRows(final Context context) {
-    final List<Row> rows = new ArrayList<>(tableRows(context));
+    final List<Row> rows = new ArrayList<>(relationRows(context, null));
     for (final PostgresCatalogIndexes.Info index : context.indexes())
       rows.add(indexRow(context, index).complete());
     return rows;
@@ -1945,7 +2022,7 @@ public class PostgresCatalog {
    * that view lists the columns of tables.
    */
   private static List<Row> attributeRows(final Context context) {
-    final List<Row> rows = new ArrayList<>(columnRows(context));
+    final List<Row> rows = new ArrayList<>(columnRows(context, false));
     for (final PostgresCatalogIndexes.Info index : context.indexes()) {
       final List<Property> properties = sortedProperties(index.type());
       for (int k = 0; k < index.columns().length; k++) {
@@ -2922,7 +2999,9 @@ public class PostgresCatalog {
         case "array_to_string" -> arrayToString(arguments);
         // Comments, defaults and ACLs have no ArcadeDB equivalent, and NULL is what PostgreSQL answers for an
         // object that has none.
-        case "obj_description", "col_description", "shobj_description", "pg_get_viewdef" -> null;
+        case "obj_description", "col_description", "shobj_description" -> null;
+        // The query of a materialized view (issue #10691), which psql's \d+ prints under the view's columns
+        case "pg_get_viewdef" -> viewDefinition(arguments);
         // The statement that creates an index, and the constraint a unique index is (issue #10473)
         case "pg_get_indexdef" -> indexDefinition(arguments);
         case "pg_get_constraintdef" -> constraintDefinition(arguments);
@@ -2943,6 +3022,25 @@ public class PostgresCatalog {
         return null;
       return PostgresCatalogExpression.truth(arguments.get(0)) ? List.of(PG_CATALOG_SCHEMA, context.schema()) :
           List.of(context.schema());
+    }
+
+    /**
+     * {@code pg_get_viewdef(view [, pretty])}: the query of a materialized view, named by its OID or by its name (issue #10691).
+     * NULL for any other relation, and for an argument this catalog cannot read, which is what it answered before it had views.
+     */
+    private Object viewDefinition(final List<Object> arguments) {
+      if (arguments.isEmpty())
+        return null;
+      final Object relation = arguments.get(0);
+      final String name;
+      if (relation instanceof Number oid)
+        name = context.relationNamed(oid.intValue());
+      else if (relation instanceof String text)
+        name = text;
+      else
+        return null;
+      final MaterializedRelation view = name == null ? null : context.materializedRelation(name);
+      return view == null ? null : view.definition();
     }
 
     /**
