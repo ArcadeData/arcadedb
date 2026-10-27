@@ -62,7 +62,7 @@ public class VectorSearchClauseProcedure implements CypherProcedure {
   private final String            scoreVariable;
 
   /**
-   * @param variable the binding variable of the clause, which its {@code WHERE} reads the candidate record as
+   * @param variable      the binding variable of the clause, which its {@code WHERE} reads the candidate record as
    * @param filter        the clause's {@code WHERE}, or null when it has none
    * @param scoreVariable the {@code SCORE AS} variable, or null when the clause has none
    */
@@ -133,7 +133,8 @@ public class VectorSearchClauseProcedure implements CypherProcedure {
   private Predicate<Document> buildFilter(final Result inputRow, final CommandContext context) {
     if (filter == null)
       return null;
-    // One row per search, rebound to each candidate in turn instead of copied once per candidate
+    // One row per search, rebound to each candidate in turn instead of copied once per candidate. The predicate is
+    // therefore not thread-safe: it relies on the search testing its candidates one at a time, as searchAndLoad does
     final ResultInternal row = inputRow != null ? ResultInternal.copyBindings(inputRow, 1) : new ResultInternal();
     return record -> {
       row.setProperty(variable, record);
