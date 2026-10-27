@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -40,8 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The data reproduces the issue: 900 vectors of tenant b, all nearer the query than any of the 100 of tenant a.
  */
 class Issue10685VectorQueryNodesPreFilterTest extends TestHelper {
-  private static final int        K     = 10;
-  private static final float[]    QUERY = { 1f, 0f };
+  private static final int                 K      = 10;
+  private static final float[]             QUERY  = { 1f, 0f };
   private static final Map<String, Object> PARAMS = Map.of("q", QUERY, "k", K, "tenant", "a");
 
   @Override
@@ -118,6 +119,20 @@ class Issue10685VectorQueryNodesPreFilterTest extends TestHelper {
   }
 
   @Test
+  void preFilterMatchingFewerThanKAnswersEveryMatch() {
+    // k above the 100 records of tenant a: the search and its stale top-up answer every one of them and nothing else
+    final List<String> tenants = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {where: {tenant: $tenant}}) YIELD node, score "
+            + "RETURN node.tenant AS tenant", Map.of("q", QUERY, "k", 200, "tenant", "a"))) {
+      while (rs.hasNext())
+        tenants.add(rs.next().getProperty("tenant"));
+    }
+    assertThat(tenants).hasSize(100);
+    assertThat(tenants).containsOnly("a");
+  }
+
+  @Test
   void filterMatchingNothingAnswersNothing() {
     assertThat(tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {filter: []}) YIELD node, score "
         + "RETURN node.tenant AS tenant")).isEmpty();
@@ -135,14 +150,16 @@ class Issue10685VectorQueryNodesPreFilterTest extends TestHelper {
   void unknownOptionIsRejectedByName() {
     assertThatThrownBy(() -> tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {tennant: 'a'}) YIELD node, score "
         + "RETURN node.tenant AS tenant"))
-        .hasStackTraceContaining("tennant");
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Unknown option 'tennant'");
   }
 
   @Test
   void optionsThatAreNotAMapAreRejected() {
     assertThatThrownBy(() -> tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, 'tenant = :tenant') YIELD node, score "
         + "RETURN node.tenant AS tenant"))
-        .hasStackTraceContaining("options");
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("options must be a map");
   }
 
   private List<String> tenants(final String cypher) {
