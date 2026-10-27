@@ -956,9 +956,11 @@ public class GraphDatabaseChecker {
         continue;
 
       final RID edgeRID = pending.edge(i);
-      if (report.corruptedRecords.contains(edgeRID))
-        // ABOUT TO BE DELETED BY THE FIX: re-linking it would build a dangling entry. Same guard the rebuild scan
-        // applies, repeated here because the corrupted set also keeps growing while the scan runs.
+      if (report.corruptedRecords.contains(edgeRID) || report.corruptedRecords.contains(vertexRID)
+          || report.corruptedRecords.contains(pending.other(i)))
+        // ABOUT TO BE DELETED BY THE FIX - the edge, or either endpoint: re-linking it would build a dangling entry, or
+        // write into a list about to go. Same guard the rebuild scan applies, repeated here because the corrupted set also
+        // keeps growing while the scan runs.
         continue;
 
       try {
