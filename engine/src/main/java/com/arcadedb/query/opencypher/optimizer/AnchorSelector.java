@@ -32,7 +32,6 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -170,7 +169,9 @@ public class AnchorSelector {
     // its own - a literal or a query parameter - can drive a seek; anything else (a nested parameter
     // field, a reference to another variable) is left to the Filter above the anchor, which evaluates
     // it with a full row in hand. Seeking with an unresolved expression would find nothing at all.
-    final Map<String, Object> allPredicates = new HashMap<>();
+    // Insertion-ordered, as every predicate map below: two candidates of the same cost are decided by the
+    // order the query writes them in, never by the hash of a property name (issue #10775).
+    final Map<String, Object> allPredicates = new LinkedHashMap<>();
     if (properties != null)
       for (final Map.Entry<String, Object> property : properties.entrySet())
         if (isStaticallySeekable(property.getValue()))
@@ -189,8 +190,18 @@ public class AnchorSelector {
     // whole WHERE is still evaluated above the anchor, so a seek that finds a superset of the matching rows is safe.
     final Map<String, SeekValues> orBranches = extractOrSeekBranches(variable, plan);
 
-    if (!allPredicates.isEmpty() || !inListPredicates.isEmpty()) {
-      // Look for indexed properties with equality predicates
+    // Check for range predicates (>, <, >=, <=, STARTS WITH) in WHERE clause
+    final Map<String, List<RangePredicate>> rangePredicates = extractRangePredicates(variable, plan);
+
+    // Every index-backed access path the predicates allow is a candidate, and the anchor is the cheapest of them
+    // (issue #10775). Returning the first indexed property found made a non-unique index beat a UNIQUE one on the same
+    // node depending on the property names, an equality on any index beat an IN-list on a unique one, and an equality
+    // with no index at all kept an indexed range from being used. Candidates are tried in a fixed order - equality,
+    // IN-list, range, OR of seeks - each in the order the query writes them, and only a strictly cheaper one replaces
+    // the best so far, so a tie is decided by that order.
+    AnchorSelection best = null;
+
+    if (!allPredicates.isEmpty() || !inListPredicates.isEmpty() || !rangePredicates.isEmpty()) {
       final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
 
       for (final Map.Entry<String, Object> property : allPredicates.entrySet()) {
@@ -199,32 +210,29 @@ public class AnchorSelector {
 
         // Check if there's an index on this property
         final IndexStatistics indexStats = findEqualitySeekIndex(indexes, propertyName, allPredicates.keySet());
+        if (indexStats == null)
+          continue;
 
-        if (indexStats != null) {
-          // INDEX SEEK - PREFERRED (lowest cost)
-          // On a composite index the other equality predicates extend the seek key as far as they
-          // reach without a gap; a key covering every column resolves a single entry, a shorter one
-          // narrows the prefix range that has to be scanned (issue #5444).
-          final List<Object> keyValues = collectKeyPrefixValues(indexStats, allPredicates, propertyValue);
-          final boolean wholeKey = keyValues.size() == indexStats.getPropertyNames().size();
-          final double selectivity = indexStats.isUnique() && wholeKey ?
-              0.001 :                                  // 0.1% for a unique key resolved in full
-              Math.max(0.001, Math.pow(0.1, keyValues.size())); // 10% per covered key column
-          final long estimatedRows = (long) (typeCount * selectivity);
-          final double cost = costModel.estimateIndexSeekCost(label, propertyName, selectivity);
+        // INDEX SEEK
+        // On a composite index the other equality predicates extend the seek key as far as they
+        // reach without a gap; a key covering every column resolves a single entry, a shorter one
+        // narrows the prefix range that has to be scanned (issue #5444).
+        final List<Object> keyValues = collectKeyPrefixValues(indexStats, allPredicates, propertyValue);
+        final double selectivity = seekSelectivity(indexStats, keyValues.size(), typeCount);
+        final long estimatedRows = resolvesOneRow(indexStats, keyValues.size()) ? 1 : (long) (typeCount * selectivity);
+        final double cost = costModel.estimateIndexSeekCost(label, propertyName, selectivity);
 
-          return new AnchorSelection(
-              variable,
-              node,
-              true, // useIndex
-              indexStats,
-              propertyName,
-              propertyValue, // Pass the value from WHERE clause or inline properties
-              keyValues,
-              cost,
-              estimatedRows
-          );
-        }
+        best = cheaper(best, new AnchorSelection(
+            variable,
+            node,
+            true, // useIndex
+            indexStats,
+            propertyName,
+            propertyValue, // Pass the value from WHERE clause or inline properties
+            keyValues,
+            cost,
+            estimatedRows
+        ));
       }
 
       // IN-list over an indexed property → multi-value index seek (one seek per list value).
@@ -233,40 +241,44 @@ public class AnchorSelector {
         final List<Expression> values = property.getValue().elements();
 
         final IndexStatistics indexStats = findEqualitySeekIndex(indexes, propertyName, allPredicates.keySet());
+        if (indexStats == null)
+          continue;
 
-        if (indexStats != null) {
-          final int nValues = Math.max(1, values.size());
-          // Per-seek selectivity: a unique index returns ~1 row per value, a non-unique one ~10%.
-          final double perSeekSelectivity = indexStats.isUnique() ? 1.0 / Math.max(1, typeCount) : 0.1;
-          final long estimatedRows = indexStats.isUnique()
-              ? nValues
-              : Math.min(typeCount, (long) (nValues * typeCount * perSeekSelectivity));
-          // Cost of nValues independent seeks. Still far below a full scan for any sane list size.
-          final double cost = nValues * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
+        final InListValues inListValues = new InListValues(values, Collections.emptySet(), wholeRightSides(property.getValue()));
+        final List<Object> keyValues = collectKeyPrefixValues(indexStats, allPredicates, inListValues);
+        final int nValues = Math.max(1, values.size());
+        // Per-seek selectivity: one row per value for a unique index resolved by its whole key, ~10% per key column otherwise
+        final double perSeekSelectivity = seekSelectivity(indexStats, keyValues.size(), typeCount);
+        final long estimatedRows = resolvesOneRow(indexStats, keyValues.size())
+            ? nValues
+            : Math.min(typeCount, (long) (nValues * typeCount * perSeekSelectivity));
+        // Cost of nValues independent seeks. Still far below a full scan for any sane list size.
+        final double cost = nValues * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
 
-          final InListValues inListValues = new InListValues(values, Collections.emptySet(), wholeRightSides(property.getValue()));
-          return new AnchorSelection(
-              variable,
-              node,
-              true, // useIndex
-              indexStats,
-              propertyName,
-              inListValues,
-              collectKeyPrefixValues(indexStats, allPredicates, inListValues),
-              cost,
-              estimatedRows
-          );
-        }
+        best = cheaper(best, new AnchorSelection(
+            variable,
+            node,
+            true, // useIndex
+            indexStats,
+            propertyName,
+            inListValues,
+            keyValues,
+            cost,
+            estimatedRows
+        ));
       }
+
+      for (final Map.Entry<String, List<RangePredicate>> rangeEntry : rangePredicates.entrySet())
+        best = cheaper(best, tryRangeScan(node, label, typeCount, indexes, rangeEntry.getKey(), rangeEntry.getValue()));
     }
 
-    if (orBranches != null) {
-      final AnchorSelection seek = orBranches.size() == 1 ?
+    if (orBranches != null)
+      best = cheaper(best, orBranches.size() == 1 ?
           trySingleOrSeek(node, label, typeCount, orBranches, allPredicates) :
-          tryUnionIndexSeek(node, label, typeCount, orBranches);
-      if (seek != null)
-        return seek;
-    }
+          tryUnionIndexSeek(node, label, typeCount, orBranches));
+
+    if (best != null)
+      return best;
 
     if (!allPredicates.isEmpty()) {
       // FILTERED SCAN - ACCEPTABLE (no index available)
@@ -287,62 +299,6 @@ public class AnchorSelector {
       );
     }
 
-    // Check for range predicates (>, <, >=, <=) in WHERE clause
-    final Map<String, List<RangePredicate>> rangePredicates = extractRangePredicates(variable, plan);
-
-    if (!rangePredicates.isEmpty()) {
-      // Look for indexed properties with range predicates
-      final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
-
-      for (final Map.Entry<String, List<RangePredicate>> rangeEntry : rangePredicates.entrySet()) {
-        final String propertyName = rangeEntry.getKey();
-        final List<RangePredicate> predicates = rangeEntry.getValue();
-
-        // Check if there's an index on this property
-        // A hash index cannot be read in key order, so it never serves a range (issue #8835)
-        final IndexStatistics indexStats = findOrderedIndexForProperty(indexes, propertyName);
-
-        // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
-        // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
-        // that holds none of the eight values the predicate accepts (issue #8699). The scan does not re-check what it
-        // consumes, so the property falls back to the label scan with its filter
-        if (indexStats != null && indexStats.isCaseInsensitive())
-          continue;
-
-        if (indexStats != null) {
-          // INDEX RANGE SCAN - Good performance for range queries
-          // Estimate selectivity based on number of bounds
-          double selectivity = costModel.estimateRangeSelectivity(); // Default 0.3 (30%)
-
-          // Refine selectivity if we have both lower and upper bounds
-          boolean hasLower = false;
-          boolean hasUpper = false;
-          for (final RangePredicate pred : predicates) {
-            if (pred.isLowerBound()) hasLower = true;
-            if (pred.isUpperBound()) hasUpper = true;
-          }
-
-          // Both bounds → more selective
-          if (hasLower && hasUpper) {
-            selectivity = 0.2; // 20% for bounded range
-          }
-
-          final long estimatedRows = (long) (typeCount * selectivity);
-          final double cost = costModel.estimateIndexRangeScanCost(label, propertyName, selectivity);
-
-          return new AnchorSelection(
-              variable,
-              node,
-              indexStats,
-              propertyName,
-              predicates,
-              cost,
-              estimatedRows
-          );
-        }
-      }
-    }
-
     // FULL SCAN - FALLBACK (no predicates)
     final double cost = costModel.estimateScanCost(label);
 
@@ -352,6 +308,69 @@ public class AnchorSelector {
         cost,
         typeCount
     );
+  }
+
+  /** Whether one seek finds one row at most: a unique index whose every key column is bound */
+  private static boolean resolvesOneRow(final IndexStatistics index, final int keyValueCount) {
+    return index.isUnique() && keyValueCount == index.getPropertyNames().size();
+  }
+
+  /**
+   * The share of the type one seek finds: one row for a unique index resolved by its whole key, 10% per bound key column
+   * otherwise. A prefix of a composite unique key is a range like any other. Every seek of a node is costed with it, so the
+   * cheapest candidate is the one that reads the fewest rows (issue #10775).
+   */
+  private static double seekSelectivity(final IndexStatistics index, final int keyValueCount, final long typeCount) {
+    if (resolvesOneRow(index, keyValueCount))
+      return 1.0 / Math.max(1, typeCount);
+    return Math.max(0.001, Math.pow(0.1, keyValueCount));
+  }
+
+  /** The candidate with the lower estimated cost; on a tie the one already held, which was written first (issue #10775). */
+  private static AnchorSelection cheaper(final AnchorSelection best, final AnchorSelection candidate) {
+    if (candidate == null)
+      return best;
+    return best == null || candidate.getEstimatedCost() < best.getEstimatedCost() ? candidate : best;
+  }
+
+  /**
+   * Costs a range predicate on one property as an index range scan.
+   *
+   * @return the range-scan anchor, or {@code null} when no ordered, case-sensitive index leads with the property
+   */
+  private AnchorSelection tryRangeScan(final LogicalNode node, final String label, final long typeCount,
+      final List<IndexStatistics> indexes, final String propertyName, final List<RangePredicate> predicates) {
+    // A hash index cannot be read in key order, so it never serves a range (issue #8835)
+    final IndexStatistics indexStats = findOrderedIndexForProperty(indexes, propertyName);
+
+    // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
+    // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
+    // that holds none of the eight values the predicate accepts (issue #8699). The scan does not re-check what it
+    // consumes, so the property falls back to the label scan with its filter
+    if (indexStats == null || indexStats.isCaseInsensitive())
+      return null;
+
+    // INDEX RANGE SCAN - Estimate selectivity based on number of bounds
+    double selectivity = costModel.estimateRangeSelectivity(); // Default 0.3 (30%)
+
+    // Refine selectivity if we have both lower and upper bounds
+    boolean hasLower = false;
+    boolean hasUpper = false;
+    for (final RangePredicate pred : predicates) {
+      if (pred.isLowerBound())
+        hasLower = true;
+      if (pred.isUpperBound())
+        hasUpper = true;
+    }
+
+    // Both bounds → more selective
+    if (hasLower && hasUpper)
+      selectivity = 0.2; // 20% for bounded range
+
+    final long estimatedRows = (long) (typeCount * selectivity);
+    final double cost = costModel.estimateIndexRangeScanCost(label, propertyName, selectivity);
+
+    return new AnchorSelection(node.getVariable(), node, indexStats, propertyName, predicates, cost, estimatedRows);
   }
 
   /**
@@ -378,10 +397,9 @@ public class AnchorSelector {
 
   /**
    * Attempts to cost a label disjunction as a union of per-root index seeks (issue #6397's suggested shape).
-   * Every equality predicate on the disjunction's own variable is tried in turn - not only the first one a
-   * {@code HashMap} happens to iterate to first - mirroring the loop-over-every-candidate approach the plain
-   * (non-disjunction) equality branch of {@link #evaluateNode} already uses, so whether a disjunction with several
-   * equality predicates gets seeked does not depend on hash-iteration order. An IN-list or a range predicate on a
+   * Every equality predicate on the disjunction's own variable is costed and the cheapest one is kept, a tie going to
+   * the one written first - mirroring the plain (non-disjunction) branch of {@link #evaluateNode} - so which predicate
+   * a disjunction with several of them seeks does not depend on hash-iteration order (issue #10775). An IN-list or a range predicate on a
    * disjunction anchor is a separate, still-unaddressed limitation the issue calls out but does not ask this fix
    * to close.
    * <p>
@@ -398,7 +416,7 @@ public class AnchorSelector {
   private AnchorSelection tryDisjunctionIndexSeek(final LogicalNode node, final LogicalPlan plan, final long totalRows) {
     final String variable = node.getVariable();
 
-    final Map<String, Object> equalityPredicates = new HashMap<>();
+    final Map<String, Object> equalityPredicates = new LinkedHashMap<>();
     final Map<String, Object> properties = node.getProperties();
     if (properties != null)
       for (final Map.Entry<String, Object> property : properties.entrySet())
@@ -413,6 +431,7 @@ public class AnchorSelector {
     if (roots.isEmpty())
       return null;
 
+    AnchorSelection best = null;
     for (final Map.Entry<String, Object> predicate : equalityPredicates.entrySet()) {
       final String propertyName = predicate.getKey();
       final Object propertyValue = predicate.getValue();
@@ -445,20 +464,22 @@ public class AnchorSelector {
       if (!everyRootIndexed)
         continue;
 
-      // Same selectivity heuristic as the single-type equality seek: a unique key resolves to ~one row, a
+      // Same selectivity heuristic as the single-type equality seek: a unique key resolves to one row per root, a
       // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
       // per-root subtree counts are not otherwise collected for a disjunction's roots.
-      final double selectivity = allUniqueWholeKey ? 0.001 : 0.1;
-      final long estimatedRows = Math.max(seeks.size(), (long) (totalRows * selectivity));
+      final long estimatedRows = allUniqueWholeKey ? seeks.size() : Math.max(seeks.size(), (long) (totalRows * 0.1));
 
       double totalCost = 0;
-      for (final AnchorSelection.DisjunctionIndexSeek seek : seeks)
+      for (final AnchorSelection.DisjunctionIndexSeek seek : seeks) {
+        final double selectivity = allUniqueWholeKey ? 1.0 / Math.max(1, statisticsProvider.getCardinality(seek.typeName())) : 0.1;
         totalCost += costModel.estimateIndexSeekCost(seek.typeName(), propertyName, selectivity);
+      }
 
-      return new AnchorSelection(variable, node, propertyName, propertyValue, seeks, totalCost, estimatedRows);
+      // The cheapest predicate, not the first one indexed on every root (issue #10775)
+      best = cheaper(best, new AnchorSelection(variable, node, propertyName, propertyValue, seeks, totalCost, estimatedRows));
     }
 
-    return null;
+    return best;
   }
 
   /**
@@ -578,7 +599,7 @@ public class AnchorSelector {
    * @return map of property names to their equality values
    */
   private Map<String, Object> extractEqualityPredicates(final String variable, final LogicalPlan plan) {
-    final Map<String, Object> predicates = new HashMap<>();
+    final Map<String, Object> predicates = new LinkedHashMap<>();
 
     if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty()) {
       return predicates;
@@ -658,7 +679,7 @@ public class AnchorSelector {
    * @return map of property names to the list of value expressions to seek
    */
   private Map<String, InListOperand> extractInListPredicates(final String variable, final LogicalPlan plan) {
-    final Map<String, InListOperand> predicates = new HashMap<>();
+    final Map<String, InListOperand> predicates = new LinkedHashMap<>();
 
     if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty())
       return predicates;
@@ -770,9 +791,9 @@ public class AnchorSelector {
       // Always the IN-list form: a single `x IN $xs` is one parameter that resolves to a whole list at runtime, which a plain
       // equality seek would look up as one key
       final Object value = branch.getValue().toInList();
-      final double perSeekSelectivity = indexStats.isUnique() ? 1.0 / Math.max(1, typeCount) : 0.1;
+      final double perSeekSelectivity = seekSelectivity(indexStats, 1, typeCount);
       totalCost += values.size() * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
-      estimatedRows += indexStats.isUnique() ? values.size() : (long) (values.size() * typeCount * perSeekSelectivity);
+      estimatedRows += resolvesOneRow(indexStats, 1) ? values.size() : (long) (values.size() * typeCount * perSeekSelectivity);
       seeks.add(new AnchorSelection.UnionIndexSeek(propertyName, value, indexStats, List.of(value)));
     }
 
@@ -796,12 +817,15 @@ public class AnchorSelector {
       return null;
 
     final InListValues inListValues = only.getValue().toInList();
+    final List<Object> keyValues = collectKeyPrefixValues(indexStats, allPredicates, inListValues);
     final int nValues = Math.max(1, only.getValue().values.size());
-    final double perSeekSelectivity = indexStats.isUnique() ? 1.0 / Math.max(1, typeCount) : 0.1;
-    final long estimatedRows = indexStats.isUnique() ? nValues : Math.min(typeCount, (long) (nValues * typeCount * perSeekSelectivity));
+    final double perSeekSelectivity = seekSelectivity(indexStats, keyValues.size(), typeCount);
+    final long estimatedRows = resolvesOneRow(indexStats, keyValues.size()) ?
+        nValues :
+        Math.min(typeCount, (long) (nValues * typeCount * perSeekSelectivity));
     final double cost = nValues * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
-    return new AnchorSelection(node.getVariable(), node, true, indexStats, propertyName, inListValues,
-        collectKeyPrefixValues(indexStats, allPredicates, inListValues), cost, estimatedRows);
+    return new AnchorSelection(node.getVariable(), node, true, indexStats, propertyName, inListValues, keyValues, cost,
+        estimatedRows);
   }
 
   /**
@@ -938,7 +962,7 @@ public class AnchorSelector {
    * - WHERE date >= $start         → {date: [RangePredicate(>=, $start)]}
    */
   private Map<String, List<RangePredicate>> extractRangePredicates(final String variable, final LogicalPlan plan) {
-    final Map<String, List<RangePredicate>> predicates = new HashMap<>();
+    final Map<String, List<RangePredicate>> predicates = new LinkedHashMap<>();
 
     if (plan.getWhereFilters() == null || plan.getWhereFilters().isEmpty()) {
       return predicates;
