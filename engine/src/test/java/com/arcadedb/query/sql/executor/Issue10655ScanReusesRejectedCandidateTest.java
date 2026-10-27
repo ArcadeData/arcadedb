@@ -18,16 +18,21 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -171,5 +176,103 @@ class Issue10655ScanReusesRejectedCandidateTest extends TestHelper {
       withContent.setElement(docs.get(0));
       assertThat(withContent.rewrapElement(docs.get(1))).isFalse();
     });
+  }
+  /**
+   * A correlated subquery in the WHERE clause reads the outer row through {@code $parent.$current}, and runs a filtered
+   * scan of its own, with its own reused candidate, while the outer candidate is being evaluated.
+   */
+  @Test
+  void correlatedSubqueryReadsTheOuterRecordUnderEvaluation() {
+    final List<Integer> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT id FROM " + TYPE + " WHERE id IN (SELECT id FROM " + TYPE + " WHERE id = $parent.$current.id AND grp = 5) ORDER BY id")) {
+      while (rs.hasNext())
+        ids.add(rs.next().getProperty("id"));
+    }
+    final List<Integer> expected = new ArrayList<>();
+    for (int i = 5; i < RECORDS; i += GROUPS)
+      expected.add(i);
+    assertThat(ids).isEqualTo(expected);
+  }
+
+  /**
+   * A parallel filtered scan runs one copy of the step per unit of pages, each on one worker at a time, so each copy keeps
+   * its own rejected candidate: the rows it returns are the sequential scan's, each answering its own record.
+   */
+  @Test
+  void parallelScanReturnsTheSequentialRowsEachWithItsOwnRecord() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 2);
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Par10655", 1);
+      final String padding = "x".repeat(200);
+      for (int i = 0; i < 20_000; i++)
+        database.newDocument("Par10655").set("id", i).set("grp", i % GROUPS).set("pad", padding).save();
+    });
+    final String query = "SELECT FROM Par10655 WHERE grp = 9";
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + query)) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("(parallel)");
+    }
+
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", query)) {
+      while (rs.hasNext())
+        rows.add(rs.next());
+    }
+    final List<Integer> ids = new ArrayList<>();
+    final Map<Result, Boolean> distinct = new IdentityHashMap<>();
+    for (final Result row : rows) {
+      assertThat(row.getElement().get().getInteger("grp")).isEqualTo(9);
+      ids.add(row.getElement().get().getInteger("id"));
+      distinct.put(row, Boolean.TRUE);
+    }
+    final List<Integer> expected = new ArrayList<>();
+    for (int i = 9; i < 20_000; i += GROUPS)
+      expected.add(i);
+    assertThat(ids).isEqualTo(expected);
+    assertThat(distinct).hasSize(expected.size());
+  }
+
+  /**
+   * Every field of a row besides its element is checked by {@code rewrapElement}: a field added later that carries row
+   * state and is not checked would be moved to another record by a filtered scan. Each field is set on its own, to a
+   * non-null value of its type, and the row must then refuse to be re-pointed.
+   */
+  @Test
+  void everyFieldBesidesTheElementBlocksTheRewrap() throws Exception {
+    final DocumentType type = database.getSchema().getType(TYPE);
+    final Document first;
+    final Document second;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " WHERE id < 2 ORDER BY id")) {
+      first = rs.next().getElement().get();
+      second = rs.next().getElement().get();
+    }
+
+    int checked = 0;
+    for (Class<?> c = ResultInternal.class; c != Object.class; c = c.getSuperclass()) {
+      for (final Field field : c.getDeclaredFields()) {
+        if (Modifier.isStatic(field.getModifiers()) || field.getName().equals("element"))
+          continue;
+        final ResultInternal row = new ResultInternal(first);
+        field.setAccessible(true);
+        field.set(row, sampleOf(field.getType(), type));
+        assertThat(row.rewrapElement(second)).as("a row whose '%s' is set must not be re-pointed", field.getName()).isFalse();
+        ++checked;
+      }
+    }
+    assertThat(checked).isGreaterThanOrEqualTo(9);
+  }
+
+  private Object sampleOf(final Class<?> fieldType, final DocumentType type) {
+    if (fieldType == Map.class)
+      return new HashMap<>();
+    if (fieldType == Set.class)
+      return new HashSet<>();
+    if (fieldType == DocumentType.class)
+      return type;
+    if (fieldType.isInstance(database))
+      return database;
+    if (fieldType == Object.class)
+      return "value";
+    throw new AssertionError("no sample value for a field of type " + fieldType.getName() + ": extend sampleOf() and rewrapElement()");
   }
 }
