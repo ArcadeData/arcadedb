@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
@@ -63,6 +64,7 @@ import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.SearchCallClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
@@ -780,6 +782,55 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return newMatchClause(pathPatterns, optional, whereClause);
+  }
+
+  /**
+   * Builds the Cypher 25 {@code SEARCH} subclause of a {@code MATCH} (issue #10776) as the {@link SearchCallClause} that runs
+   * in front of it. Before this the clause was parsed and dropped: the {@code MATCH} answered every node of the label, and
+   * a {@code SCORE AS} variable was undefined.
+   * <p>
+   * The binding variable must be a node variable of the {@code MATCH}'s own pattern, as in Neo4j. An {@code OPTIONAL MATCH}
+   * with a {@code SEARCH} is refused rather than answered: the search runs in front of the {@code MATCH}, so an empty search
+   * would drop the row an {@code OPTIONAL MATCH} keeps.
+   *
+   * @param ctx   the {@code SEARCH} subclause
+   * @param match the {@code MATCH} it belongs to, as {@link #visitMatchClause} built it
+   */
+  public SearchCallClause buildSearchClause(final Cypher25Parser.SearchClauseContext ctx, final MatchClause match) {
+    if (match.isOptional())
+      throw new FeatureNotImplementedException("SEARCH is not supported in an OPTIONAL MATCH");
+
+    final String variable = stripBackticks(ctx.variable().getText());
+    if (!isNodeVariableOf(match, variable))
+      throw new CommandSemanticException(
+          "SEARCH: the binding variable '" + variable + "' must be a node variable of the pattern of its MATCH");
+
+    final Cypher25Parser.SymbolicNameOrStringParameterContext indexCtx = ctx.indexSpecificationClause()
+        .symbolicNameOrStringParameter();
+    final Expression indexName = indexCtx.parameter() != null ?
+        expressionBuilder.parseExpressionText(indexCtx.getText()) :
+        new LiteralExpression(stripBackticks(indexCtx.getText()), indexCtx.getText());
+
+    final Expression queryVector = expressionBuilder.parseExpression(ctx.forClause().expression());
+    final WhereClause where = ctx.whereClause() != null ? visitWhereClause(ctx.whereClause()) : null;
+    final Expression limit = visitLimit(ctx.limit());
+    final String scoreVariable = ctx.scoreClause() != null ? stripBackticks(ctx.scoreClause().variable().getText()) : null;
+    if (variable.equals(scoreVariable))
+      throw new CommandSemanticException("SEARCH: the score variable '" + scoreVariable + "' is the binding variable");
+
+    return new SearchCallClause(variable, indexName, queryVector, where, limit, scoreVariable);
+  }
+
+  /**
+   * Whether {@code variable} names a node of one of the {@code MATCH}'s path patterns. A node inside a quantified group
+   * is not one: there the variable is a group variable, a list, which a vector search cannot bind.
+   */
+  private static boolean isNodeVariableOf(final MatchClause match, final String variable) {
+    for (final PathPattern path : match.getPathPatterns())
+      for (final NodePattern node : path.getNodes())
+        if (variable.equals(node.getVariable()))
+          return true;
+    return false;
   }
 
   /**

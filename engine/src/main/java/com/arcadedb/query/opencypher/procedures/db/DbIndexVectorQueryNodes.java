@@ -46,6 +46,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 /**
@@ -103,30 +104,45 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
+    return search(args[0].toString(), args[1], args[2], null, context, "db.index.vector.queryNodes()").stream();
+  }
 
-    final String indexSpec = args[0].toString();
-    final int limit = extractLimit(args[1]);
+  /**
+   * The k-NN search behind both {@code db.index.vector.queryNodes} and the Cypher 25 {@code SEARCH} clause (issue #10776):
+   * the {@code k} nearest live records of the index, nearest first, each as a row of {@code node} and {@code score}.
+   *
+   * @param indexSpec the index, as {@code 'Type[property]'} or as its schema name
+   * @param kArg      the rows to answer, a number or a numeric string
+   * @param vectorArg the query vector, or the key of the record whose vector it is
+   * @param filter    a predicate every answered record must pass, applied while the index is searched rather than to its
+   *                  top k: a candidate it rejects is skipped like a stale one and the search widened, so up to {@code k}
+   *                  matching rows come back. {@code null} for none
+   * @param caller    the name of the entry point, for error messages and the work guard
+   */
+  public static List<Result> search(final String indexSpec, final Object kArg, Object vectorArg, final Predicate<Document> filter,
+      final CommandContext context, final String caller) {
+    final int limit = extractLimit(kArg, caller);
 
-    Object key = args[2];
-    if (key == null)
+    if (vectorArg == null)
       throw new CommandSQLParsingException("Vector parameter is null");
-    if (key instanceof List<?> list)
-      key = list.toArray();
+    if (vectorArg instanceof List<?> list)
+      vectorArg = list.toArray();
 
     // Resolve the vector index
     final List<LSMVectorIndex> vectorIndexes = resolveVectorIndexes(indexSpec, context);
 
     // Get the query vector
-    final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
+    final float[] queryVector = extractQueryVector(vectorArg, vectorIndexes.getFirst(), context);
 
     // A record deleted by a commit that overlaps the search can still be in an index's answer (issue #9858): it is skipped,
-    // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368).
+    // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368). A candidate the filter
+    // rejects is skipped and widens the search the same way, so a filtered search answers k matching rows (issue #10776).
     // The command's deadline and the termination of its statement, honoured inside each search and while it waits for a
     // graph build (issue #9896)
-    final WorkGuard guard = WorkGuard.forCommand(context, "db.index.vector.queryNodes()");
+    final WorkGuard guard = WorkGuard.forCommand(context, caller);
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, guard, staleSkipped,
-            saturated)).stream();
+        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, filter, guard, staleSkipped,
+            saturated));
   }
 
   /**
@@ -134,7 +150,8 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * records, counting in {@code staleSkipped} the candidates whose record no longer exists.
    */
   private static List<Result> searchAndLoad(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final WorkGuard guard, final int[] staleSkipped, final boolean[] saturated) {
+      final int fetchK, final Predicate<Document> filter, final WorkGuard guard, final int[] staleSkipped,
+      final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
@@ -173,6 +190,11 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
         record = neighbor.getFirst().asDocument();
       } catch (final RecordNotFoundException e) {
         // Deleted between the index search and this load: a candidate lost, not a failed query (issue #9858)
+        staleSkipped[0]++;
+        continue;
+      }
+      if (filter != null && !filter.test(record)) {
+        // Not an answer, but a candidate lost like a stale one: the search widens past it (issue #10776)
         staleSkipped[0]++;
         continue;
       }
@@ -220,7 +242,9 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * {@code IllegalArgumentException: Illegal Capacity} that never mentions {@code k}.
    * </p>
    */
-  private static int extractLimit(final Object arg) {
+  private static int extractLimit(final Object arg, final String caller) {
+    if (arg == null)
+      throw new CommandSQLParsingException(caller + ": k must be a number, got null");
     final int limit;
     if (arg instanceof Number n)
       limit = NumberUtils.saturateToInt(n);
@@ -229,12 +253,12 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       try {
         limit = NumberUtils.saturateToInt(new BigDecimal(text));
       } catch (final NumberFormatException e) {
-        throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must be a number, got '" + text + "'", e);
+        throw new CommandSQLParsingException(caller + ": k must be a number, got '" + text + "'", e);
       }
     }
 
     if (limit < 0)
-      throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must not be negative, got " + limit);
+      throw new CommandSQLParsingException(caller + ": k must not be negative, got " + limit);
 
     return limit;
   }
@@ -243,7 +267,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * Resolves the index specification to a list of LSMVectorIndex instances.
    * Supports both ArcadeDB format (Type[property]) and direct index name.
    */
-  private List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
+  private static List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
     final int bracketStart = indexSpec.indexOf('[');
     if (bracketStart > 0 && indexSpec.endsWith("]")) {
       // ArcadeDB format: Type[property]
@@ -279,7 +303,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * {@link VectorUtils#collectSubIndexesOnce(IndexInternal[], Class, java.util.function.IntPredicate)} for why the same
    * sub-index can be listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
    */
-  private List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
+  private static List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
     final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -296,7 +320,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   /**
    * Extracts a float[] query vector from the key parameter.
    */
-  private float[] extractQueryVector(final Object key, final LSMVectorIndex lsmIndex, final CommandContext context) {
+  private static float[] extractQueryVector(final Object key, final LSMVectorIndex lsmIndex, final CommandContext context) {
     if (key instanceof float[] floatArray)
       return floatArray;
 

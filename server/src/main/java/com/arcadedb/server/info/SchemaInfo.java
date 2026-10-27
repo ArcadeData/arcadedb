@@ -141,7 +141,9 @@ public class SchemaInfo {
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '"
           + databaseName + "'");
 
-    final ServerDatabase database = server.getDatabase(databaseName);
+    // A client surface (MCP, the AI assistant): resolved like every other one, so a database an operator closed or a restore holds
+    // since the existsDatabase() check above is refused rather than reopened (issue #10690)
+    final ServerDatabase database = server.getDatabaseForClient(databaseName);
     return DatabaseUserContext.runAs((DatabaseInternal) database, user, () -> toJSON(database, databaseName));
   }
 }
