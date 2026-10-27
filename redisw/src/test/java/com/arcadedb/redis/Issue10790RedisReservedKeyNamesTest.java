@@ -146,10 +146,4 @@ public class Issue10790RedisReservedKeyNamesTest extends BaseRedisServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
   }
-
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
 }

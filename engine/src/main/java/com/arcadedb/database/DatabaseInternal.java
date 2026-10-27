@@ -681,6 +681,10 @@ public interface DatabaseInternal extends Database {
    * the client's own: what SQL can name as {@code $k} it still reads, and a name SQL reserves stays the context's
    * ({@link #getGlobalVariable} answers it absent).
    * <p>
+   * A raw store: the caller owns its keys, nothing here validates them. Like every {@code ConcurrentHashMap} it refuses a
+   * {@code null} key or value with a {@code NullPointerException}, so a removal is a {@code remove}, never a {@code put} of
+   * {@code null} as {@link #setGlobalVariable} accepts.
+   * <p>
    * <b>Not replicated in an HA cluster</b> - see {@link #getGlobalVariable(String)}.
    */
   ConcurrentMap<String, Object> getGlobalVariableStore();

@@ -51,12 +51,6 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
     GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
   }
 
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
   @Test
   void incrByFloatReplyAndStoredValueAreRedisDecimalText() {
     try (final Jedis jedis = connect()) {
