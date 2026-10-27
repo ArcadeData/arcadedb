@@ -666,6 +666,10 @@ public class BinaryComparator {
    * {@code elementEquals}, whatever the order they iterate in (issue #10736). Sets that are equal by their own {@code equals()} are
    * answered without pairing: an element is equal to itself under every element rule. A sorted set asked for an element its
    * comparator cannot take throws instead of answering, and is then paired off like any other.
+   * <p>
+   * The pairing is quadratic in the size of the sets, and is reached only when {@code equals()} says no, typically for sets whose
+   * elements differ by class only (a set of {@code Long} against one of {@code Integer}). Each element takes the first unpaired one
+   * equal to it, which is exact for an element rule that is an equivalence, as both rules passed here are.
    *
    * @param elementEquals the rule for a pair of elements, either of which can be {@code null}
    */
@@ -676,7 +680,8 @@ public class BinaryComparator {
       if (a.equals(b))
         return true;
     } catch (final RuntimeException e) {
-      // a comparator that refuses the other set's elements: no answer, pair them off below
+      // a comparator that refuses the other set's elements: no answer, pair them off below. Not only a ClassCastException: a RID
+      // compared with a String parses it and raises an IllegalArgumentException
     }
     final Object[] others = b.toArray();
     final boolean[] paired = new boolean[others.length];

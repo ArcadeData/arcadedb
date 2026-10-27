@@ -43,8 +43,8 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.ContainsAllCondition;
 import com.arcadedb.query.sql.parser.ContainsCondition;
-import com.arcadedb.query.sql.parser.ContainsValueCondition;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.ContainsValueCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
@@ -1256,8 +1256,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
-    Expression nextElementInKey = key.getExpressions().getFirst();
-    Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
+    final Expression keyExpression = key.getExpressions().getFirst();
+    final Object keyValue = keyExpression.execute(new ResultInternal(context.getDatabase()), context);
     // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
     // consistent with the multi-value handling in processInCondition().
@@ -1265,11 +1265,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // The mask has one entry per key slot the condition produces, so it always covers the slot; a slot past it (a key built some
     // other way) is treated as a multi-value one, the behaviour before #9370
     final byte slotKind = slot < slotKinds.length ? slotKinds[slot] : SLOT_MULTI_VALUE;
-    if (slotKind == SLOT_FIRST_ITEM) {
-      // the planner hands a CONTAINSALL with such an item only, and a CONTAINS with exactly one item
-      value = unwrapSubQueryResult(ContainsAllCondition.firstLookupItem(value));
-      nextElementInKey = toExpression(value);
-    }
+    // the planner hands a CONTAINSALL with a lookup item only, and a CONTAINS with exactly one item
+    final Object value = slotKind == SLOT_FIRST_ITEM ? unwrapSubQueryResult(ContainsAllCondition.firstLookupItem(keyValue)) : keyValue;
+    final Expression nextElementInKey = slotKind == SLOT_FIRST_ITEM ? toExpression(value) : keyExpression;
     if (slotKind == SLOT_MULTI_VALUE && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
       // `tail` does not depend on `elemInKey`: it is `key` with its (already-consumed) first expression
