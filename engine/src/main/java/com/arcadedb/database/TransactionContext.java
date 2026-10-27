@@ -1801,6 +1801,36 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * {@link #getPage(PageId, int)} for a reader that reads the page only at absolute positions ({@code readInt}, {@code readLong},
+   * {@code readShort}, {@code readByte}, {@code slice()}, {@code getPageId()}), as an index lookup does (#10654). A page the
+   * transaction holds is answered as {@code getPage} answers it. On a {@code READ_COMMITTED} miss the answer is the page cache's
+   * shared view of the page, the one every thread reads, instead of a new {@code ImmutablePage}, {@code Binary} and buffer per
+   * call: {@code getPage} keeps nothing on that path either, so the reader sees the same bytes. {@code REPEATABLE_READ} goes
+   * through {@code getPage}, because the page it returns is the one the transaction keeps and hands to every later
+   * {@code getPage}, whose caller may move its buffer position.
+   */
+  public BasePage getPageForAbsoluteReads(final PageId pageId, final int size) throws IOException {
+    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+      return getPage(pageId, size);
+
+    BasePage page = null;
+
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+
+    if (page == null)
+      page = immutablePages.get(pageId);
+
+    if (page == null)
+      page = database.getPageManager().getSharedImmutablePage(pageId, size);
+
+    return page;
+  }
+
+  /**
    * If the page is not already in transaction tx, loads from the database and clone it locally.
    */
   public MutablePage getPageToModify(final PageId pageId, final int pageSize, final boolean isNew) throws IOException {

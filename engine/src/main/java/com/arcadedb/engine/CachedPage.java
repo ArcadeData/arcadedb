@@ -38,6 +38,8 @@ public class CachedPage {
   private final int    size;
   private       int    version;
   private       long   lastAccessed = System.currentTimeMillis();
+  // #10654: built on first use, after loadMetadata(), the last write to the version and the content size of a cached page
+  private volatile ImmutablePage sharedView;
 
   public CachedPage(final MutablePage page, final boolean copyBuffer) {
     this.pageId = page.pageId;
@@ -82,6 +84,26 @@ public class CachedPage {
 
   public ImmutablePage useAsImmutable() {
     return new ImmutablePage(pageId, size, content.getContent(), version, content.size());
+  }
+
+  /**
+   * The one view of this page every thread shares, built on first use and kept (#10654): the same bytes, version and content
+   * size as {@link #useAsImmutable()}, for a reader that reads at absolute positions. See {@link SharedImmutablePage} for what it
+   * answers that a per-call view does not. Two threads that race on the first use may each build one, and both are correct:
+   * the field is volatile, so a view is never seen before its fields are.
+   */
+  public ImmutablePage getSharedImmutableView() {
+    ImmutablePage view = sharedView;
+    if (view == null) {
+      view = new SharedImmutablePage(pageId, size, content.getContent(), version, content.size());
+      sharedView = view;
+    }
+    return view;
+  }
+
+  /** The shared view if one was built, without building it. For tests. */
+  ImmutablePage peekSharedImmutableView() {
+    return sharedView;
   }
 
   /**
