@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
@@ -435,18 +436,27 @@ public class ContinuousAggregateRefresher {
    * hole per request in the pages of the backing type. A recomputed row takes over a replaced row of its own bucket instead: the key
    * does not change, so the index is not written at all, and the record is rewritten in place. A recomputed row with no replaced row
    * left in its bucket is inserted, and the replaced rows nothing took over are deleted.
+   * <p>
+   * Only the identities are held, one per row the refresh replaces: the rows of the open bucket for the refresh an append triggers,
+   * those of the recomputed range for a late sample or a delete. That is the size the transaction of the refresh has anyway, which
+   * the delete it replaces held too, and which the recomputed rows it writes hold again.
    */
   private static final class ReplacedRows {
-    private final Map<Long, ArrayDeque<Document>> byBucket = new HashMap<>();
+    private final Map<Long, ArrayDeque<RID>> byBucket = new HashMap<>();
+    private final Database                   database;
+
+    private ReplacedRows(final Database database) {
+      this.database = database;
+    }
 
     static ReplacedRows select(final Database database, final ContinuousAggregateImpl ca, final String select, final Object... params) {
-      final ReplacedRows rows = new ReplacedRows();
+      final ReplacedRows rows = new ReplacedRows(database);
       final String bucketColumn = ca.getBucketColumn();
       try (final ResultSet rs = database.query("sql", select, params)) {
         while (rs.hasNext()) {
           final Document row = rs.next().toElement();
-          final Object bucket = row.get(bucketColumn);
-          rows.byBucket.computeIfAbsent(toEpochMs(bucket, bucketColumn, ca.getName()), k -> new ArrayDeque<>(2)).add(row);
+          rows.byBucket.computeIfAbsent(toEpochMs(row.get(bucketColumn), bucketColumn, ca.getName()), k -> new ArrayDeque<>(2))
+              .add(row.getIdentity());
         }
       }
       return rows;
@@ -454,15 +464,15 @@ public class ContinuousAggregateRefresher {
 
     /** A replaced row of the bucket starting at {@code bucketMs} for a recomputed row to take over, or {@code null} when none is left. */
     MutableDocument take(final long bucketMs) {
-      final ArrayDeque<Document> rows = byBucket.get(bucketMs);
-      final Document row = rows != null ? rows.poll() : null;
-      return row != null ? row.modify() : null;
+      final ArrayDeque<RID> rows = byBucket.get(bucketMs);
+      final RID row = rows != null ? rows.poll() : null;
+      return row != null ? database.lookupByRID(row, true).asDocument().modify() : null;
     }
 
     void deleteTheRest() {
-      for (final ArrayDeque<Document> rows : byBucket.values())
-        for (final Document row : rows)
-          row.delete();
+      for (final ArrayDeque<RID> rows : byBucket.values())
+        for (final RID row : rows)
+          database.deleteRecord(database.lookupByRID(row, false));
       byBucket.clear();
     }
   }

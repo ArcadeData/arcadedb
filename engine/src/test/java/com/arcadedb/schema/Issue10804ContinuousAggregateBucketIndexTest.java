@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #10804: every ingest request refreshes the continuous aggregates over its type, and a refresh deleted the buckets at or
@@ -132,6 +133,57 @@ class Issue10804ContinuousAggregateBucketIndexTest extends TestHelper {
     assertThat(rowOf(H0)).isEqualTo(openBucketRow);
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 60), new Bucket(H0 + 2 * HOUR, "a", 7));
     assertThat(database.countType("A", false)).isEqualTo(2L);
+  }
+
+  /**
+   * A recomputed range whose buckets gain rows and lose rows: a late sample of a tag new to a closed bucket adds a row to it (no
+   * replaced row left to take over, so it is inserted), a delete of every sample of a tag in another closed bucket removes one (a
+   * replaced row nothing took over, so it is deleted), and the open bucket does both in turn.
+   */
+  @Test
+  void aRecomputedBucketThatGainsOrLosesRowsInsertsOrDeletesOnlyThose() {
+    createSourceAndAggregate();
+    for (int hour = 0; hour < 3; hour++) {
+      insert(H0 + hour * HOUR + 1_000, "a", 1);
+      insert(H0 + hour * HOUR + 2_000, "b", 10);
+    }
+    insert(H0 + 4 * HOUR + 1_000, "a", 100);
+
+    // grows: tag c is new to hour 0, behind the watermark
+    insert(H0 + 5_000, "c", 1000);
+    // shrinks: every sample of tag b in hour 1 is deleted
+    database.command("sql", "DELETE FROM S WHERE ts >= ? AND ts < ? AND h = 'b'", H0 + HOUR, H0 + 2 * HOUR);
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1), new Bucket(H0, "b", 10), new Bucket(H0, "c", 1000),
+        new Bucket(H0 + HOUR, "a", 1), new Bucket(H0 + 2 * HOUR, "a", 1), new Bucket(H0 + 2 * HOUR, "b", 10),
+        new Bucket(H0 + 4 * HOUR, "a", 100));
+
+    // the open bucket gains a tag, then loses it
+    insert(H0 + 4 * HOUR + 2_000, "d", 5);
+    assertThat(buckets().subList(6, 8)).containsExactly(new Bucket(H0 + 4 * HOUR, "a", 100), new Bucket(H0 + 4 * HOUR, "d", 5));
+    database.command("sql", "DELETE FROM S WHERE ts >= ? AND h = 'd'", H0 + 4 * HOUR);
+    assertThat(buckets()).hasSize(7).last().isEqualTo(new Bucket(H0 + 4 * HOUR, "a", 100));
+
+    // and a full refresh agrees with what the incremental ones left
+    final List<Bucket> incremental = buckets();
+    database.command("sql", "DROP CONTINUOUS AGGREGATE A");
+    database.command("sql",
+        "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1h', ts) AS hr, h, sum(v) AS total FROM S GROUP BY hr, h");
+    assertThat(buckets()).isEqualTo(incremental);
+  }
+
+  /** A creation that fails after its backing type was made, here in the first refresh, leaves neither the aggregate nor the type. */
+  @Test
+  void aFailedCreationLeavesNoBackingTypeBehind() {
+    database.command("sql", "CREATE TIMESERIES TYPE S TIMESTAMP ts TAGS (h STRING) FIELDS (v DOUBLE) SHARDS 1");
+    insert(H0 + 1_000, "not a number", 1);
+
+    final Throwable failure = catchThrowable(() -> database.command("sql",
+        "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1h', ts) AS hr, h.asLong() AS n, sum(v) AS total FROM S GROUP BY hr, n"));
+
+    assertThat(failure).as("the first refresh has to fail, or this test proves nothing").isNotNull();
+    assertThat(database.getSchema().existsContinuousAggregate("A")).isFalse();
+    assertThat(database.getSchema().existsType("A")).isFalse();
+    assertThat(database.getSchema().getIndexes()).noneMatch(index -> index.getName().startsWith("A["));
   }
 
   private long statistic(final String name) {

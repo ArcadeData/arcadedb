@@ -1581,6 +1581,8 @@ public class LocalSchema implements Schema {
     try {
       warning = aggregate.getUpgradeWarning();
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot tell whether continuous aggregate '%s' has an index on its bucket column", e,
+          aggregate.getName());
       return;
     }
     if (warning != null && reportedUpgradeWarnings.add(UNINDEXED_AGGREGATE_WARNING_PREFIX + aggregate.getName()))

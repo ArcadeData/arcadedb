@@ -225,23 +225,25 @@ public class ContinuousAggregateBuilder {
     // recompute of a range those of the range, which without an index is a scan of every row the aggregate ever wrote: measured, 400
     // times the cost of the append that triggers it once the aggregate holds 100k rows. The bucket is the LocalDateTime
     // ts.timeBucket() answers, a DATETIME as a property with no declared type stores it, so declaring it changes nothing stored
-    backingType.createProperty(finalBucketAlias, Type.DATETIME);
-    backingType.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, finalBucketAlias);
-
-    // Create and register the continuous aggregate
-    final ContinuousAggregateImpl ca = new ContinuousAggregateImpl(
-        databaseInternal, name, query, name, sourceTypeName,
-        bucketIntervalMs, finalBucketAlias, finalTsColumn);
-    ca.setStatus(MaterializedViewStatus.BUILDING);
-    // THE MONITOR GUARDS THE MAP AGAINST THE synchronized ACCESSORS, TAKEN UNDER THE WRITE LOCK THIS CALLBACK HOLDS -
-    // THE ORDER EVERY SCHEMA SAVE USES (#7457)
-    synchronized (schema) {
-      schema.continuousAggregates.put(name, ca);
-    }
-    schema.saveConfiguration();
-
-    // Perform initial full refresh (watermark=0 means all data)
+    final ContinuousAggregateImpl ca;
+    // Everything from here on is undone by the same clean-up: a failure building the index leaves no backing type behind either
     try {
+      backingType.createProperty(finalBucketAlias, Type.DATETIME);
+      backingType.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, finalBucketAlias);
+
+      // Create and register the continuous aggregate
+      ca = new ContinuousAggregateImpl(
+          databaseInternal, name, query, name, sourceTypeName,
+          bucketIntervalMs, finalBucketAlias, finalTsColumn);
+      ca.setStatus(MaterializedViewStatus.BUILDING);
+      // THE MONITOR GUARDS THE MAP AGAINST THE synchronized ACCESSORS, TAKEN UNDER THE WRITE LOCK THIS CALLBACK HOLDS -
+      // THE ORDER EVERY SCHEMA SAVE USES (#7457)
+      synchronized (schema) {
+        schema.continuousAggregates.put(name, ca);
+      }
+      schema.saveConfiguration();
+
+      // Perform initial full refresh (watermark=0 means all data)
       ContinuousAggregateRefresher.incrementalRefresh(databaseInternal, ca);
     } catch (final Exception e) {
       synchronized (schema) {
