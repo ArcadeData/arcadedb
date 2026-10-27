@@ -125,6 +125,11 @@ public class OrderByItem {
         aVal = a.getMetadata(alias);
         bVal = b.getMetadata(alias);
       }
+      // ON AN EDGE, `out` / `in` WITH NO PROPERTY OF THAT NAME ARE ITS ENDPOINTS, AS IN THE PROJECTION (ISSUE #10684)
+      if (aVal == null)
+        aVal = SuffixIdentifier.edgeEndpointIfUnshadowed(a, alias);
+      if (bVal == null)
+        bVal = SuffixIdentifier.edgeEndpointIfUnshadowed(b, alias);
     } else if (expression != null) {
       aVal = expression.execute(a, context);
       bVal = expression.execute(b, context);
