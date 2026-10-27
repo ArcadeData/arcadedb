@@ -4021,6 +4021,8 @@ public class PostgresNetworkExecutor extends Thread {
       else if (category == ErrorCategory.DATABASE_NOT_FOUND)
         writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
       else
+        // Deliberately unchanged: any other failure to open the database (an I/O error, a corrupted directory) keeps the answer it
+        // always had. It is neither a held database nor a missing name, and giving it a code of its own is not this branch's call
         writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
       return false;
     }
