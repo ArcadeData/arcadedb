@@ -547,7 +547,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       Thread.currentThread().interrupt();
     }
 
-    // Issue #10707: and for the file watchers' ticks, which are not on that executor
+    // Issue #10707: and for the file watchers' ticks, which are not on that executor. An interrupted shutdown skips this
+    // wait: the interrupt restored above makes each awaitIdle return at its first timed wait.
     awaitWatchersIdle(2_000L);
   }
 
