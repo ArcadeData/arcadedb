@@ -74,6 +74,7 @@ public class CachedPage {
   }
 
   public void loadMetadata() {
+    assert sharedView == null : "metadata of " + pageId + " reloaded after its shared view captured it (#10654)";
     version = content.getInt(BasePage.PAGE_VERSION_OFFSET);
     int contentSize = content.getInt(BasePage.PAGE_CONTENTSIZE_OFFSET);
     if (contentSize < 0 || contentSize > size) {

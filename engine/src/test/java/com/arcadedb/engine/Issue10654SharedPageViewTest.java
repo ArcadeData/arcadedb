@@ -278,9 +278,12 @@ class Issue10654SharedPageViewTest extends TestHelper {
       assertThat(cursor.hasNext()).isFalse();
     }
 
-    for (final CachedPage page : pages)
-      assertThat(pageManager().getCachedPageForRead(page.getPageId(), PAGE_SIZE).peekSharedImmutableView())
-          .as("%s after the lookup", page).isNotNull();
+    for (final CachedPage page : pages) {
+      final ImmutablePage view = pageManager().getCachedPageForRead(page.getPageId(), PAGE_SIZE).peekSharedImmutableView();
+      assertThat(view).as("%s after the lookup", page).isNotNull();
+      // getContent() duplicates the shared buffer, position included: the lookup left it where every view starts
+      assertThat(view.getContent().position()).as("%s: position of the shared buffer", page).isZero();
+    }
   }
 
   /** Reading a cached page through the shared view allocates nothing per call: measured against {@code getPage} on this JVM. */
