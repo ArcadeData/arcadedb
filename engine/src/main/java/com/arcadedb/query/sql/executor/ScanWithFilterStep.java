@@ -53,6 +53,8 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   private       int         toPage        = -1;
 
   private Iterator<Record> iterator;
+  // #10655: the last candidate the WHERE clause rejected, which the next record reuses instead of a new ResultInternal
+  private ResultInternal   rejectedCandidate;
 
   public ScanWithFilterStep(final int bucketId, final WhereClause whereClause, final CommandContext context) {
     super(context);
@@ -105,8 +107,12 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
             final Record record = iterator.next();
             totalFetched++;
 
-            // Evaluate WHERE on the document itself: every field access is lazily deserialized on demand
-            final ResultInternal candidate = new ResultInternal(record);
+            // Evaluate WHERE on the document itself: every field access is lazily deserialized on demand. A candidate the
+            // clause rejected is pointed at this record rather than replaced (#10655): only a match leaves the scan
+            ResultInternal candidate = rejectedCandidate;
+            if (candidate == null || !candidate.rewrapElement(record))
+              candidate = new ResultInternal(record);
+            rejectedCandidate = null;
 
             // Set $current before WHERE evaluation so method calls (e.g. split()) resolve correctly
             context.setVariable("current", candidate);
@@ -119,6 +125,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
                 return;
               }
               totalFiltered++;
+              rejectedCandidate = candidate;
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - filterBegin;
