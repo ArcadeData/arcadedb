@@ -437,6 +437,10 @@ public class RebuildIndexStatement extends DDLStatement {
         // reattach to and mints a new one, which - without the name carried through explicitly - always takes the
         // auto-derived form even for an explicitly-named logical index.
         final TypeIndex ownerTypeIndex = typeIndexRebuild ? null : ((IndexInternal) idx).getTypeIndex();
+        // A sub-index on the bucket of a sub type belongs to the index its super type declares, and is re-created through that type:
+        // re-created through the sub type that owns the bucket, it minted a wrapper of the sub type under the declaring index's
+        // name, which took the name over in the schema and left the super type's own buckets out of the index (issue #10734)
+        final String declaringTypeName = ownerTypeIndex != null ? ownerTypeIndex.getTypeName() : typeName;
 
         // For a bucket sub-index, resolve its target bucket BEFORE the destructive drop below, so a truly orphaned
         // index (its bucket gone) is reported without first being deleted. Self-heal a lost association
@@ -488,7 +492,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
           } else {
             database.getSchema()
-                .buildBucketIndex(typeName, bucketName,
+                .buildBucketIndex(declaringTypeName, bucketName,
                     propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
                 .withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
                 .withNullStrategy(strategy)

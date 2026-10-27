@@ -85,7 +85,7 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
         if (opts.containsKey("edgeTypeNames"))
           options.put("edgeTypeNames", opts.get("edgeTypeNames"));
         if (opts.containsKey("maxDepth"))
-          options.put("maxDepth", opts.getLong("maxDepth", Long.MAX_VALUE));
+          options.put("maxDepth", opts.getNonNegativeLong("maxDepth", Long.MAX_VALUE));
         if (opts.containsKey("emptyIfMaxDepth"))
           options.put("emptyIfMaxDepth", opts.getBoolean("emptyIfMaxDepth", true));
       } else {

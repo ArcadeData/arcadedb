@@ -380,7 +380,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     }
 
     astar.paramParallel = opts.getBoolean(PARAM_PARALLEL, astar.paramParallel);
-    astar.paramMaxDepth = opts.getLong(PARAM_MAX_DEPTH, astar.paramMaxDepth);
+    astar.paramMaxDepth = opts.getNonNegativeLong(PARAM_MAX_DEPTH, astar.paramMaxDepth);
     astar.paramEmptyIfMaxDepth = opts.getBoolean(PARAM_EMPTY_IF_MAX_DEPTH, astar.paramEmptyIfMaxDepth);
     astar.paramTieBreaker = opts.getBoolean(PARAM_TIE_BREAKER, astar.paramTieBreaker);
     astar.paramDFactor = opts.getDouble(PARAM_D_FACTOR, astar.paramDFactor);

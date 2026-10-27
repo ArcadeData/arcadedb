@@ -556,8 +556,7 @@ public class LocalDocumentType implements DocumentType {
     }
     schema.executeDroppingFiles("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds, () -> {
       dropping[0] = true;
-      for (final String indexName : orphans)
-        schema.dropIndex(indexName);
+      schema.dropIndexes(orphans);
       return null;
     });
 
@@ -809,6 +808,18 @@ public class LocalDocumentType implements DocumentType {
 
     final String oldName = name;
 
+    // A default-named index takes the name derived from the new type name, which a manually named index of another type may hold
+    // already: refused here, before anything changes, rather than taking the name over and leaving that index unreachable by it
+    // (issue #10751)
+    for (final TypeIndex idx : getAllIndexes(false)) {
+      final String indexName = idx.nameUnderType(newName);
+      final IndexInternal holder = schema.lookupIndex(indexName);
+      if (holder != null && holder != idx)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+            "Cannot rename type '" + oldName + "' to '" + newName + "': its index '" + idx.getName() + "' would be named '" + indexName
+                + "', which is the name of an index of type '" + holder.getTypeName() + "'");
+    }
+
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
     final List<TypeIndex> renamedInheritedIndexes = new ArrayList<>();
@@ -891,8 +902,8 @@ public class LocalDocumentType implements DocumentType {
 
       boolean corrupted = false;
 
-      // Unwound in reverse: indexes were renamed last, so they are restored first. 'name' is already back to the
-      // old value above, which is what TypeIndex.updateTypeName() recomputes its logic name from.
+      // Unwound in reverse: indexes were renamed last, so they are restored first. TypeIndex.updateTypeName() re-keys the schema's
+      // index map back under the old name as it goes (issue #10751).
       for (TypeIndex idx : renamedInheritedIndexes) {
         try {
           idx.updateTypeNameOfSubIndexesOn(this, oldName);
@@ -2487,10 +2498,11 @@ public class LocalDocumentType implements DocumentType {
       // Falling back to the auto-derived form keeps the public default name unchanged for all
       // callers that did not supply a manual name.
       final String customName = index.getMetadata().typeIndexName;
-      final String typeIndexName = customName != null && !customName.isEmpty() ?
-          customName :
-          name + Arrays.toString(propertyNames).replace(" ", "");
-      propIndex = new TypeIndex(typeIndexName, this);
+      final String derivedName = name + Arrays.toString(propertyNames).replace(" ", "");
+      // A REBUILD hands the derived name back as the custom one, and it is no manual name: a rename of the type has to move it. A
+      // user who spelled out the derived name (CREATE INDEX `Foo[a]` ON Foo (a)) gets the same, which is the name it already had
+      final boolean manualName = customName != null && !customName.isEmpty() && !customName.equals(derivedName);
+      propIndex = new TypeIndex(manualName ? customName : derivedName, this, manualName);
       // Staged while a schema load is in flight (issue #7213): this wrapper is the name a query resolves, and
       // publishing it here would hand a reader a TypeIndex over a bucket-level index that has not run its
       // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
@@ -3032,11 +3044,12 @@ public class LocalDocumentType implements DocumentType {
     for (final TypeIndex i : getAllIndexes(false)) {
       // Persist a user-supplied TypeIndex name once per bucket entry (issue #4139). Stored on the
       // bucket-level JSON because that is what {@link LocalSchema#load} iterates and feeds back to
-      // {@link #addIndexInternal} via setMetadata. Detected by comparing the TypeIndex name to the
-      // auto-derived form so any non-LSM implementation (HashIndex, FullText, Geo, Vector, ...)
-      // gets the manual name persisted without needing each one's toJSON to know about it.
-      final String autoName = name + Arrays.toString(i.getPropertyNames().toArray()).replace(" ", "");
-      final String custom = i.getName().equals(autoName) ? null : i.getName();
+      // {@link #addIndexInternal} via setMetadata. Kept on the TypeIndex itself so any non-LSM
+      // implementation (HashIndex, FullText, Geo, Vector, ...) gets the manual name persisted without
+      // needing each one's toJSON to know about it. Not detected by comparing the name with the derived
+      // form: a type rename used to replace the manual name by the derived one, which that comparison
+      // then took for no manual name at all, and the name was gone at the next load (issue #10751).
+      final String custom = i.hasManualName() ? i.getName() : null;
       for (final IndexInternal entry : i.getIndexesOnBuckets()) {
         final JSONObject indexJSON = entry.toJSON();
         if (custom != null)

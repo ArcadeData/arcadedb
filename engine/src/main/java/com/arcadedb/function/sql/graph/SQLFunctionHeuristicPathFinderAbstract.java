@@ -337,16 +337,14 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected String[] stringArray(final Object fromObject) {
-    if (fromObject == null)
-      return new String[] {};
-    else if (fromObject instanceof String s)
-      return toStrings(s.replace("},{", " ,").split(","));
-    else if (fromObject instanceof Collection<?> c)
-      return toStrings(c.toArray());
-    else if (fromObject instanceof Object[] a)
-      return toStrings(a);
-    throw new CommandSQLParsingException(
-        "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
+    return switch (fromObject) {
+      case null -> new String[] {};
+      case String s -> toStrings(s.replace("},{", " ,").split(","));
+      case Collection<?> c -> toStrings(c.toArray());
+      case Object[] a -> toStrings(a);
+      default -> throw new CommandSQLParsingException(
+          "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
+    };
   }
 
   /** Trims every value and drops null and blank ones, so an empty name never reaches an edge-type or property lookup. */
@@ -363,61 +361,25 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return count == result.length ? result : Arrays.copyOf(result, count);
   }
 
-  protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {
-    Boolean res;
-    if (fromObject instanceof Boolean boolean1) {
-      res = boolean1;
-    } else if (fromObject instanceof String string) {
-      res = Boolean.parseBoolean(string);
-    } else {
-      res = defaultValue;
-    }
-    return res;
-  }
-
-  protected String stringOrDefault(final Object fromObject, final String defaultValue) {
-    if (fromObject == null)
-      return defaultValue;
-    return (String) fromObject;
-  }
-
-  protected Integer integerOrDefault(final Object fromObject, final int defaultValue) {
-    if (fromObject == null) {
-      return defaultValue;
-    } else if (fromObject instanceof Number number) {
-      return number.intValue();
-    } else if (fromObject instanceof String) {
-      try {
-        return Integer.parseInt(fromObject.toString());
-      } catch (final NumberFormatException ignore) {
-      }
-    }
-    return defaultValue;
-  }
-
-  protected Long longOrDefault(final Object fromObject, final long defaultValue) {
-    if (fromObject == null) {
-      return defaultValue;
-    } else if (fromObject instanceof Number number) {
-      return number.longValue();
-    } else if (fromObject instanceof String) {
-      try {
-        return Long.parseLong(fromObject.toString());
-      } catch (final NumberFormatException ignore) {
-      }
-    }
-    return defaultValue;
-  }
-
+  /**
+   * A coordinate of a vertex for the heuristic, read from the record: a missing or non-numeric one counts as 0. Options are not read
+   * through here but through {@code FunctionOptions}, which refuses a value of the wrong kind (#10788).
+   */
   protected Double doubleOrDefault(final Object fromObject, final double defaultValue) {
-    if (fromObject == null) {
-      return defaultValue;
-    } else if (fromObject instanceof Number number) {
-      return number.doubleValue();
-    } else if (fromObject instanceof String) {
-      try {
-        return Double.parseDouble(fromObject.toString());
-      } catch (final NumberFormatException ignore) {
+    switch (fromObject) {
+      case null -> {
+        return defaultValue;
+      }
+      case Number number -> {
+        return number.doubleValue();
+      }
+      case String s -> {
+        try {
+          return Double.parseDouble(fromObject.toString());
+        } catch (final NumberFormatException ignore) {
+        }
+      }
+      default -> {
       }
     }
     return defaultValue;

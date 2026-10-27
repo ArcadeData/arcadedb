@@ -535,6 +535,9 @@ public class DatabaseChecker {
         // explicitly-named TypeIndex wrapper. Safe to read once, outside the retry loop below: it is a plain name
         // read off idx, unaffected by how many attempts the rebuild takes.
         final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
+        // Re-created through the type that DECLARES the index, as REBUILD INDEX does (issue #10734): through the sub type that
+        // owns the bucket it minted a wrapper of its own under the declaring index's name
+        final String declaringTypeName = ownerTypeIndex != null ? ownerTypeIndex.getTypeName() : typeName;
 
         // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
         // lock across both the drop and the create prevents a concurrent writer from observing the index
@@ -577,7 +580,7 @@ public class DatabaseChecker {
               // still held - so a single outer attempt can now take noticeably longer than before (up to
               // LOCK_MAX_ATTEMPTS internal retries with their own backoff) before it either succeeds or falls
               // through to the outer catch below.
-              database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+              database.getSchema().buildBucketIndex(declaringTypeName, bucketName, propNames.toArray(new String[propNames.size()]))
                   .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
                   .withMetadata(rebuildMetadata)
                   .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
