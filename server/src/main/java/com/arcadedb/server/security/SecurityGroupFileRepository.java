@@ -81,6 +81,14 @@ public class SecurityGroupFileRepository {
     policy.stop();
   }
 
+  /**
+   * Waits for a watcher tick that is running, after {@link #stop()}: see {@link ReloadableSecurityArtifact#awaitIdle}. NOT
+   * synchronized, because the tick being waited for holds this monitor for as long as it reloads.
+   */
+  boolean awaitIdle(final long timeoutMs) {
+    return policy.awaitIdle(timeoutMs);
+  }
+
   public synchronized void save(final JSONObject configuration) throws IOException {
     // Issue #7545: publishing a document is one of the three ways this repository can be reached first, and
     // every one of them has to leave the node watching the file. See startWatching().
