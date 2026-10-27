@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -301,20 +302,47 @@ public class ContinuousAggregateRefresher {
     for (final ContinuousAggregate aggregate : aggregates) {
       if (!(aggregate instanceof ContinuousAggregateImpl impl) || !sourceTypeName.equals(impl.getSourceTypeName()))
         continue;
-      final Runnable refresh = () -> {
-        try {
-          incrementalRefresh(database, impl);
-        } catch (final Exception e) {
-          LogManager.instance().log(ContinuousAggregateRefresher.class, Level.WARNING,
-              "Error refreshing continuous aggregate '%s' after a change of its source type '%s': %s", e, impl.getName(),
-              sourceTypeName, e.getMessage());
-        }
-      };
-      if (inTransaction)
-        database.getTransaction().addAfterCommitCallbackIfAbsent(refreshCallbackKey(impl.getName()), refresh);
-      else
-        refresh.run();
+      scheduleRefresh(database, impl, sourceTypeName, inTransaction);
     }
+  }
+
+  /**
+   * Refreshes, as {@link #refreshAggregatesOver(DatabaseInternal, String)} does, every continuous aggregate over the TIMESERIES type
+   * whose engine is {@code engine}: the refresh the appends of the engine API owe (issue #10686), which are not statements and so
+   * were refreshed by nothing. The source is matched by its engine and not by name, as the late-sample record of the shard does:
+   * the name the engine reports changes only once a rename is published (#10749), an aggregate follows the rename as it happens.
+   */
+  public static void refreshAggregatesOver(final DatabaseInternal database, final TimeSeriesEngine engine) {
+    final Schema schema = database.getSchema();
+    final ContinuousAggregate[] aggregates = schema.getContinuousAggregates();
+    if (aggregates.length == 0)
+      return;
+
+    final boolean inTransaction = database.isTransactionActive();
+    for (final ContinuousAggregate aggregate : aggregates) {
+      if (aggregate instanceof ContinuousAggregateImpl impl
+          && schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType
+          && sourceType.getEngine() == engine)
+        scheduleRefresh(database, impl, sourceType.getName(), inTransaction);
+    }
+  }
+
+  /** Runs the refresh of {@code impl} after the commit of the transaction open, or at once with none. Logs a failure, never raises. */
+  private static void scheduleRefresh(final DatabaseInternal database, final ContinuousAggregateImpl impl,
+      final String sourceTypeName, final boolean inTransaction) {
+    final Runnable refresh = () -> {
+      try {
+        incrementalRefresh(database, impl);
+      } catch (final Exception e) {
+        LogManager.instance().log(ContinuousAggregateRefresher.class, Level.WARNING,
+            "Error refreshing continuous aggregate '%s' after a change of its source type '%s': %s", e, impl.getName(),
+            sourceTypeName, e.getMessage());
+      }
+    };
+    if (inTransaction)
+      database.getTransaction().addAfterCommitCallbackIfAbsent(refreshCallbackKey(impl.getName()), refresh);
+    else
+      refresh.run();
   }
 
   /**

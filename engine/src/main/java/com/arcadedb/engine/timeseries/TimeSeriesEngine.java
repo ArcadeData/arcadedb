@@ -25,6 +25,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.ContinuousAggregate;
 import com.arcadedb.schema.ContinuousAggregateImpl;
+import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.RetryBackoff;
@@ -173,16 +174,48 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * {@link #appendSamples(long[], Object[][])} without the refresh of the continuous aggregates over this type, for a caller that
+   * appends many times and refreshes them once itself when it is done: the SQL {@code INSERT}, which refreshes them once per
+   * statement (issue #10632) rather than once per row. Any other caller uses {@link #appendSamples(long[], Object[][])}, or the
+   * aggregates are left stale (issue #10686).
+   */
+  public void appendSamplesWithoutRefresh(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    appendToOneShard(new ObjectColumnsRowSource(columnKinds, columns, timestamps, columnValues));
+  }
+
+  /**
    * Appends the samples of a primitive row source to a single shard, chosen round-robin.
    * <p>
    * Same routing, threading and transaction-scope contract as {@link #appendSamples(long[], Object[][])} -
    * in particular, it commits its own transaction rather than joining an enclosing one (#7410). The source
    * hands over the raw bits the row format stores, so a caller holding primitive samples never
    * allocates an object per value (issue #5474).
+   * <p>
+   * The continuous aggregates over this type are refreshed once the samples are stored (issue #10686), see
+   * {@link #refreshContinuousAggregates()}.
    */
   public void appendSamples(final TimeSeriesRowSource source) throws IOException {
+    appendToOneShard(source);
+    refreshContinuousAggregates();
+  }
+
+  private void appendToOneShard(final TimeSeriesRowSource source) throws IOException {
     final int shardIdx = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
     shards[shardIdx].appendSamples(source);
+  }
+
+  /**
+   * Refreshes the continuous aggregates over this type after an append (issue #10686): once the transaction open on the calling
+   * thread commits, or at once with none open, exactly as an SQL {@code INSERT} does. An append that is not a statement - the line
+   * protocol, the Prometheus remote write and the gRPC ingest (all through {@link TimeSeriesStorableRows#appendTo}), the importers,
+   * the engine API, the async executor - used to refresh nothing, so an aggregate kept the buckets of its creation for good. With
+   * a transaction open the refresh is registered once per aggregate, however many appends the transaction makes, which is what
+   * makes the per-batch call of the async executor cheap: its batch commits once every {@code commitEvery} tasks.
+   * <p>
+   * Free when the database has no continuous aggregate. A failing refresh is logged, never raised: the samples are stored.
+   */
+  public void refreshContinuousAggregates() {
+    ContinuousAggregateRefresher.refreshAggregatesOver(database.getWrappedDatabaseInstance(), this);
   }
 
   /**
@@ -247,15 +280,26 @@ public class TimeSeriesEngine implements AutoCloseable {
    * <p>
    * Each shard receives a {@code RangeRowSource} view over the contiguous run routed to it, so the split
    * copies no sample data and allocates no per-sample index (issues #5474, #8574).
+   * <p>
+   * The continuous aggregates over this type are refreshed once for the whole batch, after every shard wrote its part (issue
+   * #10686), see {@link #refreshContinuousAggregates()}. Also when a shard fails: the parts the other shards wrote are stored.
    */
   public void appendBatch(final TimeSeriesRowSource source) throws IOException {
-    final int n = source.size();
-    if (n == 0)
+    if (source.size() == 0)
       return;
+    try {
+      appendBatchToShards(source);
+    } finally {
+      refreshContinuousAggregates();
+    }
+  }
+
+  private void appendBatchToShards(final TimeSeriesRowSource source) throws IOException {
+    final int n = source.size();
 
     // Fast path: a single-sample batch avoids grouping overhead.
     if (n == 1) {
-      appendSamples(source);
+      appendToOneShard(source);
       return;
     }
 
@@ -1284,6 +1328,9 @@ public class TimeSeriesEngine implements AutoCloseable {
    * it fails with {@link TimeSeriesWalkCoarsenedException} rather than answer from blocks that no longer exist. A delete with a tag
    * filter decodes every block that overlaps its range, and holds the shard for as long as that takes.
    *
+   * The continuous aggregates over this type are refreshed when samples were removed (issue #10686), see
+   * {@link #refreshContinuousAggregates()}: once the transaction open on the calling thread commits, or at once with none.
+   *
    * @param tagFilter the tag conditions, or {@code null} for samples of any tags
    *
    * @return how many samples were removed
@@ -1373,6 +1420,11 @@ public class TimeSeriesEngine implements AutoCloseable {
       throw ioFailure[0];
     if (runtimeFailure[0] != null)
       throw runtimeFailure[0];
+    // refreshed here and not by the statement, so the engine API and TRUNCATE TYPE refresh them too (issue #10686). A delete that
+    // failed part way threw above and refreshes nothing: the range is recorded all the same, and the next refresh (the next append
+    // triggers one) recomputes it
+    if (deleted[0] > 0L)
+      refreshContinuousAggregates();
     return deleted[0];
   }
 

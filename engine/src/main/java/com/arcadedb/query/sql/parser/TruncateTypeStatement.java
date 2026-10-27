@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
@@ -277,11 +276,7 @@ public class TruncateTypeStatement extends DDLStatement {
           + "already be deleted, and running the statement again deletes the rest", e);
     }
 
-    // the engine told the continuous aggregates over the type that every sample is gone (issue #10428); refresh them as an INSERT does.
-    // A truncate that failed part way threw above and refreshes nothing: the range is recorded all the same, and the next refresh
-    // (the next INSERT triggers one) recomputes it
-    if (deleted > 0L)
-      ContinuousAggregateRefresher.refreshAggregatesOver(context.getDatabase(), tsType.getName());
+    // the engine told the continuous aggregates over the type that every sample is gone (issue #10428), and refreshed them (#10686)
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "truncate type");

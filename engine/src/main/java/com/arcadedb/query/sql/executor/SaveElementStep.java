@@ -320,7 +320,8 @@ public class SaveElementStep extends AbstractExecutionStep {
     }
 
     try {
-      engine.appendSamples(timestamps, columnValues);
+      // without the engine's own refresh: the statement refreshes the aggregates over the type once, not once per row (#10632)
+      engine.appendSamplesWithoutRefresh(timestamps, columnValues);
     } catch (final IOException e) {
       throw new CommandExecutionException("Error appending to TimeSeries engine", e);
     }
