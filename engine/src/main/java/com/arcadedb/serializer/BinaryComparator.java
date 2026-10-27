@@ -41,6 +41,7 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.RandomAccess;
 import java.util.function.BiPredicate;
 
 import static com.arcadedb.utility.CollectionUtils.arrayToList;
@@ -860,12 +861,15 @@ public class BinaryComparator {
     if (a instanceof short[] shorts && b instanceof short[] shorts1)
       return Arrays.compare(shorts, shorts1);
 
-    final int sizeA = a instanceof List<?> list ? list.size() : Array.getLength(a);
-    final int sizeB = b instanceof List<?> list ? list.size() : Array.getLength(b);
+    // a list without constant-time access (a LinkedList) is read once into an array rather than walked by index
+    final Object seqA = a instanceof List<?> list && !(list instanceof RandomAccess) ? list.toArray() : a;
+    final Object seqB = b instanceof List<?> list && !(list instanceof RandomAccess) ? list.toArray() : b;
+    final int sizeA = seqA instanceof List<?> list ? list.size() : Array.getLength(seqA);
+    final int sizeB = seqB instanceof List<?> list ? list.size() : Array.getLength(seqB);
     final int length = Math.min(sizeA, sizeB);
     for (int i = 0; i < length; i++) {
-      final Object elementA = a instanceof List<?> list ? list.get(i) : Array.get(a, i);
-      final Object elementB = b instanceof List<?> list ? list.get(i) : Array.get(b, i);
+      final Object elementA = seqA instanceof List<?> list ? list.get(i) : Array.get(seqA, i);
+      final Object elementB = seqB instanceof List<?> list ? list.get(i) : Array.get(seqB, i);
       final int cmp = compareTo(elementA, elementB);
       if (cmp != 0)
         return cmp;

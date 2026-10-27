@@ -41,6 +41,7 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
@@ -163,6 +164,16 @@ class Issue10710MinMaxAndGroupingKeyTest extends TestHelper {
       assertThat(((Identifiable) row.getProperty("m")).getIdentity()).isEqualTo(rids[1]);
       assertThat(((Identifiable) row.getProperty("n")).getIdentity()).isEqualTo(rids[0]);
     }
+  }
+
+  /** An array is a sequence, ordered against another array or a list element by element. */
+  @Test
+  void sequencesOrderElementByElement() {
+    assertThat(BinaryComparator.compareTo(new int[] { 0, 9 }, new int[] { 1, 2 })).isNegative();
+    assertThat(BinaryComparator.compareTo(new double[] { 1, 2 }, new long[] { 1, 2 })).isZero();
+    assertThat(BinaryComparator.compareTo(new short[] { 1 }, new short[] { 1, 0 })).isNegative();
+    assertThat(BinaryComparator.compareTo(new LinkedList<>(List.of(0, 9)), new int[] { 1, 2 })).isNegative();
+    assertThat(BinaryComparator.compareTo(new float[] { 2 }, new ArrayList<>(List.of(1)))).isPositive();
   }
 
   /** #10697: the repro of the report, over declared properties. */

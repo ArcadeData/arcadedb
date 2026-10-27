@@ -406,26 +406,30 @@ public class Statement extends SimpleNode {
               values > accepted ? ", and a list meant for one placeholder (as in 'IN ?') is passed as one value" : ""));
   }
 
+  /** The position a {@code ?} or a {@code :name} takes its positional value from, or -1 for any other node. */
+  private static int sequentialParameterNumber(final SimpleNode node) {
+    if (node instanceof PositionalParameter parameter)
+      return parameter.paramNumber;
+    if (node instanceof NamedParameter parameter)
+      // -1 for a literal the statement cache extracted: bound by name only, it takes no positional value
+      return parameter.paramNumber;
+    return -1;
+  }
+
+  /** The position a Postgres-style {@code $N} reads, or -1 for any other node. */
+  private static int dollarParameterNumber(final SimpleNode node) {
+    final String key = node instanceof Identifier identifier ? identifier.positionalParameterKey() : null;
+    return key != null ? Integer.parseInt(key) : -1;
+  }
+
   /** The placeholders a positional binding must fill (high 32 bits) and the values it may hold (low 32 bits), or BOUNDS_UNKNOWN. */
   private long positionalParameterBounds() {
     long bounds = positionalParameterBounds;
     if (bounds == BOUNDS_NOT_COMPUTED) {
       final int[] counts = { 0, 0 };
       final boolean readable = SqlAstInspector.allNodesMatch(this, node -> {
-        final int number;
-        if (node instanceof PositionalParameter parameter)
-          number = parameter.paramNumber;
-        else if (node instanceof NamedParameter parameter)
-          // -1 for a literal the statement cache extracted: bound by name only, it takes no positional value
-          number = parameter.paramNumber;
-        else {
-          final String key = node instanceof Identifier identifier ? identifier.positionalParameterKey() : null;
-          if (key != null)
-            counts[1] = Math.max(counts[1], Integer.parseInt(key) + 1);
-          return true;
-        }
-        if (number >= 0)
-          counts[0] = Math.max(counts[0], number + 1);
+        counts[0] = Math.max(counts[0], sequentialParameterNumber(node) + 1);
+        counts[1] = Math.max(counts[1], dollarParameterNumber(node) + 1);
         return true;
       });
       bounds = readable ? ((long) counts[0] << 32) | Math.max(counts[0], counts[1]) : BOUNDS_UNKNOWN;

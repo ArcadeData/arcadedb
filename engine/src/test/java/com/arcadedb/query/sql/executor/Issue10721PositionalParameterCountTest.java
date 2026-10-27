@@ -83,6 +83,9 @@ class Issue10721PositionalParameterCountTest extends TestHelper {
     // the literals 'x' and 1 become generated parameters of the cached statement: they take no positional value
     assertThat(query("SELECT FROM V WHERE k = ? AND 'x' = 'x' AND 1 = 1", 1)).isEqualTo(1);
     assertRefused(() -> query("SELECT FROM V WHERE k = ? AND 'x' = 'x' AND 1 = 1", 1, 2), 1, 2);
+    // the same shape with other literals is the same cached statement: still one placeholder, whatever ran before it
+    assertThat(query("SELECT FROM V WHERE k = ? AND 'y' = 'y' AND 2 = 2", 2)).isEqualTo(1);
+    assertRefused(() -> query("SELECT FROM V WHERE k = ? AND 'z' = 'z' AND 3 = 3"), 1, 0);
   }
 
   @Test

@@ -104,6 +104,11 @@ class Issue10753WherePrecedenceTest {
     executeTest(database -> {
       assertThat(graphql(database, "{ books(name: \"Target\", where: \"pages > 100 or pages < 10 -- big or small\") { name pages } }"))
           .containsExactly("Target/5", "Target/500");
+      assertThat(graphql(database, "{ books(name: \"Target\", where: \"pages > 100 /* big */ or pages < 10\") { name pages } }"))
+          .containsExactly("Target/5", "Target/500");
+      // a block comment left open would swallow the closing parenthesis: it is no complete condition, and is refused
+      assertThatThrownBy(() -> graphql(database, "{ books(name: \"Target\", where: \"pages > 100 /* or pages < 10\") { name pages } }"))
+          .isInstanceOf(CommandParsingException.class);
       return null;
     });
   }
