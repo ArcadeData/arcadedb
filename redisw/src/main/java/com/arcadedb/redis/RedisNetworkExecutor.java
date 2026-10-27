@@ -122,7 +122,8 @@ public class RedisNetworkExecutor extends Thread {
   private static final int INITIAL_PENDING_REPLY_BYTES = 16 * 1024;
 
   /**
-   * Holds the resolved key and database from key resolution.
+   * Holds the resolved key and database from key resolution. With a database, {@code key} is already the variable name
+   * {@link RedisVariableKeys#toVariableName} made of the client's key; without one it is the client's key itself.
    */
   private record ResolvedKey(String key, DatabaseInternal database) {
   }
@@ -702,7 +703,7 @@ public class RedisNetworkExecutor extends Thread {
       // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
       for (final String variable : variables)
         // setGlobalVariable atomically returns the previous value
-        if (database.setGlobalVariable(variable, null) != null)
+        if (database.setGlobalVariable(RedisVariableKeys.toVariableName(variable), null) != null)
           deleted[0]++;
     } else {
       // Persistent mode: delete from database
@@ -844,7 +845,7 @@ public class RedisNetworkExecutor extends Thread {
         if (!json.has("id")) {
           throw new RedisException("JSON object must have an 'id' field for transient storage");
         }
-        keys[i] = json.get("id").toString();
+        keys[i] = RedisVariableKeys.toVariableName(json.get("id").toString());
         values[i] = json.toString();
       }
       for (int i = 0; i < count; i++)
@@ -1191,13 +1192,13 @@ public class RedisNetworkExecutor extends Thread {
       // existsDatabase first, isDatabaseHeld second, because every hold goes up before the registry entry leaves (see isDatabaseHeld)
       if (server.existsDatabase(dbName) || server.isDatabaseHeld(dbName))
         // A real database prefix: authorize access (throws if not permitted) and bind the principal.
-        return new ResolvedKey(actualKey, getAuthorizedDatabase(dbName));
+        return new ResolvedKey(RedisVariableKeys.toVariableName(actualKey), getAuthorizedDatabase(dbName));
       // Not a database prefix, treat as regular key.
     }
 
     // Use selected database (from SELECT command or default config)
     if (selectedDatabaseName != null)
-      return new ResolvedKey(key, getAuthorizedDatabase(selectedDatabaseName));
+      return new ResolvedKey(RedisVariableKeys.toVariableName(key), getAuthorizedDatabase(selectedDatabaseName));
 
     return new ResolvedKey(key, null);
   }
@@ -1571,7 +1572,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private String getTransientValue(final String databaseName, final String key) {
     final DatabaseInternal database = getAuthorizedDatabase(databaseName);
-    final Object value = database.getGlobalVariable(key);
+    final Object value = database.getGlobalVariable(RedisVariableKeys.toVariableName(key));
     return value != null ? value.toString() : null;
   }
 
