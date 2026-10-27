@@ -38,9 +38,11 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexMaintenanceSuspension;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LRUCache;
@@ -924,13 +926,25 @@ public class GraphBatch implements AutoCloseable {
         if (entry.getKey() == null)
           throw new IllegalArgumentException("Property names cannot be null");
         pairs[i++] = entry.getKey().toString();
-        pairs[i++] = entry.getValue();
+        pairs[i++] = entry.getValue() instanceof Result ? Type.toRecordValue(entry.getValue()) : entry.getValue();
       }
       return pairs;
     }
     if (properties.length % 2 != 0)
       throw new IllegalArgumentException("Properties must be an even number as pairs of name, value");
-    return properties;
+
+    // A QUERY RESULT IS UNWRAPPED HERE, WHERE THE VALUE ENTERS THE EDGE, AS MutableDocument DOES IT: THE TEMPLATE WRITER LABELS
+    // A VALUE BY WHAT IT STANDS FOR AND CASTS IT TO THAT, A Result TO AN Identifiable (issue #10737). ONLY A Result AT THE TOP
+    // IS LOOKED FOR: A NESTED ONE REACHES THE FULL SERIALIZER, WHICH UNWRAPS IT, AND A BULK LOAD MUST NOT PAY A WALK OVER
+    // EVERY LIST VALUE OF EVERY EDGE. THE CALLER'S ARRAY IS COPIED BEFORE IT CHANGES, AND ONLY THEN
+    Object[] pairs = properties;
+    for (int i = 1; i < properties.length; i += 2)
+      if (properties[i] instanceof Result) {
+        if (pairs == properties)
+          pairs = properties.clone();
+        pairs[i] = Type.toRecordValue(properties[i]);
+      }
+    return pairs;
   }
 
   private boolean typeAppliesSchemaToEmptyEdge(final String edgeTypeName) {
@@ -1098,14 +1112,16 @@ public class GraphBatch implements AutoCloseable {
    * {@code commitEvery > 0}. So a connect pass that dies part-way leaves records that are durable and reachable
    * from nothing: {@code countType()} counts them and no traversal finds them.
    * <p>
-   * CHECK DATABASE does not rescue them on its own. Since #6090 its {@code checkEdges} pass does REPORT them - it
+   * CHECK DATABASE does not remove them on its own. Since #6090 its {@code checkEdges} pass does REPORT them - it
    * names each one and counts them under {@code unreachableEdgeRecords} - but removing them is an explicit opt-in
    * ({@code CHECK DATABASE FIX DELETE ORPHANS}), never part of a plain {@code FIX}, because the same shape is what
-   * a vertex that merely lost its head-chunk pointer looks like. Before that the finding was discarded entirely
-   * into the aggregate {@code missingReferenceBack} counter, which a perfectly healthy UNIDIRECTIONAL edge also
-   * raises. ({@code FIX} does reclaim orphaned edge SEGMENTS, but those are the internal linked-list chunks, not
-   * the edge records at issue here.) So nothing cleans these up unattended, and the flush cleans up after itself,
-   * before the failure propagates.
+   * a vertex that merely lost its head-chunk pointer looks like; a plain {@code FIX} RELINKS them instead (#10741),
+   * which is the recovery of a batch the process died in before {@code close()}, when nothing is left to reclaim
+   * anything. Before #6090 the finding was discarded entirely into the aggregate {@code missingReferenceBack} counter,
+   * which a perfectly healthy UNIDIRECTIONAL edge also raises. ({@code FIX} does reclaim orphaned edge SEGMENTS, but
+   * those are the internal linked-list chunks, not the edge records at issue here.) A flush that FAILED told its caller
+   * so, and a {@code FIX} relinking its records would bring back edges the caller was told were not created, so the
+   * flush cleans up after itself, before the failure propagates.
    * <p>
    * Deletion goes through {@code database.deleteRecord} rather than a direct bucket delete: an edge record may
    * carry index entries (issue #4113) and EXTERNAL property values, and this flush creates them by two different

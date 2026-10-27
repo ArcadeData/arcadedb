@@ -178,6 +178,10 @@ public class TransactionContext implements Transaction {
   // it was served from the newest committed images. Every later read of the record in the transaction answers it. Lazily
   // allocated: only that corner ever fills it.
   private       Map<RID, byte[]>                     snapshotRecordContents;
+  // #10712: per bucket, the committed record counter as this REPEATABLE_READ transaction first read it, so count(*) and
+  // countType() repeat like a pinned page instead of following every later commit. Lazily allocated: a READ_COMMITTED
+  // transaction, or one that never counts, never pays.
+  private       LongLongHashMap                      snapshotBucketCounts;
   private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   // #10302: per (vertex, direction, edge type bucket, neighbour), how many lightweight edge entries this transaction removed
   // from that vertex's list ([REMOVED]) and appended to it ([APPENDED], #10315). A lightweight edge has no RID and its twins
@@ -1711,6 +1715,25 @@ public class TransactionContext implements Transaction {
     if (snapshotRecordContents == null)
       snapshotRecordContents = new HashMap<>();
     snapshotRecordContents.put(rid, content);
+  }
+
+  /**
+   * The committed record count of bucket {@code bucketId} this transaction counts from: under {@code REPEATABLE_READ} the
+   * value the first count of the bucket in the transaction read, kept until the transaction ends, so a second
+   * {@code count(*)} repeats the first as a second read of a page does (#10712); under {@code READ_COMMITTED}
+   * {@code committedNow} itself. The transaction's own pending delta is not part of it: the caller adds it, so the
+   * transaction always counts its own writes.
+   */
+  public long getRepeatableCommittedCount(final int bucketId, final long committedNow) {
+    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+      return committedNow;
+    if (snapshotBucketCounts == null)
+      snapshotBucketCounts = new LongLongHashMap();
+    final long pinned = snapshotBucketCounts.get(bucketId, -1L);
+    if (pinned > -1)
+      return pinned;
+    snapshotBucketCounts.put(bucketId, committedNow);
+    return committedNow;
   }
 
   /** Drops the snapshot of a multi-page record this transaction writes or deletes (#9070, #9620). */
@@ -3800,6 +3823,7 @@ public class TransactionContext implements Transaction {
     immutablePages = clearOrReplace(immutablePages, PAGES_CACHE_CAPACITY);
     snapshotChunkChains = null;
     snapshotRecordContents = null;
+    snapshotBucketCounts = null;
     bucketRecordDelta.clear();
     if (deletedRecordsInTx.size() > DELETED_SET_CAPACITY * 3 / 4)
       deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);

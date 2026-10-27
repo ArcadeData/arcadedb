@@ -91,6 +91,8 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("indexReplayConclusion", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("snapshotChunkChains", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("snapshotRecordContents", NOT_STATEMENT_STATE);
+    // Issue #10712: the committed bucket counters a REPEATABLE_READ transaction first read, kept like a pinned page
+    CLASSIFICATION.put("snapshotBucketCounts", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("lockedFiles", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("explicitLockedFiles", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("explicitLock", NOT_STATEMENT_STATE);

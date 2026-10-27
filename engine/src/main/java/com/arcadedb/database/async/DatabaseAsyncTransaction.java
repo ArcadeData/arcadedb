@@ -18,13 +18,19 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.database.TransactionRetryPolicy;
+import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.util.logging.Level;
 
@@ -87,7 +93,7 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
   }
 
   private void executeTransaction(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    ConcurrentModificationException lastException = null;
+    ArcadeDBException lastException = null;
 
     if (database.isTransactionActive()) {
       try {
@@ -110,6 +116,8 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
       }
     }
 
+    final ContextConfiguration configuration = database.getConfiguration();
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
     for (int retry = 0; retry < retries + 1; ++retry) {
       // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
       // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).
@@ -133,8 +141,9 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
         // OK
         break;
 
-      } catch (final ConcurrentModificationException e) {
-        // RETRY
+      } catch (final NeedRetryException | DuplicatedKeyException e) {
+        // RETRY: THE WHOLE FAMILY THE JAVADOC PROMISES, NOT ONLY A ConcurrentModificationException. A LockTimeoutException
+        // FROM THE COMMIT'S OWN FILE LOCKS IS WHAT N WORKERS COMMITTING INTO THE SAME BUCKETS PRODUCE (#10759)
         lastException = e;
         if (database.isTransactionActive())
           database.rollback();
@@ -153,6 +162,16 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
               null, database.getName());
           break;
         }
+
+        // THE SAME RULES AS LocalDatabase.transaction: ONE RETRY FOR A DUPLICATED KEY (#4959), NONE FOR A REFUSAL THAT HOLDS ON
+        // THIS NODE (#9995). THE CONFLICT GOES TO THE CALLER THROUGH THE TAIL BELOW, AS AN EXHAUSTED BUDGET DOES
+        if (!retryPolicy.mayRetry(e))
+          break;
+
+        // AND THE SAME JITTERED BACKOFF: RETRYING AT ONCE RACES THE WORKERS THAT HAVE JUST CAUSED THE CONFLICT (#9529)
+        if (retry < retries)
+          RetryBackoff.sleep(retry, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+              configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));
 
       } catch (final Exception | Error e) {
         // An Error too (#9575): the worker loop catches it and rolls back, but only this callback tells the submitter, and

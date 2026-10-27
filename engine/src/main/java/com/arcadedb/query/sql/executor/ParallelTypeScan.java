@@ -112,6 +112,10 @@ final class ParallelTypeScan {
   private          UnitChannel[]           channels;
   private          List<Future<?>>         futures;
   private volatile Throwable               failure;
+  // Set by close() BEFORE it interrupts the producers: whatever a producer throws from then on is the cancellation the
+  // consumer asked for (an InterruptedIOException out of a page load, a ClosedByInterruptException out of a read), not a
+  // failure of the scan, and nobody is left to report one to (#10747)
+  private volatile boolean                 closed;
   // The consumer's last sign of life. Producers use it to recognize an abandoned (opened, never drained nor closed)
   // result set and free their pool thread instead of parking on a full channel forever. Starts at submission: under a
   // saturated pool a consumer slow to reach its first poll is already on the clock.
@@ -570,7 +574,11 @@ final class ParallelTypeScan {
         } catch (final Throwable e) {
           // Throwable, not Exception: an Error that killed this producer must fail the query too, or the consumer
           // would take the missing unit for an empty one
-          recordFailure(e);
+          if (closed)
+            // CANCELLED BY close(): THE INTERRUPT LANDED INSIDE A PAGE LOAD OR A READ, WHICH THROWS INSTEAD OF RETURNING (#10747)
+            LogManager.instance().log(this, Level.FINE, "Parallel scan of type '%s' cancelled while a producer was reading", e, typeName);
+          else
+            recordFailure(e);
         } finally {
           DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         }
@@ -629,6 +637,8 @@ final class ParallelTypeScan {
 
   /** Stops every worker still running and drops what the consumer holds. Idempotent. */
   void close() {
+    // BEFORE THE INTERRUPTS: A PRODUCER THAT SEES ONE MUST ALREADY SEE THE FLAG
+    closed = true;
     if (futures != null)
       for (final Future<?> f : futures)
         f.cancel(true);
