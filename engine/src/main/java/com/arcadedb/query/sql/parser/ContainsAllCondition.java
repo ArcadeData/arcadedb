@@ -275,7 +275,9 @@ public class ContainsAllCondition extends BooleanExpression {
       if (info.isIndexByItem() && right != null && right.isEarlyCalculated(info.getContext())) {
         if (!right.isLiteral())
           info.setPlanDependsOnValue();
-        return firstLookupItem(right.execute((Result) null, info.getContext())) != null;
+        final Object rightValue = right.execute((Result) null, info.getContext());
+        // a one-shot Iterator would be consumed by this call and again by the lookup before the filter reads it
+        return !(rightValue instanceof Iterator) && firstLookupItem(rightValue) != null;
       }
     }
 

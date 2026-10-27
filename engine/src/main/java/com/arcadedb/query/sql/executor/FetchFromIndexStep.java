@@ -668,10 +668,16 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     int count = 0;
     for (final BooleanExpression exp : subBlocks)
       if ((from ? exp.resolveKeyFrom(additional) : exp.resolveKeyTo(additional)) != null)
-        slots[count++] = exp instanceof BinaryCondition || exp instanceof BetweenCondition || exp instanceof ContainsValueCondition ?
-            SLOT_SCALAR :
-            exp instanceof ContainsAllCondition || exp instanceof ContainsCondition ? SLOT_FIRST_ITEM : SLOT_MULTI_VALUE;
+        slots[count++] = keySlotKind(exp);
     return slots;
+  }
+
+  private static byte keySlotKind(final BooleanExpression exp) {
+    if (exp instanceof BinaryCondition || exp instanceof BetweenCondition || exp instanceof ContainsValueCondition)
+      return SLOT_SCALAR;
+    if (exp instanceof ContainsAllCondition || exp instanceof ContainsCondition)
+      return SLOT_FIRST_ITEM;
+    return SLOT_MULTI_VALUE;
   }
 
   /**
