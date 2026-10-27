@@ -2411,7 +2411,10 @@ public enum Type {
 
   private static boolean holdsOnlyPlainValues(final Collection<?> values) {
     for (final Object item : values)
-      if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray())
+      // the commonest element, and none of the kinds below
+      if (item instanceof String)
+        continue;
+      else if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray())
           || needsTemporalKey(item))
         return false;
     return true;
