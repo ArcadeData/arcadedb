@@ -4062,6 +4062,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (database == null || database.isOpen())
       return true;
 
+    // Every refusal below is FATAL: shutdown ends the message loop once this message returns, as revalidateUser() does, so the
+    // connection is closed after the error instead of reading the next message against a closed instance
     if (explicitTransactionStarted || !portals.isEmpty()) {
       shutdown = true;
       writeError(ERROR_SEVERITY.FATAL,
@@ -4073,15 +4075,23 @@ public class PostgresNetworkExecutor extends Thread {
     final Database live;
     try {
       live = server.getDatabaseForClient(databaseName);
+      // The thread's context for the path was removed when the old instance closed: this one belongs to the new instance. The
+      // user is the one revalidateUser() has just re-resolved and checked against this database name; a user the new instance
+      // does not grant gets the engine's deny-all database user, as at connect
+      DatabaseContext.INSTANCE.init((DatabaseInternal) live).setCurrentUser(authenticatedUser.getDatabaseUser(live));
     } catch (final DatabaseOperationException e) {
       shutdown = true;
       refuseDatabase(e);
       return false;
+    } catch (final RuntimeException e) {
+      // Answered rather than left to escape: the main loop would log it and answer nothing, and the client would wait for good
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL, clientMessage("Error on reopening database '" + databaseName + "': " + e.getMessage(), e),
+          sqlStateFor(e));
+      return false;
     }
 
     database = live;
-    // The thread's context for the path was removed when the old instance closed: this one belongs to the new instance
-    DatabaseContext.INSTANCE.init((DatabaseInternal) live).setCurrentUser(authenticatedUser.getDatabaseUser(live));
     sessionSettings.setIsolationLevels(this::currentIsolationLevel, live::getTransactionIsolationLevel);
     live.setAutoTransaction(true);
     // The schema types memoized on the prepared statements are the closed instance's: re-resolved against the new schema on next

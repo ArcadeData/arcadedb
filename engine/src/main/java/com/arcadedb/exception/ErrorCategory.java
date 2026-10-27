@@ -109,7 +109,8 @@ public enum ErrorCategory {
    * The database exists and cannot serve the request NOW: a restore holds its name, {@code close database} closed it, it is being
    * dropped, an interrupted HA snapshot install left it mid-swap ({@link DatabaseNotAvailableException}, issue #10553). Raised where the
    * name is resolved, before any work of the request, so nothing of it ran. Also the handle a request had already resolved being closed
-   * under it ({@link DatabaseIsClosedException}, issue #10692), except the HA reinstall's close-for-reopen, which is {@link #RETRY}. The operator caused it and it clears without the caller
+   * under it ({@link DatabaseIsClosedException}, issue #10692), except the HA reinstall's close-for-reopen, which is {@link #RETRY}.
+   * The operator caused it and it clears without the caller
    * changing anything, which is what separates it from the three it is easily mistaken for: not {@link #NOT_FOUND}, because the database
    * is there (and the gRPC client rebuilds that as a missing record); not {@link #RETRY}, which means "run the transaction again" and
    * is decided on the conflict of a commit; not {@link #SERVER}, because nothing is broken and it is not worth a stack trace in the log.
