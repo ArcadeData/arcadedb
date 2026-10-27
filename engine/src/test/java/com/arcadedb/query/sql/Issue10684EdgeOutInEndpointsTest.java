@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
@@ -122,6 +123,36 @@ class Issue10684EdgeOutInEndpointsTest extends TestHelper {
     assertThat(row.<Object>getProperty("out")).isEqualTo("mine");
     assertThat(row.<Object>getProperty("iname")).isEqualTo("x");
     assertThat(row.<Object>getProperty("endpoint")).isEqualTo(aRid);
+  }
+
+  @Test
+  void anExplicitNullPropertyNamedOutStillWins() {
+    database.transaction(() -> database.command("sql", "UPDATE E SET out = null"));
+    final Result row = single("SELECT out AS o, in.name AS iname FROM E");
+    assertThat(row.<Object>getProperty("o")).isNull();
+    assertThat(row.<Object>getProperty("iname")).isEqualTo("x");
+    assertThat(count("SELECT FROM E WHERE out IS NULL")).isEqualTo(1);
+  }
+
+  @Test
+  void aProjectedColumnNamedOutIsNotReplacedByTheEndpoint() {
+    final Result row = single("SELECT out FROM (SELECT qty AS out FROM E)");
+    assertThat(row.<Object>getProperty("out")).isEqualTo(7);
+
+    final Result nullRow = single("SELECT out FROM (SELECT null AS out FROM E)");
+    assertThat(nullRow.<Object>getProperty("out")).isNull();
+  }
+
+  @Test
+  void lightweightEdgesResolveTheirEndpointsToo() {
+    database.command("sql", "CREATE EDGE TYPE L");
+    database.transaction(() -> {
+      final Vertex a = database.lookupByRID(aRid, true).asVertex();
+      a.newLightEdge("L", bRid);
+    });
+    final Result row = single("SELECT outE('L').in.name AS names, outE('L').out.id AS ids FROM A");
+    assertThat(row.<List<Object>>getProperty("names")).containsExactly("x");
+    assertThat(row.<List<Object>>getProperty("ids")).containsExactly(1);
   }
 
   @Test

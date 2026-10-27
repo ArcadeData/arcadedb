@@ -125,7 +125,9 @@ public class OrderByItem {
         aVal = a.getMetadata(alias);
         bVal = b.getMetadata(alias);
       }
-      // ON AN EDGE, `out` / `in` WITH NO PROPERTY OF THAT NAME ARE ITS ENDPOINTS, AS IN THE PROJECTION (ISSUE #10684)
+      // ON AN EDGE, `out` / `in` WITH NO PROPERTY OF THAT NAME ARE ITS ENDPOINTS, AS IN THE PROJECTION (ISSUE #10684). A
+      // NULL HERE CAN ALSO BE A PROPERTY THAT IS PRESENT WITH A NULL VALUE: THE HELPER ASKS hasProperty() FIRST AND LEAVES
+      // THAT NULL ALONE, SO ONLY A NAME THE ROW DOES NOT CARRY AT ALL IS REPLACED
       if (aVal == null)
         aVal = SuffixIdentifier.edgeEndpointIfUnshadowed(a, alias);
       if (bVal == null)
