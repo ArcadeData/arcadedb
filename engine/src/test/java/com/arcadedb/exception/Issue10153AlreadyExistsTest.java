@@ -20,8 +20,10 @@ package com.arcadedb.exception;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.function.FunctionLibraryFactory;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -136,7 +138,11 @@ class Issue10153AlreadyExistsTest extends TestHelper {
 
     // nothing was changed by any of the three
     assertThat(database.getSchema().existsType("Ts10796")).isTrue();
-    assertThat(database.query("sql", "select count(*) as n from Ts10796").next().<Long>getProperty("n")).isEqualTo(1L);
+    // the sample itself, read back: count(*) answers a cached counter, which a sample no longer readable would not change
+    final List<Result> samples = database.query("sql", "select ts, value from Ts10796").stream().toList();
+    assertThat(samples).hasSize(1);
+    assertThat(DateUtils.toEpochMillis(samples.getFirst().getProperty("ts"))).isEqualTo(1000L);
+    assertThat(samples.getFirst().<Double>getProperty("value")).isEqualTo(1.5);
   }
 
   @Test
