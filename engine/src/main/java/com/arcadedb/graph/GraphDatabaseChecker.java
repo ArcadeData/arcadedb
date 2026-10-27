@@ -59,6 +59,9 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphDatabaseChecker {
+  /** Test-only override of {@link #orphanRelinkBudget()}, 0 in production (#10741). */
+  static volatile long orphanRelinkBudgetForTesting = 0;
+
   private final DatabaseInternal  database;
   private final GraphEngine       graphEngine;
   /**
@@ -2088,9 +2091,6 @@ public class GraphDatabaseChecker {
 
     return stats;
   }
-
-  /** Test-only override of {@link #orphanRelinkBudget()}, 0 in production. */
-  static volatile long orphanRelinkBudgetForTesting = 0;
 
   /**
    * How many orphan edge records one {@code FIX} run relinks (#10741): what a tenth of the heap holds at the 72 bytes a

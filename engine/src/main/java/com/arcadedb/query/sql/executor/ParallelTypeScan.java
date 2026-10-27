@@ -639,7 +639,9 @@ final class ParallelTypeScan {
   private static boolean isCancellation(final Throwable e) {
     if (Thread.currentThread().isInterrupted())
       return true;
-    for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause())
+    // BOUNDED: getCause() NEVER ANSWERS THE THROWABLE ITSELF, BUT A LONGER CYCLE IS NOT RULED OUT
+    Throwable t = e;
+    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++)
       if (t instanceof InterruptedIOException || t instanceof ClosedByInterruptException || t instanceof InterruptedException)
         return true;
     return false;
