@@ -2149,6 +2149,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * The body of a 401 answered to a request whose cluster token does not match this node's (issue #10601). It starts
+   * with the string issue #9554 was filed about, so existing log searches still match.
+   */
+  static final String INVALID_CLUSTER_TOKEN_MESSAGE =
+      "Invalid cluster token: the caller's cluster token does not match this node's. See this node's log for where its "
+          + "token comes from";
+
+  /**
    * Whether {@code providedToken} is the shared secret this cluster's members authenticate to each other
    * with. This is a proof of <em>hop</em>, not of identity: it says a cluster peer sent the request, and
    * nothing about who the request is for. What the caller does with that answer - resolve a forwarded
@@ -2157,14 +2165,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Resolved through {@link HAServerPlugin#effectiveClusterToken}, the same helper the sending side uses, so
    * the two ends of a forwarded hop cannot disagree about which token is current.
    */
-  /**
-   * The body of a 401 answered to a request whose cluster token does not match this node's (issue #10601). It starts
-   * with the string issue #9554 was filed about, so existing log searches still match.
-   */
-  static final String INVALID_CLUSTER_TOKEN_MESSAGE =
-      "Invalid cluster token: the caller's cluster token does not match this node's. See this node's log for where its "
-          + "token comes from";
-
   private boolean isValidClusterToken(final String providedToken) {
     final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
     return clusterToken != null && !clusterToken.isBlank() && constantTimeEquals(clusterToken, providedToken);

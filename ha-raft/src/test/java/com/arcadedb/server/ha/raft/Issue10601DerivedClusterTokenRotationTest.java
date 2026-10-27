@@ -187,6 +187,20 @@ class Issue10601DerivedClusterTokenRotationTest {
   }
 
   @Test
+  void anEmptyRecordIsTreatedAsAbsentNotAsARotation(@TempDir final Path tmp) throws Exception {
+    final Path passwordFile = tmp.resolve("rootPassword");
+    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    Files.writeString(passwordFile, "Secret-v1!\n");
+    Files.writeString(fingerprint.toPath(), "  \n"); // what a crash between truncate and write leaves
+
+    final ClusterTokenProvider provider = fileDerived(passwordFile);
+    provider.verifyDerivedTokenFingerprint(fingerprint, false);
+
+    assertThat(Files.readString(fingerprint.toPath())).isEqualTo(ClusterTokenProvider.tokenFingerprint(provider.getClusterToken()));
+    assertThat(fingerprint.toPath().resolveSibling(fingerprint.getName() + ".tmp")).doesNotExist();
+  }
+
+  @Test
   void aTokenNotDerivedFromAFileClearsTheRecord(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
     final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());

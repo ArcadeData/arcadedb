@@ -2533,8 +2533,8 @@ public enum GlobalConfiguration {
       arcadedb.ha.clusterName and the root password (arcadedb.server.rootPassword, or the content of the file at \
       arcadedb.server.rootPasswordPath); the derived token is never stored, so changing either input changes the token \
       at the next start of each node, and nodes holding different tokens refuse each other's requests. \
-      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
-      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
+      SECURITY: set an explicit high-entropy value in production. The derivation uses a fixed public salt, so a weak \
+      root password plus a \
       reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
       forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),

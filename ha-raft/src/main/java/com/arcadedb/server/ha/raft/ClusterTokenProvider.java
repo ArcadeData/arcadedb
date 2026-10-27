@@ -30,8 +30,10 @@ import javax.crypto.spec.PBEKeySpec;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -223,6 +225,10 @@ class ClusterTokenProvider {
   /**
    * Logs a refused cluster-token hop at WARNING, at most once per {@link #REFUSAL_REPORT_INTERVAL_MS} so a peer on
    * another token cannot flood the log (or make this node re-read the password file) with one line per request.
+   * <p>
+   * Callers reach this before the request is authenticated (the token check IS the authentication, in
+   * {@code AbstractServerHttpHandler} and {@code SnapshotHttpHandler}), so any client can trigger it: the interval gate
+   * is what bounds the file read and the log line an unauthenticated caller can cause, and must stay in front of both.
    *
    * @return whether this call logged
    */
@@ -259,8 +265,10 @@ class ClusterTokenProvider {
         return;
       }
       final String fingerprint = tokenFingerprint(getClusterToken());
-      if (Files.exists(path)) {
-        final String recorded = Files.readString(path, StandardCharsets.UTF_8).strip();
+      // An empty record (a crash mid-write where the move below cannot be atomic, or a file emptied by hand) records no
+      // token, so it is treated as absent rather than as a rotation.
+      final String recorded = Files.exists(path) ? Files.readString(path, StandardCharsets.UTF_8).strip() : "";
+      if (!recorded.isEmpty()) {
         if (recorded.equals(fingerprint))
           return;
         if (!allowRotation)
@@ -278,11 +286,22 @@ class ClusterTokenProvider {
                 + "arcadedb.ha.clusterTokenAllowRotation is set: starting with the new token. Every node must restart with the "
                 + "new password, or the nodes still on the old token refuse this one", rootPasswordPath);
       }
+      // Recorded before the rest of the start runs: the token on disk is the one this node is about to use, so a start
+      // that fails later still leaves the record describing the token it would come back with. Note that leaving
+      // arcadedb.ha.clusterTokenAllowRotation on keeps this guard off for every later start.
       // On the first start of a node the Raft storage, and so the directory this record sits in, does not exist yet.
       final Path parent = path.toAbsolutePath().getParent();
       if (parent != null)
         Files.createDirectories(parent);
-      Files.writeString(path, fingerprint, StandardCharsets.UTF_8);
+      // Written to a temporary file and moved over the record, so a crash mid-write never leaves a partial record that
+      // the next start would read as a rotated password.
+      final Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+      Files.writeString(tmp, fingerprint, StandardCharsets.UTF_8);
+      try {
+        Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
+      }
     } catch (final IOException e) {
       throw new ConfigurationException(
           "Cannot read or write the cluster token fingerprint at '" + fingerprintFile.getAbsolutePath() + "'", e);
