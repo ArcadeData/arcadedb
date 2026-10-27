@@ -2258,6 +2258,8 @@ expect "fails closed when the tags of an action cannot be listed" 1 "no tag list
     "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/unlisted.yml"
 expect "reports a workflow it cannot find" 1 "not found" \
     "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/missing.yml"
+expect "accepts --tags-dir after the workflow arguments" 1 "commented \`# v3.29.5\`" \
+    "$PINCOMMENTS" "$work/pins/drifted.yml" --tags-dir "$work/pins/tags"
 
 echo
 if [[ $failures -gt 0 ]]; then

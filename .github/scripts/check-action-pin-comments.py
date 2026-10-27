@@ -55,6 +55,7 @@ Usage:
 @author Roberto Franchini (r.franchini@arcadedata.com)
 """
 
+import argparse
 import os
 import re
 import subprocess
@@ -69,7 +70,8 @@ PIN = re.compile(
     r"""^\s*(?:-\s+)?uses:\s*["']?(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)(?P<path>/[^@\s"']*)?"""
     r"""@(?P<sha>[0-9a-f]{40})["']?(?:\s+#\s*(?P<comment>\S+))?""")
 
-LS_REMOTE_TIMEOUT_SECONDS = 60
+# Short enough that an outage fails the lint job in about a minute rather than several.
+LS_REMOTE_TIMEOUT_SECONDS = 30
 RETRY_DELAY_SECONDS = 5
 
 
@@ -127,17 +129,14 @@ def list_tags(owner, repo, tags_dir):
 
 
 def main(argv):
-    args = argv[1:]
-    tags_dir = None
-    if args[:1] == ["--tags-dir"]:
-        if len(args) < 2:
-            print("--tags-dir needs a directory")
-            return 2
-        tags_dir = Path(args[1])
-        args = args[2:]
+    parser = argparse.ArgumentParser(description="Checks that each SHA-pinned action's version comment is a tag at its SHA.")
+    parser.add_argument("--tags-dir", type=Path, help="read `git ls-remote --tags` output from DIR/<owner>/<repo>.txt")
+    parser.add_argument("workflows", nargs="*", type=Path, help="workflow files (default: .github/workflows/*.yml)")
+    options = parser.parse_args(argv[1:])
+    tags_dir = options.tags_dir
 
     root = Path(__file__).resolve().parents[2]
-    workflows = [Path(a) for a in args] or sorted(
+    workflows = options.workflows or sorted(
         p for p in (root / ".github" / "workflows").iterdir() if p.suffix in (".yml", ".yaml"))
 
     for workflow in workflows:
