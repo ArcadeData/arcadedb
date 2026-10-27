@@ -371,4 +371,33 @@ public class BoltStateMachineIT extends BaseBoltServerTest {
       assertThat(summary.records()).hasSize(1);
     }
   }
+
+  /**
+   * Issue #10771, over the wire: a HELLO on an authenticated connection is a protocol error that FAILS the connection, so the
+   * RUN after it is IGNORED rather than executed, and so is a LOGON, which answered FAILURE in FAILED before the fix. RESET is
+   * the way back.
+   */
+  @Test
+  void helloOutOfTurnFailsTheConnectionUntilReset() throws Exception {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
+      bolt.sendMap(BoltMessage.HELLO, Map.of("user_agent", "issue-10771"));
+      final BoltWireConnection.Summary hello = bolt.readSummary();
+      assertThat(hello.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(hello.code()).isEqualTo(BoltException.PROTOCOL_ERROR);
+
+      bolt.run("RETURN 1 AS one");
+      assertThat(bolt.readSummary().signature()).as("a FAILED connection must not run the query").isEqualTo(BoltMessage.IGNORED);
+
+      bolt.sendMap(BoltMessage.LOGON, Map.of("scheme", "basic", "principal", "root", "credentials", DEFAULT_PASSWORD_FOR_TESTS));
+      assertThat(bolt.readSummary().signature()).as("LOGON in FAILED").isEqualTo(BoltMessage.IGNORED);
+
+      bolt.sendNoFields(BoltMessage.RESET);
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.run("RETURN 1 AS one");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.pull(-1, -1);
+      assertThat(bolt.readSummary().records()).hasSize(1);
+    }
+  }
 }

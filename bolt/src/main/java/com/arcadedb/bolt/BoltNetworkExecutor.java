@@ -243,13 +243,24 @@ public class BoltNetworkExecutor extends Thread {
           final PackStreamReader reader = new PackStreamReader(messageData, server.getConfiguration());
           final Object value = reader.readValue();
 
+          // A message that is not a request is a protocol error like a request out of turn, and fails the connection the same
+          // way (issue #10771): a FAILURE that leaves it serving would tell the client it is broken and then go on serving it
           if (!(value instanceof PackStreamReader.StructureValue structure)) {
             sendFailure(BoltException.PROTOCOL_ERROR,
                 "Expected structure, got: " + (value != null ? value.getClass().getSimpleName() : "null"));
+            state = State.FAILED;
             continue;
           }
 
-          final BoltMessage message = BoltMessage.parse(structure);
+          final BoltMessage message;
+          try {
+            message = BoltMessage.parse(structure);
+          } catch (final IOException e) {
+            // The one IOException parse() raises is an unknown signature: the client's error, not the database's
+            sendFailure(BoltException.PROTOCOL_ERROR, e.getMessage());
+            state = State.FAILED;
+            continue;
+          }
           if (debug) {
             LogManager.instance().log(this, Level.FINE, "BOLT << %s (state=%s)", message, state);
           }
@@ -469,9 +480,28 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Process a BOLT message based on current state.
+   * <p>
+   * The two rules of the Bolt state machine that hold for every request are applied here, once, before the handler runs
+   * (issue #10771): in FAILED every request but RESET and GOODBYE is answered IGNORED, and a request that is not valid in
+   * the current state is answered with a protocol-error FAILURE AND moves the connection to FAILED, so it serves nothing
+   * more until the client RESETs. Each handler used to open with its own copy of both checks, and two of thirteen
+   * (HELLO, LOGON) had neither the FAILED arm nor the move to FAILED. The handlers keep only what is particular to them.
    */
   private void processMessage(final BoltMessage message) throws IOException {
-    switch (message.getSignature()) {
+    final byte signature = message.getSignature();
+    if (signature != BoltMessage.RESET && signature != BoltMessage.GOODBYE) {
+      if (state == State.FAILED) {
+        sendIgnored();
+        return;
+      }
+      if (!isAcceptedIn(signature, state)) {
+        sendFailure(BoltException.PROTOCOL_ERROR, BoltMessage.signatureName(signature) + " not expected in state: " + state);
+        state = State.FAILED;
+        return;
+      }
+    }
+
+    switch (signature) {
     case BoltMessage.HELLO:
       handleHello((HelloMessage) message);
       break;
@@ -509,27 +539,43 @@ public class BoltNetworkExecutor extends Thread {
       handleRoute((RouteMessage) message);
       break;
     case BoltMessage.TELEMETRY:
-      // A FAILED connection must respond IGNORED to every request except RESET (Bolt state machine),
-      // consistent with the other request handlers; otherwise acknowledge with SUCCESS.
-      if (state == State.FAILED)
-        sendIgnored();
-      else
-        sendSuccess(Map.of());
+      sendSuccess(Map.of());
       break;
-    default:
-      sendFailure(BoltException.PROTOCOL_ERROR, "Unknown message: " + BoltMessage.signatureName(message.getSignature()));
     }
+  }
+
+  /**
+   * The states each request is valid in. RESET and GOODBYE are valid in every state and never get here. A signature with
+   * no arm - none today, since {@code BoltMessage.parse} refuses an unknown one before dispatch - is valid nowhere, so a
+   * request added to the parser without an entry here is refused rather than run in any state.
+   * <p>
+   * Where this is more lenient than the Bolt specification, it is on purpose and was so before the table existed: LOGON is
+   * accepted in READY too, to re-authenticate without a LOGOFF, and TELEMETRY in any state, being a hint the server
+   * only acknowledges.
+   */
+  private static boolean isAcceptedIn(final byte signature, final State state) {
+    return switch (signature) {
+      case BoltMessage.HELLO -> state == State.AUTHENTICATION || state == State.NEGOTIATION;
+      case BoltMessage.LOGON -> state == State.AUTHENTICATION || state == State.READY;
+      // READY is precisely the state where no result stream and no explicit transaction can be open (issue #6803)
+      case BoltMessage.LOGOFF, BoltMessage.BEGIN -> state == State.READY;
+      // ROUTE enumerates every peer's Bolt endpoint, so it must not run for an unauthenticated caller
+      case BoltMessage.ROUTE -> state == State.READY;
+      // TX_STREAMING accepts RUN: BOLT 4.0+ lets a client hold several result streams open inside one explicit transaction
+      // and tell them apart by qid (issue #6804). STREAMING does not: outside a transaction there is nothing to multiplex onto
+      case BoltMessage.RUN -> state == State.READY || state == State.TX_READY || state == State.TX_STREAMING;
+      case BoltMessage.PULL, BoltMessage.DISCARD -> state == State.STREAMING || state == State.TX_STREAMING;
+      case BoltMessage.COMMIT -> state == State.TX_READY;
+      case BoltMessage.ROLLBACK -> state == State.TX_READY || state == State.TX_STREAMING;
+      case BoltMessage.TELEMETRY -> true;
+      default -> false;
+    };
   }
 
   /**
    * Handle HELLO message - authenticate and initialize connection.
    */
   private void handleHello(final HelloMessage message) throws IOException {
-    if (state != State.AUTHENTICATION && state != State.NEGOTIATION) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "HELLO not expected in state: " + state);
-      return;
-    }
-
     final String scheme = message.getScheme();
     final String principal = message.getPrincipal();
     final String credentials = message.getCredentials();
@@ -587,11 +633,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle LOGON message (BOLT 5.1+).
    */
   private void handleLogon(final LogonMessage message) throws IOException {
-    if (state != State.AUTHENTICATION && state != State.READY) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "LOGON not expected in state: " + state);
-      return;
-    }
-
     final String scheme = message.getScheme();
     final String principal = message.getPrincipal();
     final String credentials = message.getCredentials();
@@ -615,17 +656,6 @@ public class BoltNetworkExecutor extends Thread {
    * COMMIT then committed writes made before the user changed (issue #6803).
    */
   private void handleLogoff() throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.READY) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "LOGOFF not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     // Belt and braces: READY already implies no open stream and no open transaction, so nothing should be left
     // to release here. Doing it anyway is what keeps "the server considers this connection unauthenticated" from
     // ever meaning "and it still holds a transaction".
@@ -763,23 +793,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle RUN message - execute a Cypher query.
    */
   private void handleRun(final RunMessage message) throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    // TX_STREAMING accepts RUN: BOLT 4.0+ lets a client hold several result streams open inside one explicit
-    // transaction and tell them apart by qid, which is the entire reason that field exists (issue #6804). Any
-    // driver configured with a fetch size smaller than the first query's row count leaves the first stream open,
-    // so a second query in the same transaction used to be answered with a protocol error that failed the
-    // session and lost the transaction. STREAMING deliberately does NOT accept RUN, matching the BOLT state
-    // machine: outside a transaction there is nothing to multiplex onto.
-    if (state != State.READY && state != State.TX_READY && state != State.TX_STREAMING) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "RUN not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     // Every open stream pins an engine ResultSet (cursors, pages) for as long as its transaction lives, and
     // nothing in the protocol obliges a client ever to consume one, so an unbounded map here is a resource leak a
     // single authenticated session could drive. Read per RUN, like the other BOLT protocol limits, so a runtime
@@ -975,17 +988,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle PULL message - fetch records from result stream.
    */
   private void handlePull(final PullMessage message) throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.STREAMING && state != State.TX_STREAMING) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "PULL not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     final BoltQueryStream stream = resolveStream(message.getQid());
     if (stream == null)
       return;
@@ -1064,17 +1066,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle DISCARD message - discard remaining records.
    */
   private void handleDiscard(final DiscardMessage discardMessage) throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.STREAMING && state != State.TX_STREAMING) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "DISCARD not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     final BoltQueryStream stream = resolveStream(discardMessage.getQid());
     if (stream == null)
       return;
@@ -1115,17 +1106,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle BEGIN message - start explicit transaction.
    */
   private void handleBegin(final BeginMessage beginMessage) throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.READY) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "BEGIN not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     // Get database from message if specified
     final String db = beginMessage.getDatabase();
     if (db != null && !db.isEmpty()) {
@@ -1169,17 +1149,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle COMMIT message - commit explicit transaction.
    */
   private void handleCommit() throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.TX_READY) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "COMMIT not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     // A user revoked while the transaction was open must not be able to commit what it wrote before
     if (database != null && !authorizeDatabase(database.getName())) {
       rollbackExplicitTransaction();
@@ -1211,17 +1180,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle ROLLBACK message - rollback explicit transaction.
    */
   private void handleRollback() throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.TX_READY && state != State.TX_STREAMING) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "ROLLBACK not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     try {
       closeAllStreams("ROLLBACK");
       if (database != null) {
@@ -1246,20 +1204,6 @@ public class BoltNetworkExecutor extends Thread {
    * Handle ROUTE message - return routing table for cluster-aware drivers.
    */
   private void handleRoute(final RouteMessage message) throws IOException {
-    if (state == State.FAILED) {
-      sendIgnored();
-      return;
-    }
-
-    if (state != State.READY) {
-      // ROUTE enumerates every peer's Bolt endpoint, so it must not run for an unauthenticated caller.
-      // Require an authenticated (READY) session, matching the other request handlers. A Bolt driver
-      // always sends ROUTE after HELLO/LOGON, so this does not affect legitimate routing.
-      sendFailure(BoltException.PROTOCOL_ERROR, "ROUTE not expected in state: " + state);
-      state = State.FAILED;
-      return;
-    }
-
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", server.getConfiguration().getValueAsLong(GlobalConfiguration.BOLT_ROUTING_TTL));
     rt.put("db", message.getDatabase() != null ? message.getDatabase() : databaseName);
@@ -1954,8 +1898,26 @@ public class BoltNetworkExecutor extends Thread {
    * wired apart: a classifier that answers NotALeader without the address leaves a {@code bolt://} client nothing to
    * reconnect to. Before issue #9870 each of seven arms appended the redirect by hand, and a new arm could skip it.
    */
-  private void sendExecutionFailure(final String code, final String text, final Throwable error) throws IOException {
+  private void sendExecutionFailure(final String code, final String failureText, final Throwable error) throws IOException {
+    // A concealing server sends no engine text, the refusal's own sentence included
+    final String text = ErrorConcealment.isConcealing(server) ? failureText : withUnavailableReason(failureText, error);
     sendFailure(code, withLeaderRedirect(text, error));
+  }
+
+  /**
+   * {@code text}, followed by why the database is not available when that is what refused the request (issue #10689). The
+   * refusal is the server's own sentence - a restore replacing the database, a {@code close database} - and usually sits under a
+   * wrapper ("Error executing Cypher command") that names the statement and not the reason, which left the client with
+   * DatabaseUnavailable and nothing to say when it will clear.
+   */
+  private static String withUnavailableReason(final String text, final Throwable error) {
+    if (error == null || ErrorCategory.of(error) != ErrorCategory.UNAVAILABLE)
+      return text;
+    final Throwable refusal = ErrorCategory.classifiedCause(error);
+    final String reason = refusal != null ? refusal.getMessage() : null;
+    if (reason == null)
+      return text;
+    return text == null ? reason : text.contains(reason) ? text : text + ": " + reason;
   }
 
   /**

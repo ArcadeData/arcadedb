@@ -52,6 +52,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   private final byte[] BUFFER = new byte[ParallelZipExtractor.BUFFER_SIZE];
 
+  /** The salt and the IV an encrypted archive opens with are 16 bytes each, written by {@code FullBackupFormat.encryptFile}. */
+  private static final int ENCRYPTION_HEADER_FIELD_SIZE = 16;
+
   private interface RestoreCallback {
     ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile) throws Exception;
   }
@@ -318,11 +321,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       final FullRestoreFormat.RestoreCallback callback) throws Exception {
     final ZipInputStream zipFile;
     if (settings.encryptionKey != null) {
-      // Read salt from the beginning of the file (16 bytes)
-      final byte[] salt = new byte[16];
-      if (fis.read(salt) != salt.length) {
-        throw new IOException("Unable to read salt from encrypted file");
-      }
+      // Read salt from the beginning of the file (16 bytes). readNBytes() and not read(): a single read() may return
+      // fewer bytes than asked, which a socket does routinely between two segments of an http(s) archive (issue #10773)
+      final byte[] salt = readHeaderField(fis, "salt");
 
       // Derive the key using PBKDF2 with the salt
       final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
@@ -333,10 +334,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
       final SecretKey secretKey = new SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
       // Read IV from the beginning of the file
-      final byte[] iv = new byte[16];
-      if (fis.read(iv) != iv.length) {
-        throw new IOException("Unable to read IV from encrypted file");
-      }
+      final byte[] iv = readHeaderField(fis, "IV");
       final IvParameterSpec ivSpec = new IvParameterSpec(iv);
 
       // Initialize cipher for decryption
@@ -354,5 +352,17 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     } finally {
       zipFile.close();
     }
+  }
+
+  /**
+   * Reads one of the two 16-byte fields an encrypted archive opens with. Only the end of the stream makes it shorter: an
+   * archive cut before its header is complete is refused, a stream that merely delivers it in pieces is not.
+   */
+  private static byte[] readHeaderField(final InputStream in, final String field) throws IOException {
+    final byte[] value = in.readNBytes(ENCRYPTION_HEADER_FIELD_SIZE);
+    if (value.length != ENCRYPTION_HEADER_FIELD_SIZE)
+      throw new IOException("Unable to read " + field + " from encrypted file: the archive ends after " + value.length + " of its "
+          + ENCRYPTION_HEADER_FIELD_SIZE + " bytes");
+    return value;
   }
 }
