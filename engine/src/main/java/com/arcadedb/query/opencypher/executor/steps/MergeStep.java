@@ -216,7 +216,8 @@ public class MergeStep extends AbstractExecutionStep {
    * @return list of results containing matched or created elements
    */
   private List<Result> executeMerge(final Result inputResult, final LabelReplacements labelReplacements) {
-    final PathPattern pathPattern = mergeClause.getPathPattern();
+    // Dynamic labels - MERGE (n:$($label) {...}) - are evaluated for this row first, so the match and the create below see static ones (issue #10683)
+    final PathPattern pathPattern = DynamicNodeLabels.resolve(mergeClause.getPathPattern(), inputResult, evaluator, context, "MERGE");
 
     // A path variable an earlier clause bound to null (an unmatched OPTIONAL MATCH) is not a free variable: the pattern
     // has no endpoint there, and the statement fails as on Neo4j. The row used to be dropped in silence (issue #10191)
