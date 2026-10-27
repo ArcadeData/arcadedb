@@ -2542,6 +2542,7 @@ public class TransactionContext implements Transaction {
    * exceeds {@link GlobalConfiguration#TX_PAGE_SLOT_MERGE_MAX_BYTES}, the merge is disabled for the remainder of the
    * transaction. Already-tracked pages are dropped (freeing their images) so a conflict on any of them now falls
    * back to a normal retry - a huge transaction degrades to plain MVCC instead of holding ~2x its touched records.
+   * Only image bytes count: the per-page slot arrays of {@code SlotRebaseBuffer} are bounded by the page's slot count.
    */
   private void accountTrackedBytes(final long added) {
     slotRebaseTrackedBytes += added;
@@ -2689,7 +2690,7 @@ public class TransactionContext implements Transaction {
 
     final MutablePage committed = getPageToModify(pageId, bucket.getPageSize(), false);
 
-    // ascending slot order, one array probe per slot the page can have
+    // ascending slot order; entries past the last slot written are simply untracked (state 0)
     for (int slot = 0; slot < buffer.state.length; slot++) {
       if (!buffer.isTracked(slot))
         continue;
