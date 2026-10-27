@@ -168,7 +168,55 @@ class Issue10776CypherSearchClauseTest extends TestHelper {
   @Test
   void unknownIndexIsAnError() {
     assertThatThrownBy(() -> names("MATCH (d:Doc) SEARCH d IN (VECTOR INDEX `Doc[name]` FOR $q LIMIT 2) RETURN d", Q))
-        .hasStackTraceContaining("Doc");
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("No vector index found on property 'name'");
+  }
+
+  @Test
+  void whereMatchingNoCandidateStopsAtTheEndOfTheIndex() {
+    // Rejects every candidate (false) and answers null for every one (missing property): the widening stops once the index
+    // has handed over all it holds, and the answer is empty rather than a hang
+    assertThat(names("MATCH (d:Doc) SEARCH d IN (VECTOR INDEX " + INDEX
+        + " FOR $q WHERE d.name = 'none' LIMIT 3) RETURN d.name AS name", Q)).isEmpty();
+    assertThat(names("MATCH (d:Doc) SEARCH d IN (VECTOR INDEX " + INDEX
+        + " FOR $q WHERE d.missing = 1 LIMIT 3) RETURN d.name AS name", Q)).isEmpty();
+  }
+
+  @Test
+  void labelOfTheMatchFiltersAfterTheSearch() {
+    // The 2 nearest are Doc records, which a Cat pattern does not match
+    assertThat(names("MATCH (d:Cat) SEARCH d IN (VECTOR INDEX " + INDEX + " FOR $q LIMIT 2) RETURN d.name AS name", Q))
+        .isEmpty();
+  }
+
+  @Test
+  void nullLimitIsAClearError() {
+    assertThatThrownBy(() -> names("MATCH (d:Doc) SEARCH d IN (VECTOR INDEX " + INDEX
+        + " FOR $q LIMIT null) RETURN d.name AS name", Q)).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("k must be a number");
+  }
+
+  @Test
+  void twoSearchesInOneQuery() {
+    final List<Result> rows = rows("MATCH (a:Doc) SEARCH a IN (VECTOR INDEX " + INDEX + " FOR $q LIMIT 1) "
+        + "MATCH (b:Doc) SEARCH b IN (VECTOR INDEX " + INDEX + " FOR [29.0, 1.0] LIMIT 2) RETURN a.name AS a, b.name AS b", Q);
+    assertThat(rows).hasSize(2);
+    for (final Result row : rows)
+      assertThat(row.<String>getProperty("a")).isEqualTo("d0");
+    assertThat(List.of(rows.get(0).<String>getProperty("b"), rows.get(1).<String>getProperty("b"))).containsExactly("d29", "d28");
+  }
+
+  @Test
+  void backtickQuotedVariables() {
+    assertThat(names("MATCH (`my doc`:Doc) SEARCH `my doc` IN (VECTOR INDEX " + INDEX
+        + " FOR $q WHERE `my doc`.name <> 'd0' LIMIT 1) SCORE AS `the score` RETURN `my doc`.name AS name, `the score`", Q))
+        .containsExactly("d1");
+  }
+
+  @Test
+  void scoreVariableAlreadyDefinedIsRefused() {
+    assertThatThrownBy(() -> names("WITH 1 AS s MATCH (d:Doc) SEARCH d IN (VECTOR INDEX " + INDEX
+        + " FOR $q LIMIT 1) SCORE AS s RETURN d.name AS name", Q)).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("'s'");
   }
 
   private List<String> names(final String query, final Map<String, Object> params) {

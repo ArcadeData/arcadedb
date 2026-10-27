@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.procedures.db;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -42,6 +44,12 @@ import java.util.stream.Stream;
  * {@code db.index.vector.queryNodes} answers them, with the clause's own {@code WHERE} applied while the index is searched
  * rather than to its top k, so {@code LIMIT 10} answers 10 matching rows when the index holds them.
  * <p>
+ * <b>Cost of a selective {@code WHERE}.</b> A rejected candidate is skipped and the search asked again with twice the
+ * candidates, until k rows match, the index has handed over everything it holds, or the budget reaches
+ * {@link com.arcadedb.index.vector.VectorUtils#MAX_FETCH_CANDIDATES} (issue #10782). Every candidate up to there is loaded
+ * and evaluated, so a filter that matches few records walks a large part of the index; the command's deadline still bounds
+ * it.
+ * <p>
  * Not registered in the procedure registry: one instance is built per {@code SEARCH} clause by the parser, since it carries
  * that clause's binding variable and its {@code WHERE}. Arguments, evaluated per input row: the index name, the query
  * vector, k.
@@ -51,14 +59,17 @@ public class VectorSearchClauseProcedure implements CypherProcedure {
 
   private final String            variable;
   private final BooleanExpression filter;
+  private final String            scoreVariable;
 
   /**
    * @param variable the binding variable of the clause, which its {@code WHERE} reads the candidate record as
-   * @param filter   the clause's {@code WHERE}, or null when it has none
+   * @param filter        the clause's {@code WHERE}, or null when it has none
+   * @param scoreVariable the {@code SCORE AS} variable, or null when the clause has none
    */
-  public VectorSearchClauseProcedure(final String variable, final BooleanExpression filter) {
+  public VectorSearchClauseProcedure(final String variable, final BooleanExpression filter, final String scoreVariable) {
     this.variable = variable;
     this.filter = filter;
+    this.scoreVariable = scoreVariable;
   }
 
   @Override
@@ -94,7 +105,11 @@ public class VectorSearchClauseProcedure implements CypherProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
     if (args[0] == null)
-      throw new IllegalArgumentException(NAME + ": the index name is null");
+      throw new CommandSQLParsingException(NAME + ": the index name is null");
+    // SCORE AS declares a new variable: rebinding one an earlier clause bound would silently overwrite it
+    if (scoreVariable != null && inputRow != null && inputRow.hasProperty(scoreVariable))
+      throw new CommandSemanticException(
+          "SEARCH: the score variable '" + scoreVariable + "' is already defined by an earlier clause");
     final Stream<Result> rows = DbIndexVectorQueryNodes.search(args[0].toString(), args[2], args[1],
         buildFilter(inputRow, context), context, NAME).stream();
 

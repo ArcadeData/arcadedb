@@ -54,7 +54,8 @@ public class SearchCallClause extends CallClause {
       final WhereClause where, final Expression limit, final String scoreVariable) {
     super(VectorSearchClauseProcedure.NAME, List.of(indexName, queryVector, limit), yieldItems(variable, scoreVariable), null,
         false);
-    this.procedure = new VectorSearchClauseProcedure(variable, where != null ? where.getConditionExpression() : null);
+    this.procedure = new VectorSearchClauseProcedure(variable, where != null ? where.getConditionExpression() : null,
+        scoreVariable);
     this.variable = variable;
     this.scoreVariable = scoreVariable;
     this.indexName = indexName;

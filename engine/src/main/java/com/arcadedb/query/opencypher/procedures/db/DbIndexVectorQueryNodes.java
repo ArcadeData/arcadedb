@@ -243,6 +243,8 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * </p>
    */
   private static int extractLimit(final Object arg, final String caller) {
+    if (arg == null)
+      throw new CommandSQLParsingException(caller + ": k must be a number, got null");
     final int limit;
     if (arg instanceof Number n)
       limit = NumberUtils.saturateToInt(n);

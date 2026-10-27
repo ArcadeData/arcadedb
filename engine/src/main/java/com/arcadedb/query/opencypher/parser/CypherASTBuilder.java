@@ -801,17 +801,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       throw new FeatureNotImplementedException("SEARCH is not supported in an OPTIONAL MATCH");
 
     final String variable = stripBackticks(ctx.variable().getText());
-    boolean declared = false;
-    for (final PathPattern path : match.getPathPatterns()) {
-      for (final NodePattern node : path.getNodes())
-        if (variable.equals(node.getVariable())) {
-          declared = true;
-          break;
-        }
-      if (declared)
-        break;
-    }
-    if (!declared)
+    if (!isNodeVariableOf(match, variable))
       throw new CommandSemanticException(
           "SEARCH: the binding variable '" + variable + "' must be a node variable of the pattern of its MATCH");
 
@@ -829,6 +819,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       throw new CommandSemanticException("SEARCH: the score variable '" + scoreVariable + "' is the binding variable");
 
     return new SearchCallClause(variable, indexName, queryVector, where, limit, scoreVariable);
+  }
+
+  /**
+   * Whether {@code variable} names a node of one of the {@code MATCH}'s path patterns. A node inside a quantified group
+   * is not one: there the variable is a group variable, a list, which a vector search cannot bind.
+   */
+  private static boolean isNodeVariableOf(final MatchClause match, final String variable) {
+    for (final PathPattern path : match.getPathPatterns())
+      for (final NodePattern node : path.getNodes())
+        if (variable.equals(node.getVariable()))
+          return true;
+    return false;
   }
 
   /**
