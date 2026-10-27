@@ -90,7 +90,7 @@ class Issue10661PendingInsertRetentionTest extends TestHelper {
 
   /**
    * The image replayed for an inserted slot is the one the slot holds at commit, whatever happened to it after the
-   * insert: overwritten with a shorter value, grown in place, deleted. Enough slots are written to outgrow the initial
+   * insert: overwritten with a shorter value, grown in place, shrunk then grown back, deleted. Enough slots are written to outgrow the initial
    * capacity of the per-page slot arrays, and a committed record is updated next to them so an UPDATE (which keeps
    * its own images) is replayed in the same rebase.
    */
@@ -117,6 +117,10 @@ class Issue10661PendingInsertRetentionTest extends TestHelper {
     // grow in place (the page has plenty of room, so the record stays in its slot)
     docs[20].set("payload", payload(20, 300)).save();
     expected[20] = payload(20, 300);
+    // shrink in place, then grow back past the original size: the image is the last one, wherever it now sits
+    docs[9].set("payload", "s").save();
+    docs[9].set("payload", payload(9, 120)).save();
+    expected[9] = payload(9, 120);
     // insert-and-delete: replayed as nothing
     docs[31].delete();
     expected[31] = null;
