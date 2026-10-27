@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.lang.reflect.Array;
 import java.util.*;
 
 public class ContainsCondition extends BooleanExpression {
@@ -166,8 +167,16 @@ public class ContainsCondition extends BooleanExpression {
   private static boolean containsValue(final Collection<?> collection, final Object value) {
     if (collection.contains(value))
       return true;
-    if (!(value instanceof List || value instanceof Map))
+    if (!(value instanceof List || value instanceof Map)) {
+      // A scalar is an element by the rule of the scalar `=`, as `tags CONTAINS 1L` already reads it: Java equals() made
+      // `tags CONTAINS [1L]` (a one-item operand, a long[] parameter) miss the stored Integer 1, which the index found (#10757)
+      if (value == null)
+        return false;
+      for (final Object o : collection)
+        if (o != null && !(o instanceof List || o instanceof Map) && QueryOperatorEquals.equals(o, value))
+          return true;
       return false;
+    }
     // only an element of the same kind can be that list or map: anything else was never equal to it, and is not asked
     final boolean list = value instanceof List;
     for (final Object o : collection)
@@ -326,9 +335,21 @@ public class ContainsCondition extends BooleanExpression {
     }
 
     if (info.getField().equals(fieldName)) {
-      // CONTAINS operator only works with BY-ITEM indexes, not regular list indexes
-      if (info.isIndexByItem() && right != null)
-        return right.isEarlyCalculated(info.getContext());
+      // CONTAINS operator only works with BY-ITEM indexes, not regular list indexes. The index answers the rows holding ONE item,
+      // and execute() reads only a single value, or a collection or array of exactly one item, as that item: a longer list is ONE
+      // element the collection must hold, which the union of its items' rows answered like CONTAINSANY (issue #10757). The
+      // decision reads the operand's value, so a plan made for one binding is not reused for another
+      if (info.isIndexByItem() && right != null && right.isEarlyCalculated(info.getContext())) {
+        if (!right.isLiteral())
+          info.setPlanDependsOnValue();
+        // A null item is held by a collection holding null, which no index entry stands for: the scan answers it
+        final Object value = right.execute((Result) null, info.getContext());
+        if (value instanceof Collection<?> collection)
+          return collection.size() == 1 && collection.iterator().next() != null;
+        if (MultiValue.isSequenceArray(value))
+          return Array.getLength(value) == 1 && Array.get(value, 0) != null;
+        return value != null && !(value instanceof Map || value instanceof Iterable || value instanceof Iterator);
+      }
     }
 
     return false;
