@@ -39,6 +39,10 @@ among the tags at that SHA. A tag counts whether it points at the commit directl
 annotated tag object (the peeled `^{}` ref). A moving major tag such as `v4` may also sit on the
 SHA; the comment may name either, but convention here is the full release.
 
+The comment is the first whitespace-separated token after `#`, so `# v4.39.1 (security fix)` checks
+`v4.39.1` while `# tag=v4.39.1` checks `tag=v4.39.1` and fails: write the bare tag first. A `uses:`
+is matched one line at a time; every pin in this repository fits on one line, keep it that way.
+
 A SHA pin with no version comment fails too, and so does a repository whose tags cannot be listed:
 a check that passes because it could not look is how the comments drifted in the first place.
 
@@ -55,6 +59,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -65,6 +70,7 @@ PIN = re.compile(
     r"""@(?P<sha>[0-9a-f]{40})["']?(?:\s+#\s*(?P<comment>\S+))?""")
 
 LS_REMOTE_TIMEOUT_SECONDS = 60
+RETRY_DELAY_SECONDS = 5
 
 
 def collect_pins(workflows):
@@ -104,7 +110,9 @@ def list_tags(owner, repo, tags_dir):
     url = f"https://github.com/{owner}/{repo}"
     last_error = None
     # One retry: a single transient network error should not turn every open PR's lint red.
-    for _ in range(2):
+    for attempt in range(2):
+        if attempt:
+            time.sleep(RETRY_DELAY_SECONDS)
         try:
             result = subprocess.run(["git", "ls-remote", "--tags", url], capture_output=True, text=True,
                                     timeout=LS_REMOTE_TIMEOUT_SECONDS,
