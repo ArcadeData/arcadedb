@@ -75,6 +75,9 @@ public abstract class GraphTraverser {
    */
   protected CommandContext context;
   private   Boolean        incomingLookup;
+  // GRAPH_GHOST_EDGE_PROBE of the database walked, read once by the first walk that asks (issue #10658). A traverser walks one
+  // database, as incomingLookup above assumes too: one reused across databases would keep the first one's value
+  private   Boolean        ghostProbe;
 
   /**
    * Creates a graph traverser with specified parameters.
@@ -141,8 +144,9 @@ public abstract class GraphTraverser {
       edges = IncomingEdgeLookup.getEdges(context, vertex, direction.toArcadeDirection(), relationshipTypes);
     else if (edgesUnread && vertex instanceof VertexInternal internal) {
       final DatabaseInternal database = (DatabaseInternal) internal.getDatabase();
-      edges = new LiveEdges(database,
-          database.getGraphEngine().getEdgesKnowingEndpoints(internal, direction.toArcadeDirection(), relationshipTypes));
+      final Iterator<Edge> entries = database.getGraphEngine()
+          .getEdgesKnowingEndpoints(internal, direction.toArcadeDirection(), relationshipTypes);
+      edges = isProbingGhosts(database) ? new LiveEdges(database, entries) : entries;
     } else if (relationshipTypes == null || relationshipTypes.length == 0)
       edges = vertex.getEdges(direction.toArcadeDirection()).iterator();
     else
@@ -274,7 +278,7 @@ public abstract class GraphTraverser {
       // answered from a scan of the edge RECORDS of the type, which a ghost has none of, and a stored incoming side reads the edge
       // when it reads the source, which fails on a ghost where the expansions catch it. The outgoing list of an undirected hop over
       // such a type is stored, so it is read by its entries like every other list and probed here (issue #10463)
-      return lastResolved || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
+      return lastResolved || !isProbingGhosts(database) || GhostEdgeReporter.isLiveEntry(database, entries.getEdgeRID());
     }
 
     /** The vertex the entry {@link #next()} last returned leads to, or null when its record is gone. */
@@ -287,6 +291,16 @@ public abstract class GraphTraverser {
         return null;
       }
     }
+  }
+
+  /**
+   * Whether the entries this walk follows without loading the edge are asked whether the edge is still there
+   * ({@link GhostEdgeReporter#isProbing}): read once per traverser, not once per entry (issue #10658).
+   */
+  private boolean isProbingGhosts(final Database database) {
+    if (ghostProbe == null)
+      ghostProbe = GhostEdgeReporter.isProbing(database);
+    return ghostProbe;
   }
 
   /**

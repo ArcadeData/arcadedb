@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -107,6 +108,14 @@ public final class GhostEdgeReporter {
     // isRecordPresent is the same question as existsRecord without the READ_RECORD check (see above); a bucket that is not an engine
     // one has only the checked form
     return bucket instanceof LocalBucket local ? local.isRecordPresent(edgeRid) : bucket.existsRecord(edgeRid);
+  }
+
+  /**
+   * Whether the walks of {@code database} that follow adjacency entries without loading the edge ask {@link #isLiveEntry} about them
+   * ({@link GlobalConfiguration#GRAPH_GHOST_EDGE_PROBE}). A setting lookup, so a walk asks it once and not once per entry (#10658).
+   */
+  public static boolean isProbing(final Database database) {
+    return database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE);
   }
 
   /**
