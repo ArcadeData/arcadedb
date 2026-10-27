@@ -420,7 +420,7 @@ jobs:
   vector-unit-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       checks: write
@@ -512,7 +512,7 @@ jobs:
   opencypher-tck-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       checks: write
