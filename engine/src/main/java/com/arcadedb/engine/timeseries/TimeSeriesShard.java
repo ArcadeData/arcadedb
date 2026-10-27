@@ -73,7 +73,9 @@ public class TimeSeriesShard implements AutoCloseable {
   private static final Runnable             NO_SCHEMA_CHANGE      = () -> { };
 
   private final int                    shardIndex;
-  private final String                 typeName;
+  // The name the type is published under, which a rename changes once it is published (issue #10749): it names the type in the
+  // sealed blobs this shard ships to the followers, which resolve it by that name
+  private volatile String              typeName;
   private final DatabaseInternal       database;
   private final List<ColumnDefinition> columns;
   private final long                   compactionBucketIntervalMs;
@@ -257,6 +259,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
     this.sealedStore = new TimeSeriesSealedStore(shardPath, columns,
         GlobalConfiguration.decodedBlockCacheBytes(database.getConfiguration()));
+    mutableBucket.setSealedStore(sealedStore);
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks.
     //
@@ -452,7 +455,8 @@ public class TimeSeriesShard implements AutoCloseable {
     boolean scanned = false;
     boolean changed = false;
     for (final ContinuousAggregate aggregate : aggregates) {
-      // by the engine and not by name: the engine keeps the name its type was created with, an aggregate follows a rename (#10096)
+      // by the engine and not by name: the name the engine reports changes only once a rename is published (#10749), an aggregate
+      // follows the rename as it happens (#10096)
       if (!(aggregate instanceof ContinuousAggregateImpl impl)
           || !(schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType)
           || sourceType.getEngine() == null || sourceType.getEngine().getShard(shardIndex) != this)
@@ -1961,6 +1965,25 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   void closeOwnedResources() throws IOException {
     sealedStore.close();
+  }
+
+  /**
+   * Moves this shard's files under the name of the type {@code newTypeName} (issue #10749): the mutable bucket, which carries the
+   * sealed file named after it (see {@link TimeSeriesBucket#rename}). Under the {@link #compactionMutex}, so no rewrite of the sealed
+   * file is between its temp file and its swap while the file moves. The name the shard reports in what it ships stays the published
+   * one until {@link #setTypeName} is called with the rename published.
+   */
+  void renameFiles(final String newTypeName) throws IOException {
+    compactionMutex.lock();
+    try {
+      mutableBucket.rename(newTypeName + "_shard_" + shardIndex);
+    } finally {
+      compactionMutex.unlock();
+    }
+  }
+
+  void setTypeName(final String typeName) {
+    this.typeName = typeName;
   }
 
   /**

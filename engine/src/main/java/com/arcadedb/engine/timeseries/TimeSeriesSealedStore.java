@@ -186,7 +186,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private static final File[] EMPTY_FILES = new File[0];
 
-  private final String               basePath;
+  // Changed only by rename() (issue #10749), under the directory WRITE lock: every reader of the path holds the READ lock or is a
+  // rewrite, which the shard keeps off a rename with its compaction mutex
+  private volatile String            basePath;
   private final List<ColumnDefinition> columns;
   /**
    * The file and its channel, held for the life of the store and replaced only by the file-swap paths (under the
@@ -5328,6 +5330,70 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File f = new File(basePath + ".ts.sealed");
     if (f.exists() && !f.delete())
       throw new IOException("Failed to delete sealed store file: " + f.getAbsolutePath());
+  }
+
+  /**
+   * Moves the sealed file to {@code newBasePath} and goes on reading it there (issue #10749): the sealed file of a shard is named
+   * after the shard's mutable bucket, so it moves when that bucket does, which is what a rename of the type does. Under the directory
+   * WRITE lock, as a compaction swaps the file: no read is on the channel, the handles are closed before the move (required on
+   * Windows) and reopened after it. A move that fails reopens the file where it was, so the store stays usable.
+   * <p>
+   * A store closed on purpose (the engine of a superseded schema) only moves its file: nothing reads it any more, and the engine
+   * that replaces it opens the file under the name it now has.
+   */
+  public void rename(final String newBasePath) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      synchronized (channelReopenLock) {
+        final String oldBasePath = basePath;
+        if (oldBasePath.equals(newBasePath))
+          return;
+
+        final File oldFile = new File(oldBasePath + FILE_EXTENSION);
+        final File newFile = new File(newBasePath + FILE_EXTENSION);
+        if (closed) {
+          moveFile(oldFile, newFile);
+          basePath = newBasePath;
+          return;
+        }
+
+        if (headerDirty) {
+          rewriteHeader();
+          headerDirty = false;
+        }
+        indexChannel.close();
+        indexFile.close();
+        try {
+          moveFile(oldFile, newFile);
+        } catch (final IOException moveEx) {
+          indexFile = new RandomAccessFile(oldFile, "rw");
+          indexChannel = channelOf(indexFile);
+          throw moveEx;
+        }
+        basePath = newBasePath;
+        indexFile = new RandomAccessFile(newFile, "rw");
+        indexChannel = channelOf(indexFile);
+      }
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * Moves the sealed file of the store at {@code oldBasePath} to {@code newBasePath}, for a shard whose store is not open (an engine
+   * that could not start, issue #6356). Nothing to move when the shard never sealed a block.
+   */
+  public static void renameFile(final String oldBasePath, final String newBasePath) throws IOException {
+    moveFile(new File(oldBasePath + FILE_EXTENSION), new File(newBasePath + FILE_EXTENSION));
+  }
+
+  private static void moveFile(final File from, final File to) throws IOException {
+    if (!from.exists())
+      return;
+    if (to.exists())
+      throw new IOException("Cannot move the sealed store '" + from.getAbsolutePath() + "' to '" + to.getAbsolutePath()
+          + "': a file with that name already exists");
+    Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE);
   }
 
   // --- Private helpers ---

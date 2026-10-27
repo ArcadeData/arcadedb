@@ -66,7 +66,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   private static final int  DELETE_SESSION_ATTEMPTS = 12;
 
   private final DatabaseInternal       database;
-  private final String                 typeName;
+  // The name the type is published under: a rename moves the files first and changes this once it is published (issue #10749)
+  private volatile String              typeName;
   private final List<ColumnDefinition> columns;
   private final TimeSeriesShard[]      shards;
   private final int                    shardCount;
@@ -1385,7 +1386,8 @@ public class TimeSeriesEngine implements AutoCloseable {
     boolean invalidated = false;
     for (final ContinuousAggregate aggregate : schema.getContinuousAggregates())
       // a range inside the one already recorded changes nothing the schema holds: no write for it
-      // by the engine and not by name: this engine keeps the name its type was created with, an aggregate follows a rename (#10096)
+      // by the engine and not by name: the name this engine reports changes only once a rename is published (#10749), an aggregate
+      // follows the rename as it happens (#10096)
       if (aggregate instanceof ContinuousAggregateImpl impl
           && schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType && sourceType.getEngine() == this
           && impl.invalidate(fromTs, toTs))
@@ -1660,6 +1662,40 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   public String getTypeName() {
     return typeName;
+  }
+
+  /**
+   * Moves every file of this engine from the names of the type {@code fromTypeName} to those of {@code toTypeName} (issue #10749):
+   * each shard's mutable bucket with its sealed file, and the tag dictionary. A failure moves back what was moved, so the files are
+   * all under one name. The engine stays open and keeps serving reads and appends throughout: each component is moved under its own
+   * file lock, as a bucket of a document type is. The name the engine reports in what it ships is changed by {@link #setTypeName},
+   * once the rename is published.
+   */
+  public void renameFiles(final String fromTypeName, final String toTypeName) throws IOException {
+    int movedShards = 0;
+    try {
+      for (final TimeSeriesShard shard : shards) {
+        shard.renameFiles(toTypeName);
+        ++movedShards;
+      }
+      if (tagDictionary != null)
+        tagDictionary.rename(toTypeName + TimeSeriesTagDictionary.NAME_SUFFIX);
+    } catch (final IOException | RuntimeException e) {
+      for (int i = movedShards - 1; i >= 0; i--)
+        try {
+          shards[i].renameFiles(fromTypeName);
+        } catch (final IOException | RuntimeException rollback) {
+          e.addSuppressed(rollback);
+        }
+      throw e;
+    }
+  }
+
+  /** The name the type is published under, once a rename of it is published (issue #10749). */
+  public void setTypeName(final String typeName) {
+    this.typeName = typeName;
+    for (final TimeSeriesShard shard : shards)
+      shard.setTypeName(typeName);
   }
 
   @Override

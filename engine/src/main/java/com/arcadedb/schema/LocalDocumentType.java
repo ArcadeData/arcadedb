@@ -698,6 +698,7 @@ public class LocalDocumentType implements DocumentType {
         for (final Map.Entry<Integer, String> entry : componentNamesOfFiles(fileManager).entrySet())
           if (!entry.getValue().equals(componentNamesBefore.get(entry.getKey())))
             fileManager.recordRename(entry.getKey(), entry.getValue());
+        renamePublished(oldName);
         return null;
       });
     } catch (final RuntimeException e) {
@@ -717,14 +718,35 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * The last step of a rename, inside the session that publishes it and after the files moved (issue #10749): what a subclass
+   * keeps under the type's name besides the schema and the files. Nothing for a document type.
+   */
+  protected void renamePublished(final String oldName) {
+  }
+
+  /**
+   * The ids of the files this type keeps its data in that are neither a bucket nor a file of an index (issue #10749): the storage a
+   * kind of type owns beyond them, the components of a TIMESERIES type's engine. The one list the rename moves and records for the
+   * followers and the drop probes before it deletes anything, so the two cannot disagree on which files are the type's. None for a
+   * document type.
+   */
+  protected void collectOwnedComponentFiles(final Collection<Integer> fileIds) {
+  }
+
+  /**
    * File id to component name of every file a rename of this type can move: its buckets with the ones a subclass involves
-   * (edge buckets, stripe pool) and the components of its indexes. Only this type's files, so a concurrent rename of
-   * another type is never published early by this one. A file dropped concurrently is simply absent from the map.
+   * (edge buckets, stripe pool), the components it owns besides them ({@link #collectOwnedComponentFiles}) and the components of
+   * its indexes. Only this type's files, so a concurrent rename of another type is never published early by this one. A file
+   * dropped concurrently is simply absent from the map.
    */
   private Map<Integer, String> componentNamesOfFiles(final FileManager fileManager) {
     final Map<Integer, String> names = new LinkedHashMap<>();
     for (final Bucket bucket : getInvolvedBuckets())
       putComponentName(fileManager, bucket.getFileId(), names);
+    final List<Integer> ownedFiles = new ArrayList<>();
+    collectOwnedComponentFiles(ownedFiles);
+    for (final Integer fileId : ownedFiles)
+      putComponentName(fileManager, fileId, names);
     final List<Integer> ownBucketIds = getBucketIds(false);
     // The sub-indexes on this type's own buckets, of the indexes it declares and of the ones it inherits: those are the ones a
     // rename moves, and the ones on the buckets of a sub type are that sub type's files (issue #10317)

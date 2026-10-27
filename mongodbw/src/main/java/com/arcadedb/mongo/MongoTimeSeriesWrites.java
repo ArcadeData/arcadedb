@@ -109,6 +109,9 @@ final class MongoTimeSeriesWrites {
         throw unsupported(type, key);
 
       if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
+        // before the operand is looked at: no form of it can name the samples of a type whose unit is not known (issue #10740)
+        if (!type.isPrecisionHonoured())
+          throw unconfirmedUnit(type, key);
         if (value instanceof Document operators) {
           if (operators.isEmpty())
             throw unsupported(type, key);
@@ -150,21 +153,16 @@ final class MongoTimeSeriesWrites {
   }
 
   /**
-   * A timestamp operand in milliseconds: a date, when the type is known to store milliseconds. A date is the only form of the
-   * operand that {@link MongoFilter} (what {@code find}, {@code count} and the record path of a write use) equates with a sample's
-   * timestamp, which {@code find} hands to the client as a date: MongoDB does not match a number against a date, so the delete must
-   * not either, or it removes samples that the same filter shows none of (issue #10598).
+   * A timestamp operand in milliseconds: a date, on a type known to store milliseconds (the only kind that reaches here, see
+   * {@link #unconfirmedUnit}). A date is the only form of the operand that {@link MongoFilter} (what {@code find}, {@code count} and
+   * the record path of a write use) equates with a sample's timestamp, which {@code find} hands to the client as a date: MongoDB does
+   * not match a number against a date, so the delete must not either, or it removes samples that the same filter shows none of
+   * (issue #10598).
    */
   private static long timestampOf(final TimeSeriesType type, final String column, final Object value) {
     // the BSON decoder hands a date over as an Instant
-    if (value instanceof Instant instant) {
-      if (!type.isPrecisionHonoured())
-        throw new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
-            + "' with a date on '" + column + "': the type declares the precision " + type.getPrecision()
-            + ", so its timestamps are not known to be in milliseconds. Confirm the unit with ALTER TIMESERIES TYPE " + type.getName()
-            + " PRECISION MILLISECOND");
+    if (value instanceof Instant instant)
       return instant.toEpochMilli();
-    }
     if (value instanceof Number)
       throw new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
           + "' with the condition on '" + column + "': it compares the timestamp with a number, which find and count do not match"
@@ -213,10 +211,29 @@ final class MongoTimeSeriesWrites {
     return Double.isFinite(d) && d == Math.rint(d);
   }
 
+  /**
+   * The refusal of any condition on the timestamp of a type declared with another precision before issue #9800 (issue #10740). Its
+   * samples may be in the declared unit or, when they were ingested through line protocol, Prometheus or gRPC, in milliseconds, so
+   * neither a date nor a number selects them as the filter says and no operand is accepted: the refusal says so, and names the
+   * statement that confirms the unit, rather than sending the user to a form the same type refuses.
+   */
+  private static MongoServerError unconfirmedUnit(final TimeSeriesType type, final String column) {
+    return new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
+        + "' with a condition on '" + column + "': the type declares the precision " + type.getPrecision()
+        + ", so its timestamps are not known to be in milliseconds and no condition on '" + column + "', a date or a number,"
+        + " selects the samples it names. Confirm the unit with " + confirmUnitStatement(type) + ", after which '" + column
+        + "' is compared with a date; until then a delete names the samples by its TAG fields only");
+  }
+
+  private static String confirmUnitStatement(final TimeSeriesType type) {
+    return "ALTER TIMESERIES TYPE " + type.getName() + " PRECISION " + TimeSeriesType.MILLISECOND_PRECISION;
+  }
+
   private static MongoServerError unsupported(final TimeSeriesType type, final String key) {
     return new MongoServerError(ErrorCode.IllegalOperation, "Cannot delete from the TIMESERIES type '" + type.getName()
         + "' with the condition on '" + key + "': a delete removes the samples in a time range of its field '"
-        + type.getTimestampColumn() + "' ($eq, $gt, $gte, $lt, $lte with a date) with the given values of"
+        + type.getTimestampColumn() + "' ($eq, $gt, $gte, $lt, $lte with a date" + (type.isPrecisionHonoured() ? "" :
+        ", once its unit is confirmed with " + confirmUnitStatement(type)) + ") with the given values of"
         + " its TAG fields (an equality with a value of the tag's own kind: a string for a STRING tag, a boolean for a BOOLEAN tag, a"
         + " number the numeric tag holds exactly; a tag of any other type cannot be named), joined by AND. A condition on a FIELD,"
         + " $or, $ne, $in or any other operator is not supported: the samples to remove are named by their time and their series");
