@@ -44,12 +44,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue10655ScanReusesRejectedCandidateTest extends TestHelper {
 
-  private static final String TYPE        = "Scan10655";
-  private static final String PROBE       = "probe10655";
-  private static final int    RECORDS     = 600;
+  private static final String TYPE    = "Scan10655";
+  private static final String PROBE   = "probe10655";
+  private static final int    RECORDS = 600;
   // EVERY 50TH RECORD MATCHES: grp = 0
-  private static final int    GROUPS      = 50;
-  private static final int    MATCHES     = RECORDS / GROUPS;
+  private static final int    GROUPS  = 50;
+  private static final int    MATCHES = RECORDS / GROUPS;
 
   @Override
   protected void beginTest() {

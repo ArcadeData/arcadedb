@@ -53,7 +53,9 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   private       int         toPage        = -1;
 
   private Iterator<Record> iterator;
-  // #10655: the last candidate the WHERE clause rejected, which the next record reuses instead of a new ResultInternal
+  // #10655: the last candidate the WHERE clause rejected, which the next record reuses instead of a new ResultInternal.
+  // This relies on WHERE evaluation not keeping a reference to the row ($current) past its own evaluation: whatever
+  // kept one would see the next record once the row is re-pointed. Values read from the row are unaffected
   private ResultInternal   rejectedCandidate;
 
   public ScanWithFilterStep(final int bucketId, final WhereClause whereClause, final CommandContext context) {
