@@ -501,7 +501,9 @@ public class ServerQueryProfiler {
     try {
       for (final String dbName : server.getDatabaseNames()) {
         try {
-          final Map<String, Object> stats = server.getDatabase(dbName).getStats();
+          // allowLoad=false: the stats are of the databases open now; one closed since getDatabaseNames() is skipped, never
+          // reopened - which would also end a 'close database' mark (issue #10690)
+          final Map<String, Object> stats = server.getDatabase(dbName, false, false).getStats();
           dbStats.put(dbName, new JSONObject(stats));
         } catch (final Exception e) {
           // Skip databases that can't be accessed

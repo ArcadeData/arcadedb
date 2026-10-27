@@ -19,8 +19,10 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -29,6 +31,7 @@ import io.undertow.websockets.core.WebSocketChannel;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,13 +59,24 @@ public class WebSocketEventBus {
     databaseWatchers.clear();
   }
 
+  /**
+   * Subscribes {@code channel} to the change stream of {@code databaseName}.
+   * <p>
+   * The name comes from a client frame, so it is resolved through {@link ArcadeDBServer#getDatabaseForClient(String)} like every
+   * other client surface (issue #10690): a database an operator closed with {@code close database}, or one a restore holds, is
+   * refused with {@link DatabaseNotAvailableException} instead of being opened from disk - which also
+   * ended the {@code close database} mark for every other client. It is resolved on every subscribe, before anything is
+   * registered: a refused subscribe leaves no subscription behind, and a watcher started by an earlier subscribe does not let a
+   * later one through to a database closed since.
+   */
   public void subscribe(final String databaseName, final String type, final Set<ChangeEvent.TYPE> changeTypes, final WebSocketChannel channel) {
+    final ServerDatabase database = this.arcadeServer.getDatabaseForClient(databaseName);
     final var channelId = (UUID) channel.getAttribute(CHANNEL_ID);
     synchronized (lockFor(databaseName)) {
       final var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
       databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
       // computeIfAbsent guarantees a single watcher even when two Undertow IO threads subscribe to the same database at once.
-      this.databaseWatchers.computeIfAbsent(databaseName, k -> createAndStartWatcher(databaseName));
+      this.databaseWatchers.computeIfAbsent(databaseName, k -> createAndStartWatcher(database));
     }
   }
 
@@ -199,7 +213,9 @@ public class WebSocketEventBus {
   }
 
   public Collection<EventWatcherSubscription> getDatabaseSubscriptions(final String database) {
-    return this.subscribers.get(database).values();
+    // Empty, not a NullPointerException, for a database nobody subscribed to: a refused subscribe registers nothing (issue #10690)
+    final var databaseSubscribers = this.subscribers.get(database);
+    return databaseSubscribers == null ? Collections.emptyList() : databaseSubscribers.values();
   }
 
   public void unsubscribeAll(final UUID channelId) {
@@ -268,9 +284,9 @@ public class WebSocketEventBus {
     return this.databaseLocks.computeIfAbsent(database, k -> new Object());
   }
 
-  private DatabaseEventWatcherThread createAndStartWatcher(final String database) {
+  private DatabaseEventWatcherThread createAndStartWatcher(final ServerDatabase database) {
     final var queueSize = this.arcadeServer.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_WS_EVENT_BUS_QUEUE_SIZE);
-    final var watcherThread = new DatabaseEventWatcherThread(this, this.arcadeServer.getDatabase(database), queueSize);
+    final var watcherThread = new DatabaseEventWatcherThread(this, database, queueSize);
     watcherThread.start();
     return watcherThread;
   }
