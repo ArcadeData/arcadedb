@@ -20,6 +20,9 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -141,6 +144,43 @@ class Issue10661PendingInsertRetentionTest extends TestHelper {
       assertThat(seed.asDocument(true).getString("payload")).isEqualTo("seed-updated");
       assertThat(concurrent.asDocument(true).getString("payload")).isEqualTo("concurrent");
       assertThat(database.countType("Retained", false)).isEqualTo(inserts - 1 + 2L);
+    });
+  }
+
+  /**
+   * The read-back the merge relies on answers the body of a plain record, and {@code null} - which the merge turns into
+   * a retryable refusal - for a slot that holds none: a deleted record, a slot past the page's record count.
+   */
+  @Test
+  void readPlainRecordBodyAnswersOnlyAPlainRecord() {
+    createSeededType();
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      for (int i = 0; i < rids.length; i++) {
+        final MutableDocument doc = database.newDocument("Retained").set("payload", payload(i, 40));
+        doc.save();
+        rids[i] = doc.getIdentity();
+      }
+    });
+    database.transaction(() -> rids[1].asDocument(true).delete());
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rids[0].getBucketId());
+    database.transaction(() -> {
+      try {
+        final BasePage page = ((DatabaseInternal) database).getTransaction()
+            .getPage(new PageId(database, bucket.getFileId(), 0), bucket.getPageSize());
+        final int liveSlot = (int) rids[0].getPosition();
+        final int deletedSlot = (int) rids[1].getPosition();
+
+        final byte[] body = bucket.readPlainRecordBody(page, liveSlot);
+        assertThat(body).isNotNull();
+        assertThat(new String(body)).contains(payload(0, 40));
+
+        assertThat(bucket.readPlainRecordBody(page, deletedSlot)).as("a deleted record").isNull();
+        assertThat(bucket.readPlainRecordBody(page, 1_000)).as("a slot past the record count").isNull();
+      } catch (final Exception e) {
+        throw new AssertionError(e);
+      }
     });
   }
 
