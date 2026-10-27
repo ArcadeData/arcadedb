@@ -2155,41 +2155,127 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Per-page record-slot writes this transaction made, retained for the disjoint-slot merge (#5381). Small maps
-   * keyed by the in-page slot index; only populated on pages that receive at least one rebasable write, and only
-   * while the feature is on. Released on {@link #reset()}.
+   * Per-page record-slot writes this transaction made, retained for the disjoint-slot merge (#5381). Arrays indexed
+   * by the in-page slot, which is a small dense number: no boxed key, no map entry per write (#10661). Only populated
+   * on pages that receive at least one rebasable write, and only while the feature is on. Released on
+   * {@link #reset()}.
    */
   private static final class SlotRebaseBuffer {
-    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins. A NULL value
-    // is the third kind (#5569): the slot was DELETED by this transaction, so the replay frees it instead of writing
-    // a body. HashMap allows null values, so one map still describes every tracked slot of the page.
-    private final Map<Integer, byte[]> finalBody     = new HashMap<>();
-    // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts).
-    private final Map<Integer, byte[]> baseBody      = new HashMap<>();
-    // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
-    // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
-    private final Set<Integer>         insertedSlots = new HashSet<>();
-    // slot -> what SHAPE the two images above describe (#6129). Only present for the shapes that are not a plain
+    // the slot has an entry: its final image is in finalBody, or on the transaction's own page (FROM_PAGE)
+    private static final byte TRACKED   = 1;
+    // the slot holds a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
+    // transaction stays an insert (no base image) rather than being mistaken for an in-place update
+    private static final byte INSERTED  = 2;
+    // the final image is the one the slot holds on the page this transaction wrote, read back only if the page has to
+    // be replayed (#10661). Set by an insert: the page holds exactly the bytes a copy would have kept, and every later
+    // write to the slot either tracks an image of its own (an update, a delete) or poisons the page
+    private static final byte FROM_PAGE = 4;
+
+    // per slot, a combination of the flags above; 0 = not tracked
+    private byte[]   state = new byte[16];
+    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins. A TRACKED slot
+    // with a null image and no FROM_PAGE flag is the third kind (#5569): the slot was DELETED by this transaction, so
+    // the replay frees it instead of writing a body.
+    private byte[][] finalBody;
+    // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts). Allocated
+    // with the first update or delete: a page that only received inserts never needs it.
+    private byte[][] baseBody;
+    // slot -> what SHAPE the two images above describe (#6129). Only allocated for the shapes that are not a plain
     // in-place record: the replay has to check the committed marker against it, because the very same bytes mean a
-    // different record depending on the marker that precedes them. Absent entry = SLOT_KIND_RECORD, which is why this
-    // one map - unlike its neighbours above - is allocated only if a page ever holds a shape that is not that: on
-    // everything but a bucket of outgrown records, it never is.
-    private       Map<Integer, Byte>   kinds;
+    // different record depending on the marker that precedes them. 0 = SLOT_KIND_RECORD, which is why this array is
+    // allocated only if a page ever holds a shape that is not that: on everything but a bucket of outgrown records, it
+    // never is.
+    private byte[]   kinds;
+
+    private void ensureSlot(final int slot) {
+      if (slot < state.length)
+        return;
+      final int newSize = Math.max(slot + 1, state.length * 2);
+      state = Arrays.copyOf(state, newSize);
+      if (finalBody != null)
+        finalBody = Arrays.copyOf(finalBody, newSize);
+      if (baseBody != null)
+        baseBody = Arrays.copyOf(baseBody, newSize);
+      if (kinds != null)
+        kinds = Arrays.copyOf(kinds, newSize);
+    }
+
+    private boolean isTracked(final int slot) {
+      return slot < state.length && (state[slot] & TRACKED) != 0;
+    }
+
+    private boolean isInserted(final int slot) {
+      return slot < state.length && (state[slot] & INSERTED) != 0;
+    }
+
+    private boolean isFinalImageOnPage(final int slot) {
+      return slot < state.length && (state[slot] & FROM_PAGE) != 0;
+    }
+
+    /** True when the slot is tracked as a DELETE: no image of its own and none on the page. */
+    private boolean isDeleted(final int slot) {
+      return isTracked(slot) && !isFinalImageOnPage(slot) && finalBodyOf(slot) == null;
+    }
+
+    private byte[] finalBodyOf(final int slot) {
+      return finalBody == null || slot >= finalBody.length ? null : finalBody[slot];
+    }
+
+    private byte[] baseBodyOf(final int slot) {
+      return baseBody == null || slot >= baseBody.length ? null : baseBody[slot];
+    }
+
+    /** Tracks the slot as an INSERT whose final image is read back from the page. Returns the image it released. */
+    private byte[] trackInsert(final int slot) {
+      ensureSlot(slot);
+      final byte[] prev = finalBodyOf(slot);
+      if (prev != null)
+        finalBody[slot] = null;
+      state[slot] |= TRACKED | INSERTED | FROM_PAGE;
+      return prev;
+    }
+
+    /** Sets the final image of the slot ({@code null} for a delete). Returns the image it replaced. */
+    private byte[] trackFinal(final int slot, final byte[] body) {
+      ensureSlot(slot);
+      if (finalBody == null) {
+        if (body == null) {
+          state[slot] = (byte) ((state[slot] | TRACKED) & ~FROM_PAGE);
+          return null;
+        }
+        finalBody = new byte[state.length][];
+      }
+      final byte[] prev = finalBody[slot];
+      finalBody[slot] = body;
+      state[slot] = (byte) ((state[slot] | TRACKED) & ~FROM_PAGE);
+      return prev;
+    }
+
+    /** First-touch base wins. Returns true when {@code body} was stored, false when the slot already had a base. */
+    private boolean trackBaseIfAbsent(final int slot, final byte[] body) {
+      ensureSlot(slot);
+      if (baseBody == null)
+        baseBody = new byte[state.length][];
+      else if (baseBody[slot] != null)
+        return false;
+      baseBody[slot] = body;
+      return true;
+    }
 
     private byte kindOf(final int slot) {
-      if (kinds == null)
+      if (kinds == null || slot >= kinds.length)
         return SLOT_KIND_RECORD;
-      final Byte kind = kinds.get(slot);
-      return kind == null ? SLOT_KIND_RECORD : kind;
+      return kinds[slot];
     }
 
     private void trackKind(final int slot, final byte kind) {
       if (kind == SLOT_KIND_RECORD)
-        // The default: recording it would allocate the map for every page the merge tracks, to say nothing.
+        // The default: recording it would allocate the array for every page the merge tracks, to say nothing.
         return;
+      ensureSlot(slot);
       if (kinds == null)
-        kinds = new HashMap<>();
-      kinds.put(slot, kind);
+        kinds = new byte[state.length];
+      kinds[slot] = kind;
     }
   }
 
@@ -2309,8 +2395,11 @@ public class TransactionContext implements Transaction {
    * page-version conflict caused only by concurrent writes to OTHER slots of that page can be resolved by
    * replaying this insert on the newer committed page. No-op when the feature is off or the page is poisoned.
    * The caller ({@link LocalBucket}) passes the already-computed page/slot so no schema lookup happens per write.
+   * <p>
+   * No image of the record is passed or kept (#10661): the replay reads the bytes the slot holds on the page this
+   * transaction wrote, which is also the right image for an insert this transaction overwrote in place afterwards.
    */
-  public void trackRebasableInsert(final int fileId, final int pageNumber, final int slot, final byte[] finalBody) {
+  public void trackRebasableInsert(final int fileId, final int pageNumber, final int slot) {
     if (!slotMerge)
       return;
     final long key = packPageKey(fileId, pageNumber);
@@ -2326,7 +2415,7 @@ public class TransactionContext implements Transaction {
       poisonSlotRebasePage(fileId, pageNumber);
       return;
     }
-    if (buffer.finalBody.containsKey(slot) && buffer.finalBody.get(slot) == null && !buffer.insertedSlots.contains(slot)) {
+    if (buffer.isDeleted(slot) && !buffer.isInserted(slot)) {
       // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
       // hands back a slot this transaction has just freed (guarded by
       // Issue5279ConcurrentInsertTest.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
@@ -2335,11 +2424,12 @@ public class TransactionContext implements Transaction {
       poisonSlotRebasePage(fileId, pageNumber);
       return;
     }
-    final byte[] prev = buffer.finalBody.put(slot, finalBody);
-    buffer.insertedSlots.add(slot);
-    // Account the NET change in retained bytes: a repeated write to the same slot replaces its image, it does not
-    // add one - so the running total tracks bytes actually held, matching the cap's retained-heap intent.
-    accountTrackedBytes(finalBody.length - (prev != null ? prev.length : 0));
+    // #10661: no copy of the record is kept. The page this transaction wrote holds the very bytes, and the replay reads
+    // them back from it only when the page really conflicts, so an insert retains nothing until commit. Account the NET
+    // change in retained bytes: an image an earlier write kept for the slot is released, so it leaves the total.
+    final byte[] prev = buffer.trackInsert(slot);
+    if (prev != null)
+      accountTrackedBytes(-prev.length);
   }
 
   /**
@@ -2362,7 +2452,7 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
-    if (buffer.finalBody.containsKey(slot) && buffer.kindOf(slot) != kind) {
+    if (buffer.isTracked(slot) && buffer.kindOf(slot) != kind) {
       // The slot CHANGED SHAPE inside this transaction (a record that spilled into a chunk chain, a placeholder
       // rebuilt as a plain record): the pre-image kept for the first write no longer describes what the second one
       // started from, so the two writes cannot be replayed as one. The writers of those transitions poison the page
@@ -2371,12 +2461,12 @@ public class TransactionContext implements Transaction {
       return;
     }
     buffer.trackKind(slot, kind);
-    final byte[] prevFinal = buffer.finalBody.put(slot, finalBody);
+    final byte[] prevFinal = buffer.trackFinal(slot, finalBody);
     long delta = finalBody.length - (prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
     // intermediate one. An insert-then-update keeps insert semantics (no base recorded). Only the FIRST base
     // capture for a slot adds to the retained-byte total.
-    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+    if (!buffer.isInserted(slot) && buffer.trackBaseIfAbsent(slot, baseBody))
       delta += baseBody.length;
     accountTrackedBytes(delta);
   }
@@ -2406,12 +2496,12 @@ public class TransactionContext implements Transaction {
       return;
     }
     // A null final image marks the slot as deleted. The image the slot held so far (if any) is released.
-    final byte[] prevFinal = buffer.finalBody.put(slot, null);
+    final byte[] prevFinal = buffer.trackFinal(slot, null);
     long delta = -(prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins, as for an update: a record this transaction already updated must still be diffed
     // against the COMMITTED pre-image, not against the intermediate image it wrote itself. A slot this transaction
     // INSERTED has no committed pre-image at all: it stays an insert-and-delete, replayed as nothing.
-    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+    if (!buffer.isInserted(slot) && buffer.trackBaseIfAbsent(slot, baseBody))
       delta += baseBody.length;
     accountTrackedBytes(delta);
   }
@@ -2452,6 +2542,7 @@ public class TransactionContext implements Transaction {
    * exceeds {@link GlobalConfiguration#TX_PAGE_SLOT_MERGE_MAX_BYTES}, the merge is disabled for the remainder of the
    * transaction. Already-tracked pages are dropped (freeing their images) so a conflict on any of them now falls
    * back to a normal retry - a huge transaction degrades to plain MVCC instead of holding ~2x its touched records.
+   * Only image bytes count: the per-page slot arrays of {@code SlotRebaseBuffer} are bounded by the page's slot count.
    */
   private void accountTrackedBytes(final long added) {
     slotRebaseTrackedBytes += added;
@@ -2476,7 +2567,7 @@ public class TransactionContext implements Transaction {
     if (!slotMerge || slotRebaseByPage == null)
       return false;
     final SlotRebaseBuffer buffer = slotRebaseByPage.get(packPageKey(fileId, pageNumber));
-    return buffer != null && buffer.insertedSlots.contains(slot);
+    return buffer != null && buffer.isInserted(slot);
   }
 
   /**
@@ -2574,6 +2665,9 @@ public class TransactionContext implements Transaction {
    * is stable), and only for a page whose every modification this transaction made was a tracked disjoint-slot
    * insert or an update that stayed inside the page.
    *
+   * @param ownPage the page as this transaction wrote it: the final images of the slots it INSERTED are read from it
+   *                (#10661), everything else comes from the images tracked at write time.
+   *
    * @return the freshly rebased page, ALREADY COMPRESSED and ready to be version-checked and committed. The
    * compression is part of the contract, not the caller's job: see the note at the end of the method body (#5608).
    *
@@ -2581,22 +2675,36 @@ public class TransactionContext implements Transaction {
    *                                         or the page can no longer host a record: the caller falls back to a
    *                                         normal full-transaction retry.
    */
-  private MutablePage rebaseSlots(final PageId pageId) throws IOException {
+  private MutablePage rebaseSlots(final MutablePage ownPage) throws IOException {
+    final PageId pageId = ownPage.getPageId();
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     final SlotRebaseBuffer buffer = slotRebaseByPage.get(key);
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(pageId.getFileId());
 
-    // Drop the stale copies so the reload observes the current committed version of the page.
+    // Drop the stale copies so the reload observes the current committed version of the page. The page this transaction
+    // wrote ({@code ownPage}, already out of modifiedPages) is where the images of the inserted slots are read back
+    // from (#10661).
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
     final MutablePage committed = getPageToModify(pageId, bucket.getPageSize(), false);
 
-    for (final Map.Entry<Integer, byte[]> entry : buffer.finalBody.entrySet()) {
-      final int slot = entry.getKey();
-      final byte[] finalBody = entry.getValue();
-      final boolean insertedHere = buffer.insertedSlots.contains(slot);
+    // ascending slot order; entries past the last slot written are simply untracked (state 0)
+    for (int slot = 0; slot < buffer.state.length; slot++) {
+      if (!buffer.isTracked(slot))
+        continue;
+      final boolean insertedHere = buffer.isInserted(slot);
+      final byte[] finalBody;
+      if (buffer.isFinalImageOnPage(slot)) {
+        finalBody = bucket.readPlainRecordBody(ownPage, slot);
+        if (finalBody == null)
+          // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
+          // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
+          throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
+              + " (the inserted record is no longer a plain record on the transaction's page). Please retry the operation");
+      } else
+        finalBody = buffer.finalBodyOf(slot);
 
       if (finalBody == null) {
         // DELETE (#5569). A slot this transaction both CREATED and deleted never existed on the committed page: its
@@ -2604,13 +2712,13 @@ public class TransactionContext implements Transaction {
         // would turn a perfectly mergeable transaction into a conflict.
         if (insertedHere)
           continue;
-        if (!bucket.rebaseRecordDeleteOnPage(committed, slot, buffer.baseBody.get(slot)))
+        if (!bucket.rebaseRecordDeleteOnPage(committed, slot, buffer.baseBodyOf(slot)))
           throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
               + " (concurrent change to the record being deleted). Please retry the operation");
         continue;
       }
 
-      final byte[] baseBody = insertedHere ? null : buffer.baseBody.get(slot);
+      final byte[] baseBody = insertedHere ? null : buffer.baseBodyOf(slot);
       if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
@@ -3130,7 +3238,8 @@ public class TransactionContext implements Transaction {
       }
 
       List<PageId> pagesToRebase = null;
-      List<PageId> slotPagesToRebase = null;
+      // the page itself, not only its id: it leaves modifiedPages here, and the replay reads the inserted slots back from it (#10661)
+      List<MutablePage> slotPagesToRebase = null;
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
         final MutablePage p = it.next();
 
@@ -3160,7 +3269,7 @@ public class TransactionContext implements Transaction {
             // of this page; replay this transaction's slot writes on the newer committed page (after the loop).
             if (slotPagesToRebase == null)
               slotPagesToRebase = new ArrayList<>();
-            slotPagesToRebase.add(p.getPageId());
+            slotPagesToRebase.add(p);
             it.remove();
           } else {
             if (isLeader)
@@ -3182,8 +3291,8 @@ public class TransactionContext implements Transaction {
         }
 
       if (slotPagesToRebase != null)
-        for (final PageId pageId : slotPagesToRebase) {
-          final MutablePage rebased = rebaseSlots(pageId);
+        for (final MutablePage ownPage : slotPagesToRebase) {
+          final MutablePage rebased = rebaseSlots(ownPage);
           pageManager.checkPageVersion(rebased, false);
           pages.add(rebased);
         }

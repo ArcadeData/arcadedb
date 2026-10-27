@@ -765,6 +765,16 @@ public class TransactionIndexContext {
     return indexEntries.isEmpty() && unorderedEntries.isEmpty();
   }
 
+  /**
+   * The entries of ONE key of an ordered lane. Most keys hold a single entry (always on a unique index, and on a
+   * non-unique one unless several records share the key in the same transaction), and the map lives until commit, so it
+   * is sized for that: a 2-slot table instead of the default 16, which a young collection would copy again and again
+   * for every pending key of a large transaction (#10661). A second entry grows it as usual.
+   */
+  private static Map<IndexKey, IndexKey> newKeyEntries() {
+    return new HashMap<>(2);
+  }
+
   public void addIndexKeyLock(final IndexInternal index, IndexKey.IndexKeyOperation operation, final Object[] keysValues,
       final RID rid) {
     if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keysValues))
@@ -809,12 +819,12 @@ public class TransactionIndexContext {
       // ...and the same lane reachable by the index itself, which is how a reader finds it in O(1) (issue #7967).
       orderedLanesPerIndex.computeIfAbsent(index, i -> new ArrayList<>(2)).add(keys);
 
-      values = new HashMap<>();
+      values = newKeyEntries();
       keys.put(k, values);
     } else {
       values = keys.get(k);
       if (values == null) {
-        values = new HashMap<>();
+        values = newKeyEntries();
         keys.put(k, values);
       } else {
         if (v.operation == IndexKey.IndexKeyOperation.ADD) {
