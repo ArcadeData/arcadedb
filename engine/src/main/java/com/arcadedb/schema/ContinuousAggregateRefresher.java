@@ -189,6 +189,8 @@ public class ContinuousAggregateRefresher {
               }
               saveRow(database, backingTypeName, result, replaced != null ? replaced.take(bucketMs) : null);
             } else
+              // no bucket (a sample with no timestamp, which a TIMESERIES type does not store): never one of the rows replaced, whose
+              // bucket is at or after the watermark, exactly as the delete it replaces never matched it
               saveRow(database, backingTypeName, result, null);
           }
         }
