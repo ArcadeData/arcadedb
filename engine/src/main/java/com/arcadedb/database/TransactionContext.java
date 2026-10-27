@@ -450,6 +450,9 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.INACTIVE)
       throw new TransactionException("Transaction already begun");
 
+    // #10712: THE COUNTERS A REPEATABLE_READ TRANSACTION PINS ARE ITS OWN, AS reset() ALSO SAYS
+    snapshotBucketCounts = null;
+
     status = STATUS.BEGUN;
     replicationBasePosition = -1L;
     // Also in reset(): a context is reused across transactions, and whichever of the two runs first must move it on;
@@ -1725,7 +1728,9 @@ public class TransactionContext implements Transaction {
    * transaction always counts its own writes.
    */
   public long getRepeatableCommittedCount(final int bucketId, final long committedNow) {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+    // ONLY INSIDE A TRANSACTION: THE CONTEXT OUTLIVES ITS TRANSACTION AND KEEPS ITS LEVEL, AND A COUNT BETWEEN TWO
+    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM
+    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ || !isActive())
       return committedNow;
     if (snapshotBucketCounts == null)
       snapshotBucketCounts = new LongLongHashMap();

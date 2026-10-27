@@ -231,6 +231,8 @@ public class DatabaseChecker {
     // Issue #10741: how many of them a plain FIX linked back into their vertices' lists (their entries are counted in
     // reconnectedEdges too, one or two per record by direction)
     result.put("relinkedOrphanEdgeRecords", 0L);
+    // and how many a run left for the next one, to bound the memory of its relink plan
+    result.put("orphanEdgeRecordsLeftToRelink", 0L);
     result.put("edgesMissingOutReference", 0L);
     result.put("edgesMissingInReference", 0L);
     result.put("unreachableEdgeRecordsFound", new LinkedHashSet<RID>());

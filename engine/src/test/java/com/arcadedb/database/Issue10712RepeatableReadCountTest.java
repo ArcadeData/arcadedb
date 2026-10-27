@@ -109,6 +109,28 @@ class Issue10712RepeatableReadCountTest extends TestHelper {
     }
   }
 
+  /**
+   * The context outlives its transaction and keeps its REPEATABLE_READ level: a count between two transactions must not pin
+   * a value the next transaction would start from.
+   */
+  @Test
+  void aCountBetweenTwoTransactionsPinsNothing() throws Exception {
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    assertThat(countStar()).isEqualTo(100);
+    database.rollback();
+
+    // OUTSIDE A TRANSACTION, ON THE SAME (NOW INACTIVE) CONTEXT
+    assertThat(database.countType(TYPE, true)).isEqualTo(100);
+    foreignCommit();
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      assertThat(countStar()).as("the new transaction counts from the committed state it starts in").isEqualTo(149);
+    } finally {
+      database.rollback();
+    }
+  }
+
   @Test
   void aCountFollowsTheCommitsAtReadCommitted() throws Exception {
     database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);

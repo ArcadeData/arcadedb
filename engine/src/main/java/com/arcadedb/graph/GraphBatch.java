@@ -1121,7 +1121,8 @@ public class GraphBatch implements AutoCloseable {
    * which a perfectly healthy UNIDIRECTIONAL edge also raises. ({@code FIX} does reclaim orphaned edge SEGMENTS, but
    * those are the internal linked-list chunks, not the edge records at issue here.) A flush that FAILED told its caller
    * so, and a {@code FIX} relinking its records would bring back edges the caller was told were not created, so the
-   * flush cleans up after itself, before the failure propagates.
+   * flush cleans up after itself, before the failure propagates. The cleanup is best effort: a record it cannot delete
+   * is logged with what to do about it - delete it before a {@code FIX}, which would relink it.
    * <p>
    * Deletion goes through {@code database.deleteRecord} rather than a direct bucket delete: an edge record may
    * carry index entries (issue #4113) and EXTERNAL property values, and this flush creates them by two different
@@ -1185,8 +1186,9 @@ public class GraphBatch implements AutoCloseable {
         } catch (final RuntimeException e) {
           pendingLeaked++;
           LogManager.instance().log(this, Level.WARNING,
-              "GraphBatch: cannot reclaim orphan edge record %s left by a failed flush: %s", null, edgeRID,
-              e.toString());
+              "GraphBatch: cannot reclaim orphan edge record %s left by a failed flush: %s. The flush reported its edge as "
+                  + "not created, and CHECK DATABASE FIX would relink it: delete it (DELETE FROM %s) before running one", null,
+              edgeRID, e.toString(), edgeRID);
         }
 
         if (commitEvery > 0 && ++inTx >= commitEvery) {
@@ -1227,7 +1229,10 @@ public class GraphBatch implements AutoCloseable {
       totalOrphanEdgeRecordsLeaked += leakedNow;
       LogManager.instance().log(this, Level.WARNING,
           "GraphBatch: could not reclaim the orphan edge records left by a failed flush; run CHECK DATABASE and "
-              + "expect up to %d unreachable edge record(s)", e, leakedNow);
+              + "expect up to %d unreachable edge record(s). The flush reported their edges as not created, while a plain "
+              + "CHECK DATABASE FIX relinks every orphan (#10741): delete these by RID (CHECK DATABASE lists them under "
+              + "unreachableEdgeRecordsFound) before running one, or use CHECK DATABASE FIX DELETE ORPHANS when no batch "
+              + "died before close() whose committed edges are to be kept", e, leakedNow);
       if (database.isTransactionActive())
         try {
           database.rollback();

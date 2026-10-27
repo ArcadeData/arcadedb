@@ -69,20 +69,20 @@ class Issue10741OrphanEdgeRelinkTest extends TestHelper {
     // THE PROCESS DIES HERE: close() IS NEVER REACHED
     reopenDatabase();
 
-    assertThat(count("SELECT count(*) AS c FROM E")).isEqualTo(EDGES);
-    assertThat(count("SELECT count(*) AS c FROM U")).isEqualTo(EDGES);
+    assertThat(count("SELECT count(@rid) AS c FROM E")).isEqualTo(EDGES);
+    assertThat(count("SELECT count(@rid) AS c FROM U")).isEqualTo(EDGES);
 
     final Result report = check("CHECK DATABASE");
     final long orphans = report.<Long>getProperty("unreachableEdgeRecords");
     assertThat(orphans).as("the abandoned batch must leave orphan edge records, or this test proves nothing").isPositive();
-    assertThat(count("SELECT count(*) AS c FROM E")).as("a report changes nothing").isEqualTo(EDGES);
+    assertThat(count("SELECT count(@rid) AS c FROM E")).as("a report changes nothing").isEqualTo(EDGES);
 
     final Result fix = check("CHECK DATABASE FIX");
     assertThat(fix.<Long>getProperty("relinkedOrphanEdgeRecords")).isEqualTo(orphans);
     assertThat(fix.<Long>getProperty("removedRecords")).isZero();
 
     // EVERY EDGE RECORD IS REACHABLE FROM ITS SOURCE, AND A BIDIRECTIONAL ONE FROM ITS TARGET TOO, EACH EXACTLY ONCE
-    assertThat(count("SELECT count(*) AS c FROM E")).isEqualTo(EDGES);
+    assertThat(count("SELECT count(@rid) AS c FROM E")).isEqualTo(EDGES);
     assertThat(count("SELECT sum(outE('E').size()) AS c FROM V")).isEqualTo(EDGES);
     assertThat(count("SELECT sum(inE('E').size()) AS c FROM V")).isEqualTo(EDGES);
     assertThat(count("SELECT sum(outE('U').size()) AS c FROM V")).isEqualTo(EDGES);
@@ -141,6 +141,48 @@ class Issue10741OrphanEdgeRelinkTest extends TestHelper {
     assertThat(after.<Long>getProperty("edgesMissingInReference")).isZero();
   }
 
+  /**
+   * The relink plan is bounded (one FIX run relinks at most a budget of orphans, so an interrupted load of tens of millions
+   * of edges cannot exhaust the heap): what a run leaves is reported, and the next run relinks it.
+   */
+  @Test
+  void aRunOverTheBudgetLeavesTheRestForTheNextRun() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().buildEdgeType().withName("E").withBidirectional(true).create();
+
+    final GraphBatch batch = database.batch().build();
+    final RID[] vertices = batch.createVertices("V", 10);
+    for (int i = 0; i < 10; i++)
+      batch.newEdge(vertices[i], "E", vertices[(i + 1) % 10], "eid", i);
+    batch.flush();
+    reopenDatabase();
+
+    final long orphans = check("CHECK DATABASE").<Long>getProperty("unreachableEdgeRecords");
+    assertThat(orphans).as("the abandoned batch must leave more orphans than the budget, or this test proves nothing")
+        .isGreaterThan(4L);
+
+    GraphDatabaseChecker.orphanRelinkBudgetForTesting = 4;
+    try {
+      final Result first = check("CHECK DATABASE FIX");
+      assertThat(first.<Long>getProperty("relinkedOrphanEdgeRecords")).isEqualTo(4L);
+      assertThat(first.<Long>getProperty("orphanEdgeRecordsLeftToRelink")).isEqualTo(orphans - 4);
+
+      long left = orphans - 4;
+      while (left > 0) {
+        final Result next = check("CHECK DATABASE FIX");
+        assertThat(next.<Long>getProperty("relinkedOrphanEdgeRecords")).isEqualTo(Math.min(4L, left));
+        left -= next.<Long>getProperty("relinkedOrphanEdgeRecords");
+        assertThat(next.<Long>getProperty("orphanEdgeRecordsLeftToRelink")).isEqualTo(left);
+      }
+    } finally {
+      GraphDatabaseChecker.orphanRelinkBudgetForTesting = 0;
+    }
+
+    assertThat(check("CHECK DATABASE").<Long>getProperty("unreachableEdgeRecords")).isZero();
+    assertThat(distinctEids("SELECT expand(outE('E')) FROM V")).isEqualTo(10);
+    assertThat(distinctEids("SELECT expand(inE('E')) FROM V")).isEqualTo(10);
+  }
+
   /** {@code DELETE ORPHANS} still wins: the operator who asked for the records to go gets them removed, not relinked. */
   @Test
   void fixDeleteOrphansStillRemovesThem() {
@@ -160,7 +202,7 @@ class Issue10741OrphanEdgeRelinkTest extends TestHelper {
     final Result fix = check("CHECK DATABASE FIX DELETE ORPHANS");
     assertThat(fix.<Long>getProperty("relinkedOrphanEdgeRecords")).isZero();
     assertThat(fix.<Long>getProperty("removedRecords")).isEqualTo(orphans);
-    assertThat(count("SELECT count(*) AS c FROM E")).isEqualTo(10 - orphans);
+    assertThat(count("SELECT count(@rid) AS c FROM E")).isEqualTo(10 - orphans);
   }
 
   private Result check(final String command) {

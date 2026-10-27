@@ -1803,6 +1803,10 @@ public class GraphDatabaseChecker {
      */
     final PendingLinks orphanOutLinks = fix && !deleteOrphans ? new PendingLinks(database) : null;
     final PendingLinks orphanInLinks = fix && !deleteOrphans ? new PendingLinks(database) : null;
+    // BOUNDED: AN INTERRUPTED BULK LOAD CAN LEAVE TENS OF MILLIONS OF ORPHANS, AND THE PLAN COSTS UP TO 72 BYTES EACH. ONE RUN
+    // RELINKS AT MOST THIS MANY; THE REST STAY ORPHANS, REPORTED, FOR THE NEXT FIX, WHICH FINDS ONLY THEM
+    final long orphanRelinkBudget = orphanRelinkBudget();
+    final AtomicLong orphansLeftForTheNextRun = new AtomicLong();
     long relinkedOrphanEdgeRecords = 0;
     long relinkedOrphanEntries = 0;
 
@@ -1919,12 +1923,15 @@ public class GraphDatabaseChecker {
                         + "either") + ", so no traversal reaches it"
                     + (!fix ?
                     " (run CHECK DATABASE FIX to relink it, or CHECK DATABASE FIX DELETE ORPHANS to remove it)" :
-                    deleteOrphans ? ", removing it" : ", relinking it"));
+                    deleteOrphans ? ", removing it" :
+                        orphanOutLinks.size() < orphanRelinkBudget ? ", relinking it" : ", left for the next CHECK DATABASE FIX"));
                 if (fix && deleteOrphans)
                   // Flagged corrupted ONLY under the explicit opt-in: that is what hands the RID to the repair
                   // loop below AND puts its bucket into the caller's affectedBuckets, so the raw bucket delete
                   // used there does not leave the edge type's indexes pointing at a record that is gone.
                   report.corrupt(edgeRID);
+                else if (fix && orphanOutLinks.size() >= orphanRelinkBudget)
+                  orphansLeftForTheNextRun.incrementAndGet();
                 else if (fix) {
                   // #10741: THE RECORD NAMES BOTH ENDPOINTS, AND BOTH ARE LIVE VERTICES WHOSE LISTS WERE WALKED, SO
                   // LINKING IT BACK LOSES NOTHING: IT ONLY MAKES TRAVERSAL AGREE WITH countType() AND A SCAN OF THE
@@ -2007,6 +2014,9 @@ public class GraphDatabaseChecker {
           relinkedOrphanEntries = relinkedOrphanEdgeRecords + applyPendingLinks(orphanInLinks, Vertex.DIRECTION.IN, null, report);
           if (relinkedOrphanEdgeRecords > 0)
             report.warn("relinked " + relinkedOrphanEdgeRecords + " orphan edge records to their vertices");
+          if (orphansLeftForTheNextRun.get() > 0)
+            report.warn(orphansLeftForTheNextRun.get() + " more orphan edge records were left for the next run, to bound the "
+                + "memory of this one: run CHECK DATABASE FIX again to relink them");
         }
 
         for (final RID rid : report.corruptedRecords) {
@@ -2054,6 +2064,7 @@ public class GraphDatabaseChecker {
       // #10741: the RECORDS behind those entries - one per orphan relinked, whatever its direction - the number to read
       // against unreachableEdgeRecords
       stats.put("relinkedOrphanEdgeRecords", relinkedOrphanEdgeRecords);
+      stats.put("orphanEdgeRecordsLeftToRelink", orphansLeftForTheNextRun.get());
       putProbeCounters(stats, probeCache);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
@@ -2074,6 +2085,20 @@ public class GraphDatabaseChecker {
     }
 
     return stats;
+  }
+
+  /** Test-only override of {@link #orphanRelinkBudget()}, 0 in production. */
+  static volatile long orphanRelinkBudgetForTesting = 0;
+
+  /**
+   * How many orphan edge records one {@code FIX} run relinks (#10741): what a tenth of the heap holds at the 72 bytes a
+   * bidirectional orphan takes in the plan, and never less than 100,000.
+   */
+  private static long orphanRelinkBudget() {
+    final long forTesting = orphanRelinkBudgetForTesting;
+    if (forTesting > 0)
+      return forTesting;
+    return Math.max(100_000L, Runtime.getRuntime().maxMemory() / 10 / 72);
   }
 
   /**
