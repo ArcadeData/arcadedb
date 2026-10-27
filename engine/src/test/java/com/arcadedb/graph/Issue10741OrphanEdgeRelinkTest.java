@@ -106,6 +106,41 @@ class Issue10741OrphanEdgeRelinkTest extends TestHelper {
     assertThat(after.<Long>getProperty("edgesMissingInReference")).isZero();
   }
 
+  /**
+   * A self-loop orphan of a bidirectional type goes back into both lists of its one vertex, each exactly once, and one of a
+   * unidirectional type into the OUT list only.
+   */
+  @Test
+  void aSelfLoopOrphanIsRelinkedOncePerList() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().buildEdgeType().withName("E").withBidirectional(true).create();
+    database.getSchema().buildEdgeType().withName("U").withBidirectional(false).create();
+
+    final GraphBatch batch = database.batch().build();
+    final RID[] vertices = batch.createVertices("V", 2);
+    batch.newEdge(vertices[0], "E", vertices[0], "eid", 1);
+    batch.newEdge(vertices[1], "U", vertices[1], "eid", 2);
+    batch.flush();
+    reopenDatabase();
+
+    final long orphans = check("CHECK DATABASE").<Long>getProperty("unreachableEdgeRecords");
+    assertThat(orphans).as("the abandoned batch must leave orphan edge records, or this test proves nothing").isEqualTo(2L);
+
+    final Result fix = check("CHECK DATABASE FIX");
+    assertThat(fix.<Long>getProperty("relinkedOrphanEdgeRecords")).isEqualTo(2L);
+    // THE BIDIRECTIONAL ONE TWO ENTRIES (OUT AND IN OF THE SAME VERTEX), THE UNIDIRECTIONAL ONE ONE
+    assertThat(fix.<Long>getProperty("reconnectedEdges")).isEqualTo(3L);
+
+    final Vertex loop = database.lookupByRID(vertices[0], true).asVertex();
+    assertThat(loop.countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(1);
+    assertThat(loop.countEdges(Vertex.DIRECTION.IN, "E")).isEqualTo(1);
+    assertThat(database.lookupByRID(vertices[1], true).asVertex().countEdges(Vertex.DIRECTION.OUT, "U")).isEqualTo(1);
+
+    final Result after = check("CHECK DATABASE");
+    assertThat(after.<Long>getProperty("unreachableEdgeRecords")).isZero();
+    assertThat(after.<Long>getProperty("edgesMissingInReference")).isZero();
+  }
+
   /** {@code DELETE ORPHANS} still wins: the operator who asked for the records to go gets them removed, not relinked. */
   @Test
   void fixDeleteOrphansStillRemovesThem() {

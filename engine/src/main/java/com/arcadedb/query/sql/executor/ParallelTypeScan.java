@@ -32,6 +32,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.io.InterruptedIOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -574,8 +576,9 @@ final class ParallelTypeScan {
         } catch (final Throwable e) {
           // Throwable, not Exception: an Error that killed this producer must fail the query too, or the consumer
           // would take the missing unit for an empty one
-          if (closed)
-            // CANCELLED BY close(): THE INTERRUPT LANDED INSIDE A PAGE LOAD OR A READ, WHICH THROWS INSTEAD OF RETURNING (#10747)
+          if (closed && isCancellation(e))
+            // CANCELLED BY close(): THE INTERRUPT LANDED INSIDE A PAGE LOAD OR A READ, WHICH THROWS INSTEAD OF RETURNING (#10747).
+            // ANYTHING ELSE IS STILL REPORTED: A REAL BUG MUST NOT HIDE BEHIND A CLOSE THAT HAPPENED AT THE SAME TIME
             LogManager.instance().log(this, Level.FINE, "Parallel scan of type '%s' cancelled while a producer was reading", e, typeName);
           else
             recordFailure(e);
@@ -626,6 +629,20 @@ final class ParallelTypeScan {
       if (batch == END_OF_UNIT)
         return true;
     }
+  }
+
+  /**
+   * Whether {@code e} is what an interrupt makes a read throw: an {@link InterruptedIOException} (the I/O lock of a page
+   * load, wrapped by the read lock), a {@link ClosedByInterruptException} or an {@link InterruptedException}, anywhere in its
+   * cause chain, or anything thrown by a thread that is interrupted (#10747).
+   */
+  private static boolean isCancellation(final Throwable e) {
+    if (Thread.currentThread().isInterrupted())
+      return true;
+    for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause())
+      if (t instanceof InterruptedIOException || t instanceof ClosedByInterruptException || t instanceof InterruptedException)
+        return true;
+    return false;
   }
 
   private void recordFailure(final Throwable e) {

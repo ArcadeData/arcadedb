@@ -90,6 +90,25 @@ class Issue10712RepeatableReadCountTest extends TestHelper {
     }
   }
 
+  /**
+   * The other order, which the javadoc names: a count pins the counter at once and a scan pins its pages only when it reads
+   * them, so a commit landing between the two makes them disagree inside one REPEATABLE_READ transaction. Each of the two
+   * repeats; neither is a snapshot (#10792).
+   */
+  @Test
+  void aCountBeforeTheFirstScanPinsEarlierThanTheScan() throws Exception {
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      assertThat(countStar()).isEqualTo(100);
+      foreignCommit();
+      assertThat(scan()).as("the pages are first read after the commit").isEqualTo(149);
+      assertThat(countStar()).as("the counter was pinned before it").isEqualTo(100);
+      assertThat(scan()).as("the scan repeats").isEqualTo(149);
+    } finally {
+      database.rollback();
+    }
+  }
+
   @Test
   void aCountFollowsTheCommitsAtReadCommitted() throws Exception {
     database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);

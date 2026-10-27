@@ -758,14 +758,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             database.rollback();
           // RETRIED IF ATTEMPTS REMAIN WHEN IT IS IN THE FAMILY EVERY RETRY LOOP RETRIES - AN MVCC CONFLICT, BUT ALSO A
           // LockTimeoutException FROM THE COMMIT'S OWN FILE LOCKS, WHICH N WORKERS COMMITTING INTO THE SAME BUCKETS
-          // PRODUCE BY CONSTRUCTION (#10759) - AND ITS RULES ALLOW ONE MORE ATTEMPT. ANYTHING ELSE IS NOT TRANSIENT
-          if (!TransactionRetryPolicy.isRetryable(e) || !retryPolicy.mayRetry(e))
-            break;
-          if (!pendingUnreplayableTasks.isEmpty())
+          // PRODUCE BY CONSTRUCTION (#10759) - AND ITS RULES ALLOW ONE MORE ATTEMPT. ANYTHING ELSE IS NOT TRANSIENT, AN Error
+          // INCLUDED: isRetryable() NEVER ANSWERS TRUE FOR ONE
+          if (!TransactionRetryPolicy.isRetryable(e) || !pendingUnreplayableTasks.isEmpty())
             // A replay can only reconstruct pendingBatchCommands - committing one over a batch that also
             // held a write it cannot reconstruct would silently omit that write while still reporting
             // success. No safe retry available: stop here and fall through to the abandon path below,
-            // exactly as an un-retried commit failure always has for this batch shape.
+            // exactly as an un-retried commit failure always has for this batch shape. Checked before
+            // mayRetry(), which spends the one retry a duplicated key is given
+            break;
+          if (!retryPolicy.mayRetry(e))
             break;
         }
       }
