@@ -41,7 +41,7 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean execute(final Object left, Object right) {
-    if (isArray(right) && !(right instanceof byte[]))
+    if (MultiValue.isSequenceArray(right))
       // Normalize an array right-hand side - the result of a second split(), a parameter bound to a Java array -
       // to a List, so it is answered exactly as the equivalent List right-hand side is. An array satisfies neither
       // `instanceof Collection` nor `instanceof Iterable`, so it used to skip every branch below and be compared as
@@ -161,17 +161,22 @@ public class ContainsCondition extends BooleanExpression {
   /**
    * True when the collection holds the value. A list or map is looked for as ONE element, compared under the numeric rule of
    * {@code =} (a stored {@code [1L, 2L]} is the {@code [1, 2]} searched for) after the {@code Collection.contains()} that settles
-   * every identical element (issue #10448).
+   * every identical element (issue #10448). Any other value is compared under {@code =} too, as the scalar right-hand side is: a
+   * {@code byte[]} by its bytes and an {@code Integer} against a stored {@code Long}, so {@code vals CONTAINS [:binary]} finds what
+   * {@code vals CONTAINS :binary} finds (issue #10758).
    */
   private static boolean containsValue(final Collection<?> collection, final Object value) {
     if (collection.contains(value))
       return true;
-    if (!(value instanceof List || value instanceof Map))
+    if (value == null)
       return false;
-    // only an element of the same kind can be that list or map: anything else was never equal to it, and is not asked
+    // only an element of the same kind can be that list or map, and a list or map is never a scalar: anything else was never equal
+    // to it, and is not asked
     final boolean list = value instanceof List;
+    final boolean map = value instanceof Map;
     for (final Object o : collection)
-      if ((list ? o instanceof List : o instanceof Map) && QueryOperatorEquals.equals(o, value))
+      if (o != null && (list ? o instanceof List : map ? o instanceof Map : !(o instanceof List || o instanceof Map))
+          && QueryOperatorEquals.equals(o, value))
         return true;
     return false;
   }

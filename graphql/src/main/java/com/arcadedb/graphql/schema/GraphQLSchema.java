@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graphql.parser.AbstractValue;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
@@ -46,6 +47,7 @@ import com.arcadedb.graphql.parser.ValueWithVariable;
 import com.arcadedb.graphql.parser.VariableDefinition;
 import com.arcadedb.graphql.parser.VariableDefinitions;
 import com.arcadedb.graphql.parser.VariableLiteral;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -299,10 +301,17 @@ public class GraphQLSchema {
    * GraphQL document as trusted and its variables as untrusted input would otherwise be handing a caller raw SQL
    * without meaning to. Variables never resolved before issue #6834, so nothing can depend on that combination; a
    * predicate that genuinely has to vary at runtime belongs in a {@code @sql} directive with a bound parameter.
+   * <p>
+   * Every term is one parenthesised operand of the {@code and} that joins them, whoever wrote it: an {@code or} inside the
+   * predicate bound looser than that {@code and} and swallowed the equality of the other arguments, so the rows depended on
+   * the order the arguments were written in, which GraphQL leaves undefined (issue #10753). The parentheses alone are not
+   * enough for a text the module does not control: a predicate that closes them and opens new ones ({@code a > 1) or (b < 2})
+   * balances the wrapping. So the predicate must first parse as a complete condition on its own, which is exactly the
+   * guarantee that, wrapped, it is one operand.
    */
   private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames,
       final Map<String, Object> variables, final Map<String, Object> boundParameters) {
-    final StringBuilder where = new StringBuilder();
+    final List<String> terms = new ArrayList<>();
 
     if (queryArguments != null)
       for (final Argument queryArgument : queryArguments.getList()) {
@@ -319,22 +328,30 @@ public class GraphQLSchema {
 
         final Object argValue = resolveValue(argument, variables);
 
-        if (!where.isEmpty())
-          where.append(" and ");
-
         if ("where".equals(argName)) {
           final String predicate = String.valueOf(argValue);
           if (predicate.contains(BOUND_PARAMETER_PREFIX))
             throw new CommandParsingException("The 'where' predicate cannot name a parameter starting with '"
                 + BOUND_PARAMETER_PREFIX + "': that prefix is reserved for the parameters bound for the other arguments");
-          where.append(predicate);
+          try {
+            new SQLAntlrParser(database).parseCondition(predicate);
+          } catch (final CommandSQLParsingException e) {
+            throw new CommandParsingException("The 'where' predicate '" + predicate + "' is not a complete SQL condition", e);
+          }
+          terms.add(predicate);
         } else {
           final String parameterName = BOUND_PARAMETER_PREFIX + boundParameters.size();
           boundParameters.put(parameterName, argValue);
-          where.append(argName).append(" = :").append(parameterName);
+          terms.add(argName + " = :" + parameterName);
         }
       }
 
+    final StringBuilder where = new StringBuilder();
+    for (final String term : terms) {
+      if (!where.isEmpty())
+        where.append(" and ");
+      where.append('(').append(term).append(')');
+    }
     return where.toString();
   }
 

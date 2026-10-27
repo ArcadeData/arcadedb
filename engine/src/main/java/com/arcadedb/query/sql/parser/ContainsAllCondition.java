@@ -40,9 +40,11 @@ public class ContainsAllCondition extends BooleanExpression {
 
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection<?> leftCollection) {
+      // The right-hand side is what is searched FOR: a byte[] is the BINARY scalar, one value, as ContainsCondition and
+      // ContainsAnyCondition read it (issue #10758)
       if (right instanceof Iterable<?> iterable)
         right = iterable.iterator();
-      else if (right != null && right.getClass().isArray())
+      else if (MultiValue.isSequenceArray(right))
         right = MultiValue.getMultiValueIterator(right);
 
       if (right instanceof Iterator<?> iterator) {
@@ -67,7 +69,7 @@ public class ContainsAllCondition extends BooleanExpression {
 
       if (right instanceof Iterable<?> iterable)
         right = iterable.iterator();
-      else if (right != null && right.getClass().isArray())
+      else if (MultiValue.isSequenceArray(right))
         right = MultiValue.getMultiValueIterator(right);
       else
         right = Set.of(right).iterator();

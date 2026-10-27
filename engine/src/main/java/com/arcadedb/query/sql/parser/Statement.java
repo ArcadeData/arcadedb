@@ -53,6 +53,11 @@ public class Statement extends SimpleNode {
   // parsing (the HTTP automatic LIMIT is appended to the command string) and planners work on copy(), which starts with
   // no memo.
   private transient volatile NestedClassification nestedClassification;
+  // Memo of positionalParameterBounds(): the same reflective walk of the immutable tree, once per parsed instance
+  private transient volatile long positionalParameterBounds = BOUNDS_NOT_COMPUTED;
+
+  private static final long BOUNDS_NOT_COMPUTED = -1L;
+  private static final long BOUNDS_UNKNOWN      = -2L;
 
   /**
    * What the statements nested in a statement do, folded into the statement's own classification: whether they all
@@ -357,6 +362,76 @@ public class Statement extends SimpleNode {
 
   public boolean executionPlanCanBeCached() {
     return false;
+  }
+
+  /**
+   * Refuses positional values that do not match the placeholders of the statements, before any of them runs (issue #10721). A value
+   * no placeholder reads was dropped without a word - a list spread into several values for one {@code IN ?} answered fewer rows -
+   * and a placeholder with no value was bound to {@code null}. A {@code ?} and a {@code :name} each take the value at their position
+   * (a script numbers them across all its statements), so every one of them needs a value, {@code null} included. A Postgres-style
+   * {@code $N} reads the value at position N and may leave the lower ones unread, as Postgres does, so it only widens how many values
+   * are accepted. Values bound by name are not positional and are not counted.
+   *
+   * @param statements every statement of a script, bound to the values together
+   * @param values     how many positional values the caller passed
+   *
+   * @throws CommandSQLParsingException if the values are more or fewer than the placeholders
+   */
+  public static void checkPositionalParameterCount(final Iterable<? extends Statement> statements, final int values) {
+    int required = 0;
+    int accepted = 0;
+    for (final Statement statement : statements) {
+      final long bounds = statement.positionalParameterBounds();
+      if (bounds == BOUNDS_UNKNOWN)
+        // the tree could not be read: nothing is refused on a count that is not known
+        return;
+      required = Math.max(required, (int) (bounds >>> 32));
+      accepted = Math.max(accepted, (int) bounds);
+    }
+    checkPositionalParameterCount(required, accepted, values);
+  }
+
+  /** {@link #checkPositionalParameterCount(Iterable, int)} for this statement alone. */
+  public void checkPositionalParameterCount(final int values) {
+    final long bounds = positionalParameterBounds();
+    if (bounds != BOUNDS_UNKNOWN)
+      checkPositionalParameterCount((int) (bounds >>> 32), (int) bounds, values);
+  }
+
+  private static void checkPositionalParameterCount(final int required, final int accepted, final int values) {
+    if (values < required || values > accepted)
+      throw new CommandSQLParsingException(
+          "The statement has " + required + " positional parameter" + (required == 1 ? "" : "s") + " but " + values + " value"
+              + (values == 1 ? " was" : "s were") + " passed: every placeholder takes exactly one value, null included" + (
+              values > accepted ? ", and a list meant for one placeholder (as in 'IN ?') is passed as one value" : ""));
+  }
+
+  /** The placeholders a positional binding must fill (high 32 bits) and the values it may hold (low 32 bits), or BOUNDS_UNKNOWN. */
+  private long positionalParameterBounds() {
+    long bounds = positionalParameterBounds;
+    if (bounds == BOUNDS_NOT_COMPUTED) {
+      final int[] counts = { 0, 0 };
+      final boolean readable = SqlAstInspector.allNodesMatch(this, node -> {
+        final int number;
+        if (node instanceof PositionalParameter parameter)
+          number = parameter.paramNumber;
+        else if (node instanceof NamedParameter parameter)
+          // -1 for a literal the statement cache extracted: bound by name only, it takes no positional value
+          number = parameter.paramNumber;
+        else {
+          final String key = node instanceof Identifier identifier ? identifier.positionalParameterKey() : null;
+          if (key != null)
+            counts[1] = Math.max(counts[1], Integer.parseInt(key) + 1);
+          return true;
+        }
+        if (number >= 0)
+          counts[0] = Math.max(counts[0], number + 1);
+        return true;
+      });
+      bounds = readable ? ((long) counts[0] << 32) | Math.max(counts[0], counts[1]) : BOUNDS_UNKNOWN;
+      positionalParameterBounds = bounds;
+    }
+    return bounds;
   }
 
   /** The plan-cache key; the parameter-number suffix applies to the computed text, not to the raw text the parser presets. */

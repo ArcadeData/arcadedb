@@ -18,11 +18,16 @@
  */
 package com.arcadedb.function.sql;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.NumberUtils;
+
+import java.util.List;
+import java.util.Map;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.
@@ -118,6 +123,12 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    * threw for something as ordinary as {@code max([1, 'a'])} (issue #6389). Numeric widening is the caller's job -
    * both functions run {@code Type.castComparableNumber} first, so this only ever sees values already brought to a
    * common numeric class, or values of genuinely different kinds.
+   * <p>
+   * The order is {@link BinaryComparator#compareTo}, the one of {@code ORDER BY}, the index keys and the comparison operators,
+   * so a BINARY value orders by its unsigned bytes, a map or a list by its entries, and two Java representations of one instant
+   * by that instant, where a raw cast refused them all: the aggregate answered over one row and threw over two (issue #10697).
+   * The comparator answers every pair, ordering unrelated kinds by class name so an index stays total; an aggregate has no
+   * such need, and two values of different kinds stay refused here, as before.
    *
    * @param left  the value to place
    * @param right the value to place it against
@@ -126,18 +137,27 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    *
    * @throws IllegalArgumentException if the two values cannot be compared with each other
    */
-  @SuppressWarnings("unchecked")
   protected int compareValues(final Object left, final Object right) {
-    // STRINGS ORDER BY CODE POINT, AS IN THE INDEX, ORDER BY AND THE COMPARISON OPERATORS (ISSUE #8975)
-    if (left instanceof String leftString && right instanceof String rightString)
-      return BinaryComparator.compareStrings(leftString, rightString);
-    try {
-      return ((Comparable<Object>) left).compareTo(right);
-    } catch (final ClassCastException e) {
+    if (!isSameKind(left, right))
       throw new IllegalArgumentException(
+          getName() + "() cannot compare a value of type " + left.getClass().getSimpleName() + " with a value of type "
+              + right.getClass().getSimpleName());
+    try {
+      return BinaryComparator.compareTo(left, right);
+    } catch (final ClassCastException | IllegalArgumentException e) {
+      // two values of one class that has no order (an embedded document), or a pair the comparator refuses
+      throw new IllegalArgumentException(left.getClass() == right.getClass() ?
+          getName() + "() cannot compare values of type " + left.getClass().getSimpleName() + ": the type has no order" :
           getName() + "() cannot compare a value of type " + left.getClass().getSimpleName() + " with a value of type "
               + right.getClass().getSimpleName(), e);
     }
+  }
+
+  /** Whether two values are of one kind {@link BinaryComparator#compareTo} orders as such, rather than by the name of their class. */
+  private static boolean isSameKind(final Object left, final Object right) {
+    return left.getClass() == right.getClass() || left instanceof Number && right instanceof Number
+        || DateUtils.isDate(left) && DateUtils.isDate(right) || left instanceof Map && right instanceof Map
+        || left instanceof List && right instanceof List || left instanceof Identifiable && right instanceof Identifiable;
   }
 
   /**

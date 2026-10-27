@@ -31,7 +31,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
@@ -2401,14 +2403,24 @@ public enum Type {
       }
       return new PrimitiveArrayKey(value);
     }
-    return value;
+    // A temporal keys as the value "=" reads it, whatever Java class holds it: a stored DATETIME, a java.util.Date and the
+    // ZonedDateTime in UTC of one instant are one group, the rule openCypher's grouping applies (issues #10526, #10696)
+    final Object temporal = TemporalUtil.distinctKey(value);
+    return temporal != null ? temporal : value;
   }
 
   private static boolean holdsOnlyPlainValues(final Collection<?> values) {
     for (final Object item : values)
-      if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray()))
+      if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray())
+          || needsTemporalKey(item))
         return false;
     return true;
+  }
+
+  /** A temporal whose key is not the value itself, see {@link TemporalUtil#distinctKey(Object)}. */
+  private static boolean needsTemporalKey(final Object value) {
+    return value instanceof Date || value instanceof Calendar || value instanceof LocalDateTime || value instanceof OffsetDateTime
+        || value instanceof Instant || value instanceof CypherTemporalValue || value instanceof Duration || value instanceof Period;
   }
 
   /**

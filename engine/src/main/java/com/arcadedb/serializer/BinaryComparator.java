@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.LocalTime;
@@ -35,6 +36,7 @@ import java.time.ZonedDateTime;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
@@ -752,6 +754,10 @@ public class BinaryComparator {
       // List) directly for exactly this pair, so this class' own fallthrough must agree instead of casting an
       // ArrayList to Comparable - which it is not - and throwing (issue #7879).
       return CollectionUtils.compare(list, list1);
+    else if (isSequenceArray(a) ? isSequenceArray(b) || b instanceof List : isSequenceArray(b) && a instanceof List)
+      // An ARRAY_OF_* value is a sequence, ordered with the lists element by element, as openCypher orders it (issue #10380): the
+      // array has no compareTo, so two of them fell to a cast that threw, and ORDER BY to the text of their identity (issue #10697)
+      return compareSequences(a, b);
     else if (a instanceof ChronoLocalDate aDate && b instanceof ChronoLocalDate bDate)
       return aDate.compareTo(bDate);
     else if (a instanceof ChronoLocalDateTime<?> aDate && b instanceof ChronoLocalDateTime<?> bDate)
@@ -834,6 +840,37 @@ public class BinaryComparator {
     // a is not even a Comparable: the same class-name tiebreak CollectionUtils.compareKeys() uses for a
     // heterogeneous key set, so the order stays total and antisymmetric instead of throwing (issue #7879).
     return a.getClass().getName().compareTo(b.getClass().getName());
+  }
+
+  /** Any Java array but a {@code byte[]}, which is the BINARY scalar. */
+  private static boolean isSequenceArray(final Object value) {
+    return value.getClass().isArray() && !(value instanceof byte[]);
+  }
+
+  /**
+   * Orders two sequences, an array that is no {@code byte[]} or a list, element by element as {@link CollectionUtils#compare(List, List)}
+   * orders two lists, a shorter sequence that is a prefix of a longer one sorting first. Two arrays of one integral type are compared
+   * without boxing their elements.
+   */
+  private static int compareSequences(final Object a, final Object b) {
+    if (a instanceof int[] ints && b instanceof int[] ints1)
+      return Arrays.compare(ints, ints1);
+    if (a instanceof long[] longs && b instanceof long[] longs1)
+      return Arrays.compare(longs, longs1);
+    if (a instanceof short[] shorts && b instanceof short[] shorts1)
+      return Arrays.compare(shorts, shorts1);
+
+    final int sizeA = a instanceof List<?> list ? list.size() : Array.getLength(a);
+    final int sizeB = b instanceof List<?> list ? list.size() : Array.getLength(b);
+    final int length = Math.min(sizeA, sizeB);
+    for (int i = 0; i < length; i++) {
+      final Object elementA = a instanceof List<?> list ? list.get(i) : Array.get(a, i);
+      final Object elementB = b instanceof List<?> list ? list.get(i) : Array.get(b, i);
+      final int cmp = compareTo(elementA, elementB);
+      if (cmp != 0)
+        return cmp;
+    }
+    return Integer.compare(sizeA, sizeB);
   }
 
   /**
