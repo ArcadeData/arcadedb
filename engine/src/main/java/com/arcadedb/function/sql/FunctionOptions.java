@@ -116,6 +116,23 @@ public class FunctionOptions {
     }
   }
 
+  /** As {@link #getInt}, for a count or a bound: a negative value is refused rather than read as "nothing" (issue #10788). */
+  public int getNonNegativeInt(final String key, final int defaultValue) {
+    return requireNonNegative(key, getInt(key, defaultValue));
+  }
+
+  /** As {@link #getLong}, for a count or a bound: a negative value is refused rather than read as "nothing" (issue #10788). */
+  public long getNonNegativeLong(final String key, final long defaultValue) {
+    return requireNonNegative(key, getLong(key, defaultValue));
+  }
+
+  private <N extends Number> N requireNonNegative(final String key, final N value) {
+    if (value.longValue() < 0)
+      throw new CommandSQLParsingException(
+          "Option '" + key + "' for function '" + functionName + "' must not be negative, got: " + value);
+    return value;
+  }
+
   public double getDouble(final String key, final double defaultValue) {
     final Object v = options.get(key);
     if (v == null)
@@ -136,7 +153,16 @@ public class FunctionOptions {
       return defaultValue;
     if (v instanceof Boolean b)
       return b;
-    return Boolean.parseBoolean(v.toString());
+    // Boolean.parseBoolean() reads every other value as false, so a typo ('ture', 'yes', 1) was another query rather than an error
+    // (issue #10788)
+    if (v instanceof String s) {
+      final String trimmed = s.trim();
+      if (trimmed.equalsIgnoreCase("true"))
+        return true;
+      if (trimmed.equalsIgnoreCase("false"))
+        return false;
+    }
+    throw new CommandSQLParsingException("Option '" + key + "' for function '" + functionName + "' must be a boolean, got: " + v);
   }
 
   public String getString(final String key, final String defaultValue) {

@@ -1571,7 +1571,25 @@ mapLiteral
 mapEntry
     // MAXDEPTH is a keyword of TRAVERSE, not a general identifier (it would be swallowed as a projection alias there),
     // but it is a documented option key of the path functions, so a map key may spell it unquoted (#9148)
-    : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
+    : (identifier | MAXDEPTH | STRING_LITERAL | mapKeyword) COLON expression
+    // "index:" is one token (the target of SELECT FROM index:...), so {index: 1} reaches here as that token and the value
+    | INDEX_COLON expression
+    ;
+
+/**
+ * The keywords the identifier rule does not take. Between the brace or comma of a map literal and its colon a word can only be
+ * a key, so every keyword is one there: the option bags of the functions are keyed by plain words ({parallel: true} for astar(),
+ * {timeout: ...}, {unique: ...}), and a key that happened to be a keyword was a syntax error that only quoting avoided (#10788).
+ * MapKeyKeywordsTest walks the lexer's vocabulary, so a keyword added to the lexer and to neither rule fails it.
+ */
+mapKeyword
+    : SELECT | TRAVERSE | MATCH | INSERT | CREATE | DELETE | UPDATE | UPSERT | FROM | INTO | INCREMENT
+    | AND | OR | NOT | IS | NULL | TRUE | FALSE | DEFINED | DEFINE | BY | COLLATE | ASC | DESC | TIMEOUT
+    | FOR | FOREACH | BREAK | RETURN | CASE | WHEN | THEN | END | BUCKET | PAGESIZE | SCHEMA | POLYMORPHIC
+    | NULL_STRATEGY | LET | UNWIND | DEFAULTS | APPLY | UNIQUE | NOTUNIQUE | FULL_TEXT | STRATEGY | DEPTH_FIRST
+    | BREADTH_FIRST | BACKUP | WAIT | RETRY | UNSAFE | BEFORE | AFTER | PARALLEL | COMPRESS | GLOBAL | TRIGGER
+    | FIX | BATCH | LIKE | ILIKE | BETWEEN | CONTAINSALL | CONTAINSANY | CONTAINSKEY | CONTAINSVALUE | CONTAINSTEXT
+    | MATCHES | INSTANCEOF
     ;
 
 mapEntryOrRid

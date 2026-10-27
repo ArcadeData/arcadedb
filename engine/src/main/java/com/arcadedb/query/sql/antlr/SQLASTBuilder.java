@@ -3069,7 +3069,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Map entry visitor - handles key: value.
-   * Grammar: mapEntry : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
+   * Grammar: mapEntry : (identifier | MAXDEPTH | STRING_LITERAL | mapKeyword) COLON expression | INDEX_COLON expression
    */
   @Override
   public JsonItem visitMapEntry(final SQLParser.MapEntryContext ctx) {
@@ -3079,6 +3079,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Left side (key) can be identifier or string literal
       if (ctx.identifier() != null) {
         item.leftIdentifier = (Identifier) visit(ctx.identifier());
+      } else if (ctx.mapKeyword() != null) {
+        // a keyword is a key as spelled, like the keywords the identifier rule takes (#10788)
+        item.leftIdentifier = new Identifier(ctx.mapKeyword().getText());
+      } else if (ctx.INDEX_COLON() != null) {
+        final String token = ctx.INDEX_COLON().getText();
+        item.leftIdentifier = new Identifier(token.substring(0, token.length() - 1));
       } else if (ctx.MAXDEPTH() != null) {
         // the keyword is case-insensitive but the option consumers look the key up as spelled: normalise it
         item.leftIdentifier = new Identifier("maxDepth");
