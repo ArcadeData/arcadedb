@@ -39,6 +39,11 @@ import java.util.logging.Level;
  * for it. This step used to carry a second "column projection push-down" phase that pre-extracted the SELECT-listed
  * columns into the row instead; it was unreachable by construction and has been removed - see issue #5756 and the note
  * on {@code SelectExecutionPlanner#handleTypeAsTarget}.
+ * <p>
+ * A candidate the WHERE clause rejects is pointed at the next record instead of being replaced (issue #10655), so an
+ * expression evaluated by the clause - a custom SQL function included - must not keep the row it is given (or
+ * {@code $current}) past its own evaluation: a row kept that way would answer a later record. Values read from it are
+ * unaffected.
  */
 public class ScanWithFilterStep extends AbstractExecutionStep {
 
@@ -133,6 +138,8 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
                 cost += System.nanoTime() - filterBegin;
             }
           }
+          // THE SCAN IS OVER: A FINISHED STEP DOES NOT KEEP THE LAST REJECTED RECORD REACHABLE
+          rejectedCandidate = null;
           warnIfRecordsSkipped();
         }
 

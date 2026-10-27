@@ -41,7 +41,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  // A NEW FIELD THAT CARRIES ROW STATE MUST ALSO BE CHECKED BY rewrapElement(), OR A FILTERED SCAN MOVES IT TO ANOTHER RECORD
+  // A new field that carries row state must also be checked by rewrapElement(), or a filtered scan moves it to another record
   protected final Database database;
   protected final Object value;
   protected Map<String, Object> content;

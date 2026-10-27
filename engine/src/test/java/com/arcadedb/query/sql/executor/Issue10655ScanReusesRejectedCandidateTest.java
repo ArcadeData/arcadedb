@@ -177,6 +177,7 @@ class Issue10655ScanReusesRejectedCandidateTest extends TestHelper {
       assertThat(withContent.rewrapElement(docs.get(1))).isFalse();
     });
   }
+
   /**
    * A correlated subquery in the WHERE clause reads the outer row through {@code $parent.$current}, and runs a filtered
    * scan of its own, with its own reused candidate, while the outer candidate is being evaluated.
@@ -201,7 +202,16 @@ class Issue10655ScanReusesRejectedCandidateTest extends TestHelper {
    */
   @Test
   void parallelScanReturnsTheSequentialRowsEachWithItsOwnRecord() {
+    final Object pagesPerUnit = database.getConfiguration().getValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT);
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 2);
+    try {
+      scanInParallel();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, pagesPerUnit);
+    }
+  }
+
+  private void scanInParallel() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Par10655", 1);
       final String padding = "x".repeat(200);
