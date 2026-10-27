@@ -25,11 +25,15 @@ jobs:
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
     runs-on: ubuntu-latest
+    # Read-only on purpose: the model reads untrusted PR content, so it gets no write tool. It returns
+    # a verdict instead, and the flag-security-hazard job below applies the label (#10600).
     permissions:
       contents: read
       pull-requests: read
       issues: read
       id-token: write
+    outputs:
+      security_hazard: ${{ fromJSON(steps.claude-review.outputs.structured_output || '{}').security_hazard == true }}
 
     steps:
       - name: Checkout repository
@@ -53,7 +57,10 @@ jobs:
             - Security concerns
             - Test coverage
             - If the PR is likely coming from an external contributor, pay extra attention to security, in the case a user is maliciously introducing security hazards in the code base
-            - If a security hazard is added then add the label "do to not merge" to he pr
+
+            Report your security verdict in the structured output: set `security_hazard` to true only when
+            the PR introduces a security hazard into the code base, and say why in `security_reason`. Do not
+            try to label the PR yourself: a later step does that from your verdict.
 
             Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
 
@@ -61,4 +68,29 @@ jobs:
 
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-          claude_args: '--model claude-sonnet-5-5 --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+          claude_args: |
+            --model claude-sonnet-5-5
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"
+            --json-schema '{"type":"object","properties":{"security_hazard":{"type":"boolean"},"security_reason":{"type":"string"}},"required":["security_hazard"]}'
+
+  # Applies the label the review asked for. The label name is fixed here, never taken from the model,
+  # and this job runs no model and checks nothing out, so the write scope is never in reach of PR content.
+  #
+  # Fork PRs: a `pull_request` run from a fork gets a read-only GITHUB_TOKEN and no OIDC token, so the
+  # review job above already fails there and this job never runs. The automatic flag therefore covers
+  # same-repository PRs only; an external contributor's PR is reviewed through an `@claude review`
+  # comment (claude.yml), and its security verdict is the maintainer's to act on.
+  flag-security-hazard:
+    needs: claude-review
+    if: needs.claude-review.outputs.security_hazard == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Label the PR "do not merge"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # The labels endpoint, not `gh pr edit`: the latter also reads project data the token cannot see.
+        run: gh api --method POST "repos/$REPO/issues/$PR_NUMBER/labels" -f 'labels[]=do not merge'

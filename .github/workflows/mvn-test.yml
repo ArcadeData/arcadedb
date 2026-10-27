@@ -87,6 +87,10 @@ jobs:
       # (#10023) and then a release bundle (#10111). Every step must use the pinned ./mvnw (#10134).
       - name: Check Maven wrapper usage
         run: ./.github/scripts/check-maven-wrapper.py
+      # A claude-code-action prompt that asks for a label, a merge or a push the job gives the model no
+      # scope or tool for is silently dropped, never even failing (#10600's "do not merge" guard).
+      - name: Check Claude prompts are executable
+        run: ./.github/scripts/check-claude-prompt-mutations.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
       # The issue-automation scripts act on what a model returned after reading untrusted issue
