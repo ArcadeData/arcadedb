@@ -143,6 +143,9 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
           getName() + "() cannot compare a value of type " + left.getClass().getSimpleName() + " with a value of type "
               + right.getClass().getSimpleName());
     try {
+      if (left instanceof Identifiable leftRecord && right instanceof Identifiable rightRecord && left.getClass() != right.getClass())
+        // a record against its RID, or two kinds of record: by identity, which the comparator would answer by class name
+        return BinaryComparator.compareTo(leftRecord.getIdentity(), rightRecord.getIdentity());
       return BinaryComparator.compareTo(left, right);
     } catch (final ClassCastException | IllegalArgumentException e) {
       // two values of one class that has no order (an embedded document), or a pair the comparator refuses

@@ -100,6 +100,15 @@ class Issue10753WherePrecedenceTest {
   }
 
   @Test
+  void aPredicateEndingInALineCommentKeepsItsOperandClosed() {
+    executeTest(database -> {
+      assertThat(graphql(database, "{ books(name: \"Target\", where: \"pages > 100 or pages < 10 -- big or small\") { name pages } }"))
+          .containsExactly("Target/5", "Target/500");
+      return null;
+    });
+  }
+
+  @Test
   void aPredicateAloneAndAnArgumentAloneAreUnchanged() {
     executeTest(database -> {
       assertThat(graphql(database, "{ books(where: \"pages > 100 or pages < 10\") { name pages } }"))

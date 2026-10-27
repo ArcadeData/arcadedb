@@ -2405,8 +2405,8 @@ public enum Type {
     }
     // A temporal keys as the value "=" reads it, whatever Java class holds it: a stored DATETIME, a java.util.Date and the
     // ZonedDateTime in UTC of one instant are one group, the rule openCypher's grouping applies (issues #10526, #10696)
-    final Object temporal = TemporalUtil.distinctKey(value);
-    return temporal != null ? temporal : value;
+    // ZonedDateTime, LocalDate, LocalTime and OffsetTime are their own key: only the classes that are not pay the lookup
+    return needsTemporalKey(value) ? TemporalUtil.distinctKey(value) : value;
   }
 
   private static boolean holdsOnlyPlainValues(final Collection<?> values) {

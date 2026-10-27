@@ -350,7 +350,8 @@ public class GraphQLSchema {
     for (final String term : terms) {
       if (!where.isEmpty())
         where.append(" and ");
-      where.append('(').append(term).append(')');
+      // the closing parenthesis on a line of its own: a predicate that ends in a line comment does not comment it out
+      where.append('(').append(term).append("\n)");
     }
     return where.toString();
   }

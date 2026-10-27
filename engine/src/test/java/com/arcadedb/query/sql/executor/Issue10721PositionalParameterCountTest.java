@@ -64,6 +64,9 @@ class Issue10721PositionalParameterCountTest extends TestHelper {
     assertRefused(() -> query("SELECT FROM V WHERE k = ?"), 1, 0);
     // a named placeholder takes a positional value by its position, so it counts as one too
     assertRefused(() -> query("SELECT FROM V WHERE k = :a OR k = :b", 1), 2, 1);
+    // a $N does not excuse a missing value of a ? before it, nor a surplus value past the highest position
+    assertRefused(() -> query("SELECT FROM V WHERE k = ? OR k = ? OR k = $2"), 2, 0);
+    assertRefused(() -> query("SELECT FROM V WHERE k = $2", 0, 2, 1), 0, 3);
   }
 
   @Test
@@ -97,6 +100,7 @@ class Issue10721PositionalParameterCountTest extends TestHelper {
     assertThat(query("SELECT FROM V WHERE k = ? OR k = ?", 1, null)).isEqualTo(1);
     // the Postgres-style $N reads the value at its position, and a lower position may be left unread, as in Postgres
     assertThat(query("SELECT FROM V WHERE k = $2", 0, 2)).isEqualTo(1);
+    assertThat(query("SELECT FROM V WHERE k = ? OR k = $3", 1, null, 2)).isEqualTo(2);
     // named values are not counted: a map binds by name
     try (final ResultSet rs = database.query("sql", "SELECT FROM V WHERE k = :a", Map.of("a", 1, "unused", 2))) {
       assertThat(rs.stream().count()).isEqualTo(1);

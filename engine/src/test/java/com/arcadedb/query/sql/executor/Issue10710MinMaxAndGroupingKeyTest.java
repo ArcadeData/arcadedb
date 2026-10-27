@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -144,6 +145,23 @@ class Issue10710MinMaxAndGroupingKeyTest extends TestHelper {
       assertThat(BinaryComparator.compareTo(first, last)).as(type.name()).isNegative();
       assertThat(BinaryComparator.compareTo(min, first)).as(type.name() + " min " + min + " vs " + first).isZero();
       assertThat(BinaryComparator.compareTo(max, last)).as(type.name() + " max " + max + " vs " + last).isZero();
+    }
+  }
+
+  /** A record and a RID are one kind, ordered by identity, not by the name of their classes. */
+  @Test
+  void aRecordAndARidOrderByIdentity() {
+    database.command("sql", "CREATE DOCUMENT TYPE R").close();
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newDocument("R").set("n", 0).save().getIdentity();
+      rids[1] = database.newDocument("R").set("n", 1).save().getIdentity();
+    });
+    final List<Object> values = List.of(rids[0], rids[1].asDocument());
+    try (final ResultSet rs = database.query("sql", "SELECT max(?) AS m, min(?) AS n", values, values)) {
+      final Result row = rs.next();
+      assertThat(((Identifiable) row.getProperty("m")).getIdentity()).isEqualTo(rids[1]);
+      assertThat(((Identifiable) row.getProperty("n")).getIdentity()).isEqualTo(rids[0]);
     }
   }
 
