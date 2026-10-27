@@ -26,8 +26,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
+
+import java.lang.reflect.Array;
 
 import java.util.*;
 
@@ -288,13 +291,16 @@ public class BinaryCondition extends BooleanExpression {
         if (right.isEarlyCalculated(info.getContext())) {
           if (operator instanceof EqualsCompareOperator) {
             final Object vl = this.right.execute((Result) null, info.getContext());
-            if (vl instanceof Collection<?> collection) {
+            // an array but a byte[] (BINARY) is the list it holds, as "=" compares it (issue #10736)
+            final boolean sequenceArray = MultiValue.isSequenceArray(vl);
+            if (vl instanceof Collection<?> || sequenceArray) {
               // the answer reads the parameter's value: the plan holds for this binding only (issue #10757)
               if (!right.isLiteral())
                 info.setPlanDependsOnValue();
               // A BY ITEM index holds one entry per ITEM of the list, so a whole list is no key of it: the lookup found nothing where
               // the scan compares the list value by value (issue #10448)
-              return !collection.isEmpty() && !info.isIndexByItem();
+              final boolean empty = sequenceArray ? Array.getLength(vl) == 0 : ((Collection<?>) vl).isEmpty();
+              return !empty && !info.isIndexByItem();
             }
             // A null value is not tested here: the plan is cached by statement text and reused by runs with another parameter value,
             // so the index step skips the seek when the value is null (#9238, #9274)

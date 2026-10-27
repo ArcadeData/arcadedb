@@ -60,6 +60,49 @@ class MaxMinFromIndexStepTest {
     });
   }
 
+  /**
+   * Issue #10748: given the buckets of its target, the step reads the entries of those buckets only - through the sub-indexes of a
+   * type index, and by skipping every other bucket's entry of any other range index.
+   */
+  @Test
+  void shouldReadTheGivenBucketsOnly() throws Exception {
+    TestHelper.executeInNewDatabase(db -> {
+      final DocumentType type = db.getSchema().buildDocumentType().withName("TestType").withTotalBuckets(2).create();
+      type.createProperty("value", Long.class);
+      final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "value");
+      final int bucket0 = type.getBuckets(false).get(0).getFileId();
+      final int bucket1 = type.getBuckets(false).get(1).getFileId();
+
+      db.transaction(() -> {
+        db.newDocument("TestType").set("value", 10L).save("TestType_0");
+        db.newDocument("TestType").set("value", 20L).save("TestType_0");
+        db.newDocument("TestType").set("value", 5L).save("TestType_1");
+        db.newDocument("TestType").set("value", 900L).save("TestType_1");
+      });
+
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(db);
+      assertThat(maxMin(index, true, new int[] { bucket0 }, context)).isEqualTo(20L);
+      assertThat(maxMin(index, false, new int[] { bucket0 }, context)).isEqualTo(10L);
+      assertThat(maxMin(index, true, new int[] { bucket0, bucket1 }, context)).isEqualTo(900L);
+      assertThat(maxMin(index, false, new int[] { bucket1 }, context)).isEqualTo(5L);
+
+      // a range index that is no type index: the entries of the other buckets are skipped one by one
+      RangeIndex onBucket1 = null;
+      for (final var subIndex : index.getIndexesOnBuckets())
+        if (subIndex.getAssociatedBucketId() == bucket1)
+          onBucket1 = (RangeIndex) subIndex;
+      assertThat(onBucket1).isNotNull();
+      assertThat(maxMin(onBucket1, true, new int[] { bucket1 }, context)).isEqualTo(900L);
+      assertThat(maxMin(onBucket1, true, new int[] { bucket0 }, context)).isNull();
+    });
+  }
+
+  private static Object maxMin(final RangeIndex index, final boolean max, final int[] buckets, final CommandContext context) {
+    final ResultSet result = new MaxMinFromIndexStep(index, ALIAS, max, buckets, context).syncPull(context, 1);
+    return result.next().getProperty(ALIAS);
+  }
+
   @Test
   void shouldReturnMinValueFromIndex() throws Exception {
     TestHelper.executeInNewDatabase(db -> {

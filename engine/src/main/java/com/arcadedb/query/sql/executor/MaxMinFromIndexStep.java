@@ -113,7 +113,9 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
               // let the loop consume a null and read the DELETED key it had stepped over.
               final Identifiable entry = cursor.next(); // advance to get the key
               if (bucketIds != null && Arrays.binarySearch(bucketIds, entry.getIdentity().getBucketId()) < 0)
-                // a record of another type than the target, which an ancestor's index holds (issue #10748)
+                // a record of another type than the target, which an ancestor's index holds (issue #10748). The cursor of a type
+                // index never hands one, as it reads the target's sub-indexes only; the planner hands no other kind of index, so this
+                // is what keeps the step exact for any index it is given rather than a filter the planner relies on
                 continue;
               final Object key = cursor.getKeys();
 

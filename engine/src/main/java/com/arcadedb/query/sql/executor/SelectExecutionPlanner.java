@@ -748,7 +748,10 @@ public class SelectExecutionPlanner {
     // The aggregate is over the records of the target, its subtypes included, and nothing else: the index of a subtype is routinely
     // its ancestor's, which holds the entries of every sibling type too, so the step reads the target's buckets only. A bucket of the
     // target the index has no sub-index on holds values the index cannot give: the scan answers then (issue #10748)
-    final int[] targetBuckets = documentType.getBucketIds(true).stream().mapToInt(Integer::intValue).toArray();
+    final List<Integer> polymorphicBuckets = documentType.getBucketIds(true);
+    final int[] targetBuckets = new int[polymorphicBuckets.size()];
+    for (int i = 0; i < targetBuckets.length; i++)
+      targetBuckets[i] = polymorphicBuckets.get(i);
     if (!coversBuckets(index, targetBuckets))
       return false;
 

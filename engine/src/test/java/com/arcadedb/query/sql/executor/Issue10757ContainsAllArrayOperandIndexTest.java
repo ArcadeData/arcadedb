@@ -134,6 +134,23 @@ class Issue10757ContainsAllArrayOperandIndexTest extends TestHelper {
     assertThat(names("Tagged", new int[0])).containsExactly("empty", "one_two", "only1", "only2", "two_three_one");
   }
 
+  /**
+   * A whole list is no key of a BY ITEM index (#10448): an array bound to {@code =} is that list too, so it is answered by the scan
+   * with or without the index, whatever binding ran before it.
+   */
+  @Test
+  void anArrayEqualToTheWholeListAnswersAsTheListDoes() {
+    createTypes();
+    for (final Map.Entry<String, Object> shape : shapesOf(1, 2).entrySet()) {
+      final Map<String, Object> params = Map.of("p", shape.getValue());
+      for (final String type : List.of("Tagged", "Plain"))
+        try (final ResultSet rs = database.query("sql", "SELECT name FROM " + type + " WHERE tags = :p", params)) {
+          assertThat(rs.stream().map(r -> r.<String>getProperty("name")).toList()).as("%s %s", type, shape.getKey())
+              .containsExactly("one_two");
+        }
+    }
+  }
+
   @Test
   void aMultiItemOperandUsesTheIndexAndRechecksTheCondition() {
     createTypes();

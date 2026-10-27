@@ -134,6 +134,8 @@ class Issue10736CollectionElementEqualityTest extends TestHelper {
     // a list keeps its order against a list, and against a set it is compared in the set's iteration order, as before
     assertThat(QueryOperatorEquals.equals(List.of(1, 2), List.of(2, 1))).isFalse();
     assertThat(QueryOperatorEquals.equals(List.of(1, 2), new LinkedHashSet<>(List.of(1L, 2L)))).isTrue();
+    assertThat(QueryOperatorEquals.equals(List.of(1, 2), new LinkedHashSet<>(List.of(2L, 1L)))).as("the set's order").isFalse();
+    assertThat(QueryOperatorEquals.equals(new LinkedHashSet<>(List.of(2L, 1L)), List.of(1, 2))).as("either side").isFalse();
     // the comparator holds one rule for both kinds of collection too: a Long and an Integer are one value
     assertThat(BinaryComparator.equals(new HashSet<>(List.of(1L, 2L)), new LinkedHashSet<>(List.of(2, 1)))).isTrue();
   }
