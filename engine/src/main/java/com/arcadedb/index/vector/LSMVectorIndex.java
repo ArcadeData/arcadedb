@@ -1860,9 +1860,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *                                 (issue #7190) - never {@code null}
    * @param tombstonedOrdinals       how many of those leading entries answer for a vector that has since been
    *                                 deleted, charged to the rebuild schedule by {@link #reuseStalePrefixGraph}
+   * @param graphFingerprint         the fingerprint the manifest certifies for the graph's own ordinals, which is the
+   *                                 identity the PQ codes paired with it must record (issue #10698)
    */
   private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] ordinalToVectorId, int graphSize,
-                                 String vectorProp, int[] unreachableOrdinals, int tombstonedOrdinals) {
+                                 String vectorProp, int[] unreachableOrdinals, int tombstonedOrdinals,
+                                 long graphFingerprint) {
   }
 
   /**
@@ -2267,7 +2270,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return new PersistedGraphCheck(false,
               // Zero by construction: this branch is only reached with no tombstones at all (issue #7842).
               new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp, persistedManifest.unreachableOrdinals(),
-                  0));
+                  0, persistedManifest.fingerprint()));
         }
         LogManager.instance().log(this, Level.INFO,
             "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
@@ -2292,9 +2295,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final List<DeltaVectorEntry> unreachableEntries = readUnreachableEntries(unreachableOrdinals,
           rebuiltOrdinalToVectorId, rebuiltOrdinalToVectorId.length, vectorProp);
 
+      // ISSUE #10698: the PQ codes were published with the locations, before any graph was chosen, so this is where
+      // they are adopted for THIS graph - and they are only if they record it. The exact-cover reopen asks the same
+      // question, but its "no" only sends the open here, and without asking again the walk paired that same graph with
+      // the very codes the question had refused. The identity is the one the manifest certifies for the array just
+      // rebuilt (the comparison above proved them equal), or, for a graph persisted without a manifest, the fingerprint
+      // of that array computed here: the same value a manifest would carry for it. That computation is one location
+      // lookup per ordinal, O(N), paid only by a PRODUCT index persisted without a manifest, on top of the walk above
+      // that already read every vector's document.
+      final long graphFingerprint = productQuantized ?
+          persistedManifest != null ? persistedManifest.fingerprint() :
+              LSMVectorIndexGraphManifest.fingerprintOf(rebuiltOrdinalToVectorId, validationLocations::getRid) : 0L;
+      final String pqMismatch = productQuantized ?
+          pqCodesMismatch(pqVectors, rebuiltOrdinalToVectorId.length, graphFingerprint) : null;
+
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        // In the same lock as the graph, so no search walks the new graph through codes built for another one
+        if (pqMismatch != null)
+          dropProductQuantizationCodes();
         this.graphIndex = loadedGraph;
         this.graphUnreachableOrdinals = unreachableOrdinals;
         this.ordinalToVectorId = rebuiltOrdinalToVectorId;
@@ -2317,26 +2337,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "which is the only way a search can return them (issue #7190)", queuedUnreachable,
             unreachableOrdinals.length, indexName);
 
-      // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
-      // This handles the case where graph was built before PRODUCT quantization was added
-      if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
+      // Build PQ when there are no codes for this graph: no PQ data at all (a graph built before PRODUCT quantization
+      // was added), or codes that were discarded just above because they were built for another graph (issue #10698)
+      if (pqMismatch != null) {
         LogManager.instance().log(this, Level.INFO,
-            "PQ not available after graph load, building PQ for index: %s", indexName);
-        try {
-          // Create vector values from the loaded vectorIndex for PQ building. One read of the array: the codes are laid
-          // out by it, and they are recorded as built for the persisted graph only while it is still the very array that
-          // graph was validated against above - which is what the manifest's fingerprint certifies (issue #10584)
-          final int[] pqOrdinals = ordinalToVectorId;
-          final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
-              metadata.dimensions, vectorProp,
-              snapshotOf(vectorIndex(), pqOrdinals), pqOrdinals, this,
-              computeGraphBuildCacheCapacity(pqOrdinals.length));
-          buildAndPersistPQ(vectors,
-              persistedManifest != null && pqOrdinals == rebuiltOrdinalToVectorId ? persistedManifest.fingerprint() : null);
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
-        }
+            "PQ codes of index %s %s: building PQ for the persisted graph (issue #10698)", indexName, pqMismatch);
+        // One read of the array: the codes are laid out by it, and they are recorded as built for the persisted graph
+        // only while it is still the very array that graph was validated against above (issue #10584)
+        final int[] pqOrdinals = ordinalToVectorId;
+        rebuildProductQuantizationFor(pqOrdinals, vectorProp,
+            pqOrdinals == rebuiltOrdinalToVectorId ? Long.valueOf(graphFingerprint) : null);
       }
 
       return PersistedGraphCheck.LOADED;
@@ -2558,7 +2568,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           indexName, deadOrdinals, mapVectorIds.length, extended.length - mapVectorIds.length);
       return new PersistedGraphCheck(false,
           new ReuseCandidate(loadedGraph, extended, mapVectorIds.length, vectorProp, manifest.unreachableOrdinals(),
-              deadOrdinals));
+              deadOrdinals, manifest.fingerprint()));
     }
 
     // The graph covers every live vector. Read what its own build left unreachable before publishing, for the same
@@ -2781,6 +2791,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           unreachableVectorIdsOf(candidate.unreachableOrdinals(), rebuiltOrdinalToVectorId, graphSize, alreadyQueued),
           vectorProp);
 
+      // ISSUE #10698: the PQ codes are adopted for this graph here, the way the up-to-date branch of
+      // loadPersistedGraphOrDecidePrefix() adopts them for its own: only if they are one per ordinal of the prefix and
+      // record the graph the manifest certifies for it. Otherwise they are dropped in the publish below and rebuilt
+      // for the prefix right after it.
+      final String pqMismatch = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null ?
+          pqCodesMismatch(pqVectors, graphSize, candidate.graphFingerprint()) : null;
+      final int[] graphOrdinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
+
       // Publish. The graph is not published for the whole unlocked read above - insert() does not wait on it -
       // so a concurrent write could have landed on this index in the meantime and already appended its own
       // entries to deltaVectors and its own count to mutationsSinceSerialize. Appending to the buffer rather
@@ -2789,9 +2807,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        if (pqMismatch != null)
+          dropProductQuantizationCodes();
         this.graphIndex = loadedGraph;
         this.graphUnreachableOrdinals = candidate.unreachableOrdinals();
-        this.ordinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
+        this.ordinalToVectorId = graphOrdinalToVectorId;
         queuedIntoDelta = appendToDeltaBuffer(gapEntries);
         queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
         this.graphState = GraphState.MUTABLE;
@@ -2817,6 +2837,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           queuedUnreachable > 0 ?
               ", plus %d its build left unreachable and which the delta scan has to serve (issue #7190)".formatted(
                   queuedUnreachable) : "");
+
+      // Still under graphBuildLock, which every writer of the PQ file holds. The gap is served by the delta scan and
+      // needs no code: the codes cover exactly the ordinals of the graph just published.
+      if (pqMismatch != null) {
+        LogManager.instance().log(this, Level.INFO,
+            "PQ codes of index %s %s: building PQ for the reused graph prefix (issue #10698)", indexName, pqMismatch);
+        rebuildProductQuantizationFor(graphOrdinalToVectorId, vectorProp, candidate.graphFingerprint());
+      }
     } finally {
       // ensureGraphAvailable() handed the latch over rather than clearing it at decision time, so this is where it
       // is released - after the publish above and, crucially, still under graphBuildLock, so the next thread to
@@ -4960,6 +4988,58 @@ public class LSMVectorIndex implements Index, IndexInternal {
     this.pqVectors = null;
     if (pqFile != null && pqFile.deletePQFile())
       persistedPQKnownStale = false;
+  }
+
+  /**
+   * Whether {@code codes} can be paired with a graph of {@code graphOrdinals} ordinals whose ordinal map has the
+   * fingerprint {@code graphFingerprint}: one code per ordinal, recorded as built for that very map (issues #10584,
+   * #10698). A count says how many, not which, so codes that record no graph cannot vouch for this one either.
+   * <p>
+   * Only for a PRODUCT-quantized index: the caller has already established that {@link #pqFile} is not {@code null}.
+   *
+   * @return {@code null} when they can, otherwise why not, worded to follow "PQ codes of index X"
+   */
+  private String pqCodesMismatch(final PQVectors codes, final int graphOrdinals, final long graphFingerprint) {
+    if (codes == null)
+      return "are not available";
+    if (codes.count() != graphOrdinals)
+      return "number %d but the graph has %d ordinals".formatted(codes.count(), graphOrdinals);
+    final Long builtFor = pqFile.graphFingerprintOf(codes);
+    if (builtFor == null)
+      return "record no graph they were built for";
+    if (builtFor.longValue() != graphFingerprint)
+      return "were built for another graph than the persisted one";
+    return null;
+  }
+
+  /**
+   * Stops searching with the PQ codes in hand because they were not built for the graph being published (issue #10698).
+   * Memory only: the file is left for the PQ rebuild that follows to replace, so a rebuild that cannot run does not turn
+   * a graph that is reusable into one the next open has to rebuild from scratch for want of a PQ file. Until it is
+   * replaced the file describes another graph, which is what {@link #persistedPQKnownStale} says to a backup.
+   */
+  private void dropProductQuantizationCodes() {
+    if (pqVectors != null)
+      persistedPQKnownStale = true;
+    this.pqVectors = null;
+    this.productQuantization = null;
+    pqFile.clearPQCache();
+  }
+
+  /**
+   * Builds and persists PQ codes laid out by {@code ordinals}, recorded as built for {@code graphFingerprint}. For the
+   * reopen paths that publish a persisted graph without codes for it; under {@link #graphBuildLock}, like every writer of
+   * the PQ file. A failure leaves the index on exact scoring, which is correct, and is logged, never thrown.
+   */
+  private void rebuildProductQuantizationFor(final int[] ordinals, final String vectorProp, final Long graphFingerprint) {
+    try {
+      final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(), metadata.dimensions,
+          vectorProp, snapshotOf(vectorIndex(), ordinals), ordinals, this, computeGraphBuildCacheCapacity(ordinals.length));
+      buildAndPersistPQ(vectors, graphFingerprint);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
+    }
   }
 
   /**
@@ -7767,6 +7847,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   boolean exactCoverReopenAnswersForTest() {
     final LSMVectorIndexGraphFile gf = graphFile;
     return gf != null && reusePersistedGraphDespiteDeletions(gf, true) != null;
+  }
+
+  /**
+   * Visible for tests: the graph fingerprint recorded for the PQ codes this index searches with now, or {@code null} when
+   * it has none or they record no graph (issue #10698).
+   */
+  Long pqCodesGraphFingerprintForTest() {
+    final LSMVectorIndexPQFile pq = pqFile;
+    return pq != null ? pq.graphFingerprintOf(pqVectors) : null;
   }
 
   /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
