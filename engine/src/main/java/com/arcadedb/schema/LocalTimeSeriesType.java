@@ -346,9 +346,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
     for (final String componentName : engineComponentNames(newName)) {
       final Component holder = schema.getFileByName(componentName);
       if (holder != null)
-        throw new AlreadyExistsException(holder instanceof Bucket ?
-            AlreadyExistsException.Kind.BUCKET :
-            schema.existsIndex(componentName) ? AlreadyExistsException.Kind.INDEX : null,
+        throw new AlreadyExistsException(kindHolding(holder, componentName),
             "Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the component '" + componentName
                 + "' its samples would move to already exists. Nothing was changed");
     }
@@ -359,6 +357,18 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the sealed file '"
             + sealed.getName() + "' its samples would move to already exists. Nothing was changed");
     }
+  }
+
+  /**
+   * The kind of schema object that holds the name of {@code holder}: a bucket, an index, or {@code null} for another component (a
+   * component left by a type that no longer exists), which {@link AlreadyExistsException} words as a schema object.
+   */
+  private AlreadyExistsException.Kind kindHolding(final Component holder, final String componentName) {
+    if (holder instanceof Bucket)
+      return AlreadyExistsException.Kind.BUCKET;
+    if (schema.existsIndex(componentName))
+      return AlreadyExistsException.Kind.INDEX;
+    return null;
   }
 
   /**

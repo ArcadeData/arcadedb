@@ -234,10 +234,11 @@ class Issue10804ContinuousAggregateBucketIndexTest extends TestHelper {
     database.getSchema().dropIndex(aggregate().getBackingType().getPolymorphicIndexByProperties("hr").getName());
     database.getSchema().getType("A").dropProperty("hr");
 
+    // as an older version left it on disk: the open names it, and the refresh still works without the index
+    reopenDatabase();
     final String warning = aggregate().getUpgradeWarning();
     assertThat(warning).contains("'A'").contains("'hr'")
         .endsWith("Run: CREATE PROPERTY `A`.`hr` DATETIME; CREATE INDEX ON `A` (`hr`) NOTUNIQUE");
-    // the refresh still works without it
     insert(H0 + 2_000, "a", 2);
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3));
 

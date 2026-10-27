@@ -113,6 +113,8 @@ class Issue10804IngestRefreshCostBenchmark extends TestHelper {
       report.append(String.format("  quarter %d: plain %,8d us/request | with aggregate %,8d us/request%n", q + 1, plain[q],
           aggregated[q]));
     report.append(String.format("  refreshes run: %,d for %,d requests, bucket total %,d", refreshes, requests, sumOfBucket()));
+    // the report is the output of the benchmark, printed as TimeSeriesEmbeddedBenchmark prints its own: the test logging
+    // configuration keeps LogManager to SEVERE, which would hide it
     System.out.println(report);
   }
 
