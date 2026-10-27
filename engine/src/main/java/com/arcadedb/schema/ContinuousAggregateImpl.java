@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.List;
@@ -121,6 +122,30 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   public String getBackingTypeName() {
     return backingTypeName;
+  }
+
+  /**
+   * Why every refresh of this aggregate reads every row it ever wrote, with the statements that stop it, or {@code null} when it does
+   * not (issue #10804). The refresh replaces the rows of the buckets at or after the watermark, and the recompute of a range those of
+   * the range: an aggregate created before #10804 has no index on its bucket column, so each read of those rows is a scan of the
+   * backing type, paid by every append that triggers a refresh. Not built at open: under HA that is a schema change every node would make on
+   * its own, so it is named here, for the schema load to report once.
+   */
+  String getUpgradeWarning() {
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(backingTypeName))
+      return null;
+    for (final TypeIndex index : schema.getType(backingTypeName).getAllIndexes(true)) {
+      final List<String> properties = index.getPropertyNames();
+      if (index.getType() == Schema.INDEX_TYPE.LSM_TREE && !properties.isEmpty() && bucketColumn.equals(properties.getFirst()))
+        return null;
+    }
+    final String type = "`" + backingTypeName + "`";
+    final String property = "`" + bucketColumn + "`";
+    return "every refresh of continuous aggregate '" + name + "' reads all its rows, its bucket column '" + bucketColumn
+        + "' has no index. Run: " + (schema.getType(backingTypeName).existsProperty(bucketColumn) ?
+        "" :
+        "CREATE PROPERTY " + type + "." + property + " DATETIME; ") + "CREATE INDEX ON " + type + " (" + property + ") NOTUNIQUE";
   }
 
   @Override

@@ -20,8 +20,10 @@ package com.arcadedb.exception;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.function.FunctionLibraryFactory;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -101,6 +103,46 @@ class Issue10153AlreadyExistsTest extends TestHelper {
     database.command("sql", "create property D1.a string");
     database.command("sql", "create property D1.b string");
     assertTaken(() -> database.getSchema().getType("D1").renameProperty("b", "a"), AlreadyExistsException.Kind.PROPERTY);
+  }
+
+  /**
+   * Issue #10796: the rename of a TIMESERIES type moves the buckets of its shards to names derived from the new one (#10749), so a
+   * free type name can still be refused because one of those names is taken. A bucket holds it - one created under that name, or the
+   * bucket of a document type whose name the derived one extends - and that is the conflict a taken name is on every wire. A sealed
+   * file left in the directory is not a schema object, and stays a plain refusal.
+   */
+  @Test
+  void aTimeSeriesRenameOntoATakenBucketNameIsAnAlreadyExistsConflict() throws IOException {
+    database.command("sql", "create timeseries type Ts10796 timestamp ts fields (value double) shards 1");
+    database.command("sql", "insert into Ts10796 set ts = 1000, value = 1.5");
+
+    database.command("sql", "create bucket Taken10796_shard_0");
+    assertTaken(() -> database.command("sql", "alter type Ts10796 name Taken10796"), AlreadyExistsException.Kind.BUCKET);
+
+    // the buckets of a document type named Doc10796_shard are Doc10796_shard_0, ...
+    database.command("sql", "create document type Doc10796_shard buckets 1");
+    final String docBucket = database.getSchema().getType("Doc10796_shard").getBuckets(false).getFirst().getName();
+    assertThat(docBucket).isEqualTo("Doc10796_shard_0");
+    assertTaken(() -> database.command("sql", "alter type Ts10796 name Doc10796"), AlreadyExistsException.Kind.BUCKET);
+
+    final Path stray = Path.of(database.getDatabasePath(), "Stray10796_shard_0.ts.sealed");
+    Files.write(stray, new byte[] { 1, 2, 3 });
+    try {
+      final Throwable refused = catchThrowable(() -> database.command("sql", "alter type Ts10796 name Stray10796"));
+      assertThat(CauseChain.find(refused, SchemaException.class)).as("got %s", refused).isNotNull();
+      assertThat(CauseChain.find(refused, AlreadyExistsException.class)).isNull();
+      assertThat(ErrorCategory.of(refused)).isEqualTo(ErrorCategory.SCHEMA);
+    } finally {
+      Files.delete(stray);
+    }
+
+    // nothing was changed by any of the three
+    assertThat(database.getSchema().existsType("Ts10796")).isTrue();
+    // the sample itself, read back: count(*) answers a cached counter, which a sample no longer readable would not change
+    final List<Result> samples = database.query("sql", "select ts, value from Ts10796").stream().toList();
+    assertThat(samples).hasSize(1);
+    assertThat(DateUtils.toEpochMillis(samples.getFirst().getProperty("ts"))).isEqualTo(1000L);
+    assertThat(samples.getFirst().<Double>getProperty("value")).isEqualTo(1.5);
   }
 
   @Test
@@ -193,7 +235,12 @@ class Issue10153AlreadyExistsTest extends TestHelper {
       // IF NOT EXISTS answered by an index of another definition: a 400 by design (#6921, #7228), not a taken name
       "query/sql/parser/CreateIndexStatement.java:IllegalArgumentException:Cannot create the index '",
       // a Cypher variable bound twice, or with two types, in one statement: a parse error, not a schema object name
-      "query/opencypher/parser/CypherSemanticValidator.java:CommandParsingException:Variable");
+      "query/opencypher/parser/CypherSemanticValidator.java:CommandParsingException:Variable",
+      // the rename of a TIMESERIES type onto a sealed file left in the database directory: a file no schema object holds (#10796).
+      // The component it collides with is a bucket or an index, refused as a taken name
+      "schema/LocalTimeSeriesType.java:SchemaException:Cannot rename the TIMESERIES type '\" + oldName + \"' to '\" + newName + \"': the sealed file '",
+      // the same file met by the move itself, the guard behind the check above that ATOMIC_MOVE does not replace it (#10796)
+      "engine/timeseries/TimeSeriesSealedStore.java:IOException:Cannot move the sealed store '");
 
   @Test
   void noSourceRefusesATakenNameWithAnotherType() throws IOException {

@@ -20,18 +20,24 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.format.DateTimeParseException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 
@@ -154,14 +160,15 @@ public class ContinuousAggregateRefresher {
         if (invalidated != null && watermarkSet && !cleanRebuild)
           recomputeInvalidatedBuckets(database, ca, invalidated, watermark);
 
-        // Delete rows in the current (possibly incomplete) bucket and all newer buckets. #8152: the guard used to be
-        // `watermark > 0`, which skipped the delete for an aggregate legitimately anchored at the epoch and let that
-        // one bucket gain a duplicate on every refresh.
-        if (cleanRebuild)
+        // Replace the rows of the current (possibly incomplete) bucket and of all newer buckets. #8152: the guard used to be
+        // `watermark > 0`, which skipped the replacement for an aggregate legitimately anchored at the epoch and let that one bucket
+        // gain a duplicate on every refresh. Issue #10804: replaced in place, not deleted and inserted again, see ReplacedRows
+        final ReplacedRows replaced;
+        if (cleanRebuild) {
           database.command("sql", "DELETE FROM `" + backingTypeName + "`");
-        else if (watermarkSet)
-          database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ?",
-              new Date(watermark));
+          replaced = null;
+        } else
+          replaced = watermarkSet ? ReplacedRows.select(database, ca, bucketsFromSelect(ca), new Date(watermark)) : null;
 
         // Build the filtered query: append WHERE clause with watermark filter on the source timestamp
         final String filteredQuery = buildFilteredQuery(ca, watermark, watermarkSet && !cleanRebuild);
@@ -172,7 +179,6 @@ public class ContinuousAggregateRefresher {
         try (final ResultSet rs = database.query("sql", filteredQuery)) {
           while (rs.hasNext()) {
             final Result result = rs.next();
-            saveRow(database, backingTypeName, result);
 
             // Track maximum bucket timestamp for advancing watermark
             final Object bucketVal = result.getProperty(bucketColumn);
@@ -182,9 +188,15 @@ public class ContinuousAggregateRefresher {
                 maxBucketTs = bucketMs;
                 maxBucketSeen = true;
               }
-            }
+              saveRow(database, backingTypeName, result, replaced != null ? replaced.take(bucketMs) : null);
+            } else
+              // no bucket (a sample with no timestamp, which a TIMESERIES type does not store): never one of the rows replaced, whose
+              // bucket is at or after the watermark, exactly as the delete it replaces never matched it
+              saveRow(database, backingTypeName, result, null);
           }
         }
+        if (replaced != null)
+          replaced.deleteTheRest();
 
         // The watermark advances to the max bucket boundary found. The FIRST bucket ever seen installs it even when
         // it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
@@ -392,17 +404,115 @@ public class ContinuousAggregateRefresher {
       final long end) {
     final String backingTypeName = ca.getBackingTypeName();
     final String bucketColumn = ca.getBucketColumn();
-    database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?",
-        new Date(first), new Date(last));
+    final ReplacedRows replaced = ReplacedRows.select(database, ca, bucketRangeSelect(ca), new Date(first), new Date(last));
 
     try (final ResultSet rs = database.query("sql", buildRangeQuery(ca, first, end))) {
-      while (rs.hasNext())
-        saveRow(database, backingTypeName, rs.next());
+      while (rs.hasNext()) {
+        final Result result = rs.next();
+        final Object bucketVal = result.getProperty(bucketColumn);
+        saveRow(database, backingTypeName, result,
+            bucketVal != null ? replaced.take(toEpochMs(bucketVal, bucketColumn, ca.getName())) : null);
+      }
+    }
+    replaced.deleteTheRest();
+  }
+
+  /**
+   * The rows of the buckets at or after a watermark, the parameter. Served by the index on the bucket column (issue #10804): without
+   * one it reads every row the aggregate ever wrote, on every refresh.
+   */
+  static String bucketsFromSelect(final ContinuousAggregateImpl ca) {
+    return "SELECT FROM `" + ca.getBackingTypeName() + "` WHERE `" + ca.getBucketColumn() + "` >= ?";
+  }
+
+  /** The rows of the buckets starting between the two parameters, both included. Served by the same index as {@link #bucketsFromSelect}. */
+  static String bucketRangeSelect(final ContinuousAggregateImpl ca) {
+    final String bucketColumn = ca.getBucketColumn();
+    return "SELECT FROM `" + ca.getBackingTypeName() + "` WHERE `" + bucketColumn + "` >= ? AND `" + bucketColumn + "` <= ?";
+  }
+
+  /**
+   * The rows a refresh replaces, by the start of their bucket (issue #10804). A refresh used to delete them and insert the recomputed
+   * ones, and an ingest request triggers one: the open bucket's rows were deleted and inserted again by every request, under the same
+   * bucket key. That leaves a tombstone and a new entry per request on one key of the index on the bucket column, which every later
+   * lookup of the bucket walks (measured: 35 ms a request after 20k requests into one 1h bucket, from 0.3 ms without the index), and a
+   * hole per request in the pages of the backing type. A recomputed row takes over a replaced row of its own bucket instead: the key
+   * does not change, so the index is not written at all, and the record is rewritten in place. A recomputed row with no replaced row
+   * left in its bucket is inserted, and the replaced rows nothing took over are deleted.
+   * <p>
+   * Only the identities are held, one per row the refresh replaces: the rows of the open bucket for the refresh an append triggers,
+   * those of the recomputed range for a late sample or a delete. That is the size the transaction of the refresh has anyway, which
+   * the delete it replaces held too, and which the recomputed rows it writes hold again.
+   */
+  private static final class ReplacedRows {
+    private final Map<Long, ArrayDeque<RID>> byBucket = new HashMap<>();
+    private final Database                   database;
+
+    private ReplacedRows(final Database database) {
+      this.database = database;
+    }
+
+    static ReplacedRows select(final Database database, final ContinuousAggregateImpl ca, final String select, final Object... params) {
+      final ReplacedRows rows = new ReplacedRows(database);
+      final String bucketColumn = ca.getBucketColumn();
+      try (final ResultSet rs = database.query("sql", select, params)) {
+        while (rs.hasNext()) {
+          final Document row = rs.next().toElement();
+          rows.byBucket.computeIfAbsent(toEpochMs(row.get(bucketColumn), bucketColumn, ca.getName()), k -> new ArrayDeque<>(2))
+              .add(row.getIdentity());
+        }
+      }
+      return rows;
+    }
+
+    /**
+     * A replaced row of the bucket starting at {@code bucketMs} for a recomputed row to take over, or {@code null} when none is left.
+     * Refreshes of one aggregate do not overlap ({@link ContinuousAggregateImpl#tryBeginRefresh}), so only a write to the backing type
+     * outside them can remove a row between the read and here: the next one is taken, and with none left the row is inserted.
+     */
+    MutableDocument take(final long bucketMs) {
+      final ArrayDeque<RID> rows = byBucket.get(bucketMs);
+      if (rows != null)
+        for (RID row = rows.poll(); row != null; row = rows.poll())
+          try {
+            return database.lookupByRID(row, true).asDocument().modify();
+          } catch (final RecordNotFoundException e) {
+            // gone already: nothing to take over
+          }
+      return null;
+    }
+
+    void deleteTheRest() {
+      for (final ArrayDeque<RID> rows : byBucket.values())
+        for (final RID row : rows)
+          try {
+            database.deleteRecord(database.lookupByRID(row, false));
+          } catch (final RecordNotFoundException e) {
+            // gone already: nothing to delete
+          }
+      byBucket.clear();
     }
   }
 
-  private static void saveRow(final Database database, final String backingTypeName, final Result result) {
-    final MutableDocument doc = database.newDocument(backingTypeName);
+  /** Writes a recomputed row: into {@code replaced}, a row of the same bucket it takes over (issue #10804), or as a new one. */
+  private static void saveRow(final Database database, final String backingTypeName, final Result result,
+      final MutableDocument replaced) {
+    final MutableDocument doc = replaced != null ? replaced : database.newDocument(backingTypeName);
+    if (replaced != null) {
+      // what the row it replaces held and the recomputed row does not, the defining query had no value for. Collected first (a removal
+      // inside the walk would change the set walked), and only when there is one: the ingest refresh rewrites a row whose properties
+      // are the same every time, and must not pay a copy of them per request
+      List<String> stale = null;
+      for (final String prop : replaced.getPropertyNames())
+        if (!result.hasProperty(prop)) {
+          if (stale == null)
+            stale = new ArrayList<>(2);
+          stale.add(prop);
+        }
+      if (stale != null)
+        for (final String prop : stale)
+          replaced.remove(prop);
+    }
     for (final String prop : result.getPropertyNames()) {
       if (!prop.startsWith("@"))
         doc.set(prop, result.getProperty(prop));
