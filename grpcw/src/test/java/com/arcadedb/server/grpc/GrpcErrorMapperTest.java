@@ -226,12 +226,16 @@ class GrpcErrorMapperTest {
   }
 
   @Test
-  @DisplayName("A database that does not exist keeps its mapping, it is not UNAVAILABLE")
-  void databaseNotFound_keepsItsMapping() {
-    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
-        new DatabaseNotFoundException("Database 'nope' does not exist"), null);
+  @DisplayName("A database that does not exist is NOT_FOUND named by its class, neither UNAVAILABLE nor INTERNAL (issue #10795)")
+  void databaseNotFound_isNotFoundNamedByItsClass() {
+    final DatabaseNotFoundException missing = new DatabaseNotFoundException("Database 'nope' does not exist");
+    for (final Throwable failure : new Throwable[] { missing, new CommandExecutionException("outer", missing) }) {
+      final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(failure, null);
 
-    assertThat(sre.getStatus().getCode()).isNotEqualTo(Status.Code.UNAVAILABLE);
+      assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+      // the class, so the client rebuilds the type rather than reading NOT_FOUND as a missing record
+      assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DatabaseNotFoundException.class.getName());
+    }
   }
 
   @Test

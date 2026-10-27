@@ -2028,6 +2028,8 @@ public class BoltNetworkExecutor extends Thread {
       // A database the server has and cannot serve now (issue #10553), reached here when it is lost under a statement rather than at
       // the selection of the database (classifyDatabaseSelectionError): the same title, so the driver reads one thing either way
       case UNAVAILABLE -> BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR;
+      // A name that is no database (issue #10795): the title classifyDatabaseSelectionError gives it at the selection
+      case DATABASE_NOT_FOUND -> BoltErrorCodes.DATABASE_NOT_FOUND_ERROR;
       case SERVER -> defaultCode;
     };
   }

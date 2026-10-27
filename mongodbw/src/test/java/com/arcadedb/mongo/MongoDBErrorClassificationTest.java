@@ -89,12 +89,15 @@ class MongoDBErrorClassificationTest {
     assertThat(((MongoServerError) wrapped).getCodeName()).isEqualTo("TemporarilyUnavailable");
   }
 
+  /** Issue #10795: a name that is no database is the caller's, NamespaceNotFound, not the transient code nor an uncoded fault. */
   @Test
-  void aNameThatIsNotADatabaseIsNotTemporarilyUnavailable() {
+  void aNameThatIsNotADatabaseIsNamespaceNotFound() {
     final MongoServerException wrapped = MongoDBDatabaseWrapper.wireException("failed",
         new DatabaseNotFoundException("Database 'nope' does not exist"));
 
-    assertThat(wrapped).isNotInstanceOf(MongoServerError.class);
+    assertThat(wrapped).isInstanceOf(MongoServerError.class);
+    assertThat(((MongoServerError) wrapped).getCode()).isEqualTo(26);
+    assertThat(((MongoServerError) wrapped).getCodeName()).isEqualTo("NamespaceNotFound");
   }
 
   @Test

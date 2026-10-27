@@ -306,6 +306,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // the one code a driver may retry later without the topology changing (NotWritablePrimary and the like would have it drop
       // the server, and with it every other database that is perfectly fine)
       case UNAVAILABLE -> new MongoServerError(365, "TemporarilyUnavailable", message, e);
+      // A name that is no database (issue #10795): MongoDB creates a database on first write and has no code of its own for one
+      // that is missing, so it is the namespace one, the code MongoDB answers a command on a namespace that does not exist with
+      case DATABASE_NOT_FOUND -> new MongoServerError(26, "NamespaceNotFound", message, e);
       case NOT_FOUND, SERVER -> new MongoServerException(message, e);
     };
   }

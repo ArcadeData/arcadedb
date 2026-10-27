@@ -23,6 +23,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
@@ -1148,7 +1149,15 @@ public class RedisNetworkExecutor extends Thread {
     if (!authenticatedUser.canAccessToDatabase(databaseName))
       throw RedisException.withKind("NOPERM", "this user has no permissions to access the database '" + databaseName + "'");
 
-    final DatabaseInternal database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
+    final DatabaseInternal database;
+    try {
+      database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
+    } catch (final DatabaseNotFoundException e) {
+      // A connection can hold the name of a database that was dropped since its SELECT (issue #10794): the answer SELECT gives a name
+      // that is no database, in this executor's own bounded words, not the engine's sentence, which names the server's directory and
+      // production mode conceals
+      throw new RedisException("Database '" + databaseName + "' not found");
+    }
     final SecurityDatabaseUser user = authenticatedUser.getDatabaseUser(database);
 
     if (Thread.currentThread() != this) {

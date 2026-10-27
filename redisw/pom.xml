@@ -51,6 +51,13 @@
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
+        <!-- The backup and restore a held-connection test swaps the database with (issue #10794): the server runs them by reflection -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-integration</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>redis.clients</groupId>
             <artifactId>jedis</artifactId>
