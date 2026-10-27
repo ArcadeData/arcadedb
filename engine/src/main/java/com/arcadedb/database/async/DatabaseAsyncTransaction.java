@@ -168,7 +168,9 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
         if (!retryPolicy.mayRetry(e))
           break;
 
-        // AND THE SAME JITTERED BACKOFF: RETRYING AT ONCE RACES THE WORKERS THAT HAVE JUST CAUSED THE CONFLICT (#9529)
+        // AND THE SAME JITTERED BACKOFF: RETRYING AT ONCE RACES THE WORKERS THAT HAVE JUST CAUSED THE CONFLICT (#9529). IT IS
+        // SLEPT ON THIS WORKER, SO THE TASKS QUEUED BEHIND THIS ONE WAIT TOO, AT MOST arcadedb.txRetryDelay PER RETRY, AS THEY
+        // ALREADY WAIT OUT THE BATCH COMMIT'S REPLAY BACKOFF
         if (retry < retries)
           RetryBackoff.sleep(retry, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
               configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));

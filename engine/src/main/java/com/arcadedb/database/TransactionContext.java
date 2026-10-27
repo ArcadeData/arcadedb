@@ -1729,8 +1729,9 @@ public class TransactionContext implements Transaction {
       return committedNow;
     if (snapshotBucketCounts == null)
       snapshotBucketCounts = new LongLongHashMap();
-    final long pinned = snapshotBucketCounts.get(bucketId, -1L);
-    if (pinned > -1)
+    // Long.MIN_VALUE, NOT -1, FOR "NOT PINNED": A DRIFTED COUNTER CAN BE NEGATIVE, AND IT MUST BE PINNED LIKE ANY OTHER VALUE
+    final long pinned = snapshotBucketCounts.get(bucketId, Long.MIN_VALUE);
+    if (pinned != Long.MIN_VALUE)
       return pinned;
     snapshotBucketCounts.put(bucketId, committedNow);
     return committedNow;
