@@ -37,7 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #10533, through a real connection: a Postgres client that names a database an {@code overwrite} restore holds, or that a
  * {@code close database} closed, is refused with {@code 57P03} cannot_connect_now - the database exists, so it is not told that it
- * does not - and a name that is not a database keeps {@code HV00Q}. Once nothing holds the name the same connection opens it.
+ * does not - and a name that is not a database is {@code 3D000} invalid_catalog_name (issue #10795). Once nothing holds the name the
+ * same connection opens it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -81,10 +82,11 @@ public class Issue10533PostgresHeldDatabaseIT extends PostgresWireProtocolTestBa
     }
   }
 
+  /** Issue #10795: PostgreSQL's own answer to a connection that names a database it does not have, 3D000 invalid_catalog_name. */
   @Test
-  void aNameThatIsNotADatabaseKeepsItsAnswer() {
+  void aNameThatIsNotADatabaseIsInvalidCatalogName() {
     assertThatThrownBy(() -> openConnection("pgnothing10533").close()).isInstanceOf(SQLException.class)
-        .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("HV00Q"))
+        .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo(PostgresNetworkExecutor.SQLSTATE_INVALID_CATALOG_NAME))
         .hasMessageContaining("does not exist");
   }
 

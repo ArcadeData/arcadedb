@@ -142,6 +142,8 @@ public class PostgresNetworkExecutor extends Thread {
 
   /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
   static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
+  /** invalid_catalog_name: what PostgreSQL answers a connection to a database that does not exist (issue #10795). */
+  static final String SQLSTATE_INVALID_CATALOG_NAME = "3D000";
 
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
   /**
@@ -4010,9 +4012,14 @@ public class PostgresNetworkExecutor extends Thread {
       return false;
     } catch (final DatabaseOperationException e) {
       // A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
-      // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other
-      if (ErrorCategory.of(e) == ErrorCategory.UNAVAILABLE)
+      // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other.
+      // The name that is no database is answered as PostgreSQL answers it, 3D000 invalid_catalog_name (issue #10795): HV00Q is an
+      // FDW code (fdw_schema_not_found) no driver associates with a database name
+      final ErrorCategory category = ErrorCategory.of(e);
+      if (category == ErrorCategory.UNAVAILABLE)
         writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+      else if (category == ErrorCategory.DATABASE_NOT_FOUND)
+        writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
       else
         writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
       return false;
@@ -4214,6 +4221,7 @@ public class PostgresNetworkExecutor extends Thread {
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
       case UNAVAILABLE -> SQLSTATE_CANNOT_CONNECT_NOW; // cannot_connect_now - a database that is held, not one that does not exist
+      case DATABASE_NOT_FOUND -> SQLSTATE_INVALID_CATALOG_NAME; // invalid_catalog_name - one that does not exist (issue #10795)
       case SERVER -> "XX000";         // internal_error
     };
   }
