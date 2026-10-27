@@ -144,6 +144,20 @@ class Issue10684EdgeOutInEndpointsTest extends TestHelper {
   }
 
   @Test
+  void orderByAProjectedNullColumnNamedOutOnAnEdgeRowKeepsTheNull() {
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO A SET id = 2");
+      database.command("sql", "CREATE EDGE E FROM (SELECT FROM A WHERE id = 2) TO (SELECT FROM B) SET qty = 8");
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT *, null AS out FROM E ORDER BY out DESC, qty ASC")) {
+      final List<Result> rows = rs.stream().toList();
+      assertThat(rows).hasSize(2);
+      assertThat(rows.stream().map(r -> r.<Object>getProperty("out")).toList()).containsOnlyNulls();
+      assertThat(rows.stream().map(r -> r.<Integer>getProperty("qty")).toList()).containsExactly(7, 8);
+    }
+  }
+
+  @Test
   void lightweightEdgesResolveTheirEndpointsToo() {
     database.command("sql", "CREATE EDGE TYPE L");
     database.transaction(() -> {
