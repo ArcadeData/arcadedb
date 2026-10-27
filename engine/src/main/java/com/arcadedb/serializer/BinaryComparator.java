@@ -37,11 +37,13 @@ import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.RandomAccess;
+import java.util.Set;
 import java.util.function.BiPredicate;
 
 import static com.arcadedb.utility.CollectionUtils.arrayToList;
@@ -633,6 +635,9 @@ public class BinaryComparator {
       return zonedOf(a).equals(zonedOf(b));
     else if (a instanceof List<?> list && b instanceof List<?> list1)
       return listsEqual(list, list1, BinaryComparator::equals);
+    else if (a instanceof Set<?> set && b instanceof Set<?> set1)
+      // the element rule of a list holds for a set too: a set of Long and the same set of Integer are one value (issue #10736)
+      return setsEqual(set, set1, BinaryComparator::equals);
     else if (a instanceof Map<?, ?> map && b instanceof Map<?, ?> map1)
       return mapsEqual(map, map1, BinaryComparator::equals);
     return a.equals(b);
@@ -643,11 +648,12 @@ public class BinaryComparator {
    * {@code elementEquals}. {@link #equals(Object, Object)} passes itself: a list of {@code Long} and the same list of
    * {@code Integer} are one value, as the scalars are (issue #10448). SQL {@code =} passes its own scalar rule, so that two values
    * it reports equal are equal as elements too - the same instant as a {@code Date} and as a {@code LocalDateTime} (issue
-   * #10595) - instead of this class keeping a second equality that has to be kept in step with it.
+   * #10595) - instead of this class keeping a second equality that has to be kept in step with it. Any two collections are compared
+   * this way, in the order they iterate: SQL {@code =} compares a set against a list so (issue #10736).
    *
    * @param elementEquals the rule for a pair of elements, either of which can be {@code null}
    */
-  public static boolean listsEqual(final List<?> a, final List<?> b, final BiPredicate<Object, Object> elementEquals) {
+  public static boolean listsEqual(final Collection<?> a, final Collection<?> b, final BiPredicate<Object, Object> elementEquals) {
     if (a.size() != b.size())
       return false;
     final Iterator<?> it = a.iterator();
@@ -656,6 +662,44 @@ public class BinaryComparator {
       if (!elementEquals.test(it.next(), it1.next()))
         return false;
     return !it.hasNext() && !it1.hasNext();
+  }
+
+  /**
+   * Two sets are equal when they have the same size and every element of one pairs off with a distinct element of the other under
+   * {@code elementEquals}, whatever the order they iterate in (issue #10736). Sets that are equal by their own {@code equals()} are
+   * answered without pairing: an element is equal to itself under every element rule. A sorted set asked for an element its
+   * comparator cannot take throws instead of answering, and is then paired off like any other.
+   * <p>
+   * The pairing is quadratic in the size of the sets, and is reached only when {@code equals()} says no, typically for sets whose
+   * elements differ by class only (a set of {@code Long} against one of {@code Integer}). Each element takes the first unpaired one
+   * equal to it, which is exact for an element rule that is an equivalence, as both rules passed here are.
+   *
+   * @param elementEquals the rule for a pair of elements, either of which can be {@code null}
+   */
+  public static boolean setsEqual(final Set<?> a, final Set<?> b, final BiPredicate<Object, Object> elementEquals) {
+    if (a.size() != b.size())
+      return false;
+    try {
+      if (a.equals(b))
+        return true;
+    } catch (final RuntimeException e) {
+      // a comparator that refuses the other set's elements: no answer, pair them off below. Not only a ClassCastException: a RID
+      // compared with a String parses it and raises an IllegalArgumentException
+    }
+    final Object[] others = b.toArray();
+    final boolean[] paired = new boolean[others.length];
+    for (final Object element : a) {
+      boolean found = false;
+      for (int i = 0; i < others.length; i++)
+        if (!paired[i] && elementEquals.test(element, others[i])) {
+          paired[i] = true;
+          found = true;
+          break;
+        }
+      if (!found)
+        return false;
+    }
+    return true;
   }
 
   /**

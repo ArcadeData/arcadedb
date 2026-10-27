@@ -92,32 +92,30 @@ public class SourceDiscovery {
       final ConsoleLogger logger) throws IOException {
     LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", url);
 
-    final Source source = getSource();
+    // THE SOURCE IS OWNED BY THIS SCOPE: EVERY REFUSAL OF THE ANALYSIS BELOW (AN UNKNOWN FILE TYPE, A FORMAT WHOSE MODULE IS
+    // MISSING) LEAVES IT AFTER THE SOURCE IS OPEN, AND A close() WRITTEN AS THE LAST STATEMENT LEAKED IT ON EACH OF THEM (#10772)
+    try (final Source source = getSource()) {
+      // THE SNIFFER WALKS THE COMMENT BLOCK ITSELF - IT COUNTS THE LINES AND REWINDS OVER THEM - SO IT NEEDS THE
+      // SOURCE WHOLE. THE analyze() BELOW IS A FORMAT AND WANTS THE OPPOSITE, AND THE reset() BETWEEN THE TWO IS
+      // WHERE THE STREAM IS REBUILT, SO ONE PARSER CAN SERVE BOTH (ISSUE #7490)
+      final Parser parser = new Parser(source, 0, false);
 
-    // THE SNIFFER WALKS THE COMMENT BLOCK ITSELF - IT COUNTS THE LINES AND REWINDS OVER THEM - SO IT NEEDS THE
-    // SOURCE WHOLE. THE analyze() BELOW IS A FORMAT AND WANTS THE OPPOSITE, AND THE reset() BETWEEN THE TWO IS
-    // WHERE THE STREAM IS REBUILT, SO ONE PARSER CAN SERVE BOTH (ISSUE #7490)
-    final Parser parser = new Parser(source, 0, false);
+      final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings, logger);
+      parser.setSkipLeadingComments(true);
+      parser.reset();
 
-    final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings, logger);
-    parser.setSkipLeadingComments(true);
-    parser.reset();
+      final SourceSchema sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
+      LogManager.instance()
+          .log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
+              FileUtils.getSizeAsString(limitBytes), limitEntries);
 
-    SourceSchema sourceSchema = null;
+      if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
+        for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
+          LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
+      }
 
-    sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
-    LogManager.instance()
-        .log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
-            FileUtils.getSizeAsString(limitBytes), limitEntries);
-
-    if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
-      for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
-        LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
+      return sourceSchema;
     }
-
-    source.close();
-
-    return sourceSchema;
   }
 
   public Source getSource() throws IOException {
@@ -894,33 +892,50 @@ public class SourceDiscovery {
 
   private Source getSourceFromContent(final InputStream in, final long totalSize, final String resource,
       final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) throws IOException {
-    in.mark(0);
-
-    final ZipInputStream zip = new ZipInputStream(in);
-    final ZipEntry entry = zip.getNextEntry();
-    if (entry != null) {
-      // ZIPPED FILE
-      if (resource != null)
-        // SEARCH FOR THE RIGHT ENTRY
-        seekZipEntry(zip, entry, resource);
-
-      return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
-    }
-
-    in.reset();
-    in.mark(in.available());
-
     try {
-      final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
-      return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
-    } catch (final IOException e) {
-      // NOT GZIP
+      in.mark(0);
+
+      final ZipInputStream zip = new ZipInputStream(in);
+      final ZipEntry entry = zip.getNextEntry();
+      if (entry != null) {
+        // ZIPPED FILE
+        if (resource != null)
+          // SEARCH FOR THE RIGHT ENTRY
+          seekZipEntry(zip, entry, resource);
+
+        return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
+      }
+
+      in.reset();
+      in.mark(in.available());
+
+      try {
+        final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
+        return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
+      } catch (final IOException e) {
+        // NOT GZIP
+      }
+
+      in.reset();
+
+      // ANALYZE THE INPUT AS TEXT
+      return new Source(url, in, totalSize, false, resetCallback, closeCallback);
+
+    } catch (final IOException | RuntimeException e) {
+      // NO Source REACHES THE CALLER, SO NO SCOPE OWNS WHAT WAS OPENED FOR IT: A ZIP WITHOUT THE REQUESTED ENTRY LEFT THE FILE
+      // OPEN, OR THE REMOTE CONNECTION CONNECTED (ISSUE #10772)
+      try {
+        in.close();
+      } catch (final IOException closeFailure) {
+        e.addSuppressed(closeFailure);
+      }
+      try {
+        closeCallback.call();
+      } catch (final Exception callbackFailure) {
+        e.addSuppressed(callbackFailure);
+      }
+      throw e;
     }
-
-    in.reset();
-
-    // ANALYZE THE INPUT AS TEXT
-    return new Source(url, in, totalSize, false, resetCallback, closeCallback);
   }
 
   /**

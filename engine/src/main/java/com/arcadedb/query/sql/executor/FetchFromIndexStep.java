@@ -41,7 +41,10 @@ import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.ContainsAllCondition;
+import com.arcadedb.query.sql.parser.ContainsCondition;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.ContainsValueCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
@@ -77,6 +80,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte FLOATING_KEYS_NOT_APPLICABLE = 2;
   /** {@link #checkedKey} before any key was checked: no key, not even null. */
   private static final Object NOT_CHECKED                  = new Object();
+  /** How a key slot reads its value, see {@link #keySlotKinds}. */
+  private static final byte   SLOT_MULTI_VALUE             = 0;
+  private static final byte   SLOT_SCALAR                  = 1;
+  private static final byte   SLOT_FIRST_ITEM              = 2;
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -641,24 +648,36 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final PCollection toKey = indexKeyTo((AndBlock) condition, additionalRangeCondition);
     final boolean fromKeyIncluded = indexKeyFromIncluded((AndBlock) condition, additionalRangeCondition);
     final boolean toKeyIncluded = indexKeyToIncluded((AndBlock) condition, additionalRangeCondition);
-    final boolean[] fromScalarSlots = scalarKeySlots((AndBlock) condition, additionalRangeCondition, true);
-    final boolean[] toScalarSlots = scalarKeySlots((AndBlock) condition, additionalRangeCondition, false);
-    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded, fromScalarSlots, toScalarSlots);
+    final byte[] fromSlotKinds = keySlotKinds((AndBlock) condition, additionalRangeCondition, true);
+    final byte[] toSlotKinds = keySlotKinds((AndBlock) condition, additionalRangeCondition, false);
+    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded, fromSlotKinds, toSlotKinds);
   }
 
   /**
-   * Marks the key slots filled by a comparison ({@code =}, {@code <}, {@code >}, ...). Only the multi-value operators
-   * ({@code IN}, {@code CONTAINSANY}, ...) expand a list into one lookup per element; a comparison against a list
-   * matches nothing on a scan, so the index must not answer it with the rows of every element (#9370).
+   * How each key slot reads its value. A slot filled by a comparison ({@code =}, {@code <}, {@code >}, ...) is one key: a
+   * comparison against a list matches nothing on a scan, so the index must not answer it with the rows of every element (#9370).
+   * So is a {@code BETWEEN} bound, and a {@code CONTAINSVALUE} slot, whose list operand is one value the map must hold (#10757).
+   * A {@code CONTAINSALL} slot is the first item searched for: every row it matches holds that item, the planner keeps the
+   * condition as a filter, and the union of every item's rows would only read more of them. A {@code CONTAINS} slot is its one item
+   * too: a longer list is one element to find, never a list of keys (#10757). The multi-value operators ({@code IN},
+   * {@code CONTAINSANY}, ...) expand a list into one lookup per element.
    */
-  private static boolean[] scalarKeySlots(final AndBlock keyCondition, final BinaryCondition additional, final boolean from) {
+  private static byte[] keySlotKinds(final AndBlock keyCondition, final BinaryCondition additional, final boolean from) {
     final List<BooleanExpression> subBlocks = keyCondition.getSubBlocks();
-    final boolean[] slots = new boolean[subBlocks.size()];
+    final byte[] slots = new byte[subBlocks.size()];
     int count = 0;
     for (final BooleanExpression exp : subBlocks)
       if ((from ? exp.resolveKeyFrom(additional) : exp.resolveKeyTo(additional)) != null)
-        slots[count++] = exp instanceof BinaryCondition;
+        slots[count++] = keySlotKind(exp);
     return slots;
+  }
+
+  private static byte keySlotKind(final BooleanExpression exp) {
+    if (exp instanceof BinaryCondition || exp instanceof BetweenCondition || exp instanceof ContainsValueCondition)
+      return SLOT_SCALAR;
+    if (exp instanceof ContainsAllCondition || exp instanceof ContainsCondition)
+      return SLOT_FIRST_ITEM;
+    return SLOT_MULTI_VALUE;
   }
 
   /**
@@ -781,7 +800,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
-      final boolean toKeyIncluded, final boolean[] fromScalarSlots, final boolean[] toScalarSlots) {
+      final boolean toKeyIncluded, final byte[] fromScalarSlots, final byte[] toScalarSlots) {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey, fromScalarSlots);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey, toScalarSlots);
 
@@ -1235,24 +1254,27 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
-  private List<PCollection> cartesianProduct(final PCollection key, final boolean[] scalarSlots) {
-    return cartesianProduct(new PCollection(), key, scalarSlots);
+  private List<PCollection> cartesianProduct(final PCollection key, final byte[] slotKinds) {
+    return cartesianProduct(new PCollection(), key, slotKinds);
   }
 
-  private List<PCollection> cartesianProduct(final PCollection head, final PCollection key, final boolean[] scalarSlots) {
+  private List<PCollection> cartesianProduct(final PCollection head, final PCollection key, final byte[] slotKinds) {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
-    final Expression nextElementInKey = key.getExpressions().getFirst();
-    final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
+    final Expression keyExpression = key.getExpressions().getFirst();
+    final Object keyValue = keyExpression.execute(new ResultInternal(context.getDatabase()), context);
     // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
     // consistent with the multi-value handling in processInCondition().
     final int slot = head.getExpressions().size();
     // The mask has one entry per key slot the condition produces, so it always covers the slot; a slot past it (a key built some
     // other way) is treated as a multi-value one, the behaviour before #9370
-    final boolean scalar = slot < scalarSlots.length && scalarSlots[slot];
-    if (!scalar && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
+    final byte slotKind = slot < slotKinds.length ? slotKinds[slot] : SLOT_MULTI_VALUE;
+    // the planner hands a CONTAINSALL with a lookup item only, and a CONTAINS with exactly one item
+    final Object value = slotKind == SLOT_FIRST_ITEM ? unwrapSubQueryResult(ContainsAllCondition.firstLookupItem(keyValue)) : keyValue;
+    final Expression nextElementInKey = slotKind == SLOT_FIRST_ITEM ? toExpression(value) : keyExpression;
+    if (slotKind == SLOT_MULTI_VALUE && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
       // `tail` does not depend on `elemInKey`: it is `key` with its (already-consumed) first expression
       // dropped, the same for every element `value` expands into. Computing it once here instead of once
@@ -1267,7 +1289,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           newHead.add(exp.copy());
 
         newHead.add(toExpression(unwrapSubQueryResult(elemInKey)));
-        result.addAll(cartesianProduct(newHead, tail, scalarSlots));
+        result.addAll(cartesianProduct(newHead, tail, slotKinds));
       }
       return result;
     } else {
@@ -1278,7 +1300,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
       tail.getExpressions().removeFirst();
-      return cartesianProduct(newHead, tail, scalarSlots);
+      return cartesianProduct(newHead, tail, slotKinds);
     }
 
   }

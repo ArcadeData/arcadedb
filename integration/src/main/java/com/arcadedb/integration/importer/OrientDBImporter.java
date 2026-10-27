@@ -373,39 +373,41 @@ public class OrientDBImporter {
   }
 
   private void parseInputFile() throws IOException {
-    final GZIPInputStream inputStream = openInputStream();
+    // EACH PASS CLOSES THE STREAM IT OPENED: THE FILE IS READ UP TO THREE TIMES IN ONE RUN, AND EVERY PASS LEFT ITS OWN OPEN
+    // (ISSUE #10772)
+    try (final JsonReader passReader = new JsonReader(new InputStreamReader(openInputStream(), DatabaseFactory.getDefaultCharset()))) {
+      reader = passReader;
+      reader.setLenient(true);
+      reader.beginObject();
 
-    reader = new JsonReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
-    reader.setLenient(true);
-    reader.beginObject();
+      while (reader.hasNext()) {
+        switch (reader.nextName()) {
+          case "info":
+            parseDatabaseInfo();
+            break;
 
-    while (reader.hasNext()) {
-      switch (reader.nextName()) {
-        case "info":
-          parseDatabaseInfo();
-          break;
+          case "clusters":
+            parseClusters();
+            break;
 
-        case "clusters":
-          parseClusters();
-          break;
+          case "schema":
+            parseSchema();
+            break;
 
-        case "schema":
-          parseSchema();
-          break;
+          case "records":
+            parseRecords();
+            break;
 
-        case "records":
-          parseRecords();
-          break;
-
-        default:
-          try {
-            reader.skipValue();
-          } catch (final EOFException e) {
-            return;
-          }
+          default:
+            try {
+              reader.skipValue();
+            } catch (final EOFException e) {
+              return;
+            }
+        }
       }
+      reader.endObject();
     }
-    reader.endObject();
   }
 
   private void writeSecurityFiles() throws IOException {

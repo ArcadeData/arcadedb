@@ -66,29 +66,18 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
         if (typeName != null) {
           // COUNTS EXACTLY WHAT ArcadeFilterByTypeStep WOULD YIELD FOR THE SAME hasLabel(), SO ADDING OR REMOVING THE
           // count() NEVER CHANGES WHAT THE LABEL MATCHES: THE TYPE POLYMORPHICALLY, OR THE ONE BUCKET OF A 'bucket:'
-          // LABEL (#8250)
-          final String bucketName = typeName.startsWith(ArcadeFilterByTypeStep.BUCKET_PREFIX) ?
-              typeName.substring(ArcadeFilterByTypeStep.BUCKET_PREFIX.length()) :
-              null;
-          final DocumentType type = bucketName != null ?
-              graph.database.getSchema().getTypeByBucketName(bucketName) :
-              graph.database.getSchema().existsType(typeName) ? graph.database.getSchema().getType(typeName) : null;
-
-          // ONLY COUNT THE TYPE IF IT MATCHES THE ELEMENT KIND OF THE TRAVERSAL (g.V() -> vertices, g.E() -> edges).
-          // hasLabel() FILTERS INSIDE THE CURRENT KIND, SO A VERTEX TRAVERSAL MUST NOT COUNT AN EDGE TYPE AND VICE VERSA (ISSUE #5223).
+          // LABEL (#8250). BOTH STEPS RESOLVE THE LABEL THROUGH ArcadeLabels, SO THEY CANNOT DISAGREE ON ONE THAT NAMES
+          // NOTHING (#10763), NOR ON ONE OF THE OTHER ELEMENT KIND (#5223)
+          final String bucketName = ArcadeLabels.bucketName(typeName);
+          final DocumentType type = ArcadeLabels.typeOf(graph.database.getSchema(), typeName, this.elementClass);
           if (type != null) {
-            final boolean matchesKind = Vertex.class.isAssignableFrom(this.elementClass) ?
-                type instanceof VertexType :
-                type instanceof EdgeType;
-            if (matchesKind) {
-              if (bucketName != null)
-                total += graph.database.countBucket(bucketName);
-              else if (LightweightEdges.isHeldBy(type))
-                // THE RECORD COUNT OF A LIGHTWEIGHT EDGE TYPE IS 0 BY CONSTRUCTION, ITS EDGES LIVE INSIDE THE VERTICES (#9142)
-                total += LightweightEdges.countOfType(graph.database, typeName);
-              else
-                total += graph.database.countType(typeName, true);
-            }
+            if (bucketName != null)
+              total += graph.database.countBucket(bucketName);
+            else if (LightweightEdges.isHeldBy(type))
+              // THE RECORD COUNT OF A LIGHTWEIGHT EDGE TYPE IS 0 BY CONSTRUCTION, ITS EDGES LIVE INSIDE THE VERTICES (#9142)
+              total += LightweightEdges.countOfType(graph.database, typeName);
+            else
+              total += graph.database.countType(typeName, true);
           }
         } else if (Vertex.class.isAssignableFrom(this.elementClass)) {
           // NON-POLYMORPHIC HERE, AND ONLY HERE: EVERY TYPE IS SUMMED, SO A POLYMORPHIC COUNT WOULD COUNT A SUB-TYPE'S

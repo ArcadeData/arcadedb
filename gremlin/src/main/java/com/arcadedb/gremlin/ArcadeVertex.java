@@ -29,7 +29,6 @@ import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
@@ -98,19 +97,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     //ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
-    final String typeName;
-    final String bucketName;
-    if (label.startsWith("bucket:")) {
-      bucketName = label.substring("bucket:".length());
-      final DocumentType type = graph.getDatabase().getSchema().getTypeByBucketName(bucketName);
-      if (type == null)
-        typeName = null;
-      else
-        typeName = type.getName();
-    } else {
-      bucketName = null;
-      typeName = label;
-    }
+    // A 'bucket:' LABEL NAMING A BUCKET THAT DOES NOT EXIST, OR THAT NO TYPE OWNS, IS REFUSED BY NAME (#10763)
+    final String typeName = ArcadeLabels.typeNameForWrite(graph.getDatabase().getSchema(), label);
 
     // getOrCreate: two traversals adding the first edge of a label concurrently both end with the type (issue #10145)
     if (!this.graph.getDatabase().getSchema().existsType(typeName))

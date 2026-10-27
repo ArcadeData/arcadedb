@@ -21,8 +21,6 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
@@ -43,8 +41,9 @@ import java.util.Objects;
 
 public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
   /** A {@code hasLabel()} value with this prefix names one bucket rather than a type. */
-  public static final String                BUCKET_PREFIX = "bucket:";
+  public static final String                BUCKET_PREFIX = ArcadeLabels.BUCKET_PREFIX;
   protected final     String                typeName;
+  private final       String                label;
   private final       String                bucketName;
   private final       ArcadeGraph           graph;
   protected           Parameters            parameters = new Parameters();
@@ -65,13 +64,13 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
 
     this.graph = (ArcadeGraph) traversal.getGraph().get();
 
-    if (typeName.startsWith(BUCKET_PREFIX)) {
-      this.bucketName = typeName.substring(BUCKET_PREFIX.length());
-      this.typeName = typeNameOfBucket(graph.getDatabase(), bucketName);
-    } else {
-      this.bucketName = null;
+    this.label = typeName;
+    this.bucketName = ArcadeLabels.bucketName(typeName);
+    if (bucketName != null) {
+      final DocumentType type = ArcadeLabels.typeOf(graph.getDatabase().getSchema(), typeName);
+      this.typeName = type != null ? type.getName() : null;
+    } else
       this.typeName = typeName;
-    }
 
     if (!Vertex.class.isAssignableFrom(this.returnClass) && !Edge.class.isAssignableFrom(this.returnClass))
       throw new IllegalArgumentException("Unsupported returning class '" + returnClass + "'");
@@ -80,35 +79,19 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     // EARLIER STEP OF THE SAME TRAVERSAL (addV()) MAY CREATE THE TYPE BEFORE THIS STEP EXECUTES (ISSUE #9335).
   }
 
-  /** The type owning the bucket, or null when the bucket does not exist (yet): an earlier step may still create it. */
-  private static String typeNameOfBucket(final BasicDatabase database, final String bucketName) {
-    if (!database.getSchema().existsBucket(bucketName))
-      return null;
-    final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
-    return type == null ? null : type.getName();
-  }
-
   @SuppressWarnings("unchecked")
   private Iterator<E> openIterator() {
     final BasicDatabase database = graph.getDatabase();
 
-    // A bucket may have been added to a type (or the type created) after compilation: resolve the name again
-    final String resolvedTypeName;
-    if (bucketName != null) {
-      resolvedTypeName = typeNameOfBucket(database, bucketName);
-    } else
-      resolvedTypeName = typeName;
-
-    if (resolvedTypeName == null || !database.getSchema().existsType(resolvedTypeName))
+    // A bucket may have been added to a type (or the type created) after compilation: resolve the label again, through the
+    // resolver ArcadeCountGlobalStep uses too, so a count() after this step cannot answer a label differently (#10763). It also
+    // filters inside the current kind: a vertex traversal filtered by an edge type matches nothing, and vice versa (#5223)
+    final DocumentType type = ArcadeLabels.typeOf(database.getSchema(), label, returnClass);
+    if (type == null)
       return EmptyIterator.instance();
-
-    final DocumentType type = database.getSchema().getType(resolvedTypeName);
+    final String resolvedTypeName = type.getName();
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
-      // hasLabel() FILTERS INSIDE THE CURRENT KIND: A VERTEX TRAVERSAL FILTERED BY AN EDGE TYPE MATCHES NOTHING (ISSUE #5223).
-      if (!(type instanceof VertexType))
-        return EmptyIterator.instance();
-
       final Iterator<Record> rawIterator = bucketName == null ?
           database.iterateType(resolvedTypeName, true) :
           database.iterateBucket(bucketName);
@@ -124,10 +107,6 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
         }
       };
     }
-
-    // hasLabel() FILTERS INSIDE THE CURRENT KIND: AN EDGE TRAVERSAL FILTERED BY A VERTEX TYPE MATCHES NOTHING (ISSUE #5223).
-    if (!(type instanceof EdgeType))
-      return EmptyIterator.instance();
 
     // A LIGHTWEIGHT EDGE HAS NO RECORD, SO THE BUCKET SCAN OF ITS TYPE IS EMPTY BY CONSTRUCTION (#9142)
     final boolean lightweight = bucketName == null && LightweightEdges.isHeldBy(type);

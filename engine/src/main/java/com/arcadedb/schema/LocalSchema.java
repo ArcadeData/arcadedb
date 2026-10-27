@@ -3260,6 +3260,8 @@ public class LocalSchema implements Schema {
         }
     }
     files.addAll(indexFiles);
+    // the files of the storage the type owns besides its buckets, the same list a rename moves (issue #10749)
+    type.collectOwnedComponentFiles(files);
 
     for (final Bucket bucket : type.getBuckets(false)) {
       files.add(bucket.getFileId());

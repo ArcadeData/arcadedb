@@ -664,6 +664,11 @@ public enum Type {
     if (targetClass == null)
       return value;
 
+    // A WRITE TO A DECLARED PROPERTY THAT DID NOT COME THROUGH A RECORD (MutableDocument.set UNWRAPS FIRST): A QUERY RESULT IS
+    // CONVERTED AS THE RECORD OR THE MAP IT STANDS FOR, NEVER REFUSED FOR BEING A WRAPPER (issue #10737)
+    if (property != null && value instanceof Result)
+      return convert(database, toRecordValue(value), targetClass, property);
+
     // Coerce the nested scalar values of a collection declared with a scalar "ofType" (e.g. LIST OF LONG, MAP OF LONG) to the
     // declared type. JSON parsing on the write path (e.g. the remote client re-serializing a full record with UPDATE ... CONTENT)
     // loses the distinction between Long and Integer for values that fit the 32-bit range, so the container is assignable but its
@@ -2762,7 +2767,8 @@ public enum Type {
    * (the HTTP {@code params}, see {@code JSONObject.toMap(true)}) leaves at ANY depth of a request, while the stored value of a
    * list or map holds lists: the same value written as a literal or from Java is a list, and {@code =}, {@code .type()} and
    * {@code GROUP BY} tell the two apart (issue #10488). The array that IS the value is left alone: its target decides what it
-   * becomes (a list, an {@code ARRAY_OF_FLOATS}).
+   * becomes (a list, an {@code ARRAY_OF_FLOATS}). A query {@link Result} nested in the value is unwrapped by the same walk, as
+   * {@link #toRecordValue} describes.
    * <p>
    * Only {@code long[]} and {@code double[]} are replaced: they are the two shapes {@code JSONArray.toPrimitiveNumericArrayOrNull}
    * produces, and the only ones a request can leave in a value. A new shape added there has to be added here.
@@ -2781,13 +2787,40 @@ public enum Type {
     return value;
   }
 
+  /**
+   * What a value assigned to a record property is stored as, decided where the value enters the record and BEFORE the schema
+   * conversion, so a declared property and an undeclared one receive the same value (issue #10737): a query {@link Result} is
+   * unwrapped once into the record or the map it stands for ({@link BinaryTypes#unwrapResult}), whether it is the value or is
+   * nested at any depth of a list or a map, and every nested {@code long[]}/{@code double[]} becomes the list it stands for
+   * ({@link #unwrapNestedPrimitiveArrays}, issue #10488). The unwrap used to happen only in the serializer, below
+   * {@code Type.convert}, which refused a {@code Result} assigned to a declared {@code LINK} or {@code EMBEDDED} property that
+   * an undeclared one stored. The serializer keeps its own unwrap for the writers that serialize without a record.
+   * <p>
+   * A row that is not a record is stored as a copy of its map: the map a {@code Result} answers is its own content, which the
+   * record must not share.
+   */
+  public static Object toRecordValue(final Object value) {
+    if (value instanceof Result result)
+      return toRecordValue(unwrapQueryResult(result));
+    return unwrapNestedPrimitiveArrays(value);
+  }
+
+  private static Object unwrapQueryResult(final Result result) {
+    final Object unwrapped = BinaryTypes.unwrapResult(result);
+    if (unwrapped instanceof Map<?, ?> map)
+      return new LinkedHashMap<>(map);
+    // A ROW WITH NEITHER A RECORD NOR A CONTENT: THE EMPTY MAP IT STANDS FOR, AS THE SERIALIZER LABELS IT
+    return unwrapped != null ? unwrapped : new LinkedHashMap<>();
+  }
+
   private static boolean holdsNestedPrimitiveArray(final Collection<?> items) {
     for (final Object item : items) {
       // The scalars come first: the common content of a list is numbers and text, and a vector held as a list of floats runs
       // through here on every write
       if (item == null || item instanceof Number || item instanceof String)
         continue;
-      if (item instanceof long[] || item instanceof double[])
+      // A QUERY RESULT NESTED IN A LIST OR A MAP IS UNWRAPPED BY THE SAME WALK (issue #10737), SO IT COSTS NOTHING MORE
+      if (item instanceof long[] || item instanceof double[] || item instanceof Result)
         return true;
       if (item instanceof Collection<?> collection) {
         if (holdsNestedPrimitiveArray(collection))
@@ -2801,6 +2834,8 @@ public enum Type {
   private static Object unwrapItem(final Object item) {
     if (item instanceof long[] || item instanceof double[])
       return primitiveArrayToJsonList(item);
+    if (item instanceof Result result)
+      return toRecordValue(unwrapQueryResult(result));
     return unwrapNestedPrimitiveArrays(item);
   }
 

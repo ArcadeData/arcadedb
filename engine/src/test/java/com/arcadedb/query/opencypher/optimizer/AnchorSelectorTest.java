@@ -186,6 +186,32 @@ class AnchorSelectorTest {
     assertThat(anchor.getEstimatedCardinality()).isLessThanOrEqualTo(10L); // Very selective (10000 * 0.001 = 10)
   }
 
+  /**
+   * Issue #10775: on a very large type a unique seek is estimated at one row (selectivity 1/count) and still has to beat
+   * a non-unique seek on the same node, whichever property is written first and whatever the properties are called.
+   */
+  @Test
+  void aUniqueSeekBeatsANonUniqueOneOnAVeryLargeTypeWhateverTheOrder() {
+    statistics.setCardinality("Doc", 10_000_000_000L);
+    statistics.addIndex(new IndexStatistics("Doc", List.of("uid"), true, "Doc[uid]"));
+    statistics.addIndex(new IndexStatistics("Doc", List.of("grp"), false, "Doc[grp]"));
+
+    final Map<String, Object> uniqueFirst = new LinkedHashMap<>();
+    uniqueFirst.put("uid", "id1");
+    uniqueFirst.put("grp", "A");
+    final Map<String, Object> nonUniqueFirst = new LinkedHashMap<>();
+    nonUniqueFirst.put("grp", "A");
+    nonUniqueFirst.put("uid", "id1");
+
+    for (final Map<String, Object> properties : List.of(uniqueFirst, nonUniqueFirst)) {
+      final AnchorSelection anchor = anchorSelector.selectAnchor(createPlanWithNode("d", "Doc", properties));
+      assertThat(anchor.useIndex()).isTrue();
+      assertThat(anchor.getIndex().getIndexName()).as("properties %s", properties).isEqualTo("Doc[uid]");
+      assertThat(anchor.getEstimatedCardinality()).isEqualTo(1L);
+      assertThat(anchor.getEstimatedCost()).isLessThan(costModel.estimateIndexSeekCost("Doc", "grp", 0.001));
+    }
+  }
+
   @Test
   void selectAnchorWithCompositeIndex() {
     // Setup: Node with composite index
