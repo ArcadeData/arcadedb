@@ -2324,7 +2324,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final int retryDelay = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY);
     final int retryDelayBase = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE);
 
-    boolean duplicatedKeyRetried = false;
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
 
     // #10135: how many transaction levels belong to the CALLER. On failure only the levels above it are rolled back.
     // Sampled once: every failed attempt rolls back to exactly this depth, so it is the same before each attempt
@@ -2399,24 +2399,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work
         // and naming the leader - fails every attempt the same way, so the caller gets it now instead of after every
-        // retry delay
-        if (e instanceof NeedRetryException retryable && !retryable.isRetryableOnThisNode())
+        // retry delay. #4959: a genuine duplicate is deterministic and fails identically on every attempt, so a
+        // duplicated key gets one retry, which covers the only nondeterministic case: racing a COMMIT that lands between
+        // attempts (#5061: a transient duplicate from an in-flight sibling transaction is unreachable - checkUniqueIndexKeys
+        // reads committed pages plus THIS transaction's own overlay). Both rules live in TransactionRetryPolicy, shared by
+        // every retry loop (#10759)
+        if (!retryPolicy.mayRetry(e))
           throw e;
-
-        if (e instanceof DuplicatedKeyException) {
-          // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
-          // concurrency-induced duplicate can succeed on retry, and one retry is enough to disambiguate:
-          // fail fast instead of burning all the remaining attempts plus their retry delays.
-          //
-          // #5061: a TRANSIENT duplicate from an in-flight sibling transaction that later rolls back
-          // is unreachable - checkUniqueIndexKeys reads committed pages plus THIS transaction's own overlay
-          // (TransactionIndexContext is per-transaction), so uncommitted sibling entries are invisible and a
-          // detected duplicate is always against durable state (or this same transaction). The one retry
-          // covers the only nondeterministic case: racing a COMMIT that lands between attempts.
-          if (duplicatedKeyRetried)
-            throw e;
-          duplicatedKeyRetried = true;
-        }
 
         if (retry < attempts - 1)
           delayBetweenRetries(retry, retryDelayBase, retryDelay);

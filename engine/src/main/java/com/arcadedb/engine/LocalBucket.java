@@ -1374,8 +1374,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (cached > -1)
       // O(1) fast path: the counter is kept up to date on every commit, so return it directly. With an active
       // transaction add its uncommitted delta; without one there is nothing pending, so the cached value is the
-      // committed count. Only a still-unknown (-1) counter falls through to the full recompute below.
-      return cached + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
+      // committed count. Only a still-unknown (-1) counter falls through to the full recompute below. Under
+      // REPEATABLE_READ the committed part is the one the transaction first counted, so the count repeats (#10712)
+      return transaction != null ?
+          transaction.getRepeatableCommittedCount(fileId, cached) + transaction.getBucketRecordDelta(fileId) :
+          cached;
 
     // #5152: the recompute below (scan + publish of cachedRecordCount) must be mutually exclusive with a
     // commit's publishPages + record-count fold on this bucket. A commit holds this bucket's file lock across
@@ -1408,7 +1411,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // hold it (or timed out) and skip the duplicate O(N) scan, which also shortens how long we hold the lock.
       final long recomputed = cachedRecordCount.get();
       if (recomputed > -1)
-        return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
+        return transaction != null ?
+            transaction.getRepeatableCommittedCount(fileId, recomputed) + transaction.getBucketRecordDelta(fileId) :
+            recomputed;
 
       // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
       final long stampAtScanStart = getUnlockedApplyStamp();
@@ -1488,7 +1493,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         LogManager.instance().log(this, Level.FINE,
                 "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
                 lockTimeout);
-      return total;
+      if (transaction == null)
+        return total;
+      // THE SCAN COUNTED THE TRANSACTION'S VIEW: ITS COMMITTED PART IS WHAT A REPEATABLE_READ TRANSACTION KEEPS (#10712)
+      final long pending = transaction.getBucketRecordDelta(fileId);
+      return transaction.getRepeatableCommittedCount(fileId, total - pending) + pending;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);

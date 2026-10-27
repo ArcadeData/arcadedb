@@ -29,6 +29,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionRetryPolicy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
@@ -660,11 +661,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     /**
-     * Commits the worker's shared batch transaction, retrying a {@link ConcurrentModificationException}
-     * by rolling back, beginning a fresh transaction and replaying every task buffered in
-     * {@link #pendingBatchCommands} - the same MVCC-conflict retry contract {@code db.async().transaction()}
-     * already gets from {@link DatabaseAsyncTransaction}, bounded by {@link GlobalConfiguration#TX_RETRIES}
-     * (issue #7615).
+     * Commits the worker's shared batch transaction, retrying a failure {@link TransactionRetryPolicy} calls
+     * retryable (a {@link NeedRetryException} - an MVCC conflict, a commit lock timeout - or a duplicated key, issue
+     * #10759) by rolling back, beginning a fresh transaction and replaying every task buffered in
+     * {@link #pendingBatchCommands} - the same retry contract {@code db.async().transaction()} gets from
+     * {@link DatabaseAsyncTransaction}, bounded by {@link GlobalConfiguration#TX_RETRIES} (issue #7615).
      * <p>
      * Every buffered command already called its own {@code userCallback.onComplete()} when it first ran -
      * a non-durable signal, since the write only becomes durable once THIS commit succeeds (see the
@@ -710,6 +711,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         final boolean beginFreshTransaction) {
       final ContextConfiguration configuration = database.getConfiguration();
       final int maxRetries = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
+      final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
       Throwable lastFailure = null;
 
       for (int attempt = 0; attempt <= maxRetries; ++attempt) {
@@ -750,24 +752,23 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           }
           return;
 
-        } catch (final ConcurrentModificationException e) {
-          // TRANSIENT MVCC CONFLICT: RETRY IF ATTEMPTS REMAIN
+        } catch (final Throwable e) {
           lastFailure = e;
           if (database.isTransactionActive())
             database.rollback();
-          if (!pendingUnreplayableTasks.isEmpty())
+          // RETRIED IF ATTEMPTS REMAIN WHEN IT IS IN THE FAMILY EVERY RETRY LOOP RETRIES - AN MVCC CONFLICT, BUT ALSO A
+          // LockTimeoutException FROM THE COMMIT'S OWN FILE LOCKS, WHICH N WORKERS COMMITTING INTO THE SAME BUCKETS
+          // PRODUCE BY CONSTRUCTION (#10759) - AND ITS RULES ALLOW ONE MORE ATTEMPT. ANYTHING ELSE IS NOT TRANSIENT, AN Error
+          // INCLUDED: isRetryable() NEVER ANSWERS TRUE FOR ONE
+          if (!TransactionRetryPolicy.isRetryable(e) || !pendingUnreplayableTasks.isEmpty())
             // A replay can only reconstruct pendingBatchCommands - committing one over a batch that also
             // held a write it cannot reconstruct would silently omit that write while still reporting
             // success. No safe retry available: stop here and fall through to the abandon path below,
-            // exactly as an un-retried commit failure always has for this batch shape.
+            // exactly as an un-retried commit failure always has for this batch shape. Checked before
+            // mayRetry(), which spends the one retry a duplicated key is given
             break;
-
-        } catch (final Throwable e) {
-          // NOT AN MVCC CONFLICT: NOT TRANSIENT, NO POINT RETRYING
-          lastFailure = e;
-          if (database.isTransactionActive())
-            database.rollback();
-          break;
+          if (!retryPolicy.mayRetry(e))
+            break;
         }
       }
 

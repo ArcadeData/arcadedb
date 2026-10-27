@@ -35,8 +35,10 @@ import java.util.concurrent.ThreadLocalRandom;
  * stall.
  * <p>
  * Shared by {@link com.arcadedb.database.LocalDatabase#transaction} (the programmatic / embedded retry loop),
- * {@link com.arcadedb.query.sql.executor.RetryStep} (the SQL {@code COMMIT RETRY} statement) and the remote
- * drivers' {@code RemoteDatabase.transaction} (issue #8617) so the copies of this policy cannot drift from each other.
+ * {@link com.arcadedb.query.sql.executor.RetryStep} (the SQL {@code COMMIT RETRY} statement), the remote
+ * drivers' {@code RemoteDatabase.transaction} (issue #8617), and the async executor's {@code db.async().transaction()} and
+ * batch commit (issues #9529, #10759) so the copies of this policy cannot drift from each other. Which failures are worth
+ * the wait is decided once for all of them by {@link com.arcadedb.database.TransactionRetryPolicy}.
  */
 public class RetryBackoff {
   private RetryBackoff() {
