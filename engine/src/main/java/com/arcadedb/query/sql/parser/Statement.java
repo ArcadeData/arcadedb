@@ -54,10 +54,19 @@ public class Statement extends SimpleNode {
   // no memo.
   private transient volatile NestedClassification nestedClassification;
   // Memo of positionalParameterBounds(): the same reflective walk of the immutable tree, once per parsed instance
-  private transient volatile long positionalParameterBounds = BOUNDS_NOT_COMPUTED;
+  private transient volatile ParameterBounds positionalParameterBounds;
 
-  private static final long BOUNDS_NOT_COMPUTED = -1L;
-  private static final long BOUNDS_UNKNOWN      = -2L;
+  /**
+   * How many positional values a statement must be bound to ({@code required}) and may be bound to ({@code accepted}).
+   *
+   * @param required the placeholders a positional binding must fill
+   * @param accepted the values it may hold, at least {@code required}
+   */
+  private record ParameterBounds(int required, int accepted) {
+  }
+
+  // a tree that could not be read: nothing is refused on a count that is not known
+  private static final ParameterBounds UNKNOWN_BOUNDS = new ParameterBounds(0, Integer.MAX_VALUE);
 
   /**
    * What the statements nested in a statement do, folded into the statement's own classification: whether they all
@@ -381,21 +390,17 @@ public class Statement extends SimpleNode {
     int required = 0;
     int accepted = 0;
     for (final Statement statement : statements) {
-      final long bounds = statement.positionalParameterBounds();
-      if (bounds == BOUNDS_UNKNOWN)
-        // the tree could not be read: nothing is refused on a count that is not known
-        return;
-      required = Math.max(required, (int) (bounds >>> 32));
-      accepted = Math.max(accepted, (int) bounds);
+      final ParameterBounds bounds = statement.positionalParameterBounds();
+      required = Math.max(required, bounds.required());
+      accepted = Math.max(accepted, bounds.accepted());
     }
     checkPositionalParameterCount(required, accepted, values);
   }
 
   /** {@link #checkPositionalParameterCount(Iterable, int)} for this statement alone. */
   public void checkPositionalParameterCount(final int values) {
-    final long bounds = positionalParameterBounds();
-    if (bounds != BOUNDS_UNKNOWN)
-      checkPositionalParameterCount((int) (bounds >>> 32), (int) bounds, values);
+    final ParameterBounds bounds = positionalParameterBounds();
+    checkPositionalParameterCount(bounds.required(), bounds.accepted(), values);
   }
 
   private static void checkPositionalParameterCount(final int required, final int accepted, final int values) {
@@ -416,23 +421,22 @@ public class Statement extends SimpleNode {
     return -1;
   }
 
-  /** The position a Postgres-style {@code $N} reads, or -1 for any other node. */
+  /** The position a Postgres-style {@code $N} reads, or -1 for any other node. The key is at most Integer.MAX_VALUE - 1. */
   private static int dollarParameterNumber(final SimpleNode node) {
     final String key = node instanceof Identifier identifier ? identifier.positionalParameterKey() : null;
     return key != null ? Integer.parseInt(key) : -1;
   }
 
-  /** The placeholders a positional binding must fill (high 32 bits) and the values it may hold (low 32 bits), or BOUNDS_UNKNOWN. */
-  private long positionalParameterBounds() {
-    long bounds = positionalParameterBounds;
-    if (bounds == BOUNDS_NOT_COMPUTED) {
+  private ParameterBounds positionalParameterBounds() {
+    ParameterBounds bounds = positionalParameterBounds;
+    if (bounds == null) {
       final int[] counts = { 0, 0 };
       final boolean readable = SqlAstInspector.allNodesMatch(this, node -> {
         counts[0] = Math.max(counts[0], sequentialParameterNumber(node) + 1);
         counts[1] = Math.max(counts[1], dollarParameterNumber(node) + 1);
         return true;
       });
-      bounds = readable ? ((long) counts[0] << 32) | Math.max(counts[0], counts[1]) : BOUNDS_UNKNOWN;
+      bounds = readable ? new ParameterBounds(counts[0], Math.max(counts[0], counts[1])) : UNKNOWN_BOUNDS;
       positionalParameterBounds = bounds;
     }
     return bounds;

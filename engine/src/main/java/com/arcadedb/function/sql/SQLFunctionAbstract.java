@@ -156,7 +156,10 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
     }
   }
 
-  /** Whether two values are of one kind {@link BinaryComparator#compareTo} orders as such, rather than by the name of their class. */
+  /**
+   * Whether two values are of one kind {@link BinaryComparator#compareTo} orders as such, rather than by the name of their class.
+   * Kept in step with the arms of that method: a kind added there that relates two classes belongs here too.
+   */
   private static boolean isSameKind(final Object left, final Object right) {
     return left.getClass() == right.getClass() || left instanceof Number && right instanceof Number
         || DateUtils.isDate(left) && DateUtils.isDate(right) || left instanceof Map && right instanceof Map
