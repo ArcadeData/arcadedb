@@ -175,6 +175,14 @@ class Issue10685VectorQueryNodesPreFilterTest extends TestHelper {
   }
 
   @Test
+  void whereMatchingNothingAnswersNothing() {
+    assertThat(tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {where: {tenant: 'nobody'}}) YIELD node, score "
+        + "RETURN node.tenant AS tenant")).isEmpty();
+    assertThat(tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {where: \"tenant = 'nobody'\"}) YIELD node, score "
+        + "RETURN node.tenant AS tenant")).isEmpty();
+  }
+
+  @Test
   void emptyOrNullOptionsBehaveAsTheThreeArgumentForm() {
     assertThat(tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {}) YIELD node, score "
         + "RETURN node.tenant AS tenant")).hasSize(K).containsOnly("b");
