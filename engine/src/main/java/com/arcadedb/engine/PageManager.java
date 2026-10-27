@@ -1592,6 +1592,15 @@ public class PageManager extends LockContext {
     return null;
   }
 
+  /**
+   * The shared {@link CachedPage} itself, through the same funnel as {@link #getImmutablePage}, for a reader that only reads single
+   * values at absolute positions ({@link CachedPage#readByte}) and so does not need the per-call view that builds an
+   * {@link ImmutablePage}, its Binary and the buffer around it (#10654). {@code null} when the page is not there.
+   */
+  public CachedPage getCachedPageForRead(final PageId pageId, final int pageSize) throws IOException {
+    return getCachedPage(pageId, pageSize, false, false);
+  }
+
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);

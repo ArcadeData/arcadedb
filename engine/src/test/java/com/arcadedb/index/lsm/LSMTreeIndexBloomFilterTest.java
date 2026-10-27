@@ -23,11 +23,16 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Binary;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.BufferBloomFilter;
+import com.arcadedb.engine.CachedPage;
 import com.arcadedb.engine.MurmurHash;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
+import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -54,6 +59,7 @@ class LSMTreeIndexBloomFilterTest extends TestHelper {
    * compaction and the lookup do.
    */
   private static final int FINGERPRINT = 0x5117;
+
 
   private static long hash(final String key) {
     final byte[] bytes = key.getBytes(StandardCharsets.UTF_8);
@@ -204,6 +210,98 @@ class LSMTreeIndexBloomFilterTest extends TestHelper {
     }
 
     assertThat(agreed).as("the probe must answer TRUE for the keys it holds, not for nothing").isGreaterThan(keys / 2);
+  }
+
+  /**
+   * #10654: the probe reads the shared cached page instead of a view of it. Three routes to the same bit page - the filter's own
+   * {@code mightContain}, the static probe on a view, the static probe on the cached page - must give the same answer for every
+   * hash, and a hash the filter holds must come back TRUE.
+   */
+  @Test
+  void theCachedPageProbeAgreesWithTheViewOne() throws Exception {
+    final int keys = 20_000;
+    final LSMTreeIndexBloomFilter filter = newFilter("cached-vs-view");
+    filter.publish(6, 2, FINGERPRINT, hashes(keys, "p-"), keys, 0.01);
+
+    final LSMTreeIndexBloomFilter.Entry entry = filter.readDirectoryPage(filter.getTotalPages() - 1).get(6);
+    assertThat(entry).isNotNull();
+
+    int positives = 0;
+    for (int i = 0; i < 40_000; i++) {
+      final long hash = i < keys ? hash("p-" + i) : hash("q-" + i);
+      final PageId pageId = new PageId((DatabaseInternal) database, filter.getFileId(),
+          entry.firstFilterPage() + blockOfSameWayTheComponentDoes(hash, entry.filterPages()));
+      final BasePage view = ((DatabaseInternal) database).getPageManager().getImmutablePage(pageId, PAGE_SIZE, false, false);
+      final CachedPage cached = ((DatabaseInternal) database).getPageManager().getCachedPageForRead(pageId, PAGE_SIZE);
+
+      final boolean viaView = BufferBloomFilter.mightContainHash(view, entry.slotsPerBlock(), entry.probes(), hash);
+      assertThat(BufferBloomFilter.mightContainHash(cached, entry.slotsPerBlock(), entry.probes(), hash)).as("hash %d", hash)
+          .isEqualTo(viaView);
+      assertThat(filter.mightContain(6, 2, FINGERPRINT, hash)).as("hash %d", hash).isEqualTo(viaView);
+      if (i < keys)
+        assertThat(viaView).as("a key the filter holds, hash %d", hash).isTrue();
+      if (viaView)
+        ++positives;
+    }
+    assertThat(positives).as("the absent half must mostly come back FALSE").isLessThan(keys + keys / 10);
+  }
+
+  /** #10654: the page of a series that has no page behind it still answers TRUE (searched), as it did when the read threw. */
+  @Test
+  void aProbeThatCannotReadItsPageAnswersTrue() throws Exception {
+    final LSMTreeIndexBloomFilter filter = newFilter("unreadable-page");
+    filter.publish(6, 2, FINGERPRINT, hashes(1_000, "p-"), 1_000, 0.01);
+    final LSMTreeIndexBloomFilter.Entry entry = filter.readDirectoryPage(filter.getTotalPages() - 1).get(6);
+
+    final PageManager.PageReadFaultInjector injector = pageId -> {
+      if (pageId.getFileId() == filter.getFileId())
+        throw new IOException("injected");
+    };
+    PageManager.setPageReadFaultInjector(injector);
+    try {
+      assertThat(entry).isNotNull();
+      assertThat(filter.mightContain(6, 2, FINGERPRINT, hash("q-absent"))).isTrue();
+    } finally {
+      PageManager.setPageReadFaultInjector(null);
+    }
+  }
+
+  /**
+   * #10654: a probe builds no PageId and no view of the page. Measured against the route it used to take, on this JVM: a new
+   * PageId and a view of the page, which is what {@code mightContain} built per call.
+   */
+  @Test
+  void aProbeAllocatesNoPageIdAndNoPageView() throws Exception {
+    final int keys = 20_000;
+    final LSMTreeIndexBloomFilter filter = newFilter("probe-allocation");
+    filter.publish(6, 2, FINGERPRINT, hashes(keys, "p-"), keys, 0.01);
+    final LSMTreeIndexBloomFilter.Entry entry = filter.readDirectoryPage(filter.getTotalPages() - 1).get(6);
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+
+    final long[] probes = hashes(2_000, "q-");
+    final Object[] kept = new Object[64];
+    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    final long threadId = Thread.currentThread().threadId();
+
+    long old = 0, now = 0;
+    for (int round = 0; round < 10; round++) {
+      final long beforeOld = threads.getThreadAllocatedBytes(threadId);
+      for (int i = 0; i < probes.length; i++) {
+        final int block = blockOfSameWayTheComponentDoes(probes[i], entry.filterPages());
+        // WHAT mightContain BUILT PER CALL (results kept so the JIT cannot drop them)
+        kept[i % kept.length] = pageManager.getImmutablePage(
+            new PageId((DatabaseInternal) database, filter.getFileId(), entry.firstFilterPage() + block), PAGE_SIZE, false, false);
+      }
+      old = threads.getThreadAllocatedBytes(threadId) - beforeOld;
+
+      final long beforeNow = threads.getThreadAllocatedBytes(threadId);
+      for (final long hash : probes)
+        filter.mightContain(6, 2, FINGERPRINT, hash);
+      now = threads.getThreadAllocatedBytes(threadId) - beforeNow;
+    }
+
+    assertThat(now).as("bytes of %d probes, against %d for the PageId and page view they used to build", probes.length, old)
+        .isLessThan(old / 4);
   }
 
   /** Mirrors the component's block routing, so the test addresses the page the component would. */

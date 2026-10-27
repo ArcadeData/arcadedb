@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.BufferBloomFilter;
+import com.arcadedb.engine.CachedPage;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MurmurHash;
@@ -131,6 +132,9 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
    * {@link BufferBloomFilter} requires for its lock-free reads.
    */
   private volatile Map<Integer, Entry> directory = Map.of();
+
+  /** The PageIds of this file's pages, so a probe names its page without building a key. */
+  private final PageIdCache filterPageIds = new PageIdCache(this);
 
   /** One published filter. Immutable once built. */
   record Entry(int seriesRootPage, int seriesPages, int seriesFingerprint, int firstFilterPage, int filterPages,
@@ -269,9 +273,10 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
       // Read OUTSIDE the transaction, and allocation-free. Outside, because nothing ever modifies a filter page inside
       // a transaction - they are written only by a compaction, which runs outside one - so pulling them into the
       // caller's tracked page set would grow every write transaction's working set for nothing. Allocation-free,
-      // because this runs once per series per lookup and a bulk load performs both millions of times.
-      final BasePage page = database.getPageManager()
-          .getImmutablePage(new PageId(database, getFileId(), entry.firstFilterPage() + block), pageSize, false, false);
+      // because this runs once per series per lookup and a bulk load performs both millions of times (#10654: the PageId is
+      // the one this file handed out before, and the shared page is read as it is, with no ImmutablePage view built around it).
+      final CachedPage page = database.getPageManager()
+          .getCachedPageForRead(filterPageIds.get(entry.firstFilterPage() + block), pageSize);
       if (page == null)
         return true;
 
