@@ -464,19 +464,21 @@ public class AnchorSelector {
       if (!everyRootIndexed)
         continue;
 
-      // Same selectivity heuristic as the single-type equality seek: a unique key resolves to one row per root, a
-      // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
-      // per-root subtree counts are not otherwise collected for a disjunction's roots.
-      final long estimatedRows = allUniqueWholeKey ? seeks.size() : Math.max(seeks.size(), (long) (totalRows * 0.1));
-
       // Each root's seek is costed with the selectivity of its own index and bound key prefix, the rule every other seek
       // follows, so two predicates whose seeks bind prefixes of different length do not tie at a flat 10%
       double totalCost = 0;
+      double rangeSelectivity = 0;
       for (final AnchorSelection.DisjunctionIndexSeek seek : seeks) {
         final double selectivity = seekSelectivity(seek.index(), seek.keyValues().size(),
             statisticsProvider.getCardinality(seek.typeName()));
         totalCost += costModel.estimateIndexSeekCost(seek.typeName(), propertyName, selectivity);
+        if (!resolvesOneRow(seek.index(), seek.keyValues().size()))
+          rangeSelectivity = Math.max(rangeSelectivity, selectivity);
       }
+
+      // A unique key resolves to one row per root; otherwise the least selective root seek is applied to the total scan
+      // size rather than per root, since the per-root subtree counts are not otherwise collected for a disjunction's roots.
+      final long estimatedRows = allUniqueWholeKey ? seeks.size() : Math.max(seeks.size(), (long) (totalRows * rangeSelectivity));
 
       // The cheapest predicate, not the first one indexed on every root (issue #10775)
       best = cheaper(best, new AnchorSelection(variable, node, propertyName, propertyValue, seeks, totalCost, estimatedRows));
