@@ -35,7 +35,6 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -52,6 +51,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -385,8 +385,13 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     void publishTo(final DatabaseInternal database) {
+      final ConcurrentMap<String, Object> store = database.getGlobalVariableStore();
       for (final Map.Entry<String, Object> entry : values.entrySet())
-        database.setGlobalVariable(entry.getKey(), entry.getValue());
+        // a buffered null is GETDEL's delete
+        if (entry.getValue() == null)
+          store.remove(entry.getKey());
+        else
+          store.put(entry.getKey(), entry.getValue());
     }
   }
 
@@ -564,37 +569,20 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * The single normalization point for a RAM key (PR #8309 review): {@code LocalDatabase.getGlobalVariable}/
-   * {@code setGlobalVariable}/{@code computeGlobalVariable} all strip a leading {@code $} and refuse a reserved
-   * name via {@code SQLQueryEngine.validateVariableName}. Called once per command, on the raw key from the
-   * parsed command, before it ever reaches the transaction's {@link RamOverlay} or the real map - so both agree on
-   * the same key (an overlay entry stored under the raw {@code "$seq"} would never be found by a later
-   * {@code GET seq} in the same transaction) and a reserved name is refused at the point the offending command runs,
-   * which rolls back the rest of its block, rather than when the overlay is published after the commit.
+   * Reads a RAM key: the active transaction's own write first (a buffered null is GETDEL's delete, not "absent"). Every RAM command
+   * names the key as the client wrote it, through the store of the global variables rather than the SQL accessors (issue #10790):
+   * those strip a leading {@code $} and refuse the names SQL reserves, so {@code $seq} was the key {@code seq} and {@code parent}
+   * could not be written. The RESP wire path stores its keys the same way, so the two surfaces name a key by the same string.
    */
-  private String normalizeRamKey(final String key) {
-    return SQLQueryEngine.validateVariableName(key);
-  }
-
-  /**
-   * The key a read-only RAM command (GET/EXISTS) looks up: the leading {@code $} stripped as {@link #normalizeRamKey}
-   * does, but a reserved name is not refused, since it can never hold a value. Answering it as absent is what
-   * {@code LocalDatabase.getGlobalVariable} and the RESP wire path do, so both surfaces agree on the same read.
-   */
-  private static String normalizeRamReadKey(final String key) {
-    return key.startsWith("$") ? key.substring(1) : key;
-  }
-
-  /** Reads a RAM key: the active transaction's own write first (a buffered null is GETDEL's delete, not "absent"). */
   private Object readRamVariable(final String key, final RamOverlay overlay) {
     if (overlay != null && overlay.hasKey(key))
       return overlay.get(key);
-    return database.getGlobalVariable(key);
+    return database.getGlobalVariableStore().get(key);
   }
 
   /**
    * INCR/DECR on a RAM key. On a key the active transaction already SET, the base is that transaction's own value and
-   * the result stays in its overlay. Otherwise it is one atomic {@code computeGlobalVariable} on the shared map - the
+   * the result stays in its overlay. Otherwise it is one atomic {@code compute} on the shared map - the
    * primitive #8248 gave the wire path, because a read followed by a write lets two concurrent INCR calls read the
    * same starting value - applied once per {@link RamSlot}.
    */
@@ -607,28 +595,28 @@ public class RedisQueryEngine implements QueryEngine {
       overlay.set(key, newValue);
       return newValue;
     }
-    final Object newValue = database.computeGlobalVariable(key, remapping);
+    final Object newValue = database.getGlobalVariableStore().compute(key, (k, current) -> remapping.apply(current));
     return slot != null ? slot.reserve(newValue) : newValue;
   }
 
   private String set(final List<String> parts) {
-    final String key = normalizeRamKey(parts.get(1));
+    final String key = parts.get(1);
     final String value = parts.get(2);
     final RamOverlay overlay = ramOverlay();
     if (overlay != null)
       overlay.set(key, value);
     else
-      database.setGlobalVariable(key, value);
+      database.getGlobalVariableStore().put(key, value);
     return "OK";
   }
 
   private Object get(final List<String> parts) {
-    return readRamVariable(normalizeRamReadKey(parts.get(1)), ramOverlay());
+    return readRamVariable(parts.get(1), ramOverlay());
   }
 
   /** See {@link #computeRamVariable} for when GETDEL stays in the transaction and when it claims from the shared map. */
   private Object getDel(final List<String> parts, final RamSlot slot) {
-    final String key = normalizeRamKey(parts.get(1));
+    final String key = parts.get(1);
     if (slot != null && slot.reserved)
       return slot.value;
     final RamOverlay overlay = ramOverlay();
@@ -637,9 +625,9 @@ public class RedisQueryEngine implements QueryEngine {
       overlay.set(key, null);
       return previous;
     }
-    // setGlobalVariable atomically returns the previous value - the same reason GETDEL needs it that INCR needs
-    // computeGlobalVariable (issue #8248): two concurrent GETDEL calls on the same key must not both read it.
-    final Object previous = database.setGlobalVariable(key, null);
+    // remove atomically returns the previous value - the same reason GETDEL needs it that INCR needs compute (issue #8248): two
+    // concurrent GETDEL calls on the same key must not both read it.
+    final Object previous = database.getGlobalVariableStore().remove(key);
     return slot != null ? slot.reserve(previous) : previous;
   }
 
@@ -647,7 +635,7 @@ public class RedisQueryEngine implements QueryEngine {
     final RamOverlay overlay = ramOverlay();
     int count = 0;
     for (int i = 1; i < parts.size(); i++) {
-      if (readRamVariable(normalizeRamReadKey(parts.get(i)), overlay) != null) {
+      if (readRamVariable(parts.get(i), overlay) != null) {
         count++;
       }
     }
@@ -661,7 +649,7 @@ public class RedisQueryEngine implements QueryEngine {
    * atomicity.
    */
   private Object incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
-    final String key = normalizeRamKey(parts.get(1));
+    final String key = parts.get(1);
 
     if (decimal) {
       // the decimal TEXT, as on the wire (#9058): a Double would lose digits and turn a huge result into Infinity
@@ -674,7 +662,7 @@ public class RedisQueryEngine implements QueryEngine {
 
   /** See {@link #incrBy}. */
   private Number decrBy(final List<String> parts, final RamSlot slot) {
-    final String key = normalizeRamKey(parts.get(1));
+    final String key = parts.get(1);
     final long decrement = parts.size() > 2 ? RedisCounterOperations.parseInteger(parts.get(2)) : 1L;
 
     return (Number) computeRamVariable(key, RedisCounterOperations.decrementBy(decrement), slot);

@@ -54,16 +54,13 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
-
-  /** Commands whose arguments are opaque bytes (issue #9057); see the argument loop in the command dispatch. */
-  private static final Set<String> BINARY_SAFE_COMMANDS = Set.of("SET", "ECHO", "PING");
 
   /**
    * Commands that skip the query admission gate and the list of running statements: the ones that touch no data, and the
@@ -89,7 +86,7 @@ public class RedisNetworkExecutor extends Thread {
   // bytes the batch being built has queued, to give a grown buffer back once batches stop needing it (see flushReplies)
   private          int                 batchReplyBytes  = 0;
   private final    byte[]              tokenBytes       = new byte[MAX_TOKEN_LENGTH];
-  private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
+  private final    ConcurrentMap<String, Object> defaultBucket = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
   private          ServerSecurityUser  authenticatedUser    = null;
   private          RunningQuery.Client runningQueryClient   = null;
@@ -122,9 +119,9 @@ public class RedisNetworkExecutor extends Thread {
   private static final int INITIAL_PENDING_REPLY_BYTES = 16 * 1024;
 
   /**
-   * Holds the resolved key and database from key resolution.
+   * The key a command names and the map it lives in: the connection's own bucket, or the global-variable store of a database.
    */
-  private record ResolvedKey(String key, DatabaseInternal database) {
+  private record ResolvedKey(String key, ConcurrentMap<String, Object> space) {
   }
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
@@ -159,8 +156,9 @@ public class RedisNetworkExecutor extends Thread {
     final String defaultDbName = server.getConfiguration().getValueAsString(GlobalConfiguration.REDIS_DEFAULT_DATABASE);
     if (defaultDbName != null && !defaultDbName.isEmpty()) {
       // A database an operator holds (a restore, a close database) is recorded too, so that getAuthorizedDatabase answers LOADING
-      // for it: left out, an unprefixed SET wrote to the connection-local bucket, answered OK and lost the value (issue #10553)
-      if (server.existsDatabase(defaultDbName) || server.isDatabaseHeld(defaultDbName))
+      // for it: left out, an unprefixed SET wrote to the connection-local bucket, answered OK and lost the value (issue #10553). So
+      // is one on disk that nothing opened yet, which its first command opens (issue #10567)
+      if (server.isDatabaseOfServer(defaultDbName))
         this.selectedDatabaseName = defaultDbName;
       else
         LogManager.instance().log(this, Level.WARNING,
@@ -363,12 +361,10 @@ public class RedisNetworkExecutor extends Thread {
       // raw ClassCastException from the generic catch-all instead of this message. No handler actually
       // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
       // than a gap worth a recursive check for.
-      // Only SET, ECHO and PING carry opaque bytes (issue #9057). Every other command parses its arguments as text, where
-      // an escaped byte would be a lone surrogate, so it gets the replacement character instead.
-      // A new command that handles opaque bytes must be added here. The KEY of SET is text like the key of every lookup
-      // command (GET, EXISTS, DEL...), so it is sanitized the same way and stays findable.
-      final boolean binarySafe = BINARY_SAFE_COMMANDS.contains(cmdString);
-      final boolean keyIsText = "SET".equals(cmdString);
+      // A key and a stored value keep their bytes (issues #9057, #10752); every other argument is parsed as text, where an escaped
+      // byte would be a lone surrogate, so it gets the replacement character instead. RedisArguments is the table that says which
+      // is which: sanitizing a key made two binary keys that differ only in an invalid byte one key
+      final int[] opaque = RedisArguments.opaquePositions(cmdString);
       for (int i = 1; i < list.size(); i++) {
         final Object arg = list.get(i);
         if (arg == null) {
@@ -376,7 +372,7 @@ public class RedisNetworkExecutor extends Thread {
           appendCrLf();
           return;
         }
-        if ((!binarySafe || (keyIsText && i == 1)) && arg instanceof String str)
+        if (arg instanceof String str && !RedisArguments.isOpaque(opaque, i))
           list.set(i, RedisBinaryCodec.sanitize(str));
       }
 
@@ -701,8 +697,8 @@ public class RedisNetworkExecutor extends Thread {
         });
       // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
       for (final String variable : variables)
-        // setGlobalVariable atomically returns the previous value
-        if (database.setGlobalVariable(variable, null) != null)
+        // the key as the client sent it, as GETDEL removes it (issue #10790)
+        if (database.getGlobalVariableStore().remove(variable) != null)
           deleted[0]++;
     } else {
       // Persistent mode: delete from database
@@ -832,7 +828,7 @@ public class RedisNetworkExecutor extends Thread {
     // Check if transient mode: second argument is JSON (starts with '{')
     if (secondArg.startsWith("{")) {
       // Transient mode: store JSON objects in globalVariables. Every element is parsed and validated BEFORE the first is written:
-      // setGlobalVariable is a plain map put that no transaction undoes, so a malformed element k used to leave elements 1..k-1
+      // the store is a plain map that no transaction undoes, so a malformed element k used to leave elements 1..k-1
       // stored behind an error reply (#9837). The same order as the RID parsing of hDel's transient branch. The stores that follow
       // cannot fail, but they are still one put at a time: a concurrent reader may see some of the elements and not the others
       final DatabaseInternal database = getAuthorizedDatabase(databaseName);
@@ -847,8 +843,9 @@ public class RedisNetworkExecutor extends Thread {
         keys[i] = json.get("id").toString();
         values[i] = json.toString();
       }
+      final ConcurrentMap<String, Object> store = database.getGlobalVariableStore();
       for (int i = 0; i < count; i++)
-        database.setGlobalVariable(keys[i], values[i]);
+        store.put(keys[i], values[i]);
       value.append(":");
       value.append(count);
     } else {
@@ -913,8 +910,8 @@ public class RedisNetworkExecutor extends Thread {
    * NX/XX must be a single atomic check-and-set: {@code SET k v NX} is the primitive a distributed-lock client
    * builds on, and evaluating "does k exist" and "write k" as two separate calls would let two racing clients both
    * observe "absent" and both believe they acquired the lock. {@link #setVariableIfAbsent} / {@link
-   * #setVariableIfPresent} route to a single atomic map operation ({@code ConcurrentHashMap.putIfAbsent} /
-   * {@code computeIfPresent}, or their {@code DatabaseInternal} equivalents) instead of a get-then-set pair.
+   * #setVariableIfPresent} route to a single atomic map operation ({@code putIfAbsent} / {@code computeIfPresent} on the
+   * connection's bucket or on the database's global-variable store) instead of a get-then-set pair.
    */
   private void set(final List<Object> list) {
     final String k = (String) list.get(1);
@@ -1123,8 +1120,8 @@ public class RedisNetworkExecutor extends Thread {
   private void select(final List<Object> list) {
     final String dbName = (String) list.get(1);
     // A database an operator holds (a restore, a close database) is not registered but exists: getAuthorizedDatabase below answers it
-    // as unavailable, not as a name that is no database (issue #10553)
-    if (!server.existsDatabase(dbName) && !server.isDatabaseHeld(dbName))
+    // as unavailable, not as a name that is no database (issue #10553). One on disk that nothing opened yet is opened (issue #10567)
+    if (!server.isDatabaseOfServer(dbName))
       throw new RedisException("Database '" + dbName + "' not found");
 
     // Authorize access (and bind the principal) before switching the connection's current database.
@@ -1174,52 +1171,49 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   /**
-   * Resolves the database and actual key from a potentially prefixed key.
+   * Resolves the key space and actual key from a potentially prefixed key.
    * Priority: key prefix (dbname.key) > SELECT > default config > connection-local bucket.
+   * <p>
+   * A database's key space is its global-variable store, read and written by the client's key as it is
+   * ({@link DatabaseInternal#getGlobalVariableStore()}, issue #10790): the SQL accessors strip a leading {@code $} and refuse
+   * the names SQL reserves, which made {@code $k} the key {@code k} and refused {@code parent}, {@code depth}... A key SQL can name
+   * stays visible to it as {@code $key}.
    *
    * @param key the key which may contain a database prefix (e.g., "mydb.mykey")
-   * @return ResolvedKey containing the resolved key and database (database may be null if using local bucket)
    */
-  private ResolvedKey resolveKeyAndDatabase(final String key) {
+  private ResolvedKey resolveKey(final String key) {
     // Check for database prefix (dbname.key)
     final int dotPos = key.indexOf('.');
     if (dotPos > 0) {
       final String dbName = key.substring(0, dotPos);
-      final String actualKey = key.substring(dotPos + 1);
-      // A database an operator holds is one too: it is not registered, and taking its prefix for part of a plain key wrote the
-      // client's value to the connection-local bucket, answered OK, and lost it for the database (issue #10553). The ORDER matters:
-      // existsDatabase first, isDatabaseHeld second, because every hold goes up before the registry entry leaves (see isDatabaseHeld)
-      if (server.existsDatabase(dbName) || server.isDatabaseHeld(dbName))
+      // Whether the prefix names a database of this server, open or not: one an operator holds (issue #10553), and one on disk that
+      // nothing opened yet (issue #10567), which getAuthorizedDatabase opens, or refuses while a snapshot install has it pending.
+      // Taken for part of a plain key, the client's value went to the connection-local bucket, answered OK, and was lost for the
+      // database
+      if (server.isDatabaseOfServer(dbName))
         // A real database prefix: authorize access (throws if not permitted) and bind the principal.
-        return new ResolvedKey(actualKey, getAuthorizedDatabase(dbName));
+        return new ResolvedKey(key.substring(dotPos + 1), getAuthorizedDatabase(dbName).getGlobalVariableStore());
       // Not a database prefix, treat as regular key.
     }
 
     // Use selected database (from SELECT command or default config)
     if (selectedDatabaseName != null)
-      return new ResolvedKey(key, getAuthorizedDatabase(selectedDatabaseName));
+      return new ResolvedKey(key, getAuthorizedDatabase(selectedDatabaseName).getGlobalVariableStore());
 
-    return new ResolvedKey(key, null);
+    return new ResolvedKey(key, defaultBucket);
   }
 
   private Object getVariable(final String key) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null) {
-      return resolved.database().getGlobalVariable(resolved.key());
-    }
-    return defaultBucket.get(resolved.key());
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().get(resolved.key());
   }
 
   /**
    * @return the previous value of the key, or null if it had none
    */
   private Object setVariable(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().setGlobalVariable(resolved.key(), value);
-    return defaultBucket.put(resolved.key(), value);
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().put(resolved.key(), value);
   }
 
   /**
@@ -1228,11 +1222,8 @@ public class RedisNetworkExecutor extends Thread {
    * @return the existing value if the key was already set (left untouched), or null if it was absent (now set)
    */
   private Object setVariableIfAbsent(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().setGlobalVariableIfAbsent(resolved.key(), value);
-    return defaultBucket.putIfAbsent(resolved.key(), value);
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().putIfAbsent(resolved.key(), value);
   }
 
   /**
@@ -1241,13 +1232,9 @@ public class RedisNetworkExecutor extends Thread {
    * @return the previous value if the key was set (now replaced), or null if it was absent (left untouched)
    */
   private Object setVariableIfPresent(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().setGlobalVariableIfPresent(resolved.key(), value);
-
+    final ResolvedKey resolved = resolveKey(key);
     final Object[] previous = new Object[1];
-    defaultBucket.computeIfPresent(resolved.key(), (k, current) -> {
+    resolved.space().computeIfPresent(resolved.key(), (k, current) -> {
       previous[0] = current;
       return value;
     });
@@ -1272,30 +1259,18 @@ public class RedisNetworkExecutor extends Thread {
    * @return the value {@code remapping} returned, i.e. the key's new value
    */
   private Object computeVariable(final String key, final UnaryOperator<Object> remapping) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().computeGlobalVariable(resolved.key(), remapping);
-    return defaultBucket.compute(resolved.key(), (k, current) -> remapping.apply(current));
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().compute(resolved.key(), (k, current) -> remapping.apply(current));
   }
 
   private Object removeVariable(final String key) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null) {
-      // Use setGlobalVariable which atomically returns the previous value
-      return resolved.database().setGlobalVariable(resolved.key(), null);
-    }
-    return defaultBucket.remove(resolved.key());
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().remove(resolved.key());
   }
 
   private boolean containsVariable(final String key) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null) {
-      return resolved.database().getGlobalVariable(resolved.key()) != null;
-    }
-    return defaultBucket.containsKey(resolved.key());
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().containsKey(resolved.key());
   }
 
   private Object parseNext() throws IOException {
@@ -1571,7 +1546,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private String getTransientValue(final String databaseName, final String key) {
     final DatabaseInternal database = getAuthorizedDatabase(databaseName);
-    final Object value = database.getGlobalVariable(key);
+    final Object value = database.getGlobalVariableStore().get(key);
     return value != null ? value.toString() : null;
   }
 

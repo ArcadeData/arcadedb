@@ -137,6 +137,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1870,6 +1871,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Map<String, Object> getGlobalVariables() {
     return proxied.getGlobalVariables();
+  }
+
+  /**
+   * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
+   */
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return proxied.getGlobalVariableStore();
   }
 
   @Override

@@ -278,6 +278,14 @@ public class ArcadeDBServer {
   // a request that resolved the name in that window opened the directory being deleted. Set before the drop starts and
   // cleared after the files are gone, by dropLocalDatabase, and refused to every caller by getDatabase under databasesLock.
   private final       Set<String>                           beingDropped                         = ConcurrentHashMap.newKeySet();
+  // The databases on disk, open or not, for isDatabaseOfServer (issue #10567). Built at each start, for the database directory of
+  // that lifecycle
+  private volatile    DatabaseDirectoryNames                databaseDirectoryNames;
+  // Set under databasesLock by stopInternal before it closes the databases, cleared by the next start (issue #10707): a database
+  // opened after the close would be left open, and locked, behind a stopped server, where the next server on the same directory
+  // fails on its file lock. Read under the same lock by every load and create, so a load in flight when it is set has finished and
+  // registered its database, which the close then closes, and every later one is refused
+  private             boolean                               databasesClosedByStop;
   // Serialises start() and stop(). Deliberately an explicit lock rather than `synchronized` on the
   // instance: the JVM shutdown hook must be able to give up on it (see stopFromShutdownHook), because a
   // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
@@ -581,6 +589,12 @@ public class ArcadeDBServer {
 
     // A NEW LIFECYCLE OF THIS INSTANCE: A DATABASE A COMMAND CLOSED BEFORE THE LAST STOP IS NOT CLOSED ANY MORE (#10234)
     closedByCommand.clear();
+    synchronized (databasesLock) {
+      databasesClosedByStop = false;
+    }
+    databaseDirectoryNames = new DatabaseDirectoryNames(
+        new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)),
+        directory -> holdsDatabase(directory) || isAwaitingSnapshotRecovery(directory), ArcadeDBServer::isReservedDatabaseName);
     status = STATUS.STARTING;
 
     // A (re)start has not been held by the security-convergence gate yet (issue #8446).
@@ -1384,6 +1398,13 @@ public class ArcadeDBServer {
     if (security != null)
       CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service", false);
 
+    // Issue #10707: from here no database is opened or created (see databasesClosedByStop). A thread still running after the
+    // services stopped - a security reload sweep, a request that outlived the HTTP server - is refused instead of reopening a
+    // directory the next server on it then finds locked
+    synchronized (databasesLock) {
+      databasesClosedByStop = true;
+    }
+
     for (final ServerDatabase db : databases.values())
       CodeUtils.executeIgnoringExceptions(db.getEmbedded()::close, "Error closing database '" + db.getName() + "'",
           false);
@@ -1550,6 +1571,8 @@ public class ArcadeDBServer {
    */
   public void releaseDatabaseNameReservedForRestore(final String databaseName) {
     synchronized (databasesLock) {
+      // the restore may have left a database on disk that is not opened (issue #10567)
+      invalidateDatabaseDirectoryNames();
       restoringDatabaseNames.remove(databaseName);
     }
   }
@@ -1576,6 +1599,40 @@ public class ArcadeDBServer {
   public boolean isDatabaseHeld(final String databaseName) {
     return closedByCommand.contains(databaseName) || restoringDatabaseNames.contains(databaseName)
         || beingDropped.contains(databaseName);
+  }
+
+  /**
+   * Whether {@code databaseName} is a database of this server, open or not: registered ({@link #existsDatabase}), held by an
+   * operator ({@link #isDatabaseHeld}), or a directory of the database directory that holds a database nothing opened yet - with
+   * {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} off, every database until its first request - or that a snapshot
+   * install left pending (issue #10567). The question a protocol that guesses whether a key prefix names a database has to answer
+   * (Redis); {@link #getDatabaseForClient} then opens the database, or refuses one that is held or pending.
+   * <p>
+   * Lock-free, and without a look at the disk on each call: the directory part is answered from a listing kept in memory (see
+   * {@link DatabaseDirectoryNames}), because the caller is the hot path of every command whose key has a dot in it. The answer is
+   * a sample, as {@link #existsDatabase} is, asked in the order {@link #isDatabaseHeld} documents.
+   */
+  public boolean isDatabaseOfServer(final String databaseName) {
+    if (databaseName == null || databaseName.isEmpty())
+      return false;
+    if (existsDatabase(databaseName) || isDatabaseHeld(databaseName))
+      return true;
+    final DatabaseDirectoryNames names = databaseDirectoryNames;
+    return names != null && names.contains(databaseName);
+  }
+
+  /** The database directory changed under the server's hands: {@link #isDatabaseOfServer} lists it again. */
+  private void invalidateDatabaseDirectoryNames() {
+    final DatabaseDirectoryNames names = databaseDirectoryNames;
+    if (names != null)
+      names.invalidate();
+  }
+
+  /** Called under {@link #databasesLock} by every path that would open or create a database (issue #10707). */
+  private void checkDatabasesNotClosedByStop(final String databaseName) {
+    if (databasesClosedByStop)
+      throw new DatabaseNotAvailableException(
+          "Database '" + databaseName + "' is not available: the server '" + serverName + "' is stopped");
   }
 
   /**
@@ -1608,6 +1665,7 @@ public class ArcadeDBServer {
 
     ServerDatabase serverDatabase;
     synchronized (databasesLock) {
+      checkDatabasesNotClosedByStop(databaseName);
       checkDatabaseNameIsNotBeingRestored(databaseName);
 
       serverDatabase = databases.get(databaseName);
@@ -1901,6 +1959,8 @@ public class ArcadeDBServer {
           "Drop of database '%s' failed: its instance is closed and its files may be partly deleted", e, databaseName);
       throw e;
     } finally {
+      // the files are gone, or what a failed delete left is still there: listed again either way (issue #10567)
+      invalidateDatabaseDirectoryNames();
       beingDropped.remove(databaseName);
     }
   }
@@ -1913,6 +1973,9 @@ public class ArcadeDBServer {
       // is closing was neither registered nor held (issue #10553)
       if (keepClosedByCommandMark)
         closedByCommand.add(databaseName);
+      // Before the entry leaves too, for isDatabaseOfServer: a deregistered database may still be on disk, which a listing taken
+      // while it was registered may not show (issue #10567)
+      invalidateDatabaseDirectoryNames();
       removed = databases.remove(databaseName);
       // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
       if (!keepClosedByCommandMark)
@@ -2262,6 +2325,8 @@ public class ArcadeDBServer {
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
+
+        checkDatabasesNotClosedByStop(databaseName);
 
         // Whoever takes a database away has to be seen here, under the lock the load takes, or the load and the operation
         // interleave (issues #10234, #10388). A drop is refused to every caller: its files are being deleted, and nobody
