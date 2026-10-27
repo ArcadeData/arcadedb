@@ -767,8 +767,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final String oldName = logicName;
     if (newName.equals(oldName))
       return;
+    // indexRenamed() reads the new name from this index, so it is assigned first and given back if the map could not follow
     logicName = newName;
-    type.getSchema().getEmbedded().indexRenamed(oldName, this);
+    try {
+      type.getSchema().getEmbedded().indexRenamed(oldName, this);
+    } catch (final RuntimeException | Error e) {
+      logicName = oldName;
+      throw e;
+    }
   }
 
   /**
