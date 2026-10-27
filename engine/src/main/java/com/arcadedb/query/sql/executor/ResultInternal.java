@@ -41,6 +41,7 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
+  // A new field that carries row state must also be checked by rewrapElement(), or a filtered scan moves it to another record
   protected final Database database;
   protected final Object value;
   protected Map<String, Object> content;
@@ -703,6 +704,22 @@ public class ResultInternal implements Result {
   public ResultInternal setElement(final Document element) {
     this.element = element;
     return this;
+  }
+
+  /**
+   * Points a row that {@link #ResultInternal(Identifiable)} built at {@code identifiable} instead, as that constructor
+   * would, so a filtered scan can evaluate its WHERE clause on one row for every record the clause rejects rather than
+   * on a new one per record (issue #10655). A row that carries anything besides its element - a property, a removed
+   * property, a temporary property, metadata, a value - is left alone and the answer is {@code false}: what was
+   * written belongs to the record it was written on, and the caller builds a new row instead.
+   */
+  boolean rewrapElement(final Identifiable identifiable) {
+    if (content != null || temporaryContent != null || metadata != null || tombstones != null || value != null || database != null
+        || projectionSourceType != null || projectionSourceColumns != null || projectionExcludes != null)
+      return false;
+    final Record record = identifiable.getRecord();
+    this.element = record instanceof Document doc ? doc : null;
+    return true;
   }
 
   @Override
