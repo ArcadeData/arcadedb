@@ -158,6 +158,24 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
     }
   }
 
+  /** A database setting saved into the target is a write too: the swap deletes the configuration.json it went to. */
+  @Test
+  void aSettingChangeIsRefusedWhileTheRestoreHoldsTheTarget() throws Exception {
+    final String key = GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH.getKey();
+    final int before = server.getDatabase(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH);
+
+    server.reserveDatabaseNameForRestore(NAME);
+    assertThatThrownBy(() -> new ServerControlPlane(server).setDatabaseSetting(NAME, key, "3"))
+        .isInstanceOf(DatabaseNotAvailableException.class);
+    assertThat(server.getDatabase(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH))
+        .as("the setting was not applied").isEqualTo(before);
+
+    server.releaseDatabaseNameReservedForRestore(NAME);
+    new ServerControlPlane(server).setDatabaseSetting(NAME, key, "3");
+    assertThat(server.getDatabase(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH))
+        .isEqualTo(3);
+  }
+
   /** The operator's own step may open the target while the claim stands: what it opens refuses writes as well. */
   @Test
   void aTargetOpenedWhileTheRestoreHoldsItRefusesWrites() {

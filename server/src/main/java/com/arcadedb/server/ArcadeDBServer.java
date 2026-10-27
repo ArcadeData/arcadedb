@@ -2762,6 +2762,9 @@ public class ArcadeDBServer {
       // rather than engineered away; a create that lands in it is destroyed by the drop below exactly as
       // issue #7469 describes for the control-plane restores.
       reserveDatabaseNameForRestore(databaseName);
+      // An existing target now refuses writes: the commits already past that check end before the drop, so none is acknowledged
+      // and then destroyed with it (issue #10689), as the control-plane restores wait in reserveRestoreTarget
+      awaitCommitsInFlightOn(databaseName);
 
       // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE.
       //

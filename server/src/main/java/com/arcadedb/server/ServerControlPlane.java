@@ -1216,6 +1216,10 @@ public class ServerControlPlane {
     // between and be undone with a value it replaced (issue #9919).
     final String storedKey = storedKey(key);
     final LocalDatabase local = database.getEmbedded() instanceof LocalDatabase l ? l : null;
+    // A setting saved into a database that refuses writes is lost like any other write: a restore replacing it discards the
+    // configuration.json the swap deletes (issue #10689), and one saved before the HA plugin wrapped it is never replicated (#8270)
+    if (local != null)
+      local.checkWritesAccepted();
     final LocalDatabase.SettingChange change;
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
     if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
