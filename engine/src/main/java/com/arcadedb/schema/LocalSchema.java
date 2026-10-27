@@ -1569,6 +1569,25 @@ public class LocalSchema implements Schema {
   private static final String BUCKETLESS_TYPE_WARNING_PREFIX = "bucketless-type:";
   // KEY PREFIX IN reportedUpgradeWarnings: A LIGHTWEIGHT EDGE TYPE WITH A CONSTRAINT IT CANNOT APPLY, ACCEPTED BEFORE #9846
   private static final String UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX = "unenforced-lightweight-constraint:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A CONTINUOUS AGGREGATE CREATED BEFORE #10804, WITH NO INDEX ON ITS BUCKET COLUMN
+  private static final String UNINDEXED_AGGREGATE_WARNING_PREFIX = "unindexed-continuous-aggregate:";
+
+  /**
+   * Issue #10804: names, once per aggregate for the life of this schema, a continuous aggregate whose refresh scans its whole backing
+   * type, with the statements that index it. Never breaks the load: the warning is advice.
+   */
+  private void warnAboutUnindexedContinuousAggregate(final ContinuousAggregateImpl aggregate) {
+    final String warning;
+    try {
+      warning = aggregate.getUpgradeWarning();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot tell whether continuous aggregate '%s' has an index on its bucket column", e,
+          aggregate.getName());
+      return;
+    }
+    if (warning != null && reportedUpgradeWarnings.add(UNINDEXED_AGGREGATE_WARNING_PREFIX + aggregate.getName()))
+      LogManager.instance().log(this, Level.WARNING, "Database '%s': %s", null, database.getName(), warning);
+  }
 
   /**
    * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
@@ -4649,6 +4668,7 @@ public class LocalSchema implements Schema {
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
             ca.setStatus(MaterializedViewStatus.STALE);
+          warnAboutUnindexedContinuousAggregate(ca);
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading continuous aggregate '%s': %s", e, caName,
