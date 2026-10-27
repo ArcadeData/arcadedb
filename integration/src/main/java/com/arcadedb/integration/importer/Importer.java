@@ -139,7 +139,6 @@ public class Importer extends AbstractImporter {
       if (database != null) {
         closeDatabase();
       }
-      closeInputFile();
     }
 
     return context.toMap();
@@ -201,14 +200,13 @@ public class Importer extends AbstractImporter {
     // THE SOURCE BEING READ, RECORDED BEFORE THE READ RATHER THAN AFTER IT SUCCEEDS, SO A FAILURE CAN NAME IT
     loadingUrl = url;
 
-    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls)
-        // SO A REMOTE FETCH IS BOUNDED BY THE TIMEOUT THE OPERATOR CONFIGURED, WHICH LIVES IN THIS OVERLAY AND NOT
-        // IN THE GlobalConfiguration ENUM (PR #7755 REVIEW)
-        .setConfiguration(database != null ? database.getConfiguration() : null);
+    final SourceDiscovery sourceDiscovery = newSourceDiscovery(url);
 
     if (settings.probeOnly) {
-      sourceDiscovery.getSource();
-      return;
+      // OPENING IT IS THE PROBE
+      try (final Source ignored = sourceDiscovery.getSource()) {
+        return;
+      }
     }
 
     final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema, logger);
@@ -219,20 +217,36 @@ public class Importer extends AbstractImporter {
 
     updateDatabaseSchema(sourceSchema.getSchema());
 
-    source = sourceDiscovery.getSource();
-    parser = new Parser(source, 0);
-    parser.reset();
+    // THE SOURCE IS OWNED BY THIS SCOPE, NOT BY THE FIELD: AN IMPORT READS UP TO FOUR SOURCES (url, documents, vertices,
+    // edges), AND A FIELD THAT EACH PHASE OVERWROTE AND THAT WAS CLOSED ONCE AT THE END LEAKED ALL BUT THE LAST (ISSUE #10772).
+    // THE FIELD ONLY POINTS AT THE SOURCE BEING READ, FOR THE PROGRESS REPORT AND FOR THE MESSAGE OF A FAILURE
+    try (final Source loading = sourceDiscovery.getSource()) {
+      source = loading;
+      parser = new Parser(loading, 0);
+      parser.reset();
 
-    format = sourceSchema.getContentImporter();
+      format = sourceSchema.getContentImporter();
 
-    // ONE ImporterContext SERVES EVERY PHASE OF AN IMPORT, SO THE ROW COUNTER ARRIVES CARRYING WHATEVER THE PREVIOUS
-    // PHASE LEFT IN IT. ZEROED HERE, ONCE, RATHER THAN BY EACH FORMAT ON ENTRY TO ITS OWN load(): TWO OF THE ELEVEN
-    // FORMATS DID NOT, AND THE TWO THAT TOOK A DECISION OFF THE VALUE - THE -parsingLimitEntries CHECK AND THE COMMIT
-    // CADENCE - TRUNCATED OR SKIPPED A WHOLE PHASE WHEN THEY INHERITED A NON-ZERO ONE (ISSUES #7288, #7313). A FORMAT
-    // ADDED LATER NOW INHERITS THE RESET INSTEAD OF HAVING TO REMEMBER IT (ISSUE #7342)
-    context.beginPhase();
+      // ONE ImporterContext SERVES EVERY PHASE OF AN IMPORT, SO THE ROW COUNTER ARRIVES CARRYING WHATEVER THE PREVIOUS
+      // PHASE LEFT IN IT. ZEROED HERE, ONCE, RATHER THAN BY EACH FORMAT ON ENTRY TO ITS OWN load(): TWO OF THE ELEVEN
+      // FORMATS DID NOT, AND THE TWO THAT TOOK A DECISION OFF THE VALUE - THE -parsingLimitEntries CHECK AND THE COMMIT
+      // CADENCE - TRUNCATED OR SKIPPED A WHOLE PHASE WHEN THEY INHERITED A NON-ZERO ONE (ISSUES #7288, #7313). A FORMAT
+      // ADDED LATER NOW INHERITS THE RESET INSTEAD OF HAVING TO REMEMBER IT (ISSUE #7342)
+      context.beginPhase();
 
-    format.load(sourceSchema, entityType, parser, database, context, settings);
+      format.load(sourceSchema, entityType, parser, database, context, settings);
+    }
+  }
+
+  /**
+   * The discovery of the source at {@code url}, for one phase of the import. Every source it hands out is owned by the scope that
+   * asked for it, which closes it.
+   */
+  protected SourceDiscovery newSourceDiscovery(final String url) {
+    return new SourceDiscovery(url, settings.allowLocalUrls)
+        // SO A REMOTE FETCH IS BOUNDED BY THE TIMEOUT THE OPERATOR CONFIGURED, WHICH LIVES IN THIS OVERLAY AND NOT
+        // IN THE GlobalConfiguration ENUM (PR #7755 REVIEW)
+        .setConfiguration(database != null ? database.getConfiguration() : null);
   }
 
   protected void closeDatabase() {

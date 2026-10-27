@@ -20,18 +20,24 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.log.LogManager;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
 
-public class Source {
+/**
+ * A source being imported. Every acquisition of one owns it in a try-with-resources scope: the importer reads several sources in
+ * one run, and a source held in a field that each phase overwrote closed only the last one (issue #10772).
+ */
+public class Source implements Closeable {
   public final  String                                      url;
   public        InputStream                                 inputStream;
   public final  long                                        totalSize;
   public final  boolean                                     compressed;
   private final com.arcadedb.utility.Callable<Void, Source> resetCallback;
   private final Callable<Void>                              closeCallback;
+  private       boolean                                     closed;
 
   public Source(final String url, final InputStream inputStream, final long totalSize, final boolean compressed,
       final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) {
@@ -49,6 +55,10 @@ public class Source {
    * then reported a successful run with zero records instead of an error (issue #6810).
    */
   public void reset() throws IOException {
+    // A CLOSED SOURCE IS OUT OF ITS OWNER'S SCOPE: RE-OPENING IT WOULD CREATE A STREAM THAT NOTHING CLOSES (ISSUE #10772)
+    if (closed)
+      throw new IllegalStateException("Source " + this + " is closed");
+
     if (resetCallback == null)
       return;
 
@@ -63,7 +73,15 @@ public class Source {
     }
   }
 
+  /**
+   * Closes the stream and runs the close callback, which disconnects a remote source. Idempotent, and it never throws: a failure is
+   * logged, so a close in a {@code finally} cannot hide the exception that is leaving the scope.
+   */
+  @Override
   public void close() {
+    if (closed)
+      return;
+    closed = true;
     try {
       // Close the current inputStream first - this is important when reset() was called,
       // as it creates a new stream that the closeCallback doesn't know about.
@@ -78,6 +96,10 @@ public class Source {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing source %s", e, this);
     }
+  }
+
+  public boolean isClosed() {
+    return closed;
   }
 
   @Override

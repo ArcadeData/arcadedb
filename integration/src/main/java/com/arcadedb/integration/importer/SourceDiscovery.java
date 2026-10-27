@@ -92,32 +92,30 @@ public class SourceDiscovery {
       final ConsoleLogger logger) throws IOException {
     LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", url);
 
-    final Source source = getSource();
+    // THE SOURCE IS OWNED BY THIS SCOPE: EVERY REFUSAL OF THE ANALYSIS BELOW (AN UNKNOWN FILE TYPE, A FORMAT WHOSE MODULE IS
+    // MISSING) LEAVES IT AFTER THE SOURCE IS OPEN, AND A close() WRITTEN AS THE LAST STATEMENT LEAKED IT ON EACH OF THEM (#10772)
+    try (final Source source = getSource()) {
+      // THE SNIFFER WALKS THE COMMENT BLOCK ITSELF - IT COUNTS THE LINES AND REWINDS OVER THEM - SO IT NEEDS THE
+      // SOURCE WHOLE. THE analyze() BELOW IS A FORMAT AND WANTS THE OPPOSITE, AND THE reset() BETWEEN THE TWO IS
+      // WHERE THE STREAM IS REBUILT, SO ONE PARSER CAN SERVE BOTH (ISSUE #7490)
+      final Parser parser = new Parser(source, 0, false);
 
-    // THE SNIFFER WALKS THE COMMENT BLOCK ITSELF - IT COUNTS THE LINES AND REWINDS OVER THEM - SO IT NEEDS THE
-    // SOURCE WHOLE. THE analyze() BELOW IS A FORMAT AND WANTS THE OPPOSITE, AND THE reset() BETWEEN THE TWO IS
-    // WHERE THE STREAM IS REBUILT, SO ONE PARSER CAN SERVE BOTH (ISSUE #7490)
-    final Parser parser = new Parser(source, 0, false);
+      final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings, logger);
+      parser.setSkipLeadingComments(true);
+      parser.reset();
 
-    final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings, logger);
-    parser.setSkipLeadingComments(true);
-    parser.reset();
+      final SourceSchema sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
+      LogManager.instance()
+          .log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
+              FileUtils.getSizeAsString(limitBytes), limitEntries);
 
-    SourceSchema sourceSchema = null;
+      if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
+        for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
+          LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
+      }
 
-    sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
-    LogManager.instance()
-        .log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
-            FileUtils.getSizeAsString(limitBytes), limitEntries);
-
-    if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
-      for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
-        LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
+      return sourceSchema;
     }
-
-    source.close();
-
-    return sourceSchema;
   }
 
   public Source getSource() throws IOException {
