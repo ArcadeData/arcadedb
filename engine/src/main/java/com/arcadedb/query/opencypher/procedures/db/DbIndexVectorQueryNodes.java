@@ -141,7 +141,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
     // Resolved after the index, so a bad index spec stays loud. A filter that matched nothing is not "no filter": no record can
     // satisfy it (issue #8959)
-    final Set<RID> allowedRIDs = parsePreFilter(args.length > 3 ? args[3] : null, context);
+    final Set<RID> allowedRIDs = parseOptions(args.length > 3 ? args[3] : null, context);
     if (allowedRIDs != null && allowedRIDs.isEmpty())
       return Stream.empty();
 
@@ -163,7 +163,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * {@code vector.neighbors} reads its own {@code where} and {@code filter} (issue #10685). {@code null} or an empty map is
    * the three-argument form.
    */
-  private static Set<RID> parsePreFilter(final Object options, final CommandContext context) {
+  private static Set<RID> parseOptions(final Object options, final CommandContext context) {
     if (options == null)
       return null;
     if (!(options instanceof Map<?, ?> map))

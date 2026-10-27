@@ -133,6 +133,42 @@ class Issue10685VectorQueryNodesPreFilterTest extends TestHelper {
   }
 
   @Test
+  void preFilterAppliesToEverySubIndexOfAParentTypeSpec() {
+    // a sub-type brings its own buckets, so 'Fact[embedding]' resolves several indexes: tenant b nearest in the sub-type
+    // too, one tenant a record in it that the filter names and one the filter leaves out
+    database.command("sql", "CREATE VERTEX TYPE SubFact EXTENDS Fact");
+    final String[] subA = new String[2];
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        database.newVertex("SubFact").set("tenant", "b", "embedding", new float[] { 1f, i * 0.00001f }).save();
+      subA[0] = database.newVertex("SubFact").set("tenant", "a", "embedding", new float[] { 1f, 4f }).save().getIdentity().toString();
+      subA[1] = database.newVertex("SubFact").set("tenant", "a", "embedding", new float[] { 1f, 4.1f }).save().getIdentity()
+          .toString();
+    });
+    final List<String> allowed = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM Fact WHERE @type = 'Fact'")) {
+      while (rs.hasNext())
+        allowed.add(rs.next().<Object>getProperty("rid").toString());
+    }
+    allowed.add(subA[0]);
+
+    final List<String> rids = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {filter: $allowed, where: {tenant: $tenant}}) YIELD node, score "
+            + "RETURN node", Map.of("q", QUERY, "k", K, "tenant", "a", "allowed", allowed))) {
+      while (rs.hasNext()) {
+        final Document node = rs.next().getProperty("node");
+        assertThat(node.getString("tenant")).isEqualTo("a");
+        rids.add(node.getIdentity().toString());
+      }
+    }
+    assertThat(rids).hasSize(K);
+    // the sub-type's allowed tenant a record is the nearest of them all, the one the filter left out is not answered
+    assertThat(rids.getFirst()).isEqualTo(subA[0]);
+    assertThat(rids).doesNotContain(subA[1]);
+  }
+
+  @Test
   void filterMatchingNothingAnswersNothing() {
     assertThat(tenants("CALL db.index.vector.queryNodes('Fact[embedding]', $k, $q, {filter: []}) YIELD node, score "
         + "RETURN node.tenant AS tenant")).isEmpty();
