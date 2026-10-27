@@ -2961,8 +2961,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
         // Skip the record-image copy on a page that is already poisoned (it would be discarded anyway).
         else if (!slotTx.isSlotRebasePagePoisoned(fileId, slotPageNumber))
-          slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex,
-                  Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
+          // #10661: no copy of the record: the replay reads it back from this page, which already holds it
+          slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex);
       }
 
       return rid;
@@ -3672,6 +3672,41 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Reads the body (no size prefix) of the plain record held by {@code positionInPage}. The disjoint-slot merge uses it
+   * to take the final image of a slot this transaction INSERTED from the page the transaction wrote, instead of
+   * keeping a copy of every inserted record until commit (#10661).
+   *
+   * @return the body, or {@code null} when the slot is free or does not hold a plain record that fits the page (a
+   * placeholder, a chunk, a corrupted entry), which the caller turns into a refusal to merge.
+   */
+  public byte[] readPlainRecordBody(final BasePage page, final int positionInPage) {
+    try {
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (positionInPage >= recordCountInPage)
+        return null;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        return null;
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] <= 0)
+        return null;
+      final long contentPos = recordPositionInPage + recordSize[1];
+      if (contentPos + recordSize[0] > page.getMaxContentSize())
+        return null;
+      // both bounded by the page size checked above
+      final byte[] body = new byte[(int) recordSize[0]];
+      page.readByteArray((int) contentPos, body, 0, body.length);
+      return body;
+    } catch (final IOException e) {
+      // a page that cannot be read back cannot be replayed: the caller refuses the merge and the transaction retries
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot read back the record in slot %d of page %s for the slot merge", e, positionInPage,
+              page.getPageId());
+      return null;
+    }
+  }
+
+  /**
    * Commit-time primitive for the disjoint-slot page merge (#5381). Re-applies ONE record write this transaction
    * made to a bucket page, on top of {@code page} freshly reloaded at its current committed version, keeping the
    * record's RID (page+slot) fixed. Called only on the leader/embedded commit while the bucket file's commit
@@ -4378,15 +4413,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (grown) {
           if (slotCandidate) {
             if (growRebasable) {
-              final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
-                      buffer.getContentBeginOffset() + bufferSize);
               if (growBaseBody != null)
-                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody, finalBody,
+                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody,
+                        Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
+                                buffer.getContentBeginOffset() + bufferSize),
                         isPlaceHolder ? TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT : TransactionContext.SLOT_KIND_RECORD);
               else
                 // The slot holds a record CREATED by this transaction: there is no committed pre-image to diff
-                // against, so it stays an insert whose final image the merge re-writes at the same free slot.
-                slotTx.trackRebasableInsert(fileId, pageId, positionInPage, finalBody);
+                // against, so it stays an insert whose final image the merge reads back from this page and re-writes
+                // at the same free slot (#10661: no copy is kept).
+                slotTx.trackRebasableInsert(fileId, pageId, positionInPage);
             } else
               slotTx.poisonSlotRebasePage(fileId, pageId);
           }
@@ -4576,13 +4612,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (slotCandidate) {
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
           if (slotTracked) {
-            final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
-                    buffer.getContentBeginOffset() + bufferSize);
             if (slotInsertedHere)
               // The slot holds a record CREATED by this transaction: it stays an insert (there is no committed
-              // pre-image to diff against), so only refresh its final image - and skip copying one altogether.
-              slotTx.trackRebasableInsert(fileId, pageId, positionInPage, finalBody);
+              // pre-image to diff against), and its final image is the one this write leaves on the page, read back
+              // by the merge only if the page conflicts (#10661) - so no image is copied at all.
+              slotTx.trackRebasableInsert(fileId, pageId, positionInPage);
             else {
+              final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
+                      buffer.getContentBeginOffset() + bufferSize);
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
               slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody, finalBody,
