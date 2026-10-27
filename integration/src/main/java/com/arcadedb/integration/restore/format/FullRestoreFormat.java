@@ -52,6 +52,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   private final byte[] BUFFER = new byte[ParallelZipExtractor.BUFFER_SIZE];
 
+  /** The salt and the IV an encrypted archive opens with are 16 bytes each, written by {@code FullBackupFormat.encryptFile}. */
+  private static final int ENCRYPTION_HEADER_FIELD_SIZE = 16;
+
   private interface RestoreCallback {
     ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile) throws Exception;
   }
@@ -356,11 +359,10 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
    * archive cut before its header is complete is refused, a stream that merely delivers it in pieces is not.
    */
   private static byte[] readHeaderField(final InputStream in, final String field) throws IOException {
-    final byte[] value = new byte[16];
-    final int read = in.readNBytes(value, 0, value.length);
-    if (read != value.length)
-      throw new IOException(
-          "Unable to read " + field + " from encrypted file: the archive ends after " + read + " of its " + value.length + " bytes");
+    final byte[] value = in.readNBytes(ENCRYPTION_HEADER_FIELD_SIZE);
+    if (value.length != ENCRYPTION_HEADER_FIELD_SIZE)
+      throw new IOException("Unable to read " + field + " from encrypted file: the archive ends after " + value.length + " of its "
+          + ENCRYPTION_HEADER_FIELD_SIZE + " bytes");
     return value;
   }
 }
