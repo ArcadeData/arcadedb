@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -464,17 +465,31 @@ public class ContinuousAggregateRefresher {
       return rows;
     }
 
-    /** A replaced row of the bucket starting at {@code bucketMs} for a recomputed row to take over, or {@code null} when none is left. */
+    /**
+     * A replaced row of the bucket starting at {@code bucketMs} for a recomputed row to take over, or {@code null} when none is left.
+     * Refreshes of one aggregate do not overlap ({@link ContinuousAggregateImpl#tryBeginRefresh}), so only a write to the backing type
+     * outside them can remove a row between the read and here: the next one is taken, and with none left the row is inserted.
+     */
     MutableDocument take(final long bucketMs) {
       final ArrayDeque<RID> rows = byBucket.get(bucketMs);
-      final RID row = rows != null ? rows.poll() : null;
-      return row != null ? database.lookupByRID(row, true).asDocument().modify() : null;
+      if (rows != null)
+        for (RID row = rows.poll(); row != null; row = rows.poll())
+          try {
+            return database.lookupByRID(row, true).asDocument().modify();
+          } catch (final RecordNotFoundException e) {
+            // gone already: nothing to take over
+          }
+      return null;
     }
 
     void deleteTheRest() {
       for (final ArrayDeque<RID> rows : byBucket.values())
         for (final RID row : rows)
-          database.deleteRecord(database.lookupByRID(row, false));
+          try {
+            database.deleteRecord(database.lookupByRID(row, false));
+          } catch (final RecordNotFoundException e) {
+            // gone already: nothing to delete
+          }
       byBucket.clear();
     }
   }
