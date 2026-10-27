@@ -52,10 +52,14 @@ class Issue10533PostgresHeldDatabaseTest {
         new DatabaseNotAvailableException("Database 'mydb' is not available")))).isEqualTo("57P03");
   }
 
+  /** Issue #10795: a name that is no database is invalid_catalog_name, PostgreSQL's own answer, and not internal_error. */
   @Test
-  void aNameThatIsNotADatabaseKeepsItsAnswer() {
+  void aNameThatIsNotADatabaseIsInvalidCatalogName() {
     assertThat(ErrorCategory.of(new DatabaseNotFoundException("Database 'nope' does not exist"))).isNotEqualTo(ErrorCategory.UNAVAILABLE);
     assertThat(ErrorCategory.of(new DatabaseOperationException("Error on opening the database"))).isNotEqualTo(ErrorCategory.UNAVAILABLE);
-    assertThat(PostgresNetworkExecutor.sqlStateFor(new DatabaseNotFoundException("Database 'nope' does not exist"))).isEqualTo("XX000");
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new DatabaseNotFoundException("Database 'nope' does not exist")))
+        .isEqualTo(PostgresNetworkExecutor.SQLSTATE_INVALID_CATALOG_NAME).isEqualTo("3D000");
+    assertThat(PostgresNetworkExecutor.sqlStateFor(new CommandExecutionException("Error on executing the query",
+        new DatabaseNotFoundException("Database 'nope' does not exist")))).isEqualTo("3D000");
   }
 }

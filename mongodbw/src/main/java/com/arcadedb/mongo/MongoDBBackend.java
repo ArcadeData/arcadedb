@@ -116,14 +116,18 @@ public class MongoDBBackend extends AbstractMongoBackend {
    * The database a client names, resolved the way every wire protocol does (it honours the marks an operator puts on a name: a restore,
    * a {@code close database}). A database the server HAS and cannot serve now is answered with the code MongoDB gives a server in that
    * state, {@code TemporarilyUnavailable}: the library would report the bare exception as an uncoded "Unknown error", which a driver
-   * reads as a server fault (issue #10553). A name that is not a database keeps the answer it had.
+   * reads as a server fault (issue #10553). A name that is no database is answered {@code NamespaceNotFound} (issue #10795), and for
+   * the same reason: the bare exception went out uncoded too.
    */
   private ServerDatabase databaseForClient(final String databaseName) {
     try {
       return server.getDatabaseForClient(databaseName);
     } catch (final DatabaseOperationException e) {
-      if (ErrorCategory.of(e) == ErrorCategory.UNAVAILABLE)
+      final ErrorCategory category = ErrorCategory.of(e);
+      if (category == ErrorCategory.UNAVAILABLE)
         throw MongoDBDatabaseWrapper.wireException("Database '" + databaseName + "' is not available", e);
+      if (category == ErrorCategory.DATABASE_NOT_FOUND)
+        throw MongoDBDatabaseWrapper.wireException("Database '" + databaseName + "' does not exist", e);
       throw e;
     }
   }
