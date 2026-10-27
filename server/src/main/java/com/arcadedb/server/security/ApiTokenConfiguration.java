@@ -191,6 +191,11 @@ public class ApiTokenConfiguration {
     policy.stop();
   }
 
+  /** Waits for a watcher tick that is running, after {@link #stop()}; not synchronized, see the groups store's. */
+  boolean awaitIdle(final long timeoutMs) {
+    return policy.awaitIdle(timeoutMs);
+  }
+
   private File errorFile() {
     return new File(new File(filePath).getParentFile(), ERROR_FILE_NAME);
   }
