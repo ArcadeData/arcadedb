@@ -30,6 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -313,6 +314,22 @@ public interface DocumentType {
 
   List<IndexInternal> getPolymorphicBucketIndexByBucketId(int bucketId, List<String> filterByProperties);
 
+  /**
+   * The indexes of {@link #getPolymorphicBucketIndexByBucketId} (no property filter) that a write maintains in its transaction,
+   * see {@link Schema.INDEX_TYPE#isMaintainedInTransaction()}. The default filters on every call; a type that keeps the list
+   * answers it without allocating.
+   */
+  default List<IndexInternal> getPolymorphicBucketIndexMaintainedInTransaction(final int bucketId) {
+    final List<IndexInternal> all = getPolymorphicBucketIndexByBucketId(bucketId, null);
+    if (all == null)
+      return null;
+    final List<IndexInternal> maintained = new ArrayList<>(all.size());
+    for (final IndexInternal index : all)
+      if (index.getType() == null || index.getType().isMaintainedInTransaction())
+        maintained.add(index);
+    return maintained;
+  }
+
   List<TypeIndex> getIndexesByProperties(String property1, String... propertiesN);
 
   List<TypeIndex> getIndexesByProperties(Collection<String> properties);
@@ -331,6 +348,15 @@ public interface DocumentType {
   TypeIndex getIndexByProperties(String... properties);
 
   TypeIndex getIndexByProperties(List<String> properties);
+
+  /**
+   * The COLUMNAR index declared by this type on {@code property} (the document property, with or without BY ITEM), or null. A
+   * COLUMNAR index is not returned by the {@code getIndexByProperties} family, which answers key indexes only.
+   */
+  TypeIndex getColumnarIndex(String property);
+
+  /** As {@link #getColumnarIndex(String)}, walking up the super types. */
+  TypeIndex getPolymorphicColumnarIndex(String property);
 
   Schema getSchema();
 

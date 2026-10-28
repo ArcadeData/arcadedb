@@ -86,7 +86,34 @@ public class DocumentIndexer {
 
     final int bucketId = rid.getBucketId();
 
-    return modifiedRecord.getType().getPolymorphicBucketIndexByBucketId(bucketId, null);
+    return modifiedRecord.getType().getPolymorphicBucketIndexMaintainedInTransaction(bucketId);
+  }
+
+  /**
+   * Whether a write stages entries for {@code index} in its transaction: false for a COLUMNAR index, whose projection is filled
+   * after commit (see {@link Schema.INDEX_TYPE#isMaintainedInTransaction()}).
+   */
+  private static boolean isMaintainedInTransaction(final Index index) {
+    final Schema.INDEX_TYPE type = index.getType();
+    return type == null || type.isMaintainedInTransaction();
+  }
+
+  /**
+   * {@code indexes} without the ones no write maintains: the same list (null included) when there is none, which is always the case
+   * for a list {@link #getInvolvedIndexes} answered, so that path allocates nothing.
+   */
+  private static List<IndexInternal> maintainedInTransaction(final List<IndexInternal> indexes) {
+    if (indexes == null)
+      return null;
+    for (int i = 0; i < indexes.size(); i++)
+      if (!isMaintainedInTransaction(indexes.get(i))) {
+        final List<IndexInternal> maintained = new ArrayList<>(indexes.size() - 1);
+        for (final IndexInternal index : indexes)
+          if (isMaintainedInTransaction(index))
+            maintained.add(index);
+        return maintained;
+      }
+    return indexes;
   }
 
   public void createDocument(final Document record, final DocumentType type, final LocalBucket bucket) {
@@ -95,12 +122,14 @@ public class DocumentIndexer {
       throw new IllegalArgumentException("Cannot index a non persistent record");
 
     // INDEX THE RECORD
-    final List<IndexInternal> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), null);
+    final List<IndexInternal> metadata = type.getPolymorphicBucketIndexMaintainedInTransaction(bucket.getFileId());
     for (final Index entry : metadata)
       addToIndex(entry, rid, record);
   }
 
   public void addToIndex(final Index entry, final RID rid, final Document record) {
+    if (!isMaintainedInTransaction(entry))
+      return;
     forEachIndexKey(entry, record, keyValues -> entry.put(keyValues, new RID[] { rid }));
   }
 
@@ -109,6 +138,8 @@ public class DocumentIndexer {
    * a build added for a record is exactly what this removes (issue #10490).
    */
   public void removeFromIndex(final Index entry, final RID rid, final Document record) {
+    if (!isMaintainedInTransaction(entry))
+      return;
     forEachIndexKey(entry, record, keyValues -> entry.remove(keyValues, rid));
   }
 
@@ -574,7 +605,7 @@ public class DocumentIndexer {
    */
   public void snapshotAfterBuild(final TransactionContext tx, final Document pending, final IndexInternal built) {
     final RID rid = pending.getIdentity();
-    if (rid == null || tx.getWrittenRecord(rid) == null)
+    if (rid == null || tx.getWrittenRecord(rid) == null || !isMaintainedInTransaction(built))
       return;
 
     final List<IndexInternal> indexes = getInvolvedIndexes(pending);
@@ -679,8 +710,11 @@ public class DocumentIndexer {
    *     the root property read directly by the list delta logic. Container values are shallow-copied (embedded
    *     documents detached) so the snapshot cannot alias state the caller later mutates in place.
    */
-  public Document updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
-    if (indexes == null || indexes.isEmpty())
+  public Document updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> involved) {
+    if (involved == null || involved.isEmpty())
+      return null;
+    final List<IndexInternal> indexes = maintainedInTransaction(involved);
+    if (indexes.isEmpty())
       return null;
 
     if (originalRecord == null)
@@ -800,7 +834,7 @@ public class DocumentIndexer {
     if (type == null)
       throw new IllegalStateException("Type not found for bucket " + bucketId);
 
-    final List<IndexInternal> metadata = type.getPolymorphicBucketIndexByBucketId(bucketId, null);
+    final List<IndexInternal> metadata = type.getPolymorphicBucketIndexMaintainedInTransaction(bucketId);
     if (metadata != null && !metadata.isEmpty()) {
       final List<IndexInternal> allIndexes = new ArrayList(metadata);
       for (final IndexInternal index : metadata) {
