@@ -110,6 +110,16 @@ class FacetsExplainTest extends TestHelper {
 
   @Test
   @Timeout(120)
+  void profileShowsDistinctExecution() {
+    load();
+    final String text = plan("PROFILE", "SELECT FROM " + TYPE + " WHERE " + WHERE + " FACETS d: brand DISTINCT, n: fileSize DISTINCT")
+        .getProperty("executionPlanAsString");
+    assertThat(text).contains("+ COLLECT FACET MATCHES", "d: brand DISTINCT", "n: fileSize DISTINCT", "source=index", "segments=");
+    assertThat(text).containsPattern("budget=[1-9]");
+  }
+
+  @Test
+  @Timeout(120)
   void profileWithLimitStillComputesFacets() {
     load();
     final Result plan = plan("PROFILE", QUERY + " LIMIT 2");

@@ -228,6 +228,31 @@ public final class FacetOracle {
     return counts;
   }
 
+  /**
+   * The answer of a DISTINCT facet by SQL alone: {@code SELECT count(DISTINCT p)} for a single-valued property, and for a LIST property
+   * the number of non-null groups of {@code GROUP BY p} over its items ({@code UNWIND p}). Shares no code with the collector.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static long distinctCount(final Database db, final String type, final String property, final String where) {
+    final Property declared = db.getSchema().getType(type).getPolymorphicPropertyIfExists(property);
+    if (declared != null && declared.getType() == Type.LIST) {
+      long groups = 0;
+      try (final ResultSet rs = db.query("sql",
+          "SELECT " + quote(property) + " AS v, count(*) AS c FROM (SELECT " + quote(property) + " FROM " + quote(type) + where(where)
+              + " UNWIND " + quote(property) + ") GROUP BY " + quote(property))) {
+        while (rs.hasNext())
+          if (rs.next().getProperty("v") != null)
+            groups++;
+      }
+      return groups;
+    }
+    try (final ResultSet rs = db.query("sql",
+        "SELECT count(DISTINCT " + quote(property) + ") AS c FROM " + quote(type) + where(where))) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
   /** {@link ColumnarIndexManager#awaitCaughtUp} of the database's embedded instance, 30 s. */
   public static void awaitCaughtUp(final Database db) {
     try {

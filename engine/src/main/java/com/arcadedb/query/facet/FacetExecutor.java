@@ -475,6 +475,7 @@ public final class FacetExecutor {
       case RangeFacetSpec range -> new RangeCollector(range, column, budgetWaitMs, db, extractor);
       case HistogramFacetSpec histogram -> new HistogramCollector(histogram, column, budgetWaitMs, db, extractor);
       case HierarchyFacetSpec hierarchy -> new HierarchyFacetCollector(hierarchy, column, matchCount, db, declaringType, budgetWaitMs);
+      case DistinctFacetSpec distinct -> new DistinctFacetCollector(distinct, column, matchCount, db, declaringType, budgetWaitMs);
       default -> throw new CommandExecutionException("FACETS " + spec.alias() + ": " + kindKeyword(spec) + " facets are not supported");
     };
   }
@@ -528,6 +529,9 @@ public final class FacetExecutor {
       if (dates && FacetFallbackScanner.isUndeclared(db.getSchema().getTypeByBucketId(bucketIds[i]), source))
         plan.scanSourceOf[i] = source = FacetFallbackScanner.asDates(db, source);
       String key = source.read() == FacetFallbackScanner.Read.COLUMN ? "column " + source.column().indexFileId() : source.read().name();
+      if (source.read() == FacetFallbackScanner.Read.EPOCH)
+        // one collector per declared date type: their epoch counts are of different units
+        key += " " + source.column().propertyType();
       if (spec instanceof HierarchyFacetSpec)
         // one hierarchy per declaring type: the scanned buckets of each are counted over its own view; the buckets of a type without
         // the index have none, and their collector reports which type that is

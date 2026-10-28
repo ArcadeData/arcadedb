@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
 import java.time.temporal.ChronoUnit;
@@ -54,9 +55,11 @@ import java.util.List;
  *   {@link PatchedValue#unknown}, a list item once per distinct value), merged with the projection's counts by the collectors'
  *   converted merge;</li>
  *   <li>any other property is its raw value ({@link DocumentIndexer#getPropertyValue}), an expression facet the value of its expression
- *   on the record, and so is the property of a HIERARCHY facet (and of a DISTINCT facet over a dictionary column). For a terms,
- *   hierarchy or distinct facet ({@link Read#TERMS}) a list (or array) counts each distinct item once per document, nulls left out.
- *   For a range or histogram facet the property's schema type decides: a date or datetime is read as epoch milliseconds
+ *   on the record, and so is the property of a HIERARCHY facet (and of a DISTINCT facet over a dictionary column, or over a property
+ *   that is no number and no date). For a terms, hierarchy or distinct facet ({@link Read#TERMS}) a list (or array) counts each
+ *   distinct item once per document, nulls left out. A distinct facet over a date property reads the epoch counts of its declared
+ *   type and precision ({@link Read#EPOCH}: days for a DATE, down to nanoseconds for a DATETIME_NANOS). For a range or histogram facet
+ *   (and a distinct one over a number) the property's schema type decides: a date or datetime is read as epoch milliseconds
  *   ({@link Read#EPOCH_MS}), an integral type as a long ({@link Read#INTEGER}), anything else (a floating type, an undeclared property,
  *   an expression) as a double ({@link Read#NUMBER}); a value that does not convert counts as missing. A type that does not declare the
  *   property reads it as dates when another type of the facet holds it as a date ({@link #asDates}). Dates are read at millisecond
@@ -70,7 +73,7 @@ public final class FacetFallbackScanner {
   private static final int LINEAR_DEDUP_ITEMS = 16;
 
   /** How a scanned facet reads the value of a record. */
-  enum Read {COLUMN, TERMS, NUMBER, INTEGER, EPOCH_MS}
+  enum Read {COLUMN, TERMS, NUMBER, INTEGER, EPOCH_MS, EPOCH}
 
   /**
    * How one facet is scanned in one bucket.
@@ -95,7 +98,9 @@ public final class FacetFallbackScanner {
    * Decides how the facet is scanned in a bucket of {@code type}: the property's column when it is one of the type's (and its
    * extractor knows it), else its raw value, read by the property's schema type. A HIERARCHY facet, and a DISTINCT facet over a
    * dictionary column, read the raw values ({@link Read#TERMS}): they compare values, never ordinals, so the extraction against a
-   * dictionary buys them nothing.
+   * dictionary buys them nothing. Without a column, a DISTINCT facet reads a date property as the epoch counts of its declared type and
+   * precision ({@link Read#EPOCH}), an integral or a floating property by its declared type as a range facet does, and any other (a
+   * string, a list, a DECIMAL, an undeclared property) by its raw values.
    */
   static Source sourceOf(final DatabaseInternal db, final DocumentType type, final FacetSpec spec) {
     final String property = spec.property();
@@ -113,11 +118,20 @@ public final class FacetFallbackScanner {
     final String name = property != null ? property : spec.alias();
     final Property declared = type == null || property == null ? null : type.getPolymorphicPropertyIfExists(property);
     final Type propertyType = declared == null ? null : declared.getType();
-    if (propertyType != null && propertyType.isDateOrDateTime())
+    if (propertyType != null && propertyType.isDateOrDateTime()) {
+      if (spec instanceof DistinctFacetSpec)
+        // the declared type and precision: a DATE is no instant, two instants a millisecond apart or less are two values
+        return new Source(spec, Read.EPOCH, new ColumnDefinition(-1, name, propertyType, ColumnKind.LONG, false,
+            propertyType == Type.DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(propertyType)), null,
+            ColumnConversion.declaredDates(db, propertyType));
       return dates(db, spec, name);
+    }
     if (propertyType == Type.BYTE || propertyType == Type.SHORT || propertyType == Type.INTEGER || propertyType == Type.LONG)
       return new Source(spec, Read.INTEGER, new ColumnDefinition(-1, name, Type.LONG, ColumnKind.LONG, false, null), null,
           ColumnConversion.integers());
+    if (spec instanceof DistinctFacetSpec && propertyType != Type.FLOAT && propertyType != Type.DOUBLE)
+      // a string, a list, a DECIMAL, an undeclared property: distinct raw values (a number canonicalized by the collector)
+      return new Source(spec, Read.TERMS, null, null, null);
     return new Source(spec, Read.NUMBER, new ColumnDefinition(-1, name, Type.DOUBLE, ColumnKind.DOUBLE, false, null), null, null);
   }
 
