@@ -78,6 +78,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
@@ -279,6 +280,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          FileManager                               fileManager;
   protected          LocalSchema                               schema;
   protected          TransactionManager                        transactionManager;
+  // Created in openInternal() before the schema loads, so the load can register the COLUMNAR indexes it finds
+  private            ColumnarIndexManager                      columnarIndexManager;
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
   // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
   // so nothing may ever wait for the async workers while holding it.
@@ -1313,6 +1316,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public TransactionManager getTransactionManager() {
     return transactionManager;
+  }
+
+  /** The owner of this database's columnar projections, one per database. */
+  public ColumnarIndexManager getColumnarIndexManager() {
+    return columnarIndexManager;
   }
 
   /**
@@ -4412,6 +4420,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
       fileManager.setDroppedFileHandler(file -> PageManager.INSTANCE.deferFileDrop(wrappedDatabaseInstance, file));
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
+      columnarIndexManager = new ColumnarIndexManager(this);
 
       open = true;
 

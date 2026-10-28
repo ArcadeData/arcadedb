@@ -358,7 +358,7 @@ public class RebuildIndexStatement extends DDLStatement {
    * would have. A failure to restore is attached to the original error rather
    * than raised, so the caller still sees why the rebuild failed.
    */
-  private static void restoreDroppedIndex(final Database database, final String indexName,
+  private static void restoreDroppedIndex(final Database database, final String indexName, final Schema.INDEX_TYPE indexType,
       final String typeName, final List<String> propertyNames, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final BiConsumer<LSMTreeIndexAbstract.NULL_STRATEGY, Index.BuildIndexCallback> createIndex, final RuntimeException failure) {
     boolean created = false;
@@ -376,8 +376,10 @@ public class RebuildIndexStatement extends DDLStatement {
               + "held before the rebuild, and the strategy is set back in memory only", null, indexName, nullStrategy);
       createIndex.accept(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
       created = true;
-      // by properties, not by name: a rebuilt bucket index gets a new unique name
-      final TypeIndex restored = database.getSchema().getType(typeName).getIndexByProperties(propertyNames);
+      // by properties, not by name: a rebuilt bucket index gets a new unique name. And by family: a key index and a COLUMNAR
+      // one can sit on the same properties
+      final TypeIndex restored = ((LocalDocumentType) database.getSchema().getType(typeName)).getIndexByProperties(propertyNames,
+          indexType);
       for (final IndexInternal onBucket : restored.getIndexesOnBuckets())
         onBucket.setNullStrategy(nullStrategy);
     } catch (final RuntimeException restoreError) {
@@ -546,7 +548,7 @@ public class RebuildIndexStatement extends DDLStatement {
           // The drop and the build are two committed schema changes, so a build that fails for a reason that is not
           // contention (the stored data refused by the index, #9254) has already cost the type its index
           if (droppedThisAttempt[0])
-            restoreDroppedIndex(database, idx.getName(), typeName, propertyNames, nullStrategy, createIndex, e);
+            restoreDroppedIndex(database, idx.getName(), type, typeName, propertyNames, nullStrategy, createIndex, e);
           throw e;
         }
 

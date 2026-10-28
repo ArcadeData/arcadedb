@@ -39,7 +39,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeColumnarIndexBuilder;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeGeoIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
@@ -49,7 +51,6 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -101,7 +102,8 @@ public class CreateIndexStatement extends DDLStatement {
   public void validate() throws CommandSQLParsingException {
     if (type == null)
       throw new CommandSQLParsingException(
-          "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH)");
+          "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH"
+              + " | COLUMNAR)");
     final String typeAsString = type.getStringValue().toUpperCase(Locale.ROOT);
     switch (typeAsString) {
     case "FULL_TEXT" -> {
@@ -119,6 +121,8 @@ public class CreateIndexStatement extends DDLStatement {
     case "UNIQUE_HASH" -> {
     }
     case "NOTUNIQUE_HASH" -> {
+    }
+    case "COLUMNAR" -> {
     }
     default -> throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
     }
@@ -245,18 +249,13 @@ public class CreateIndexStatement extends DDLStatement {
 
     final String[] fields = calculateProperties(context);
 
-    // Without a manual name, GENERATE IT (used only for the existsIndex shortcut below). It must match
-    // the canonical name derived in LocalDocumentType.addIndexInternal, including the BY KEY/VALUE/ITEM
-    // modifier (spaces stripped), otherwise the existsIndex check below never detects a pre-existing
-    // modifier index (issues #4879, #4881).
-    final String indexName = userProvidedName ? name.getValue() : typeName + Arrays.toString(fields).replace(" ", "");
-
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
 
     if (type == null)
       throw new CommandSQLParsingException(
-          "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH)");
+          "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH"
+              + " | COLUMNAR)");
 
     final String typeAsString = type.getStringValue();
     if ("FULL_TEXT".equalsIgnoreCase(typeAsString))
@@ -281,8 +280,17 @@ public class CreateIndexStatement extends DDLStatement {
     } else if ("NOTUNIQUE_HASH".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.HASH;
       unique = false;
+    } else if ("COLUMNAR".equalsIgnoreCase(typeAsString)) {
+      indexType = Schema.INDEX_TYPE.COLUMNAR;
+      unique = false;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
+
+    // Without a manual name, GENERATE IT (used only for the existsIndex shortcut below). It must match the canonical name derived
+    // in LocalDocumentType.addIndexInternal, including the BY KEY/VALUE/ITEM modifier (spaces stripped), otherwise the existsIndex
+    // check below never detects a pre-existing modifier index (issues #4879, #4881). A COLUMNAR index has a name of its own
+    // (Type[p]_columnar), so it can sit next to a key index on the same property.
+    final String indexName = userProvidedName ? name.getValue() : LocalDocumentType.defaultIndexName(typeName, List.of(fields), indexType);
 
     // Collation settings (e.g., CI for case-insensitive), normalised and validated by IndexMetadata.
     //
@@ -520,6 +528,21 @@ public class CreateIndexStatement extends DDLStatement {
       }
       resultingIndex = geoBuilder.create();
       creator = geoBuilder;
+
+    } else if (indexType == Schema.INDEX_TYPE.COLUMNAR) {
+      // Builder is already a TypeColumnarIndexBuilder after withType(COLUMNAR)
+      final TypeColumnarIndexBuilder columnarBuilder = builder.withColumnarType();
+      if (metadata != null) {
+        final JSONObject jsonMetadata = readUserMetadata(context);
+        try {
+          columnarBuilder.withMetadata(jsonMetadata);
+          columnarBuilder.withUserMetadata(jsonMetadata);
+        } catch (final IndexException | IllegalArgumentException | JSONException e) {
+          throw new CommandSQLParsingException("Invalid METADATA for COLUMNAR index: " + e.getMessage(), e);
+        }
+      }
+      resultingIndex = columnarBuilder.create();
+      creator = columnarBuilder;
 
     } else {
       // Every index type whose settings live in METADATA is handled above. Reaching here with a METADATA clause means

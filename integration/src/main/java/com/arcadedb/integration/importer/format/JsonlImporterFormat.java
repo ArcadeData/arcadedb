@@ -63,6 +63,7 @@ import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeBuilder;
+import com.arcadedb.schema.TypeColumnarIndexBuilder;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -451,6 +452,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                 }
                 if (idxType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
                   loadSparseVectorIndex(databaseSchema, typeName, idxFields, idx);
+                  return;
+                }
+                // COLUMNAR keeps its hierarchy and cardinality limit in its metadata too
+                if (idxType == Schema.INDEX_TYPE.COLUMNAR) {
+                  loadColumnarIndex(databaseSchema, typeName, idxFields, idx);
                   return;
                 }
 
@@ -919,6 +925,16 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * {@code unique}/{@code nullStrategy} (see {@code LSMSparseVectorIndex.toJSON()}), so those are still applied
    * explicitly; everything else (dimensions, modifier, weightQuantization) comes back through the dedicated builder.
    */
+  /** Recreates a {@code COLUMNAR} index from its exported definition, with the settings its metadata carries. */
+  private void loadColumnarIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
+    final TypeColumnarIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
+        .withType(Schema.INDEX_TYPE.COLUMNAR)
+        .withColumnarType();
+    builder.withPersistedMetadata(idx);
+    builder.withIgnoreIfExists(true);
+    builder.create();
+  }
+
   private void loadSparseVectorIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
     final TypeLSMSparseVectorIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
         .withType(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR)

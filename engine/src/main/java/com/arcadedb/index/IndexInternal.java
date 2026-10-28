@@ -202,6 +202,14 @@ public interface IndexInternal extends Index {
   }
 
   /**
+   * Whether the index can answer what it is for right now. True for every index that is maintained in transaction; a COLUMNAR
+   * index answers whether its projection holds a valid state (it can be rebuilding with nothing to serve).
+   */
+  default boolean isUsable() {
+    return true;
+  }
+
+  /**
    * Whether this instance holds in-memory state that took work to build and that a freshly built successor would start
    * without (issue #10021): for an LSM vector index, the resident graph. A schema reload replaces every instance, and this is
    * how it tells the ones whose first search is about to become expensive from the ones that were never used. Most indexes

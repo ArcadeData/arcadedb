@@ -43,6 +43,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -64,6 +65,9 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
+  /** Suffix of the default name of a COLUMNAR index, see {@link #defaultIndexName}. */
+  public static final String COLUMNAR_NAME_SUFFIX = "_columnar";
+
   /**
    * Serialises renames of THIS type against each other (issue #7937). Deliberately a lock of the type instance and
    * not the database write lock: every bucket rename waits for the whole database's page flush queue to drain, and
@@ -108,6 +112,15 @@ public class LocalDocumentType implements DocumentType {
   // DROP INDEX: concurrent, and so is each list it holds (#9989)
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new ConcurrentHashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new ConcurrentHashMap<>();
+  // The same lists without the bucket indexes no write maintains (COLUMNAR), so the indexer reads them without filtering on every
+  // write. Mutated together with bucketIndexesByBucket, at the same two sites
+  private final   Map<Integer, List<IndexInternal>> maintainedIndexesByBucket    = new ConcurrentHashMap<>();
+  /**
+   * The COLUMNAR indexes, kept apart from {@link #indexesByProperties}: a COLUMNAR index answers facets and no lookup, so it
+   * coexists with a key index on the same property (one index per property set and FAMILY). Keyed like the other map, by the
+   * index property list ({@code [brand]}, {@code [tags by item]}).
+   */
+  private final   Map<List<String>, TypeIndex>      columnarIndexesByProperties  = new ConcurrentHashMap<>();
   /**
    * The property lists of the indexes {@link TypeIndexBuilder} is populating right now (issue #9331). The index is registered
    * bucket by bucket, each bucket index before its entries are committed, so for the whole build it covers only part of
@@ -117,7 +130,12 @@ public class LocalDocumentType implements DocumentType {
    * are two attempts at the same index, and the marker has to outlive the first to finish. The index belongs to the type the
    * builder runs on, which is also the type the readiness check asks (the TypeIndex is minted on it), subtypes included.
    */
-  private final Map<List<String>, AtomicInteger>    indexesUnderConstruction     = new ConcurrentHashMap<>();
+  private final Map<ConstructionKey, AtomicInteger> indexesUnderConstruction     = new ConcurrentHashMap<>();
+
+  /** The index a build populates: its properties and whether it is the COLUMNAR one or the key one on them. */
+  private record ConstructionKey(List<String> propertyNames, boolean columnar) {
+  }
+
   /**
    * The property lists of the UNIQUE indexes whose build leaves the uniqueness check to one pass over the finished index (issue
    * #10349): a commit of that build does not look each key up in the index it is filling, which is what made the build quadratic.
@@ -125,9 +143,10 @@ public class LocalDocumentType implements DocumentType {
    * under that lock as soon as its final pass has run: for that span nobody else commits to the index, and no other index on these
    * properties is live. It is a set and not a count because two builds of the same properties cannot overlap under that lock.
    * <p>
-   * Keyed by the property list of THIS type, which names exactly one index: there is one index per property set on a type, the
-   * bucket indexes of a type (its sub-types' buckets included) all carry that type's name, and an index of a super type on the same
-   * properties belongs to the super type's own registry, which is never asked for these buckets.
+   * Keyed by the property list of THIS type, which names exactly one UNIQUE index: there is one key index per property set on a type
+   * (a COLUMNAR index on the same properties is never unique, so the commit never asks for it), the bucket indexes of a type (its
+   * sub-types' buckets included) all carry that type's name, and an index of a super type on the same properties belongs to the super
+   * type's own registry, which is never asked for these buckets.
    */
   private final Set<List<String>>                   indexesWithDeferredUniqueCheck = ConcurrentHashMap.newKeySet();
   // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the
@@ -580,7 +599,7 @@ public class LocalDocumentType implements DocumentType {
       return;
 
     final Set<Integer> stillCovered = new HashSet<>(type.getBucketIds(true));
-    for (final TypeIndex typeIndex : type.indexesByProperties.values())
+    for (final TypeIndex typeIndex : type.getAllIndexes(false))
       for (final IndexInternal subIndex : typeIndex.getIndexesOnBuckets())
         if (!stillCovered.contains(subIndex.getAssociatedBucketId())) {
           orphans.add(subIndex.getName());
@@ -2185,10 +2204,17 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Collection<TypeIndex> getAllIndexes(final boolean polymorphic) {
-    if (!polymorphic || superTypes.isEmpty())
-      return Collections.unmodifiableCollection(indexesByProperties.values());
+    if (!polymorphic || superTypes.isEmpty()) {
+      if (columnarIndexesByProperties.isEmpty())
+        return Collections.unmodifiableCollection(indexesByProperties.values());
+      final List<TypeIndex> own = new ArrayList<>(indexesByProperties.size() + columnarIndexesByProperties.size());
+      own.addAll(indexesByProperties.values());
+      own.addAll(columnarIndexesByProperties.values());
+      return Collections.unmodifiableList(own);
+    }
 
     final Set<TypeIndex> set = new HashSet<>(indexesByProperties.values());
+    set.addAll(columnarIndexesByProperties.values());
 
     for (final DocumentType t : superTypes)
       set.addAll(t.getAllIndexes(true));
@@ -2222,6 +2248,19 @@ public class LocalDocumentType implements DocumentType {
     return result;
   }
 
+  /** Same lists as {@link #getPolymorphicBucketIndexByBucketId} with no filter, kept without the COLUMNAR indexes. */
+  @Override
+  public List<IndexInternal> getPolymorphicBucketIndexMaintainedInTransaction(final int bucketId) {
+    final List<IndexInternal> r = maintainedIndexesByBucket.get(bucketId);
+    if (superTypes.isEmpty())
+      return r == null ? Collections.emptyList() : Collections.unmodifiableList(r);
+
+    final List<IndexInternal> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
+    for (final DocumentType t : superTypes)
+      result.addAll(t.getPolymorphicBucketIndexMaintainedInTransaction(bucketId));
+    return result;
+  }
+
   @Override
   public List<TypeIndex> getIndexesByProperties(final String property1, final String... propertiesN) {
     final Set<String> properties = new HashSet<>(propertiesN.length + 1);
@@ -2234,7 +2273,15 @@ public class LocalDocumentType implements DocumentType {
   public List<TypeIndex> getIndexesByProperties(final Collection<String> properties) {
     final List<TypeIndex> result = new ArrayList<>();
 
-    for (final Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
+    collectIndexesByProperties(indexesByProperties, properties, result);
+    // the COLUMNAR ones too: DROP PROPERTY and the other guards that ask this must see every index on the property
+    collectIndexesByProperties(columnarIndexesByProperties, properties, result);
+    return result;
+  }
+
+  private static void collectIndexesByProperties(final Map<List<String>, TypeIndex> indexes, final Collection<String> properties,
+      final List<TypeIndex> result) {
+    for (final Map.Entry<List<String>, TypeIndex> entry : indexes.entrySet()) {
       for (final String prop : entry.getKey()) {
         if (properties.contains(prop)) {
           result.add(entry.getValue());
@@ -2242,7 +2289,59 @@ public class LocalDocumentType implements DocumentType {
         }
       }
     }
-    return result;
+  }
+
+  /**
+   * The index of {@code family} on exactly {@code properties} declared by this type: the COLUMNAR slot for COLUMNAR, the key
+   * index slot for any other type (null family included).
+   */
+  public TypeIndex getIndexByProperties(final List<String> properties, final Schema.INDEX_TYPE family) {
+    return indexMapOf(family).get(properties);
+  }
+
+  /** As {@link #getIndexByProperties(List, Schema.INDEX_TYPE)}, walking up the super types. */
+  public TypeIndex getPolymorphicIndexByProperties(final List<String> properties, final Schema.INDEX_TYPE family) {
+    if (family != Schema.INDEX_TYPE.COLUMNAR)
+      return getPolymorphicIndexByProperties(properties);
+    TypeIndex idx = columnarIndexesByProperties.get(properties);
+    if (idx == null)
+      for (final LocalDocumentType t : superTypes) {
+        idx = t.getPolymorphicIndexByProperties(properties, family);
+        if (idx != null)
+          break;
+      }
+    return idx;
+  }
+
+  @Override
+  public TypeIndex getColumnarIndex(final String property) {
+    final TypeIndex index = columnarIndexesByProperties.get(List.of(property));
+    return index != null ? index : columnarIndexesByProperties.get(List.of(property + ColumnarIndex.BY_ITEM_SUFFIX));
+  }
+
+  @Override
+  public TypeIndex getPolymorphicColumnarIndex(final String property) {
+    TypeIndex index = getColumnarIndex(property);
+    if (index == null)
+      for (final LocalDocumentType t : superTypes) {
+        index = t.getPolymorphicColumnarIndex(property);
+        if (index != null)
+          break;
+      }
+    return index;
+  }
+
+  private Map<List<String>, TypeIndex> indexMapOf(final Schema.INDEX_TYPE family) {
+    return family == Schema.INDEX_TYPE.COLUMNAR ? columnarIndexesByProperties : indexesByProperties;
+  }
+
+  /**
+   * The name a type index gets when the user gave it none: {@code Type[p1,p2]} for a key index, {@code Type[p]_columnar} for a
+   * COLUMNAR one, so the two can sit on the same property under distinct, globally unique names.
+   */
+  public static String defaultIndexName(final String typeName, final List<String> propertyNames, final Schema.INDEX_TYPE family) {
+    final String base = typeName + propertyNames.toString().replace(" ", "");
+    return family == Schema.INDEX_TYPE.COLUMNAR ? base + COLUMNAR_NAME_SUFFIX : base;
   }
 
   @Override
@@ -2377,7 +2476,8 @@ public class LocalDocumentType implements DocumentType {
       }
     }
 
-    if (indexesByProperties.size() != that.indexesByProperties.size())
+    if (indexesByProperties.size() != that.indexesByProperties.size()
+        || !columnarIndexesByProperties.keySet().equals(that.columnarIndexesByProperties.keySet()))
       return false;
 
     for (final Map.Entry<List<String>, TypeIndex> entry1 : indexesByProperties.entrySet()) {
@@ -2410,10 +2510,10 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /** Marks the index on {@code propertyNames} as being populated, see {@link #indexesUnderConstruction}. */
-  void beginIndexConstruction(final List<String> propertyNames) {
+  void beginIndexConstruction(final List<String> propertyNames, final Schema.INDEX_TYPE family) {
     // One map operation: a computeIfAbsent() then an increment could take the counter an end is just removing, and the build
     // would count on a detached one
-    indexesUnderConstruction.compute(propertyNames, (key, count) -> {
+    indexesUnderConstruction.compute(constructionKey(propertyNames, family), (key, count) -> {
       if (count == null)
         return new AtomicInteger(1);
       count.incrementAndGet();
@@ -2421,8 +2521,13 @@ public class LocalDocumentType implements DocumentType {
     });
   }
 
-  void endIndexConstruction(final List<String> propertyNames) {
-    indexesUnderConstruction.computeIfPresent(propertyNames, (k, count) -> count.decrementAndGet() <= 0 ? null : count);
+  void endIndexConstruction(final List<String> propertyNames, final Schema.INDEX_TYPE family) {
+    indexesUnderConstruction.computeIfPresent(constructionKey(propertyNames, family),
+        (k, count) -> count.decrementAndGet() <= 0 ? null : count);
+  }
+
+  private static ConstructionKey constructionKey(final List<String> propertyNames, final Schema.INDEX_TYPE family) {
+    return new ConstructionKey(propertyNames, family == Schema.INDEX_TYPE.COLUMNAR);
   }
 
   /** Leaves the uniqueness check of the index on {@code propertyNames} to the build populating it, see {@link #indexesWithDeferredUniqueCheck}. */
@@ -2445,12 +2550,13 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Whether the index on {@code propertyNames} is still being populated, and so cannot answer a query yet.
+   * Whether the index of {@code family} (COLUMNAR, or the key index) on {@code propertyNames} is still being populated, and so
+   * cannot answer a query yet.
    */
-  public boolean isIndexUnderConstruction(final List<String> propertyNames) {
+  public boolean isIndexUnderConstruction(final List<String> propertyNames, final Schema.INDEX_TYPE family) {
     // The emptiness test is the fast path: this runs for every index of every query planned, and nothing is being built nearly
     // always
-    return !indexesUnderConstruction.isEmpty() && indexesUnderConstruction.containsKey(propertyNames);
+    return !indexesUnderConstruction.isEmpty() && indexesUnderConstruction.containsKey(constructionKey(propertyNames, family));
   }
 
   protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames,
@@ -2461,6 +2567,8 @@ public class LocalDocumentType implements DocumentType {
 
     final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new CopyOnWriteArrayList<>());
     list.add(index);
+    if (index.getType().isMaintainedInTransaction())
+      maintainedIndexesByBucket.computeIfAbsent(bucketId, k -> new CopyOnWriteArrayList<>()).add(index);
 
     if (propIndex == null)
       propIndex = typeIndexFor(index, propertyNames);
@@ -2477,7 +2585,9 @@ public class LocalDocumentType implements DocumentType {
    */
   TypeIndex typeIndexFor(final IndexInternal index, final String[] propertyNames) {
     final List<String> propertyList = Arrays.asList(propertyNames);
-    TypeIndex propIndex = indexesByProperties.get(propertyList);
+    // Routed by the type of the BUCKET index: the TypeIndex has none until its first sub-index is added
+    final Map<List<String>, TypeIndex> indexes = indexMapOf(index.getType());
+    TypeIndex propIndex = indexes.get(propertyList);
     // A wrapper found here can be "invalidated" if a prior {@link TypeIndex#drop()} (e.g.
     // existingTypeIndex.drop() in {@link TypeIndexBuilder#create()}) ran on it but the schema's
     // own auto-removal hook (LocalSchema#dropIndex, #4179) failed to dislodge it - this is the
@@ -2485,7 +2595,7 @@ public class LocalDocumentType implements DocumentType {
     // Treat a stale entry as if it weren't there: mint a fresh wrapper so the new bucket index
     // can attach.
     if (propIndex != null && !propIndex.isValid()) {
-      indexesByProperties.remove(propertyList);
+      indexes.remove(propertyList);
       schema.removeIndexDuringLoad(propIndex.getName());
       propIndex = null;
     }
@@ -2498,7 +2608,7 @@ public class LocalDocumentType implements DocumentType {
       // Falling back to the auto-derived form keeps the public default name unchanged for all
       // callers that did not supply a manual name.
       final String customName = index.getMetadata().typeIndexName;
-      final String derivedName = name + Arrays.toString(propertyNames).replace(" ", "");
+      final String derivedName = defaultIndexName(name, propertyList, index.getType());
       // A REBUILD hands the derived name back as the custom one, and it is no manual name: a rename of the type has to move it. A
       // user who spelled out the derived name (CREATE INDEX `Foo[a]` ON Foo (a)) gets the same, which is the name it already had
       final boolean manualName = customName != null && !customName.isEmpty() && !customName.equals(derivedName);
@@ -2507,19 +2617,15 @@ public class LocalDocumentType implements DocumentType {
       // publishing it here would hand a reader a TypeIndex over a bucket-level index that has not run its
       // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
       schema.publishIndexDuringLoad(propIndex.getName(), propIndex);
-      indexesByProperties.put(propertyList, propIndex);
+      indexes.put(propertyList, propIndex);
     }
     return propIndex;
   }
 
   public void removeTypeIndexInternal(final TypeIndex index) {
-    for (final Iterator<TypeIndex> it = indexesByProperties.values().iterator(); it.hasNext(); ) {
-      final TypeIndex idx = it.next();
-      if (idx == index) {
-        it.remove();
-        break;
-      }
-    }
+    // by identity: TypeIndex.equals() reads the sub-indexes, which a dropped index no longer answers for
+    if (!removeByIdentity(indexesByProperties, index))
+      removeByIdentity(columnarIndexesByProperties, index);
 
     for (final IndexInternal idx : index.getIndexesOnBuckets())
       removeBucketIndexInternal(idx);
@@ -2528,12 +2634,27 @@ public class LocalDocumentType implements DocumentType {
       superType.removeTypeIndexInternal(index);
   }
 
+  private static boolean removeByIdentity(final Map<List<String>, TypeIndex> indexes, final TypeIndex index) {
+    for (final Iterator<TypeIndex> it = indexes.values().iterator(); it.hasNext(); )
+      if (it.next() == index) {
+        it.remove();
+        return true;
+      }
+    return false;
+  }
+
   public void removeBucketIndexInternal(final Index index) {
     final List<IndexInternal> list = bucketIndexesByBucket.get(index.getAssociatedBucketId());
     if (list != null) {
       list.remove(index);
       if (list.isEmpty())
         bucketIndexesByBucket.remove(index.getAssociatedBucketId());
+    }
+    final List<IndexInternal> maintained = maintainedIndexesByBucket.get(index.getAssociatedBucketId());
+    if (maintained != null) {
+      maintained.remove(index);
+      if (maintained.isEmpty())
+        maintainedIndexesByBucket.remove(index.getAssociatedBucketId());
     }
   }
 
@@ -3392,7 +3513,7 @@ public class LocalDocumentType implements DocumentType {
     // createIndexes=false: the sub-indexes are already on disk and are read back with the schema.
     if (createIndexes) {
       final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
-      indexes.removeAll(indexesByProperties.values());
+      indexes.removeAll(getAllIndexes(false));
       propagateSuperTypeIndexes(superType, indexes, created);
     }
 

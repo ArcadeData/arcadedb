@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -33,6 +34,12 @@ import java.util.function.Consumer;
 public final class ColumnarTestHooks {
   /** Called with the name of every point reached; null in production. */
   public static volatile Consumer<String> killPoint;
+
+  /**
+   * Calls that reached a write method of a {@link ColumnarIndex} (put, remove and their replays), JVM-wide. No write path should
+   * reach one (the indexer and the graph batch skip the type), so the opt-out tests read it to prove the skip, not only the no-op.
+   */
+  public static final AtomicLong INDEX_WRITES = new AtomicLong();
 
   /** Thrown by a test hook to stop an operation at a kill point. */
   public static final class SimulatedCrash extends RuntimeException {

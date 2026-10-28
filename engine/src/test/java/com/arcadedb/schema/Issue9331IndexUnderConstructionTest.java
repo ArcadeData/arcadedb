@@ -40,18 +40,20 @@ class Issue9331IndexUnderConstructionTest extends TestHelper {
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().createDocumentType("Marked");
     final List<String> properties = List.of("id");
 
-    assertThat(type.isIndexUnderConstruction(properties)).isFalse();
+    assertThat(type.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.LSM_TREE)).isFalse();
 
-    type.beginIndexConstruction(properties);
-    type.beginIndexConstruction(properties);
-    assertThat(type.isIndexUnderConstruction(properties)).isTrue();
+    type.beginIndexConstruction(properties, Schema.INDEX_TYPE.LSM_TREE);
+    type.beginIndexConstruction(properties, Schema.INDEX_TYPE.LSM_TREE);
+    assertThat(type.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.LSM_TREE)).isTrue();
 
-    type.endIndexConstruction(properties);
-    assertThat(type.isIndexUnderConstruction(properties)).as("the second build is still populating").isTrue();
+    type.endIndexConstruction(properties, Schema.INDEX_TYPE.LSM_TREE);
+    assertThat(type.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.LSM_TREE)).as("the second build is still populating")
+        .isTrue();
+    assertThat(type.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.COLUMNAR)).as("the marker is per index family").isFalse();
 
-    type.endIndexConstruction(properties);
-    assertThat(type.isIndexUnderConstruction(properties)).isFalse();
-    assertThat(type.isIndexUnderConstruction(List.of("other"))).isFalse();
+    type.endIndexConstruction(properties, Schema.INDEX_TYPE.LSM_TREE);
+    assertThat(type.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.LSM_TREE)).isFalse();
+    assertThat(type.isIndexUnderConstruction(List.of("other"), Schema.INDEX_TYPE.LSM_TREE)).isFalse();
   }
 
   /** Pins the wording the stale-index detection reads: a change in the file manager's message must fail here, not in production. */
@@ -69,12 +71,12 @@ class Issue9331IndexUnderConstructionTest extends TestHelper {
     final LocalDocumentType second = (LocalDocumentType) database.getSchema().createDocumentType("Second");
     final List<String> properties = List.of("id");
 
-    first.beginIndexConstruction(properties);
+    first.beginIndexConstruction(properties, Schema.INDEX_TYPE.LSM_TREE);
 
-    assertThat(first.isIndexUnderConstruction(properties)).isTrue();
-    assertThat(second.isIndexUnderConstruction(properties)).as("another type with the same property names").isFalse();
+    assertThat(first.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.LSM_TREE)).isTrue();
+    assertThat(second.isIndexUnderConstruction(properties, Schema.INDEX_TYPE.LSM_TREE)).as("another type with the same property names").isFalse();
 
-    first.endIndexConstruction(properties);
+    first.endIndexConstruction(properties, Schema.INDEX_TYPE.LSM_TREE);
   }
 
   @Test
@@ -98,7 +100,7 @@ class Issue9331IndexUnderConstructionTest extends TestHelper {
 
     assertThat(seenDuringBuild[0]).as("the build callback ran and the index was already registered").isNotNull();
     assertThat(readyDuringBuild[0]).as("not offered to queries while it is being populated").isFalse();
-    assertThat(local.isIndexUnderConstruction(List.of("id"))).isFalse();
+    assertThat(local.isIndexUnderConstruction(List.of("id"), Schema.INDEX_TYPE.LSM_TREE)).isFalse();
     assertThat(parent.getPolymorphicIndexByProperties("id").isReadyForQueries()).isTrue();
   }
 }
