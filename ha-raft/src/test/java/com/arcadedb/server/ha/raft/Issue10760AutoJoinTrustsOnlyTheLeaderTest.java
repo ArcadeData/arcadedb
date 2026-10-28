@@ -109,6 +109,17 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
     assertThat(probe.addsThrough).isEmpty();
   }
 
+  @Test
+  void aNamedLeaderMissingFromTheFollowersConfigurationIsReportedNotDialled() {
+    final ScriptedProbe probe = new ScriptedProbe()
+        .answer(B, follower(D.getId(), SELF, B, C))
+        .answer(C, new IOException("unreachable"));
+    final KubernetesAutoJoin autoJoin = autoJoin(probe);
+
+    assertThat(autoJoin.tryAutoJoin()).isEqualTo(KubernetesAutoJoin.Outcome.NO_LEADER_ANSWERED);
+    assertThat(probe.asked).containsExactly("B", "C");
+  }
+
   /**
    * The guarantee, as a table: over every combination of non-leader answers from the two peers, no round yields
    * {@code ALREADY_MEMBER} or {@code JOINED}, and no {@code Mode.ADD} is sent.

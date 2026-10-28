@@ -114,6 +114,23 @@ class Issue10769MembershipChangeReadsCommittedConfigurationTest {
     assertThat(sent).as("nothing the leader could never match is sent").isEmpty();
   }
 
+  /**
+   * The refusal ends the change, it is not retried until the budget runs out: the configuration becomes readable right
+   * after the bounded wait, and nothing is sent anyway. Counted in reads, not in time.
+   */
+  @Test
+  void anUnreadableConfigurationEndsTheChangeInsteadOfBeingRetried() {
+    final AtomicInteger reads = new AtomicInteger();
+    // One read, then the 50 of the bounded wait, all unreadable; any read after that would find the configuration
+    server.on("getCommittedPeersOrNull", args -> reads.incrementAndGet() <= 51 ? null : List.of(peer("A"), peer("B")));
+
+    assertThatThrownBy(() -> new RaftClusterManager(server).addPeer("F", "h6:2434"))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("cannot read the live Raft configuration");
+    assertThat(reads.get()).as("one bounded wait, then the refusal").isEqualTo(51);
+    assertThat(sent).isEmpty();
+  }
+
   @Test
   void aDeclaredPeerThatIsNotAMemberIsNotFound() {
     server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));

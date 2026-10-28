@@ -285,16 +285,22 @@ public class KubernetesAutoJoin {
       // The leader this follower names is asked next, at the address the follower's configuration holds for it. That
       // address is the group's, not this node's declaration, so it is held to the rule every peer address is
       // (validatePeerAddress) before it is dialled; nothing is added through it unless it then answers as the LEADER.
-      if (answer.leaderId() != null && !answer.leaderId().equals(localPeerId) && !asked.contains(answer.leaderId()))
+      if (answer.leaderId() != null && !answer.leaderId().equals(localPeerId) && !asked.contains(answer.leaderId())) {
+        RaftPeer named = null;
         for (final RaftPeer member : answer.members())
           if (member.getId().equals(answer.leaderId())) {
-            if (isDialableAddress(member.getAddress()))
-              toAsk.addFirst(member);
-            else
-              probeFailures.put(member.getId().toString(),
-                  "leader named by " + peer.getId() + " has an illegal address '" + member.getAddress() + "'");
+            named = member;
             break;
           }
+        if (named == null)
+          probeFailures.put(answer.leaderId().toString(),
+              "leader named by " + peer.getId() + " is not in its own configuration, so it has no address to dial");
+        else if (isDialableAddress(named.getAddress()))
+          toAsk.addFirst(named);
+        else
+          probeFailures.put(named.getId().toString(),
+              "leader named by " + peer.getId() + " has an illegal address '" + named.getAddress() + "'");
+      }
     }
     return null;
   }
