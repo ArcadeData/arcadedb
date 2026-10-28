@@ -21,6 +21,9 @@ package com.arcadedb.query.facet;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.BaseExpression;
@@ -30,6 +33,10 @@ import com.arcadedb.query.sql.parser.FacetRangeItem;
 import com.arcadedb.query.sql.parser.FacetsClause;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.Modifier;
+import com.arcadedb.schema.ColumnarIndexMetadata;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.time.DateTimeException;
 import java.time.ZoneId;
@@ -43,6 +50,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Turns the {@link FacetsClause} of a SELECT into {@link FacetSpec}s: applies the defaults, resolves input parameters and checks the
@@ -60,13 +68,75 @@ public final class FacetSpecCompiler {
    * @param clause the parsed FACETS clause
    * @param ctx    the context whose input parameters resolve the parameters used in bounds and INCLUDE lists
    *
-   * @throws CommandSQLParsingException on an invalid value or on a kind of facet not supported yet
+   * @throws CommandSQLParsingException on an invalid value
    */
   public static List<FacetSpec> compile(final FacetsClause clause, final CommandContext ctx) {
     final List<FacetSpec> specs = new ArrayList<>(clause.items.size());
     for (final FacetItem item : clause.items)
       specs.add(compile(item, ctx));
     return specs;
+  }
+
+  /**
+   * Checks the facets that depend on the schema of the faceted type: STATS needs a numeric or date property, HIERARCHY a COLUMNAR
+   * index with a hierarchy in its METADATA.
+   *
+   * A property or index declared only on a subtype is enough: the executor resolves the declaring type per bucket.
+   *
+   * @param target the faceted type, null for a bucket or subquery target: only the type-free checks (made by {@link #compile}) apply,
+   *               the executor makes these per declaring type
+   *
+   * @throws CommandSQLParsingException on a facet the type cannot answer
+   */
+  public static void validateAgainstSchema(final List<FacetSpec> specs, final DocumentType target) {
+    if (target == null)
+      return;
+    for (final FacetSpec spec : specs)
+      switch (spec) {
+      case StatsFacetSpec stats -> {
+        if (!anyTypeMatches(target, type -> {
+          final Property declared = type.getPolymorphicPropertyIfExists(stats.property());
+          return declared != null && isStatsType(declared.getType());
+        }))
+          throw new CommandSQLParsingException(
+              "STATS requires a property of type BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DATE or DATETIME: " + stats.property());
+      }
+      case HierarchyFacetSpec hierarchy -> {
+        if (!anyTypeMatches(target, type -> hasHierarchy(type, hierarchy.property())))
+          throw new CommandSQLParsingException(
+              "HIERARCHY requires a COLUMNAR index with METADATA hierarchy on " + target.getName() + "." + hierarchy.property());
+      }
+      default -> {
+      }
+      }
+  }
+
+  /** Whether the type or any of its subtypes (a query on a type reads its subtypes' buckets) satisfies the predicate. */
+  private static boolean anyTypeMatches(final DocumentType type, final Predicate<DocumentType> predicate) {
+    if (predicate.test(type))
+      return true;
+    for (final DocumentType sub : type.getSubTypes())
+      if (anyTypeMatches(sub, predicate))
+        return true;
+    return false;
+  }
+
+  private static boolean isStatsType(final Type type) {
+    return switch (type) {
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DATE, DATETIME, DATETIME_SECOND -> true;
+      default -> false;
+    };
+  }
+
+  private static boolean hasHierarchy(final DocumentType target, final String property) {
+    final TypeIndex index = target.getPolymorphicColumnarIndex(property);
+    if (index != null)
+      for (final IndexInternal sub : index.getSubIndexes())
+        if (sub instanceof ColumnarIndex columnar) {
+          final ColumnarIndexMetadata metadata = columnar.getColumnarMetadata();
+          return metadata != null && metadata.getHierarchy() != null;
+        }
+    return false;
   }
 
   /**
@@ -141,10 +211,12 @@ public final class FacetSpecCompiler {
 
     return switch (item.kind) {
       case TERMS -> new TermsFacetSpec(alias, property, expression, item.filter, top(alias, item), minCount(item), order(item),
-          include(item, ctx), item.missing, null);
+          include(item, ctx), item.missing, after(alias, item, ctx));
       case RANGES -> new RangeFacetSpec(alias, property, expression, item.filter, ranges(alias, item, ctx), item.defaultLabel);
       case HISTOGRAM -> histogram(alias, property, expression, item, ctx);
-      default -> throw new CommandSQLParsingException("FACETS " + alias + ": " + item.kind + " facets are not supported");
+      case HIERARCHY -> new HierarchyFacetSpec(alias, property(alias, item, property), item.filter, top(alias, item), minCount(item));
+      case DISTINCT -> new DistinctFacetSpec(alias, property(alias, item, property), item.filter, precision(alias, item));
+      case STATS -> new StatsFacetSpec(alias, property(alias, item, property), item.filter);
     };
   }
 
@@ -162,6 +234,29 @@ public final class FacetSpecCompiler {
     return path.toString();
   }
 
+  /** The property of a HIERARCHY, DISTINCT or STATS facet: these kinds do not take an expression. */
+  private static String property(final String alias, final FacetItem item, final String property) {
+    if (property == null)
+      throw new CommandSQLParsingException("FACETS " + alias + ": " + item.kind + " needs a property, not an expression");
+    return property;
+  }
+
+  /** The cursor of AFTER, null when the facet has none. AFTER pages in ascending value order, so it excludes any other order. */
+  private static Object after(final String alias, final FacetItem item, final CommandContext ctx) {
+    if (item.after == null)
+      return null;
+    if (Boolean.TRUE.equals(item.orderByCount))
+      throw new CommandSQLParsingException("AFTER pages in value order: remove ORDER BY COUNT");
+    if (Boolean.FALSE.equals(item.orderByCount) && Boolean.FALSE.equals(item.ascending))
+      throw new CommandSQLParsingException("AFTER pages in ascending value order: remove ORDER BY VALUE DESC");
+    if (item.include != null)
+      throw new CommandSQLParsingException("AFTER and INCLUDE cannot be combined");
+    final Object cursor = item.after.execute((Result) null, ctx);
+    if (cursor == null)
+      throw new CommandSQLParsingException("FACETS " + alias + ": AFTER is null (its parameter is missing or bound to null), leave AFTER out for the first page");
+    return cursor;
+  }
+
   private static int top(final String alias, final FacetItem item) {
     if (item.top == null)
       return DEFAULT_TOP;
@@ -174,6 +269,14 @@ public final class FacetSpecCompiler {
     if (top < 1)
       throw new CommandSQLParsingException("FACETS " + alias + ": TOP must be at least 1");
     return top;
+  }
+
+  private static long precision(final String alias, final FacetItem item) {
+    if (item.precision == null)
+      return Long.MAX_VALUE;
+    if (item.precision < 1)
+      throw new CommandSQLParsingException("FACETS " + alias + ": DISTINCT PRECISION must be at least 1");
+    return item.precision;
   }
 
   private static int minCount(final FacetItem item) {

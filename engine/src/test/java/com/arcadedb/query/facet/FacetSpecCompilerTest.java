@@ -22,7 +22,6 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.parser.FacetItem;
 import com.arcadedb.query.sql.parser.FacetsClause;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Test;
@@ -161,14 +160,6 @@ class FacetSpecCompilerTest {
     assertThat(spec.boundsFrom()).isEqualTo(0);
     assertThat(spec.boundsTo()).isEqualTo(100);
     assertThat(spec.interval().fixedNumber()).isEqualTo(10d);
-  }
-
-  @Test
-  void unknownKindIsRefused() {
-    final FacetsClause c = clause("t: tags TERMS");
-    c.items.getFirst().kind = FacetItem.Kind.HIERARCHY;
-    assertThatThrownBy(() -> FacetSpecCompiler.compile(c, new BasicCommandContext())).isInstanceOf(CommandSQLParsingException.class)
-        .hasMessage("FACETS t: HIERARCHY facets are not supported");
   }
 
   @Test
