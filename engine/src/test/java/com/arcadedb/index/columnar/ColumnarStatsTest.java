@@ -51,6 +51,17 @@ class ColumnarStatsTest {
   }
 
   @Test
+  void openFilesAreTheSumOfTheDeltasOfTheBucketProjections() {
+    final ColumnarStats stats = new ColumnarStats();
+    stats.addOpenFiles("Asset", 3);
+    stats.addOpenFiles("Asset", 2);
+    stats.addOpenFiles("Asset", -4);
+
+    assertThat(stats.openFiles("Asset")).isEqualTo(1);
+    assertThat(stats.openFiles("Other")).isZero();
+  }
+
+  @Test
   void readersReturnWhatWritersAdded() {
     final ColumnarStats stats = new ColumnarStats();
     writeEveryCell(stats);
@@ -70,19 +81,12 @@ class ColumnarStatsTest {
     assertThat(stats.mergeDurationTotalNanos("Asset")).isEqualTo(2_000);
     assertThat(stats.dictionaryCompactions("Asset", "brand")).isEqualTo(1);
     assertThat(stats.dictionaryOrdinalsReclaimed("Asset", "brand")).isEqualTo(600);
-    assertThat(stats.applyLagMs("Asset")).isEqualTo(42);
     assertThat(stats.overlayRows("Asset")).isEqualTo(99);
     assertThat(stats.segments("Asset")).isEqualTo(3);
-    assertThat(stats.dictionarySize("Asset", "brand")).isEqualTo(1234);
-    assertThat(stats.cardinalityExceeded("Asset", "brand")).isTrue();
-    assertThat(stats.cardinalityExceeded("Asset", "tags")).isFalse();
-    assertThat(stats.deadRatio("Asset")).isEqualTo(0.25);
     assertThat(stats.openFiles("Asset")).isEqualTo(8);
 
     // a reader never invents a value for another type
     assertThat(stats.applyPagesCount("Other")).isZero();
-    assertThat(stats.deadRatio("Other")).isZero();
-    assertThat(stats.cardinalityExceeded("Other", "brand")).isFalse();
   }
 
   @Test
@@ -98,8 +102,7 @@ class ColumnarStatsTest {
         "flush.count|Asset|null|null", "merge.count|Asset|null|null", "conversion.failures|Asset|fileSize|null",
         "recovery.pages|null|null|null", "apply.records.reread|Asset|null|null", "apply.unreadable|Asset|null|null",
         "rebuild.pages.reused|Asset|null|null", "flush.duration|Asset|null|null", "merge.duration|Asset|null|null",
-        "apply.lag.ms|Asset|null|null", "overlay.rows|Asset|null|null", "segments|Asset|null|null", "segments.dead.ratio|Asset|null|null",
-        "dictionary.size|Asset|brand|null", "cardinality.exceeded|Asset|brand|null", "open.files|Asset|null|null"));
+        "overlay.rows|Asset|null|null", "segments|Asset|null|null", "open.files|Asset|null|null"));
     assertThat(new TreeSet<>(keys)).isEqualTo(expected);
     assertThat(keys).hasSameSizeAs(expected);
   }
@@ -129,8 +132,6 @@ class ColumnarStatsTest {
     stats.applyPages("Asset", 1);
     stats.flushDuration("Asset", 10);
     stats.setOverlayRows("Asset", 5);
-    stats.setCardinalityExceeded("Asset", "brand", true);
-    stats.setDeadRatio("Asset", 0.5);
     stats.dictionaryCompaction("Asset", "brand", 3);
   }
 
@@ -149,12 +150,8 @@ class ColumnarStatsTest {
     stats.unreadable("Asset");
     stats.rebuildPagesReused("Asset", 13);
     stats.dictionaryCompaction("Asset", "brand", 600);
-    stats.setApplyLagMs("Asset", 42);
     stats.setOverlayRows("Asset", 99);
     stats.setSegments("Asset", 3);
-    stats.setDictionarySize("Asset", "brand", 1234);
-    stats.setCardinalityExceeded("Asset", "brand", true);
-    stats.setDeadRatio("Asset", 0.25);
     stats.setOpenFiles("Asset", 8);
   }
 }

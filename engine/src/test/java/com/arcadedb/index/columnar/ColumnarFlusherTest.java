@@ -667,6 +667,22 @@ class ColumnarFlusherTest extends TestHelper {
   }
 
   @Test
+  void openFilesFollowThePublishedSegments() throws Exception {
+    final ColumnarProjection projection = open();
+    apply(projection, 0, 1, 1, 2, 2, 3, 3);
+    ColumnarFlusher.flush(projection, 1);
+    assertThat(stats.openFiles("Asset")).isEqualTo(1);
+
+    apply(projection, 0, 1, DELETE);
+    ColumnarFlusher.flush(projection, 2);
+    ColumnarFlusher.merge(projection, MergePolicy.select(projection.manifest().segments(), 0.3f, 1));
+    assertThat(stats.openFiles("Asset")).as("the merged-away file is closed once its last reader is released").isEqualTo(1);
+
+    projection.close();
+    assertThat(stats.openFiles("Asset")).isZero();
+  }
+
+  @Test
   void flushCountsInStats() throws Exception {
     final ColumnarProjection projection = open();
     assertThat(stats.flushCount("Asset")).isZero();

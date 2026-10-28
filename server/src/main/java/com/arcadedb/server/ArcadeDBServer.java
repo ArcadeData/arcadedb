@@ -57,6 +57,7 @@ import com.arcadedb.server.monitor.EngineMetricsBinder;
 import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
 import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.monitor.MicrometerQueryTracer;
+import com.arcadedb.server.monitor.ColumnarMetrics;
 import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
@@ -352,6 +353,7 @@ public class ArcadeDBServer {
   // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
   // thread it starts leaks one instance per restart (issue #5850).
   private              HAReplicationMetrics haReplicationMetrics;
+  private              ColumnarMetrics      columnarMetrics;
   // Executor-pool rows owned by THIS server rather than the JVM (issue #7856), closed in stopMetrics() so a restart
   // re-registers them against the new instances instead of leaving rows that read the stopped ones. Guarded by itself.
   private final        List<Closeable> instancePoolMetrics = new ArrayList<>();
@@ -1250,6 +1252,8 @@ public class ArcadeDBServer {
     // daemon thread per restart (issue #5850).
     haReplicationMetrics = new HAReplicationMetrics(this);
     haReplicationMetrics.bindTo(Metrics.globalRegistry);
+    // Columnar projection health (rebuilds, apply, flush, merge, block cache) per database; closed in stopMetrics() like the above.
+    columnarMetrics = new ColumnarMetrics(this);
     QueryMetricsRecorder.Holder.register(new MicrometerQueryMetricsRecorder());
     // From here the TimeSeries read handlers hand the engine an AggregationMetrics and publish what it counted
     // (issue #7717). Off, it answers null and the reads take the allocation-free path they always did.
@@ -1321,6 +1325,10 @@ public class ArcadeDBServer {
     if (haReplicationMetrics != null) {
       CodeUtils.executeIgnoringExceptions(haReplicationMetrics::close, "Error on closing the HA replication metrics", false);
       haReplicationMetrics = null;
+    }
+    if (columnarMetrics != null) {
+      CodeUtils.executeIgnoringExceptions(columnarMetrics::close, "Error on closing the columnar metrics", false);
+      columnarMetrics = null;
     }
     if (metricsLoggingRegistry != null) {
       removeMeterRegistry(metricsLoggingRegistry);
