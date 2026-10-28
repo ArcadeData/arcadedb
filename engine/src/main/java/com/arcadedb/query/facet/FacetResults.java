@@ -73,8 +73,8 @@ public final class FacetResults {
     return lagMs;
   }
 
-  /** The execution statistics by alias; empty unless the executor computed these results. */
-  Map<String, FacetExecutionStats> executionStats() {
+  /** The execution statistics by alias (PROFILE); empty unless the executor computed these results. */
+  public Map<String, FacetExecutionStats> executionStats() {
     return executionStats;
   }
 

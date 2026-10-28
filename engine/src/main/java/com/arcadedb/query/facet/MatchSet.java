@@ -345,6 +345,36 @@ public final class MatchSet implements AutoCloseable {
   }
 
   /**
+   * One set holding the buckets of both, which must be disjoint: a {@link #fromProjection} set and the matches recorded from the rows
+   * of the buckets it has no entry for. The result owns everything both held (closing it releases their reservations and snapshots);
+   * the two sets are left closed and must not be used. Over budget when either is.
+   */
+  public static MatchSet union(final MatchSet first, final MatchSet second) {
+    final BucketMatches[] byBucket = Arrays.copyOf(first.byBucket, Math.max(first.byBucket.length, second.byBucket.length));
+    for (int i = 0; i < second.byBucket.length; i++)
+      if (second.byBucket[i] != null) {
+        if (byBucket[i] != null)
+          throw new IllegalArgumentException("Bucket " + i + " is in both match sets");
+        byBucket[i] = second.byBucket[i];
+      }
+    ColumnarSnapshot[] snapshots = first.snapshots;
+    if (second.snapshots != null) {
+      snapshots = snapshots == null ? second.snapshots.clone() : Arrays.copyOf(snapshots, Math.max(snapshots.length, second.snapshots.length));
+      for (int i = 0; i < second.snapshots.length; i++)
+        if (second.snapshots[i] != null)
+          snapshots[i] = second.snapshots[i];
+    }
+    final List<FacetMemoryBudget.Reservation> reservations = new ArrayList<>(first.reservations);
+    reservations.addAll(second.reservations);
+    final MatchSet union = new MatchSet(byBucket, first.size + second.size, first.overBudget || second.overBudget,
+        first.waits + second.waits, reservations, snapshots);
+    // handed over: closing the parts now would release what the union holds
+    first.closed = true;
+    second.closed = true;
+    return union;
+  }
+
+  /**
    * The pending positions that hold a committed record. Pending is page-granular (every slot of a dirty page, plus the owners of the
    * content on it): reading each pending page's slot table once ({@link LocalBucket#forEachCommittedRecordSlot}, no record decoded)
    * drops its empty and content slots, so the size of the match set, the counters sized from it and the patch budget count records

@@ -198,6 +198,11 @@ class SQLFacetsParserTest {
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS is only allowed on the outermost SELECT");
     assertThatThrownBy(() -> parse("SELECT FROM Asset WHERE x IN (SELECT y FROM B FACETS y TERMS)"))
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS is only allowed on the outermost SELECT");
+    // a nested FACETS with a LIMIT of its own (its LIMIT would release a collect step no ResultSet can reach)
+    assertThatThrownBy(() -> parse("SELECT FROM (SELECT FROM Asset FACETS brand TERMS LIMIT 5) LIMIT 2"))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS is only allowed on the outermost SELECT");
+    assertThatThrownBy(() -> parse("SELECT FROM Asset LET $a = (SELECT FROM B FACETS b TERMS LIMIT 3) LIMIT 1"))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS is only allowed on the outermost SELECT");
   }
 
   @Test

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -28,6 +29,9 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.facet.FacetBucket;
+import com.arcadedb.query.facet.FacetResult;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
@@ -191,6 +195,50 @@ public final class FacetOracle {
   /** Asserts the same without waiting: the pages not applied yet are patched from the records. */
   public static void assertEquivalentWhileLagging(final Database db, final String type, final String property, final String where) {
     assertSame(type, property, where, expectedCounts(db, type, property, where), projectionCounts(db, type, property, where, true));
+  }
+
+  /**
+   * Runs {@code SELECT FROM <type> WHERE <where> FACETS f: <property> TERMS TOP <topMax>} and asserts that its counts are the GROUP BY
+   * counts of {@link #expectedCounts}: the {@code missing} member is compared under {@link #MISSING}, a date value by its column's epoch
+   * count. Never waits for the projection to catch up, so it can run inside a {@code suspendApply()} hold.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static void assertFacetsEqualGroupBy(final Database db, final String type, final String property, final String where) {
+    final int topMax = GlobalConfiguration.COLUMNAR_TOP_MAX.getValueAsInteger();
+    final Map<Object, Long> expected = expectedCounts(db, type, property, where);
+    final long distinct = expected.keySet().stream().filter(k -> k != MISSING).count();
+    if (distinct > topMax)
+      throw new AssertionError("Oracle: " + type + "." + property + " WHERE " + where + " has " + distinct
+          + " distinct values, more than TOP " + topMax + " can return: the comparison would be truncated");
+
+    final FacetResults facets;
+    try (final ResultSet rs = db.query("sql",
+        "SELECT FROM " + quote(type) + where(where) + " FACETS f: " + quote(property) + " TERMS TOP " + topMax)) {
+      facets = rs.getFacets();
+    }
+    if (facets == null)
+      throw new AssertionError("The FACETS query over " + type + " WHERE " + where + " returned no facets");
+    final FacetResult result = facets.get("f");
+    if (!"index".equals(result.source()) && !"scan".equals(result.source()))
+      throw new AssertionError("Facet " + property + " WHERE " + where + " is " + result.source() + ": " + result.reason());
+
+    final ColumnarValueExtractor extractor = extractor(db, type);
+    final Map<Object, Long> actual = new HashMap<>();
+    for (final FacetBucket bucket : result.buckets()) {
+      if (bucket.isMissing())
+        continue;
+      final Object value = bucket.value();
+      final Object key = value == null || value instanceof String || value instanceof Number || value instanceof Boolean ? value
+          : extractor.toColumnLong(property, value);
+      if (actual.put(key, bucket.count()) != null)
+        throw new AssertionError("Facet " + property + " WHERE " + where + " returned the value " + value + " twice");
+    }
+    if (result.missing() > 0)
+      actual.put(MISSING, result.missing());
+    if (result.otherCount() != 0)
+      throw new AssertionError("Facet " + property + " WHERE " + where + " left " + result.otherCount() + " values out of TOP " + topMax);
+    assertSame(type, property, where, expected, actual);
   }
 
   /** LONG columns: stored value to count, without the missing records. */

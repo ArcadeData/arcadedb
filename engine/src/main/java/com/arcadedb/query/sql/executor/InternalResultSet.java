@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.utility.ResettableIterator;
 
 import java.util.ArrayList;
@@ -33,6 +34,7 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
   private   int               next    = 0;
   protected ExecutionPlan     plan;
   protected QueryStatistics   statistics;
+  protected FacetResults      facets;
 
   public InternalResultSet() {
   }
@@ -42,11 +44,12 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
   }
 
   /**
-   * Copy constructor.
+   * Copy constructor: every row, then the facets of the source (computed by then, since its rows are exhausted).
    */
   public InternalResultSet(final ResultSet resultSet) {
     while (resultSet.hasNext())
       add(resultSet.next());
+    facets = resultSet.getFacets();
   }
 
   @Override
@@ -84,6 +87,15 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
     this.statistics = statistics;
   }
 
+  @Override
+  public FacetResults getFacets() {
+    return facets;
+  }
+
+  public void setFacets(final FacetResults facets) {
+    this.facets = facets;
+  }
+
   public InternalResultSet add(final Result nextResult) {
     content.add(nextResult);
     return this;
@@ -117,6 +129,7 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
   public InternalResultSet copy() {
     final InternalResultSet copy = new InternalResultSet();
     copy.content = this.content;
+    copy.facets = this.facets;
     return copy;
   }
 
