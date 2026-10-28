@@ -47,9 +47,10 @@ class LSMVectorIndexMetrics {
   // given search path (exact on the plain and groupBy paths, PQ-approximate on the PQ path), picked before any
   // graph traversal ran. Shared across all three paths; a query on any of them can bump this counter.
   private final AtomicLong preFilterSearches = new AtomicLong(0);
-  // Graph walks scored on the PQ codes fused into the nodes of the graph file (jvector FusedPQ, the fusedPQ index setting),
-  // on the exact path and on the ungrouped PQ path that SQL and openCypher take alike (issue #10713; groupBy keeps its exact walk). Zero on an index whose graph
-  // file carries no fused codes, so it says whether the bytes the setting costs on disk are read.
+  // Graph walks set up to score on the PQ codes fused into the nodes of the graph file (jvector FusedPQ, the fusedPQ index
+  // setting), on the exact path and on the ungrouped PQ path that SQL and openCypher take alike (issue #10713; groupBy keeps
+  // its exact walk). Counted when the walk's score provider is built, so a walk that then fails is still counted. Zero on an
+  // index whose graph file carries no fused codes, so it says whether the bytes the setting costs on disk are read.
   private final AtomicLong fusedPQWalks = new AtomicLong(0);
   // Grouped searches (vector.neighbors with groupBy) that ran out of candidate budget before they could open `limit`
   // distinct groups, so the caller got a correct but short answer. Finding the limit-th nearest group costs however

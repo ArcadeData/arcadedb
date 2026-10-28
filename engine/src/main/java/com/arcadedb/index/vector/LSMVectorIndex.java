@@ -8704,6 +8704,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (graph instanceof OnDiskGraphIndex diskGraph
         && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
       final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
+      // jvector 4.0.2's FusedPQDecoder keeps the exact function it is handed but never calls it: the walk is scored on the fused
+      // codes only, and the reranker reaches the answer through the provider's re-rank step alone, so walk is not needed here
       final DefaultSearchScoreProvider fused = new DefaultSearchScoreProvider(
           fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, reranker), reranker);
       metrics.incrementFusedPQWalks();
