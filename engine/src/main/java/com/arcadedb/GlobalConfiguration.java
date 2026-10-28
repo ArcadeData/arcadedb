@@ -416,6 +416,12 @@ public enum GlobalConfiguration {
           + "projection for the writes it has not applied yet. Above it the query counts from the projection alone and reports "
           + "meta.exact=false. Default is 10000", Integer.class, 10000),
 
+  COLUMNAR_PATCH_BUDGET_RATIO("arcadedb.columnar.patchBudgetRatio", SCOPE.SERVER,
+      "Share of the matches of a FACETS query it may read from the records to correct the projection for the writes it has not "
+          + "applied yet, when that is more than arcadedb.columnar.patchBudget: the query stays exact while the positions to read are at "
+          + "most max(patchBudget, patchBudgetRatio x matches). Reading a share of the matches costs about that share of a scan, which "
+          + "the projection would otherwise answer inexactly. 0 keeps the absolute budget only. Default is 0.5", Double.class, 0.5),
+
   COLUMNAR_QUERY_MEMORY_BUDGET("arcadedb.columnar.queryMemoryBudget", SCOPE.JVM,
       "Bytes of counting memory (dense counters, hash counters, match bitmaps) that all concurrent FACETS queries of the JVM may hold "
           + "together. Default is 268435456 (256MB)", Long.class, 268435456L),
@@ -4719,6 +4725,9 @@ public enum GlobalConfiguration {
       if (type == Float.class)
         return iValue instanceof Number n ? n.floatValue() : Float.parseFloat(iValue.toString().trim());
 
+      if (type == Double.class)
+        return iValue instanceof Number n ? n.doubleValue() : Double.parseDouble(iValue.toString().trim());
+
       if (type == String.class) {
         final String text = iValue.toString();
         // Normalised to the DECLARED spelling when the setting has an allow-list. setValue matches that list
@@ -4802,7 +4811,7 @@ public enum GlobalConfiguration {
     final String message =
         "Value '" + iValue + "' is not valid for setting '" + key + "' of type " + type.getSimpleName();
 
-    final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class ?
+    final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class || type == Double.class ?
         new NumberFormatException(message) :
         new IllegalArgumentException(message);
     failure.initCause(cause);
@@ -4884,6 +4893,11 @@ public enum GlobalConfiguration {
   public float getValueAsFloat() {
     final Object v = value != nullValue && value != null ? value : defValue;
     return v instanceof Number n ? n.floatValue() : Float.parseFloat(v.toString().trim());
+  }
+
+  public double getValueAsDouble() {
+    final Object v = value != nullValue && value != null ? value : defValue;
+    return v instanceof Number n ? n.doubleValue() : Double.parseDouble(v.toString().trim());
   }
 
   public String getKey() {

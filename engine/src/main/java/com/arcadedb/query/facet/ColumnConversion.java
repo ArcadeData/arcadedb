@@ -19,6 +19,7 @@
 package com.arcadedb.query.facet;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
@@ -40,10 +41,14 @@ interface ColumnConversion {
   /** The unit of the epoch counts of a date column, null for a column that is not a date. */
   TimeUnit dateUnit(String property);
 
-  /** The conversion of a real column: the extractor's; null for no extractor. */
-  static ColumnConversion of(final ColumnarValueExtractor extractor) {
+  /**
+   * The conversion of a real column as a collector counts it: the extractor's for literals, the epoch unit of {@code column} (the
+   * definition the counted segments were written with), not of whatever the extractor holds now; null for no extractor.
+   */
+  static ColumnConversion of(final ColumnarValueExtractor extractor, final ColumnDefinition column) {
     if (extractor == null)
       return null;
+    final TimeUnit dateUnit = ColumnarValueExtractor.dateUnit(column.propertyType());
     return new ColumnConversion() {
       @Override
       public long toColumnLong(final String property, final Object value) {
@@ -52,7 +57,7 @@ interface ColumnConversion {
 
       @Override
       public TimeUnit dateUnit(final String property) {
-        return extractor.dateUnit(property);
+        return dateUnit;
       }
     };
   }

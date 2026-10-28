@@ -47,7 +47,11 @@ import java.util.List;
  * Not thread safe. {@link #close()} releases the reservation and the projection snapshots; it is idempotent.
  */
 public final class MatchSet implements AutoCloseable {
-  private static final long STEP_BYTES = 1L << 20;
+  private static final long STEP_BYTES        = 1L << 20;
+  /** The array header of one stripe. */
+  private static final long STRIPE_OVERHEAD   = 16;
+  /** One page of a bitmap's index: its page number, its stripe reference and its stripe generation. */
+  private static final long INDEX_ENTRY_BYTES = 4 + 8 + 8;
 
   private final BucketMatches[]                       byBucket;
   private final long                                  size;
@@ -166,6 +170,9 @@ public final class MatchSet implements AutoCloseable {
       BucketMatches matches = bucketId < byBucket.length ? byBucket[bucketId] : null;
       if (matches == null)
         matches = open(bucketId);
+      else if (matches.base.get(position))
+        // a record the rows yield twice (a RID list with repeats, a subquery) is one match, counted once
+        return true;
 
       final int page = (int) (position / matches.maxRecordsInPage);
       final long stripeBytes = matches.maxRecordsInPage / 8;
@@ -293,8 +300,8 @@ public final class MatchSet implements AutoCloseable {
           continue;
         }
 
-        final PositionBitmap pending = occupied((LocalBucket) db.getSchema().getBucketById(bucketId), snapshot.pendingPositions());
-        // charge the union's stripes before allocating it
+        final PositionBitmap pending = snapshot.pendingPositions();
+        // charge the union's stripes before allocating it: every pending page counts, whether or not a committed record is on it
         final PageSet pages = new PageSet();
         long stripes = 0;
         for (final ColumnarSegmentView view : snapshot.segments())
@@ -320,7 +327,7 @@ public final class MatchSet implements AutoCloseable {
         final PositionBitmap bitmap = new PositionBitmap(pending.maxRecordsInPage());
         for (final ColumnarSegmentView view : snapshot.segments())
           bitmap.or(view.live());
-        bitmap.or(pending);
+        addOccupied((LocalBucket) db.getSchema().getBucketById(bucketId), pending, bitmap);
 
         if (bucketId >= byBucket.length)
           byBucket = Arrays.copyOf(byBucket, Math.max(bucketId + 1, byBucket.length * 2));
@@ -373,19 +380,17 @@ public final class MatchSet implements AutoCloseable {
   }
 
   /**
-   * The pending positions that hold a committed record. Pending is page-granular (every slot of a dirty page, plus the owners of the
-   * content on it): reading each pending page's slot table once ({@link LocalBucket#forEachCommittedRecordSlot}, no record decoded)
-   * drops its empty and content slots, so the size of the match set, the counters sized from it and the patch budget count records
-   * that exist rather than slots.
+   * Adds to {@code bitmap} the pending positions that hold a committed record. Pending is page-granular (every slot of a dirty page, plus
+   * the owners of the content on it): reading each pending page's slot table once ({@link LocalBucket#forEachCommittedRecordSlot}, no
+   * record decoded) drops its empty and content slots, so the size of the match set, the counters sized from it and the patch budget
+   * count records that exist rather than slots. Written straight into the charged union: no bitmap of its own.
    */
-  private static PositionBitmap occupied(final LocalBucket bucket, final PositionBitmap pending) {
-    final PositionBitmap occupied = new PositionBitmap(pending.maxRecordsInPage());
+  private static void addOccupied(final LocalBucket bucket, final PositionBitmap pending, final PositionBitmap bitmap) {
     for (final int page : pending.pages())
       bucket.forEachCommittedRecordSlot(page, position -> {
         if (pending.get(position))
-          occupied.set(position);
+          bitmap.set(position);
       });
-    return occupied;
   }
 
   /**
@@ -428,7 +433,9 @@ public final class MatchSet implements AutoCloseable {
   /**
    * The records the facet counts: those that pass every filter, plus, for a facet that carries filter {@code i}, those that fail only
    * filter {@code i}. A facet with no filter gets the pass-all set itself (owned by this set, read only); one with a filter gets a
-   * new bitmap owned by the caller. Null when nothing was recorded for the bucket.
+   * new bitmap owned by the caller, which shares the pass-all stripes copy-on-write: it allocates its page index and one stripe per
+   * page of the failed-only set (see {@link #derivedBytes}), and a write to it clones the stripes it touches. Null when nothing was
+   * recorded for the bucket.
    */
   public PositionBitmap forFacet(final int facetIndex, final int bucketId) {
     final BucketMatches matches = matches(bucketId);
@@ -437,15 +444,80 @@ public final class MatchSet implements AutoCloseable {
     final int filterIndex = filterIndexByFacet[facetIndex];
     if (filterIndex < 0)
       return matches.passAll;
-    final PositionBitmap result = matches.passAll.copy();
-    if (matches.failedOnly != null && matches.failedOnly[filterIndex] != null)
-      result.or(matches.failedOnly[filterIndex]);
+    final PositionBitmap result = matches.passAll.snapshot();
+    final PositionBitmap failed = failedOnly(matches, filterIndex);
+    if (failed != null)
+      result.or(failed);
     return result;
   }
 
-  /** True when {@link #forFacet} answers this set's own bitmap for the facet (no FILTER): the caller copies it before writing. */
-  public boolean sharesFacetMatches(final int facetIndex) {
-    return filterIndexByFacet[facetIndex] < 0;
+  /**
+   * The records the facet counts in the bucket ({@link #forFacet}) as a read-only view over this set's own bitmaps: nothing is copied.
+   * Null when nothing was recorded for the bucket.
+   */
+  public FacetMatches facetMatches(final int facetIndex, final int bucketId) {
+    final BucketMatches matches = matches(bucketId);
+    if (matches == null)
+      return null;
+    final int filterIndex = filterIndexByFacet[facetIndex];
+    return new FacetMatches(matches.passAll, filterIndex < 0 ? null : failedOnly(matches, filterIndex));
+  }
+
+  /**
+   * An upper bound of the bytes a bitmap derived from the facet's matches allocates: {@link #forFacet} for a facet with a filter, a
+   * {@link PositionBitmap#snapshot} of the pass-all set for one without, then, with a non-empty {@code patch}, {@code andNot(patch)}
+   * (which clones the stripes of the patched pages). Zero for a facet without filter and without patch: the pass-all set itself serves.
+   */
+  public long derivedBytes(final int facetIndex, final int bucketId, final PositionBitmap patch) {
+    final BucketMatches matches = matches(bucketId);
+    if (matches == null)
+      return 0;
+    final int filterIndex = filterIndexByFacet[facetIndex];
+    final PositionBitmap failed = filterIndex < 0 ? null : failedOnly(matches, filterIndex);
+    final boolean patched = patch != null && !patch.isEmpty();
+    if (filterIndex < 0 && !patched)
+      return 0;
+    final long stripeBytes = STRIPE_OVERHEAD + matches.maxRecordsInPage / 8;
+    final long failedPages = failed == null ? 0 : failed.pageCount();
+    final long patchPages = patched ? patch.pageCount() : 0;
+    // the page index (page number, stripe reference, stripe generation) of the pass-all pages and of those the failed-only set adds,
+    // then one stripe cloned per failed-only page and per patched page
+    return INDEX_ENTRY_BYTES * (matches.passAll.pageCount() + failedPages) + stripeBytes * (failedPages + patchPages);
+  }
+
+  /** The index, among the facets that carry one, of the facet's FILTER; -1 for a facet without. */
+  public int filterIndexOf(final int facetIndex) {
+    return filterIndexByFacet[facetIndex];
+  }
+
+  private static PositionBitmap failedOnly(final BucketMatches matches, final int filterIndex) {
+    return matches.failedOnly == null ? null : matches.failedOnly[filterIndex];
+  }
+
+  /**
+   * The records one facet counts in one bucket, read through the match set's own bitmaps: the pass-all set and, for a facet with a
+   * filter, the records that fail only that filter. The two are disjoint, so the cardinalities add. Valid while the match set is open.
+   */
+  public static final class FacetMatches {
+    private final PositionBitmap passAll;
+    private final PositionBitmap failed;
+
+    private FacetMatches(final PositionBitmap passAll, final PositionBitmap failed) {
+      this.passAll = passAll;
+      this.failed = failed;
+    }
+
+    public boolean get(final long position) {
+      return passAll.get(position) || failed != null && failed.get(position);
+    }
+
+    public long cardinality() {
+      return passAll.cardinality() + (failed == null ? 0 : failed.cardinality());
+    }
+
+    public long andCardinality(final PositionBitmap other) {
+      return passAll.andCardinality(other) + (failed == null ? 0 : failed.andCardinality(other));
+    }
   }
 
   /** The buckets that have matches, ascending. */

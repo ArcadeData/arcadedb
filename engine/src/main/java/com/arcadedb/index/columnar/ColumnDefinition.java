@@ -34,6 +34,16 @@ import java.time.temporal.ChronoUnit;
  * @param precision    the epoch unit of a date column ({@code DAYS} for DATE), null for any other
  */
 public record ColumnDefinition(int indexFileId, String property, Type propertyType, ColumnKind kind, boolean byItem, ChronoUnit precision) {
+  /**
+   * Whether a value is stored the same way in both columns (same property type, kind, BY ITEM and precision), whatever index file and
+   * property name each belongs to: the bucket columns of one polymorphic index differ by file id only, and a reader decodes one with the
+   * other's definition exactly when this holds.
+   */
+  public boolean sameEncoding(final ColumnDefinition other) {
+    return other != null && propertyType == other.propertyType && kind == other.kind && byItem == other.byItem
+        && precision == other.precision;
+  }
+
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("indexFileId", indexFileId);

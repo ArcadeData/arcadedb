@@ -371,4 +371,37 @@ class PositionBitmapTest {
     assertThat(snapshot.get(4 * 128 + 3)).isFalse();
     assertThat(bitmap.get(4 * 128 + 3)).isTrue();
   }
+
+  /** forEachAndNotAny visits what andNot over the union of the others leaves, against a BitSet oracle, without changing any bitmap. */
+  @Test
+  void forEachAndNotAnyMatchesAndNotOverTheUnion() {
+    final Random random = new Random(11);
+    final PositionBitmap base = new PositionBitmap(PAGE);
+    final PositionBitmap[] others = { new PositionBitmap(PAGE), new PositionBitmap(PAGE), new PositionBitmap(PAGE) };
+    final BitSet expected = new BitSet();
+    for (int i = 0; i < 20_000; i++) {
+      // pages 0 to 9; the others leave some pages untouched, and cover word boundaries
+      final int position = random.nextInt(10 * PAGE);
+      base.set(position);
+      expected.set(position);
+      if (random.nextInt(3) == 0)
+        others[random.nextInt(others.length)].set(random.nextInt(8 * PAGE));
+    }
+    for (final PositionBitmap other : others)
+      other.forEach(position -> expected.clear((int) position));
+    final long baseCardinality = base.cardinality();
+
+    final List<Long> seen = new ArrayList<>();
+    base.forEachAndNotAny(others, seen::add);
+    final List<Long> oracle = new ArrayList<>();
+    expected.stream().forEach(position -> oracle.add((long) position));
+    assertThat(seen).isEqualTo(oracle);
+    assertThat(base.cardinality()).isEqualTo(baseCardinality);
+
+    final List<Long> none = new ArrayList<>();
+    base.forEachAndNotAny(new PositionBitmap[0], none::add);
+    assertThat(none).hasSize((int) baseCardinality);
+    assertThatThrownBy(() -> base.forEachAndNotAny(new PositionBitmap[] { new PositionBitmap(256) }, p -> {
+    })).isInstanceOf(IllegalArgumentException.class);
+  }
 }

@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnReader;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
@@ -394,8 +395,10 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
    * so the WHERE's own comparison and conversions decide; a dictionary value is decided once per ordinal. The snapshot of a bucket is
    * acquired by the first row of the bucket and held until {@link #close()}. The record (the row) answers instead when the column
    * cannot: a pending position, one no segment covers, no value in the column (missing, or a value it could not hold), a zero double
-   * (the column does not keep the sign), a bucket with no usable projection or one that does not publish the column, and a bucket the
-   * caller's open transaction changed.
+   * (the column does not keep the sign), a bucket with no usable projection or one that does not publish the column with the plan's
+   * property type, and a bucket the caller's open transaction changed. That last test is made once per bucket, at its first row (as the
+   * INDEX evaluator looks its RID set up once): a record the application changes later in the same iteration, in a bucket it had not
+   * changed before, is judged on its committed column value (final review A-M2, accepted under D20).
    * <p>
    * Not charged to {@link FacetMemoryBudget}: the snapshots pin projection state the projection holds anyway, and the per-ordinal
    * verdict memo is one byte per dictionary value up to the highest ordinal a row reached in the bucket, a small fraction of the
@@ -410,6 +413,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     private       ColumnarIndexManager manager;
     private       ResultInternal       scratch;
     private       BucketColumn[]       buckets = new BucketColumn[0];
+    /** The one-bucket set the transaction check takes, reused for every bucket. */
+    private final IntHashSet           singleBucket = new IntHashSet(1);
     private       long                 columnAnswers;
     private       long                 recordAnswers;
 
@@ -536,9 +541,9 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
 
     private BucketColumn acquire(final int bucketId) {
       if (database.isTransactionActive()) {
-        final IntHashSet single = new IntHashSet(1);
-        single.add(bucketId);
-        if (database.getTransaction().hasChangesInFiles(single))
+        singleBucket.clear();
+        singleBucket.add(bucketId);
+        if (database.getTransaction().hasChangesInFiles(singleBucket))
           // the column holds committed values only; the rows are read as the transaction sees them
           return FROM_RECORDS;
       }
@@ -552,7 +557,9 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
         return FROM_RECORDS;
       }
       try {
-        if (snapshot.isUsable() && snapshot.publishes(property))
+        // decoded with the property type of the plan: a column the snapshot holds with another type (redefined since) is not read
+        final ColumnDefinition published = snapshot.isUsable() ? snapshot.publishedColumn(property) : null;
+        if (published != null && published.propertyType() == propertyType)
           return new BucketColumn(snapshot, property, snapshot.segments());
       } catch (final RuntimeException | Error e) {
         snapshot.close();

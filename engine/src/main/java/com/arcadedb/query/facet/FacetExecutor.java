@@ -31,6 +31,7 @@ import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
@@ -51,17 +52,24 @@ import java.util.Map;
  * {@link CrossBucketOrdinalMap}, and the collectors of several groups are merged by value.
  * <p>
  * Fallback scan (spec 7.8, D14): a bucket the projection cannot answer for a facet (no projection, a projection closed or dropped
- * meanwhile, an unusable snapshot, a column not published by the snapshot, a segment view without the column holding a match, no
- * COLUMNAR index on the property, an expression facet) is counted from its matched records by {@link FacetFallbackScanner}, by
- * collectors of their own (one per declaring type of the column, one for raw values) merged with the others by value. The answer stays
- * exact and the facet's source is {@code scan}. A query that scans takes one permit of {@link ColumnarIndexManager#fallbackScans()}
- * without waiting; refused, every facet that needed a scan is {@code unavailable} with the reason {@code fallback scans capped}, and
- * the others are counted as usual.
+ * meanwhile, an unusable snapshot, a column the snapshot does not publish with the schema's current encoding, a segment view without
+ * the column holding a match, no COLUMNAR index on the property, an expression facet) is counted from its matched records by
+ * {@link FacetFallbackScanner}, by collectors of their own (one per declaring type of the column, one for raw values) merged with the
+ * others by value. The answer stays exact and the facet's source is {@code scan}. A query that scans takes one permit of
+ * {@link ColumnarIndexManager#fallbackScans()} without waiting; refused, every facet that needed a scan is {@code unavailable} with the
+ * reason {@code fallback scans capped}, and the others are counted as usual.
  * <p>
  * Patching (spec 7.3, D10, D11): the matches a snapshot cannot answer for, and those the caller's open transaction wrote, are read
- * from their records by {@link FacetPatcher}, once per record for every facet. Above {@code arcadedb.columnar.patchBudget} positions
- * in all nothing is patched and the answer is not exact, except for the buckets the caller's transaction wrote: they are scanned for
- * every facet.
+ * from their records by {@link FacetPatcher}, once per record for every facet. Above {@code max(arcadedb.columnar.patchBudget,
+ * arcadedb.columnar.patchBudgetRatio x matches)} positions in all nothing is patched and the answer is not exact, except for the
+ * buckets the caller's transaction wrote: they are scanned for every facet. The fallback scan and the patch loop check the query's
+ * deadline and termination every few records.
+ * <p>
+ * Memory (D13): besides the counters, every bitmap the query derives from the match set is charged to {@link FacetMemoryBudget} before
+ * it is allocated: each bucket's patch set, and per bucket the matches a facet counts in the segments (a FILTER facet's own matches,
+ * the matches minus the patch set). Those are made for one bucket and one facet at a time and dropped once the facet counted the
+ * bucket (a histogram keeps them until it finishes); a refused charge makes that facet unavailable ({@code memory budget}), or, for a
+ * patch set, the answer not exact.
  * <p>
  * Waiting for counting memory is bounded per collector (one {@code arcadedb.columnar.queryBudgetWait} window, see
  * {@link CollectorReservations}), and a facet that spans N declaring types has N collectors: it can wait up to N windows in all.
@@ -83,7 +91,7 @@ public final class FacetExecutor {
 
   /**
    * @param matches the matched records, owned by the caller; {@link MatchSet#setFacetFilterIndex} was called with one entry per facet
-   * @param ctx     the context of the query
+   * @param ctx     the context of the query: its deadline and termination bound the records read
    * @param target  the type the query selects from, null when unknown. A facet that counts no bucket (an empty match set) still
    *                converts its literals (BOUNDS, range bounds, INCLUDE) with the column of the property's declaring type in it, exactly as
    *                a facet that counts one does; without it, or without a COLUMNAR index on the property there, a number is taken as is
@@ -109,6 +117,8 @@ public final class FacetExecutor {
     final int[] bucketIds = readableBuckets(db, matches.bucketIds());
     final ColumnarSnapshot[] snapshots = new ColumnarSnapshot[bucketIds.length];
     final boolean[] acquired = new boolean[bucketIds.length];
+    final CollectorReservations patchCharges = new CollectorReservations(GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
+    Throwable failure = null;
     try {
       final long now = System.currentTimeMillis();
       long lagMs = 0;
@@ -122,14 +132,28 @@ public final class FacetExecutor {
           lagMs = Math.max(lagMs, now - snapshots[i].oldestPendingEpochStartMs());
       }
 
+      // by facet, the buckets the projection answers; by bucket, whether it answers any facet (only those are patched)
+      final boolean[][] answers = new boolean[facets.size()][bucketIds.length];
+      final boolean[] answered = new boolean[bucketIds.length];
+      for (int f = 0; f < answers.length; f++)
+        for (int i = 0; i < bucketIds.length; i++) {
+          answers[f][i] = projectionAnswers(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
+          answered[i] |= answers[f][i];
+        }
+
       final PositionBitmap[] patches = new PositionBitmap[bucketIds.length];
       final boolean[] ownScanned = new boolean[bucketIds.length];
-      final boolean exact = planPatches(db, manager, matches, bucketIds, snapshots, patches, ownScanned);
+      final boolean exact = planPatches(db, manager, matches, bucketIds, snapshots, answered, patches, ownScanned, patchCharges);
 
       // by facet, the buckets read from their records (null: none)
       final boolean[][] scans = new boolean[facets.size()][];
       for (int f = 0; f < scans.length; f++)
-        scans[f] = scans(db, matches, f, facets.get(f), bucketIds, snapshots, ownScanned);
+        for (int i = 0; i < bucketIds.length; i++)
+          if (ownScanned[i] || !answers[f][i]) {
+            if (scans[f] == null)
+              scans[f] = new boolean[bucketIds.length];
+            scans[f][i] = true;
+          }
 
       final long patched = count(db, manager, matches, facets, ctx, target, bucketIds, snapshots, patches, scans, results, stats);
       if (patched > 0)
@@ -137,75 +161,87 @@ public final class FacetExecutor {
       final FacetResults facetResults = new FacetResults(exact, patched, lagMs, results);
       facetResults.setExecutionStats(stats);
       return facetResults;
+    } catch (final RuntimeException | Error e) {
+      failure = e;
+      throw e;
     } finally {
-      closeAcquired(snapshots, acquired);
+      if (patchCharges.waits() > 0)
+        manager.getStats().queryBudgetWaits(patchCharges.waits());
+      patchCharges.release();
+      closeAcquired(snapshots, acquired, failure);
     }
   }
 
   /**
-   * Fills each bucket's patch set (D11, plus the records the caller's open transaction wrote). When their sum exceeds
-   * {@code arcadedb.columnar.patchBudget} nothing is patched (D10): a bucket the caller's transaction wrote is then scanned for every
-   * facet instead ({@code scanned}, no patch set), any other is counted from the projection alone.
+   * Fills the patch set of each bucket the projection answers a facet in (D11, plus the records the caller's open transaction wrote),
+   * each charged to the memory budget before it is made. When their sum exceeds {@code max(arcadedb.columnar.patchBudget,
+   * arcadedb.columnar.patchBudgetRatio x matches)} nothing is patched (D10): a bucket the caller's transaction wrote is then scanned for
+   * every facet instead ({@code scanned}, no patch set), any other is counted from the projection alone. A refused charge does the same,
+   * except that it is no patch overflow.
+   *
+   * @param answered by bucket, whether the projection answers any facet in it; a bucket every facet scans needs no patch set
    *
    * @return false when a bucket that needed patching is counted from the projection alone (the answer is not exact)
    */
   private static boolean planPatches(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
-      final int[] bucketIds, final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches, final boolean[] scanned) {
+      final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[] answered, final PositionBitmap[] patches,
+      final boolean[] scanned, final CollectorReservations charges) {
     final PositionBitmap[] own = FacetPatcher.ownWrites(db, matches, bucketIds);
+    final long budget = Math.max(GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValueAsLong(),
+        (long) (GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValueAsDouble() * matches.size()));
     long total = 0;
-    for (int i = 0; i < bucketIds.length; i++) {
-      if (snapshots[i] == null)
+    boolean refused = false;
+    for (int i = 0; i < bucketIds.length && !refused; i++) {
+      if (snapshots[i] == null || !answered[i])
         continue;
-      patches[i] = FacetPatcher.patchSet(matches, snapshots[i], bucketIds[i]);
+      // counted first, allocating nothing: a caught-up bucket (the usual case) charges and makes nothing
+      final long size = FacetPatcher.patchSetSize(matches, snapshots[i], bucketIds[i]);
+      if (size > 0 && charges.reserve(FacetPatcher.patchSetBytes(matches, bucketIds[i], size), true) == null) {
+        refused = true;
+        break;
+      }
+      patches[i] = size == 0 ? new PositionBitmap(snapshots[i].pendingPositions().maxRecordsInPage())
+          : FacetPatcher.patchSet(matches, snapshots[i], bucketIds[i]);
       if (own != null && own[i] != null)
         patches[i].or(own[i]);
       total += patches[i].cardinality();
     }
-    if (total <= GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValueAsLong())
+    if (!refused && total <= budget)
       return true;
 
-    manager.getStats().queryPatchOverflow();
+    if (!refused)
+      manager.getStats().queryPatchOverflow();
     boolean exact = true;
     for (int i = 0; i < bucketIds.length; i++) {
-      if (patches[i] == null)
+      if (snapshots[i] == null || !answered[i])
         continue;
       if (own != null && own[i] != null)
         // the caller's own uncommitted writes are not lag: the committed projection value would be a wrong answer
         scanned[i] = true;
-      else if (!patches[i].isEmpty())
+      else if (patches[i] == null || !patches[i].isEmpty())
+        // a patch set the budget refused to make is not known to be empty
         exact = false;
       patches[i] = null;
     }
+    charges.release();
     return exact;
   }
 
   /**
-   * The buckets the facet is counted in by the fallback scan: those the projection cannot answer for it (see the class comment), and
-   * those {@code ownScanned} (the caller's transaction wrote them, over the patch budget).
-   *
-   * @return by bucket index, null when the projection answers every bucket
+   * Whether the bucket's snapshot holds the facet's property, encoded as the schema's definition encodes it now
+   * ({@link ColumnDefinition#sameEncoding}), for every match of the
+   * facet it holds live. A column redefined after the snapshot was taken (retyped, or dropped and created again) is not decoded with
+   * the new definition: the bucket is read from its records.
    */
-  private static boolean[] scans(final DatabaseInternal db, final MatchSet matches, final int facetIndex, final FacetSpec spec,
-      final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[] ownScanned) {
-    boolean[] scans = null;
-    for (int i = 0; i < bucketIds.length; i++)
-      if (ownScanned[i] || !projectionAnswers(db, matches, facetIndex, spec, bucketIds[i], snapshots[i])) {
-        if (scans == null)
-          scans = new boolean[bucketIds.length];
-        scans[i] = true;
-      }
-    return scans;
-  }
-
-  /** Whether the bucket's snapshot holds the facet's property for every match of the facet it holds live. */
   private static boolean projectionAnswers(final DatabaseInternal db, final MatchSet matches, final int facetIndex, final FacetSpec spec,
       final int bucketId, final ColumnarSnapshot snapshot) {
     final String property = spec.property();
-    if (property == null || snapshot == null || !snapshot.publishes(property))
+    if (property == null || snapshot == null)
       return false;
-    if (FacetFallbackScanner.column(db.getSchema().getTypeByBucketId(bucketId), property) == null)
+    final ColumnDefinition current = FacetFallbackScanner.column(db.getSchema().getTypeByBucketId(bucketId), property);
+    if (current == null || !current.sameEncoding(snapshot.publishedColumn(property)))
       return false;
-    final PositionBitmap facetMatches = matches.forFacet(facetIndex, bucketId);
+    final MatchSet.FacetMatches facetMatches = matches.facetMatches(facetIndex, bucketId);
     for (final ColumnarSegmentView segment : snapshot.segments())
       if (segment.column(property) == null && facetMatches != null && facetMatches.andCardinality(segment.live()) > 0)
         return false;
@@ -228,12 +264,14 @@ public final class FacetExecutor {
       final List<FacetSpec> facets, final CommandContext ctx, final DocumentType target, final int[] bucketIds,
       final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches, final boolean[][] scans,
       final LinkedHashMap<String, FacetResult> results, final LinkedHashMap<String, FacetExecutionStats> stats) {
+    final WorkGuard guard = WorkGuard.forCommandDeadline(ctx);
     final FacetPlan[] plans = new FacetPlan[facets.size()];
+    final DerivedMatches derived = new DerivedMatches(matches, facets);
     boolean scanPermit = false;
     try {
       boolean wantsScan = false;
       for (int f = 0; f < plans.length; f++) {
-        plans[f] = plan(db, manager, matches, f, facets.get(f), bucketIds, snapshots, patches, scans[f]);
+        plans[f] = plan(db, manager, matches, f, facets.get(f), bucketIds, snapshots, scans[f]);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
       }
       if (wantsScan) {
@@ -258,18 +296,27 @@ public final class FacetExecutor {
         for (int f = 0; f < plans.length; f++) {
           scanning[f] = plans[f].scanBucket(i, bucketIds[i]);
           sources[f] = scanning[f] != null ? plans[f].scanSourceOf[i] : null;
-          patching[f] = scanning[f] != null ? null : plans[f].countBucket(i, snapshots[i]);
+          patching[f] = null;
+          if (scanning[f] == null && plans[f].counts(i)) {
+            final PositionBitmap segmentMatches = derived.of(f, bucketIds[i], patches[i]);
+            if (segmentMatches == null)
+              plans[f].refuse();
+            else
+              patching[f] = plans[f].countBucket(i, snapshots[i], segmentMatches);
+            derived.facetDone();
+          }
           anyScanning |= scanning[f] != null;
           anyPatching |= patching[f] != null;
         }
+        derived.bucketDone();
         final boolean patchHere = anyPatching && patches[i] != null && !patches[i].isEmpty();
         if (anyScanning) {
           final FacetPatcher.Patching patcher = patchHere ? new FacetPatcher.Patching(db, matches, snapshots[i], facets, patchingView) : null;
-          FacetFallbackScanner.scan(db, matches, bucketIds[i], sourcesView, ctx, sink, patchHere ? patches[i] : null, patcher);
+          FacetFallbackScanner.scan(db, matches, bucketIds[i], sourcesView, ctx, sink, patchHere ? patches[i] : null, patcher, guard);
           if (patcher != null)
             patched += patcher.read();
         } else if (patchHere)
-          patched += FacetPatcher.countPatched(db, matches, snapshots[i], patches[i], facets, patchingView);
+          patched += FacetPatcher.countPatched(db, matches, snapshots[i], patches[i], facets, patchingView, guard);
       }
 
       for (final FacetPlan plan : plans) {
@@ -283,6 +330,81 @@ public final class FacetExecutor {
       for (final FacetPlan plan : plans)
         if (plan != null)
           plan.release();
+      derived.release(manager);
+    }
+  }
+
+  /**
+   * The bitmaps a facet's collector counts the segments of a bucket with, derived from the match set and charged to the memory budget
+   * before they are made: a FILTER facet's own matches, and the matches minus the bucket's patch set. A facet without FILTER in a bucket
+   * without patch set counts the match set's own bitmap (nothing made). The matches minus the patch set of the facets without FILTER
+   * are made once per bucket and shared by them; a FILTER facet's bitmap is dropped (its charge released) as soon as the facet counted
+   * the bucket. A histogram keeps the bitmaps it counted until it finishes: those stay charged until the query ends.
+   */
+  private static final class DerivedMatches {
+    private final MatchSet              matches;
+    /** By facet: whether its collector keeps the bitmaps (a histogram). */
+    private final boolean[]             keeps;
+    /** Whether a facet without FILTER keeps the bitmaps: the shared one is then charged until the query ends. */
+    private final boolean               sharedKept;
+    private final CollectorReservations kept;
+    private final CollectorReservations bucket;
+    private final CollectorReservations facet;
+    private       PositionBitmap        shared;
+
+    private DerivedMatches(final MatchSet matches, final List<FacetSpec> facets) {
+      this.matches = matches;
+      this.keeps = new boolean[facets.size()];
+      boolean sharedKept = false;
+      for (int f = 0; f < keeps.length; f++) {
+        keeps[f] = facets.get(f) instanceof HistogramFacetSpec;
+        sharedKept |= keeps[f] && matches.filterIndexOf(f) < 0;
+      }
+      this.sharedKept = sharedKept;
+      final long waitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
+      this.kept = new CollectorReservations(waitMs);
+      this.bucket = new CollectorReservations(waitMs);
+      this.facet = new CollectorReservations(waitMs);
+    }
+
+    /** The bitmap the facet counts the bucket's segments with; null when the memory budget refused it. */
+    private PositionBitmap of(final int facetIndex, final int bucketId, final PositionBitmap patch) {
+      final boolean patched = patch != null && !patch.isEmpty();
+      final boolean filtered = matches.filterIndexOf(facetIndex) >= 0;
+      if (!filtered && !patched)
+        return matches.forFacet(facetIndex, bucketId);
+      if (!filtered && shared != null)
+        return shared;
+      final CollectorReservations charges = filtered ? keeps[facetIndex] ? kept : facet : sharedKept ? kept : bucket;
+      if (charges.reserve(matches.derivedBytes(facetIndex, bucketId, patch), true) == null)
+        return null;
+      // without FILTER the match set's own bitmap: a copy-on-write snapshot, so the andNot below clones only the patched pages
+      final PositionBitmap derived = filtered ? matches.forFacet(facetIndex, bucketId) : matches.forFacet(facetIndex, bucketId).snapshot();
+      if (patched)
+        derived.andNot(patch);
+      if (!filtered)
+        shared = derived;
+      return derived;
+    }
+
+    /** The facet counted the bucket: a FILTER facet's bitmap is dropped, unless its histogram keeps it. */
+    private void facetDone() {
+      facet.release();
+    }
+
+    /** Every facet counted the bucket: the shared bitmap is dropped, unless a histogram keeps it. */
+    private void bucketDone() {
+      shared = null;
+      bucket.release();
+    }
+
+    private void release(final ColumnarIndexManager manager) {
+      final int waits = kept.waits() + bucket.waits() + facet.waits();
+      if (waits > 0)
+        manager.getStats().queryBudgetWaits(waits);
+      kept.release();
+      bucket.release();
+      facet.release();
     }
   }
 
@@ -300,9 +422,15 @@ public final class FacetExecutor {
       final long matchCount) {
     if (type == null)
       return collectorFor(spec, null, matchCount, null, null);
+    return columnCollector(spec, type, column(type, spec.property()), matchCount);
+  }
+
+  /** The collector of a facet for one declaring type, counting {@code column} (the definition the counted segments were written with). */
+  private static FacetCollector columnCollector(final FacetSpec spec, final DocumentType type, final ColumnDefinition column,
+      final long matchCount) {
     final DatabaseInternal db = (DatabaseInternal) type.getSchema().getEmbedded().getDatabase();
-    return collectorFor(spec, column(type, spec.property()), matchCount, db,
-        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName())));
+    return collectorFor(spec, column, matchCount, db,
+        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column));
   }
 
   /**
@@ -323,36 +451,44 @@ public final class FacetExecutor {
   /**
    * Groups the facet's buckets by declaring type and prepares one collector per group: the buckets the projection answers, then the
    * scanned buckets, by how they are read ({@link FacetFallbackScanner#sourceOf}, decided here once per bucket and handed to the scan):
-   * one collector per column, one per kind of raw read.
+   * one collector per column, one per kind of raw read. The declaring type's column definition is read once here: a bucket whose
+   * snapshot publishes the column with another encoding (redefined since {@link #projectionAnswers} looked) is scanned too, so the
+   * collector decodes every segment it counts with the definition it was written with.
    *
    * @param scans by bucket index, the buckets the facet is scanned in; null when none
    */
   private static FacetPlan plan(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
-      final int facetIndex, final FacetSpec spec, final int[] bucketIds, final ColumnarSnapshot[] snapshots,
-      final PositionBitmap[] patches, final boolean[] scans) {
+      final int facetIndex, final FacetSpec spec, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[] scans) {
     final FacetPlan plan = new FacetPlan(spec, bucketIds.length);
     final String property = spec.property();
     // the buckets of each declaring type, in bucket order; the scanned buckets by column or kind of raw read
     final LinkedHashMap<String, List<Integer>> groups = new LinkedHashMap<>();
     final LinkedHashMap<String, List<Integer>> scanGroups = new LinkedHashMap<>();
     final Map<String, DocumentType> declaringTypes = new LinkedHashMap<>();
+    final Map<String, ColumnDefinition> declaredColumns = new LinkedHashMap<>();
     // a date column or declared date property in any bucket: the buckets of types that do not declare the property read it as dates
     boolean dates = false;
     for (int i = 0; i < bucketIds.length; i++) {
       final DocumentType type = db.getSchema().getTypeByBucketId(bucketIds[i]);
       // an index dropped since projectionAnswers looked: the bucket is scanned as well
       final TypeIndex index = type == null || property == null ? null : type.getPolymorphicColumnarIndex(property);
-      if (scans != null && scans[i] || index == null) {
+      ColumnDefinition declared = null;
+      if (index != null && (scans == null || !scans[i])) {
+        final String declaring = index.getTypeName();
+        declaringTypes.computeIfAbsent(declaring, k -> db.getSchema().getType(declaring));
+        declared = declaredColumns.computeIfAbsent(declaring, k -> FacetFallbackScanner.column(declaringTypes.get(declaring), property));
+        if (declared == null || !declared.sameEncoding(snapshots[i].publishedColumn(property)))
+          declared = null;
+      }
+      if (declared == null) {
         final FacetFallbackScanner.Source source = FacetFallbackScanner.sourceOf(db, type, spec);
         plan.scanSourceOf[i] = source;
         dates |= source.read() == FacetFallbackScanner.Read.EPOCH_MS || source.column() != null && source.column().propertyType()
             .isDateOrDateTime();
         continue;
       }
-      final String declaring = index.getTypeName();
-      declaringTypes.putIfAbsent(declaring, db.getSchema().getType(declaring));
-      groups.computeIfAbsent(declaring, k -> new ArrayList<>()).add(i);
-      dates |= column(declaringTypes.get(declaring), property).propertyType().isDateOrDateTime();
+      groups.computeIfAbsent(index.getTypeName(), k -> new ArrayList<>()).add(i);
+      dates |= declared.propertyType().isDateOrDateTime();
     }
     for (int i = 0; i < bucketIds.length; i++) {
       FacetFallbackScanner.Source source = plan.scanSourceOf[i];
@@ -366,8 +502,8 @@ public final class FacetExecutor {
 
     try {
       for (final Map.Entry<String, List<Integer>> group : groups.entrySet())
-        if (!plan.addGroup(db, manager, matches, facetIndex, group.getKey(), declaringTypes.get(group.getKey()), group.getValue(),
-            bucketIds, snapshots, patches)) {
+        if (!plan.addGroup(db, manager, matches, facetIndex, group.getKey(), declaringTypes.get(group.getKey()),
+            declaredColumns.get(group.getKey()), group.getValue(), bucketIds, snapshots)) {
           plan.unavailable = true;
           return plan;
         }
@@ -389,13 +525,11 @@ public final class FacetExecutor {
     /** By bucket index: the collector of the bucket's declaring type, null for a bucket the facet does not count. */
     private final FacetCollector[]            collectorOf;
     private final CrossBucketOrdinalMap[]     mapOf;
-    /** By bucket index: the facet's matches minus the patch set, what the segments count. */
-    private final PositionBitmap[]            segmentMatches;
     /** By bucket index: the collector of a bucket the facet is scanned in, null for the others. */
     private final FacetCollector[]            scanCollectorOf;
     /** By bucket index: how a bucket the facet is scanned in is read, null for the others. */
     private final FacetFallbackScanner.Source[] scanSourceOf;
-    /** The memory budget refused an ordinal map: nothing is counted. */
+    /** The memory budget refused an ordinal map or a bitmap of the facet's matches: nothing is counted. */
     private       boolean                     unavailable;
     /** The facet needed a fallback scan and the permit was refused: nothing is counted. */
     private       boolean                     capped;
@@ -406,7 +540,6 @@ public final class FacetExecutor {
       this.spec = spec;
       this.collectorOf = new FacetCollector[buckets];
       this.mapOf = new CrossBucketOrdinalMap[buckets];
-      this.segmentMatches = new PositionBitmap[buckets];
       this.scanCollectorOf = new FacetCollector[buckets];
       this.scanSourceOf = new FacetFallbackScanner.Source[buckets];
     }
@@ -419,7 +552,7 @@ public final class FacetExecutor {
         final int[] bucketIds) {
       long matchCount = 0;
       for (final int i : members) {
-        final PositionBitmap facetMatches = matches.forFacet(facetIndex, bucketIds[i]);
+        final MatchSet.FacetMatches facetMatches = matches.facetMatches(facetIndex, bucketIds[i]);
         if (facetMatches != null)
           matchCount += facetMatches.cardinality();
       }
@@ -447,40 +580,31 @@ public final class FacetExecutor {
     /**
      * Prepares the buckets of one declaring type: the collector is sized for every record it counts, from segments and from records.
      *
+     * @param column the declaring type's column, which every member's snapshot publishes with the same encoding
+     *
      * @return false when the memory budget refused the private ordinal array of an older dictionary generation
      */
     private boolean addGroup(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches, final int facetIndex,
-        final String declaring, final DocumentType declaringType, final List<Integer> members, final int[] bucketIds,
-        final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches) {
+        final String declaring, final DocumentType declaringType, final ColumnDefinition column, final List<Integer> members,
+        final int[] bucketIds, final ColumnarSnapshot[] snapshots) {
       final ColumnarSnapshot[] groupSnapshots = new ColumnarSnapshot[members.size()];
       long matchCount = 0;
       for (int j = 0; j < groupSnapshots.length; j++) {
         final int i = members.get(j);
         groupSnapshots[j] = snapshots[i];
-        // shared with the match set for a facet without FILTER: copied before it is written
-        PositionBitmap facetMatches = matches.forFacet(facetIndex, bucketIds[i]);
-        final PositionBitmap patch = patches[i];
-        if (patch != null && !patch.isEmpty()) {
-          // the facet's patched records: counted from the records, not from the segments
-          matchCount += facetMatches.andCardinality(patch);
-          if (matches.sharesFacetMatches(facetIndex))
-            facetMatches = facetMatches.copy();
-          facetMatches.andNot(patch);
-        }
-        segmentMatches[i] = facetMatches;
-        matchCount += facetMatches.cardinality();
+        // from the segments or from the patched records, every match of the facet is counted once
+        matchCount += matches.facetMatches(facetIndex, bucketIds[i]).cardinality();
       }
 
-      final ColumnKind kind = column(declaringType, spec.property()).kind();
       CrossBucketOrdinalMap map = null;
-      if (kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) {
+      if (column.kind() == ColumnKind.ORDINAL || column.kind() == ColumnKind.ORDINAL_LIST) {
         map = CrossBucketOrdinalMap.of(db, declaring, spec.property(), groupSnapshots);
         if (map == null)
           return false;
         maps.add(map);
       }
 
-      final FacetCollector collector = collectorFor(spec, declaringType, manager.projection(bucketIds[members.getFirst()]), matchCount);
+      final FacetCollector collector = columnCollector(spec, declaringType, column, matchCount);
       collectors.add(collector);
       for (final int i : members) {
         collectorOf[i] = collector;
@@ -489,20 +613,31 @@ public final class FacetExecutor {
       return true;
     }
 
+    /** Whether the facet counts the bucket from its snapshot (it is available and the bucket is of one of its declaring types). */
+    private boolean counts(final int i) {
+      return !unavailable && !capped && collectorOf[i] != null;
+    }
+
+    /** The memory budget refused a bitmap of the facet's matches: the facet is unavailable and its counters are given back now. */
+    private void refuse() {
+      unavailable = true;
+      release();
+    }
+
     /**
      * Begins the bucket on its collector and counts its segment views.
      *
-     * @return the collector, which then takes the bucket's patched records; null when the facet does not count the bucket
+     * @param segmentMatches the facet's matches in the bucket minus the patch set: what the segments count
+     *
+     * @return the collector, which then takes the bucket's patched records
      */
-    private FacetCollector countBucket(final int i, final ColumnarSnapshot snapshot) {
-      final FacetCollector collector = unavailable || capped ? null : collectorOf[i];
-      if (collector == null)
-        return null;
+    private FacetCollector countBucket(final int i, final ColumnarSnapshot snapshot, final PositionBitmap segmentMatches) {
+      final FacetCollector collector = collectorOf[i];
       collector.beginBucket(snapshot.bucketId(), snapshot, mapOf[i]);
       for (final ColumnarSegmentView segment : snapshot.segments())
         // a view without the column holds no match of the facet live, or the bucket would be scanned (projectionAnswers)
         if (segment.column(spec.property()) != null)
-          collector.collect(segment, segmentMatches[i]);
+          collector.collect(segment, segmentMatches);
       return collector;
     }
 
@@ -599,8 +734,11 @@ public final class FacetExecutor {
     return null;
   }
 
-  /** Closes the snapshots this executor acquired (not those the match set owns), each in its own guard. */
-  private static void closeAcquired(final ColumnarSnapshot[] snapshots, final boolean[] acquired) {
+  /**
+   * Closes the snapshots this executor acquired (not those the match set owns), each in its own guard. A close failure is thrown, or,
+   * when {@code inFlight} (the failure the execution already ends with) is set, added to it as suppressed so that one is not lost.
+   */
+  private static void closeAcquired(final ColumnarSnapshot[] snapshots, final boolean[] acquired, final Throwable inFlight) {
     RuntimeException failure = null;
     for (int i = 0; i < snapshots.length; i++) {
       if (!acquired[i])
@@ -608,7 +746,9 @@ public final class FacetExecutor {
       try {
         snapshots[i].close();
       } catch (final RuntimeException e) {
-        if (failure == null)
+        if (inFlight != null)
+          inFlight.addSuppressed(e);
+        else if (failure == null)
           failure = e;
         else
           failure.addSuppressed(e);

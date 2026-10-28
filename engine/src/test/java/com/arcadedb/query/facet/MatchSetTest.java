@@ -97,8 +97,53 @@ class MatchSetTest extends TestHelper {
       m.setFacetFilterIndex(new int[] { 0 });
       final PositionBitmap first = m.forFacet(0, bucketId);
       first.set(99);
+      // a stripe it shares with the pass-all set, copy-on-write: cloned before the write
+      first.clear(1);
       assertThat(positions(m.forFacet(0, bucketId))).containsExactly(1L, 2L);
       assertThat(positions(m.forBucket(bucketId))).containsExactly(1L, 2L);
+      assertThat(positions(first)).containsExactly(2L, 99L);
+    } finally {
+      m.close();
+    }
+  }
+
+  /** Final review A-M3: a record the rows yield twice is one match: the size counts it once. */
+  @Test
+  @Timeout(120)
+  void aRecordAddedTwiceIsOneMatch() {
+    final int bucketId = primaryBucketId();
+    final MatchSet m = build(bucketId, 1, new long[][] { { 1, 0 }, { 2, 1 }, { 1, 0 }, { 2, 1 } });
+    try {
+      m.setFacetFilterIndex(new int[] { 0, -1 });
+      assertThat(m.size()).isEqualTo(2);
+      assertThat(positions(m.forFacet(0, bucketId))).containsExactly(1L, 2L);
+      assertThat(positions(m.forFacet(1, bucketId))).containsExactly(1L);
+    } finally {
+      m.close();
+    }
+  }
+
+  /** The view of a facet's matches answers what {@link MatchSet#forFacet} holds, without making a bitmap. */
+  @Test
+  @Timeout(120)
+  void facetMatchesViewAgreesWithForFacet() {
+    final int bucketId = primaryBucketId();
+    final MatchSet m = build(bucketId, 2, new long[][] { { 1, 0b00 }, { 2, 0b01 }, { 3, 0b10 }, { 4, 0b11 }, { 5000, 0b01 } });
+    try {
+      m.setFacetFilterIndex(new int[] { 0, 1, -1 });
+      final PositionBitmap probe = new PositionBitmap(m.forBucket(bucketId).maxRecordsInPage());
+      probe.set(2);
+      probe.set(3);
+      probe.set(5000);
+      for (int f = 0; f < 3; f++) {
+        final MatchSet.FacetMatches view = m.facetMatches(f, bucketId);
+        final PositionBitmap bitmap = m.forFacet(f, bucketId);
+        assertThat(view.cardinality()).as("facet " + f).isEqualTo(bitmap.cardinality());
+        assertThat(view.andCardinality(probe)).as("facet " + f).isEqualTo(bitmap.andCardinality(probe));
+        for (long position = 0; position < 6000; position++)
+          assertThat(view.get(position)).as("facet " + f + " position " + position).isEqualTo(bitmap.get(position));
+      }
+      assertThat(m.facetMatches(0, bucketId + 1000)).isNull();
     } finally {
       m.close();
     }

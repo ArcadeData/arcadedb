@@ -31,9 +31,10 @@ import com.arcadedb.index.columnar.PositionBitmap;
  * The {@code matches} given to {@link #collect} is the facet's match bitmap AND NOT the patched positions, not ANDed with the live
  * rows: an ORDINAL or ORDINAL_LIST collector hands it to {@code ColumnReader.forEachOrdinal}, which visits only live rows, and counts
  * as missing {@code matches.andCardinality(segment.live())} minus the distinct positions visited; a LONG or DOUBLE collector ANDs
- * {@code segment.live()} itself. A collector may keep the segment and its {@code matches} to count them at {@link #finish} (a
- * histogram whose bucket boundaries depend on every matched value): both stay valid until the executor returns, since it closes the
- * snapshots and drops the bitmaps only after every facet finished.
+ * {@code segment.live()} itself. Only the collector of a {@link HistogramFacetSpec} may keep the segment and its {@code matches} to
+ * count them at {@link #finish} (its bucket boundaries depend on every matched value): the executor keeps those bitmaps, and their
+ * memory charge, until it returns, and closes the snapshots only after every facet finished. Any other collector must be done with
+ * {@code matches} when {@link #collect} returns: the executor drops a derived bitmap (and gives its memory back) right after.
  */
 public interface FacetCollector {
   /**

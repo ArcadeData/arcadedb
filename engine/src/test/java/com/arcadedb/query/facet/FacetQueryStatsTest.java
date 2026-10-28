@@ -103,11 +103,14 @@ class FacetQueryStatsTest extends TestHelper {
       assertThat(stats.queryPatchOverflowsCount()).as("within the patch budget").isEqualTo(overflowsBefore);
 
       final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+      final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
       GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(1);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
       try {
         assertThat(facets("brand TERMS TOP 1000").exact()).isFalse();
       } finally {
         GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+        GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
       }
       assertThat(stats.queryPatchOverflowsCount()).isEqualTo(overflowsBefore + 1);
     }
