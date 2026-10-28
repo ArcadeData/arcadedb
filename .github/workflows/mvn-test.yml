@@ -1293,21 +1293,36 @@ jobs:
 
       # continue-on-error keeps a missing artifact from failing the step with a bare "Artifact not
       # found", so the collector below can report which suite is missing and why it matters.
-      - name: Download unit test coverage reports
+      # unit-tests and slow-unit-tests run as two shards each. Every shard is downloaded into its own
+      # directory and named to the collector as a suite of its own: a missing shard then fails the
+      # collector, and the two slow shards (both -pl engine) cannot overwrite each other's jacoco.xml.
+      - name: Download unit test (engine shard) coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          pattern: unit-coverage-reports-*
-          merge-multiple: true
-          path: unit-coverage
+          name: unit-coverage-reports-engine
+          path: unit-coverage-engine
 
-      - name: Download slow unit test coverage reports
+      - name: Download unit test (other-modules shard) coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          pattern: slow-unit-coverage-reports-*
-          merge-multiple: true
-          path: slow-unit-coverage
+          name: unit-coverage-reports-modules
+          path: unit-coverage-modules
+
+      - name: Download slow unit test (lsm-vector shard) coverage reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: slow-unit-coverage-reports-lsm-vector
+          path: slow-unit-coverage-lsm-vector
+
+      - name: Download slow unit test (rest shard) coverage reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: slow-unit-coverage-reports-rest
+          path: slow-unit-coverage-rest
 
       - name: Download vector unit test coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1338,8 +1353,10 @@ jobs:
         id: coverage-files-generator
         run: |
           ./.github/scripts/collect-coverage-reports.sh \
-            unit-tests=unit-coverage \
-            slow-unit-tests=slow-unit-coverage \
+            unit-tests-engine=unit-coverage-engine \
+            unit-tests-modules=unit-coverage-modules \
+            slow-unit-tests-lsm-vector=slow-unit-coverage-lsm-vector \
+            slow-unit-tests-rest=slow-unit-coverage-rest \
             vector-unit-tests=vector-unit-coverage \
             opencypher-tck-tests=opencypher-tck-coverage \
             integration-tests=integration-coverage
