@@ -24,6 +24,8 @@ import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnReader;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
+import com.arcadedb.index.columnar.DictionaryPrefixSearch;
+import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.index.columnar.OrdinalConsumer;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.schema.Type;
@@ -35,7 +37,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntBinaryOperator;
+import java.util.function.IntPredicate;
 import java.util.function.LongConsumer;
+import java.util.function.Predicate;
 
 /**
  * Counts a terms facet for one declaring type. A dictionary column (ORDINAL, ORDINAL_LIST) is counted per merged ordinal of the type's
@@ -50,6 +54,15 @@ import java.util.function.LongConsumer;
  * ORDINAL_LIST hash counter when it reaches the distinct ordinals reserved (the cardinality at most). Any refusal makes the facet
  * {@code unavailable} with the reason {@code memory budget} and releases everything it held. The reservations are released when the
  * facet is ranked or {@link #release released}.
+ * <p>
+ * <b>Paging.</b> A facet ordered by value ascending without INCLUDE (the first page) or with AFTER (the next ones, which imply that
+ * order) returns a cursor ({@link FacetResult#after()}): the last value of the page when a value with at least MIN_COUNT follows it,
+ * else null. AFTER keeps the values strictly greater than the cursor, which the executor converted with the property's type (a cursor
+ * is echoed as received: a date formatted without its sub-seconds is another value), and it filters before ranking on every path: one declaring type over a dictionary prunes by rank against
+ * {@link DictionaryPrefixSearch#rankAfter} (a value check on the cursor's gap only), merged ordinals, values counted by value, the merge
+ * across declaring types and LONG and DOUBLE terms compare values ({@link FacetValueComparator}: numbers as numbers, never by their bit
+ * patterns), a date term on its epoch count. The MISSING bucket of a paged facet sorts last: it is returned once, outside TOP, on the
+ * last page (the one whose cursor is null), never on an earlier one; {@code otherCount} counts every matched value outside the page.
  * <p>
  * Not thread safe: a collector is driven by one query thread.
  */
@@ -98,6 +111,8 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   // the segment being counted: positions arrive in ascending order, so a change of position is a new document
   private long             lastPosition;
   private long             positions;
+  /** The cursor of the next page: the last value returned when a value follows it, set by the ranking. */
+  private Object           cursor;
 
   /**
    * @param column     the column of the property in the declaring type, null when no bucket is counted (no match)
@@ -583,14 +598,85 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
         buckets.add(FacetBucket.term(entry.getKey(), entry.getValue()));
         returned += entry.getValue();
       }
-    } else
-      for (final int ordinal : FacetRanker.topOrdinals(counter, spec.top(), spec.minCount(), spec.order(), valueOrder())) {
-        final long count = counter.get(ordinal);
-        buckets.add(FacetBucket.term(map.value(ordinal), count));
+    } else {
+      final int[] ordinals = topOrdinals(pageSize());
+      final int n = Math.min(ordinals.length, spec.top());
+      for (int i = 0; i < n; i++) {
+        final long count = counter.get(ordinals[i]);
+        buckets.add(FacetBucket.term(map.value(ordinals[i]), count));
         returned += count;
       }
+      if (ordinals.length > n)
+        cursor = map.value(ordinals[n - 1]);
+    }
     returned -= addMissingBucket(buckets, missing);
-    return FacetResult.of("terms", "index", buckets, total[0] - returned, missing);
+    return paged(FacetResult.of("terms", "index", buckets, total[0] - returned, missing));
+  }
+
+  /**
+   * The best {@code top} merged ordinals, after the AFTER cursor when there is one. One bucket's dictionary prunes by rank: an ordinal
+   * ranked above the cursor's gap ({@link DictionaryPrefixSearch#rankAfter}) sorts after it, one ranked below before it, and only an
+   * ordinal of the gap's own rank (unranked, newer than the view, or every ordinal when the dictionary has no view) is compared by value.
+   * The ranks hold against the view the gap was computed with: when a rebuild published another one meanwhile, every ordinal is compared
+   * by value instead.
+   */
+  private int[] topOrdinals(final int top) {
+    if (spec.after() == null)
+      return FacetRanker.topOrdinals(counter, top, spec.minCount(), spec.order(), valueOrder());
+    final Object after = FacetValueComparator.normalize(spec.after());
+    final FacetValueComparator values = FacetValueComparator.INSTANCE;
+    final CrossBucketOrdinalMap merged = map;
+    final IntPredicate byValue = ordinal -> values.compareNormalized(merged.value(ordinal), after) > 0;
+    if (map instanceof CrossBucketOrdinalMap.IdentityOrdinalMap identity) {
+      final GlobalDictionary dictionary = identity.dictionary();
+      final int[] view = dictionary.sortedOrdinals();
+      final int gap = DictionaryPrefixSearch.rankAfter(dictionary, after);
+      final int[] selected = FacetRanker.topOrdinals(counter, top, spec.minCount(), spec.order(), valueOrder(), ordinal -> {
+        final int rank = dictionary.rank(ordinal);
+        return rank > gap || rank == gap && byValue.test(ordinal);
+      });
+      if (dictionary.sortedOrdinals() == view)
+        return selected;
+    }
+    return FacetRanker.topOrdinals(counter, top, spec.minCount(), spec.order(), valueOrder(), byValue);
+  }
+
+  /** Whether the facet returns a cursor: ordered by value ascending without INCLUDE, as every AFTER page is. */
+  private boolean isPaged() {
+    return spec.after() != null || spec.order() == FacetOrder.VALUE_ASC && !hasInclude();
+  }
+
+  /** The values ranked for a page: one more than TOP when the facet is paged, which tells whether a value follows the page. */
+  private int pageSize() {
+    return isPaged() ? spec.top() + 1 : spec.top();
+  }
+
+  /** The result with the cursor of the next page when the facet is paged. */
+  private FacetResult paged(final FacetResult result) {
+    return isPaged() ? result.withAfter(cursor) : result;
+  }
+
+  /**
+   * The keys of the general path greater than the AFTER cursor, null without AFTER: values by {@link FacetValueComparator}, a date
+   * term (not converted) by its epoch count, the cursor converted as stored values are. The cursor arrives converted to the property's
+   * type ({@link FacetBounds#cursorConverted}, once per facet, by the executor).
+   */
+  private Predicate<Object> afterKeys(final boolean converted) {
+    if (spec.after() == null)
+      return null;
+    final Object after = spec.after();
+    final Object key;
+    if (!converted && isDateColumn() && extractor != null)
+      try {
+        key = extractor.toColumnLong(spec.property(), after);
+      } catch (final IllegalArgumentException e) {
+        // the executor converted the cursor to the property's type: only a column redefined meanwhile gets here
+        throw FacetBounds.cursorNotAValue(spec.alias(), spec.property(), propertyType, after);
+      }
+    else
+      key = FacetValueComparator.normalize(after);
+    final FacetValueComparator values = FacetValueComparator.INSTANCE;
+    return value -> values.compareNormalized(value, key) > 0;
   }
 
   private IntBinaryOperator valueOrder() {
@@ -634,13 +720,17 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
       }
       ranked = FacetRanker.topValues(included, included.size(), 0, spec.order());
     } else
-      ranked = FacetRanker.topValues(counts, spec.top(), spec.minCount(), spec.order());
-    for (final Map.Entry<Object, Long> entry : ranked) {
+      ranked = FacetRanker.topValues(counts, pageSize(), spec.minCount(), spec.order(), afterKeys(converted));
+    final int n = hasInclude() ? ranked.size() : Math.min(ranked.size(), spec.top());
+    for (int i = 0; i < n; i++) {
+      final Map.Entry<Object, Long> entry = ranked.get(i);
       buckets.add(FacetBucket.term(bucketValue(entry.getKey(), converted), entry.getValue()));
       returned += entry.getValue();
     }
+    if (ranked.size() > n)
+      cursor = buckets.getLast().value();
     returned -= addMissingBucket(buckets, missingTotal);
-    return FacetResult.of("terms", "index", buckets, total - returned, missingTotal);
+    return paged(FacetResult.of("terms", "index", buckets, total - returned, missingTotal));
   }
 
   private boolean hasInclude() {
@@ -649,13 +739,20 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
 
   /**
    * With MISSING, places the bucket of the records without a value where its count ranks it (null sorts last among equal counts and in
-   * a value order). It takes a TOP slot like any value; with INCLUDE it is added on top of the included values.
+   * a value order). It takes a TOP slot like any value; with INCLUDE it is added on top of the included values. A paged facet (value
+   * order ascending) adds it on top of TOP, on its last page only (no value follows, {@link #cursor} null): the records without a value
+   * sort after every value, so a paging loop returns it exactly once.
    *
    * @return the count of the value bucket it displaced past TOP, 0 when none (that count joins {@code otherCount})
    */
   private long addMissingBucket(final List<FacetBucket> buckets, final long missingCount) {
     if (!spec.missingBucket() || missingCount == 0 || missingCount < spec.minCount())
       return 0;
+    if (isPaged()) {
+      if (cursor == null)
+        buckets.add(FacetBucket.missing(missingCount));
+      return 0;
+    }
     int at = buckets.size();
     for (int i = 0; i < buckets.size(); i++) {
       final long count = buckets.get(i).count();

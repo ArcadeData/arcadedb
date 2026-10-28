@@ -24,6 +24,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntBinaryOperator;
+import java.util.function.IntPredicate;
+import java.util.function.Predicate;
 
 /**
  * Picks the top buckets of a facet. Ties never depend on iteration order: the default is count descending then value ascending,
@@ -41,11 +43,20 @@ public final class FacetRanker {
    */
   public static int[] topOrdinals(final FacetCounter counter, final int top, final int minCount, final FacetOrder order,
       final IntBinaryOperator valueOrder) {
+    return topOrdinals(counter, top, minCount, order, valueOrder, null);
+  }
+
+  /**
+   * {@link #topOrdinals(FacetCounter, int, int, FacetOrder, IntBinaryOperator)} over the ordinals {@code eligible} accepts (all when
+   * null), tested after the count: the AFTER cursor of a terms facet.
+   */
+  public static int[] topOrdinals(final FacetCounter counter, final int top, final int minCount, final FacetOrder order,
+      final IntBinaryOperator valueOrder, final IntPredicate eligible) {
     if (top <= 0)
       return new int[0];
     final TopHeap heap = new TopHeap(top, order, valueOrder);
     counter.forEachNonZero((ordinal, count) -> {
-      if (count >= minCount)
+      if (count >= minCount && (eligible == null || eligible.test(ordinal)))
         heap.offer(ordinal, count);
     });
     return heap.drainBestFirst();
@@ -58,11 +69,20 @@ public final class FacetRanker {
    */
   public static List<Map.Entry<Object, Long>> topValues(final Map<Object, long[]> counts, final int top, final int minCount,
       final FacetOrder order) {
+    return topValues(counts, top, minCount, order, null);
+  }
+
+  /**
+   * {@link #topValues(Map, int, int, FacetOrder)} over the keys {@code eligible} accepts (all when null), tested after the count: the
+   * AFTER cursor of a terms facet.
+   */
+  public static List<Map.Entry<Object, Long>> topValues(final Map<Object, long[]> counts, final int top, final int minCount,
+      final FacetOrder order, final Predicate<Object> eligible) {
     if (top <= 0 || counts.isEmpty())
       return new ArrayList<>(0);
     final ValueHeap heap = new ValueHeap((int) Math.min(top, counts.size()), order);
     for (final Map.Entry<Object, long[]> e : counts.entrySet())
-      if (e.getValue()[0] >= minCount)
+      if (e.getValue()[0] >= minCount && (eligible == null || eligible.test(e.getKey())))
         heap.offer(e.getKey(), e.getValue()[0]);
     return heap.drainBestFirst();
   }

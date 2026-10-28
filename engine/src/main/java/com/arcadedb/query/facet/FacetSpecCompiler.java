@@ -286,7 +286,8 @@ public final class FacetSpecCompiler {
 
   private static FacetOrder order(final FacetItem item) {
     if (item.orderByCount == null)
-      return FacetOrder.COUNT_DESC;
+      // AFTER pages in ascending value order (any other order is refused by after())
+      return item.after != null ? FacetOrder.VALUE_ASC : FacetOrder.COUNT_DESC;
     if (item.orderByCount)
       return Boolean.TRUE.equals(item.ascending) ? FacetOrder.COUNT_ASC : FacetOrder.COUNT_DESC;
     return Boolean.FALSE.equals(item.ascending) ? FacetOrder.VALUE_DESC : FacetOrder.VALUE_ASC;
