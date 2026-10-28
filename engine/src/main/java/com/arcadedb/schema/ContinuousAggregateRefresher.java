@@ -210,8 +210,8 @@ public class ContinuousAggregateRefresher {
           advancedWatermark[0] = maxBucketTs;
       }, false);
       if (!committed)
-        throw new IllegalStateException(
-            "The refresh of continuous aggregate '" + ca.getName() + "' joined a transaction instead of committing its own");
+        throw new IllegalStateException("The refresh of continuous aggregate '" + ca.getName()
+            + "' joined a transaction instead of committing its own: its watermark was not advanced");
 
       // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
       if (advancedWatermark[0] != null)

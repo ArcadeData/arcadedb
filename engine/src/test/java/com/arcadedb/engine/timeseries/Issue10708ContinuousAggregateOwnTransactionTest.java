@@ -430,6 +430,47 @@ class Issue10708ContinuousAggregateOwnTransactionTest extends TestHelper {
     assertThat(database.lookupByRID(rid, true).asDocument().getInteger("x")).isEqualTo(2);
   }
 
+  /**
+   * A block retried after a conflict: each attempt's append is durable (#7410), the second attempt appends again, and each attempt
+   * owes its own refresh - the one rolled back too. The aggregate follows the source through both.
+   */
+  @Test
+  void aRetriedBlockRefreshesOncePerAttempt() {
+    createSource();
+    insert(H0, 1);
+    createAggregate();
+    database.command("sql", "CREATE DOCUMENT TYPE Other");
+    final RID[] created = new RID[1];
+    database.transaction(() -> created[0] = database.newDocument("Other").set("x", 0).save().getIdentity());
+    final RID rid = created[0];
+    final long before = aggregate().getRefreshCount();
+    final AtomicInteger attempts = new AtomicInteger();
+
+    database.transaction(() -> {
+      final int attempt = attempts.incrementAndGet();
+      insert(H0 + HOUR, 2);
+      database.lookupByRID(rid, true).asDocument().modify().set("x", attempt).save();
+      if (attempt == 1) {
+        final Thread concurrent = new Thread(
+            () -> database.transaction(() -> database.lookupByRID(rid, true).asDocument().modify().set("x", 100).save()));
+        concurrent.start();
+        try {
+          concurrent.join();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException(e);
+        }
+      }
+      assertThat(aggregate().getRefreshCount()).as("not before the attempt ends").isEqualTo(before + attempt - 1);
+    });
+
+    assertThat(attempts.get()).isEqualTo(2);
+    assertThat(aggregate().getRefreshCount()).isEqualTo(before + 2);
+    // both attempts appended: the samples are not part of the transaction
+    assertThat(sourceRows()).containsEntry(1L, 4.0);
+    assertConverged();
+  }
+
   /** A nested transaction of the caller's own: the refresh runs when the transaction the write ran in ends, not the outer one. */
   @Test
   void aWriteInANestedTransactionRefreshesWhenThatTransactionEnds() {
