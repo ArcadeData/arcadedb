@@ -143,6 +143,42 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
     return new SegmentReader(file.retain(), layout, dead);
   }
 
+  /**
+   * A RENAME (spec 6.4): this reader when every column the segment stores has the property name {@code columns} gives its index file
+   * id (or {@code columns} has no column of the same id and kind), otherwise a reader of the same file and dead set whose columns
+   * answer {@link #column(String)} under the names of {@code columns}. The file is retained, the cached blocks stay valid; the
+   * caller closes this reader when it no longer needs it.
+   */
+  SegmentReader withColumnNames(final ColumnDefinition[] columns) {
+    ColumnDefinition[] renamed = null;
+    for (int k = 0; k < layout.columns.length; k++) {
+      final ColumnDefinition stored = layout.columns[k];
+      for (final ColumnDefinition column : columns)
+        if (column.indexFileId() == stored.indexFileId() && column.kind() == stored.kind() && !column.property().equals(stored.property())) {
+          if (renamed == null)
+            renamed = layout.columns.clone();
+          renamed[k] = new ColumnDefinition(stored.indexFileId(), column.property(), stored.propertyType(), stored.kind(), stored.byItem(),
+              stored.precision());
+        }
+    }
+    if (renamed == null)
+      return this;
+    if (closed.get())
+      throw new IllegalStateException("Segment reader of " + file.path() + " is closed");
+    final Layout l = layout;
+    final Layout relabeled = new Layout(l.segmentId, l.maxRecordsInPage, l.wordsPerStripe, l.blockRows, l.rowCount, renamed,
+        columnIndexOf(renamed), l.min, l.max, l.minPage, l.maxPage, l.presenceFirstPage, l.presenceLocation, l.versionsLocation,
+        l.rowsLocation);
+    return new SegmentReader(file.retain(), relabeled, dead);
+  }
+
+  private static Map<String, Integer> columnIndexOf(final ColumnDefinition[] columns) {
+    final Map<String, Integer> columnIndex = new HashMap<>();
+    for (int k = 0; k < columns.length; k++)
+      columnIndex.put(columns[k].property(), k);
+    return columnIndex;
+  }
+
   SegmentFile file() {
     return file;
   }
@@ -597,9 +633,7 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
         || rowCount != header.rowCount())
       throw new BlockCorruptionException("Segment " + path + " has invalid header values");
 
-    final Map<String, Integer> columnIndex = new HashMap<>();
-    for (int k = 0; k < columns.length; k++)
-      columnIndex.put(columns[k].property(), k);
+    final Map<String, Integer> columnIndex = columnIndexOf(columns);
 
     final int minPage = footer.getInt(0);
     final int maxPage = footer.getInt(4);

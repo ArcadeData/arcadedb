@@ -82,7 +82,7 @@ final class ColumnarRebuilder {
   static final String SNAPSHOT_INSTALL = "snapshot_install";
   static final String UNCLEAN_NO_WAL   = "unclean_no_wal";
   static final String SCHEMA           = "schema";
-  static final String CHECK_FIX        = "check_fix";
+  static final String CHECK_FIX        = ColumnarSchemaEvent.CHECK_FIX;
   /** Reached once the scan wrote every segment, before the publish takes the apply lock. */
   static final String SCANNED          = "rebuild.scanned";
 
@@ -123,6 +123,11 @@ final class ColumnarRebuilder {
       else if (state.compareAndSet(current, new Request(current.reason(), true, reason)))
         return;
     }
+  }
+
+  /** A rebuild of the projection is queued (waiting for a permit or a pool thread) or running; lock free. */
+  static boolean isQueuedOrRunning(final ColumnarProjection projection) {
+    return projection.rebuildRequest.get() != null;
   }
 
   /** A rebuild waits for a permit; lock free, the apply tick reads it. */
@@ -336,6 +341,14 @@ final class ColumnarRebuilder {
     private ProjectionState retainReusableState() {
       if (!reason.equals(CHECK_FIX) && !reason.equals(SCHEMA) || p.externalFileId() >= 0 || !p.isUsable())
         return null;
+      // a column whose definition changed (RETYPE, spec 6.4) holds values of the old type in the segments: none of them is copied
+      final ColumnarManifest published = p.manifest();
+      if (published == null)
+        return null;
+      for (final ColumnDefinition column : columns)
+        for (final ColumnDefinition was : published.columns())
+          if (was.indexFileId() == column.indexFileId() && !ColumnarReconciler.sameData(was, column))
+            return null;
       final ProjectionState state = p.retainState();
       final GlobalDictionary[] found = new GlobalDictionary[columns.length];
       for (int k = 0; k < columns.length; k++) {

@@ -156,19 +156,14 @@ public final class ColumnarIndex implements IndexInternal {
 
   /**
    * Scans nothing here: the projection builds the column in the background. The schema has bound this index to its bucket by now, so
-   * this opens the projection the factory could not open yet ({@link ColumnarIndexManager#openRegistered()}), schedules its
-   * {@code create} rebuild (R17, coalesced with the other indexes created meanwhile) unless the projection already published this
-   * column in a valid state (an empty bucket is published with its columns at open, V-B1), asks the manager to reconcile its columns,
-   * and indexes 0 records.
+   * this opens the projection the factory could not open yet and schedules its {@code create} rebuild (R17, coalesced with the other
+   * indexes created meanwhile) unless the projection already published this column in a valid state (an empty bucket is published
+   * with its columns at open, V-B1), both under the manager's registry lock ({@link ColumnarIndexManager#buildRegistered}), asks the
+   * manager to reconcile its columns, and indexes 0 records.
    */
   @Override
   public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction, final BuildIndexCallback callback) {
-    final ColumnarIndexManager manager = manager();
-    manager.openRegistered();
-    final ColumnarProjection projection = manager.projection(getAssociatedBucketId());
-    if (projection != null && !projection.isPublishedWith(columnDefinition().indexFileId()))
-      ColumnarRebuilder.schedule(manager, projection, ColumnarRebuilder.CREATE);
-    manager.requestReconcile();
+    manager().buildRegistered(this);
     return 0;
   }
 

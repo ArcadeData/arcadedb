@@ -473,9 +473,11 @@ final class ColumnarFlusher {
     final List<ColumnarManifest.DictionaryEntry> dictionaries = new ArrayList<>(current.dictionaries().size());
     for (final ColumnarManifest.DictionaryEntry entry : current.dictionaries()) {
       final String property = p.propertyOf(entry.indexFileId());
-      final GlobalDictionary dictionary = property == null ? null : writerDictionaries.get(property);
+      if (property == null)
+        continue; // a column the reconciler dropped: its dictionary file is deleted once no state names it
+      final GlobalDictionary dictionary = writerDictionaries.get(property);
       if (dictionary == null) {
-        dictionaries.add(entry); // a column the projection no longer has: kept as published until the reconciler drops it
+        dictionaries.add(entry); // a column a rebuild did not publish again yet (RETYPE): kept as published
         continue;
       }
       final GlobalDictionary.DurableState durable = dictionary.fsync();
@@ -485,7 +487,7 @@ final class ColumnarFlusher {
     ColumnarTestHooks.reach(DICTIONARIES_SYNCED);
 
     final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), p.maxRecordsInPage(),
-        current.columns(), segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
+        p.manifestColumns(current), segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
     publishManifest(p, manifest, attempt, () -> {
       if (!p.publish(manifest, next, overlays, writerDictionaries, p.currentState().isUsable()))
         return false;
