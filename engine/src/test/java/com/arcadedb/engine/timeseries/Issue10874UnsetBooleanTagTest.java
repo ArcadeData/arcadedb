@@ -103,6 +103,37 @@ class Issue10874UnsetBooleanTagTest extends TestHelper {
     assertThat(timestamps("SELECT ts FROM N WHERE flag IS NULL")).hasSize(10);
   }
 
+  /**
+   * A tag declared with a numeric codec is not a dictionary: the per-row test of the push-down decodes it with its own codec, and a
+   * sample that left it unset is {@code null} there as in the scan (review of PR #10902).
+   */
+  @Test
+  void aTagStoredWithANumericCodecIsFilteredByItsOwnCodec() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE B TIMESTAMP ts TAGS (flag BOOLEAN CODEC SIMPLE8B, host STRING) FIELDS (v DOUBLE) SHARDS 1");
+    database.transaction(() -> {
+      for (int i = 0; i < 30; i++) {
+        final long ts = 1000L * (i + 1);
+        if (i % 3 == 2)
+          database.command("sql", "INSERT INTO B SET ts = ?, host = ?, v = ?", ts, "h" + (i % 2), (double) i);
+        else
+          database.command("sql", "INSERT INTO B SET ts = ?, flag = ?, host = ?, v = ?", ts, i % 3 == 0, "h" + (i % 2), (double) i);
+      }
+    });
+    ((LocalTimeSeriesType) database.getSchema().getType("B")).getEngine().compactAll();
+
+    assertThat(timestamps("SELECT ts FROM B WHERE flag = false")).hasSize(10);
+    assertThat(single("SELECT count(*) AS c FROM B WHERE flag = false", "c")).as("ungrouped").isEqualTo(10L);
+    assertThat(single("SELECT count(*) AS c FROM B WHERE flag = true", "c")).isEqualTo(10L);
+    long grouped = 0;
+    try (final ResultSet rs = database.query("sql", "SELECT host, count(*) AS c FROM B WHERE flag = true GROUP BY host")) {
+      while (rs.hasNext())
+        grouped += ((Number) rs.next().getProperty("c")).longValue();
+    }
+    assertThat(grouped).as("grouped").isEqualTo(10L);
+    assertThat(timestamps("SELECT ts FROM B WHERE flag IS NULL")).hasSize(10);
+  }
+
   /** The empty text is "no value" for every type but STRING, BOOLEAN included. */
   @Test
   void theEmptyTextReadsBackAsNoValueForEveryNonStringType() {

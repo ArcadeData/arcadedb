@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -68,6 +69,9 @@ class Issue10872ClosedUnderARequestTest extends BaseGraphServerTest {
     final AbstractServerHttpHandler.ErrorClassification closed = handler.classifyError(DatabaseIsClosedException.of(NAME));
     assertThat(closed.status()).isEqualTo(503);
     assertThat(closed.message()).isEqualTo("Database is closed");
+    // typed as the resolver's refusal, so the remote client rebuilds it and does not resend the command
+    assertThat(closed.reported()).isInstanceOf(DatabaseNotAvailableException.class);
+    assertThat(closed.exceptionArgs()).isEqualTo("CLOSED");
 
     // what the engine raises carries the name
     assertThat(DatabaseIsClosedException.of(NAME).getDatabaseName()).isEqualTo(NAME);

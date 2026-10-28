@@ -1418,9 +1418,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         return retryable(databaseClosed);
       final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
       final String closedName = databaseClosed.getDatabaseName();
+      // Reported as the typed refusal the resolver gives the next request, with its reason: an untyped 503 would reach the remote
+      // client as a NeedRetryException and have the command sent again to whatever replaces the database
       if (server != null && closedName != null && server.isDatabaseOfServer(closedName))
-        return new ErrorClassification(503, DatabaseNotAvailableException.Reason.CLOSED.label(), databaseClosed, null,
-            ErrorLogKind.RETRYABLE);
+        return new ErrorClassification(503, DatabaseNotAvailableException.Reason.CLOSED.label(),
+            new DatabaseNotAvailableException(databaseClosed.getMessage(), DatabaseNotAvailableException.Reason.CLOSED),
+            DatabaseNotAvailableException.Reason.CLOSED.name(), ErrorLogKind.RETRYABLE);
       return new ErrorClassification(404, "Database is closed", databaseClosed, null, ErrorLogKind.USER);
     }
 

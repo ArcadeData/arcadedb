@@ -5524,9 +5524,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Which rows of a block satisfy every condition of {@code tagFilter}, indexed by row.
    * <p>
-   * Each condition is decided once per DISTINCT dictionary entry, through {@link TagFilter.Condition#matchesStored} -
-   * the same reading of the stored text a row scan applies - and then looked up per row by dictionary index, so the
-   * aggregation push-down and the scan cannot disagree about a row (issue #10874) and no row hashes a string.
+   * A {@code DICTIONARY} tag - every tag but one declared with a numeric codec - is decided once per DISTINCT dictionary entry,
+   * through {@link TagFilter.Condition#matchesStored}, the same reading of the stored text a row scan applies, and then looked up per
+   * row by dictionary index, so the aggregation push-down and the scan cannot disagree about a row (issue #10874) and no row hashes
+   * a string. A tag declared with a numeric codec ({@code BOOLEAN CODEC SIMPLE8B}) is decoded by that codec into the values the scan
+   * reads, a sample with none being {@code null}, and tested per row.
    */
   private boolean[] tagFilterRowMatches(final byte[] blockData, final BlockEntry entry, final TagFilter tagFilter,
       final int rowCount) throws IOException {
@@ -5537,6 +5539,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int schemaIdx = findNonTsColumnSchemaIndex(cond.columnIndex());
       final byte[] encoded = sliceColumn(blockData, entry, schemaIdx);
       final ColumnDefinition column = columns.get(schemaIdx);
+      if (column.getCompressionHint() != TimeSeriesCodec.DICTIONARY) {
+        final Object[] values = decodeColumn(column, encoded);
+        if (values.length != rowCount)
+          throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + rowCount
+              + " timestamp(s) but column '" + column.getName() + "' holds a different number of values");
+        for (int i = 0; i < rowCount; i++)
+          if (rowMatches[i] && !cond.matchValues().contains(values[i]))
+            rowMatches[i] = false;
+        continue;
+      }
       if (DictionaryCodec.valueCount(encoded) != rowCount)
         throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + rowCount + " timestamp(s) but column '"
             + column.getName() + "' holds a different number of values");
