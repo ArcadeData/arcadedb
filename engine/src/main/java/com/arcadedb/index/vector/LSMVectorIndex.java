@@ -8704,9 +8704,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (graph instanceof OnDiskGraphIndex diskGraph
         && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
       final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
-      metrics.incrementFusedPQWalks();
-      return new DefaultSearchScoreProvider(
+      final DefaultSearchScoreProvider fused = new DefaultSearchScoreProvider(
           fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, reranker), reranker);
+      metrics.incrementFusedPQWalks();
+      return fused;
     }
     return new DefaultSearchScoreProvider(walk, reranker);
   }
