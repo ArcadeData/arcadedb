@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
@@ -65,6 +66,7 @@ public class GraphQLResultSet implements ResultSet {
   private static final String TYPENAME_FIELD = "__typename";
 
   private final GraphQLSchema        schema;
+  private final GraphQLTypeRegistry  registry;
   private final ResultSet            resultSet;
   private final List<Selection>      projections;
   private final ObjectTypeDefinition returnType;
@@ -188,17 +190,67 @@ public class GraphQLResultSet implements ResultSet {
                             ObjectTypeDefinition type, List<Selection> set, boolean cacheable, boolean typeName) {
   }
 
-  public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
-      final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
+  /**
+   * @param registry the SDL the operation runs against, read once by the operation: every type this result set meets is resolved
+   *                 against it, whatever a concurrent document declares meanwhile (#10764)
+   */
+  GraphQLResultSet(final GraphQLSchema schema, final GraphQLTypeRegistry registry, final ResultSet resultSet,
+      final List<Selection> projections, final ObjectTypeDefinition returnType, final Map<String, Object> variables,
+      final GraphQLFragments fragments) {
     if (resultSet == null)
       throw new IllegalArgumentException("NULL resultSet");
 
     this.schema = schema;
+    this.registry = registry;
     this.resultSet = resultSet;
     this.projections = projections;
     this.returnType = returnType;
     this.variables = variables;
     this.fragments = fragments;
+
+    // VALIDATED BEFORE ANY RECORD IS READ, SO A DOCUMENT THE SPECIFICATION REJECTS IS REJECTED ALSO WHEN NO RECORD MATCHES
+    if (projections != null)
+      checkScalarLeafs(projections, returnType);
+  }
+
+  /**
+   * Refuses a selection set written on a field the SDL declares as a built-in scalar (ScalarLeafs, spec 5.3.3, #10762): {@code
+   * { books { name { nope } } } }} used to answer the row without the field at all. Walked over the document against the SDL, as
+   * far as the SDL describes it: a field the SDL does not declare, or one of a type it does not declare, is checked against the
+   * value it resolves to instead (see {@link #resolveSelection}). A fragment is followed when its type condition is the type the
+   * level is written against, or names no type the SDL declares, since that is all the SDL alone can decide.
+   */
+  private void checkScalarLeafs(final List<Selection> selections, final ObjectTypeDefinition parentType) {
+    if (parentType == null)
+      return;
+    for (final Selection selection : fragments.expand(selections,
+        typeCondition -> typeCondition.equals(parentType.getName()) || !registry.isObjectType(typeCondition))) {
+      final SelectionSet set = selection.getSelectionSet();
+      if (set == null)
+        continue;
+      final FieldDefinition schemaField = parentType.getFieldDefinitionByName(selection.getFieldName());
+      if (schemaField == null)
+        continue;
+      final String namedType = namedTypeOf(schemaField.getType());
+      if (namedType != null && GraphQLSchema.isBuiltInScalar(namedType))
+        throw scalarWithSelection(selection.getName(), "it is declared as " + namedType);
+      checkScalarLeafs(set.getSelections(), registry.getTypeFromField(schemaField));
+    }
+  }
+
+  /** The named type at the bottom of the list and non-null wrappers of a field type. */
+  private static String namedTypeOf(com.arcadedb.graphql.parser.Type type) {
+    while (type != null) {
+      if (type.getTypeName() != null)
+        return type.getTypeName().getName();
+      type = type.getListType() != null ? type.getListType().getType() : null;
+    }
+    return null;
+  }
+
+  private static CommandParsingException scalarWithSelection(final String field, final String why) {
+    return new CommandParsingException(
+        "GraphQL field '" + field + "' is a leaf (" + why + ") and cannot have a selection set of sub-fields");
   }
 
   @Override
@@ -219,7 +271,7 @@ public class GraphQLResultSet implements ResultSet {
       final List<Projection> projections = new ArrayList<>(type.getFieldDefinitions().size());
       // ADD ALL THE TYPE FIELDS AUTOMATICALLY
       for (final FieldDefinition fieldDefinition : type.getFieldDefinitions()) {
-        final ObjectTypeDefinition subType = schema.getTypeFromField(fieldDefinition);
+        final ObjectTypeDefinition subType = registry.getTypeFromField(fieldDefinition);
         if (subType != null && isBeingExpanded(subType))
           // THE SCHEMA IS CYCLIC ON THIS FIELD: STOP THE AUTOMATIC EXPANSION HERE RATHER THAN RECURSE FOREVER.
           // ONLY A QUERY THAT ASKS FOR THE FIELD EXPLICITLY GETS IT, AND THEN AT THE DEPTH IT ASKS FOR
@@ -293,7 +345,7 @@ public class GraphQLResultSet implements ResultSet {
       }
 
       final FieldDefinition schemaField = parentType != null ? parentType.getFieldDefinitionByName(fieldName) : null;
-      final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;
+      final ObjectTypeDefinition subType = schemaField != null ? registry.getTypeFromField(schemaField) : null;
 
       // THE PROJECTIONS OF A CACHED LEVEL ARE BUILT ONCE PER CACHE ENTRY, SO THE LISTS THEY HOLD, A MERGED ONE INCLUDED,
       // ARE THE SAME OBJECTS FOR EVERY RECORD THAT ENTRY SERVES: THE LEVEL BELOW IS CACHED BY THEIR IDENTITY TOO
@@ -368,7 +420,7 @@ public class GraphQLResultSet implements ResultSet {
     if (!typeKnown)
       return true;
 
-    return !schema.isObjectType(typeCondition) && !schema.isDatabaseType(typeCondition);
+    return !registry.isObjectType(typeCondition) && !schema.isDatabaseType(typeCondition);
   }
 
   private static int indexOf(final List<Projection> projections, final String responseKey) {
@@ -488,7 +540,7 @@ public class GraphQLResultSet implements ResultSet {
       level.add(recordType);
       for (int i = 0; i < level.size(); i++) {
         final DocumentType candidate = level.get(i);
-        if (schema.isObjectType(candidate.getName()) && (parentType == null || candidate.instanceOf(parentType.getName()))) {
+        if (registry.isObjectType(candidate.getName()) && (parentType == null || candidate.instanceOf(parentType.getName()))) {
           typeName = candidate.getName();
           break;
         }
@@ -528,108 +580,119 @@ public class GraphQLResultSet implements ResultSet {
         aliases.put(projName, realName);
       }
 
-      if (entry.typeName()) {
-        map.put(projName, typeNameOf(current, parentType));
-        continue;
-      }
-
-      Object projectionValue = current.getProperty(realName);
-
-      if (projectionValue == null && current.getElement().isPresent())
-        // PROPERTY NOT FOUND IN PROJECTION, TRY DIRECTLY FROM THE ELEMENT (E.G. CYPHER RETURN)
-        projectionValue = current.getElement().get().get(realName);
-
-      if (projectionValue == null) {
-        // TRY THE FIELD FIRST
-        // AN INLINE DIRECTIVE IS WRITTEN IN THE QUERY DOCUMENT, SO IT CAN REFERENCE THE OPERATION'S VARIABLES
-        projectionValue = evaluateDirectives(current, entry.field(), variables);
-        if (projectionValue == null)
-          // SEARCH IN THE SCHEMA, IN THE TYPE THIS SELECTION BELONGS TO. A DIRECTIVE DECLARED THERE IS PART OF THE
-          // SDL, NOT OF THE OPERATION, SO NO VARIABLE IS IN SCOPE FOR IT
-          projectionValue = evaluateDirectives(current, entry.schemaField(), null);
-      }
-
-      final AbstractField field = entry.field();
-      if (projectionValue == null && field != null) {
-        if (field.getDirectives() != null) {
-          for (final Directive directive : field.getDirectives().getDirectives()) {
-            if ("rid".equals(directive.getName())) {
-              if (current.getElement().isPresent())
-                projectionValue = current.getElement().get().getIdentity();
-            } else if ("type".equals(directive.getName())) {
-              if (current.getElement().isPresent())
-                projectionValue = current.getElement().get().getTypeName();
-            }
-          }
-        }
-      }
-
-      final List<Selection> selectionSet = entry.set();
-      final boolean cacheable = entry.cacheable();
-      final ObjectTypeDefinition projectionType = entry.type();
-
-      if (selectionSet != null || projectionType != null)
-        // A LINK IS READ AS A BARE RID: LOAD THE RECORD IT POINTS TO, OTHERWISE NO ARM BELOW COULD RESOLVE IT (ISSUE #9467)
-        projectionValue = loadLinks(projectionValue);
-
-      if (selectionSet != null) {
-        switch (projectionValue) {
-        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
-        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
-        case Document document -> projectionValue = mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
-        case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType, cacheable);
-        case Iterable iterable -> {
-          final List<Result> subResults = new ArrayList<>();
-          for (final Object o : iterable) {
-            final Result item;
-            if (o instanceof Document document)
-              item = mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
-            else if (o instanceof Result result)
-              item = mapBySelections(result, selectionSet, projectionType, cacheable);
-            else
-              continue;
-
-            subResults.add(item);
-          }
-          projectionValue = subResults;
-        }
-        case null, default -> {
-          continue;
-        }
-        }
-      } else if (projectionType != null) {
-        switch (projectionValue) {
-        case Map m -> projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
-        // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
-        // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
-        case EmbeddedDocument emb -> projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
-        case Document document -> projectionValue = mapByReturnType(new ResultInternal(document), projectionType);
-        case Result result -> projectionValue = mapByReturnType(result, projectionType);
-        case Iterable iterable -> {
-          final List<Result> subResults = new ArrayList<>();
-          for (final Object o : iterable) {
-            final Result item;
-            if (o instanceof Document document)
-              item = mapByReturnType(new ResultInternal(document), projectionType);
-            else if (o instanceof Result result)
-              item = mapByReturnType(result, projectionType);
-            else
-              continue;
-
-            subResults.add(item);
-          }
-          projectionValue = subResults;
-        }
-        case null, default -> {
-          continue;
-        }
-        }
-      }
-
-      map.put(projName, projectionValue);
+      // ONE KEY PER PROJECTION, WRITTEN UNCONDITIONALLY: A FIELD THAT RESOLVES TO NOTHING IS PRESENT WITH null, AS THE
+      // SPECIFICATION REQUIRES (CompleteValue, 6.4.2), NOT ABSENT. Two arms of the resolution used to skip the write for a null
+      // object field while a null scalar of the same row was written (#10762); no arm of resolveProjection can skip it now
+      map.put(projName, resolveProjection(current, entry, parentType));
     }
 
     return new GraphQLResult(map, current, aliases);
+  }
+
+  /**
+   * The value of one projection for {@code current}: a scalar as read, an object (or a list of them) resolved against its
+   * selection set or, with none, against the type the SDL declares for it, and {@code null} when the record has nothing there.
+   */
+  private Object resolveProjection(final Result current, final Projection entry, final ObjectTypeDefinition parentType) {
+    if (entry.typeName())
+      return typeNameOf(current, parentType);
+
+    final String realName = entry.fieldName();
+    Object projectionValue = current.getProperty(realName);
+
+    if (projectionValue == null && current.getElement().isPresent())
+      // PROPERTY NOT FOUND IN PROJECTION, TRY DIRECTLY FROM THE ELEMENT (E.G. CYPHER RETURN)
+      projectionValue = current.getElement().get().get(realName);
+
+    if (projectionValue == null) {
+      // TRY THE FIELD FIRST
+      // AN INLINE DIRECTIVE IS WRITTEN IN THE QUERY DOCUMENT, SO IT CAN REFERENCE THE OPERATION'S VARIABLES
+      projectionValue = evaluateDirectives(current, entry.field(), variables);
+      if (projectionValue == null)
+        // SEARCH IN THE SCHEMA, IN THE TYPE THIS SELECTION BELONGS TO. A DIRECTIVE DECLARED THERE IS PART OF THE
+        // SDL, NOT OF THE OPERATION, SO NO VARIABLE IS IN SCOPE FOR IT
+        projectionValue = evaluateDirectives(current, entry.schemaField(), null);
+    }
+
+    final AbstractField field = entry.field();
+    if (projectionValue == null && field != null) {
+      if (field.getDirectives() != null) {
+        for (final Directive directive : field.getDirectives().getDirectives()) {
+          if ("rid".equals(directive.getName())) {
+            if (current.getElement().isPresent())
+              projectionValue = current.getElement().get().getIdentity();
+          } else if ("type".equals(directive.getName())) {
+            if (current.getElement().isPresent())
+              projectionValue = current.getElement().get().getTypeName();
+          }
+        }
+      }
+    }
+
+    final List<Selection> selectionSet = entry.set();
+    final boolean cacheable = entry.cacheable();
+    final ObjectTypeDefinition projectionType = entry.type();
+
+    if (selectionSet != null || projectionType != null)
+      // A LINK IS READ AS A BARE RID: LOAD THE RECORD IT POINTS TO, OTHERWISE NO ARM BELOW COULD RESOLVE IT (ISSUE #9467)
+      projectionValue = loadLinks(projectionValue);
+
+    if (selectionSet != null)
+      return switch (projectionValue) {
+        case null -> null;
+        case Map m -> mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
+        case EmbeddedDocument emb -> mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
+        case Document document -> mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
+        case Result result -> mapBySelections(result, selectionSet, projectionType, cacheable);
+        case Iterable iterable -> {
+          final List<Result> subResults = new ArrayList<>();
+          for (final Object o : iterable) {
+            final Result item = toResult(o);
+            if (item != null)
+              subResults.add(mapBySelections(item, selectionSet, projectionType, cacheable));
+            else if (o != null)
+              throw scalarWithSelection(entry.name(), "its elements are " + o.getClass().getSimpleName() + " values");
+          }
+          yield subResults;
+        }
+        // A SELECTION SET ON A VALUE WITH NO FIELDS: WHAT checkScalarLeafs REFUSES FROM THE SDL, MET HERE ON A FIELD THE SDL DOES
+        // NOT DESCRIBE. DROPPING THE FIELD ANSWERED A ROW WITHOUT IT AND WITHOUT A WORD (#10762)
+        default -> throw scalarWithSelection(entry.name(), "its value is a " + projectionValue.getClass().getSimpleName());
+      };
+
+    if (projectionType != null)
+      return switch (projectionValue) {
+        case null -> null;
+        case Map m -> mapByReturnType(new ResultInternal(m), projectionType);
+        // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
+        // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
+        case EmbeddedDocument emb -> mapByReturnType(new ResultInternal(emb), projectionType);
+        case Document document -> mapByReturnType(new ResultInternal(document), projectionType);
+        case Result result -> mapByReturnType(result, projectionType);
+        case Iterable iterable -> {
+          final List<Result> subResults = new ArrayList<>();
+          for (final Object o : iterable) {
+            final Result item = toResult(o);
+            if (item != null)
+              subResults.add(mapByReturnType(item, projectionType));
+          }
+          yield subResults;
+        }
+        // THE SDL DECLARES AN OBJECT AND THE RECORD HOLDS A SCALAR: A FIELD ERROR, WHICH COMPLETES A NULLABLE FIELD AS null
+        default -> null;
+      };
+
+    return projectionValue;
+  }
+
+  /** An element of a list that a sub-selection can be resolved against, or null for anything else. */
+  private static Result toResult(final Object o) {
+    return switch (o) {
+      case Result result -> result;
+      case Document document -> new ResultInternal(document);
+      case Map<?, ?> m -> new ResultInternal((Map<String, Object>) m);
+      case null, default -> null;
+    };
   }
 
   /**

@@ -2799,6 +2799,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * (#10637, {@link #relocateANeighbourOffPage}).
    */
   private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder) {
+    return createRecordInternal(buffer, isPlaceHolder, true);
+  }
+
+  /**
+   * @param mayCreatePage false to create the record only in a page the bucket already has: answers {@code null}, having written
+   *                      nothing and reserved nothing, when the allocator would open a new page for it ({@link #createRecordsBulk})
+   */
+  private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder, final boolean mayCreatePage) {
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
@@ -2856,6 +2864,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       } else
         createNewPage = true;
+
+      if (createNewPage && !mayCreatePage)
+        // NOTHING WRITTEN, NOTHING RESERVED: the loop above leaves the claim loop only through a claimed slot or a new page
+        return null;
 
       final MutablePage selectedPage;
       if (createNewPage) {
@@ -4071,10 +4083,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Creates multiple records from pre-serialized Binary buffers in a single operation.
-   * Always appends to new pages to avoid complexity with existing page layouts, deletions,
-   * and multi-page records. This avoids the per-record findAvailableSpace overhead and is
-   * designed for bulk import scenarios where sequential page writes are optimal.
+   * Creates multiple records from pre-serialized Binary buffers in a single operation (the edge flush of {@code GraphBatch}).
+   * <p>
+   * The records go first where the bucket already has room, through the allocator every insert uses (issue #10746): the free
+   * slots and the free tail of its pages, the reuse-space mode and the append-only flag of the transaction, the in-flight slot
+   * reservations and the commit-time slot merge all apply to them as to a record created one by one. Always starting on a fresh
+   * page instead made every flush open one, however few records it carried, and left the room deleted records gave back to the
+   * single-record inserts only: under a steady insert/delete churn through {@code database.batch()} the bucket grew by one page per
+   * flush with a flat live set.
+   * <p>
+   * Once the allocator has no room left to offer, the rest are appended to fresh pages in sequence, which is the bulk-import case
+   * this method exists for: no per-record search, a fresh page has no gaps to fill. Each such page has its free tail listed when
+   * it is finished, so the next flush, or the next insert, fills it rather than opening another page. A record that would not fit
+   * even an empty page is created as a chunk chain by the allocator.
    *
    * @param buffers    array of pre-serialized record content (NOT including the size prefix)
    * @param from       start index in buffers array (inclusive)
@@ -4082,62 +4103,88 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @param ridsOut    output array for assigned RIDs (must have length >= to - from)
    */
   public void createRecordsBulk(final Binary[] buffers, final int from, final int to, final RID[] ridsOut) {
-      // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
-      // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
-      // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
-      // grant on this type could still write edges here once the request thread bound the principal
-      // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
-      database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
+    // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
+    // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
+    // grant on this type could still write edges here once the request thread bound the principal
+    // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
-      // Always start from a fresh new page for bulk writes.
-      MutablePage currentPage = addNewPage();
-      int recordPositionInPage = contentHeaderSize;
-      int availablePositionIndex = 0;
-      final int maxContent = currentPage.getMaxContentSize();
+    int i = from;
+    // FIRST THE ROOM THE BUCKET ALREADY HAS, AS LONG AS THE ALLOCATOR FINDS SOME
+    for (; i < to; i++) {
+      final RID rid = createRecordInternal(buffers[i], false, false);
+      if (rid == null)
+        break;
+      ridsOut[i - from] = rid;
+    }
+    if (i == to)
+      return;
 
-      for (int i = from; i < to; i++) {
-        final Binary buffer = buffers[i];
+    // THEN THE REST, APPENDED TO FRESH PAGES
+    final int maxContent = getPageSize() - BasePage.PAGE_HEADER_SIZE;
+    MutablePage currentPage = null;
+    int recordPositionInPage = 0;
+    int availablePositionIndex = 0;
 
-        // Pad to minimum record size
-        while (buffer.size() < MINIMUM_RECORD_SIZE)
-          buffer.append((byte) 0);
+    for (; i < to; i++) {
+      final Binary buffer = buffers[i];
 
-        final int actualSize = buffer.size();
-        final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
+      // Pad to minimum record size, as createRecordInternal does
+      while (buffer.size() < MINIMUM_RECORD_SIZE)
+        buffer.append((byte) 0);
 
-        // Check if current page has room
-        if (availablePositionIndex >= maxRecordsInPage
-            || recordPositionInPage + spaceNeeded > maxContent) {
-          // Finalize current page record count
-          currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+      final int actualSize = buffer.size();
+      final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
 
-          // Create a new page
-          currentPage = addNewPage();
-          recordPositionInPage = contentHeaderSize;
-          availablePositionIndex = 0;
+      if (contentHeaderSize + spaceNeeded > maxContent) {
+        // NOT EVEN AN EMPTY PAGE CAN HOST IT: THIS LOOP USED TO WRITE IT PAST THE END OF ITS PAGE, THE ALLOCATOR MAKES IT A CHUNK
+        // CHAIN. The page being filled is sealed first: the allocator may write the head chunk on its tail, and it reads the
+        // record count to know where the tail starts
+        if (currentPage != null) {
+          finishBulkPage(currentPage, availablePositionIndex, recordPositionInPage);
+          currentPage = null;
         }
-
-        // Write the record offset in the record table
-        currentPage.writeUnsignedInt(
-            PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
-            recordPositionInPage);
-
-        // Write record size + content
-        final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
-        currentPage.writeByteArray(recordPositionInPage + sizeBytes,
-            buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
-
-        // Assign RID
-        ridsOut[i - from] = new RID(file.getFileId(),
-            ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
-
-        recordPositionInPage += sizeBytes + actualSize;
-        availablePositionIndex++;
+        ridsOut[i - from] = createRecordInternal(buffer, false, true);
+        continue;
       }
 
-    // Finalize last page record count
-    if (availablePositionIndex > 0)
-      currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+      if (currentPage == null || availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > maxContent) {
+        if (currentPage != null)
+          finishBulkPage(currentPage, availablePositionIndex, recordPositionInPage);
+
+        currentPage = addNewPage();
+        recordPositionInPage = contentHeaderSize;
+        availablePositionIndex = 0;
+      }
+
+      // Write the record offset in the record table
+      currentPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE, recordPositionInPage);
+
+      // Write record size + content
+      final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
+      currentPage.writeByteArray(recordPositionInPage + sizeBytes, buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
+
+      // Assign RID
+      ridsOut[i - from] = new RID(file.getFileId(),
+          ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
+
+      recordPositionInPage += sizeBytes + actualSize;
+      availablePositionIndex++;
+    }
+
+    if (currentPage != null)
+      finishBulkPage(currentPage, availablePositionIndex, recordPositionInPage);
+  }
+
+  /**
+   * Seals a page {@link #createRecordsBulk} filled from scratch: writes its record count and lists its free tail, as an insert
+   * on a brand-new page does, so a later write fills it.
+   */
+  private void finishBulkPage(final MutablePage page, final int records, final int contentEnd) {
+    page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) records);
+    final int emptyPageSpace = page.getMaxContentSize() - contentHeaderSize;
+    updatePageStatistics(page, emptyPageSpace, contentHeaderSize - contentEnd);
   }
 
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
