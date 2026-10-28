@@ -466,6 +466,16 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return raw;
   }
 
+  /**
+   * Reads a signed number at {@code index} without allocating: the number of bytes it took is the distance the position
+   * moved, {@code position() - index} right after the call (#10656). Unlike {@link #getNumberAndSize(int)} this does not
+   * box the pair in a {@code long[]}, which on a page read runs once per record header.
+   */
+  public long getNumber(final int index) {
+    position(index);
+    return getNumber();
+  }
+
   @Override
   public long getNumber() {
     final long raw = getUnsignedNumber();

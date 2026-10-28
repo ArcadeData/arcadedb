@@ -137,19 +137,16 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
         int currentOffset = headerSize;
         for (int i = 0; i < numberOfEntries; i++) {
           // Read variable-sized vectorId
-          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
-          final int id = (int) vectorIdAndSize[0];
-          currentOffset += (int) vectorIdAndSize[1];
+          final int id = (int) page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           // Read variable-sized bucketId
-          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
-          final int bucketId = (int) bucketIdAndSize[0];
-          currentOffset += (int) bucketIdAndSize[1];
+          final int bucketId = (int) page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           // Read variable-sized position
-          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
-          final long position = positionAndSize[0];
-          currentOffset += (int) positionAndSize[1];
+          final long position = page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           final RID rid = new RID(bucketId, position);
 
