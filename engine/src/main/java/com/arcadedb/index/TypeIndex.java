@@ -763,7 +763,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   /**
    * The type this index is declared on has been renamed: a derived logic name follows (a manual one is the user's and stays, issue
    * #10751), and so do the sub-indexes on its own buckets. The sub-indexes on the buckets of its sub types name those sub types,
-   * which the rename did not touch (issue #10317).
+   * which the rename did not touch (issue #10317). A derived COLUMNAR name keeps its suffix, so it never takes the name of a key index
+   * on the same properties.
    */
   @Override
   public void updateTypeName(final String newTypeName) {
@@ -774,7 +775,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /** The name this index answers to once its type is named {@code typeName}: unchanged for a manual name, derived otherwise. */
   public String nameUnderType(final String typeName) {
-    return manualName ? logicName : typeName + getPropertyNames().toString().replace(" ", "");
+    return manualName ? logicName : LocalDocumentType.defaultIndexName(typeName, getPropertyNames(), getType());
   }
 
   /**
