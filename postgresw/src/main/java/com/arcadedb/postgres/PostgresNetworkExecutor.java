@@ -79,6 +79,8 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.monitor.QueryProfile;
@@ -552,6 +554,8 @@ public class PostgresNetworkExecutor extends Thread {
         }
       } finally {
         ACTIVE_SESSIONS.remove(processId, this);
+        // A client that drops the connection in the middle of a fetch leaves its cursors open (issue #6659)
+        dropPortals();
         rollbackPendingTransaction();
       }
 
@@ -563,7 +567,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void syncCommand() {
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().threadId());
 
     if (skipUntilSync || errorInTransaction) {
       // DISCARDED PREVIOUS MESSAGES TILL THIS POINT. The block the discarded messages belonged to goes with
@@ -610,7 +614,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void flushCommand() throws IOException {
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: flush (thread=%s)", Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: flush (thread=%s)", Thread.currentThread().threadId());
     // Flush message does NOT generate any response according to PostgreSQL protocol.
     // It just forces the backend to deliver any data pending in its output buffers.
     // See: https://www.postgresql.org/docs/current/protocol-message-formats.html
@@ -628,13 +632,13 @@ public class PostgresNetworkExecutor extends Thread {
     // recovers is owed the CloseComplete it is waiting for.
 
     if (closeType == 'P')
-      getPortal(prepStatementOrPortal, true);
+      closePortalCursor(getPortal(prepStatementOrPortal, true));
     else if (closeType == 'S')
       preparedStatements.remove(prepStatementOrPortal);
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType,
-          Thread.currentThread().getId());
+          Thread.currentThread().threadId());
 
     writeMessage("close complete", null, '3', 4);
   }
@@ -646,7 +650,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance()
           .log(this, Level.INFO, "PSQL: describe '%s' type=%s (skipUntilSync=%s errorInTransaction=%s thread=%s)",
-              portalName, (char) type, skipUntilSync, errorInTransaction, Thread.currentThread().getId());
+              portalName, (char) type, skipUntilSync, errorInTransaction, Thread.currentThread().threadId());
 
     if (skipUntilSync)
       return;
@@ -707,21 +711,29 @@ public class PostgresNetworkExecutor extends Thread {
         // Execute(s) depend on this same fullResultSet being run exactly once.
         try {
           beginImplicitTransactionBlock(portal);
-          // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
-          // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
-          // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
-          // re-running the statement or losing what Describe already had to read. Bounded by the same cap as
-          // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
-          // what is held here. Marked executed only once the rows are held, so a refused portal is not left
-          // looking like a drained one.
-          // The query admission slot (issue #9518) covers the query and its column resolution, which may replay the query for an
-          // empty result, and goes back before anything is written to the client
-          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
-              final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
-            portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
-            portal.executed = true;
-            resolvePortalColumns(portal, true);
-          }
+          final Map<String, PostgresType> fixedColumns = fixedColumnsOf(portal, true);
+          if (fixedColumns != null)
+            // A projection of declared properties names its columns from the schema (issue #6659): the statement is
+            // run, as a Describe('P') always runs it, but no row is read until an Execute asks for it
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+              openPortalCursor(portal, fixedColumns);
+            }
+          else
+            // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
+            // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
+            // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
+            // re-running the statement or losing what Describe already had to read. Bounded by the same cap as
+            // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
+            // what is held here. Marked executed only once the rows are held, so a refused portal is not left
+            // looking like a drained one.
+            // The query admission slot (issue #9518) covers the query and its column resolution, which may replay the query for an
+            // empty result, and goes back before anything is written to the client
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+                final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
+              portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+              portal.executed = true;
+              resolvePortalColumns(portal, true);
+            }
           answerWithColumns(portal);
           portal.rowsDescribed = true;
           rememberDescribedLayout(portal);
@@ -1003,7 +1015,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
-                Thread.currentThread().getId());
+                Thread.currentThread().threadId());
 
       // Not "apply, then decide": applyTransactionControl() clears the marker it acted on, so a guard inside
       // beginImplicitTransactionBlock() reading portal.transactionControl afterwards would never see one.
@@ -1040,7 +1052,16 @@ public class PostgresNetworkExecutor extends Thread {
           // until its first row has gone out: a fetch-size cursor continuing a suspended SHOW ALL must keep slicing
           // the answer it started on, and a drained one must stay drained (issue #8708)
           portal.fullResultSet = showResultSet(portal.showName);
-        if (!portal.executed) {
+        final Map<String, PostgresType> fixedColumns = portal.executed || !portal.isExpectingResult ? null : fixedColumnsOf(portal, false);
+        if (fixedColumns != null) {
+          // Its columns are known before its rows (issue #6659): run as a live cursor that each Execute pulls only the
+          // rows it asks for from, rather than read whole now
+          final long engineStart = System.nanoTime();
+          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+            openPortalCursor(portal, fixedColumns);
+          }
+          profile.addEngineNanos(System.nanoTime() - engineStart);
+        } else if (!portal.executed) {
           final long engineStart = System.nanoTime();
           if (portal.isExpectingResult) {
             // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
@@ -1079,6 +1100,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
 
+        if (portal.streamed) {
+          executeFromCursor(portal, limit, profile);
+          return;
+        }
+
         if (portal.promisedNoData() && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
           answerDescribedNoData(portal);
           return;
@@ -1112,7 +1138,7 @@ public class PostgresNetworkExecutor extends Thread {
                 portal.columns != null ? portal.columns.keySet() : "null",
                 dataRowColumns.keySet(),
                 portal.cachedResultSet.size(),
-                Thread.currentThread().getId());
+                Thread.currentThread().threadId());
 
           // A portal materialized before this Execute (a SHOW/system/catalog answer fixed at Parse, or one a
           // Describe('P') ran) already carries its columns; a RowDescription is never sent from here (issue #8244).
@@ -1126,7 +1152,7 @@ public class PostgresNetworkExecutor extends Thread {
             if (DEBUG)
               LogManager.instance().log(this, Level.WARNING,
                   "PSQL: Column count mismatch - RowDesc=%d, DataRow=%d (thread=%s)",
-                  portal.columns.size(), dataRowColumns.size(), Thread.currentThread().getId());
+                  portal.columns.size(), dataRowColumns.size(), Thread.currentThread().threadId());
           }
 
           // Use the columns that were sent in RowDescription for consistency
@@ -1207,7 +1233,7 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static int affectedRecords(final Statement statement, final List<Result> rows) {
     if ((statement instanceof UpdateStatement || statement instanceof DeleteStatement) && rows.size() == 1
-        && rows.get(0).getProperty("count") instanceof Number count)
+        && rows.getFirst().getProperty("count") instanceof Number count)
       return count.intValue();
     return rows.size();
   }
@@ -1218,18 +1244,15 @@ public class PostgresNetworkExecutor extends Thread {
    * a client that prepared them expects only as a CommandComplete tag.
    */
   static boolean isRowlessWrite(final Statement statement) {
-    if (statement instanceof InsertStatement insert)
-      return insert.getReturnStatement() == null;
-    else if (statement instanceof CreateVertexStatement createVertex)
-      return createVertex.getReturnStatement() == null;
-    else if (statement instanceof CreateEdgeStatement)
+    return switch (statement) {
+      case InsertStatement insert -> insert.getReturnStatement() == null;
+      case CreateVertexStatement createVertex -> createVertex.getReturnStatement() == null;
       // CREATE EDGE has no RETURN clause in the grammar: if it ever gains one, check it here like CREATE VERTEX
-      return true;
-    else if (statement instanceof UpdateStatement update)
-      return !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
-    else if (statement instanceof DeleteStatement delete)
-      return !delete.isReturnBefore();
-    return false;
+      case CreateEdgeStatement ignored -> true;
+      case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
+      case DeleteStatement delete -> !delete.isReturnBefore();
+      case null, default -> false;
+    };
   }
 
   private CommandContext createCommandContext() {
@@ -1605,7 +1628,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: handling catalog query: %s (thread=%s)", query,
-          Thread.currentThread().getId());
+          Thread.currentThread().threadId());
 
     // A set operation naming no catalog relation (issue #10228) is never a pg_type lookup.
     final List<Result> types = PostgresCatalog.mightBeCatalogQuery(query) ? toResults(PostgresTypeCatalog.resolve(query)) : null;
@@ -1997,9 +2020,10 @@ public class PostgresNetworkExecutor extends Thread {
    * before the statement runs (issue #8562).
    */
   private Map<String, PostgresType> getColumnsFromWriteReturn(final Statement statement) {
-    if (statement instanceof InsertStatement insert)
+    switch (statement) {
+    case InsertStatement insert:
       return getColumnsFromReturn(insert.getTargetType(), insert.getReturnStatement());
-    else if (statement instanceof UpdateStatement update) {
+    case UpdateStatement update: {
       if (update.getReturnProjection() != null) {
         final FromItem item = update.getTarget() != null ? update.getTarget().getItem() : null;
         return getColumnsFromReturn(item != null ? item.getIdentifier() : null, update.getReturnProjection());
@@ -2007,9 +2031,12 @@ public class PostgresNetworkExecutor extends Thread {
       if (update.isReturnBefore() || update.isReturnAfter())
         return getColumnsFromTarget(update.getTarget());
       return null;
-    } else if (statement instanceof DeleteStatement delete)
+    }
+    case DeleteStatement delete:
       return delete.isReturnBefore() ? getColumnsFromTarget(delete.getFromClause()) : null;
-    return null;
+    default:
+      return null;
+    }
   }
 
   /**
@@ -2202,7 +2229,7 @@ public class PostgresNetworkExecutor extends Thread {
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO,
               "PSQL: getColumnsFromType('%s') -> sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
-              typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().getId());
+              typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().threadId());
         return cols;
       }
 
@@ -2701,7 +2728,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> RowDescription: %d columns: %s (thread=%s)",
-          columns.size(), columns.keySet(), Thread.currentThread().getId());
+          columns.size(), columns.keySet(), Thread.currentThread().threadId());
 
 //    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
     final Binary bufferDescription = new Binary();
@@ -2765,45 +2792,53 @@ public class PostgresNetworkExecutor extends Thread {
     final Binary bufferData = new Binary();
     final Binary bufferValues = new Binary();
 
-    for (final Result row : resultSet) {
-      bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
-
-      int colIndex = 0;
-      for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
-        final String propertyName = postgresTypeEntry.getKey();
-        final Object value = columnValue(row, propertyName);
-
-        final PostgresType columnType = postgresTypeEntry.getValue();
-        if (resolveResultFormat(resultFormats, colIndex++) == 1)
-          columnType.serializeAsBinary(columnType, bufferValues, value);
-        else
-          columnType.serializeAsText(columnType, bufferValues, value);
-      }
-
-      bufferValues.flip();
-      final int dataRowLength = 4 + bufferValues.getByteBuffer().limit();
-      bufferData.putByte((byte) 'D');
-      bufferData.putInt(dataRowLength);
-      bufferData.putBuffer(bufferValues.getByteBuffer());
-
-      if (DEBUG)
-        LogManager.instance().log(this, Level.INFO,
-            "PSQL:-> DataRow: cols=%d, bufferValues=%d, dataRowLength=%d, bufferData=%d (thread=%s)",
-            columns.size(), bufferValues.getByteBuffer().limit(), dataRowLength,
-            bufferData.position(), Thread.currentThread().getId());
-
-      bufferData.flip();
-      channel.writeBuffer(bufferData.getByteBuffer());
-
-      bufferData.clear();
-      bufferValues.clear();
-    }
+    for (final Result row : resultSet)
+      writeDataRow(row, columns, resultFormats, bufferData, bufferValues);
 
     channel.flush();
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) data written (thread=%s)", resultSet.size(),
-          Thread.currentThread().getId());
+          Thread.currentThread().threadId());
+  }
+
+  /**
+   * Writes one DataRow without flushing it, through two buffers the caller hands to every row it writes: a live cursor
+   * writes its rows one by one as it pulls them (issue #6659).
+   */
+  private void writeDataRow(final Result row, final Map<String, PostgresType> columns, final List<Integer> resultFormats,
+      final Binary bufferData, final Binary bufferValues) throws IOException {
+    bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
+
+    int colIndex = 0;
+    for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
+      final String propertyName = postgresTypeEntry.getKey();
+      final Object value = columnValue(row, propertyName);
+
+      final PostgresType columnType = postgresTypeEntry.getValue();
+      if (resolveResultFormat(resultFormats, colIndex++) == 1)
+        columnType.serializeAsBinary(columnType, bufferValues, value);
+      else
+        columnType.serializeAsText(columnType, bufferValues, value);
+    }
+
+    bufferValues.flip();
+    final int dataRowLength = 4 + bufferValues.getByteBuffer().limit();
+    bufferData.putByte((byte) 'D');
+    bufferData.putInt(dataRowLength);
+    bufferData.putBuffer(bufferValues.getByteBuffer());
+
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO,
+          "PSQL:-> DataRow: cols=%d, bufferValues=%d, dataRowLength=%d, bufferData=%d (thread=%s)",
+          columns.size(), bufferValues.getByteBuffer().limit(), dataRowLength,
+          bufferData.position(), Thread.currentThread().threadId());
+
+    bufferData.flip();
+    channel.writeBuffer(bufferData.getByteBuffer());
+
+    bufferData.clear();
+    bufferValues.clear();
   }
 
   /**
@@ -2954,7 +2989,7 @@ public class PostgresNetworkExecutor extends Thread {
     final boolean binary = copy.getFormat() == PostgresCopyStatement.Format.BINARY;
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> CopyOutResponse: %s, %d columns: %s (thread=%s)", copy.getFormat(),
-          names.length, columns.keySet(), Thread.currentThread().getId());
+          names.length, columns.keySet(), Thread.currentThread().threadId());
 
     writeMessage("copy out response", () -> {
       channel.writeByte((byte) (binary ? 1 : 0));
@@ -3021,7 +3056,7 @@ public class PostgresNetworkExecutor extends Thread {
     profile.addSerializationNanos(System.nanoTime() - serStart);
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", count, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", count, Thread.currentThread().threadId());
     return count;
   }
 
@@ -3134,7 +3169,7 @@ public class PostgresNetworkExecutor extends Thread {
       // the message unread and it must leave the name exactly as it found it - the same boundary parseCommand()
       // draws. skipUntilSync cannot change while the rest of this message is read, so it is safe to test here.
       if (!skipUntilSync)
-        portals.remove(portalName);
+        closePortalCursor(portals.remove(portalName));
 
       // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
       // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
@@ -3154,12 +3189,12 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
-                Thread.currentThread().getId());
+                Thread.currentThread().threadId());
 
       final int paramFormatCount = channel.readShort();
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
-            paramFormatCount, Thread.currentThread().getId());
+            paramFormatCount, Thread.currentThread().threadId());
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
         for (int i = 0; i < paramFormatCount; i++) {
@@ -3172,15 +3207,15 @@ public class PostgresNetworkExecutor extends Thread {
       totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
-            paramValuesCount, Thread.currentThread().getId());
+            paramValuesCount, Thread.currentThread().threadId());
       if (paramValuesCount > 0) {
         portal.parameterValues = new ArrayList<>(paramValuesCount);
         for (int i = 0; i < paramValuesCount; i++) {
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().getId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().threadId());
           final long paramSize = channel.readUnsignedInt();
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().getId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
 
           if (paramSize == NULL_PARAM_LENGTH) {
             // Postgres protocol NULL sentinel: a declared length of -1 (0xFFFFFFFF unsigned), with no
@@ -3211,7 +3246,7 @@ public class PostgresNetworkExecutor extends Thread {
           // the correct wire offset if deserialize() throws.
           paramsConsumed = i + 1;
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().getId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().threadId());
 
           // Determine format code according to PostgreSQL protocol:
           // - If paramFormatCount == 0: all parameters use text format (0)
@@ -3233,15 +3268,15 @@ public class PostgresNetworkExecutor extends Thread {
 
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind deserializing param %d typeCode=%d formatCode=%d (thread=%s)",
-                i, typeCode, formatCode, Thread.currentThread().getId());
+                i, typeCode, formatCode, Thread.currentThread().threadId());
           portal.parameterValues.add(PostgresType.deserialize(typeCode, formatCode, paramValue));
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().getId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().threadId());
         }
       }
 
       if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().getId());
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().threadId());
       final int resultFormatCount = channel.readShort();
       if (resultFormatCount > 0) {
         portal.resultFormats = new ArrayList<>(resultFormatCount);
@@ -3251,7 +3286,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO, "PSQL: bind resultFormats=%s (0=text, 1=binary) (thread=%s)",
-              portal.resultFormats, Thread.currentThread().getId());
+              portal.resultFormats, Thread.currentThread().threadId());
       }
       resultFormatSectionRead = true;
 
@@ -3295,7 +3330,7 @@ public class PostgresNetworkExecutor extends Thread {
       portals.put(portalName, portal);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-            portalName, Thread.currentThread().getId());
+            portalName, Thread.currentThread().threadId());
 
       writeMessage("bind complete", null, '2', 4);
 
@@ -3376,7 +3411,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d, detected=%d) (errorInTransaction=%s thread=%s)",
-                portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().getId());
+                portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().threadId());
 
       if (errorInTransaction) {
         // Mirror queryCommand()'s aborted-transaction dispatch (issue #6457/#6542): a client recovering
@@ -3869,17 +3904,19 @@ public class PostgresNetworkExecutor extends Thread {
         throw new PostgresSessionSettings.SettingException("DISCARD ALL cannot run inside a transaction block", "25001");
       sessionSettings.resetAll();
       preparedStatements.clear();
-      portals.clear();
+      dropPortals();
     }
     case DEALLOCATE_ALL -> preparedStatements.clear();
     case DEALLOCATE -> {
       if (preparedStatements.remove(command.name()) == null)
         throw new PostgresSessionSettings.SettingException("prepared statement \"" + command.name() + "\" does not exist", "26000");
     }
-    case CLOSE_ALL -> portals.clear();
+    case CLOSE_ALL -> dropPortals();
     case CLOSE -> {
-      if (portals.remove(command.name()) == null)
+      final PostgresPortal closed = portals.remove(command.name());
+      if (closed == null)
         throw new PostgresSessionSettings.SettingException("cursor \"" + command.name() + "\" does not exist", "34000");
+      closePortalCursor(closed);
     }
     case DISCARD_PLANS, DISCARD_SEQUENCES, DISCARD_TEMP -> {
       // Nothing to discard on this server
@@ -4443,7 +4480,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL:-> %s (%s - %s) (thread=%s)", null, messageName, messageCode,
-            FileUtils.getSizeAsString(length), Thread.currentThread().getId());
+            FileUtils.getSizeAsString(length), Thread.currentThread().threadId());
 
     } catch (final IOException e) {
       setErrorInTx();
@@ -4559,14 +4596,14 @@ public class PostgresNetworkExecutor extends Thread {
       readNextByte();
   }
 
-  private void writeCommandComplete(final String queryText, final int resultSetCount) {
+  private void writeCommandComplete(final String queryText, final long resultSetCount) {
     final String upperCaseText = queryText.toUpperCase(Locale.ENGLISH);
     final String tag = getTag(upperCaseText, resultSetCount);
     writeMessage("command complete",
         () -> writeString(tag), 'C', 4 + tag.length() + 1);
   }
 
-  private String getTag(String upperCaseText, int resultSetCount) {
+  private String getTag(String upperCaseText, long resultSetCount) {
     if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO")) {
       return "INSERT 0 " + resultSetCount;
     } else if (upperCaseText.startsWith("COPY")) {
@@ -5117,8 +5154,192 @@ public class PostgresNetworkExecutor extends Thread {
    * abandoned in memory until the connection closed. Prepared statements are session-scoped and are not touched.
    */
   private void dropPortals() {
-    if (!portals.isEmpty())
+    if (!portals.isEmpty()) {
+      for (final PostgresPortal portal : portals.values())
+        closePortalCursor(portal);
       portals.clear();
+    }
+  }
+
+  /**
+   * Closes the live cursor of a portal, if it has one, and ends the statement it runs (issue #6659). Never throws: it runs
+   * on every way out of a portal - the end of its rows, a Close, a Bind of its name, the end of its transaction block, of
+   * the connection - and a cursor that fails to close must neither keep the others open nor skip what follows it (the
+   * rollback of a dropped connection, the ReadyForQuery a Sync owes).
+   */
+  private static void closePortalCursor(final PostgresPortal portal) {
+    if (portal == null || portal.cursorStatement == null)
+      return;
+    final ResultSet cursor = portal.cursor;
+    final RunningQuery statement = portal.cursorStatement;
+    portal.cursor = null;
+    portal.cursorStatement = null;
+    try {
+      if (cursor != null)
+        cursor.close();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(PostgresNetworkExecutor.class, Level.WARNING, "PSQL: error on closing the cursor of statement '%s'", e,
+          portal.query);
+    } finally {
+      statement.close();
+    }
+  }
+
+  /**
+   * The columns a portal's rows can be sent under before any of them is read, or null when only its rows can name them
+   * (issue #6659): a portal answered from its columns is served from a live cursor, every other one is read whole first.
+   *
+   * @param describing true for a {@code Describe('P')}, which announces the columns it answers with: only the schema can
+   *                   name them then ({@link #declaredProjectionColumns}). An Execute announces nothing, and a portal of a
+   *                   statement whose layout a Describe was promised for (issue #6725, #9009) has its rows encoded under
+   *                   that layout whichever rows they are, so the layout fixes them too.
+   */
+  private Map<String, PostgresType> fixedColumnsOf(final PostgresPortal portal, final boolean describing) {
+    if (portal.catalogQuery || portal.showName != null || portal.copyStatement != null || portal.promisedNoData()
+        || !(portal.sqlStatement instanceof SelectStatement || portal.sqlStatement instanceof MatchStatement))
+      return null;
+    if (!describing && portal.columnsDescribed && portal.columns != null && !portal.columns.isEmpty())
+      return portal.columns;
+    return portal.sqlStatement instanceof SelectStatement select ? declaredProjectionColumns(select, resolveQueryTargetType(portal)) : null;
+  }
+
+  /**
+   * The columns of a SELECT that projects nothing but properties its FROM type declares, named and typed from the schema
+   * alone (issue #6659). A record holds a declared property under its declared type, so these are the columns its rows
+   * would produce - {@link PostgresType#getTypeFromArcade} agrees with {@link PostgresType#getTypeForValue} by design -
+   * and they are known before the first row is read. Null for every other projection - a wildcard, an expression, an
+   * undeclared property, an UNWIND, a target that is not a type, a type whose values do not decide one Postgres type -
+   * and for a type the user may not read, whose schema a listing would not show them either: such a statement is run
+   * and read whole first, and refused the way it always was.
+   */
+  private Map<String, PostgresType> declaredProjectionColumns(final SelectStatement select, final DocumentType targetType) {
+    final Projection projection = select.getProjection();
+    if (targetType == null || select.getUnwind() != null || projection == null || projection.isExpand() || projection.getItems() == null
+        || projection.getItems().isEmpty()
+        || !SecurityHelper.canAccessType((DatabaseInternal) database, targetType, SecurityDatabaseUser.ACCESS.READ_RECORD))
+      return null;
+
+    final Map<String, PostgresType> columns = new LinkedHashMap<>();
+    for (final ProjectionItem item : projection.getItems()) {
+      final Expression expression = item.getExpression();
+      if (item.isAll() || item.exclude || expression == null || !expression.isBaseIdentifier())
+        return null;
+      final String alias = item.getProjectionAliasAsString();
+      final Property property = alias != null ? targetType.getPolymorphicPropertyIfExists(expression.getDefaultAlias().getStringValue()) : null;
+      if (property == null || !hasRowIndependentColumnType(property)
+          || columns.put(alias, PostgresType.getTypeFromArcade(property.getType(), property.getOfType())) != null)
+        return null;
+    }
+    return columns;
+  }
+
+  /**
+   * True for a declared type whose values all travel under the one Postgres type the schema names for it. Not for a LIST
+   * without a scalar element type, which is typed by the elements each list holds, nor for a LINK or an EMBEDDED, whose
+   * value is a RID or a record depending on how it was loaded.
+   */
+  private static boolean hasRowIndependentColumnType(final Property property) {
+    return switch (property.getType()) {
+      case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, STRING, DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS,
+           DATETIME_NANOS, BINARY, MAP -> true;
+      case LIST -> {
+        final Type elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+        yield elementType != null && switch (elementType) {
+          case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, STRING -> true;
+          default -> false;
+        };
+      }
+      default -> false;
+    };
+  }
+
+  /**
+   * Runs a portal's statement as a live cursor whose rows are sent under {@code columns} (issue #6659). The statement is
+   * listed from now until the cursor is closed (issue #9689) and is bound to this thread only while its work runs - here
+   * and in each Execute that pulls from it - so a cancel or a termination stops it there, while between two fetches the
+   * thread serves the connection's other statements without carrying it. The caller holds the admission slot.
+   */
+  private void openPortalCursor(final PostgresPortal portal, final Map<String, PostgresType> columns) {
+    final RunningQuery statement = server.getRunningQueries()
+        .open(database != null ? database.getName() : databaseName, userName, "postgres", null, null,
+            RunningQuery.Client.of(String.valueOf(processId), clientSocketAddress()));
+    statement.setStatement(portal.language, portal.query);
+    final RunningQuery previous = runningStatement;
+    boolean opened = false;
+    try (final RunningQuery.Binding ignored = statement.bind()) {
+      runningStatement = statement;
+      portal.cursor = runPortalQuery(portal);
+      opened = true;
+    } finally {
+      runningStatement = previous;
+      if (!opened)
+        statement.close();
+    }
+    portal.cursorStatement = statement;
+    portal.columns = columns;
+    portal.streamed = true;
+    portal.executed = true;
+  }
+
+  /**
+   * Answers an Execute of a portal served from its live cursor (issue #6659): writes the next {@code limit} rows, or every
+   * row left for 0, as they are pulled, then PortalSuspended while rows remain, or CommandComplete once the cursor is
+   * drained - tagged with the rows of every Execute of the portal, as PostgreSQL tags it - which closes it. No row is held
+   * meanwhile, so {@link GlobalConfiguration#POSTGRES_QUERY_MAX_ROWS} does not apply: it bounds the results that have to
+   * be read whole before their columns can be announced, and this one is not.
+   * <p>
+   * Each fetch is admitted on its own (issue #9518) and runs as the cursor's statement (issue #9689): a cursor the client
+   * leaves idle holds no admission slot, and a cancel reaches a fetch as it reaches any statement. The command timeout is
+   * the statement's own, taken once when it starts, as {@code arcadedb.command.timeout} documents: it keeps running while
+   * the client waits between two fetches, where PostgreSQL's {@code statement_timeout} restarts with each Execute.
+   */
+  private void executeFromCursor(final PostgresPortal portal, final int limit, final QueryProfile profile) throws IOException {
+    final ResultSet cursor = portal.cursor;
+    if (cursor == null) {
+      // Drained by an earlier Execute: no row is sent twice, exactly as for a drained materialized portal
+      writeCommandComplete(portal.query, 0);
+      return;
+    }
+
+    final long serStart = System.nanoTime();
+    final RunningQuery statement = portal.cursorStatement;
+    final RunningQuery previous = runningStatement;
+    int sent = 0;
+    final boolean more;
+    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+        final RunningQuery.Binding ignoredBinding = statement.bind()) {
+      runningStatement = statement;
+      final Binary bufferData = new Binary();
+      final Binary bufferValues = new Binary();
+      while ((limit <= 0 || sent < limit) && cursor.hasNext()) {
+        // The engine checks a termination where it does work, and a cursor past a blocking step (an ORDER BY sorts on the
+        // first fetch) only hands out rows it already holds: checked here too, so a cancel or a termination - one that
+        // came while the client was between two fetches included - stops the rows as well as the work
+        statement.checkNotTerminated("the fetch");
+        final Result row = cursor.next();
+        if (row == null)
+          continue;
+        writeDataRow(row, portal.columns, portal.resultFormats, bufferData, bufferValues);
+        ++sent;
+      }
+      more = cursor.hasNext();
+    } catch (final RuntimeException | IOException e) {
+      // The rows already written stand, the ErrorResponse follows them, and the portal has nothing more to give
+      closePortalCursor(portal);
+      throw e;
+    } finally {
+      runningStatement = previous;
+    }
+    channel.flush();
+
+    portal.cursorRows += sent;
+    if (more)
+      portalSuspendedResponse();
+    else {
+      closePortalCursor(portal);
+      writeCommandComplete(portal.query, portal.cursorRows);
+    }
+    profile.addSerializationNanos(System.nanoTime() - serStart);
   }
 
   /**

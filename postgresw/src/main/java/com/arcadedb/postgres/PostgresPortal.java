@@ -19,7 +19,9 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
 
@@ -140,16 +142,27 @@ public class PostgresPortal {
    * reader of that field already expects; this field is what makes a second slice possible without re-running
    * the statement or losing the rows a Describe already had to materialize to discover the row's columns.
    * <p>
-   * <b>Known limitation</b> (tracked as issue #6659): this is eager, in-memory pagination over a fully
-   * materialized list, not a true streaming cursor - the whole result is pulled into memory (and retained for
-   * the portal's whole lifetime) before the first row goes out, regardless of the client's row-limit. A client
-   * that always Describes first (pgjdbc, notably) already got this treatment before #6458, since
-   * {@code describeCommand()} has to read every row to discover a sparse document's full column set - but a
-   * raw wire-protocol client that skips Describe and relies on Execute's row-limit to bound server-side memory
-   * over a large result no longer gets that bound. Real streaming would need the source {@code ResultSet} kept
-   * open across Execute calls instead of closed immediately by {@code browseAndCacheResultSet}.
+   * Only for a portal whose rows alone can name its columns - a wildcard, an expression, an undeclared property, a
+   * language this server does not parse - since a document can carry a property no earlier row had. A portal whose
+   * columns are fixed before its first row is read is served from {@link #cursor} instead (issue #6659).
    */
   public List<Result>              fullResultSet;
+  /**
+   * The live result set an Execute pulls this portal's rows from, when its columns were fixed before its first row was
+   * read (issue #6659): kept open across Execute calls, so each one pulls only the rows it asks for instead of the whole
+   * result being held before the first row goes out. Null before it is opened and once it is closed: after its last
+   * row, or with the portal - a Close, a Bind of the same name, the end of its transaction block or of the connection.
+   */
+  public ResultSet                 cursor;
+  /** The registry entry of the statement {@link #cursor} runs (issue #9689): listed, cancellable and terminable until it is closed. */
+  public RunningQuery              cursorStatement;
+  /** True once this portal's rows come from {@link #cursor}, and still once it is drained: a drained portal sends no row again. */
+  public boolean                   streamed             = false;
+  /**
+   * How many rows {@link #cursor} has sent across every Execute so far, the count its CommandComplete is tagged with. A
+   * long, unlike {@link #resultCursor}: nothing caps a stream at what a list can index.
+   */
+  public long                      cursorRows           = 0;
   /**
    * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
    * far (issue #6458). The next Execute's slice starts here.
