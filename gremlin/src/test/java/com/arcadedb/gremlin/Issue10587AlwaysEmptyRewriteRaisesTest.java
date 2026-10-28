@@ -19,6 +19,8 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.utility.FileUtils;
+import org.apache.tinkerpop.gremlin.process.traversal.P;
+import org.apache.tinkerpop.gremlin.process.traversal.TextP;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
@@ -136,7 +138,12 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
         t -> t.label(), t -> t.has("n", 1L), t -> t.hasLabel("P"), t -> t.is(1), t -> t.dedup(), t -> t.identity(), t -> t.constant(1),
         t -> t.count(), t -> t.V(), t -> t.math("_"), t -> t.math("1/0"), t -> t.order().by(__.math("_")), t -> t.not(__.out()),
         t -> t.local(__.out()), t -> t.union(__.out(), __.identity()), t -> t.filter(__.values("s")), t -> t.value(), t -> t.key(),
-        t -> t.select("a"), t -> t.dedup("a"));
+        t -> t.select("a"), t -> t.dedup("a"),
+        // THE PREDICATES OF has() AND is() OVER A VALUE OF ANOTHER TYPE: A COMPARISON THAT RAISED WOULD BE THE SAME HOLE
+        t -> t.has("s", P.gt(1)), t -> t.has("n", P.lt("a")), t -> t.has("n", P.within("a", 1L)), t -> t.has("n", TextP.containing("x")),
+        t -> t.has("s", TextP.regex("^x")), t -> t.has("n", P.between("a", "z")), t -> t.is(P.gt("a")), t -> t.is(TextP.startingWith("x")),
+        t -> t.is(P.neq(null)), t -> t.has("n", P.not(P.eq("a"))), t -> t.has("n", TextP.notContaining("q")),
+        t -> t.is(P.gt((Object) 1).and((P) TextP.containing("x"))), t -> t.has("s", P.gt(1).or(P.within("x"))));
 
     for (final Function<GraphTraversalSource, GraphTraversal<?, ?>> feeder : feeders)
       for (final Function<GraphTraversal<?, ?>, GraphTraversal<?, ?>> step : steps) {

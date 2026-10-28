@@ -28,6 +28,8 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryComparator;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
+import org.apache.tinkerpop.gremlin.process.traversal.Contains;
+import org.apache.tinkerpop.gremlin.process.traversal.NotP;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
@@ -63,6 +65,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.util.EmptyStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.traverser.TraverserRequirement;
+import org.apache.tinkerpop.gremlin.process.traversal.util.ConnectiveP;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.apache.tinkerpop.gremlin.structure.Element;
 
@@ -277,7 +280,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
    */
   private static void applyAlwaysEmptyFilterOptimization(final Traversal.Admin<?, ?> traversal) {
     final List<Step> steps = traversal.getSteps();
-    int input = NOT_READ_ONLY;
+    int input = ANY;
+    boolean inputKnown = false;
     for (int i = 0; i < steps.size(); i++) {
       final Step<?, ?> step = steps.get(i);
       if (!(step instanceof TraversalFilterStep<?> || step instanceof WhereTraversalStep<?>))
@@ -289,8 +293,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
       // THE STEPS IN FRONT OF THE FILTER, AND WHAT THEY FEED IT. THE CHILD TOO: ITS STEPS IN FRONT OF THE limit(0) RUN ONCE FOR EVERY
       // TRAVERSER THE FILTER IS OFFERED, AND THE FILTER IS GONE
-      if (input == NOT_READ_ONLY)
+      if (!inputKnown) {
         input = inputOf(traversal);
+        inputKnown = true;
+      }
       final int fed = readOnlyOutput(steps.subList(0, i), input);
       if (fed == NOT_READ_ONLY || readOnlyOutput(((Traversal.Admin<?, ?>) children.get(0)).getSteps(), fed) == NOT_READ_ONLY)
         continue;
@@ -355,6 +361,12 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       } else if (c == HasStep.class) {
         if (current == ANY)
           return NOT_READ_ONLY;
+        for (final HasContainer container : ((HasStep<?>) step).getHasContainers())
+          if (!predicateNeverRaises(container.getPredicate()))
+            return NOT_READ_ONLY;
+      } else if (c == IsStep.class) {
+        if (!predicateNeverRaises(((IsStep<?>) step).getPredicate()))
+          return NOT_READ_ONLY;
       } else if (c == PropertiesStep.class || c == IdStep.class || c == LabelStep.class) {
         if (current == ANY)
           return NOT_READ_ONLY;
@@ -372,7 +384,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       else if (c == StartStep.class) {
         if (((StartStep<?>) step).getStart() != null)
           current = ANY;
-      } else if (c != IdentityStep.class && c != NoOpBarrierStep.class && c != RangeGlobalStep.class && c != IsStep.class
+      } else if (c != IdentityStep.class && c != NoOpBarrierStep.class && c != RangeGlobalStep.class
           && c != TraversalFilterStep.class && c != WhereTraversalStep.class && c != NotStep.class)
         return NOT_READ_ONLY;
     }
@@ -380,6 +392,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   }
 
   private static boolean childrenAreReadOnly(final TraversalParent parent, final int input) {
+    // A by('key') OR by(T.id) MODULATOR IS AN AbstractLambdaTraversal: IT RAISES ON A TRAVERSER WITHOUT THE KEY, SO dedup().by('k') AND
+    // order().by('k') KEEP THE FILTER, CONSERVATIVELY
     for (final Traversal.Admin<?, ?> child : parent.getLocalChildren())
       if (child instanceof AbstractLambdaTraversal || readOnlyOutput(child.getSteps(), input) == NOT_READ_ONLY)
         return false;
@@ -387,6 +401,24 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       if (child instanceof AbstractLambdaTraversal || readOnlyOutput(child.getSteps(), input) == NOT_READ_ONLY)
         return false;
     return true;
+  }
+
+  /**
+   * Whether the predicate of a {@code has()} or an {@code is()} answers false, rather than raising, over a value of another type: a
+   * comparison ({@link Compare}, ternary since TinkerPop 3.6) and a membership test ({@link Contains}) do, joined by and/or or negated,
+   * while a text predicate ({@code TextP.containing()} over a number) raises a ClassCastException, and so may one this module does not
+   * know.
+   */
+  private static boolean predicateNeverRaises(final P<?> predicate) {
+    if (predicate instanceof ConnectiveP<?> connective) {
+      for (final P<?> p : connective.getPredicates())
+        if (!predicateNeverRaises(p))
+          return false;
+      return true;
+    }
+    if (predicate instanceof NotP<?> not)
+      return predicateNeverRaises(not.negate());
+    return predicate != null && (predicate.getBiPredicate() instanceof Compare || predicate.getBiPredicate() instanceof Contains);
   }
 
   private static boolean idsAreRids(final Object[] ids) {
