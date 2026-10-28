@@ -369,6 +369,38 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
     assertThat(withStep.getMessage()).isEqualTo(normal.getMessage());
   }
 
+  /**
+   * Final review B-M4: {@code facet.searchValues} over a type the user may read no bucket of fails as the plain query over the type does,
+   * rather than answering an empty list where every other call on the type fails. Over the super type the readable buckets answer.
+   */
+  @Test
+  void searchValuesOverAnUnreadableTypeFailsLikeThePlainQuery() {
+    final Throwable plain = catchThrowable(() -> {
+      try (final RemoteDatabase remote = remote(); final ResultSet rs = remote.query("sql", "SELECT FROM " + SUB)) {
+        rs.stream().count();
+      }
+    });
+    final Throwable search = catchThrowable(() -> {
+      try (final RemoteDatabase remote = remote();
+          final ResultSet rs = remote.query("sql", "SELECT expand(facet.searchValues('" + SUB + "', 'brand', 'brand-', 10))")) {
+        rs.stream().count();
+      }
+    });
+    assertThat(plain).as("the plain query refuses the user").isNotNull();
+    assertThat(search).as("facet.searchValues refuses the user").isNotNull();
+    assertThat(search.getClass()).isEqualTo(plain.getClass());
+    assertThat(search.getMessage()).isEqualTo(plain.getMessage());
+
+    final List<Object> values = new ArrayList<>();
+    try (final RemoteDatabase remote = remote();
+        final ResultSet rs = remote.query("sql", "SELECT expand(facet.searchValues('" + SUPER + "', 'brand', 'brand-', 10))")) {
+      while (rs.hasNext())
+        values.add(rs.next().getProperty("value"));
+    }
+    // brand-5 and brand-6 exist only in Image
+    assertThat(values).containsExactly("brand-0", "brand-1", "brand-2", "brand-3", "brand-4");
+  }
+
   @Test
   void rootSeesEverything() {
     final String sql = "SELECT FROM " + SUPER + " FACETS " + FACETS + " LIMIT 0";

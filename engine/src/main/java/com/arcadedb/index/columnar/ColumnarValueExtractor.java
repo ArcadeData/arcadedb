@@ -204,14 +204,12 @@ public final class ColumnarValueExtractor {
 
   /** Counts {@code coerced} values of the column converted from another stored type ({@link #isCoerced}). */
   void countCoerced(final ColumnDefinition column, final long coerced) {
-    for (long i = 0; i < coerced; i++)
-      stats.coercedValue(typeName, column.property());
+    stats.addCoercedValues(typeName, column.property(), coerced);
   }
 
   /** Counts {@code failures} conversion failures of the column. */
   void countFailures(final ColumnDefinition column, final int failures) {
-    for (int i = 0; i < failures; i++)
-      stats.conversionFailure(typeName, column.property());
+    stats.addConversionFailures(typeName, column.property(), failures);
   }
 
   /**

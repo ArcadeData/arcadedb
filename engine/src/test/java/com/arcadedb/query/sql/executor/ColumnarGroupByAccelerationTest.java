@@ -23,10 +23,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarManifest;
 import com.arcadedb.index.columnar.ColumnarProjection;
@@ -38,7 +41,12 @@ import com.arcadedb.index.columnar.ColumnarTestHooks;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
+import com.arcadedb.query.facet.AdvancedFacetsFixture;
+import com.arcadedb.query.facet.CrossBucketOrdinalMap;
 import com.arcadedb.query.facet.FacetMemoryBudget;
+import com.arcadedb.query.sql.executor.ColumnarGroupByAggregator.Decline;
+import com.arcadedb.query.sql.executor.ColumnarGroupByPlanner.AggregateSpec;
+import com.arcadedb.query.sql.executor.ColumnarGroupByPlanner.ColumnarGroupByPlan;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -61,6 +69,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * GROUP BY answered from the COLUMNAR projection ({@link ColumnarGroupByStep}): every accelerated execution returns what the same
@@ -669,8 +678,8 @@ class ColumnarGroupByAccelerationTest extends TestHelper {
       final List<Map<String, Object>> accelerated = rows(sql);
       assertThat(accelerated).as(sql).isNotEmpty().containsExactlyInAnyOrderElementsOf(normalRows(sql));
     }
-    assertThat(lastPath(key)).isEqualTo("normal: Clip.brand has values stored as another type");
-    assertThat(lastPath(value)).isEqualTo("normal: Clip.size has values stored as another type");
+    assertThat(lastPath(key)).isEqualTo(storedAsAnotherType("brand"));
+    assertThat(lastPath(value)).isEqualTo(storedAsAnotherType("size"));
     assertThat(manager().coercedValues("Clip", "label")).isZero();
     // the key a record stores as a number is returned as that number
     assertThat(rows(key)).anyMatch(row -> row.get("brand") instanceof Integer);
@@ -697,6 +706,16 @@ class ColumnarGroupByAccelerationTest extends TestHelper {
 
   private static final String CLIP_SUM = "SELECT label, count(*), sum(size) FROM Clip GROUP BY label";
 
+  /** The decline of a Clip column holding values converted from another stored type, with its remedy (final review A-M3). */
+  private static String storedAsAnotherType(final String property) {
+    return "normal: Clip." + property + " has values stored as another type (REBUILD INDEX `Clip[" + property + "]_columnar` to recount)";
+  }
+
+  /** The decline of a Clip column holding values that failed to convert, with its remedy (final review A-M3). */
+  private static String failedToConvert(final String property) {
+    return "normal: Clip." + property + " has values that failed to convert (REBUILD INDEX `Clip[" + property + "]_columnar` to recount)";
+  }
+
   private String clipBucket() {
     return database.getSchema().getType("Clip").getBuckets(false).getFirst().getName();
   }
@@ -711,9 +730,9 @@ class ColumnarGroupByAccelerationTest extends TestHelper {
   @Timeout(300)
   void coercedValueStillDeclinesAfterReopen() {
     createClip(true, false);
-    assertThat(lastPath(CLIP_SUM)).isEqualTo("normal: Clip.size has values stored as another type");
+    assertThat(lastPath(CLIP_SUM)).isEqualTo(storedAsAnotherType("size"));
     reopen();
-    assertThat(lastPath(CLIP_SUM)).isEqualTo("normal: Clip.size has values stored as another type");
+    assertThat(lastPath(CLIP_SUM)).isEqualTo(storedAsAnotherType("size"));
     assertThat(rows(CLIP_SUM)).containsExactlyInAnyOrderElementsOf(normalRows(CLIP_SUM));
   }
 
@@ -723,10 +742,11 @@ class ColumnarGroupByAccelerationTest extends TestHelper {
   void conversionFailureStillDeclinesAfterReopen() {
     createClip(false, true);
     final String count = "SELECT label, count(size) FROM Clip GROUP BY label";
-    // the planner declines while the failures are in this run's stats; after a reopen only the persisted counts know them
-    assertThat(profiledStep(count)).isNull();
+    // final review A-I1: the persisted counts decide at run time, in this process as after a reopen
+    assertThat(lastPath(count)).isEqualTo(failedToConvert("size"));
+    assertThat(rows(count)).containsExactlyInAnyOrderElementsOf(normalRows(count));
     reopen();
-    assertThat(lastPath(count)).isEqualTo("normal: Clip.size has values that failed to convert");
+    assertThat(lastPath(count)).isEqualTo(failedToConvert("size"));
     assertThat(rows(count)).containsExactlyInAnyOrderElementsOf(normalRows(count));
   }
 
@@ -817,9 +837,142 @@ class ColumnarGroupByAccelerationTest extends TestHelper {
     } catch (final IOException e) {
       throw new AssertionError(e);
     }
-    assertThat(lastPath(CLIP_SUM)).isEqualTo("normal: Clip.size has values stored as another type");
+    assertThat(lastPath(CLIP_SUM)).isEqualTo(storedAsAnotherType("size"));
     reopen();
-    assertThat(lastPath(CLIP_SUM)).isEqualTo("normal: Clip.size has values stored as another type");
+    assertThat(lastPath(CLIP_SUM)).isEqualTo(storedAsAnotherType("size"));
+  }
+
+  /**
+   * Final review A-I1: a value that failed to convert, fixed in its record, is no reason to decline once its column is rebuilt, in the
+   * same process: the counts the projection persisted with its state decide, never the counter of this run's stats.
+   */
+  @Test
+  @Timeout(300)
+  void fixedFailureIsAcceleratedAfterARebuildWithoutAReopen() {
+    createClip(false, true);
+    final String count = "SELECT label, count(size) FROM Clip GROUP BY label";
+    assertThat(lastPath(count)).isEqualTo(failedToConvert("size"));
+    assertThat(manager().conversionFailures("Clip", "size")).as("this run's stats keep the failures").isGreaterThan(0);
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Clip")) {
+        while (rs.hasNext()) {
+          final Document record = rs.next().getRecord().orElseThrow().asDocument();
+          if (record.get("size") instanceof String)
+            record.modify().set("size", 7L).save();
+        }
+      }
+    });
+    database.command("sql", "REBUILD INDEX `Clip[size]_columnar`");
+    FacetOracle.awaitCaughtUp(database);
+    assertIdentical(count);
+  }
+
+  /**
+   * Final review A-M2: the decline checks need only the snapshots, so they run before the match set is built: a statement that declines
+   * for its conversions never charges the match set's union (a budget too small for it does not change the reason).
+   */
+  @Test
+  @Timeout(300)
+  void conversionDeclineRunsBeforeTheMatchSetIsBuilt() {
+    createClip(true, false);
+    assertThat(lastPath(CLIP_SUM)).isEqualTo(storedAsAnotherType("size"));
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final FacetMemoryBudget.Reservation hold = budget.reserve(budget.available() - 1024, 0);
+    assertThat(hold).isNotNull();
+    try {
+      assertThat(lastPath(CLIP_SUM)).isEqualTo(storedAsAnotherType("size"));
+    } finally {
+      hold.close();
+    }
+  }
+
+  /**
+   * Final review A-M5: the constructor of the aggregator gives back its first 64 KiB step when the charge of the initial groups that
+   * follows it is refused (59 aggregate items or more make a group of 64 outgrow the step).
+   */
+  @Test
+  @Timeout(300)
+  void refusedInitialGroupsGiveTheFirstStepBack() {
+    final AggregateSpec[] aggregates = new AggregateSpec[80];
+    final String[] aliases = new String[aggregates.length];
+    aliases[0] = "fileSize";
+    for (int i = 1; i < aggregates.length; i++) {
+      aggregates[i] = new AggregateSpec(AggregateSpec.Kind.SUM, "fileSize", ColumnKind.LONG, Type.LONG);
+      aliases[i] = "s" + i;
+    }
+    final ColumnarGroupByPlan plan = new ColumnarGroupByPlan(TYPE, new int[0], "fileSize", ColumnKind.LONG, Type.LONG, aliases, aggregates);
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final long left = 64 * 1024 + 1024;
+    final FacetMemoryBudget.Reservation hold = budget.reserve(budget.available() - left, 0);
+    assertThat(hold).isNotNull();
+    try {
+      assertThatThrownBy(() -> new ColumnarGroupByAggregator((DatabaseInternal) database, plan, null,
+          new CrossBucketOrdinalMap[aggregates.length], WorkGuard.forCommandDeadline(null))).isInstanceOf(Decline.class);
+      assertThat(budget.available()).as("nothing is kept by a refused constructor").isEqualTo(left);
+    } finally {
+      hold.close();
+    }
+  }
+
+  /** Final review B-I1: the rows of every statement are the normal plan's under read events, and the step says why it ran it. */
+  private void assertReadEventsRunTheNormalPlan(final List<Map<String, Object>> unfiltered) {
+    final String reason = "normal: reading bucket " + bucketName(0) + " fires read events (READ triggers or listeners)";
+    for (final String sql : QUERIES) {
+      final List<Map<String, Object>> rows = rows(sql);
+      assertThat(lastPath(sql)).as(sql).isEqualTo(reason);
+      final List<Map<String, Object>> normal = normalRows(sql);
+      assertThat(normal).as(sql).isNotEmpty();
+      if (sql.contains("ORDER BY"))
+        assertThat(rows).as(sql).containsExactlyElementsOf(normal);
+      else
+        assertThat(rows).as(sql).containsExactlyInAnyOrderElementsOf(normal);
+    }
+    assertThat(rows(Q1)).as("the read events change the answer").isNotEqualTo(unfiltered);
+  }
+
+  /**
+   * Final review B-I1: a BEFORE READ trigger hides the records of a tenant from the normal plan, so the step runs it, decided at each
+   * execution of the cached plan: accelerated again once the trigger is dropped.
+   */
+  @Test
+  @Timeout(300)
+  void beforeReadTriggerRunsTheNormalPlan() {
+    load(1L, 1, 3000);
+    final List<Map<String, Object>> unfiltered = rows(Q1);
+    assertThat(lastPath(Q1)).isEqualTo("columnar");
+    database.command("sql", "CREATE TRIGGER hideTenant BEFORE READ ON TYPE " + TYPE + " EXECUTE JAVA '"
+        + AdvancedFacetsFixture.HideTenantTrigger.class.getName() + "'");
+    try {
+      assertReadEventsRunTheNormalPlan(unfiltered);
+    } finally {
+      database.command("sql", "DROP TRIGGER hideTenant");
+    }
+    for (final String sql : QUERIES)
+      assertIdentical(sql);
+  }
+
+  /** Final review B-I1: an AFTER READ listener of the type, then one of the database, that filters a tenant's records out. */
+  @Test
+  @Timeout(300)
+  void afterReadListenerRunsTheNormalPlan() {
+    load(7L, 1, 3000);
+    final List<Map<String, Object>> unfiltered = rows(Q1);
+    final AfterRecordReadListener listener = record -> AdvancedFacetsFixture.isHiddenTenant(record.asDocument().get("author")) ? null : record;
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    try {
+      assertReadEventsRunTheNormalPlan(unfiltered);
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+    assertIdentical(Q1);
+
+    database.getEvents().registerListener(listener);
+    try {
+      assertReadEventsRunTheNormalPlan(unfiltered);
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+    assertIdentical(Q1);
   }
 
   /** I47 (M6): the statement's own TIMEOUT clause stops the accelerated loops, as it stops the normal aggregation. */

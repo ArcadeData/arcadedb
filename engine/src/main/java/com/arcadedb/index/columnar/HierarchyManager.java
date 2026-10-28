@@ -40,10 +40,12 @@ import com.arcadedb.utility.IntHashSet;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -84,6 +86,10 @@ public final class HierarchyManager {
   static final String REBUILD_DEFERRED = "hierarchy.rebuildDeferred";
   /** Why {@link #view()} has no view for a caller whose transactions are nested as deep as allowed while the view needs a rebuild. */
   public static final String NESTING_TOO_DEEP = "transaction nesting too deep for the hierarchy view";
+  /** Why a facet has no view when its statement's deadline passed while the shared view was being rebuilt ({@link #view(long)}). */
+  public static final String BEING_REBUILT     = "hierarchy view being rebuilt";
+  /** Why a facet has no view when its statement's deadline passed while the private view of its transaction was built. */
+  public static final String PRIVATE_NOT_BUILT = "hierarchy view of the transaction's changes not built before the deadline";
 
   /** The watched files, their set for {@link TransactionContext#hasChangesInFiles}, and what a change of the sources is told by. */
   private record FileSet(int[] ids, IntHashSet set, String fingerprint) {
@@ -106,6 +112,8 @@ public final class HierarchyManager {
   private final AtomicBoolean        rebuildWanted = new AtomicBoolean();
   private final AtomicLong           sourceChanges = new AtomicLong();
   private final AtomicLong           rebuilds      = new AtomicLong();
+  /** Notified at every publication of the shared view (and at close): a caller with a deadline waits on it ({@link #view(long)}). */
+  private final Object               published     = new Object();
   private volatile HierarchyView     current;
   private volatile FileSet           files         = FileSet.NONE;
   private volatile long              sourcesSchemaVersion = Long.MIN_VALUE;
@@ -151,31 +159,97 @@ public final class HierarchyManager {
     return columnar.watchGeneration(onChange) + sourceChanges.get();
   }
 
+  /** {@link #view(long)} with no deadline. */
+  public HierarchyView view() {
+    return view(Long.MAX_VALUE);
+  }
+
   /**
    * The view for the calling thread's query: a private one, built through the caller's transaction and never cached, when that
    * transaction changed a watched file; otherwise the shared view, rebuilt first when it is older than the generation read now. Null
    * when the hierarchy is not available; {@link #unavailableReason()} then says why (also {@link #NESTING_TOO_DEEP}, for this caller
    * only).
+   * <p>
+   * A caller with a deadline (final review A-M4, round 2 N1) never builds the shared view: it queues the rebuild on
+   * {@link ColumnarMaintenancePool} and waits for its publication until the deadline, so overlapping queries whose TIMEOUT is shorter
+   * than a build cannot keep starting and abandoning it. Past the deadline the call returns null while {@link #unavailableReason()}
+   * stays null; {@link #deadlineReason()} then says why ({@link #BEING_REBUILT}). The private view of a caller's own changes is built by
+   * the caller, stopped at the deadline ({@link #PRIVATE_NOT_BUILT}). The builder checks the deadline between its scans and every 1024
+   * vertices, not in its sort, BFS and Tarjan passes, so a build can overrun it by those (tuning list).
+   *
+   * @param deadlineMs epoch milliseconds, {@link Long#MAX_VALUE} for none
    */
-  public HierarchyView view() {
+  public HierarchyView view(final long deadlineMs) {
     refreshIfSchemaChanged();
     if (closed || unavailableReason != null)
       return null;
+    final BooleanSupplier cancelled = deadlineMs == Long.MAX_VALUE ? () -> closed :
+        () -> closed || System.currentTimeMillis() > deadlineMs;
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null && tx.isActive() && tx.hasChangesInFiles(files.set()))
-      return HierarchyBuilder.build(database, def, generation(), indexName, false, null, null);
+      try {
+        return HierarchyBuilder.build(database, def, generation(), indexName, false, null, cancelled);
+      } catch (final CancellationException e) {
+        if (closed)
+          throw e;
+        return null;
+      }
     final long wanted = generation();
     final HierarchyView fresh = current;
     if (fresh != null && fresh.generation() >= wanted)
       return fresh;
+    if (deadlineMs != Long.MAX_VALUE)
+      return awaitPublished(wanted, deadlineMs);
     if (isCallerNestedTooDeep())
       return null;
     buildLock.lock();
     try {
-      return buildLocked(wanted);
+      return buildLocked(wanted, cancelled);
     } finally {
       buildLock.unlock();
       requeueIfWanted();
+    }
+  }
+
+  /**
+   * Why {@link #view(long)} gave the calling thread no view although {@link #unavailableReason()} is null: its deadline passed, while
+   * the private view of its own changes was built ({@link #PRIVATE_NOT_BUILT}) or the shared one rebuilt ({@link #BEING_REBUILT}).
+   */
+  public String deadlineReason() {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isActive() && tx.hasChangesInFiles(files.set()) ? PRIVATE_NOT_BUILT : BEING_REBUILT;
+  }
+
+  /**
+   * Queues the rebuild on the maintenance pool and waits until a shared view at least as new as {@code wanted} is published, the
+   * manager closes or the deadline passes (null). A build already running and older than {@code wanted} queues the next one when it
+   * ends (the deferred rebuild), so the wait always has a build coming.
+   */
+  private HierarchyView awaitPublished(final long wanted, final long deadlineMs) {
+    scheduleRebuild();
+    synchronized (published) {
+      while (true) {
+        final HierarchyView view = current;
+        if (view != null && view.generation() >= wanted)
+          return view;
+        if (closed || unavailableReason != null)
+          return null;
+        final long left = deadlineMs - System.currentTimeMillis();
+        if (left <= 0)
+          return null;
+        try {
+          published.wait(left);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return null;
+        }
+      }
+    }
+  }
+
+  private void notifyPublished() {
+    synchronized (published) {
+      published.notifyAll();
     }
   }
 
@@ -201,7 +275,7 @@ public final class HierarchyManager {
       rebuildWanted.set(false);
     }
     try {
-      buildLocked(wanted);
+      buildLocked(wanted, () -> closed);
     } finally {
       buildLock.unlock();
       requeueIfWanted();
@@ -247,6 +321,7 @@ public final class HierarchyManager {
       columnar.unwatchFiles(onChange);
     }
     current = null;
+    notifyPublished();
   }
 
   /** Whether the type index this manager belongs to is still in the schema (one of its bucket indexes at creation is left). */
@@ -296,15 +371,22 @@ public final class HierarchyManager {
       scheduleRebuild();
   }
 
-  /** Under {@link #buildLock}: the shared view at least as new as {@code wanted}, built when the current one is older. */
-  private HierarchyView buildLocked(final long wanted) {
+  /**
+   * Under {@link #buildLock}: the shared view at least as new as {@code wanted}, built when the current one is older.
+   *
+   * @param cancelled stops the build with a {@link CancellationException}: the manager closed, or the deadline of the query building it
+   */
+  private HierarchyView buildLocked(final long wanted, final BooleanSupplier cancelled) {
     final HierarchyView raced = current;
     if (raced != null && raced.generation() >= wanted)
       return raced;
     // every rebuild recomputes the sources: a stripe pool bucket created at a super-node's first promotion is watched from now on
     refreshSources(schemaVersion());
-    if (closed || unavailableReason != null)
+    if (closed || unavailableReason != null) {
+      // a caller waiting for the publication learns it now, not at its deadline
+      notifyPublished();
       return null;
+    }
     // read before the scans: a change committed during the build bumps the generation past the label
     final long generation = generation();
     final HierarchyView previous = current;
@@ -317,7 +399,7 @@ public final class HierarchyManager {
         // a transaction of its own (nested when the caller has one): the shared view never sees uncommitted state
         database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
         try {
-          return HierarchyBuilder.build(database, def, generation, indexName, true, previous, () -> closed);
+          return HierarchyBuilder.build(database, def, generation, indexName, true, previous, cancelled);
         } finally {
           // pops only the build's own transaction; not counted as a rollback in the database statistics
           database.rollbackUncounted();
@@ -330,9 +412,11 @@ public final class HierarchyManager {
     // a close that cleared the view meanwhile wins: nothing is left published in a closed manager
     if (closed) {
       current = null;
+      notifyPublished();
       return null;
     }
     rebuilds.incrementAndGet();
+    notifyPublished();
     return built;
   }
 

@@ -21,11 +21,14 @@ package com.arcadedb.query.facet;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.trigger.JavaTrigger;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
@@ -57,7 +60,31 @@ public final class AdvancedFacetsFixture {
   public static final Map<String, String> MEASURE_STATS = measureStats();
   public static final int          MEASURES      = 40;
 
+  /** The tenant a read trigger hides: every author starting with it ({@code author-1}, {@code author-10} to {@code author-19}). */
+  public static final String       HIDDEN_TENANT = "author-1";
+
   private AdvancedFacetsFixture() {
+  }
+
+  /** Whether {@link #HIDDEN_TENANT} owns a record of this author. */
+  public static boolean isHiddenTenant(final Object author) {
+    return author instanceof String name && name.startsWith(HIDDEN_TENANT);
+  }
+
+  /**
+   * A {@code BEFORE READ} trigger hiding the records of {@link #HIDDEN_TENANT}: it is given the RID only, and reads the record itself (a
+   * read listener's own reads fire no read event).
+   */
+  public static class HideTenantTrigger implements JavaTrigger {
+    @Override
+    public boolean execute(final Database database, final Record record, final Record oldRecord) {
+      return true;
+    }
+
+    @Override
+    public boolean executeBeforeRead(final Database database, final RID rid) {
+      return !isHiddenTenant(database.lookupByRID(rid, true).asDocument().get("author"));
+    }
   }
 
   private static Map<String, String> measureStats() {

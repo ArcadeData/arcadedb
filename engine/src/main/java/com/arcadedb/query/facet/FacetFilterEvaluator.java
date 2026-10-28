@@ -273,11 +273,14 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
       // the buckets the current user may read: the RIDs of the others are neither kept nor charged (final review B-M3), so neither the
       // budget nor a fallback depends on records the user cannot see, and such a bucket is not covered (its rows, never asked, would be
       // evaluated on the row)
+      // evaluated on the row as well: a bucket whose records fire read events (final review B-I1), where a listener may rewrite the
+      // value the index holds
       final SecurityDatabaseUser user = SecurityHelper.currentUser(db);
       final boolean[] covered = new boolean[maxBucket + 1];
       for (final IndexInternal sub : subIndexes) {
         final int bucketId = sub.getAssociatedBucketId();
-        if (bucketId >= 0 && (user == null || user.requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD)))
+        if (bucketId >= 0 && (user == null || user.requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
+            && !FacetFallbackScanner.firesReadEvents(db, db.getSchema().getTypeByBucketId(bucketId)))
           covered[bucketId] = true;
       }
 
@@ -571,7 +574,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
           return FROM_RECORDS;
       }
       final ColumnarProjection projection = manager.projection(bucketId);
-      if (projection == null)
+      // a read event may hide or rewrite the record (final review B-I1): only the record, read as any read is, answers
+      if (projection == null || FacetFallbackScanner.firesReadEvents(database, database.getSchema().getTypeByBucketId(bucketId)))
         return FROM_RECORDS;
       final ColumnarSnapshot snapshot;
       try {

@@ -19,14 +19,12 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnarIndex;
-import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromItem;
@@ -94,8 +92,8 @@ final class ColumnarGroupByPlanner {
   }
 
   /**
-   * The plan of an eligible GROUP BY, null when the statement keeps the normal plan. Reads the schema and the conversion failures of the
-   * properties, never the projection's state.
+   * The plan of an eligible GROUP BY, null when the statement keeps the normal plan. Reads the schema only, never the projection's state:
+   * the conversions of its values are decided at run time from the counts the projection persisted (final review A-I1).
    *
    * @param statementProjection the projection as the statement wrote it, before the planner split it for the aggregation
    */
@@ -251,8 +249,8 @@ final class ColumnarGroupByPlanner {
 
   /**
    * The column of the property's COLUMNAR index when it can answer the target: the index (the target's own or a super type's) projects
-   * every bucket of the target, the property is declared with the type the column encodes, not as a list, by every type of those buckets,
-   * and no value of it failed to convert. Null otherwise.
+   * every bucket of the target, and the property is declared with the type the column encodes, not as a list, by every type of those
+   * buckets. Null otherwise.
    */
   private static ColumnDefinition column(final DatabaseInternal db, final DocumentType type, final int[] bucketIds, final String property) {
     final TypeIndex index = type.getPolymorphicColumnarIndex(property);
@@ -286,12 +284,9 @@ final class ColumnarGroupByPlanner {
         return null;
       typeNames.add(bucketType.getName());
     }
-    final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
     for (final String typeName : typeNames) {
       final Property declared = db.getSchema().getType(typeName).getPolymorphicPropertyIfExists(property);
       if (declared == null || declared.getType() != column.propertyType())
-        return null;
-      if (manager.conversionFailures(typeName, property) != 0)
         return null;
     }
     return column;

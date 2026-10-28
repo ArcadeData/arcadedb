@@ -50,6 +50,21 @@ class ColumnarStatsTest {
     assertThat(stats.conversionFailures("Other", "fileSize")).isZero();
   }
 
+  /** Final review A-M6: a rebuild adds a column's counts at once, one add per column, not one increment per value. */
+  @Test
+  void conversionCountsAreAddedInOneCall() {
+    final ColumnarStats stats = new ColumnarStats();
+    stats.addConversionFailures("Asset", "fileSize", 5);
+    stats.addConversionFailures("Asset", "fileSize", 0);
+    stats.addCoercedValues("Asset", "brand", 7);
+    stats.addCoercedValues("Asset", "brand", 2);
+
+    assertThat(stats.conversionFailures("Asset", "fileSize")).isEqualTo(5);
+    assertThat(stats.coercedValues("Asset", "brand")).isEqualTo(9);
+    assertThat(stats.coercedValues("Asset", "fileSize")).isZero();
+    assertThat(stats.conversionFailures("Asset", "brand")).isZero();
+  }
+
   @Test
   void openFilesAreTheSumOfTheDeltasOfTheBucketProjections() {
     final ColumnarStats stats = new ColumnarStats();

@@ -462,6 +462,170 @@ class HierarchyManagerTest extends TestHelper {
     assertThat(parentValues(manager.view(), "a/d")).containsExactly("a");
   }
 
+  /**
+   * Final review A-M4: a query waits for the build another thread runs only until its statement's deadline, then gets no view (its facet
+   * answers unavailable) instead of waiting for a whole-graph build with no bound.
+   */
+  @Test
+  void aQueryWaitsForARunningBuildOnlyUntilItsDeadline() throws Exception {
+    manager.view();
+    final CountDownLatch building = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicReference<Thread> builder = new AtomicReference<>();
+    ColumnarTestHooks.killPoint = name -> {
+      if (HierarchyBuilder.BETWEEN_SCANS.equals(name) && Thread.currentThread() == builder.get()) {
+        building.countDown();
+        try {
+          release.await(HANG_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    };
+    Thread holder = null;
+    try {
+      try (final AutoCloseable hold = columnar().suspendApply()) {
+        database.transaction(() -> reparent("a/d", "x"));
+        holder = new Thread(() -> manager.view());
+        builder.set(holder);
+        holder.start();
+        assertThat(building.await(HANG_MS, TimeUnit.MILLISECONDS)).isTrue();
+        // a short wait expected to time out: the other thread holds the build lock past the deadline
+        assertThat(manager.view(System.currentTimeMillis() + 100)).isNull();
+        assertThat(manager.unavailableReason()).isNull();
+      }
+    } finally {
+      release.countDown();
+      ColumnarTestHooks.killPoint = null;
+      if (holder != null)
+        holder.join(HANG_MS);
+    }
+    assertThat(holder.isAlive()).isFalse();
+    assertThat(parentValues(manager.view(), "a/d")).containsExactly("x");
+  }
+
+  private static boolean isMaintenanceThread() {
+    return Thread.currentThread().getName().startsWith("ArcadeDB-ColumnarMaintenance-");
+  }
+
+  /**
+   * Final review A-M4 round 2 (N1): a query with a deadline never builds the shared view. It queues the rebuild on the maintenance pool
+   * and waits for its publication until the deadline; past it there is no view, and the pool publishes it for the next query.
+   */
+  @Test
+  void aQueryWithADeadlineLeavesTheSharedBuildToTheMaintenancePool() throws Exception {
+    manager.view();
+    final long rebuilds = manager.rebuildCount();
+    final Thread query = Thread.currentThread();
+    final AtomicBoolean queryBuilt = new AtomicBoolean();
+    ColumnarTestHooks.killPoint = name -> {
+      if (!HierarchyBuilder.BETWEEN_SCANS.equals(name))
+        return;
+      if (Thread.currentThread() == query)
+        queryBuilt.set(true);
+      else if (isMaintenanceThread())
+        try {
+          Thread.sleep(300);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+    };
+    try {
+      // the apply pass is held: the watcher queues no rebuild of its own, only the query's request can
+      try (final AutoCloseable hold = columnar().suspendApply()) {
+        database.transaction(() -> reparent("a/d", "x"));
+        // a short wait expected to time out: the pool's build outlasts it
+        assertThat(manager.view(System.currentTimeMillis() + 50)).isNull();
+        assertThat(manager.unavailableReason()).isNull();
+        assertThat(manager.deadlineReason()).isEqualTo(HierarchyManager.BEING_REBUILT);
+        assertThat(waitFor(() -> manager.rebuildCount() > rebuilds)).as("the maintenance pool publishes the view").isTrue();
+        assertThat(parentValues(manager.view(System.currentTimeMillis() + HANG_MS), "a/d")).containsExactly("x");
+      }
+    } finally {
+      ColumnarTestHooks.killPoint = null;
+    }
+    assertThat(queryBuilt.get()).as("the query never ran the shared build").isFalse();
+  }
+
+  /**
+   * Final review round 2 (N1): two queries in a loop, each with a deadline shorter than a build, never starve it: the maintenance pool
+   * builds while they wait, the build count advances and both get the view of the new tree.
+   */
+  @Test
+  void overlappingQueriesWithShortDeadlinesGetTheView() throws Exception {
+    manager.view();
+    final long rebuilds = manager.rebuildCount();
+    // every build is slower than a query's deadline, whoever runs it
+    ColumnarTestHooks.killPoint = name -> {
+      if (HierarchyBuilder.BETWEEN_SCANS.equals(name))
+        try {
+          Thread.sleep(300);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+    };
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicBoolean[] served = { new AtomicBoolean(), new AtomicBoolean() };
+    final Thread[] queries = new Thread[served.length];
+    try {
+      try (final AutoCloseable hold = columnar().suspendApply()) {
+        database.transaction(() -> reparent("a/d", "x"));
+        for (int q = 0; q < queries.length; q++) {
+          final AtomicBoolean done = served[q];
+          queries[q] = new Thread(() -> {
+            try {
+              final long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(HANG_MS);
+              while (System.nanoTime() - end < 0) {
+                final HierarchyView view = manager.view(System.currentTimeMillis() + 100);
+                if (view != null && parentValues(view, "a/d").contains("x")) {
+                  done.set(true);
+                  return;
+                }
+              }
+            } catch (final Throwable e) {
+              failure.set(e);
+            }
+          });
+          queries[q].start();
+        }
+        for (final Thread query : queries)
+          query.join(2 * HANG_MS);
+      }
+    } finally {
+      ColumnarTestHooks.killPoint = null;
+    }
+    assertThat(failure.get()).isNull();
+    assertThat(manager.rebuildCount()).as("the build count advances").isGreaterThan(rebuilds);
+    for (int q = 0; q < served.length; q++)
+      assertThat(served[q].get()).as("query " + q + " got the view").isTrue();
+  }
+
+  /** Final review round 2 (N5): a private view (the caller's own changes) stopped at the deadline says so, not "being rebuilt". */
+  @Test
+  void aPrivateBuildPastTheDeadlineAnswersItsOwnReason() {
+    manager.view();
+    final Thread query = Thread.currentThread();
+    ColumnarTestHooks.killPoint = name -> {
+      if (HierarchyBuilder.BETWEEN_SCANS.equals(name) && Thread.currentThread() == query)
+        try {
+          Thread.sleep(200);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+    };
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      assertThat(manager.view(System.currentTimeMillis() + 50)).isNull();
+      assertThat(manager.unavailableReason()).isNull();
+      assertThat(manager.deadlineReason()).isEqualTo(HierarchyManager.PRIVATE_NOT_BUILT);
+    } finally {
+      ColumnarTestHooks.killPoint = null;
+      database.rollback();
+    }
+    assertThat(manager.deadlineReason()).isEqualTo(HierarchyManager.BEING_REBUILT);
+  }
+
   @Test
   void privateBuildsNeverLogTheCycleWarning() throws Exception {
     manager.view();

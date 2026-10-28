@@ -323,6 +323,73 @@ class HierarchyFacetIntegrationTest extends TestHelper {
     }
   }
 
+  /**
+   * Final review A-M4: a stale view honours the statement's TIMEOUT. The query leaves the build to the maintenance pool and waits for it
+   * until its deadline (round 2, N1); past it the facet is unavailable ({@link HierarchyManager#BEING_REBUILT}), the other facets are
+   * answered, and the pool publishes the view for the next query.
+   */
+  @Test
+  @Timeout(300)
+  void buildPastTheStatementDeadlineIsUnavailable() throws Exception {
+    load(1L, 1);
+    assertEqualsReference(facet(QUERY), WHERE);
+    final AtomicBoolean slept = new AtomicBoolean();
+    // held: the coalesced background rebuild is not queued by the watcher, only by the query
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      database.transaction(() -> reparent("t0/t1", "t2"));
+      ColumnarTestHooks.killPoint = name -> {
+        if ("hierarchy.betweenScans".equals(name) && Thread.currentThread().getName().startsWith("ArcadeDB-ColumnarMaintenance-")
+            && slept.compareAndSet(false, true))
+          try {
+            // past the statement's TIMEOUT below
+            Thread.sleep(2_500);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+      };
+      try {
+        final FacetResults results = facets(QUERY + ", b: brand TERMS TOP 5 TIMEOUT 2000 RETURN");
+        assertThat(slept.get()).as("the maintenance pool builds the view").isTrue();
+        final FacetResult result = results.get("t");
+        assertThat(result.source()).isEqualTo(FacetResult.UNAVAILABLE);
+        assertThat(result.reason()).isEqualTo(HierarchyManager.BEING_REBUILT);
+        assertThat(results.get("b").source()).isEqualTo("index");
+      } finally {
+        ColumnarTestHooks.killPoint = null;
+      }
+    }
+    // the build left to the background, then the query without TIMEOUT: the view of the new tree
+    assertEqualsReference(facet(QUERY), WHERE);
+  }
+
+  /** Final review round 2 (N5): the private view of the caller's own tag changes, not built before the TIMEOUT, says so. */
+  @Test
+  @Timeout(300)
+  void privateBuildPastTheStatementDeadlineSaysSo() {
+    load(1L, 1);
+    final Thread query = Thread.currentThread();
+    final AtomicBoolean slept = new AtomicBoolean();
+    ColumnarTestHooks.killPoint = name -> {
+      if ("hierarchy.betweenScans".equals(name) && Thread.currentThread() == query && slept.compareAndSet(false, true))
+        try {
+          Thread.sleep(2_500);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+    };
+    database.begin();
+    try {
+      reparent("t0/t1", "t2");
+      final FacetResult result = facets(QUERY + " TIMEOUT 2000 RETURN").get("t");
+      assertThat(slept.get()).as("the query built its private view").isTrue();
+      assertThat(result.source()).isEqualTo(FacetResult.UNAVAILABLE);
+      assertThat(result.reason()).isEqualTo(HierarchyManager.PRIVATE_NOT_BUILT);
+    } finally {
+      ColumnarTestHooks.killPoint = null;
+      database.rollback();
+    }
+  }
+
   @Test
   @Timeout(300)
   void multiBucketTypeEqualsReference() {

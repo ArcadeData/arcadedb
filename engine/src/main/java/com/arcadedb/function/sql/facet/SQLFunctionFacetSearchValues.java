@@ -58,10 +58,13 @@ import java.util.concurrent.TimeUnit;
  * is the number of records of the type (polymorphic) carrying the value now. Made for type-ahead over facet values.
  * <p>
  * Candidates come from the per-bucket dictionaries ({@link DictionaryPrefixSearch}) of the buckets of the type the current user may read
- * records of (the dictionaries have no access check of their own), k-way merged by value with duplicates dropped, in batches of
+ * records of (the dictionaries have no access check of their own; a user who may read none of them gets the security error the normal
+ * plan raises), k-way merged by value with duplicates dropped, in batches of
  * {@code max(2 * limit, 16)}. A dictionary keeps the values of deleted and updated records until compaction, so every batch is counted
  * by an internal {@code SELECT FROM <type> FACETS v: <property> TERMS INCLUDE [...]} query, which counts only live records the user may
- * read (patching what the projection has not applied yet): a candidate counted 0 is dropped. The search stops at {@code limit} rows, at
+ * read (patching what the projection has not applied yet, and reading the records of a type with READ triggers or listeners, so a record
+ * they hide is not counted): a candidate counted 0 is dropped. A value only such a listener writes into a record is in no dictionary and
+ * is not suggested. The search stops at {@code limit} rows, at
  * the end of the prefix range or after {@value #MAX_BATCHES} batches, returning what it found.
  * <p>
  * The limit is capped by {@code arcadedb.columnar.topMax}. Buckets of the type without the column (an index declared only on a subtype)
@@ -126,6 +129,7 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
     final String[] bucketNames = new String[polymorphic.size()];
     ColumnDefinition column = null;
     boolean indexed = false;
+    int firstDenied = -1;
     int n = 0;
     for (final Bucket bucket : polymorphic) {
       final ColumnDefinition bucketColumn = column(db.getSchema().getTypeByBucketId(bucket.getFileId()), property);
@@ -137,8 +141,11 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
             + "): only string values can be searched by prefix");
       if (column == null)
         column = bucketColumn;
-      if (!SecurityHelper.canAccessFile(db, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+      if (!SecurityHelper.canAccessFile(db, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD)) {
+        if (firstDenied < 0)
+          firstDenied = bucket.getFileId();
         continue;
+      }
       bucketIds[n] = bucket.getFileId();
       bucketNames[n++] = bucket.getName();
     }
@@ -146,6 +153,9 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
       throw new CommandExecutionException(NAME + ": no COLUMNAR index on " + type.getName() + "." + property);
     if (type.getName().indexOf('`') >= 0 || column.property().indexOf('`') >= 0)
       throw new CommandExecutionException(NAME + ": the name of " + type.getName() + "." + column.property() + " cannot be quoted");
+    if (n == 0 && firstDenied >= 0)
+      // no bucket of the type is readable: the error the normal plan (and the internal count) raises for it, never an empty answer
+      db.checkPermissionsOnFile(firstDenied, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     final int limit = (int) Math.min(number.longValue(), GlobalConfiguration.COLUMNAR_TOP_MAX.getValueAsInteger());
     final List<Map<String, Object>> rows = new ArrayList<>();
@@ -199,7 +209,9 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
       sql.append(":v").append(i);
       parameters.put("v" + i, candidates.get(i));
     }
-    sql.append("] LIMIT 1");
+    // LIMIT 0: no row is fetched, only the facet is computed. A row fetch reads the buckets of the type in scan order, an unreadable
+    // subtype's included, and fails the call for a user the facet itself answers (it counts the readable buckets only)
+    sql.append("] LIMIT 0");
     final FacetResult result;
     final boolean exact;
     try (final ResultSet rs = db.query("sql", sql.toString(), parameters)) {

@@ -1105,8 +1105,8 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("missing", SpecBuilders.integer("Number of matching records without a value for the faceted property"));
     schema.addProperty("after", SpecBuilders.anyValue("""
         Cursor to pass to AFTER to get the next page of buckets: the last value of this page, written as a row's \
-        value of the property; null when no value follows. Present on every terms facet ordered by VALUE (any \
-        facet with AFTER) without INCLUDE. Echo it exactly as received: a value rewritten by the client, such as \
+        value of the property; null when no value follows. Present on every terms facet ordered by VALUE ASC (the \
+        default for VALUE, and implied by AFTER) without INCLUDE; a VALUE DESC facet has none. Echo it exactly as received: a value rewritten by the client, such as \
         a date-time reformatted or truncated to its sub-second part, can start the next page elsewhere."""));
     schema.addProperty("@props", SpecBuilders.string("""
         Present only when the request asked for type hints ('typeHints') and a member of the facet is of a type \

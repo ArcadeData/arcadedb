@@ -71,6 +71,8 @@ public record HierarchyDefinition(String vertexType, String key, String parentEd
       throw new IllegalArgumentException("hierarchy.parentEdge '" + parentEdge
           + "' is unidirectional: use parentDirection OUT with child-to-parent edges");
 
+    // the key is a string on every path: a bucket's 'parent' attribute (FacetBucket) is written raw on every transport, not through
+    // the row encoder its value goes through, so a key of another type would have to encode it first
     final Property declared = schema.getType(indexedType).getPolymorphicPropertyIfExists(property);
     if (declared != null) {
       final Type type = declared.getType();

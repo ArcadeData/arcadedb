@@ -183,16 +183,22 @@ final class ColumnarGroupByAggregator implements AutoCloseable {
         };
     this.groupBytes = bytes;
 
-    if (ordinalKey) {
-      // a group per merged ordinal, then the null group
-      nullGroup = keyMap.size();
-      size = nullGroup + 1;
-      denseGroups = size;
-      grow(size);
-    } else {
-      charges.charge(HASH_ENTRY_BYTES * INITIAL_LONG_KEY_GROUPS);
-      longGroups = new LongLongHashMap(INITIAL_LONG_KEY_GROUPS);
-      grow(INITIAL_LONG_KEY_GROUPS);
+    // a refused charge leaves no aggregator to close: what the constructor reserved before it goes back here (final review A-M5)
+    try {
+      if (ordinalKey) {
+        // a group per merged ordinal, then the null group
+        nullGroup = keyMap.size();
+        size = nullGroup + 1;
+        denseGroups = size;
+        grow(size);
+      } else {
+        charges.charge(HASH_ENTRY_BYTES * INITIAL_LONG_KEY_GROUPS);
+        longGroups = new LongLongHashMap(INITIAL_LONG_KEY_GROUPS);
+        grow(INITIAL_LONG_KEY_GROUPS);
+      }
+    } catch (final RuntimeException | Error e) {
+      charges.release();
+      throw e;
     }
   }
 

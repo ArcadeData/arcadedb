@@ -96,6 +96,16 @@ class FacetResultsJsonTest {
     assertThat(u.has("missing")).isFalse();
   }
 
+  /** Final review B-M5: no result member on an unavailable facet, by construction: a cursor set on one is not written either. */
+  @Test
+  void unavailableFacetNeverWritesACursor() {
+    final JSONObject u = FacetResult.unavailable("terms", "memory budget").withAfter("brand-7").toJSON();
+    assertThat(u.getString("source")).isEqualTo("unavailable");
+    assertThat(u.has("after")).isFalse();
+    final JSONObject nullCursor = FacetResult.unavailable("terms", "memory budget").withAfter(null).toJSON();
+    assertThat(nullCursor.has("after")).isFalse();
+  }
+
   @Test
   void missingBucketIsNullValueFlagged() {
     final JSONObject m = FacetBucket.missing(4).toJSON();

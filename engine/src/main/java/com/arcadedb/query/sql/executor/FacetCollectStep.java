@@ -24,12 +24,14 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.facet.FacetExecutionStats;
 import com.arcadedb.query.facet.FacetExecutor;
+import com.arcadedb.query.facet.FacetFallbackScanner;
 import com.arcadedb.query.facet.FacetFilterEvaluator;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.facet.FacetSpec;
@@ -76,6 +78,9 @@ import java.util.logging.Level;
  * </ul>
  * The index and the projection hold the records of every bucket; a bucket the current user may not read is left out of the match set
  * when it is built, so its records reach no count, no memory reservation and no PROFILE figure (the executor skips such a bucket too).
+ * Neither holds what a read event does to a record (final review B-I1, {@link FacetFallbackScanner#firesReadEvents}): a bucket whose
+ * records fire read events is never taken from the projection (it is scanned, or the rows are the source), and the index is not the
+ * source when a bucket of the target fires them, so a record a BEFORE READ trigger hides is no match and reaches no figure.
  * <p>
  * A result set dropped before it was read to its end and never closed gives back what the step holds (memory reservations, the
  * snapshots of PROJECTION filters) once it is unreachable: a {@link Cleaner} releases them and logs a warning.
@@ -345,7 +350,7 @@ public class FacetCollectStep extends AbstractExecutionStep {
 
       // the index adds its matches without a fail mask: a FILTER needs the rows (or, without WHERE, the projection)
       final List<ExecutionStepInternal> bucketFilters = new ArrayList<>();
-      final IndexedMatchSource indexed = anyFilter ? null : indexedSource(bucketFilters);
+      final IndexedMatchSource indexed = anyFilter || targetFiresReadEvents() ? null : indexedSource(bucketFilters);
       if (indexed != null && indexed.collectAllMatches(context, builder, acceptedBuckets(bucketFilters))) {
         recordRows = false;
         matchSource = INDEX;
@@ -451,13 +456,27 @@ public class FacetCollectStep extends AbstractExecutionStep {
     }
   }
 
-  /** The buckets of {@code bucketIds} that have a columnar projection. */
+  /**
+   * Whether a record of the target fires read events: the index, which adds every match by RID without reading a record, is then not
+   * the source (the rows, read as any read does, are). A query whose target is no type asks the database's own listeners only.
+   */
+  private boolean targetFiresReadEvents() {
+    if (targetType == null || !database.getSchema().existsType(targetType))
+      return FacetFallbackScanner.firesReadEvents(database, null);
+    for (final Bucket bucket : database.getSchema().getType(targetType).getBuckets(true))
+      if (FacetFallbackScanner.firesReadEvents(database, database.getSchema().getTypeByBucketId(bucket.getFileId())))
+        return true;
+    return false;
+  }
+
+  /** The buckets of {@code bucketIds} that have a columnar projection and whose records fire no read event. */
   private int[] projectionsOf(final int[] bucketIds) {
     final ColumnarIndexManager manager = ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager();
     final int[] withProjection = new int[bucketIds.length];
     int count = 0;
     for (final int bucketId : bucketIds)
-      if (manager.projection(bucketId) != null)
+      if (manager.projection(bucketId) != null && !FacetFallbackScanner.firesReadEvents(database,
+          database.getSchema().getTypeByBucketId(bucketId)))
         withProjection[count++] = bucketId;
     return count == bucketIds.length ? bucketIds : Arrays.copyOf(withProjection, count);
   }

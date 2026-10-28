@@ -130,7 +130,8 @@ public final class FacetProtocol {
       if (stats.avg() != null)
         out.setAvg(encoder.apply(stats.avg()));
     }
-    if (result.hasAfter()) {
+    // as FacetResult.toJSON: an unavailable facet carries no cursor
+    if (result.hasAfter() && !FacetResult.UNAVAILABLE.equals(result.source())) {
       out.setHasAfter(true);
       if (result.after() != null)
         out.setAfter(encoder.apply(result.after()));
