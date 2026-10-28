@@ -3703,14 +3703,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
       if (recordPositionInPage == 0)
         return null;
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] <= 0)
+      // ALLOCATION-FREE: ONCE PER RECORD THE SLOT MERGE REPLAYS (#10656)
+      final long recordSize = page.readNumber(recordPositionInPage);
+      if (recordSize <= 0)
         return null;
-      final long contentPos = recordPositionInPage + recordSize[1];
-      if (contentPos + recordSize[0] > page.getMaxContentSize())
+      final long contentPos = recordPositionInPage + page.getLastReadNumberSize();
+      if (contentPos + recordSize > page.getMaxContentSize())
         return null;
       // both bounded by the page size checked above
-      final byte[] body = new byte[(int) recordSize[0]];
+      final byte[] body = new byte[(int) recordSize];
       page.readByteArray((int) contentPos, body, 0, body.length);
       return body;
     } catch (final IOException e) {
