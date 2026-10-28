@@ -115,7 +115,7 @@ public class SubqueryStep extends AbstractExecutionStep {
    *   clause of the body; that clause may only reference outer variables (no expressions, no aggregations).
    *   Without such an importing WITH, no outer variable is visible inside the subquery.</li>
    * </ul>
-   * Returning {@code null} signals "import all" (used for {@code CALL (*)}).
+   * Returning {@code null} signals "import all" (used for {@code CALL (*)} and an importing {@code WITH *}).
    *
    * @return set of imported variable names, or {@code null} to import all outer variables
    */
@@ -135,8 +135,9 @@ public class SubqueryStep extends AbstractExecutionStep {
       final Set<String> combined = new LinkedHashSet<>();
       for (final CypherStatement branch : union.getQueries()) {
         final Set<String> branchImports = collectImportingWithVariables(branch);
-        if (branchImports != null)
-          combined.addAll(branchImports);
+        if (branchImports == null)
+          return null; // a branch importing with WITH * needs every outer variable
+        combined.addAll(branchImports);
       }
       return combined;
     }
@@ -152,11 +153,13 @@ public class SubqueryStep extends AbstractExecutionStep {
     final WithClause withClause = first.getTypedClause();
     final Set<String> imports = new LinkedHashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      // An importing WITH * imports every outer variable, exactly like CALL (*) (issue #10891). Before, it imported none,
+      // so a predicate on an outer variable read null and the subquery silently returned no row.
+      if (item.isStar())
+        return null;
       if (!(item.getExpression() instanceof VariableExpression var))
         continue;
       final String name = var.getVariableName();
-      if (STAR_SCOPE.equals(name))
-        continue; // WITH * handled by caller if desired; treat as non-importing here
       final String alias = item.getAlias();
       if (alias != null && !alias.equals(name))
         continue; // aliased projection, not a pure import
@@ -306,12 +309,14 @@ public class SubqueryStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (bufferIndex < buffer.size())
-          return true;
-        if (finished)
-          return false;
-        fetchMore(nRecords);
-        return bufferIndex < buffer.size();
+        // A batch whose rows all produced no inner row leaves the buffer empty while input remains: run the next batch
+        // instead of reporting the end, or every later batch is silently skipped (issue #10886)
+        while (bufferIndex >= buffer.size()) {
+          if (finished)
+            return false;
+          fetchMore();
+        }
+        return true;
       }
 
       @Override
@@ -321,7 +326,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
-      private void fetchMore(final int n) {
+      private void fetchMore() {
         buffer.clear();
         bufferIndex = 0;
 

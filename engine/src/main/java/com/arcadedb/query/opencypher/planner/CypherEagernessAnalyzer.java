@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -88,6 +89,13 @@ public final class CypherEagernessAnalyzer {
   private       boolean     writePending           = false;
   // Sticky, never cleared by a barrier: whether any clause that changes the graph precedes the current one.
   private       boolean     writeSeen              = false;
+  // What the MERGE clauses planned since the last barrier match on: the property keys and labels of their patterns. A MERGE
+  // runs its lookup once per row, so a later SET or REMOVE of one of them changes what the MERGE of the next row finds
+  // (issue #10889).
+  private final Set<String> mergeReadKeys          = new HashSet<>();
+  private final Set<String> mergeReadLabels        = new HashSet<>();
+  private       boolean     mergeReadsAnyKey       = false;
+  private       boolean     mergeReadsAnyLabel     = false;
 
   /**
    * Folds one MATCH (or OPTIONAL MATCH) clause into the read footprint. A node pattern with no static and
@@ -144,6 +152,146 @@ public final class CypherEagernessAnalyzer {
     writtenPropertyKeys.clear();
     writesAnyPropertyKey = false;
     writePending = false;
+    mergeReadKeys.clear();
+    mergeReadLabels.clear();
+    mergeReadsAnyKey = false;
+    mergeReadsAnyLabel = false;
+  }
+
+  /**
+   * Folds what a MERGE matches on into the footprint {@link #needsBarrierAfterMerge(SetClause)} weighs a later write
+   * against: the keys of its inline property maps (a bare-parameter map reads keys it cannot name) and its node labels (a
+   * dynamic label any label). Called only for a MERGE that can receive more than one row: one that starts the statement
+   * runs its lookup once, so no later write can change what it finds.
+   */
+  public void observeMergeRead(final MergeClause mergeClause) {
+    if (mergeClause == null || mergeClause.getPathPattern() == null)
+      return;
+    final PathPattern pathPattern = mergeClause.getPathPattern();
+    for (final NodePattern node : pathPattern.getNodes()) {
+      observeMergeReadKeys(node.getProperties(), node.getPropertiesParameterName());
+      if (node.hasDynamicLabels())
+        mergeReadsAnyLabel = true;
+      else if (node.hasLabels())
+        mergeReadLabels.addAll(node.getLabels());
+    }
+    for (final RelationshipPattern relationship : pathPattern.getRelationships())
+      observeMergeReadKeys(relationship.getProperties(), relationship.getPropertiesParameterName());
+  }
+
+  private void observeMergeReadKeys(final Map<String, Object> properties, final String parameterName) {
+    if (parameterName != null)
+      mergeReadsAnyKey = true;
+    else if (properties != null)
+      mergeReadKeys.addAll(properties.keySet());
+  }
+
+  /**
+   * True when a SET needs the barrier in FRONT of it because it writes a property key or a label a MERGE before it matches
+   * on. Cypher runs the MERGE for every row before the SET runs for any of them (Neo4j plants its {@code Eager} between the
+   * two); streamed, the MERGE of the second row already sees the SET of the first, so
+   * {@code UNWIND [1, 2] AS x MERGE (n:Item {id: 1, key: 'v'}) SET n.key = null} created two nodes, and a {@code WITH}
+   * between the two clauses brought it back to one only as long as the input fit one pull batch (issue #10889).
+   * <p>
+   * A whole-map write ({@code SET n = map}, {@code SET n += expr}) or a key computed per row writes keys the planner
+   * cannot name, and counts as writing every key; a {@code SET n += {..}} literal writes exactly its keys.
+   */
+  public boolean needsBarrierAfterMerge(final SetClause setClause) {
+    if (setClause == null || !mergeReadsAnything())
+      return false;
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      switch (item.getType()) {
+      case PROPERTY -> {
+        if (mergeReadsKey(item.getKeyExpression() != null ? null : item.getProperty()))
+          return true;
+      }
+      case MERGE_MAP -> {
+        if (item.getValueExpression() instanceof MapExpression map) {
+          for (final String key : map.getEntries().keySet())
+            if (mergeReadsKey(key))
+              return true;
+        } else if (mergeReadsKey(null))
+          return true;
+      }
+      case REPLACE_MAP -> {
+        // replaces the whole map, so every key the MERGE reads is either rewritten or removed
+        if (mergeReadsKey(null))
+          return true;
+      }
+      case LABELS -> {
+        if (mergeReadsLabel(item.getLabels(), item.hasLabelExpressions()))
+          return true;
+      }
+      }
+    }
+    return false;
+  }
+
+  /** The REMOVE counterpart of {@link #needsBarrierAfterMerge(SetClause)}. */
+  public boolean needsBarrierAfterMerge(final RemoveClause removeClause) {
+    if (removeClause == null || !mergeReadsAnything())
+      return false;
+    for (final RemoveClause.RemoveItem item : removeClause.getItems()) {
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY) {
+        if (mergeReadsKey(item.getKeyExpression() != null ? null : item.getProperty()))
+          return true;
+      } else if (mergeReadsLabel(item.getLabels(), item.hasLabelExpressions()))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * A MERGE whose {@code ON CREATE SET} / {@code ON MATCH SET} writes what an earlier MERGE matches on: see
+   * {@link #needsBarrierAfterMerge(SetClause)}. A MERGE action writing what its own MERGE matches on is not a conflict: it
+   * is part of that MERGE, applied row by row.
+   */
+  public boolean needsBarrierAfterMerge(final MergeClause mergeClause) {
+    return mergeClause != null && (needsBarrierAfterMerge(mergeClause.getOnCreateSet())
+        || needsBarrierAfterMerge(mergeClause.getOnMatchSet()));
+  }
+
+  /** A FOREACH whose body, at any nesting depth, writes what a MERGE before it matches on. */
+  public boolean needsBarrierAfterMerge(final ForeachClause foreachClause) {
+    if (foreachClause == null || !mergeReadsAnything())
+      return false;
+    for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
+      final boolean conflicts = switch (innerClause.getType()) {
+        case SET -> needsBarrierAfterMerge((SetClause) innerClause.getClause());
+        case REMOVE -> needsBarrierAfterMerge((RemoveClause) innerClause.getClause());
+        case MERGE -> needsBarrierAfterMerge((MergeClause) innerClause.getClause());
+        case FOREACH -> needsBarrierAfterMerge((ForeachClause) innerClause.getClause());
+        default -> false;
+      };
+      if (conflicts)
+        return true;
+    }
+    return false;
+  }
+
+  private boolean mergeReadsAnything() {
+    return mergeReadsAnyKey || mergeReadsAnyLabel || !mergeReadKeys.isEmpty() || !mergeReadLabels.isEmpty();
+  }
+
+  /** Whether writing {@code key} (null: a key the planner cannot name) can change what a MERGE planned before it matches. */
+  private boolean mergeReadsKey(final String key) {
+    if (mergeReadsAnyKey)
+      return true;
+    if (key == null)
+      return !mergeReadKeys.isEmpty();
+    return mergeReadKeys.contains(key);
+  }
+
+  private boolean mergeReadsLabel(final List<String> labels, final boolean dynamic) {
+    if (mergeReadsAnyLabel)
+      return true;
+    if (dynamic)
+      return !mergeReadLabels.isEmpty();
+    if (labels != null)
+      for (final String label : labels)
+        if (mergeReadLabels.contains(label))
+          return true;
+    return false;
   }
 
   /**
