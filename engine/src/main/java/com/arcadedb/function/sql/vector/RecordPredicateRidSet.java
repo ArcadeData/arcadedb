@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
@@ -35,6 +36,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 /**
  * The allow-list of the {@code where} option of {@code vector.neighbors} / {@code vector.sparseNeighbors} (issue #10169): the
@@ -45,7 +47,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * The predicate is either a map of property to value, every entry of which must hold with the SQL {@code =} semantics
  * ({@code where: { embed_space: :space }}), or a SQL condition evaluated on the record ({@code where: "year >= :minYear"}),
  * whose parameters must be named: a positional {@code ?} is refused, since the condition is parsed on its own and could not tell
- * which of the query's positional values it meant. A
+ * which of the query's positional values it meant. The {@code WHERE} of the Cypher {@code SEARCH} clause hands its own
+ * predicate instead ({@link #matching}, issue #10782). A
  * {@code filter} given as well restricts the candidates further, and is checked first, so a candidate outside it is never
  * loaded.
  * <p>
@@ -57,7 +60,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * Safe for the concurrent searches of a sparse fan-out: the memo is concurrent and the records are loaded outside any lock,
  * so a slow load holds no other worker back. Only a SQL condition is evaluated under this set's lock, because it evaluates in
  * the caller's {@link CommandContext}, which is not meant to be shared between threads. Two workers meeting the same candidate
- * may both test it; the answer is the same. The memo holds one entry per candidate the search met, which the search itself
+ * may both test it; the answer is the same. A caller's predicate ({@link #matching}) is evaluated under the lock too, for the
+ * same reason: the {@code SEARCH} clause's evaluates in the caller's context, rebinding one row to each candidate. The memo holds one entry per candidate the search met, which the search itself
  * bounds (its beam, its fetch budget), and lives as long as the call.
  * <p>
  * The cost follows the predicate's selectivity. A predicate that keeps a fair share of the records is met within the graph walk,
@@ -74,21 +78,32 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class RecordPredicateRidSet extends AbstractSet<RID> {
+public final class RecordPredicateRidSet extends AbstractSet<RID> implements PredicateRidSet {
   private final BasicDatabase                   database;
   private final CommandContext                  context;
   private final Map<String, Object>             equalities;
   private final WhereClause                     condition;
+  private final Predicate<Document>             predicate;
   private final Set<RID>                        restrictTo;
   private final ConcurrentHashMap<RID, Boolean> decided = new ConcurrentHashMap<>();
 
   private RecordPredicateRidSet(final CommandContext context, final Map<String, Object> equalities, final WhereClause condition,
-      final Set<RID> restrictTo) {
+      final Predicate<Document> predicate, final Set<RID> restrictTo) {
     this.database = context.getDatabase();
     this.context = context;
     this.equalities = equalities;
     this.condition = condition;
+    this.predicate = predicate;
     this.restrictTo = restrictTo;
+  }
+
+  /**
+   * The allow-list of the records {@code predicate} accepts, decided as the search meets each candidate: the {@code WHERE} of
+   * the Cypher {@code SEARCH} clause, tested by the index while it walks rather than on a widening window of its nearest
+   * candidates (issue #10782). The predicate is called under this set's lock, so it may rely on one call at a time.
+   */
+  public static Set<RID> matching(final Predicate<Document> predicate, final CommandContext context) {
+    return new RecordPredicateRidSet(context, null, null, predicate, null);
   }
 
   /**
@@ -111,7 +126,7 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
       final LinkedHashMap<String, Object> equalities = new LinkedHashMap<>(map.size());
       for (final Map.Entry<?, ?> e : map.entrySet())
         equalities.put(String.valueOf(e.getKey()), e.getValue());
-      return new RecordPredicateRidSet(context, equalities, null, filter);
+      return new RecordPredicateRidSet(context, equalities, null, null, filter);
     }
     if (where instanceof String text) {
       if (text.isBlank())
@@ -129,7 +144,7 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
       } catch (final Exception e) {
         throw new CommandSQLParsingException(functionName + " 'where' is not a valid condition: " + text, e);
       }
-      return new RecordPredicateRidSet(context, null, condition, filter);
+      return new RecordPredicateRidSet(context, null, condition, null, filter);
     }
     throw new CommandSQLParsingException(
         functionName + " 'where' must be a map of property to value or a SQL condition, got " + where.getClass().getSimpleName());
@@ -184,6 +199,10 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
       synchronized (this) {
         return Boolean.TRUE.equals(condition.matchesFilters(record, context));
       }
+    if (predicate != null)
+      synchronized (this) {
+        return predicate.test(record);
+      }
     for (final Map.Entry<String, Object> e : equalities.entrySet())
       if (!QueryOperatorEquals.equals(SQLFunctionVectorAbstract.readNestedField(record, e.getKey()), e.getValue()))
         return false;
@@ -202,7 +221,7 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
 
   @Override
   public String toString() {
-    return "where(" + (condition != null ? condition : equalities) + (restrictTo != null ? ", filter of " + restrictTo.size() : "")
+    return "where(" + (condition != null ? condition : predicate != null ? predicate : equalities) + (restrictTo != null ? ", filter of " + restrictTo.size() : "")
         + ", " + decided.size() + " decided)";
   }
 

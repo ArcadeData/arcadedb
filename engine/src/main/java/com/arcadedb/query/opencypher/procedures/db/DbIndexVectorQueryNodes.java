@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -114,9 +115,10 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * @param indexSpec the index, as {@code 'Type[property]'} or as its schema name
    * @param kArg      the rows to answer, a number or a numeric string
    * @param vectorArg the query vector, or the key of the record whose vector it is
-   * @param filter    a predicate every answered record must pass, applied while the index is searched rather than to its
-   *                  top k: a candidate it rejects is skipped like a stale one and the search widened, so up to {@code k}
-   *                  matching rows come back. {@code null} for none
+   * @param filter    a predicate every answered record must pass, tested by the index as it meets each candidate rather than
+   *                  on its top k (issue #10782): the walk skips what it rejects and keeps expanding until it holds
+   *                  {@code k} matches or has met every vector it can reach, so {@code k} matching rows come back whenever
+   *                  the index holds them, however far they are. Each record is tested once per call. {@code null} for none
    * @param caller    the name of the entry point, for error messages and the work guard
    */
   public static List<Result> search(final String indexSpec, final Object kArg, Object vectorArg, final Predicate<Document> filter,
@@ -134,15 +136,20 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Get the query vector
     final float[] queryVector = extractQueryVector(vectorArg, vectorIndexes.getFirst(), context);
 
+    // The filter as the indexes' allow-list (issue #10782), the plan the where option of vector.neighbors takes (#10169).
+    // Skipping a rejected candidate here and widening the search instead stopped at MAX_FETCH_CANDIDATES, so a filter that
+    // kept fewer than k of the 100,000 nearest answered short although the index held matches further away, and every
+    // widening reloaded and re-tested the candidates of the pass before it
+    final Set<RID> allowedRIDs = filter != null ? RecordPredicateRidSet.matching(filter, context) : null;
+
     // A record deleted by a commit that overlaps the search can still be in an index's answer (issue #9858): it is skipped,
-    // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368). A candidate the filter
-    // rejects is skipped and widens the search the same way, so a filtered search answers k matching rows (issue #10776).
+    // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368).
     // The command's deadline and the termination of its statement, honoured inside each search and while it waits for a
     // graph build (issue #9896)
     final WorkGuard guard = WorkGuard.forCommand(context, caller);
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, filter, guard, staleSkipped,
-            saturated));
+        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, allowedRIDs, guard,
+            staleSkipped, saturated));
   }
 
   /**
@@ -150,14 +157,14 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * records, counting in {@code staleSkipped} the candidates whose record no longer exists.
    */
   private static List<Result> searchAndLoad(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final Predicate<Document> filter, final WorkGuard guard, final int[] staleSkipped,
+      final int fetchK, final Set<RID> allowedRIDs, final WorkGuard guard, final int[] staleSkipped,
       final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       // The search vector.neighbors takes by default: a PRODUCT index walks on its PQ codes and re-ranks as its rerankOversample
       // says (issue #10514), any other quantization walks exactly
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, -1, -1, null, guard);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, -1, -1, allowedRIDs, guard);
       allNeighbors.addAll(neighbors);
       if (neighbors.size() >= fetchK)
         saturated[0] = true;
@@ -184,17 +191,19 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
         break;
       if (!emitted.add(neighbor.getFirst()))
         continue;
+      // The indexes answer only what the allow-list accepted. Asked again, from its memo and before the load, so a row the
+      // filter rejected cannot reach the answer through a path of an index that does not consult it; such a row is a lost
+      // candidate, and the search widens past it like a stale one
+      if (allowedRIDs != null && !allowedRIDs.contains(neighbor.getFirst())) {
+        staleSkipped[0]++;
+        continue;
+      }
 
       final Document record;
       try {
         record = neighbor.getFirst().asDocument();
       } catch (final RecordNotFoundException e) {
         // Deleted between the index search and this load: a candidate lost, not a failed query (issue #9858)
-        staleSkipped[0]++;
-        continue;
-      }
-      if (filter != null && !filter.test(record)) {
-        // Not an answer, but a candidate lost like a stale one: the search widens past it (issue #10776)
         staleSkipped[0]++;
         continue;
       }

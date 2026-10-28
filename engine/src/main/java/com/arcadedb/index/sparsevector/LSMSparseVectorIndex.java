@@ -47,6 +47,7 @@ import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.NumberUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -209,7 +210,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       return;
     }
 
-    final int[]   indices = toIntArray(keys[0]);
+    final int[]   indices = dimensionsToIndex(keys[0], rids);
     final float[] values  = toFloatArray(keys[1]);
     if (indices == null || values == null)
       return;
@@ -272,7 +273,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       return;
     }
 
-    final int[]   indices = toIntArray(keys[0]);
+    // As put() indexed them when the record was written, which for a record stored before issue #10789 was a truncation:
+    // refusing here would leave its postings behind and the record impossible to delete
+    final int[]   indices = toIntArray(keys[0], false);
     final float[] values  = toFloatArray(keys[1]);
     if (indices == null || values == null)
       return;
@@ -523,7 +526,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         // Deleted after the index answered: there is nothing left to return for it.
         continue;
       }
-      final int[] tokens = toIntArray(record.get(tokensProperty));
+      // Read as remove() reads them: the postings of a record stored before issue #10789 were written truncated
+      final int[] tokens = toIntArray(record.get(tokensProperty), false);
       final float[] values = toFloatArray(record.get(weightsProperty));
       if (tokens == null || values == null || tokens.length != values.length) {
         // Not a shape put() would have indexed: keep the score the index gave rather than invent one.
@@ -1575,15 +1579,47 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     return keys != null && keys.length == 1 && keys[0] instanceof SparsePostingReplayKey;
   }
 
-  private static int[] toIntArray(final Object o) {
+  /**
+   * The dimension ids {@link #put} indexes for {@code rids}. A declared {@code ARRAY_OF_INTEGERS} property already holds
+   * an {@code int[]}, but a record written before its property was declared keeps the list it was given, and indexing
+   * {@code [0, 2.5]} as dimension 2, or {@code 3000000000} as a wrapped int, would answer for a dimension the record does
+   * not hold (issue #10789): such a record is refused, naming the record and the property, as {@code vector.sparseCreate}
+   * refuses the same list.
+   */
+  private int[] dimensionsToIndex(final Object value, final RID[] rids) {
+    try {
+      return toIntArray(value, true);
+    } catch (final ArithmeticException e) {
+      throw new IndexException(
+          "Sparse vector index '" + getName() + "' cannot index record " + (rids.length == 1 ? rids[0] : Arrays.toString(rids))
+              + ": property '" + getPropertyNames().getFirst() + "' holds " + e.getMessage()
+              + ", but a dimension must be a whole number in the int range");
+    }
+  }
+
+  /**
+   * @param exact true to refuse with an {@link ArithmeticException} an element that is not a whole number in the int range;
+   *              false to truncate it as {@link Number#intValue()} does, which is how every record stored before issue
+   *              #10789 was indexed, and therefore how its postings are found again
+   */
+  private static int[] toIntArray(final Object o, final boolean exact) {
     if (o == null)
       return null;
     if (o instanceof int[] arr)
       return arr;
     if (o instanceof Integer[] arr) {
       final int[] out = new int[arr.length];
-      for (int i = 0; i < arr.length; i++)
+      for (int i = 0; i < arr.length; i++) {
+        if (arr[i] == null)
+          throw new IndexException("Sparse vector indices must be numbers, found: null");
         out[i] = arr[i];
+      }
+      return out;
+    }
+    if (o instanceof long[] arr) {
+      final int[] out = new int[arr.length];
+      for (int i = 0; i < arr.length; i++)
+        out[i] = exact ? toDimension(arr[i]) : (int) arr[i];
       return out;
     }
     if (o instanceof List<?> list) {
@@ -1592,11 +1628,20 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         final Object e = list.get(i);
         if (!(e instanceof Number n))
           throw new IndexException("Sparse vector indices must be numbers, found: " + e);
-        out[i] = n.intValue();
+        out[i] = exact ? toDimension(n) : n.intValue();
       }
       return out;
     }
-    throw new IndexException("Sparse vector indices must be int[], Integer[] or List<Number>, found: " + o.getClass().getName());
+    throw new IndexException(
+        "Sparse vector indices must be int[], Integer[], long[] or List<Number>, found: " + o.getClass().getName());
+  }
+
+  private static int toDimension(final Number value) {
+    try {
+      return NumberUtils.toIntWhole(value);
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticException(NumberUtils.describeRejectedNumber(value));
+    }
   }
 
   private static float[] toFloatArray(final Object o) {
