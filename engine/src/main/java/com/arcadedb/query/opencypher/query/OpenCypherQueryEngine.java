@@ -1512,18 +1512,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
 
     final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
-    TypeIndexBuilder builder = schema.buildTypeIndex(typeName, propertyNames);
-    builder.withUnique(false);
-    builder.withIgnoreIfExists(ddl.isIfNotExists());
+    final TypeIndexBuilder generic = schema.buildTypeIndex(typeName, propertyNames);
+    generic.withUnique(false);
+    generic.withIgnoreIfExists(ddl.isIfNotExists());
     // An equivalent index under another name satisfies IF NOT EXISTS, as in Neo4j: the name is not asked for then, or the
     // builder would refuse the request over the name alone (#6921)
     if (indexName != null && !(existedBefore && ddl.isIfNotExists()))
-      builder.withIndexName(indexName);
+      generic.withIndexName(indexName);
     if (anyUndeclared)
-      builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+      generic.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+    final TypeIndexBuilder builder;
     final TypeIndex created;
     try {
-      builder = withIndexKind(builder, ddl.getIndexKind(), indexMetadata);
+      builder = withIndexKind(generic, ddl.getIndexKind(), indexMetadata);
       created = builder.create();
     } catch (final RuntimeException e) {
       // The declarations above are part of this statement: a build that fails must not leave the type with properties

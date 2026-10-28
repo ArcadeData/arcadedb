@@ -32,14 +32,14 @@ import java.util.Map;
  * asked for answers differently with no sign of why.
  */
 final class CypherIndexOptions {
-  static final String INDEX_CONFIG     = "indexConfig";
-  static final String INDEX_PROVIDER   = "indexProvider";
-  static final String VECTOR_DIMENSIONS = "vector.dimensions";
-  static final String VECTOR_SIMILARITY = "vector.similarity_function";
-  static final String VECTOR_HNSW_M    = "vector.hnsw.m";
-  static final String VECTOR_HNSW_EF   = "vector.hnsw.ef_construction";
-  static final String VECTOR_QUANTIZED = "vector.quantization.enabled";
-  static final String FULLTEXT_ANALYZER = "fulltext.analyzer";
+  static final String INDEX_CONFIG                   = "indexConfig";
+  static final String INDEX_PROVIDER                 = "indexProvider";
+  static final String VECTOR_DIMENSIONS              = "vector.dimensions";
+  static final String VECTOR_SIMILARITY              = "vector.similarity_function";
+  static final String VECTOR_HNSW_M                  = "vector.hnsw.m";
+  static final String VECTOR_HNSW_EF                 = "vector.hnsw.ef_construction";
+  static final String VECTOR_QUANTIZED               = "vector.quantization.enabled";
+  static final String FULLTEXT_ANALYZER              = "fulltext.analyzer";
   static final String FULLTEXT_EVENTUALLY_CONSISTENT = "fulltext.eventually_consistent";
 
   /**
@@ -99,10 +99,15 @@ final class CypherIndexOptions {
         // index runs as it is
         if (!"cosine".equals(function) && !"euclidean".equals(function) && !"dot_product".equals(function))
           throw new CommandParsingException(
-              "Unsupported `" + VECTOR_SIMILARITY + "` '" + value + "': use 'cosine' or 'euclidean'");
+              "Unsupported `" + VECTOR_SIMILARITY + "` '" + value + "': use 'cosine', 'euclidean' or 'dot_product'");
         similarity = function.toUpperCase(Locale.ROOT);
       }
-      case VECTOR_HNSW_M -> metadata.put("maxConnections", 2 * positiveInt(value, key));
+      case VECTOR_HNSW_M -> {
+        final int m = positiveInt(value, key);
+        if (m > Integer.MAX_VALUE / 2)
+          throw new CommandParsingException("`" + key + "` is too large: " + m);
+        metadata.put("maxConnections", 2 * m);
+      }
       case VECTOR_HNSW_EF -> metadata.put("beamWidth", positiveInt(value, key));
       case VECTOR_QUANTIZED -> {
         if (!(value instanceof Boolean enabled))
@@ -205,7 +210,8 @@ final class CypherIndexOptions {
 
     if (name.indexOf('.') > 0)
       try {
-        final Class<?> clazz = Class.forName(name);
+        // not initialized: a class that is no analyzer must not run its static initializer because a statement named it
+        final Class<?> clazz = Class.forName(name, false, CypherIndexOptions.class.getClassLoader());
         if (Analyzer.class.isAssignableFrom(clazz)) {
           clazz.getConstructor();
           return name;

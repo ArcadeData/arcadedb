@@ -119,6 +119,8 @@ class Issue10678CypherVectorAndFulltextIndexDdlTest extends TestHelper {
         + "`vector.dimension`: 3}}")).hasMessageContaining("setting `vector.dimension`");
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 0}}"))
         .hasMessageContaining("positive integer");
+    assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3, "
+        + "`vector.hnsw.m`: 2000000000}}")).hasMessageContaining("too large");
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {config: {}}"))
         .hasMessageContaining("config");
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:A|B) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3}}"))
@@ -167,6 +169,8 @@ class Issue10678CypherVectorAndFulltextIndexDdlTest extends TestHelper {
         + "'klingon'}}")).isInstanceOf(CommandParsingException.class).hasMessageContaining("klingon");
     assertThat(refusal("CREATE FULLTEXT INDEX f FOR (n:L) ON EACH [n.t] OPTIONS {indexConfig: {`fulltext.analyzer`: "
         + "'java.lang.String'}}")).hasMessageContaining("java.lang.String");
+    assertThat(refusal("CREATE FULLTEXT INDEX f FOR (n:L) ON EACH [n.t] OPTIONS {indexConfig: {`fulltext.analyzer`: "
+        + "'org.example.NoSuchAnalyzer'}}")).hasMessageContaining("org.example.NoSuchAnalyzer");
     assertThat(refusal("CREATE FULLTEXT INDEX f FOR (n:L|M) ON EACH [n.t]"))
         .hasMessageContaining("several labels");
     assertThat(database.getSchema().existsType("L")).isFalse();
