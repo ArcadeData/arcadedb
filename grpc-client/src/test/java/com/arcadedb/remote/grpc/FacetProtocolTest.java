@@ -310,6 +310,19 @@ class FacetProtocolTest {
     assertThat(back.get("size").toJSON().toString()).isEqualTo(FacetResultsSamples.allKinds().get("size").toJSON().toString());
   }
 
+  /** Final review B-M5: an unavailable facet carries no cursor on the wire either, whatever was set on it. */
+  @Test
+  void unavailableFacetCarriesNoCursor() {
+    final LinkedHashMap<String, FacetResult> map = new LinkedHashMap<>();
+    map.put("brand", FacetResult.unavailable("terms", "memory budget").withAfter("brand-7"));
+    final GrpcFacetResult proto = toProto(new FacetResults(true, 0L, 0L, map)).getResultsOrThrow("brand");
+    assertThat(proto.getHasAfter()).isFalse();
+    assertThat(proto.hasAfter()).isFalse();
+    final FacetResult back = fromProto(toProto(new FacetResults(true, 0L, 0L, map))).get("brand");
+    assertThat(back.source()).isEqualTo(FacetResult.UNAVAILABLE);
+    assertThat(back.hasAfter()).isFalse();
+  }
+
   @Test
   void emptyResultsRoundTrip() {
     final FacetResults empty = new FacetResults(true, 0L, 0L, new LinkedHashMap<>());

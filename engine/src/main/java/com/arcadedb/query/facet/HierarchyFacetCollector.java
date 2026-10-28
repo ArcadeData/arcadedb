@@ -96,6 +96,8 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
   private final FacetExecutionStats           stats  = new FacetExecutionStats();
   private final List<HierarchyFacetCollector> others = new ArrayList<>();
 
+  /** The deadline of the query's statement (epoch ms): the wait for the view and its build stop there ({@link #deadline}). */
+  private long          deadlineMs = Long.MAX_VALUE;
   private boolean       viewTaken;
   private HierarchyView view;
   /** Why the facet is unavailable, null while it is not. */
@@ -168,6 +170,16 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
   static HierarchyFacetCollector forView(final HierarchyFacetSpec spec, final ColumnDefinition column, final long matchCount,
       final HierarchyView view, final long budgetWaitMs) {
     return new HierarchyFacetCollector(spec, column, matchCount, null, null, null, view, budgetWaitMs);
+  }
+
+  /**
+   * Bounds the wait for the view, and a build of it, by the deadline of the query's statement (final review A-M4): past it the facet is
+   * unavailable ({@link HierarchyManager#deadlineReason}) instead of waiting for a whole-graph build. Call before the first bucket.
+   *
+   * @param deadlineMs epoch milliseconds, {@link Long#MAX_VALUE} for none
+   */
+  void deadline(final long deadlineMs) {
+    this.deadlineMs = deadlineMs;
   }
 
   @Override
@@ -337,14 +349,16 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       }
       HierarchyView taken;
       try {
-        taken = manager.view();
+        taken = manager.view(deadlineMs);
       } catch (final CancellationException e) {
         // the manager closed during the build (the database closing, the index dropped)
         taken = null;
       }
       if (taken == null) {
         final String reason = manager.unavailableReason();
-        unavailable = reason != null ? reason : "the hierarchy of " + declaringType + "." + spec.property() + " is not available";
+        // no reason of the manager's: the statement's deadline passed while the view was built (shared or private)
+        unavailable = reason != null ? reason : deadlineMs != Long.MAX_VALUE ? manager.deadlineReason() :
+            "the hierarchy of " + declaringType + "." + spec.property() + " is not available";
         return;
       }
       // view() recomputes the watched files when the schema moved: the files the view was built from are checked as well

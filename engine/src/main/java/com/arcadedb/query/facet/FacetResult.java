@@ -225,7 +225,8 @@ public final class FacetResult {
         json.put(MISSING, missing);
       }
     }
-    if (hasAfter)
+    // no result member on an unavailable facet, by construction (final review B-M5)
+    if (hasAfter && !UNAVAILABLE.equals(source))
       json.put(AFTER, encoder.encode(FacetBucket.integral(after), valueType));
     return json;
   }

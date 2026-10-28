@@ -30,11 +30,13 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnarIndex;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.facet.CrossBucketOrdinalMap;
+import com.arcadedb.query.facet.FacetFallbackScanner;
 import com.arcadedb.query.facet.FacetPatcher;
 import com.arcadedb.query.facet.MatchSet;
 import com.arcadedb.query.sql.executor.ColumnarGroupByAggregator.Decline;
@@ -61,11 +63,13 @@ import java.util.Set;
  * <p>
  * The projection answers only when it can answer exactly, for the whole query, checked in this order (the first failing check is the
  * reason of the normal path): the switch is on; the user may read every bucket of the target (a denial runs the normal chain, which
- * raises what the normal plan raises, never a count of the readable buckets only); the caller's transaction changed none of them and
- * does not read at REPEATABLE_READ (the projection holds the latest committed state, not the pages the transaction pinned); every
- * bucket has a usable snapshot that publishes the key and every aggregated property with the schema's encoding, with no value that
- * failed to convert or was converted from another stored type; the ordinal maps and the group arrays are granted by the query memory
- * budget without waiting.
+ * raises what the normal plan raises, never a count of the readable buckets only); no record of the target fires read events (a READ
+ * trigger or listener of its type, a super type's trigger, or a read listener of the database, {@link FacetFallbackScanner#firesReadEvents}:
+ * a trigger may hide a record and a listener rewrite one, which only the normal plan's reads apply); the caller's transaction changed
+ * none of the buckets and does not read at REPEATABLE_READ (the projection holds the latest committed state, not the pages the
+ * transaction pinned); every bucket has a usable snapshot that publishes the key and every aggregated property with the schema's
+ * encoding, with no value that failed to convert or was converted from another stored type (checked on the snapshots before the match
+ * set is built); the ordinal maps and the group arrays are granted by the query memory budget without waiting.
  * <p>
  * The statement has no WHERE (the planner declines every other shape), so upstream is never read on this path: the matches are
  * {@link MatchSet#fromProjection} (live rows plus the committed records of pending pages). Rows the projection holds live off pending
@@ -166,6 +170,9 @@ public class ColumnarGroupByStep extends AbstractExecutionStep {
     for (final int bucketId : bucketIds)
       if (!SecurityHelper.canAccessFile(db, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
         throw new Decline("the user may not read bucket " + bucketName(db, bucketId));
+    for (final int bucketId : bucketIds)
+      if (FacetFallbackScanner.firesReadEvents(db, db.getSchema().getTypeByBucketId(bucketId)))
+        throw new Decline("reading bucket " + bucketName(db, bucketId) + " fires read events (READ triggers or listeners)");
     checkTransaction(db, bucketIds);
 
     if (!db.getSchema().existsType(plan.typeName()))
@@ -174,21 +181,31 @@ public class ColumnarGroupByStep extends AbstractExecutionStep {
     final String[] properties = properties();
     final ColumnDefinition[] columns = currentColumns(db, type, bucketIds, properties);
 
+    // a bucket without a projection, first: the match set would have no entry for it and check nothing of it
+    final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
+    for (final int bucketId : bucketIds)
+      if (manager.projection(bucketId) == null)
+        throw new Decline(notUsable(db, bucketId));
+
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ColumnarSnapshot[] snapshots = new ColumnarSnapshot[bucketIds.length];
     final List<CrossBucketOrdinalMap> maps = new ArrayList<>(2);
     MatchSet matches = null;
     ColumnarGroupByAggregator aggregator = null;
     try {
-      // the snapshots are the match set's, closed with it
-      matches = MatchSet.fromProjection(db, bucketIds, 0);
+      // the snapshots are the match set's, closed with it; each is checked as soon as it is acquired, before the union of its rows is
+      // charged and built (final review A-M2): a statement that declines pays no match set
+      matches = MatchSet.fromProjection(db, bucketIds, 0, snapshot -> {
+        checkSnapshot(db, snapshot.bucketId(), snapshot, properties, columns);
+        checkConversions(db, snapshot.bucketId(), snapshot, properties);
+      });
       if (matches.isOverBudget())
         throw new Decline(ColumnarGroupByAggregator.BUDGET);
-      for (int i = 0; i < bucketIds.length; i++)
-        snapshots[i] = matches.snapshot(bucketIds[i]);
       for (int i = 0; i < bucketIds.length; i++) {
-        checkSnapshot(db, bucketIds[i], snapshots[i], properties, columns);
-        checkConversions(db, bucketIds[i], snapshots[i], properties);
+        snapshots[i] = matches.snapshot(bucketIds[i]);
+        // no usable snapshot: the match set has no entry for the bucket and checked nothing of it
+        if (snapshots[i] == null)
+          throw new Decline(notUsable(db, bucketIds[i]));
       }
 
       final CrossBucketOrdinalMap keyMap = plan.groupKind() == ColumnKind.ORDINAL ?
@@ -292,7 +309,8 @@ public class ColumnarGroupByStep extends AbstractExecutionStep {
    * before the property was typed: a {@code 5} in a STRING property) is held in the declared type: the normal plan sees the raw value.
    * The counts are the projection's, persisted with it, as the state the snapshot holds was published with them (review N2: a rebuild
    * publishing meanwhile lowers the projection's, not those of the values this query reads); unknown ones (a projection persisted
-   * without them) decline until a rebuild.
+   * without them) decline until a rebuild. The counts only grow until a rebuild of the column extracts every value again: the reason
+   * names the REBUILD INDEX that clears them once the records are fixed (final review A-M3).
    */
   private static void checkConversions(final DatabaseInternal db, final int bucketId, final ColumnarSnapshot snapshot,
       final String[] properties) {
@@ -304,10 +322,16 @@ public class ColumnarGroupByStep extends AbstractExecutionStep {
       if (counts == null)
         throw new Decline("the conversions of bucket " + bucketName(db, bucketId) + " are unknown until its next rebuild");
       if (counts[0] != 0)
-        throw new Decline(bucketType.getName() + "." + property + " has values that failed to convert");
+        throw new Decline(bucketType.getName() + "." + property + " has values that failed to convert" + recount(bucketType, property));
       if (counts[1] != 0)
-        throw new Decline(bucketType.getName() + "." + property + " has values stored as another type");
+        throw new Decline(bucketType.getName() + "." + property + " has values stored as another type" + recount(bucketType, property));
     }
+  }
+
+  /** The remedy of a conversion decline: the rebuild of the property's COLUMNAR index, which counts every value again. */
+  private static String recount(final DocumentType bucketType, final String property) {
+    final TypeIndex index = bucketType.getPolymorphicColumnarIndex(property);
+    return index == null ? "" : " (REBUILD INDEX `" + index.getName() + "` to recount)";
   }
 
   /**

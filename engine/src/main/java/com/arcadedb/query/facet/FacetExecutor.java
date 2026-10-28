@@ -57,7 +57,9 @@ import java.util.function.LongPredicate;
  * <p>
  * Fallback scan (spec 7.8, D14): a bucket the projection cannot answer for a facet (no projection, a projection closed or dropped
  * meanwhile, an unusable snapshot, a column the snapshot does not publish with the schema's current encoding, a segment view without
- * the column holding a match, no COLUMNAR index on the property, an expression facet) is counted from its matched records by
+ * the column holding a match, no COLUMNAR index on the property, an expression facet, a type whose records fire read events, see
+ * {@link FacetFallbackScanner#firesReadEvents}: the scan reads them as any read does, so a record a trigger hides counts nowhere and a
+ * record a listener rewrites counts as rewritten) is counted from its matched records by
  * {@link FacetFallbackScanner}, by collectors of their own (one per declaring type of the column, one for raw values) merged with the
  * others by value. The answer stays exact and the facet's source is {@code scan}. A query that scans takes one permit of
  * {@link ColumnarIndexManager#fallbackScans()} without waiting; refused, every facet that needed a scan is {@code unavailable} with the
@@ -136,12 +138,17 @@ public final class FacetExecutor {
           lagMs = Math.max(lagMs, now - snapshots[i].oldestPendingEpochStartMs());
       }
 
+      // a bucket whose records fire read events answers no facet from the projection (final review B-I1), decided for this execution
+      final boolean[] readEvents = new boolean[bucketIds.length];
+      for (int i = 0; i < bucketIds.length; i++)
+        readEvents[i] = FacetFallbackScanner.firesReadEvents(db, db.getSchema().getTypeByBucketId(bucketIds[i]));
+
       // by facet, the buckets the projection answers; by bucket, whether it answers any facet (only those are patched)
       final boolean[][] answers = new boolean[facets.size()][bucketIds.length];
       final boolean[] answered = new boolean[bucketIds.length];
       for (int f = 0; f < answers.length; f++)
         for (int i = 0; i < bucketIds.length; i++) {
-          answers[f][i] = projectionAnswers(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
+          answers[f][i] = !readEvents[i] && projectionAnswers(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
           answered[i] |= answers[f][i];
         }
 
@@ -293,6 +300,7 @@ public final class FacetExecutor {
       boolean wantsScan = false;
       for (int f = 0; f < plans.length; f++) {
         plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots, scans[f]);
+        plans[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
       }
       if (wantsScan) {
@@ -659,6 +667,13 @@ public final class FacetExecutor {
         columnOf[i] = column;
       }
       return true;
+    }
+
+    /** The deadline of the statement: a HIERARCHY collector waits for its view, and builds it, until then at most (final review A-M4). */
+    private void deadline(final long deadlineMs) {
+      for (final FacetCollector collector : collectors)
+        if (collector instanceof HierarchyFacetCollector hierarchy)
+          hierarchy.deadline(deadlineMs);
     }
 
     /** Whether the facet counts the bucket from its snapshot (it is available and the bucket is of one of its declaring types). */

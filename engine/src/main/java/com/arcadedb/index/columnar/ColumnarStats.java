@@ -134,13 +134,21 @@ public final class ColumnarStats {
     conversionFailures.cell(type, property).increment();
   }
 
+  /** {@code n} {@link #conversionFailure}s at once: a rebuild or an apply pass counts a column's values with one add (final review A-M6). */
+  public void addConversionFailures(final String type, final String property, final long n) {
+    if (n > 0)
+      conversionFailures.cell(type, property).add(n);
+  }
+
   /**
-   * One value of a projected record held in the column as the declared type although the record stores another one (written before the
-   * property was typed: a {@code 5} in a STRING property). Counted by the apply and rebuild paths only, each time they extract it, so it
-   * only grows: a GROUP BY answered from the column would return the declared type where the normal plan returns the raw value.
+   * {@code n} values of projected records held in the column as the declared type although the records store another one (written
+   * before the property was typed: a {@code 5} in a STRING property). Counted by the apply and rebuild paths only, each time they extract
+   * them, so it only grows: a GROUP BY answered from the column would return the declared type where the normal plan returns the raw
+   * value. One add per call, as {@link #addConversionFailures}.
    */
-  public void coercedValue(final String type, final String property) {
-    coercedValues.cell(type, property).increment();
+  public void addCoercedValues(final String type, final String property, final long n) {
+    if (n > 0)
+      coercedValues.cell(type, property).add(n);
   }
 
   /** One per apply pass that ran (any projection). */

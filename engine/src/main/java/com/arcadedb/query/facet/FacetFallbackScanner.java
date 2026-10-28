@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
@@ -35,6 +36,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
@@ -264,6 +266,24 @@ public final class FacetFallbackScanner {
       }
     });
     return read[0];
+  }
+
+  /**
+   * Whether reading a record of {@code type} fires a read event: a BEFORE or AFTER READ listener of the database, or of the type and the
+   * triggers of its lineage (a super type's included), exactly what a record read dispatches to ({@code LocalBucket.fireBeforeReadEvents},
+   * {@code LocalDatabase.invokeAfterReadEvents}). A bucket of such a type is never answered from the projection (final review B-I1): a
+   * BEFORE READ trigger may hide a record and an AFTER READ listener filter or rewrite it, which only a read of the record applies, so its
+   * records are read ({@link #scan}, {@link FacetPatcher#recordAt}) and GROUP BY runs the normal plan. Asked at each execution, so a
+   * cached plan follows a trigger created or dropped since; with no read listener anywhere it costs two list checks and a volatile read.
+   */
+  public static boolean firesReadEvents(final DatabaseInternal db, final DocumentType type) {
+    final RecordEventsRegistry events = (RecordEventsRegistry) db.getEmbedded().getEvents();
+    if (events.hasBeforeReadListeners() || events.hasAfterReadListeners())
+      return true;
+    if (!(type instanceof LocalDocumentType local))
+      return false;
+    // the database's count of the BEFORE READ listeners of all its types: zero, a read asks no type (as fireBeforeReadEvents)
+    return events.hasBeforeReadListenersInDatabase() && local.hasBeforeReadListeners() || local.hasAfterReadListeners();
   }
 
   /**

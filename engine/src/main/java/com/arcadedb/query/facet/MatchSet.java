@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.LongPredicate;
 
 /**
@@ -273,6 +274,18 @@ public final class MatchSet implements AutoCloseable {
    * a step the result is {@link #isOverBudget() over budget} and holds nothing.
    */
   public static MatchSet fromProjection(final DatabaseInternal db, final int[] bucketIds, final long budgetWaitMs) {
+    return fromProjection(db, bucketIds, budgetWaitMs, null);
+  }
+
+  /**
+   * {@link #fromProjection(DatabaseInternal, int[], long)} with a check of each usable snapshot, run as soon as it is acquired and
+   * before anything of its bucket is charged or built: a check that throws closes every snapshot acquired and releases every
+   * reservation taken, and the exception reaches the caller, which so pays nothing for a match set it would not use.
+   *
+   * @param check null for none
+   */
+  public static MatchSet fromProjection(final DatabaseInternal db, final int[] bucketIds, final long budgetWaitMs,
+      final Consumer<ColumnarSnapshot> check) {
     final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
     final FacetMemoryBudget budget = FacetMemoryBudget.instance();
     final List<FacetMemoryBudget.Reservation> reservations = new ArrayList<>();
@@ -301,6 +314,8 @@ public final class MatchSet implements AutoCloseable {
           snapshot.close();
           continue;
         }
+        if (check != null)
+          check.accept(snapshot);
 
         final PositionBitmap pending = snapshot.pendingPositions();
         // charge the union's stripes before allocating it: every pending page counts, whether or not a committed record is on it

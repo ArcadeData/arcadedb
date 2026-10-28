@@ -150,7 +150,7 @@ FACETS
 | `STATS` | `count`, `missing`, `min`, `max`, `sum`, `avg` on numeric and date properties (dates: no sum or avg); sums widen from `long` to `BigDecimal` exactly as `sum()` does |
 | `AFTER <value>` | Composite-style cursor over a terms facet in value order |
 | `facet.searchValues('Asset', 'tags', 'run', 20)` | Prefix search over the dictionaries with current counts, for high-cardinality pickers |
-| `GROUP BY` acceleration | Eligible `GROUP BY` queries aggregate from the projection with patching; never inexact, falling back to the normal plan when in doubt; kill switch `arcadedb.columnar.groupByAcceleration` (default true, database scope) |
+| `GROUP BY` acceleration | Eligible `GROUP BY` queries aggregate from the projection with patching; never inexact, falling back to the normal plan when in doubt; kill switch `arcadedb.columnar.groupByAcceleration` (default true, database scope). The normal plan also runs for a type with `READ` triggers or listeners (they can hide or rewrite records), and for a column holding values that failed to convert or were stored as another type: those counts only grow, so once the records are fixed `REBUILD INDEX <name>` recounts them (PROFILE names the index) |
 
 ---
 
