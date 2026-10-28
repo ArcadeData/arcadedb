@@ -77,6 +77,14 @@ class Issue10699PositionalIntArgumentsTest extends TestHelper {
   }
 
   @Test
+  void sparseCreateRefusesANullDimensionNamingItself() {
+    assertThatThrownBy(() -> sparseCreate("[0,1]", "[1.0,2.0]", "null"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("vector.sparseCreate")
+        .hasMessageContaining("dimensions");
+  }
+
+  @Test
   void sparseCreateNamesItselfWhenAnIndexDoesNotFitTheDimension() {
     assertThatThrownBy(() -> sparseCreate("[0,5]", "[1.0,2.0]", "3"))
         .isInstanceOf(CommandSQLParsingException.class)
