@@ -49,7 +49,11 @@ public class SQLFunctionRandomInt extends SQLFunctionAbstract {
     if (params[0] == null)
       return null;
 
-    int bound = params[0] instanceof Number n ? n.intValue() : Integer.parseInt(params[0].toString());
+    // intValue() READ 2.5 AS 2, AND 0.9 AND 3000000000 AS NON-POSITIVE INTS REPORTED AS "bound must be positive"; A TEXT
+    // THAT DID NOT PARSE ESCAPED AS A RAW NumberFormatException (issue #10699)
+    final int bound = requireWholeIntArgument(params[0], "maximum");
+    if (bound <= 0)
+      throw new IllegalArgumentException(NAME + "() <maximum> must be positive, but received " + bound);
 
     return RANDOM.nextInt(bound);
   }
