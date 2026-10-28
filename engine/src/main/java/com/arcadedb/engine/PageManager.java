@@ -1025,6 +1025,8 @@ public class PageManager extends LockContext {
     try {
       thread.setSuspended(database, false);
     } catch (final RuntimeException | Error e) {
+      // WITH NO WINDOW PUBLISHED THE BARRIER ITSELF THREW FIRST, AND ITS catch ALREADY COUNTED THE FAILURE: COUNTING
+      // IT AGAIN HERE WOULD REPORT ONE FAILED BARRIER TWICE
       if (published != null) {
         try {
           published.close();

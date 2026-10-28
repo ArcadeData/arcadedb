@@ -346,7 +346,6 @@ public class PageSnapshot implements AutoCloseable {
       buffer.append("    at ").append(frame).append(eol);
   }
 
-
   /**
    * A page carries whichever {@code Database} instance created it, which on a server is not necessarily the same
    * object the consumer opened the window with (wrappers, proxies). {@code LocalDatabase.equals} keys on the

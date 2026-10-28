@@ -96,7 +96,12 @@ class Issue10657SnapshotWindowLeakDiagnosticsTest extends TestHelper {
   @Test
   void aCloseWaitingPastTheThresholdNamesTheWindowAndTheStackThatOpenedIt() throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.setValue(true);
-    final String report = closeAndCaptureTheReport();
+    final String report;
+    try {
+      report = closeAndCaptureTheReport();
+    } finally {
+      GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.reset();
+    }
 
     assertThat(report).contains(database.getName());
     assertThat(report).contains("thread '" + Thread.currentThread().getName() + "'");
@@ -109,7 +114,12 @@ class Issue10657SnapshotWindowLeakDiagnosticsTest extends TestHelper {
   @Test
   void withoutTrackingTheReportStillNamesTheWindowAndSaysHowToGetTheStack() throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.setValue(false);
-    final String report = closeAndCaptureTheReport();
+    final String report;
+    try {
+      report = closeAndCaptureTheReport();
+    } finally {
+      GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.reset();
+    }
 
     assertThat(report).contains("thread '" + Thread.currentThread().getName() + "'");
     assertThat(report).doesNotContain("openTheWindowFromHere");
