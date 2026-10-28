@@ -53,12 +53,6 @@ public class Issue9057BinarySafeAndHmgetMissingRidTest extends BaseRedisServerTe
     GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
   }
 
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
   @Test
   void nonUtf8BytesRoundTripByteForByte() {
     final byte[][] values = {//

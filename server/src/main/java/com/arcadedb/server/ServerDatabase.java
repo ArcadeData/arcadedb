@@ -77,6 +77,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -910,6 +911,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return current().getGlobalVariables();
+  }
+
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return current().getGlobalVariableStore();
   }
 
   @Override

@@ -144,6 +144,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -3212,6 +3213,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     if (name.startsWith("$"))
       name = name.substring(1);
+    // A name SQL reserves is the context's ($parent, $depth...): SQL cannot set it as a global, and an entry another key space put
+    // in the store under it (a Redis key, issue #10790) must not answer for it where the context has none
+    if (SQLQueryEngine.RESERVED_VARIABLE_NAMES.contains(name))
+      return null;
     return globalVariables.get(name);
   }
 
@@ -3270,6 +3275,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return CollectionUtils.immutableMap(globalVariables);
+  }
+
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return globalVariables;
   }
 
   public QueryEngineManager getQueryEngineManager() {
