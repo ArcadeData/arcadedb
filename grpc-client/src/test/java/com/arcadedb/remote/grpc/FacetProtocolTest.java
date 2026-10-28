@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.query.facet.DistinctValue;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
@@ -25,6 +26,7 @@ import com.arcadedb.query.facet.FacetResultsSamples;
 import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.FacetProtocol;
 import com.arcadedb.server.grpc.GrpcFacetBucket;
 import com.arcadedb.server.grpc.GrpcFacetResult;
@@ -146,14 +148,17 @@ class FacetProtocolTest {
   }
 
   @Test
-  void plan5MembersTravelAsJsonText() {
+  void plan5MembersOnTheWire() {
     final GrpcFacets proto = toProto(FacetResultsSamples.plan5Members());
     assertThat(proto.getExact()).isFalse();
     assertThat(proto.getResultsOrThrow("tree").getBuckets(0).getAttributesJson()).contains("\"parent\"").contains("\"depth\"");
     assertThat(proto.getResultsOrThrow("uniq").getExtensionsJson()).contains("\"value\"").contains("\"exact\"");
-    assertThat(proto.getResultsOrThrow("st").getExtensionsJson()).contains("\"avg\"");
-    // the values of the property are typed (plan 5 Task 9): the cursor and a STATS facet's extremes
-    assertThat(proto.getResultsOrThrow("st").getExtensionsJson()).doesNotContain("\"min\"").doesNotContain("\"max\"");
+    assertThat(proto.getResultsOrThrow("st").getExtensionsJson()).contains("\"count\"");
+    // the values are typed (plan 5 Tasks 9 and 14): the cursor, a STATS facet's extremes, its sum and its average
+    assertThat(proto.getResultsOrThrow("st").getExtensionsJson()).doesNotContain("\"min\"").doesNotContain("\"max\"")
+        .doesNotContain("\"sum\"").doesNotContain("\"avg\"");
+    assertThat(proto.getResultsOrThrow("st").getSum().getInt64Value()).isEqualTo(500L);
+    assertThat(proto.getResultsOrThrow("st").getAvg().getDoubleValue()).isEqualTo(50.0);
     assertThat(proto.getResultsOrThrow("st").getMin().getInt64Value()).isEqualTo(1L);
     assertThat(proto.getResultsOrThrow("st").getMax().getInt64Value()).isEqualTo(99L);
     assertThat(proto.getResultsOrThrow("more").getAfter().getStringValue()).isEqualTo("Nike");
@@ -190,6 +195,89 @@ class FacetProtocolTest {
     assertThat(back.get("none").stats()).isEqualTo(new FacetStats(0L, 3L, null, null, null, null));
     assertThat(back.get("next").after()).isEqualTo(LocalDate.of(2021, 5, 5));
     assertThat(back.get("next").hasAfter()).isTrue();
+  }
+
+  /**
+   * Plan 5 Task 14 (Task 9 M1, M2): a STATS facet's sum and average are typed values on the wire too, encoded as a row's value of
+   * their Java type (a FLOAT's sum a float, a decimal sum a decimal, NaN a double NaN), not JSON text that turns NaN into null and every
+   * number into a Long or a Double.
+   */
+  @Test
+  void statsSumAndAvgTravelAsRowValues() throws Exception {
+    final LinkedHashMap<String, FacetResult> map = new LinkedHashMap<>();
+    map.put("ratio", FacetResult.ofStats("index", new FacetStats(2L, 0L, 0.25f, 1.5f, 1.75f, 0.875d)).withValueType(Type.FLOAT));
+    map.put("nan", FacetResult.ofStats("index", new FacetStats(2L, 0L, 1.0d, Double.NaN, Double.NaN, Double.NaN)).withValueType(Type.DOUBLE));
+    map.put("wide", FacetResult.ofStats("scan", new FacetStats(1L, 0L, 1L, 1L, new BigDecimal("92233720368547758070"), 3.5d))
+        .withValueType(Type.LONG));
+    map.put("int", FacetResult.ofStats("index", new FacetStats(2L, 0L, 3, 4, 7, 3.5d)).withValueType(Type.INTEGER));
+    map.put("day", FacetResult.ofStats("index", new FacetStats(1L, 0L, LocalDate.of(2020, 1, 1), LocalDate.of(2020, 1, 1), null, null))
+        .withValueType(Type.DATE));
+    final GrpcFacets proto = toProto(new FacetResults(true, 0L, 0L, map));
+
+    final GrpcFacetResult ratio = proto.getResultsOrThrow("ratio");
+    assertThat(ratio.getSum().getKindCase()).isEqualTo(GrpcValue.KindCase.FLOAT_VALUE);
+    assertThat(ratio.getAvg().getKindCase()).isEqualTo(GrpcValue.KindCase.DOUBLE_VALUE);
+    assertThat(ratio.getExtensionsJson()).doesNotContain("\"sum\"").doesNotContain("\"avg\"").contains("\"count\"");
+    assertThat(proto.getResultsOrThrow("nan").getSum().getDoubleValue()).isNaN();
+    assertThat(proto.getResultsOrThrow("wide").getSum().getKindCase()).isEqualTo(GrpcValue.KindCase.DECIMAL_VALUE);
+    assertThat(proto.getResultsOrThrow("day").hasSum()).isFalse();
+    assertThat(proto.getResultsOrThrow("day").hasAvg()).isFalse();
+
+    final FacetResults back = fromProto(GrpcFacets.parseFrom(proto.toByteArray()));
+    for (final String alias : map.keySet()) {
+      final FacetStats sent = map.get(alias).stats();
+      final FacetStats received = back.get(alias).stats();
+      assertThat(received).as(alias).isEqualTo(sent);
+      if (sent.sum() != null)
+        assertThat(received.sum().getClass()).as(alias).isEqualTo(sent.sum().getClass());
+      if (sent.avg() != null)
+        assertThat(received.avg().getClass()).as(alias).isEqualTo(sent.avg().getClass());
+    }
+  }
+
+  /** A server that predates the typed sum and average sends them in the extensions: the client still reads them. */
+  @Test
+  void olderServerStatsInTheExtensionsAreStillRead() {
+    final GrpcFacets proto = GrpcFacets.newBuilder().setExact(true).addAliases("st").putResults("st", GrpcFacetResult.newBuilder()
+        .setType("stats").setSource("index").setMissing(1L).setHasCounts(true)
+        .setExtensionsJson("{\"count\":3,\"sum\":12,\"avg\":4.0,\"min\":2,\"max\":6}").build()).build();
+    final FacetStats stats = fromProto(proto).get("st").stats();
+    assertThat(stats.count()).isEqualTo(3L);
+    assertThat(stats.missing()).isEqualTo(1L);
+    assertThat(stats.sum()).isEqualTo(12L);
+    assertThat(stats.avg()).isEqualTo(4.0d);
+    assertThat(stats.min()).isEqualTo(2L);
+    assertThat(stats.max()).isEqualTo(6L);
+  }
+
+  /**
+   * Plan 5 Task 14: the members of the plan 5 kinds arrive as the embedded result holds them: a hierarchy bucket's parent, depth and
+   * orphan flag, a DISTINCT's value and exact flag.
+   */
+  @Test
+  void hierarchyAndDistinctMembersRoundTrip() throws Exception {
+    final LinkedHashMap<String, FacetResult> map = new LinkedHashMap<>();
+    map.put("t", FacetResult.of("hierarchy", "index", List.of(
+        FacetBucket.term("t0/t1", 4L).withAttributes(new JSONObject().put("parent", "t0").put("depth", 1)),
+        FacetBucket.term("loop", 2L).withAttributes(new JSONObject().put("parent", "loop2").put("depth", -1)),
+        FacetBucket.term("stray", 1L).withAttributes(new JSONObject().put("parent", (Object) null).put("depth", 0).put("orphan", true)),
+        FacetBucket.missing(3L)), 9L, 3L).withValueType(Type.STRING));
+    map.put("d", FacetResult.ofDistinct("index", new DistinctValue(1234L, true), 5L));
+    final FacetResults back = fromProto(GrpcFacets.parseFrom(toProto(new FacetResults(true, 0L, 0L, map)).toByteArray()));
+
+    final FacetResult tree = back.get("t");
+    assertThat(tree.kind()).isEqualTo("hierarchy");
+    assertThat(tree.otherCount()).isEqualTo(9L);
+    assertThat(tree.missing()).isEqualTo(3L);
+    assertThat(tree.buckets().get(0).attributes().getString("parent")).isEqualTo("t0");
+    assertThat(tree.buckets().get(0).attributes().getInt("depth")).isEqualTo(1);
+    assertThat(tree.buckets().get(1).attributes().getInt("depth")).isEqualTo(-1);
+    assertThat(tree.buckets().get(2).attributes().getBoolean("orphan")).isTrue();
+    assertThat(tree.buckets().get(2).attributes().has("parent")).isTrue();
+    assertThat(tree.buckets().get(2).attributes().isNull("parent")).isTrue();
+    assertThat(tree.buckets().get(3).isMissing()).isTrue();
+    assertThat(back.get("d").distinct()).isEqualTo(new DistinctValue(1234L, true));
+    assertThat(back.get("d").missing()).isEqualTo(5L);
   }
 
   /** An empty range key and DEFAULT label stay range buckets: the key field has presence, so "" is not taken for "no key". */

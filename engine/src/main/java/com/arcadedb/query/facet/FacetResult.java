@@ -22,6 +22,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,8 +40,10 @@ public final class FacetResult {
   public static final String UNAVAILABLE = "unavailable";
 
   /**
-   * The member of a result that names the type of its bucket values ({@code value:<type id>}), written by a transport that sends the
-   * type hints of its rows, under the name and in the form a row's hint takes.
+   * The member of a result that names the type of its values, written by a transport that sends the type hints of its rows, under the
+   * name and in the form a row's hint takes: {@code value:<type id>} for the values of the property (buckets, a STATS facet's min and
+   * max, the cursor), and for a STATS facet {@code sum:<type id>} and {@code avg:<type id>}, comma separated; an entry only for a type
+   * JSON does not round-trip.
    */
   public static final String VALUE_TYPE_HINT = Property.PROPERTY_TYPES_PROPERTY;
 
@@ -113,6 +116,11 @@ public final class FacetResult {
   /** The same result with the cursor of the next page; a null {@code after} means no value follows. */
   public FacetResult withAfter(final Object after) {
     return new FacetResult(kind, source, reason, buckets, otherCount, missing, distinct, stats, after, true, valueType);
+  }
+
+  /** The same result with other statistics (a transport that decodes their values itself rebuilds them); every other member is kept. */
+  public FacetResult withStats(final FacetStats stats) {
+    return new FacetResult(kind, source, reason, buckets, otherCount, stats.missing(), distinct, stats, after, hasAfter, valueType);
   }
 
   /** The same result with another {@link #source()}: the executor marks a facet {@code scan} once a bucket of it was read from records. */
@@ -198,8 +206,10 @@ public final class FacetResult {
         // the extremes are values of the property, encoded as a row's value of it (a date in the row's date format)
         json.put(MIN, stats.min() == null ? null : encoder.encode(FacetBucket.integral(stats.min()), valueType));
         json.put(MAX, stats.max() == null ? null : encoder.encode(FacetBucket.integral(stats.max()), valueType));
-        json.put(SUM, FacetBucket.integral(stats.sum()));
-        json.put(AVG, FacetBucket.integral(stats.avg()));
+        // the sum and the average are values of their own type (a FLOAT's mean is a Double), written as a row's value of that type is: a
+        // non-finite one by its name, which JSON would otherwise write as null
+        json.put(SUM, stats.sum() == null ? null : encoder.encode(FacetBucket.integral(stats.sum()), null));
+        json.put(AVG, stats.avg() == null ? null : encoder.encode(FacetBucket.integral(stats.avg()), null));
       } else {
         if (distinct != null) {
           json.put(VALUE, distinct.value());
@@ -225,21 +235,28 @@ public final class FacetResult {
   }
 
   /**
-   * @param decoder reads each value of the data back (bucket values, a STATS facet's min and max and the cursor, with the type of the {@link #VALUE_TYPE_HINT}
-   *                member, null without one); null to keep the values as JSON holds them, integral numbers as {@code Long}
+   * @param decoder reads each value of the data back with the type its {@link #VALUE_TYPE_HINT} entry names (null without one): bucket
+   *                values, a STATS facet's min and max and the cursor with the {@code value} entry, its sum and average with their own
+   *                {@code sum} and {@code avg} entries; a sum or average written as a non-finite marker ({@link NonFiniteNumbers}) is
+   *                restored to that number before the decoder is asked. Null to keep the values as JSON holds them, integral numbers as
+   *                {@code Long}
    */
   public static FacetResult fromJSON(final JSONObject json, final FacetResults.ValueDecoder decoder) {
     final String kind = json.getString(TYPE);
     final String source = json.getString(SOURCE);
-    final Type valueType = valueTypeOf(json.getString(VALUE_TYPE_HINT, null));
+    final String hint = json.getString(VALUE_TYPE_HINT, null);
+    final Type valueType = typeOf(hint, VALUE);
     FacetResult result;
     if (UNAVAILABLE.equals(source))
       result = unavailable(kind, json.getString(REASON, null));
-    else if ("stats".equals(kind))
+    else if ("stats".equals(kind)) {
+      final Type sumType = typeOf(hint, SUM);
+      final Type avgType = typeOf(hint, AVG);
       result = ofStats(source,
           new FacetStats(json.getLong(COUNT, 0L), json.getLong(MISSING, 0L), FacetBucket.decode(json.opt(MIN), decoder, valueType),
-              FacetBucket.decode(json.opt(MAX), decoder, valueType), (Number) FacetBucket.integral(json.opt(SUM)),
-              FacetBucket.integral(json.opt(AVG))));
+              FacetBucket.decode(json.opt(MAX), decoder, valueType), numberOf(json.opt(SUM), decoder, sumType),
+              numberOf(json.opt(AVG), decoder, avgType)));
+    }
     else if ("distinct".equals(kind))
       result = ofDistinct(source, new DistinctValue(json.getLong(VALUE, 0L), json.getBoolean(EXACT, true)), json.getLong(MISSING, 0L));
     else {
@@ -254,15 +271,46 @@ public final class FacetResult {
     return valueType != null ? result.withValueType(valueType) : result;
   }
 
-  /** The type a {@link #VALUE_TYPE_HINT} member names ({@code value:<type id>}), null for none or one this version does not know. */
-  private static Type valueTypeOf(final String hint) {
-    if (hint == null || !hint.startsWith(VALUE + ":"))
+  /**
+   * The type a {@link #VALUE_TYPE_HINT} member names for {@code member}: the hint lists {@code name:<type id>} entries separated by
+   * commas, as a row's hint does ({@code value} for the values of the property, {@code sum} and {@code avg} for a STATS facet's). Null
+   * for no entry, or one this version does not know.
+   */
+  private static Type typeOf(final String hint, final String member) {
+    if (hint == null)
       return null;
-    try {
-      return Type.getById(Byte.parseByte(hint.substring(VALUE.length() + 1)));
-    } catch (final RuntimeException e) {
-      return null;
+    final String prefix = member + ":";
+    int start = 0;
+    while (start < hint.length()) {
+      int end = hint.indexOf(',', start);
+      if (end < 0)
+        end = hint.length();
+      if (hint.startsWith(prefix, start))
+        try {
+          return Type.getById(Byte.parseByte(hint.substring(start + prefix.length(), end)));
+        } catch (final RuntimeException e) {
+          return null;
+        }
+      start = end + 1;
     }
+    return null;
+  }
+
+  /**
+   * A STATS sum or average read back ({@link FacetStats} holds a number): the name a non-finite number is written by (JSON has none, a
+   * row's is written so) as that number again, a {@code Float} when its hint says FLOAT, else a {@code Double}, without asking the
+   * decoder (a row decoder cannot parse every name); any other value as the decoder reads it.
+   */
+  private static Number numberOf(final Object json, final FacetResults.ValueDecoder decoder, final Type type) {
+    if (json instanceof String name) {
+      final Double nonFinite = NonFiniteNumbers.decode(name);
+      if (nonFinite != null)
+        return type == Type.FLOAT ? (Number) nonFinite.floatValue() : nonFinite;
+    }
+    final Object decoded = FacetBucket.decode(json, decoder, type);
+    if (decoded != null && !(decoded instanceof Number))
+      throw new IllegalArgumentException("A STATS sum or average must be a number, found '" + decoded + "'");
+    return (Number) decoded;
   }
 
   private boolean hasOtherCount() {

@@ -181,11 +181,13 @@ message GrpcFacetResult {
   int64 other_count         = 5;
   int64 missing             = 6;
   bool has_counts           = 7; // false for an unavailable facet, which carries no buckets or counts
-  string extensions_json    = 8; // any other member of the result (distinct value/exact, stats counts, sum, avg) as JSON object text
+  string extensions_json    = 8; // any other member of the result (distinct value/exact, stats count) as JSON object text
   GrpcValue after           = 9;  // the cursor of the next page, encoded as a row's value; unset with has_after when no value follows
   GrpcValue min             = 10; // a stats facet's min, encoded as a row's value of the property; unset when no record has a value
   GrpcValue max             = 11; // a stats facet's max, likewise
   bool has_after            = 12; // the result carries a cursor (after may still be unset: no value follows)
+  GrpcValue sum             = 13; // a stats facet's sum, encoded as a row's value of its type (sum() gives it); unset when null
+  GrpcValue avg             = 14; // a stats facet's average, likewise
 }
 
 message GrpcFacets {

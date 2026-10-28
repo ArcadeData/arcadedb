@@ -18,7 +18,10 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.query.facet.DistinctValue;
+import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResultsSamples;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -65,6 +68,40 @@ class ParseResultSetFromJsonFacetsTest {
       assertThat(facetValue).as(alias).isEqualTo(row.getProperty(alias));
       assertThat(facetValue.getClass()).as(alias).isEqualTo(row.getProperty(alias).getClass());
     }
+  }
+
+  /**
+   * Plan 5 Task 14: the plan 5 kinds of a leader's answer, as the leader's HTTP serializer writes them: hierarchy attributes, a DISTINCT
+   * value, a STATS facet whose sum and average are non-finite (written by name, read back as the numbers FacetStats holds) and a
+   * date-time cursor kept as the row's text, as the follower keeps a row's value.
+   */
+  @Test
+  void plan5KindsOfTheLeaderAnswer() {
+    final String body = "{\"result\":[{\"p\":\"2024-02-29 10:30:15\"}],\"facets\":{\"meta\":{\"exact\":true,\"patched\":0,\"lagMs\":0},"
+        + "\"t\":{\"type\":\"hierarchy\",\"source\":\"index\",\"buckets\":[{\"value\":\"t0/t1\",\"count\":4,\"parent\":\"t0\",\"depth\":1},"
+        + "{\"value\":\"stray\",\"count\":1,\"parent\":null,\"depth\":0,\"orphan\":true}],\"otherCount\":0,\"missing\":2},"
+        + "\"d\":{\"type\":\"distinct\",\"source\":\"index\",\"value\":42,\"exact\":true,\"missing\":1},"
+        + "\"s\":{\"type\":\"stats\",\"source\":\"index\",\"count\":3,\"missing\":0,\"min\":1.5,\"max\":\"NaN\",\"sum\":\"NaN\",\"avg\":\"NaN\"},"
+        + "\"p\":{\"type\":\"terms\",\"source\":\"index\",\"buckets\":[{\"value\":\"2024-02-29 10:30:15\",\"count\":1}],\"otherCount\":0,"
+        + "\"missing\":0,\"after\":\"2024-02-29 10:30:15\"}}}";
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(body);
+    final Result row = rs.next();
+
+    final FacetResult tree = rs.getFacets().get("t");
+    assertThat(tree.buckets().get(0).attributes().getString("parent")).isEqualTo("t0");
+    assertThat(tree.buckets().get(0).attributes().getInt("depth")).isEqualTo(1);
+    assertThat(tree.buckets().get(1).attributes().getBoolean("orphan")).isTrue();
+    assertThat(tree.missing()).isEqualTo(2L);
+    assertThat(rs.getFacets().get("d").distinct()).isEqualTo(new DistinctValue(42L, true));
+    final FacetStats stats = rs.getFacets().get("s").stats();
+    assertThat(stats.count()).isEqualTo(3L);
+    assertThat(stats.sum()).isEqualTo(Double.NaN);
+    assertThat(stats.avg()).isEqualTo(Double.NaN);
+    // the extremes are values of the property: kept as the JSON parse gives them, like a row's
+    assertThat(stats.max()).isEqualTo("NaN");
+    final FacetResult paged = rs.getFacets().get("p");
+    assertThat(paged.hasAfter()).isTrue();
+    assertThat(paged.after()).isEqualTo(row.getProperty("p"));
   }
 
   @Test

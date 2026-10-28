@@ -215,7 +215,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   /**
    * The JSON of the facets, the same on the buffered and the streamed encoding: {@code FacetResults.toJSON()} with every value of the
    * data written as the row serializer writes a row's value of the same property, and, with type hints, the {@code @props} hint of the
-   * terms facets whose values JSON does not round-trip (final review C-I8).
+   * facets with a member JSON does not round-trip (final review C-I8; a STATS sum and average have entries of their own).
    */
   static JSONObject facetsJson(final Database database, final FacetResults facets, final boolean includeTypeHints) {
     return JsonSerializer.createJsonSerializer().setIncludeTypeHints(includeTypeHints).serializeFacets(database, facets);
