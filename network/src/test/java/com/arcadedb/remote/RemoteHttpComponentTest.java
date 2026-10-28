@@ -260,6 +260,15 @@ class RemoteHttpComponentTest {
         DatabaseNotAvailableException.class.getName()).put("exceptionArgs", "SOMETHING_NEW").toString(), "test");
     assertThat(((DatabaseNotAvailableException) newer).getReason()).isEqualTo(DatabaseNotAvailableException.Reason.UNAVAILABLE);
 
+    // an older server sends no reason at all, or an empty one
+    for (final String args : new String[] { null, "" }) {
+      final JSONObject body = new JSONObject().put("exception", DatabaseNotAvailableException.class.getName());
+      if (args != null)
+        body.put("exceptionArgs", args);
+      final Exception older = component.manageException(503, body.toString(), "test");
+      assertThat(((DatabaseNotAvailableException) older).getReason()).isEqualTo(DatabaseNotAvailableException.Reason.UNAVAILABLE);
+    }
+
     final Exception missing = component.manageException(404, new JSONObject().put("error", "Database not found")
         .put("exception", DatabaseNotFoundException.class.getName()).toString(), "test");
     assertThat(missing).isExactlyInstanceOf(DatabaseNotFoundException.class);
