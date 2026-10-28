@@ -45,10 +45,15 @@ public interface FacetCounter {
   /** The heap held by the counter, for the memory budget. */
   long estimatedBytes();
 
-  /** Dense when {@code cardinality <= 100_000 && matchCount * 8 >= cardinality}, hash otherwise. */
+  /** Dense when {@link #prefersDense}, hash otherwise. */
   static FacetCounter choose(final long matchCount, final int cardinality) {
-    if (cardinality <= MAX_DENSE_CARDINALITY && matchCount >= (cardinality + 7L) / 8)
+    if (prefersDense(matchCount, cardinality))
       return new DenseFacetCounter(cardinality);
     return new HashFacetCounter((int) Math.min(matchCount, cardinality));
+  }
+
+  /** {@code cardinality <= 100_000 && matchCount * 8 >= cardinality}: the rule of {@link #choose}, for a caller reserving memory first. */
+  static boolean prefersDense(final long matchCount, final int cardinality) {
+    return cardinality <= MAX_DENSE_CARDINALITY && matchCount >= (cardinality + 7L) / 8;
   }
 }

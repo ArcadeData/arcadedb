@@ -140,6 +140,11 @@ public final class ColumnarManifest {
     return columns.clone();
   }
 
+  /** The column definitions themselves, not a copy: shared, never write the array. */
+  ColumnDefinition[] columnsView() {
+    return columns;
+  }
+
   public List<SegmentEntry> segments() {
     return segments;
   }

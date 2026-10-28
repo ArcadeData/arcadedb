@@ -43,4 +43,11 @@ public interface FacetCollector {
   void merge(FacetCollector other);
 
   FacetResult finish();
+
+  /**
+   * Releases the memory the collector reserved without ranking anything: the executor calls it on every collector of a facet that
+   * failed before {@link #finish}. Idempotent, and a no-op after {@link #finish}.
+   */
+  default void release() {
+  }
 }

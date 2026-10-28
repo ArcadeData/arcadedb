@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -38,6 +39,8 @@ public final class FacetResults {
   private final long                            patched;
   private final long                            lagMs;
   private final LinkedHashMap<String, FacetResult> results;
+  /** How each facet was computed (EXPLAIN, PROFILE); never serialized, empty for results parsed from JSON. */
+  private       Map<String, FacetExecutionStats>   executionStats = Map.of();
 
   /**
    * @param exact   false when the counts may lag the committed data (patch budget exceeded); an approximate DISTINCT also makes the
@@ -68,6 +71,15 @@ public final class FacetResults {
 
   public long lagMs() {
     return lagMs;
+  }
+
+  /** The execution statistics by alias; empty unless the executor computed these results. */
+  Map<String, FacetExecutionStats> executionStats() {
+    return executionStats;
+  }
+
+  void setExecutionStats(final Map<String, FacetExecutionStats> executionStats) {
+    this.executionStats = Collections.unmodifiableMap(executionStats);
   }
 
   public FacetResult get(final String alias) {

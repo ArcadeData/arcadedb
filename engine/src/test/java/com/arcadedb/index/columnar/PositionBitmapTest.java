@@ -115,6 +115,12 @@ class PositionBitmapTest {
     final BitSet andSet = (BitSet) sa.clone();
     andSet.and(sb);
     assertThat(a.andCardinality(b)).isEqualTo(andSet.cardinality());
+    // the visiting form gives the same positions, ascending, without building the intersection
+    final List<Long> visited = new ArrayList<>();
+    a.forEachAnd(b, visited::add);
+    final List<Long> expectedAnd = new ArrayList<>();
+    andSet.stream().forEach(p -> expectedAnd.add((long) p));
+    assertThat(visited).isEqualTo(expectedAnd);
 
     final PositionBitmap and = a.copy();
     and.and(b);

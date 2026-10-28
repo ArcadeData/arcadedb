@@ -64,7 +64,17 @@ public final class LongTermsCounter {
   }
 
   public long estimatedBytes() {
-    return HashFacetCounter.hashBytes(initialCapacity, map.size(), Long.BYTES * 2L);
+    return bytesAt(map.size());
+  }
+
+  /** The distinct terms counted. */
+  public int size() {
+    return map.size() + (minValueCount != 0 ? 1 : 0);
+  }
+
+  /** The heap the counter holds once it counts {@code entries} distinct terms, to reserve before it grows there. */
+  public long bytesAt(final int entries) {
+    return HashFacetCounter.hashBytes(initialCapacity, entries, Long.BYTES * 2L);
   }
 
   /** The heap a counter expecting this many distinct terms holds, to reserve before allocating it. */

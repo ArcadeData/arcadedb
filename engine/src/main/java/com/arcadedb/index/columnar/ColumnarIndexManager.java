@@ -63,6 +63,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.IntConsumer;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -222,6 +223,8 @@ public final class ColumnarIndexManager {
   /** The last reconcile recorded definitions or hierarchy fingerprints: one is due on request even with no projection left. */
   private volatile boolean    reconcileTracked;
   private final List<Consumer<ColumnarSchemaEvent>> schemaListeners = new CopyOnWriteArrayList<>();
+  /** The query layer's merged ordinal maps of this database (plan 4), dropped on a columnar schema event and on close. */
+  private final ConcurrentHashMap<Object, Object>   ordinalMapCache = new ConcurrentHashMap<>();
   private final Runnable      tick         = this::tick;
   /** The interval the tick is registered with: the paced apply interval, read only when there is work (C-M1). */
   private final LongSupplier  tickInterval = this::tickIntervalMs;
@@ -530,6 +533,10 @@ public final class ColumnarIndexManager {
   }
 
   private void notifyListeners(final ColumnarSchemaEvent event) {
+    // a projection or a column changed: merged ordinals are rebuilt from the dictionaries on the next query (a hierarchy source change
+    // touches no projection)
+    if (event.kind() != ColumnarSchemaEvent.Kind.HIERARCHY_SOURCE_CHANGED)
+      ordinalMapCache.clear();
     for (final Consumer<ColumnarSchemaEvent> listener : schemaListeners)
       try {
         listener.accept(event);
@@ -989,6 +996,16 @@ public final class ColumnarIndexManager {
 
   public ColumnarStats getStats() {
     return stats;
+  }
+
+  /**
+   * The cached merged dictionary ordinals of FACETS queries under the key, created by {@code factory} when absent. Cleared on every
+   * columnar schema event but {@code HIERARCHY_SOURCE_CHANGED} and when the manager closes.
+   *
+   * @apiNote internal to {@code com.arcadedb.query.facet.CrossBucketOrdinalMap}, which owns the keys and the values
+   */
+  public Object ordinalMapEntry(final Object key, final Function<Object, Object> factory) {
+    return ordinalMapCache.computeIfAbsent(key, factory);
   }
 
   // ------------------------------------------------------------------------------------------------------ scrape-time gauges
@@ -2533,6 +2550,7 @@ public final class ColumnarIndexManager {
       registryLock.unlock();
     }
     closing = true;
+    ordinalMapCache.clear();
     stopApplying();
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(drainTimeoutMs);
     awaitNoPass(deadline);

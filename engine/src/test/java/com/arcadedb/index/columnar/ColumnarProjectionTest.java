@@ -615,6 +615,48 @@ class ColumnarProjectionTest extends TestHelper {
   }
 
   @Test
+  void snapshotPublishesOnlyTheColumnsItsManifestHoldsWithTheSameDefinition() throws IOException {
+    useType("Asset");
+    manifest(1, List.of(), writeSegment(1, 1));
+    final ColumnarProjection projection = open();
+    final ColumnarSnapshot before = projection.acquire();
+    assertThat(before.publishes("brand")).isTrue();
+    assertThat(before.publishes("size")).isTrue();
+    assertThat(before.publishes("nothing")).isFalse();
+
+    // added after the publish: not published until a rebuild publishes it
+    projection.addColumn(new ColumnDefinition(15, "color", Type.STRING, ColumnKind.ORDINAL, false, null));
+    try (final ColumnarSnapshot added = projection.acquire()) {
+      assertThat(added.publishes("color")).isFalse();
+      assertThat(added.publishes("brand")).isTrue();
+    }
+
+    // a rename keeps the data published under the new name; a retype is not published
+    final ColumnDefinition[] redefined = projection.columns();
+    redefined[BRAND] = new ColumnDefinition(redefined[BRAND].indexFileId(), "label", Type.STRING, ColumnKind.ORDINAL, false, null);
+    for (int i = 0; i < redefined.length; i++)
+      if (redefined[i].property().equals("size"))
+        redefined[i] = new ColumnDefinition(redefined[i].indexFileId(), "size", Type.INTEGER, ColumnKind.LONG, false, null);
+    assertThat(projection.redefineColumns(redefined)).isTrue();
+    try (final ColumnarSnapshot after = projection.acquire()) {
+      assertThat(after.publishes("label")).isTrue();
+      assertThat(after.publishes("brand")).isFalse();
+      assertThat(after.publishes("size")).isFalse();
+      assertThat(after.publishes("score")).isTrue();
+      assertThat(after.publishes("color")).isFalse();
+    }
+    // captured at acquire: the older snapshot keeps its answer
+    assertThat(before.publishes("brand")).isTrue();
+    assertThat(before.publishes("size")).isTrue();
+    before.close();
+
+    projection.markUnusableWithoutRequest("test");
+    try (final ColumnarSnapshot unusable = projection.acquire()) {
+      assertThat(unusable.publishes("label")).isFalse();
+    }
+  }
+
+  @Test
   void dateColumnDefinitionsSurviveTheEmptyManifest() throws IOException {
     useType("Asset");
     final ColumnDefinition date = new ColumnDefinition(16, "created", Type.DATETIME, ColumnKind.LONG, false, ChronoUnit.MILLIS);

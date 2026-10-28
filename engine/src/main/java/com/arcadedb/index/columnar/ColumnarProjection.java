@@ -590,9 +590,21 @@ public final class ColumnarProjection {
       ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
       final ProjectionState current = retainState();
       if (sequence == rebuildSequence)
-        return new Snapshot(bucketId, current, pending, oldest);
+        return new Snapshot(bucketId, current, pending, oldest, current.publishedProperties(columns));
       current.release();
     }
+  }
+
+  /**
+   * The one rule of "published" (roadmap, plan 3 additions), shared by {@link #isPublishedWith} and {@link ColumnarSnapshot#publishes}:
+   * the manifest has a column of the same index file id storing the same data as the projection's own definition
+   * ({@link ColumnarReconciler#sameData}, the property name aside).
+   */
+  static boolean isPublished(final ColumnDefinition[] manifestColumns, final ColumnDefinition own) {
+    for (final ColumnDefinition column : manifestColumns)
+      if (column.indexFileId() == own.indexFileId())
+        return ColumnarReconciler.sameData(column, own);
+    return false;
   }
 
   /** The pending positions of both trackers, read in movement order under the owner map read locks. */
@@ -783,12 +795,7 @@ public final class ColumnarProjection {
     if (current == null || !isUsable())
       return false;
     final ColumnDefinition own = column(indexFileId);
-    if (own == null)
-      return false;
-    for (final ColumnDefinition column : current.columns())
-      if (column.indexFileId() == indexFileId)
-        return ColumnarReconciler.sameData(column, own);
-    return false;
+    return own != null && isPublished(current.columnsView(), own);
   }
 
   /** The columns of the projection whose definition the current manifest does not publish, see {@link #isPublishedWith}. */
@@ -862,7 +869,8 @@ public final class ColumnarProjection {
     if (closed || dropped)
       return false;
     final ProjectionState next = new ProjectionState(manifest == null ? 0 : manifest.generation(), segments, overlays, dictionaries,
-        manifest == null ? Set.of() : manifest.files(), usable, this::stateReleased);
+        manifest == null ? Set.of() : manifest.files(), manifest == null ? new ColumnDefinition[0] : manifest.columnsView(), usable,
+        this::stateReleased);
     for (final SegmentReader reader : segments)
       if (openReaders.add(reader))
         segmentFiles.putIfAbsent(fileName(reader), reader.file());
@@ -2009,13 +2017,16 @@ public final class ColumnarProjection {
     private final PositionBitmap            pending;
     private final long                      oldestPendingEpochStartMs;
     private final List<ColumnarSegmentView> views;
+    private final String[]                  publishedProperties;
     private volatile int                    closed;
 
-    private Snapshot(final int bucketId, final ProjectionState state, final PositionBitmap pending, final long oldestPendingEpochStartMs) {
+    private Snapshot(final int bucketId, final ProjectionState state, final PositionBitmap pending, final long oldestPendingEpochStartMs,
+        final String[] publishedProperties) {
       this.bucketId = bucketId;
       this.state = state;
       this.pending = pending;
       this.oldestPendingEpochStartMs = oldestPendingEpochStartMs;
+      this.publishedProperties = publishedProperties;
       final SegmentReader[] segments = state.segments();
       final ColumnarSegmentView[] overlays = state.overlays();
       final ColumnarSegmentView[] all = Arrays.copyOf(segments, segments.length + overlays.length, ColumnarSegmentView[].class);
@@ -2051,6 +2062,14 @@ public final class ColumnarProjection {
     @Override
     public GlobalDictionary dictionary(final String property) {
       return state.dictionary(property);
+    }
+
+    @Override
+    public boolean publishes(final String property) {
+      for (final String published : publishedProperties)
+        if (published.equals(property))
+          return true;
+      return false;
     }
 
     @Override

@@ -62,7 +62,17 @@ public final class HashFacetCounter implements FacetCounter {
 
   @Override
   public long estimatedBytes() {
-    return hashBytes(initialCapacity, map.size(), Integer.BYTES * 2L);
+    return bytesAt(map.size());
+  }
+
+  /** The distinct ordinals counted. */
+  public int size() {
+    return map.size();
+  }
+
+  /** The heap the counter holds once it counts {@code entries} distinct ordinals, to reserve before it grows there. */
+  public long bytesAt(final int entries) {
+    return hashBytes(initialCapacity, entries, Integer.BYTES * 2L);
   }
 
   /** The heap a counter expecting this many distinct ordinals holds, to reserve before allocating it. */
@@ -75,7 +85,11 @@ public final class HashFacetCounter implements FacetCounter {
     return (int) Math.min(1 << 30, (long) (expected / 0.75) + 1);
   }
 
-  /** The two parallel arrays of an open-addressing map with load factor 0.75: the capacity doubles until {@code size} fits. */
+  /**
+   * The two parallel arrays of an open-addressing map with load factor 0.75: the capacity doubles until {@code size} fits. This is the
+   * steady state: while a resize copies, the old arrays are held too (1.5 times this for one doubling), a transient the budget does
+   * not charge.
+   */
   static long hashBytes(final int initialCapacity, final int size, final long slotBytes) {
     long capacity = Integer.highestOneBit(Math.max(MIN_CAPACITY, initialCapacity) - 1) << 1;
     while (size >= capacity * 3 / 4)
