@@ -34,7 +34,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -79,9 +78,58 @@ class RaftClusterManager {
   /** How far {@link #isPermanent} follows a failure's cause chain. Deeper than any Ratis failure nests. */
   private static final int MAX_CAUSE_DEPTH = 16;
 
-  /** How long {@link #buildAddArgs} waits for a configuration that cannot be read yet, in {@value #COMMITTED_PEERS_WAIT_MS} ms steps. */
+  /**
+   * How long {@link #readCommittedConfiguration} waits for a configuration that cannot be read yet, in
+   * {@value #COMMITTED_PEERS_WAIT_MS} ms steps.
+   */
   private static final int  COMMITTED_PEERS_WAIT_ATTEMPTS = 50;
   private static final long COMMITTED_PEERS_WAIT_MS       = 100L;
+
+  /**
+   * The peers of the COMMITTED Raft configuration, and nothing else (issue #10769).
+   * <p>
+   * {@link RaftHAServer#getLivePeers()} substitutes the declared {@code arcadedb.ha.serverList} while the division cannot
+   * be read (before the Raft server starts, throughout an in-place restart, issue #5271). A membership change is a
+   * compare-and-set against the leader's configuration, so a precondition built from the declared list is one the leader
+   * may never match: every attempt is refused and rebuilt identically until the budget runs out. The add path was moved
+   * off that accessor for this reason, the removal path was not, and the two drifted.
+   * <p>
+   * This type is what keeps them from drifting again: only {@link #readCommittedConfiguration} constructs one, every
+   * membership change is a {@link MembershipChange} built from one, and {@link #setConfigurationWithRetry} accepts
+   * nothing else, so the declared list is not in scope wherever a precondition, a membership check or a quorum guard is
+   * computed.
+   */
+  static final class CommittedConfiguration {
+    private final List<RaftPeer> peers;
+
+    private CommittedConfiguration(final Collection<RaftPeer> peers) {
+      this.peers = List.copyOf(peers);
+    }
+
+    List<RaftPeer> peers() {
+      return peers;
+    }
+
+    int size() {
+      return peers.size();
+    }
+
+    boolean contains(final String peerId) {
+      for (final RaftPeer peer : peers)
+        if (peer.getId().toString().equals(peerId))
+          return true;
+      return false;
+    }
+  }
+
+  /**
+   * One membership change, built from the committed configuration of the attempt about to be sent. Returns {@code null}
+   * when the goal is already met, which {@link #setConfigurationWithRetry} treats as success.
+   */
+  @FunctionalInterface
+  interface MembershipChange {
+    SetConfigurationRequest.Arguments build(CommittedConfiguration committed);
+  }
 
   private final RaftHAServer raftHAServer;
   private final long         setConfigurationBudgetMs;
@@ -182,7 +230,7 @@ class RaftClusterManager {
     // drops one of two concurrent adds (issue #4795). Not Mode.ADD, which is atomic too but cannot carry the
     // address-uniqueness check that has to run against the state the change is applied to (issue #7802).
     try {
-      setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
+      setConfigurationWithRetry(committed -> buildAddArgs(committed, peerId, newPeer), "add peer " + peerId + " at " + address,
           "The peer answered a connection but the Raft membership change did not commit: Ratis holds the change"
               + " uncommitted until the new peer has caught up with the leader's log, and the change is a"
               + " compare-and-set that is refused, and retried, whenever another membership change lands first, so a"
@@ -206,12 +254,18 @@ class RaftClusterManager {
     LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
   }
 
-  /** Whether {@code peerId} is in the configuration this node currently knows; never throws. */
+  /**
+   * Whether {@code peerId} is in the committed configuration; never throws. Not {@link RaftHAServer#getLivePeers()}: the
+   * declared list it substitutes for an unreadable configuration would keep a declared address for a peer whose add did
+   * not commit (issue #10769).
+   */
   private boolean isMember(final RaftPeerId peerId) {
     try {
-      for (final RaftPeer peer : raftHAServer.getLivePeers())
-        if (peer.getId().equals(peerId))
-          return true;
+      final Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
+      if (committed != null)
+        for (final RaftPeer peer : committed)
+          if (peer.getId().equals(peerId))
+            return true;
     } catch (final RuntimeException ignored) {
       // Unreadable configuration: treat as "not a member", the answer that withdraws the address.
     }
@@ -224,24 +278,20 @@ class RaftClusterManager {
 
   void removePeer(final String peerId, final boolean force) {
     // Validate up-front so an unknown peer or a quorum breach fails immediately rather than after the
-    // 90s retry budget. The retry loop re-validates on each attempt (see buildRemoveArgs).
-    final Collection<RaftPeer> currentPeers = raftHAServer.getLivePeers();
-    boolean found = false;
-    for (final RaftPeer peer : currentPeers)
-      if (peer.getId().toString().equals(peerId)) {
-        found = true;
-        break;
-      }
-    if (!found)
+    // 90s retry budget. The retry loop re-validates on each attempt (see buildRemoveArgs). Both read the COMMITTED
+    // configuration (issue #10769): the declared list would name peers that are not members and count them in the quorum.
+    final String operationDesc = "remove peer " + peerId;
+    final CommittedConfiguration committed = readCommittedConfiguration(operationDesc);
+    if (!committed.contains(peerId))
       throw new ConfigurationException("Peer " + peerId + " not found in cluster");
 
-    ensureQuorumPreserved(peerId, currentPeers.size(), currentPeers.size() - 1, force);
+    ensureQuorumPreserved(peerId, committed.size(), committed.size() - 1, force);
 
     // Ratis 3.2.2 has no atomic REMOVE delta, so use COMPARE_AND_SET: the change commits only if the
     // leader's current configuration still matches the snapshot we computed the new list from. A
     // concurrent membership change invalidates the CAS, and the retry loop re-snapshots and rebuilds,
     // instead of the read-modify-write last-write-wins of a plain setConfiguration (issue #4795).
-    setConfigurationWithRetry(() -> buildRemoveArgs(peerId, force), "remove peer " + peerId,
+    setConfigurationWithRetry(current -> buildRemoveArgs(current, peerId, force), operationDesc,
         "The Raft membership change did not commit. A removal needs a leader and a voting majority of the"
             + " CURRENT configuration, so check that the cluster still has one.");
 
@@ -250,6 +300,34 @@ class RaftClusterManager {
     // removed node is usually cut off before it applies its removal, so its state machine is not told
     raftHAServer.notifyMembershipChanged();
     LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+  }
+
+  /**
+   * The committed Raft configuration, the one source a membership change is built from (issue #10769).
+   * <p>
+   * Unreadable for the moment an in-place restart re-initializes the division (issue #5271): waited out briefly, inside
+   * the retry budget's spirit, rather than handed back to the operator for a window that lasts a second or two. Still
+   * unreadable after that, or interrupted while waiting (the interrupt is kept), the operation is refused with that
+   * reason: never substituted with the declared server list, whose compare-and-set precondition the leader may never
+   * match, so every attempt would be refused until the budget ran out and the operator would be told about the leader.
+   *
+   * @throws ConfigurationException when the configuration cannot be read
+   */
+  private CommittedConfiguration readCommittedConfiguration(final String operationDesc) {
+    Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
+    for (int wait = 0; committed == null && wait < COMMITTED_PEERS_WAIT_ATTEMPTS; wait++) {
+      try {
+        Thread.sleep(COMMITTED_PEERS_WAIT_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      committed = raftHAServer.getCommittedPeersOrNull();
+    }
+    if (committed == null)
+      throw new ConfigurationException("Failed to " + operationDesc + ": this node cannot read the live Raft"
+          + " configuration right now (its Raft server is starting or restarting). Retry in a moment.");
+    return new CommittedConfiguration(committed);
   }
 
   /**
@@ -269,31 +347,13 @@ class RaftClusterManager {
    *
    * @throws DuplicatePeerAddressException when another member already holds the address under a different id
    */
-  private SetConfigurationRequest.Arguments buildAddArgs(final String peerId, final RaftPeer newPeer) {
-    // The COMMITTED configuration, never the declared server list getLivePeers() falls back to while the division cannot
-    // be read: a compare-and-set built from the declared list carries a precondition the leader may never match, so
-    // every attempt would be refused until the budget ran out. Mode.ADD never depended on the caller's view.
-    Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
-    // Unreadable for the moment an in-place restart re-initializes the division (issue #5271): waited out briefly, inside
-    // the retry budget's spirit, rather than handed back to the operator for a window that lasts a second or two.
-    for (int wait = 0; committed == null && wait < COMMITTED_PEERS_WAIT_ATTEMPTS; wait++) {
-      try {
-        Thread.sleep(COMMITTED_PEERS_WAIT_MS);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
-      committed = raftHAServer.getCommittedPeersOrNull();
-    }
-    if (committed == null)
-      throw new ConfigurationException("Failed to add peer " + peerId + ": this node cannot read the live Raft"
-          + " configuration right now (its Raft server is starting or restarting). Retry in a moment.");
+  private static SetConfigurationRequest.Arguments buildAddArgs(final CommittedConfiguration committed, final String peerId,
+      final RaftPeer newPeer) {
     // Voting peers only, so the new configuration carries no listeners; the cluster has none, and a future one would
     // have to be carried across here or this add would silently drop it (Mode.ADD never touched them).
-    final List<RaftPeer> currentPeers = new ArrayList<>(committed);
-    for (final RaftPeer peer : currentPeers)
-      if (peer.getId().toString().equals(peerId))
-        return null; // already a member
+    if (committed.contains(peerId))
+      return null; // already a member
+    final List<RaftPeer> currentPeers = committed.peers();
 
     RaftHAServer.ensureNoDuplicateAddress(currentPeers, newPeer);
 
@@ -314,8 +374,9 @@ class RaftClusterManager {
    * {@code null} when the peer is already absent (a concurrent removal won the race), which the
    * retry loop treats as success - the removal goal is already met.
    */
-  private SetConfigurationRequest.Arguments buildRemoveArgs(final String peerId, final boolean force) {
-    final List<RaftPeer> currentPeers = new ArrayList<>(raftHAServer.getLivePeers());
+  private static SetConfigurationRequest.Arguments buildRemoveArgs(final CommittedConfiguration committed,
+      final String peerId, final boolean force) {
+    final List<RaftPeer> currentPeers = committed.peers();
     final List<RaftPeer> newPeers = new ArrayList<>(currentPeers.size());
     for (final RaftPeer peer : currentPeers)
       if (!peer.getId().toString().equals(peerId))
@@ -797,14 +858,16 @@ class RaftClusterManager {
 
     final RaftPeerId localPeerId = raftHAServer.getLocalPeerId();
 
-    final Collection<RaftPeer> currentPeers = raftHAServer.getLivePeers();
-    if (currentPeers.size() <= 1) {
+    // The committed configuration, not the declared list (issue #10769): a declared list longer than the membership would
+    // skip the single-node check and loosen the quorum guard, and the removal it leads to could never commit anyway.
+    final CommittedConfiguration committed = readCommittedConfiguration("leave the cluster");
+    if (committed.size() <= 1) {
       HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
       return;
     }
 
     // Fail fast before transferring leadership if leaving would breach quorum, unless forced.
-    ensureQuorumPreserved(localPeerId.toString(), currentPeers.size(), currentPeers.size() - 1, force);
+    ensureQuorumPreserved(localPeerId.toString(), committed.size(), committed.size() - 1, force);
 
     if (raftHAServer.isLeader()) {
       // The same ranked, screened candidates every other hand-off uses (RaftHAServer.selectStepDownTargets), not the
@@ -835,22 +898,26 @@ class RaftClusterManager {
 
   /**
    * Issues a {@code setConfiguration} call, retrying within {@link #setConfigurationBudgetMs}
-   * ({@link GlobalConfiguration#HA_MEMBERSHIP_CHANGE_TIMEOUT}, 90 s by default) and re-evaluating
-   * {@code argsSupplier} on every attempt.
+   * ({@link GlobalConfiguration#HA_MEMBERSHIP_CHANGE_TIMEOUT}, 90 s by default) and rebuilding {@code change} on every
+   * attempt from the committed configuration read for that attempt.
    * <p>
    * Rebuilding the arguments each attempt is what makes {@code COMPARE_AND_SET} removals safe: a retry
    * after a CAS mismatch (a concurrent membership change) re-snapshots the current configuration so the
    * next attempt's precondition is fresh. It also survives the window on a fresh cluster where a newly
    * elected leader has not yet committed an entry from its own term and therefore transiently rejects
-   * configuration changes. A {@code null} from the supplier means the goal is already met and the call
+   * configuration changes. A {@code null} from the change means the goal is already met and the call
    * returns successfully.
+   * <p>
+   * The configuration each attempt is built from is read here, by {@link #readCommittedConfiguration}, and handed to
+   * {@code change} (issue #10769): a change cannot be built from anything else, so no caller can send a precondition
+   * taken from the declared server list. When the configuration stays unreadable the call is refused with that reason
+   * instead of spending the budget on attempts the leader cannot accept.
    * <p>
    * The budget bounds the WHOLE call and not merely the gaps between attempts (issue #7561): see
    * {@link #canAttemptAgain} for the arm that stops the overshoot and {@link #isPermanent} for the failure
    * that is not waited out at all.
    */
-  private void setConfigurationWithRetry(final Supplier<SetConfigurationRequest.Arguments> argsSupplier,
-      final String operationDesc, final String hint) {
+  private void setConfigurationWithRetry(final MembershipChange change, final String operationDesc, final String hint) {
     // A client of this operation's own, so one setConfiguration call is bounded by MEMBERSHIP_RETRY_POLICY -
     // three attempts, so at worst three RPC timeouts - instead of by the shared client's RetryLimited(60, 1s),
     // which is what made the deadline below unobservable for a whole minute at a time (issue #7561). Null on a
@@ -875,7 +942,7 @@ class RaftClusterManager {
         throw new ConfigurationException("Failed to " + operationDesc
             + ": this node has no Raft client, so its Raft server has not started yet. Retry once the node has"
             + " joined the cluster.");
-      setConfigurationWithRetry(client, argsSupplier, operationDesc, hint);
+      setConfigurationWithRetry(client, change, operationDesc, hint);
     } finally {
       if (dedicated != null)
         try {
@@ -887,8 +954,8 @@ class RaftClusterManager {
     }
   }
 
-  private void setConfigurationWithRetry(final RaftClient client,
-      final Supplier<SetConfigurationRequest.Arguments> argsSupplier, final String operationDesc, final String hint) {
+  private void setConfigurationWithRetry(final RaftClient client, final MembershipChange change,
+      final String operationDesc, final String hint) {
     final long startedAt = System.currentTimeMillis();
     final long deadline = startedAt + setConfigurationBudgetMs;
     long sleepMs = 200;
@@ -902,7 +969,7 @@ class RaftClusterManager {
         // Rebuild the arguments on every attempt so COMPARE_AND_SET retries re-snapshot the current
         // configuration after a concurrent change (issue #4795). A null result means the goal is
         // already met (e.g. the peer was removed by a concurrent change).
-        final SetConfigurationRequest.Arguments args = argsSupplier.get();
+        final SetConfigurationRequest.Arguments args = change.build(readCommittedConfiguration(operationDesc));
         if (args == null)
           return;
 
