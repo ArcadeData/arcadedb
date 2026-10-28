@@ -21,7 +21,10 @@ package com.arcadedb.query.opencypher.query;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -32,6 +35,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -428,14 +432,32 @@ public final class CypherSchemaCommands {
     return owners;
   }
 
+  /**
+   * The statement that creates the index again. A vector and a full-text index are written in the syntax Cypher accepts for
+   * them since #10678, with the settings their OPTIONS carry, so the statement SHOW INDEXES lists runs as it is.
+   */
   private static String indexCreateStatement(final TypeIndex index, final String neoType, final boolean edge, final String label) {
     final String variable = edge ? "r" : "n";
     final StringJoiner props = new StringJoiner(", ");
     for (final String property : index.getPropertyNames())
       props.add(variable + "." + quote(property));
-    return "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(index.getName()) + " FOR " + (edge ?
-        "()-[r:" + quote(label) + "]-()" :
-        "(n:" + quote(label) + ")") + " ON (" + props + ")";
+    final String head = "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(index.getName()) + " FOR " + (
+        edge ? "()-[r:" + quote(label) + "]-()" : "(n:" + quote(label) + ")");
+
+    final IndexInternal[] bucketIndexes = index.getIndexesOnBuckets();
+    final IndexInternal first = bucketIndexes.length > 0 ? bucketIndexes[0] : null;
+    if (index.getType() == Schema.INDEX_TYPE.LSM_VECTOR && first instanceof LSMVectorIndex vector)
+      return head + " ON " + props + " OPTIONS {indexConfig: {`" + CypherIndexOptions.VECTOR_DIMENSIONS + "`: " + vector.getDimensions()
+          + ", `" + CypherIndexOptions.VECTOR_SIMILARITY + "`: '" + vector.getSimilarityFunction().name().toLowerCase(Locale.ROOT)
+          + "'}}";
+    if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT && first instanceof LSMTreeFullTextIndex fullText) {
+      final FullTextIndexMetadata metadata = fullText.getFullTextMetadata();
+      final String analyzer = metadata != null ? CypherIndexOptions.analyzerName(metadata.getAnalyzerClass()) : null;
+      return head + " ON EACH [" + props + "]" + (analyzer != null ?
+          " OPTIONS {indexConfig: {`" + CypherIndexOptions.FULLTEXT_ANALYZER + "`: '" + analyzer + "'}}" :
+          "");
+    }
+    return head + " ON (" + props + ")";
   }
 
   private static String indexType(final Schema.INDEX_TYPE type) {

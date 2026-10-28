@@ -73,13 +73,17 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
@@ -353,7 +357,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       // DDL statements (constraints) are executed directly without the planner pipeline
       if (statement instanceof CypherDDLStatement)
-        return executeDDL((CypherDDLStatement) statement);
+        return executeDDL((CypherDDLStatement) statement, effectiveParameters);
 
       // SHOW CONSTRAINTS / SHOW INDEXES are answered from the schema (issue #9706)
       if (statement instanceof CypherShowSchemaStatement show)
@@ -629,7 +633,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Executes a DDL statement (constraint creation/deletion) directly against the schema.
    */
-  private ResultSet executeDDL(final CypherDDLStatement ddl) {
+  private ResultSet executeDDL(final CypherDDLStatement ddl, final Map<String, Object> parameters) {
     final Schema schema = database.getSchema();
     final QueryStatistics stats = new QueryStatistics();
 
@@ -649,7 +653,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case CREATE_INDEX:
       // Under the constraint lock too: an index name is checked against the constraint names before it is taken (#9705)
       synchronized (CypherConstraintRegistry.lockFor(database)) {
-        executeCreateIndex(ddl, schema, stats);
+        executeCreateIndex(ddl, schema, stats, parameters);
       }
       break;
     case DROP_INDEX:
@@ -1447,7 +1451,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * are unique across indexes and constraints, as in Neo4j: a taken name raises, and with {@code IF NOT EXISTS} it is a
    * no-op, like an equivalent index under another name.
    */
-  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
+  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats,
+      final Map<String, Object> parameters) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
     final String indexName = ddl.getConstraintName();
@@ -1463,6 +1468,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     }
 
+    // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
+    final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
+      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters));
+      case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters));
+      case RANGE -> null;
+    };
+
     autoCreateDDLType(schema, ddl, typeName);
 
     // Cypher properties are dynamically typed and travel over Bolt with their actual Java type
@@ -1474,6 +1486,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     //   2. If no record carries the property, keep the property undeclared and tell the index
     //      builder to fall back to STRING serialisation for its keys. Writes then preserve the
     //      original Java type and downstream Cypher comparisons work correctly.
+    // A vector index is the exception: it reads its property as an ARRAY_OF_FLOATS, so an undeclared one is declared so, as
+    // SQL CREATE INDEX ... LSM_VECTOR asks the user to do first (#10678). A full-text index tokenizes the text of the value,
+    // so its keys are always strings and its properties stay undeclared.
     final DocumentType type = schema.getType(typeName);
     final Type[] defaultKeyTypes = new Type[propertyNames.length];
     final List<String> declaredHere = new ArrayList<>();
@@ -1482,7 +1497,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final String propName = propertyNames[i];
       if (type.getPolymorphicPropertyIfExists(propName) != null)
         continue;
-      final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
+      final Type inferred = switch (ddl.getIndexKind()) {
+        case VECTOR -> Type.ARRAY_OF_FLOATS;
+        case FULLTEXT -> null;
+        case RANGE -> inferPropertyTypeFromExistingData(typeName, propName);
+      };
       if (inferred != null) {
         type.createProperty(propName, inferred);
         declaredHere.add(propName);
@@ -1493,18 +1512,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
 
     final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
-    final TypeIndexBuilder builder = schema.buildTypeIndex(typeName, propertyNames);
-    builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-    builder.withUnique(false);
-    builder.withIgnoreIfExists(ddl.isIfNotExists());
+    final TypeIndexBuilder generic = schema.buildTypeIndex(typeName, propertyNames);
+    generic.withUnique(false);
+    generic.withIgnoreIfExists(ddl.isIfNotExists());
     // An equivalent index under another name satisfies IF NOT EXISTS, as in Neo4j: the name is not asked for then, or the
     // builder would refuse the request over the name alone (#6921)
     if (indexName != null && !(existedBefore && ddl.isIfNotExists()))
-      builder.withIndexName(indexName);
+      generic.withIndexName(indexName);
     if (anyUndeclared)
-      builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+      generic.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+    final TypeIndexBuilder builder;
+    final TypeIndex created;
     try {
-      builder.create();
+      builder = withIndexKind(generic, ddl.getIndexKind(), indexMetadata);
+      created = builder.create();
     } catch (final RuntimeException e) {
       // The declarations above are part of this statement: a build that fails must not leave the type with properties
       // nobody asked for, which coerce every later write (issue #8999)
@@ -1517,8 +1538,61 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
       throw e;
     }
+
+    // Build the graph of a vector index now, as SQL CREATE INDEX does by default: only for an index this statement built, and
+    // not inside the caller's transaction, whose entries are not on the index pages yet (issue #10438)
+    if (ddl.getIndexKind() == CypherDDLStatement.IndexKind.VECTOR && builder.isBuilt() && !builder.isBuiltInCallerTransaction())
+      for (final Index bucketIndex : created.getIndexesOnBuckets())
+        if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+          vectorIndex.buildVectorGraphNow();
+
     if (!existedBefore)
       stats.incIndexesAdded();
+  }
+
+  /**
+   * Turns the builder into the one of the index kind the statement asks for, configured from the metadata its OPTIONS were
+   * translated into. The metadata is also the request IF NOT EXISTS compares an existing index with, so an index already on
+   * the property with other settings is reported rather than taken for the one asked for (#5765).
+   */
+  private static TypeIndexBuilder withIndexKind(final TypeIndexBuilder builder, final CypherDDLStatement.IndexKind kind,
+      final JSONObject metadata) {
+    switch (kind) {
+    case VECTOR: {
+      final TypeLSMVectorIndexBuilder vectorBuilder = (TypeLSMVectorIndexBuilder) builder.withType(Schema.INDEX_TYPE.LSM_VECTOR);
+      try {
+        vectorBuilder.withMetadata(metadata);
+      } catch (final IndexException | IllegalArgumentException e) {
+        throw new CommandParsingException("Invalid vector index OPTIONS: " + e.getMessage(), e);
+      }
+      vectorBuilder.withUserMetadata(metadata);
+      return vectorBuilder;
+    }
+    case FULLTEXT: {
+      final TypeFullTextIndexBuilder ftBuilder = builder.withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType();
+      if (!metadata.isEmpty()) {
+        try {
+          ftBuilder.withMetadata(metadata);
+        } catch (final IndexException | IllegalArgumentException e) {
+          throw new CommandParsingException("Invalid full-text index OPTIONS: " + e.getMessage(), e);
+        }
+        ftBuilder.withUserMetadata(metadata);
+      }
+      return ftBuilder;
+    }
+    default:
+      return builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+    }
+  }
+
+  /** The OPTIONS of a CREATE INDEX, evaluated against the statement's parameters: a map literal or a {@code $parameter}. */
+  private Object evaluateIndexOptions(final CypherDDLStatement ddl, final Map<String, Object> parameters) {
+    if (ddl.getOptions() == null)
+      return null;
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    return EXPRESSION_EVALUATOR.evaluate(ddl.getOptions(), new ResultInternal(), context);
   }
 
   /**
