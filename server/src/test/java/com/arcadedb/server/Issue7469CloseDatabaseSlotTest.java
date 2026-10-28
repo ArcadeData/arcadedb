@@ -64,7 +64,7 @@ class Issue7469CloseDatabaseSlotTest {
           .hasMessageContaining(DB_NAME);
 
       // NOT EVEN LOOKED UP: THE REFUSAL HAPPENS BEFORE ANYTHING IS TOUCHED
-      assertThat(server.calls("getDatabase")).doesNotContain(List.of(DB_NAME));
+      assertThat(server.calls("getDatabaseForOperator")).doesNotContain(List.of(DB_NAME));
       assertThat(server.calls("removeDatabase")).doesNotContain(List.of(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.BACKUP);
@@ -114,7 +114,7 @@ class Issue7469CloseDatabaseSlotTest {
     final ServerDatabase database = SERVED.open(DB_NAME);
 
     server.returns("getBackupCoordinator", coordinator);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? database : null);
 
     new ServerControlPlane(server).closeDatabase(DB_NAME);
 
@@ -137,7 +137,7 @@ class Issue7469CloseDatabaseSlotTest {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
 
     server.returns("getBackupCoordinator", coordinator);
-    server.on("getDatabase", args -> {
+    server.on("getDatabaseForOperator", args -> {
       if (Objects.equals(args[0], DB_NAME))
         throw new IllegalArgumentException("Database '" + DB_NAME + "' not found");
       return null;

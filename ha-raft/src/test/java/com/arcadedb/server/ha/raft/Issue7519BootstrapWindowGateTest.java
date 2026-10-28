@@ -104,7 +104,7 @@ class Issue7519BootstrapWindowGateTest {
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     // The server arg is null: the paths reached here dereference the wrapped localDb, not the server.
     final ServerDatabase servedDb = new ServerDatabase(null, localDb);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
     return server;
   }
 

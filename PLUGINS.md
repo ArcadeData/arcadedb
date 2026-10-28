@@ -203,8 +203,10 @@ Plugins have full access to the ArcadeDB server instance:
 public void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
     this.server = arcadeDBServer;
 
-    // Access databases
-    ServerDatabase db = server.getDatabase("mydb");
+    // Access databases. A database a client of your plugin names is resolved with getDatabaseForClient(), which refuses a
+    // database an operator closed ('close database') or is restoring; getDatabaseForOperator() is for the plugin's own
+    // maintenance steps and opens it regardless. getDatabase(String) is the deprecated name of getDatabaseForOperator()
+    ServerDatabase db = server.getDatabaseForClient("mydb");
 
     // Access HTTP server for custom endpoints
     HttpServer httpServer = server.getHttpServer();

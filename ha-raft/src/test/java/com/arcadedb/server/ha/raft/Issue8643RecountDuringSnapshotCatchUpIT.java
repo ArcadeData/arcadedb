@@ -295,7 +295,7 @@ class Issue8643RecountDuringSnapshotCatchUpIT extends BaseRaftHATest {
           Thread.sleep(1);
           continue;
         }
-        final Database db = server.getDatabase(getDatabaseName());
+        final Database db = server.getDatabaseForOperator(getDatabaseName());
         if (!db.getSchema().existsType(TYPE_NAME)) {
           Thread.sleep(5);
           continue;

@@ -102,7 +102,7 @@ class SecurityGroupMigrationIT {
     server = new ArcadeDBServer();
     server.start();
 
-    final DatabaseInternal database = server.getDatabase(DATABASE_NAME);
+    final DatabaseInternal database = server.getDatabaseForOperator(DATABASE_NAME);
     final ServerSecurity security = server.getSecurity();
 
     // STEP 4: Verify admin group now has "updateDatabaseSettings"
@@ -195,7 +195,7 @@ class SecurityGroupMigrationIT {
     assertThat(hasUpdateDatabaseSettings).isTrue();
 
     // Root should be able to alter database settings
-    final DatabaseInternal database = server.getDatabase(DATABASE_NAME);
+    final DatabaseInternal database = server.getDatabaseForOperator(DATABASE_NAME);
     final ServerSecurityUser root = security.getUser("root");
     final SecurityDatabaseUser dbUser = root.getDatabaseUser(database);
     DatabaseContext.INSTANCE.init(database).setCurrentUser(dbUser);

@@ -48,7 +48,7 @@ class SchemaIndexDetailQueryTest extends BaseGraphServerTest {
 
   @Test
   void compoundIndexDetailIsQueryableOverHttp() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("HttpCompoundIndexType");
       type.createProperty("propA", Type.STRING);

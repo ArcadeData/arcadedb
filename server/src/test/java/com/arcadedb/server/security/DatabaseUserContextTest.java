@@ -35,7 +35,7 @@ class DatabaseUserContextTest extends BaseGraphServerTest {
 
   @Test
   void runAsRestoresThePreviousBindingOnSuccess() {
-    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName());
     final ServerSecurityUser user = getServer(0).getSecurity().authenticate("root", DEFAULT_PASSWORD_FOR_TESTS, null);
 
     final String seen = DatabaseUserContext.runAs(database, user, () -> {
@@ -50,7 +50,7 @@ class DatabaseUserContextTest extends BaseGraphServerTest {
 
   @Test
   void runAsRestoresThePreviousBindingWhenTheActionThrows() {
-    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName());
     final ServerSecurityUser user = getServer(0).getSecurity().authenticate("root", DEFAULT_PASSWORD_FOR_TESTS, null);
 
     try {

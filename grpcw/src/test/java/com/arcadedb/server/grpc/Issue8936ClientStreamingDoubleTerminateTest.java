@@ -56,8 +56,8 @@ public class Issue8936ClientStreamingDoubleTerminateTest extends BaseGraphServer
   void setupService() {
     final String databasePath = getServer(0).getRootPath() + File.separator + "databases";
     service = new ArcadeDbGrpcService(databasePath, getServer(0), 0L, 0L, 0L);
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE + " IF NOT EXISTS");
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE VERTEX TYPE " + TYPE + "V IF NOT EXISTS");
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE + " IF NOT EXISTS");
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE VERTEX TYPE " + TYPE + "V IF NOT EXISTS");
   }
 
   @AfterEach

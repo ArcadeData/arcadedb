@@ -51,7 +51,7 @@ class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
     assertThat(getServer(0).existsDatabase("Universe")).isTrue();
     assertThat(getServer(0).existsDatabase("Amiga")).isTrue();
 
-    assertThat(getServer(0).getDatabase("Universe").getMode()).isEqualTo(READ_ONLY);
-    assertThat(getServer(0).getDatabase("Amiga").getMode()).isEqualTo(READ_ONLY);
+    assertThat(getServer(0).getDatabaseForOperator("Universe").getMode()).isEqualTo(READ_ONLY);
+    assertThat(getServer(0).getDatabaseForOperator("Amiga").getMode()).isEqualTo(READ_ONLY);
   }
 }

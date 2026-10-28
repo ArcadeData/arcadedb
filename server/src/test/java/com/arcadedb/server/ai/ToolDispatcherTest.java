@@ -88,7 +88,7 @@ class ToolDispatcherTest extends BaseGraphServerTest {
     assertThat(first.length()).isLessThanOrEqualTo(AiSchemaDigest.MAX_CHARS);
 
     // A type created now is not in the summary until the cache expires (nothing invalidates it, by design) ...
-    getServer(0).getDatabase(getDatabaseName()).getSchema().createDocumentType("AddedLater");
+    getServer(0).getDatabaseForOperator(getDatabaseName()).getSchema().createDocumentType("AddedLater");
     assertThat(AiSchemaDigest.forUser(getServer(0), root, getDatabaseName())).isEqualTo(first).doesNotContain("AddedLater");
     // ... and is, once it does
     final long saved = AiSchemaDigest.cacheTtlMs;

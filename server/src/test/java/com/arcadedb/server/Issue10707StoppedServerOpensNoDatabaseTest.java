@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10707: a stopped server opens no database. A thread that outlived the services of the server - a security reload sweep
- * that was running when they stopped, a request still in flight - used to reach {@link ArcadeDBServer#getDatabase(String)} after
+ * that was running when they stopped, a request still in flight - used to reach {@link ArcadeDBServer#getDatabaseForOperator(String)} after
  * the server had closed its databases, and reopened the directory: registered behind a stopped server, holding its file lock, so
  * the next server on that directory failed to start with {@code OverlappingFileLockException}.
  *
@@ -43,11 +43,11 @@ public class Issue10707StoppedServerOpensNoDatabaseTest extends BaseGraphServerT
   @Test
   void aStoppedServerRefusesToOpenOrCreateADatabase() throws Exception {
     final ArcadeDBServer server = getServer(0);
-    final String path = server.getDatabase(getDatabaseName()).getDatabasePath();
+    final String path = server.getDatabaseForOperator(getDatabaseName()).getDatabasePath();
     server.stop();
 
     // from another thread, as the security watcher or a late request would
-    final CompletableFuture<Object> lateOpen = CompletableFuture.supplyAsync(() -> server.getDatabase(getDatabaseName()));
+    final CompletableFuture<Object> lateOpen = CompletableFuture.supplyAsync(() -> server.getDatabaseForOperator(getDatabaseName()));
     assertThatThrownBy(() -> lateOpen.get(30, TimeUnit.SECONDS)).hasCauseInstanceOf(DatabaseNotAvailableException.class)
         .hasMessageContaining("stopped");
     assertThatThrownBy(() -> server.getDatabaseForClient(getDatabaseName())).isInstanceOf(DatabaseNotAvailableException.class);
@@ -68,6 +68,6 @@ public class Issue10707StoppedServerOpensNoDatabaseTest extends BaseGraphServerT
     final ArcadeDBServer server = getServer(0);
     server.stop();
     server.start();
-    assertThat(server.getDatabase(getDatabaseName()).isOpen()).as("a new lifecycle lifts the refusal").isTrue();
+    assertThat(server.getDatabaseForOperator(getDatabaseName()).isOpen()).as("a new lifecycle lifts the refusal").isTrue();
   }
 }

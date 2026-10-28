@@ -81,7 +81,7 @@ public class Issue10562MongoReplacedDatabaseTest extends BaseMongoServerTest {
         client.close();
       final ArcadeDBServer server = getServer(0);
       if (server.existsDatabase(NAME))
-        server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+        server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
       FileUtils.deleteRecursively(
           new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));
     } finally {

@@ -95,7 +95,7 @@ class Issue8451DropAppliesToClosedDatabaseTest {
 
   /** What {@code ServerControlPlane.closeDatabase} does: close the instance and deregister it, files left in place. */
   private void closeDatabaseLikeTheVerb() {
-    server.getDatabase(DB_NAME).getEmbedded().close();
+    server.getDatabaseForOperator(DB_NAME).getEmbedded().close();
     server.removeDatabase(DB_NAME);
   }
 
@@ -131,7 +131,7 @@ class Issue8451DropAppliesToClosedDatabaseTest {
 
     assertThat(Files.exists(databaseDirectory)).as("the dropped database's directory must be gone").isFalse();
     assertThat(server.existsDatabase(DB_NAME)).isFalse();
-    assertThatThrownBy(() -> server.getDatabase(DB_NAME)).as("nothing is left for a later request to reopen")
+    assertThatThrownBy(() -> server.getDatabaseForOperator(DB_NAME)).as("nothing is left for a later request to reopen")
         .isNotNull();
     assertThat(server.existsDatabase(DB_NAME)).isFalse();
     assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
