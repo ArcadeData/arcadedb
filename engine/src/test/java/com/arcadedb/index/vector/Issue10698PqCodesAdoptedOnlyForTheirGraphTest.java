@@ -117,6 +117,8 @@ class Issue10698PqCodesAdoptedOnlyForTheirGraphTest {
         assertThat(index.getPQVectorCount()).as("the codes are the newer graph's, one per ordinal").isEqualTo(NUM_VECTORS + 1);
         assertThat(index.pqCodesGraphFingerprintForTest()).as("and record the graph the manifest certifies")
             .isEqualTo(manifest().fingerprint());
+        assertThat(index.pqCodesForPublishedGraphForTest()).as("and serve the graph the walk published (issue #10786)")
+            .isNotNull();
         assertThat(logs).anyMatch(m -> m.contains(REBUILT));
       } finally {
         db.close();
@@ -154,6 +156,7 @@ class Issue10698PqCodesAdoptedOnlyForTheirGraphTest {
         assertThat(logs).as("the walk published the persisted graph").anyMatch(m -> m.contains(WALK_LINE));
         assertThat(index.getStats().get("graphRebuildCount")).isZero();
         assertThat(index.pqCodesGraphFingerprintForTest()).isEqualTo(manifest().fingerprint());
+        assertThat(index.pqCodesForPublishedGraphForTest()).isNotNull();
         assertThat(results.stream().map(Pair::getFirst)).as("a vector is its own nearest neighbour once its code is its own")
             .contains(ridOf(db, probe));
         assertThat(logs).anyMatch(m -> m.contains("were built for another graph than the persisted one") && m.contains(REBUILT));
@@ -184,6 +187,7 @@ class Issue10698PqCodesAdoptedOnlyForTheirGraphTest {
 
         assertThat(index.getStats().get("graphRebuildCount")).isZero();
         assertThat(index.pqCodesGraphFingerprintForTest()).isEqualTo(manifest().fingerprint());
+        assertThat(index.pqCodesForPublishedGraphForTest()).isNotNull();
         assertThat(logs).anyMatch(m -> m.contains("record no graph they were built for") && m.contains(REBUILT));
       } finally {
         db.close();
@@ -209,6 +213,7 @@ class Issue10698PqCodesAdoptedOnlyForTheirGraphTest {
 
         assertThat(logs).as("the walk ran").anyMatch(m -> m.contains(WALK_LINE));
         assertThat(index.getPQVectorCount()).isEqualTo(NUM_VECTORS);
+        assertThat(index.pqCodesForPublishedGraphForTest()).as("bound to the graph it published (issue #10786)").isNotNull();
         assertThat(logs).as("and kept the codes").noneMatch(m -> m.contains(REBUILT))
             .noneMatch(m -> m.contains("Building Product Quantization"));
       } finally {
@@ -259,6 +264,8 @@ class Issue10698PqCodesAdoptedOnlyForTheirGraphTest {
           assertThat(index.getPQVectorCount()).as("one code per ordinal of the reused graph").isEqualTo(NUM_VECTORS);
           assertThat(index.pqCodesGraphFingerprintForTest()).as("recording the graph the manifest certifies")
               .isEqualTo(manifest().fingerprint());
+          assertThat(index.pqCodesForPublishedGraphForTest()).as("bound to the prefix it published (issue #10786)")
+              .isNotNull();
           assertThat(logs).anyMatch(m -> m.contains("were built for another graph than the persisted one")
               && m.contains("reused graph prefix"));
           assertThat(results.stream().map(Pair::getFirst)).as("the gap is still searchable")
@@ -281,6 +288,7 @@ class Issue10698PqCodesAdoptedOnlyForTheirGraphTest {
         capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
         assertThat(index.getStats().get("graphLoadsFromOrdinalMap"))
             .as("the rebuilt codes were persisted with their graph's identity, so the next reopen is the fast one").isEqualTo(1L);
+        assertThat(index.pqCodesForPublishedGraphForTest()).as("bound to the map it published (issue #10786)").isNotNull();
         assertThat(logs).noneMatch(m -> m.contains(WALK_LINE)).noneMatch(m -> m.contains(REBUILT));
       } finally {
         db.drop();

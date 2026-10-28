@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #8316: the slow path of {@link ArcadeDBServer#getDatabase(String)} reused any instance registered in
+ * Issue #8316: the slow path of {@link ArcadeDBServer#getDatabaseForOperator(String)} reused any instance registered in
  * {@link DatabaseFactory}'s active-instance map for the same path without asking whether it was still open. A close that
  * failed half way left its CLOSED instance there, and the lookup - including the HA snapshot installer's reopen after a
  * successful swap - registered that dead instance instead of opening the installed files. The engine now unregisters a
@@ -76,7 +76,7 @@ class Issue8316ClosedActiveInstanceNotReusedTest {
   void anOpenActiveInstanceIsStillReused() {
     final Database opened = new DatabaseFactory(dbPath.toString()).create();
 
-    assertThat(server.getDatabase(DB).getWrappedDatabaseInstance())
+    assertThat(server.getDatabaseForOperator(DB).getWrappedDatabaseInstance())
         .as("a plugin that opened the database at startup shares its instance with the server")
         .isSameAs(opened);
   }
@@ -89,7 +89,7 @@ class Issue8316ClosedActiveInstanceNotReusedTest {
     activeInstances().put(dbPath, closed);
     stale = closed;
 
-    assertThatThrownBy(() -> server.getDatabase(DB))
+    assertThatThrownBy(() -> server.getDatabaseForOperator(DB))
         .as("the lookup refuses the path as still in use rather than serving a closed database")
         .isInstanceOf(DatabaseOperationException.class);
     assertThat(server.getDatabaseNames()).doesNotContain(DB);
@@ -97,7 +97,7 @@ class Issue8316ClosedActiveInstanceNotReusedTest {
     // Once the stale entry is gone, the same lookup opens the files.
     activeInstances().remove(dbPath, closed);
     stale = null;
-    final ServerDatabase reopened = server.getDatabase(DB);
+    final ServerDatabase reopened = server.getDatabaseForOperator(DB);
     assertThat(reopened.isOpen()).isTrue();
     assertThat(reopened.getWrappedDatabaseInstance()).isNotSameAs(closed);
   }

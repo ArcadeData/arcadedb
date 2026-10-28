@@ -142,13 +142,14 @@ class Issue7224PgTypeNamespaceJoinTest {
     assertThat(resolve("SELECT rolname FROM pg_roles").rows).hasSize(1);
   }
 
-  /** And pg_namespace alone is still a question about schemas. */
+  /** And pg_namespace alone is still a question about schemas: pg_catalog, which typnamespace names, and the database's (issue #10745). */
   @Test
   void pgNamespaceOnItsOwnIsStillASchemaQuery() {
     final PostgresCatalog.Answer answer = resolve("SELECT nspname FROM pg_catalog.pg_namespace");
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0).get("nspname")).isNotNull();
+    assertThat(answer.rows).hasSize(2);
+    assertThat(answer.rows.get(0).get("nspname")).isEqualTo("pg_catalog");
+    assertThat(answer.rows.get(1).get("nspname")).isNotNull();
   }
 
   /** A three-way join keeps naming the most specific subject: pg_class still wins over both. */
@@ -178,8 +179,8 @@ class Issue7224PgTypeNamespaceJoinTest {
 
     // With nothing readable left to decide it - a sub-select over a relation this catalog does not model - the
     // answer is still a decline rather than "every type".
-    assertThat(PostgresCatalog.resolve("SELECT typname FROM pg_type t WHERE (SELECT p.proisstrict FROM pg_proc p "
-        + "WHERE p.oid = t.typreceive)", database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("SELECT typname FROM pg_type t WHERE (SELECT e.extrelocatable FROM pg_extension e "
+        + "WHERE e.oid = t.typreceive)", database, USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
   private PostgresCatalog.Answer resolve(final String query, final Object... parameters) {

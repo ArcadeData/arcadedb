@@ -94,7 +94,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   @Test
   void defaultDatabases() {
     getServer(0).getSecurity().authenticate("albert", "einstein", "graph");
-    final Database database = getServer(0).getDatabase("graph");
+    final Database database = getServer(0).getDatabaseForOperator("graph");
     assertThat(database.countType("testDoc", true)).isEqualTo(1);
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
   }

@@ -46,6 +46,7 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -290,32 +291,40 @@ public class SourceDiscovery {
 
     String knownFileType = null;
     String knownDelimiter = null;
+    final String sourceUrl;
+    // THE GENERIC `fileType` OPTION NAMES THE FORMAT OF THE `url` SOURCE, WHICHEVER ROUTE THAT SOURCE IS IMPORTED BY:
+    // THE DATABASE ONE, OR THE VERTEX/EDGE ONE WHEN NO PER-ENTITY FILE IS SET (ISSUE #10754)
+    final Object genericFileTypeOption = settings.options.get("fileType");
+    final String genericFileType = genericFileTypeOption != null ? genericFileTypeOption.toString() : null;
 
     switch (entityType) {
     case DOCUMENT:
-      knownFileType = settings.documentsFileType != null ? settings.documentsFileType : getFileTypeByExtension(settings.documents);
+      sourceUrl = settings.documents;
+      knownFileType = settings.documentsFileType != null ? settings.documentsFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.documentsDelimiter;
       break;
 
     case VERTEX:
-      knownFileType = settings.verticesFileType != null ?
-          settings.verticesFileType :
-          getFileTypeByExtension(settings.vertices != null ? settings.vertices : settings.url);
+      sourceUrl = settings.vertices != null ? settings.vertices : settings.url;
+      knownFileType = settings.verticesFileType != null ? settings.verticesFileType :
+          settings.vertices == null && genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.verticesDelimiter;
       break;
 
     case EDGE:
-      knownFileType = settings.edgesFileType != null ?
-          settings.edgesFileType :
-          getFileTypeByExtension(settings.edges != null ? settings.edges : settings.url);
+      sourceUrl = settings.edges != null ? settings.edges : settings.url;
+      knownFileType = settings.edgesFileType != null ? settings.edgesFileType :
+          settings.edges == null && genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.edgesDelimiter;
       break;
 
     case DATABASE:
       // NO PER-ENTITY SETTINGS: THE GENERIC `delimiter` OPTION IS THE ONE THE USER CAN SET ON THIS FORM
       // (-delimiter / IMPORT DATABASE ... WITH delimiter = ';'), SO READ IT BACK FROM THE OPTIONS AND FALL BACK TO
-      // -documentsDelimiter WHEN IT IS ABSENT (ISSUE #6811)
-      knownFileType = getFileTypeByExtension(settings.url);
+      // -documentsDelimiter WHEN IT IS ABSENT (ISSUE #6811). THE GENERIC `fileType` OPTION IS THIS FORM'S
+      // -documentsFileType: WITHOUT IT A SOURCE THE SNIFFER MISREAD HAD NO WAY OUT (ISSUE #10754)
+      sourceUrl = settings.url;
+      knownFileType = genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       final Object genericDelimiter = settings.options.get("delimiter");
       knownDelimiter = genericDelimiter != null ? genericDelimiter.toString() : settings.documentsDelimiter;
       break;
@@ -359,7 +368,64 @@ public class SourceDiscovery {
     if (format != null)
       return format;
 
-    return analyzeText(parser, settings, logger, userDelimiter);
+    return analyzeText(parser, settings, logger, userDelimiter, sourceUrl);
+  }
+
+  /**
+   * The source's first character that is not whitespace past its leading {@code commentLines} comment lines, or
+   * {@code 0} when there is none. Rewinds the source to find it.
+   */
+  private static char firstSignificantChar(final Parser parser, final int commentLines) throws IOException {
+    parser.reset();
+    // readLine() STARTS FROM THE FIRST CHARACTER OF A PARSER THAT HAS READ NOTHING AND LEAVES IT ON THE FIRST CHARACTER
+    // OF THE NEXT LINE, SO AFTER THE COMMENTS THE CURRENT CHARACTER IS ALREADY THE FIRST ONE OF THE DATA
+    for (int i = 0; i < commentLines; ++i)
+      skipLine(parser);
+    if (parser.isBeforeFirstChar()) {
+      if (!parser.isAvailable())
+        return 0;
+      parser.nextChar();
+    }
+    return skipJsonWhitespace(parser) ? parser.getCurrentChar() : 0;
+  }
+
+  /**
+   * Advances the parser past whitespace, starting from its current character. Answers whether it stopped on a
+   * character rather than at the end of the source.
+   */
+  private static boolean skipJsonWhitespace(final Parser parser) throws IOException {
+    while (!parser.isEndOfStream() && isJsonWhitespace(parser.getCurrentChar())) {
+      if (!parser.isAvailable())
+        return false;
+      parser.nextChar();
+    }
+    return !parser.isEndOfStream();
+  }
+
+  /**
+   * Whether the parser's current character opens a JSON value, or closes an empty array. A letter opens one only as
+   * the first of a whole {@code true}, {@code false} or {@code null} followed by a delimiter, so {@code [id]} or
+   * {@code [name]} - the column names of a delimited-text header - do not. Consumes the literal it checks.
+   */
+  private static boolean isJsonValueStart(final Parser parser) throws IOException {
+    final char c = parser.getCurrentChar();
+    if (c == '{' || c == '[' || c == ']' || c == '"' || c == '-' || (c >= '0' && c <= '9'))
+      return true;
+
+    final String literal = c == 't' ? "true" : c == 'f' ? "false" : c == 'n' ? "null" : null;
+    if (literal == null)
+      return false;
+    for (int i = 1; i < literal.length(); ++i)
+      if (!parser.isAvailable() || parser.nextChar() != literal.charAt(i))
+        return false;
+    if (!parser.isAvailable())
+      return false;
+    final char after = parser.nextChar();
+    return after == ',' || after == ']' || isJsonWhitespace(after);
+  }
+
+  private static boolean isJsonWhitespace(final char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\uFEFF';
   }
 
   /**
@@ -398,7 +464,7 @@ public class SourceDiscovery {
    * @param userDelimiter the delimiter the user supplied for this entity, or null - a detected one yields to it
    */
   private FormatImporter analyzeText(final Parser parser, final ImporterSettings settings, final ConsoleLogger logger,
-      final String userDelimiter) throws IOException {
+      final String userDelimiter, final String sourceUrl) throws IOException {
     FormatImporter format = null;
 
     // SKIP THE LEADING COMMENT LINES, '#' AND '//' ALIKE. THIS USED TO BE TWO LOOPS THAT BETWEEN THEM SKIPPED
@@ -421,6 +487,37 @@ public class SourceDiscovery {
         logger.logLine(1, "Recognized format %s", format.getFormat());
         return format;
       }
+    }
+
+    // A JSON DOCUMENT THAT OPENS WITH WHITESPACE - A BLANK LINE, AN INDENTATION, A BYTE ORDER MARK - AFTER ITS COMMENTS
+    // IF IT HAS ANY. THE FIRST-CHARACTER DISPATCH NEVER RECOGNISED IT (ISSUE #10754). analyzeChar() LEAVES A PARSER IT
+    // RETURNED NULL FOR ON THE SAME CHARACTER WHEN THAT CHARACTER IS WHITESPACE, SO THIS READS ON FROM THERE WITHOUT A
+    // REWIND. ONLY THE JSON ARMS ARE TRIED: JSON ALLOWS THE WHITESPACE, WHILE AN XML DECLARATION MUST COME FIRST
+    if (!parser.isBeforeFirstChar() && !parser.isEndOfStream() && isJsonWhitespace(parser.getCurrentChar())
+        && skipJsonWhitespace(parser) && (parser.getCurrentChar() == '{' || parser.getCurrentChar() == '[')) {
+      format = analyzeChar(parser, settings, userDelimiter);
+      if (format != null) {
+        logger.logLine(1, "Recognized format %s", format.getFormat());
+        return format;
+      }
+    }
+
+    // THE EXTENSION DOES NOT SHORT-CIRCUIT JSON AND XML THE WAY IT DOES csv/jsonl: A .json FILE MAY HOLD A NEO4J OR
+    // ORIENTDB EXPORT, WHICH ONLY THE CONTENT TELLS APART. BUT IT STILL RULES OUT DELIMITED TEXT: A .json OR .xml SOURCE
+    // THAT REACHED THIS POINT, ITS COMMENTS SKIPPED, IS ONE THE DISPATCH COULD NOT PLACE, AND DECLARING IT CSV IMPORTED
+    // ITS WHOLE CONTENT AS ONE HEADER ROW, CREATED NOTHING AND REPORTED SUCCESS (ISSUE #10754)
+    final String extension = sourceUrl != null ? getFormatFromExtension(sourceUrl).toLowerCase(Locale.ENGLISH) : "";
+    if ("json".equals(extension) || "xml".equals(extension)) {
+      // AN XML DOCUMENT THE DISPATCH DID NOT PLACE BECAUSE ITS FIRST LINE CARRIES TEXT BETWEEN ITS TAGS, OR BECAUSE IT
+      // OPENS WITH WHITESPACE, IS STILL XML WHEN ITS EXTENSION SAYS SO
+      if ("xml".equals(extension) && firstSignificantChar(parser, commentLines) == '<') {
+        format = new XMLImporterFormat();
+        logger.logLine(1, "Recognized format %s", format.getFormat());
+        return format;
+      }
+      throw new ImportException("Cannot determine the format of the source '" + sourceUrl + "': its extension is ." + extension
+          + " but its content does not begin like " + extension.toUpperCase(Locale.ENGLISH)
+          + ". Set the file type explicitly (-fileType or -documentsFileType) if the content is right");
     }
 
     // analyzeChar() CONSUMES THE LINE IT SNIFFS - THE CALL ABOVE AND THE ONE getSchema() MADE BOTH DO - AND THE
@@ -866,6 +963,20 @@ public class SourceDiscovery {
         return new Neo4jImporterFormat();
 
       return new JSONImporterFormat();
+
+    } else if (currentChar == '[') {
+      // A JSON DOCUMENT WHOSE TOP LEVEL IS AN ARRAY. IT WAS NOT RECOGNISED AT ALL: THE TEXT SNIFFING FOUND THE COMMAS
+      // BETWEEN ITS VALUES AND DECLARED IT CSV, SO THE WHOLE ARRAY BECAME ONE HEADER ROW AND THE IMPORT CREATED NOTHING
+      // AND REPORTED SUCCESS (ISSUE #10754). THE NEXT SIGNIFICANT CHARACTER DECIDES, AS THE START OF A JSON VALUE: AN
+      // OBJECT, AN ARRAY, A STRING, A NUMBER, ONE OF THE LITERALS true/false/null, OR THE END OF AN EMPTY ARRAY. AN ARRAY
+      // OF SCALARS IS JSON TOO, AND REACHES THE JSON IMPORTER TO BE REFUSED THERE BY POSITION RATHER THAN BE READ AS
+      // DELIMITED TEXT. A DELIMITED-TEXT HEADER THAT MERELY OPENS WITH '[' - "[id],[name]" - IS LEFT TO THE SNIFFING
+      // THAT FOLLOWS. THE WHITESPACE BETWEEN IS SKIPPED WHATEVER ITS LENGTH, AS A JSON PARSER WOULD
+      if (parser.isAvailable()) {
+        parser.nextChar();
+        if (skipJsonWhitespace(parser) && isJsonValueStart(parser))
+          return new JSONImporterFormat();
+      }
     }
 
     return null;

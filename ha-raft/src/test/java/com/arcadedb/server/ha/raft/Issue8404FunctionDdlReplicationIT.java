@@ -51,8 +51,8 @@ class Issue8404FunctionDdlReplicationIT extends BaseRaftHATest {
     final int leader = findLeaderIndex();
     assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int follower = firstFollower(leader);
-    final Database onLeader = getServer(leader).getDatabase(getDatabaseName());
-    final Database onFollower = getServer(follower).getDatabase(getDatabaseName());
+    final Database onLeader = getServer(leader).getDatabaseForOperator(getDatabaseName());
+    final Database onFollower = getServer(follower).getDatabaseForOperator(getDatabaseName());
 
     // DEFINE FUNCTION on the leader, creating the library: the case the issue reports.
     onLeader.command("sql", "DEFINE FUNCTION lib8404.twice \"return n * 2;\" PARAMETERS [n] LANGUAGE js");
@@ -92,7 +92,7 @@ class Issue8404FunctionDdlReplicationIT extends BaseRaftHATest {
   void unregisterFunctionLibraryReachesEveryNode() {
     final int leader = findLeaderIndex();
     assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    final Database onLeader = getServer(leader).getDatabase(getDatabaseName());
+    final Database onLeader = getServer(leader).getDatabaseForOperator(getDatabaseName());
 
     onLeader.command("sql", "DEFINE FUNCTION lib8879.f \"SELECT 1 AS r\" LANGUAGE sql");
     onLeader.command("sql", "DEFINE FUNCTION keep8879.f \"SELECT 2 AS r\" LANGUAGE sql");
@@ -103,7 +103,7 @@ class Issue8404FunctionDdlReplicationIT extends BaseRaftHATest {
 
     await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).untilAsserted(() -> {
       for (int i = 0; i < getServerCount(); i++)
-        assertThat(getServer(i).getDatabase(getDatabaseName()).getSchema().hasFunctionLibrary("lib8879"))
+        assertThat(getServer(i).getDatabaseForOperator(getDatabaseName()).getSchema().hasFunctionLibrary("lib8879"))
             .as("library lib8879 on server %d", i).isFalse();
     });
     awaitFunctionOnEveryServer("keep8879", "f", true);
@@ -112,7 +112,7 @@ class Issue8404FunctionDdlReplicationIT extends BaseRaftHATest {
   private void awaitFunctionOnEveryServer(final String library, final String function, final boolean present) {
     await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).untilAsserted(() -> {
       for (int i = 0; i < getServerCount(); i++) {
-        final Schema schema = getServer(i).getDatabase(getDatabaseName()).getSchema();
+        final Schema schema = getServer(i).getDatabaseForOperator(getDatabaseName()).getSchema();
         final boolean defined = schema.hasFunctionLibrary(library) && schema.getFunctionLibrary(library).hasFunction(function);
         assertThat(defined).as("function %s.%s on server %d", library, function, i).isEqualTo(present);
       }

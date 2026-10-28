@@ -81,14 +81,9 @@ jobs:
 
       - name: Write run summary
         if: always()
-        run: |
-          found=0
-          for f in e2e-ha/target/chaos/*/summary.json; do
-            [ -f "$f" ] || continue
-            found=1
-            jq -r '"### HA chaos: \(.result)\n\n- seed: `\(.seed)`\n- nodes: \(.nodes), duration: \(.duration), steps: \(.steps)\n- message: \(.message)\n- replay: `\(.replay)`\n"' "$f" >> "$GITHUB_STEP_SUMMARY"
-          done
-          if [ "$found" = 0 ]; then echo "### HA chaos: no summary written (build or setup failed)" >> "$GITHUB_STEP_SUMMARY"; fi
+        # Renders every field of summary.json, so a counter added to ChaosReport reaches this page
+        # without a second edit here (#10603).
+        run: ./.github/scripts/chaos-run-summary.sh e2e-ha/target/chaos/*/summary.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload chaos report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

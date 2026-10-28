@@ -114,7 +114,7 @@ class Issue7392OnDemandBackupWithoutAutoBackupIT extends BaseGraphServerTest {
       try {
         final ArcadeDBServer server = getServer(0);
         if (server.existsDatabase(restoredDatabaseName))
-          server.getDatabase(restoredDatabaseName).getEmbedded().drop();
+          server.getDatabaseForOperator(restoredDatabaseName).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }

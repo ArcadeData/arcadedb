@@ -40,6 +40,9 @@ public abstract class BasePage {
   protected       Binary content;
   protected final int    size;
   protected       int    version;
+  // BYTES TAKEN BY THE NUMBER THE LAST readNumber() DECODED: THE SIZE HALF OF THE PAIR, KEPT HERE SO THAT A RECORD HEADER
+  // READ DOES NOT ALLOCATE A long[2] FOR IT (#10656). A PAGE IS USED BY ONE THREAD AT A TIME (SEE THE CLASS JAVADOC)
+  private         int    lastReadNumberSize;
 
   protected BasePage(final PageId pageId, final int size, final byte[] buffer, final int version,
       final int contentSize) {
@@ -82,12 +85,33 @@ public abstract class BasePage {
   }
 
   /**
-   * Reads an unsigned number.
+   * Reads a signed variable-length number without allocating (#10656). The number of bytes it occupies on the page is
+   * {@link #getLastReadNumberSize()}, which stays valid until the next call to this method on the same page.
+   */
+  public long readNumber(final int index) {
+    final int start = PAGE_HEADER_SIZE + index;
+    final long value = this.content.getNumber(start);
+    lastReadNumberSize = this.content.position() - start;
+    return value;
+  }
+
+  /**
+   * The number of bytes the number decoded by the last {@link #readNumber(int)} (or {@link #readNumberAndSize(int)})
+   * call on this page occupies.
+   */
+  public int getLastReadNumberSize() {
+    return lastReadNumberSize;
+  }
+
+  /**
+   * Reads a signed variable-length number. Allocates the returned pair on every call: a hot path uses
+   * {@link #readNumber(int)} and {@link #getLastReadNumberSize()} instead.
    *
-   * @return An array of longs with the unsigned number in the 1st position and the occupied bytes on the 2nd position.
+   * @return An array of longs with the number in the 1st position and the occupied bytes on the 2nd position.
    */
   public long[] readNumberAndSize(final int index) {
-    return this.content.getNumberAndSize(PAGE_HEADER_SIZE + index);
+    final long value = readNumber(index);
+    return new long[] { value, lastReadNumberSize };
   }
 
   public long readLong(final int index) {

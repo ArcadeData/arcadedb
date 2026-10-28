@@ -2444,6 +2444,39 @@ class PostgresTypeTest {
     assertThat((byte[]) PostgresType.deserialize(PostgresType.BYTEA.code, 0, data)).isEqualTo(payload);
   }
 
+  /**
+   * Issue #10592: typarray and typelem are pointers into pg_type, so each one names a type this protocol has, and the two point at
+   * each other. Six scalars named an array type no constant carried.
+   */
+  @Test
+  void everyArrayAndElementCodeNamesATypeThatPointsBack() {
+    for (final PostgresType type : PostgresType.values()) {
+      if (type.arrayCode != 0) {
+        assertThat(PostgresType.byCode(type.arrayCode)).as("the array type of %s", type.typeName).isNotNull();
+        assertThat(PostgresType.byCode(type.arrayCode).elementCode).as("the element of the array of %s", type.typeName)
+            .isEqualTo(type.code);
+      }
+      if (type.elementCode != 0) {
+        assertThat(PostgresType.byCode(type.elementCode)).as("the element type of %s", type.typeName).isNotNull();
+        assertThat(PostgresType.byCode(type.elementCode).arrayCode).as("the array of the element of %s", type.typeName)
+            .isEqualTo(type.code);
+      }
+      assertThat(type.isArrayType()).as(type.typeName).isEqualTo(type.elementCode != 0);
+    }
+  }
+
+  /** A binary varchar[] parameter, the one pgjdbc binds for {@code createArrayOf("varchar", ...)}, is read (issue #10592). */
+  @Test
+  void aBinaryVarcharArrayParameterIsRead() {
+    final Binary buffer = new Binary();
+    PostgresType.ARRAY_VARCHAR.serializeAsBinary(PostgresType.ARRAY_VARCHAR, buffer, List.of("a", "bc"));
+    buffer.flip();
+    final byte[] data = new byte[buffer.getInt()];
+    buffer.getByteBuffer().get(data);
+
+    assertThat(PostgresType.deserialize(PostgresType.ARRAY_VARCHAR.code, 1, data)).isEqualTo(List.of("a", "bc"));
+  }
+
   @Test
   void byNameAnswersBothSpellingsPostgreSqlAcceptsForAType() {
     // A client writing 'integer'::regtype means the type one writing 'int4'::regtype means, so both spellings

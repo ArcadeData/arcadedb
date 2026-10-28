@@ -103,7 +103,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
       final int leaderIndex = findLeaderIndex();
       assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
       final ArcadeDBServer leaderServer = getServer(leaderIndex);
-      final Database leaderDB = leaderServer.getDatabase(getDatabaseName());
+      final Database leaderDB = leaderServer.getDatabaseForOperator(getDatabaseName());
 
       leaderDB.transaction(() -> {
         leaderDB.command("sql", "CREATE VERTEX TYPE Hub BUCKETS 1");

@@ -85,7 +85,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
   }
 
   private long countRows(final String typeName) {
-    return getServer(0).getDatabase(getDatabaseName())
+    return getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
   }
 
@@ -97,12 +97,12 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
   @Test
   void streamErrorRollsBackAndLeavesNoActiveTransaction() throws Exception {
     final String typeName = "Issue5041Tx3_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     final ExecutorService pool = Executors.newSingleThreadExecutor(r -> new Thread(r, "issue5041-tx3-pool"));
     try {
-      final Database db = getServer(0).getDatabase(getDatabaseName());
+      final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
       final RecordingResponseObserver resp = new RecordingResponseObserver();
       final StreamObserver<InsertChunk> req = service.insertStream(resp);
 
@@ -121,7 +121,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
     } finally {
       pool.shutdownNow();
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -135,12 +135,12 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
   @Test
   void unrelatedInitOnSharedThreadDoesNotDiscardStreamRows() throws Exception {
     final String typeName = "Issue5041Tx4_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     final ExecutorService pool = Executors.newSingleThreadExecutor(r -> new Thread(r, "issue5041-tx4-pool"));
     try {
-      final Database db = getServer(0).getDatabase(getDatabaseName());
+      final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
       final RecordingResponseObserver resp = new RecordingResponseObserver();
       final StreamObserver<InsertChunk> req = service.insertStream(resp);
 
@@ -162,7 +162,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
     } finally {
       pool.shutdownNow();
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -174,7 +174,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
   @Test
   void bidirectionalHalfCloseWithoutCommitCommitsNothing() throws Exception {
     final String typeName = "Issue5041Tx6_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -217,7 +217,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
       assertThat(countRows(typeName)).as("half-close without COMMIT must commit nothing").isZero();
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -232,7 +232,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
   @Test
   void bidirectionalHeaderOnlyAuthIsPropagatedToStreamExecutor() throws Exception {
     final String typeName = "Issue5041Con1_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -278,7 +278,7 @@ class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
       assertThat(countRows(typeName)).isEqualTo(5L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 

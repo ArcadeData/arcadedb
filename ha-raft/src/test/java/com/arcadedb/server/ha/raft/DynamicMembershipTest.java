@@ -108,14 +108,14 @@ class DynamicMembershipTest extends BaseRaftHATest {
     evict(raftServer, targetIndex, false);
 
     // A write the remaining members commit and the evicted peer, by definition, never sees.
-    final Database leaderDB = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database leaderDB = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     leaderDB.transaction(() -> {
       leaderDB.command("sql", "CREATE DOCUMENT TYPE AfterEviction");
       leaderDB.command("sql", "INSERT INTO AfterEviction SET id = 1");
     });
 
     assertThat(leaderDB.getSchema().existsType("AfterEviction")).isTrue();
-    assertThat(getServer(targetIndex).getDatabase(getDatabaseName()).getSchema().existsType("AfterEviction"))
+    assertThat(getServer(targetIndex).getDatabaseForOperator(getDatabaseName()).getSchema().existsType("AfterEviction"))
         .as("an evicted peer must not receive entries committed after its removal")
         .isFalse();
   }
