@@ -292,6 +292,10 @@ public class SourceDiscovery {
     String knownFileType = null;
     String knownDelimiter = null;
     final String sourceUrl;
+    // THE GENERIC `fileType` OPTION NAMES THE FORMAT OF THE `url` SOURCE, WHICHEVER ROUTE THAT SOURCE IS IMPORTED BY:
+    // THE DATABASE ONE, OR THE VERTEX/EDGE ONE WHEN NO PER-ENTITY FILE IS SET (ISSUE #10754)
+    final Object genericFileTypeOption = settings.options.get("fileType");
+    final String genericFileType = genericFileTypeOption != null ? genericFileTypeOption.toString() : null;
 
     switch (entityType) {
     case DOCUMENT:
@@ -302,13 +306,15 @@ public class SourceDiscovery {
 
     case VERTEX:
       sourceUrl = settings.vertices != null ? settings.vertices : settings.url;
-      knownFileType = settings.verticesFileType != null ? settings.verticesFileType : getFileTypeByExtension(sourceUrl);
+      knownFileType = settings.verticesFileType != null ? settings.verticesFileType :
+          settings.vertices == null && genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.verticesDelimiter;
       break;
 
     case EDGE:
       sourceUrl = settings.edges != null ? settings.edges : settings.url;
-      knownFileType = settings.edgesFileType != null ? settings.edgesFileType : getFileTypeByExtension(sourceUrl);
+      knownFileType = settings.edgesFileType != null ? settings.edgesFileType :
+          settings.edges == null && genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.edgesDelimiter;
       break;
 
@@ -318,8 +324,7 @@ public class SourceDiscovery {
       // -documentsDelimiter WHEN IT IS ABSENT (ISSUE #6811). THE GENERIC `fileType` OPTION IS THIS FORM'S
       // -documentsFileType: WITHOUT IT A SOURCE THE SNIFFER MISREAD HAD NO WAY OUT (ISSUE #10754)
       sourceUrl = settings.url;
-      final Object genericFileType = settings.options.get("fileType");
-      knownFileType = genericFileType != null ? genericFileType.toString() : getFileTypeByExtension(sourceUrl);
+      knownFileType = genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       final Object genericDelimiter = settings.options.get("delimiter");
       knownDelimiter = genericDelimiter != null ? genericDelimiter.toString() : settings.documentsDelimiter;
       break;
@@ -395,6 +400,28 @@ public class SourceDiscovery {
       parser.nextChar();
     }
     return !parser.isEndOfStream();
+  }
+
+  /**
+   * Whether the parser's current character opens a JSON value, or closes an empty array. A letter opens one only as
+   * the first of a whole {@code true}, {@code false} or {@code null} followed by a delimiter, so {@code [id]} or
+   * {@code [name]} - the column names of a delimited-text header - do not. Consumes the literal it checks.
+   */
+  private static boolean isJsonValueStart(final Parser parser) throws IOException {
+    final char c = parser.getCurrentChar();
+    if (c == '{' || c == '[' || c == ']' || c == '"' || c == '-' || (c >= '0' && c <= '9'))
+      return true;
+
+    final String literal = c == 't' ? "true" : c == 'f' ? "false" : c == 'n' ? "null" : null;
+    if (literal == null)
+      return false;
+    for (int i = 1; i < literal.length(); ++i)
+      if (!parser.isAvailable() || parser.nextChar() != literal.charAt(i))
+        return false;
+    if (!parser.isAvailable())
+      return false;
+    final char after = parser.nextChar();
+    return after == ',' || after == ']' || isJsonWhitespace(after);
   }
 
   private static boolean isJsonWhitespace(final char c) {
@@ -940,16 +967,15 @@ public class SourceDiscovery {
     } else if (currentChar == '[') {
       // A JSON DOCUMENT WHOSE TOP LEVEL IS AN ARRAY. IT WAS NOT RECOGNISED AT ALL: THE TEXT SNIFFING FOUND THE COMMAS
       // BETWEEN ITS VALUES AND DECLARED IT CSV, SO THE WHOLE ARRAY BECAME ONE HEADER ROW AND THE IMPORT CREATED NOTHING
-      // AND REPORTED SUCCESS (ISSUE #10754). THE NEXT SIGNIFICANT CHARACTER DECIDES: AN OBJECT, A NESTED ARRAY OR THE
-      // END OF AN EMPTY ONE. A DELIMITED-TEXT HEADER THAT MERELY OPENS WITH '[' - "[id],[name]" - IS LEFT TO THE
-      // SNIFFING THAT FOLLOWS. THE WHITESPACE BETWEEN IS SKIPPED WHATEVER ITS LENGTH, AS A JSON PARSER WOULD
+      // AND REPORTED SUCCESS (ISSUE #10754). THE NEXT SIGNIFICANT CHARACTER DECIDES, AS THE START OF A JSON VALUE: AN
+      // OBJECT, AN ARRAY, A STRING, A NUMBER, ONE OF THE LITERALS true/false/null, OR THE END OF AN EMPTY ARRAY. AN ARRAY
+      // OF SCALARS IS JSON TOO, AND REACHES THE JSON IMPORTER TO BE REFUSED THERE BY POSITION RATHER THAN BE READ AS
+      // DELIMITED TEXT. A DELIMITED-TEXT HEADER THAT MERELY OPENS WITH '[' - "[id],[name]" - IS LEFT TO THE SNIFFING
+      // THAT FOLLOWS. THE WHITESPACE BETWEEN IS SKIPPED WHATEVER ITS LENGTH, AS A JSON PARSER WOULD
       if (parser.isAvailable()) {
         parser.nextChar();
-        if (skipJsonWhitespace(parser)) {
-          currentChar = parser.getCurrentChar();
-          if (currentChar == '{' || currentChar == '[' || currentChar == ']')
-            return new JSONImporterFormat();
-        }
+        if (skipJsonWhitespace(parser) && isJsonValueStart(parser))
+          return new JSONImporterFormat();
       }
     }
 

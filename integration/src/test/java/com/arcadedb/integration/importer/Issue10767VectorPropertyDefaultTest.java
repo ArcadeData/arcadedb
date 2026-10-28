@@ -119,6 +119,33 @@ class Issue10767VectorPropertyDefaultTest {
     }
   }
 
+  /** Names SQL cannot take as written: each is escaped for the context it lands in, identifier or string literal. */
+  @Test
+  void propertyNamesNeedingEscapeStillWork() throws Exception {
+    final File source = writeFile("importer-10767-vec-escape.txt", WORD2VEC);
+    final String databasePath = "target/databases/test-import-10767-escape";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final String vectorProperty = "my`vec\\tor";
+    final String idProperty = "it's";
+    try {
+      new Importer(new String[] { "-url", "file://" + source.getAbsolutePath(), "-database", databasePath, "-forceDatabaseCreate",
+          "true", "-vertexType", "Word", "-vectorProperty", vectorProperty, "-idProperty", idProperty }).load();
+
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        final DocumentType type = db.getSchema().getType("Word");
+        assertThat(type.getProperty(vectorProperty).getType()).isEqualTo(Type.ARRAY_OF_FLOATS);
+        assertThat(type.existsProperty(idProperty)).isTrue();
+        assertThat(db.getSchema().existsIndex("Word[" + vectorProperty + "]")).isTrue();
+        assertThat(db.countType("Word", true)).isEqualTo(3);
+      }
+    } finally {
+      dropDatabase(databasePath);
+      source.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
   private static File writeFile(final String name, final String content) throws Exception {
     final File file = new File("target/" + name);
     Files.writeString(file.toPath(), content, StandardCharsets.UTF_8);

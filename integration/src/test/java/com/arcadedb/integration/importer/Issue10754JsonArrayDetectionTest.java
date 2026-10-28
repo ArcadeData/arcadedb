@@ -174,6 +174,44 @@ class Issue10754JsonArrayDetectionTest {
     }
   }
 
+  /** A magnitude a double cannot hold is kept exact: 1e309 would be Infinity, 1e-400 would be 0. */
+  @Test
+  void decimalOutsideTheDoubleRangeIsKeptExact() throws Exception {
+    final String databasePath = importSource("importer-10754-overflow.json", "[{\"id\":1,\"big\":1e309,\"tiny\":1e-400,\"zero\":0.0}]",
+        "");
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      final Document doc = db.iterateType("Document", true).next().asDocument();
+      assertThat(new BigDecimal(doc.get("big").toString())).isEqualByComparingTo(new BigDecimal("1e309"));
+      assertThat(new BigDecimal(doc.get("tiny").toString())).isEqualByComparingTo(new BigDecimal("1e-400"));
+      assertThat(doc.get("zero")).isEqualTo(0.0);
+    } finally {
+      dropDatabase(databasePath);
+    }
+  }
+
+  /** An array of scalars is JSON too: it reaches the JSON importer and is refused by position, not read as delimited text. */
+  @Test
+  void scalarArrayIsJsonAndRefusedByPosition() {
+    for (final String content : new String[] { "[1,2]", "[\"a\",\"b\"]", "[true, false]", "[ null ]", "[-1.5]" }) {
+      final String fileName = "importer-10754-scalars.txt";
+      assertThatThrownBy(() -> importSource(fileName, content, "")).as(content)
+          .hasStackTraceContaining("$[0]").hasStackTraceContaining("only an object is a record");
+      dropDatabase(databasePath(fileName));
+    }
+  }
+
+  /** The generic fileType names the format of the url source on the vertex route too, not only on the database one. */
+  @Test
+  void fileTypeAppliesWhenTheUrlIsImportedAsVertices() throws Exception {
+    final String databasePath = importSource("importer-10754-vertices.json", "id,name\n1,one\n2,two\n",
+        " -vertexType Person -fileType csv");
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      assertThat(db.countType("Person", true)).isEqualTo(2);
+    } finally {
+      dropDatabase(databasePath);
+    }
+  }
+
   /** JSON's only non-canonical integer within the long range is "-0": it is the LONG zero, not a DECIMAL. */
   @Test
   void negativeZeroIsTheLongZero() throws Exception {

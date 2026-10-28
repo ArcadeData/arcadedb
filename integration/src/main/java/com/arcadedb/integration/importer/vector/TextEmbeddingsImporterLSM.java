@@ -26,6 +26,8 @@ import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
@@ -138,10 +140,12 @@ public class TextEmbeddingsImporterLSM {
         database.getSchema().getIndexByName(indexName);
         // Index already exists
       } catch (final Exception e) {
-        // Index doesn't exist, create it. The identifiers are quoted so a name SQL reserves or cannot parse still works
-        database.command("sql", "CREATE INDEX ON `" + settings.vertexTypeName + "` (`" + vectorPropertyName + "`) LSM_VECTOR " +
+        // Index doesn't exist, create it. Every name is escaped for the SQL context it lands in - an identifier, or a string
+        // literal in the metadata - so a name SQL reserves or cannot parse still works
+        database.command("sql", "CREATE INDEX ON " + Identifier.quote(settings.vertexTypeName) + " (" + Identifier.quote(
+            vectorPropertyName) + ") LSM_VECTOR " +
             "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
-            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}").close();
+            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + Expression.encodeSingle(idPropertyName) + "'}").close();
       }
 
       logger.logLine(2, "- Created schema and LSM_VECTOR index");

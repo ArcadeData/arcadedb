@@ -20,6 +20,7 @@ package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10765: a RID that names no record is "not there" for every command that takes one, on both Redis surfaces. HGET and
@@ -94,6 +96,11 @@ public class Issue10765RedisMissingRidParityTest extends BaseRedisServerTest {
     assertThat(multi.get(1)).isNotNull();
 
     assertThat(value(database, "HDEL " + missing)).isEqualTo(0);
+
+    // a malformed RID is a bad request, like any other malformed argument, not a server error
+    for (final String command : new String[] { "HGET #bad", "HEXISTS #bad", "HMGET #bad", "HDEL #bad" })
+      assertThatThrownBy(() -> database.command("redis", command).close()).as(command)
+          .isInstanceOf(CommandParsingException.class);
   }
 
   /**

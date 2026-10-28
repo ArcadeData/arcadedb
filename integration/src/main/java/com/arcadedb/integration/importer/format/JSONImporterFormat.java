@@ -318,7 +318,8 @@ public class JSONImporterFormat implements FormatImporter {
 
   /**
    * A JSON number as the value it spells: a {@code Long} when it is an integer a {@code long} holds, a
-   * {@code BigDecimal} when it is an integer that is larger, a {@code Double} otherwise. Every number used to be read
+   * {@code BigDecimal} when it is an integer that is larger or a magnitude a {@code double} cannot hold, a
+   * {@code Double} otherwise. Every number used to be read
    * as a {@code double}, so {@code 42} was stored as {@code 42.0} and {@code 9007199254740993} as
    * {@code 9007199254740992} (issue #10754).
    */
@@ -332,7 +333,11 @@ public class JSONImporterFormat implements FormatImporter {
       // JSON FORBIDS LEADING ZEROS AND A '+', SO AN INTEGER THAT IS NOT A CANONICAL LONG IS EITHER "-0" OR ONE TOO
       // LARGE FOR A LONG
       return "-0".equals(text) ? Long.valueOf(0L) : new BigDecimal(text);
-    return Double.parseDouble(text);
+    // A MAGNITUDE A DOUBLE CANNOT HOLD - 1e309 OVERFLOWS TO INFINITY, 1e-400 UNDERFLOWS TO ZERO - IS KEPT EXACT INSTEAD
+    final double decimal = Double.parseDouble(text);
+    if (Double.isFinite(decimal) && (decimal != 0D || new BigDecimal(text).signum() == 0))
+      return decimal;
+    return new BigDecimal(text);
   }
 
   private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,
