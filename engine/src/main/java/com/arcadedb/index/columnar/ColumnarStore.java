@@ -137,8 +137,7 @@ public final class ColumnarStore {
    */
   public static void prepareForSnapshotInstall(final Path databasePath) throws IOException {
     final Path root = databasePath.resolve(ROOT_DIR);
-    FileUtils.createDirectoriesDurably(root);
-    writeAtomically(root.resolve(REBUILD_MARKER), SNAPSHOT_INSTALL.getBytes(StandardCharsets.UTF_8));
+    writeRebuildReason(databasePath, SNAPSHOT_INSTALL);
     try (final DirectoryStream<Path> entries = Files.newDirectoryStream(root)) {
       for (final Path entry : entries) {
         if (entry.getFileName().toString().equals(REBUILD_MARKER))
@@ -163,6 +162,13 @@ public final class ColumnarStore {
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  /** Writes {@code columnar/REBUILD} with the reason: every projection of the database rebuilds at the next open until it is cleared. */
+  static void writeRebuildReason(final Path databasePath, final String reason) throws IOException {
+    final Path root = databasePath.resolve(ROOT_DIR);
+    FileUtils.createDirectoriesDurably(root);
+    writeAtomically(root.resolve(REBUILD_MARKER), reason.getBytes(StandardCharsets.UTF_8));
   }
 
   public static void clearRebuildReason(final Path databasePath) throws IOException {

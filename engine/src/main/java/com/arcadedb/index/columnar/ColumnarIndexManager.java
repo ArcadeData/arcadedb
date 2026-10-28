@@ -27,6 +27,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IntHashSet;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -82,7 +84,15 @@ import java.util.logging.Level;
  * consecutive failure up to {@link #MAINTENANCE_BACKOFF_MAX_MS}); a merge failing {@link #CORRUPT_MERGES_BEFORE_REBUILD} times in a
  * row with a {@link BlockCorruptionException} marks the projection {@code corrupt}, which requests its rebuild.
  * <p>
- * READ_ONLY databases (R16): no tick, no flush, no file written or deleted.
+ * <b>Startup and recovery (spec 6.5).</b> {@link #startApplying(boolean)} runs once, after the WAL replay: the projections that need a
+ * rebuild get one ({@code columnar/REBUILD} marker, then {@code missing} or {@code corrupt} files, then a {@code NOWAL} marker on an
+ * unclean open), the others take the pages of {@code columnar/recovery.pages} back into their trackers; a clean open or a crash
+ * recovery never counts a rebuild. Only then is the rebuild requester of each projection installed ({@link ColumnarRebuilder}), so a
+ * projection a live DDL registers later is never rebuilt as {@code missing}. {@link #persistRecoverySet()} writes the pages every
+ * tracker holds before a WAL file is dropped and at a clean close.
+ * <p>
+ * READ_ONLY databases (R16): no tick, no flush, no rebuild, no file written or deleted; the startup only records why a projection is
+ * not usable.
  */
 public final class ColumnarIndexManager {
   /** Delay after the first failed flush or merge of a projection; doubled per consecutive failure. */
@@ -95,6 +105,8 @@ public final class ColumnarIndexManager {
   static final long DRAIN_TIMEOUT_MS              = 30_000L;
   /** Reached before the projection of a bucket is opened, or given a new column, by the registration. */
   static final String OPEN_PROJECTION = "manager.openProjection";
+  /** Reached by {@link #persistRecoverySet()} once the recovery set is renamed, before it returns to {@code cleanWALFiles}. */
+  static final String RECOVERY_SET_PERSISTED = "recoverySet.persisted";
 
   /** Permits of {@link #fallbackScans()}; plan 4 reads them from {@code arcadedb.columnar.maxFallbackScans}. */
   private static final int    FALLBACK_SCANS  = 2;
@@ -176,6 +188,16 @@ public final class ColumnarIndexManager {
 
   /** Called with the file id by every mark, before it is routed (V-M16); null outside tests. */
   static volatile IntConsumer onMarkForTesting;
+
+  /** Serializes the writers of {@code columnar/recovery.pages} (WAL housekeeping, Raft checkpoint, close) and the startup's read. */
+  private final Object                  recoveryLock      = new Object();
+  /** {@link #startApplying(boolean)} ran: projections opened from now on get their rebuild requester at once. Under registryLock. */
+  private boolean                       startupDone;
+  /** The startup took the recovery set into the trackers; until then a persist keeps the pages of the file. Under recoveryLock. */
+  private boolean                       recoveryMerged;
+  /** Projections whose rebuild the {@code REBUILD} marker asked for and that did not publish yet; the marker is cleared once empty. */
+  private final Set<ColumnarProjection> markerRebuilds    = ConcurrentHashMap.newKeySet();
+  private volatile boolean              droppedDatabase;
 
   private final AtomicBoolean passScheduled       = new AtomicBoolean();
   private final AtomicInteger suspensions         = new AtomicInteger();
@@ -291,16 +313,21 @@ public final class ColumnarIndexManager {
         return;
       publishRegistry();
       slot.projection.drop();
+      forgetMarkerRebuild(slot.projection);
     } finally {
       registryLock.unlock();
     }
   }
 
-  /** Whether the projection of {@code index} holds a valid state to answer facets from; false while it has none. */
+  /**
+   * Whether the projection of {@code index} holds a valid state that publishes the index's column, to answer facets from; false while it
+   * has none, and for an index added to a usable projection until its create rebuild publishes the column.
+   */
   public boolean isUsable(final ColumnarIndex index) {
     final int bucketId = index.getAssociatedBucketId();
     final ColumnarProjection projection = projection(bucketId);
-    return projection != null && projection.isUsable() && !failedBuckets.contains(bucketId);
+    // a projection that does not publish the index's column yet (a create rebuild pending) cannot answer for it
+    return projection != null && projection.isPublishedWith(index.columnDefinition().indexFileId()) && !failedBuckets.contains(bucketId);
   }
 
   /** Asks for the projections to be reconciled with the COLUMNAR indexes of the schema (columns added or dropped). */
@@ -353,7 +380,11 @@ public final class ColumnarIndexManager {
           slot.projection.addColumn(column);
       else {
         final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(bucketId);
-        slotsByBucket.put(bucketId, new Slot(ColumnarProjection.open(database, bucket, columns.toArray(new ColumnDefinition[0]), stats)));
+        final ColumnarProjection projection = ColumnarProjection.open(database, bucket, columns.toArray(new ColumnDefinition[0]), stats);
+        slotsByBucket.put(bucketId, new Slot(projection));
+        // after the startup only: the startup decides the rebuilds of the projections the open found (V-M10)
+        if (startupDone)
+          installRebuildRequester(projection);
       }
       return true;
     } catch (final RuntimeException e) {
@@ -711,12 +742,252 @@ public final class ColumnarIndexManager {
 
   // ----------------------------------------------------------------------------------------------------------------- scheduling
 
-  /** After the WAL replay: registers the tick of this database with {@link ColumnarApplyPool}. Never on a READ_ONLY database. */
-  public void startApplying() {
+  /**
+   * After the WAL replay, once per open: runs the startup sequence over the projections the schema load opened, installs their rebuild
+   * requesters, then registers the tick of this database with {@link ColumnarApplyPool} (never on a READ_ONLY database).
+   * <ol>
+   * <li>{@code columnar/REBUILD} present: every projection rebuilds with its reason; the marker is cleared once all published.</li>
+   * <li>Otherwise, per projection: files {@code missing} or {@code corrupt} (as the open found them) rebuild with that reason; a
+   * {@code NOWAL} marker rebuilds as {@code unclean_no_wal} on an unclean open, and is deleted as stray on a clean one (a clean close
+   * flushed every page of the database, so no projection can be newer than its bucket).</li>
+   * <li>The others take the pages {@code columnar/recovery.pages} names for their files (primary and external) back into their
+   * trackers. A recovery set that fails its check writes the {@code REBUILD} marker with reason {@code corrupt} first: its pages are
+   * lost, so every projection rebuilds, and keeps rebuilding at each open until all published.</li>
+   * </ol>
+   * READ_ONLY (R16): the reasons are only recorded (the projection is served by the fallback); nothing is scheduled, cleared or written.
+   *
+   * @param uncleanOpen the database was not closed properly (its lock file was found)
+   */
+  public void startApplying(final boolean uncleanOpen) {
+    final Slot[] opened;
+    registryLock.lock();
+    try {
+      if (closed || startupDone)
+        return;
+      startupDone = true;
+      opened = slots;
+    } finally {
+      registryLock.unlock();
+    }
+    recover(opened, uncleanOpen);
     if (readOnly || closing || applying)
       return;
     ColumnarApplyPool.getInstance().register(tick, () -> database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL));
     applying = true;
+  }
+
+  /** The startup sequence of {@link #startApplying(boolean)}. */
+  private void recover(final Slot[] opened, final boolean uncleanOpen) {
+    final Path databasePath = Path.of(database.getDatabasePath());
+    final Path recoveryFile = databasePath.resolve(ColumnarStore.ROOT_DIR).resolve(RecoverySetFile.FILE_NAME);
+    final Map<ColumnarProjection, String> rebuilds = new LinkedHashMap<>();
+    synchronized (recoveryLock) {
+      String marker = readRebuildMarker(databasePath);
+      Map<Integer, int[]> recovery = Map.of();
+      if (!readOnly && marker == null)
+        try {
+          recovery = RecoverySetFile.read(recoveryFile);
+        } catch (final IOException | RuntimeException e) {
+          LogManager.instance().log(this, Level.SEVERE, "The columnar recovery set of database '%s' cannot be read: every projection is "
+              + "rebuilt", e, database.getName());
+          marker = ColumnarProjection.CORRUPT;
+          try {
+            ColumnarStore.writeRebuildReason(databasePath, marker);
+          } catch (final IOException w) {
+            LogManager.instance().log(this, Level.SEVERE, "Cannot write the columnar rebuild marker of database '%s'", w, database.getName());
+          }
+        }
+
+      long recovered = 0;
+      for (final Slot slot : opened) {
+        final ColumnarProjection projection = slot.projection;
+        final String reason = startupRebuildReason(projection, marker, uncleanOpen);
+        if (reason != null) {
+          rebuilds.put(projection, reason);
+          if (marker != null)
+            markerRebuilds.add(projection);
+        } else if (!readOnly) {
+          recovered += markRecovered(projection.bucketId(), recovery);
+          if (projection.externalFileId() >= 0)
+            recovered += markRecovered(projection.externalFileId(), recovery);
+        }
+      }
+      if (recovered > 0)
+        stats.recoveryPages(recovered);
+      recoveryMerged = true;
+      if (marker != null && !readOnly && markerRebuilds.isEmpty())
+        clearRebuildMarker();
+    }
+
+    for (final Slot slot : opened) {
+      final ColumnarProjection projection = slot.projection;
+      final String reason = rebuilds.get(projection);
+      if (readOnly) {
+        if (reason != null && projection.isUsable())
+          projection.markUnusableWithoutRequest(reason);
+        continue;
+      }
+      installRebuildRequester(projection);
+      if (reason != null)
+        ColumnarRebuilder.schedule(this, projection, reason);
+    }
+  }
+
+  /** The reason the startup rebuilds the projection with, null when it is current (see {@link #startApplying(boolean)}). */
+  private String startupRebuildReason(final ColumnarProjection projection, final String marker, final boolean uncleanOpen) {
+    if (marker != null)
+      return marker;
+    if (projection.unusableReason() != null)
+      return projection.unusableReason();
+    final Path noWal = projection.bucketDir().resolve(ColumnarStore.NOWAL_MARKER);
+    if (!Files.exists(noWal))
+      return null;
+    if (uncleanOpen)
+      return ColumnarRebuilder.UNCLEAN_NO_WAL;
+    if (!readOnly)
+      try {
+        // a marker the close could not delete, or one a no-WAL commit wrote after the columnar close: every page is on disk now
+        Files.deleteIfExists(noWal);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot delete the stray NOWAL marker of the columnar projection of bucket '%s'", e,
+            projection.bucketName());
+      }
+    return null;
+  }
+
+  /** The reason in {@code columnar/REBUILD}, null without one; an unreadable marker is a marker all the same. */
+  private String readRebuildMarker(final Path databasePath) {
+    try {
+      final String reason = ColumnarStore.readRebuildReason(databasePath);
+      return reason == null ? null : reason.isEmpty() ? ColumnarProjection.CORRUPT : reason;
+    } catch (final UncheckedIOException e) {
+      LogManager.instance().log(this, Level.WARNING, "The columnar rebuild marker of database '%s' cannot be read", e, database.getName());
+      return ColumnarProjection.CORRUPT;
+    }
+  }
+
+  /** Marks the pages the recovery set holds for the file; returns their number. */
+  private long markRecovered(final int fileId, final Map<Integer, int[]> recovery) {
+    final int[] pages = recovery.get(fileId);
+    if (pages == null || pages.length == 0)
+      return 0;
+    mark(fileId, pages, pages.length);
+    return pages.length;
+  }
+
+  private void installRebuildRequester(final ColumnarProjection projection) {
+    if (!readOnly)
+      projection.setRebuildRequester(reason -> ColumnarRebuilder.schedule(this, projection, reason));
+  }
+
+  /** {@link ColumnarRebuilder}, once a rebuild of the projection published: ends the obligations the rebuild discharged. */
+  void rebuildPublished(final ColumnarProjection projection) {
+    // a NOWAL marker no no-WAL commit of this session wrote describes pages the scan read as they are now
+    synchronized (projection.noWalMarkerLock) {
+      if (projection.noWalMarkerEpoch == -1)
+        try {
+          Files.deleteIfExists(projection.bucketDir().resolve(ColumnarStore.NOWAL_MARKER));
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.WARNING, "Cannot delete the NOWAL marker of the rebuilt columnar projection of bucket '%s'",
+              e, projection.bucketName());
+        }
+    }
+    forgetMarkerRebuild(projection);
+  }
+
+  /** The projection no longer needs the rebuild the {@code REBUILD} marker asked for; the last one clears the marker. */
+  private void forgetMarkerRebuild(final ColumnarProjection projection) {
+    if (markerRebuilds.remove(projection) && markerRebuilds.isEmpty())
+      clearRebuildMarker();
+  }
+
+  private void clearRebuildMarker() {
+    try {
+      ColumnarStore.clearRebuildReason(Path.of(database.getDatabasePath()));
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot clear the columnar rebuild marker of database '%s'", e, database.getName());
+    }
+  }
+
+  /**
+   * Runs a rebuild body of the projection counted as a running maintenance job (a close waits for it); nothing when the projection is
+   * not this manager's any more, or the manager closes.
+   */
+  void runRebuildBody(final ColumnarProjection projection, final Runnable body) {
+    final Slot slot = slot(projection.bucketId());
+    if (slot != null && slot.projection == projection)
+      runMaintenanceBody(slot, body);
+  }
+
+  boolean isReadOnly() {
+    return readOnly;
+  }
+
+  /** A close, drop or kill began: a rebuild aborts at its next page. */
+  boolean isClosing() {
+    return closing;
+  }
+
+  /** {@link #kill()} ran: a rebuild stops as a crash would, writing and deleting nothing. */
+  boolean isKilled() {
+    return killed;
+  }
+
+  /**
+   * Persists the recovery set (spec 6.5): the pages every tracker holds (in an epoch, in flight or unflushed, primary and external,
+   * R7) are written to {@code columnar/recovery.pages} atomically. Called before a WAL file is dropped (housekeeping, rotation, close),
+   * at a clean close under the database's write lock, and by the Raft checkpoint; safe from any thread at any time, the writers are
+   * serialized. Before the startup took the recovery set of the last session back, its pages are kept in what is written. Nothing is
+   * written on a READ_ONLY database, for a database being dropped, or without a projection.
+   *
+   * @return false when the set could not be written (logged), or after a {@link #kill()}: the caller keeps its WAL files
+   */
+  public boolean persistRecoverySet() {
+    if (readOnly || droppedDatabase)
+      return true;
+    if (killed)
+      return false;
+    synchronized (recoveryLock) {
+      final Slot[] current = slots;
+      if (current.length == 0)
+        return true;
+      final Path root = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR);
+      final Path file = root.resolve(RecoverySetFile.FILE_NAME);
+      try {
+        final Map<Integer, IntHashSet> byFile = new LinkedHashMap<>();
+        if (!recoveryMerged)
+          for (final Map.Entry<Integer, int[]> entry : RecoverySetFile.read(file).entrySet())
+            for (final int page : entry.getValue())
+              byFile.computeIfAbsent(entry.getKey(), k -> new IntHashSet()).add(page);
+        for (final Slot slot : current) {
+          final ColumnarProjection projection = slot.projection;
+          projection.tracker().collectRecoverySet(byFile.computeIfAbsent(projection.bucketId(), k -> new IntHashSet()));
+          final DirtyPageTracker external = projection.externalTracker();
+          if (external != null)
+            external.collectRecoverySet(byFile.computeIfAbsent(projection.externalFileId(), k -> new IntHashSet()));
+        }
+        final int[] fileIds = new int[byFile.size()];
+        final int[][] pages = new int[fileIds.length][];
+        final int[] counts = new int[fileIds.length];
+        int i = 0;
+        for (final Map.Entry<Integer, IntHashSet> entry : byFile.entrySet()) {
+          fileIds[i] = entry.getKey();
+          pages[i] = entry.getValue().toArray();
+          Arrays.sort(pages[i]);
+          counts[i] = pages[i].length;
+          i++;
+        }
+        FileUtils.createDirectoriesDurably(root);
+        RecoverySetFile.write(file, fileIds, pages, counts);
+        ColumnarTestHooks.reach(RECOVERY_SET_PERSISTED);
+        return true;
+      } catch (final ColumnarTestHooks.SimulatedCrash e) {
+        throw e;
+      } catch (final IOException | RuntimeException e) {
+        logFailure("Cannot persist the columnar recovery set of database '%s': its WAL files are kept", e);
+        return false;
+      }
+    }
   }
 
   /** The tick is registered with {@link ColumnarApplyPool}. */
@@ -732,7 +1003,12 @@ public final class ColumnarIndexManager {
   /** No lock: volatile reads, then a CAS, then a submit. */
   private void tick() {
     // a database with no COLUMNAR index pays these reads only, never a configuration read or a pass
-    if (slots.length == 0 && !watchersPending && failedBuckets.isEmpty() || closing || suspensions.get() > 0)
+    if (slots.length == 0 && !watchersPending && failedBuckets.isEmpty())
+      return;
+    // a rebuild that found no free permit starts here once one is free (a test, or a rebuild of another JVM component, held it)
+    if (ColumnarRebuilder.hasWaiting())
+      ColumnarRebuilder.drainWaiting();
+    if (closing || suspensions.get() > 0)
       return;
     if (!watchersPending && !hasPendingApply() && !isOpenRetryDue() && !isUnreadableRetryDue()
         && System.currentTimeMillis() - lastPassMs < database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL))
@@ -995,7 +1271,8 @@ public final class ColumnarIndexManager {
   }
 
   /**
-   * Waits until every projection is usable and no page is pending (in an epoch or in flight): every mark that returned before the call
+   * Waits until every projection is usable, every registered index's column is published ({@link #isUsable(ColumnarIndex)}) and no
+   * page is pending (in an epoch or in flight): every mark that returned before the call
    * is applied and its overlay published.
    *
    * @return false when that is not reached within {@code timeoutMs}
@@ -1015,6 +1292,9 @@ public final class ColumnarIndexManager {
       return false;
     for (final Slot slot : slots)
       if (!slot.projection.isUsable() || hasPendingApply(slot.projection))
+        return false;
+    for (final ColumnarIndex index : registered)
+      if (!isUsable(index))
         return false;
     return true;
   }
@@ -1069,6 +1349,7 @@ public final class ColumnarIndexManager {
    * flush or merge is stopped at once and waited for, so nothing writes in the directory the drop deletes.
    */
   public void closeForDrop() {
+    droppedDatabase = true;
     shutdown(false);
   }
 

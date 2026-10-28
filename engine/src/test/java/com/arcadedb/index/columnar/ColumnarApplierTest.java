@@ -454,19 +454,42 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
   void anUnconvertibleValueIsCountedOncePerStagedRecord() throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
     // planted while the property is not in the schema: a DECIMAL a LONG column cannot hold
-    database.transaction(() -> database.newDocument("Asset").set("fileSize", new BigDecimal("1.5")).save());
+    final RID[] planted = new RID[1];
+    database.transaction(() -> planted[0] = database.newDocument("Asset").set("brand", "a").set("fileSize", new BigDecimal("1.5")).save()
+        .getIdentity());
     // the schema API, as ColumnarValueExtractorTest does: the SQL statement refuses a property its stored values break
     database.getSchema().getType("Asset").createProperty("fileSize", Type.LONG);
     database.command("sql", "CREATE INDEX ON Asset (fileSize) COLUMNAR");
     final ColumnarProjection projection = projection();
+    // the create rebuild projects the record and counts its failing value once
+    caughtUp();
 
     for (int pass = 0; pass < 4; pass++) {
       manager().markPages(bucketId(), new int[] { 0 }, 1);
       awaitDrained(projection);
     }
 
-    assertThat(projection.overlay().rows()).as("the record is projected, its value missing").isEqualTo(1);
+    long rows = 0;
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      for (final ColumnarSegmentView view : snapshot.segments())
+        rows += view.live().cardinality();
+    }
+    assertThat(rows).as("the record is projected, its value missing").isEqualTo(1);
     assertThat(manager().conversionFailures("Asset", "fileSize")).as("re-reads of the unchanged record count nothing").isEqualTo(1);
+
+    // a second projected column, then a change of it: the apply pass stages the record, its failing value counted with it
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+    caughtUp();
+    assertThat(manager().conversionFailures("Asset", "fileSize")).as("the brand rebuild counts no fileSize failure").isEqualTo(1);
+    database.transaction(() -> planted[0].asDocument(true).modify().set("brand", "b").save());
+    caughtUp();
+    assertThat(manager().conversionFailures("Asset", "fileSize")).as("the staged record version counts its failing value").isEqualTo(2);
+    for (int pass = 0; pass < 3; pass++) {
+      manager().markPages(bucketId(), new int[] { 0 }, 1);
+      awaitDrained(projection);
+    }
+    assertThat(manager().conversionFailures("Asset", "fileSize")).as("re-reads of the unchanged record count nothing").isEqualTo(2);
   }
 
   @Test
