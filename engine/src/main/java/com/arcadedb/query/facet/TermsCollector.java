@@ -35,7 +35,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.function.IntBinaryOperator;
 import java.util.function.LongConsumer;
 
@@ -65,11 +64,9 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   private final Type                propertyType;
   private final DatabaseInternal    database;
   private final ColumnarValueExtractor extractor;
-  /** {@link System#nanoTime()} of the first reservation: all of them together wait {@code budgetWaitMs} at most from there. */
-  private long                      waitStartNanos;
-  private boolean                   waitStarted;
   private final long                matchCount;
-  private final long                budgetWaitMs;
+  /** Every byte a counter holds, reserved before it is allocated; all of them together wait one window. */
+  private final CollectorReservations budget;
   private final FacetExecutionStats stats  = new FacetExecutionStats();
   private final List<TermsCollector> others = new ArrayList<>();
   private final NumericRows         numericRows = new NumericRows();
@@ -80,11 +77,8 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   private HashFacetCounter                          growingHash;
   private int                                       cardinality;
   private LongTermsCounter                          terms;
-  private final List<FacetMemoryBudget.Reservation> reservations = new ArrayList<>(2);
-  private long                                      reservedBytes;
   /** The distinct values of the hash counter the reservations cover. */
   private int                                       reservedDistinct;
-  private int                                       budgetWaits;
   private boolean                                   unavailable;
   private boolean                                   finished;
   private long                                      missing;
@@ -113,7 +107,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
     this.database = database;
     this.extractor = extractor;
     this.matchCount = matchCount;
-    this.budgetWaitMs = budgetWaitMs;
+    this.budget = new CollectorReservations(budgetWaitMs);
   }
 
   @Override
@@ -254,22 +248,21 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
 
   @Override
   public void release() {
-    for (final FacetMemoryBudget.Reservation reservation : reservations)
-      reservation.close();
-    reservations.clear();
-    reservedBytes = 0;
+    budget.release();
   }
 
   /** The statistics of the facet, the other declaring types merged in included. */
-  FacetExecutionStats stats() {
+  @Override
+  public FacetExecutionStats stats() {
     return stats;
   }
 
   /** Grants of the budget that were not immediate, this collector's and the merged ones'. */
-  int budgetWaits() {
-    int waits = budgetWaits;
+  @Override
+  public int budgetWaits() {
+    int waits = budget.waits();
     for (final TermsCollector collector : others)
-      waits += collector.budgetWaits;
+      waits += collector.budget.waits();
     return waits;
   }
 
@@ -308,10 +301,9 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
 
   private void allocateOrdinalCounter() {
     final int size = map.size();
-    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
     if (FacetCounter.prefersDense(matchCount, size)) {
       // dense is tried without waiting: refused, a hash map of what is counted is much smaller
-      final FacetMemoryBudget.Reservation dense = budget.reserve(DenseFacetCounter.bytesFor(size), 0);
+      final FacetMemoryBudget.Reservation dense = budget.reserve(DenseFacetCounter.bytesFor(size), false);
       if (dense != null) {
         granted(dense, FacetExecutionStats.CountingMode.DENSE, size, size);
         counter = new DenseFacetCounter(size);
@@ -319,7 +311,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
       }
     }
     final int expected = (int) Math.min(matchCount, size);
-    final FacetMemoryBudget.Reservation hash = budget.reserve(HashFacetCounter.bytesFor(expected), remainingWaitMs());
+    final FacetMemoryBudget.Reservation hash = budget.reserve(HashFacetCounter.bytesFor(expected), true);
     if (hash == null) {
       unavailable = true;
       return;
@@ -334,7 +326,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
 
   private void allocateTermsCounter() {
     final int expected = (int) Math.min(matchCount, NUMERIC_EXPECTED_TERMS);
-    final FacetMemoryBudget.Reservation granted = FacetMemoryBudget.instance().reserve(LongTermsCounter.bytesFor(expected), remainingWaitMs());
+    final FacetMemoryBudget.Reservation granted = budget.reserve(LongTermsCounter.bytesFor(expected), true);
     if (granted == null) {
       unavailable = true;
       return;
@@ -345,12 +337,8 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
 
   private void granted(final FacetMemoryBudget.Reservation granted, final FacetExecutionStats.CountingMode mode, final int size,
       final int distinct) {
-    reservations.add(granted);
-    reservedBytes += granted.bytes();
     reservedDistinct = distinct;
     cardinality = size;
-    if (granted.waited())
-      budgetWaits++;
     stats.counter(mode, granted.bytes(), size);
   }
 
@@ -360,28 +348,14 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   }
 
   /**
-   * What is left of the collector's one wait: the first waiting reservation starts the {@code budgetWaitMs} deadline, every later one
-   * (a top-up) waits only for its remainder, so the facet's latency is bounded by one wait however many times it grows.
-   */
-  private long remainingWaitMs() {
-    final long now = System.nanoTime();
-    if (!waitStarted) {
-      waitStarted = true;
-      waitStartNanos = now;
-    }
-    // elapsed, not a deadline: a huge setting cannot overflow the nanosecond clock
-    return Math.max(0, budgetWaitMs - TimeUnit.NANOSECONDS.toMillis(now - waitStartNanos));
-  }
-
-  /**
    * Tops the reservation up so it covers the hash counter holding {@code distinct} values.
    *
    * @return false when the budget refused: the facet is then unavailable and every reservation is released
    */
   private boolean reserveDistinct(final int distinct) {
     final long needed = terms != null ? terms.bytesAt(distinct) : growingHash.bytesAt(distinct);
-    if (needed > reservedBytes) {
-      final FacetMemoryBudget.Reservation more = FacetMemoryBudget.instance().reserve(needed - reservedBytes, remainingWaitMs());
+    if (needed > budget.bytes()) {
+      final FacetMemoryBudget.Reservation more = budget.reserve(needed - budget.bytes(), true);
       if (more == null) {
         unavailable = true;
         counter = null;
@@ -390,10 +364,6 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
         release();
         return false;
       }
-      reservations.add(more);
-      reservedBytes += more.bytes();
-      if (more.waited())
-        budgetWaits++;
       stats.toppedUp(more.bytes());
     }
     reservedDistinct = Math.max(reservedDistinct, distinct);
@@ -503,10 +473,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
    * matches. The literal itself when it does not convert, and for a list indexed BY ITEM (the column knows no item type).
    */
   private Object schemaConverted(final Object value) {
-    if (value == null || propertyType == null || database == null || kind == ColumnKind.ORDINAL_LIST)
-      return value;
-    final Object converted = Type.convertOrNull(database, value, propertyType.getJavaImplementation(database));
-    return converted != null ? converted : value;
+    return kind == ColumnKind.ORDINAL_LIST ? value : FacetBounds.schemaConverted(database, propertyType, value);
   }
 
   // ------------------------------------------------------------------------------------------------------------------- ranking

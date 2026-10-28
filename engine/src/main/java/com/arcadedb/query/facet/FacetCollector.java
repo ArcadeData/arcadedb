@@ -31,7 +31,9 @@ import com.arcadedb.index.columnar.PositionBitmap;
  * The {@code matches} given to {@link #collect} is the facet's match bitmap AND NOT the patched positions, not ANDed with the live
  * rows: an ORDINAL or ORDINAL_LIST collector hands it to {@code ColumnReader.forEachOrdinal}, which visits only live rows, and counts
  * as missing {@code matches.andCardinality(segment.live())} minus the distinct positions visited; a LONG or DOUBLE collector ANDs
- * {@code segment.live()} itself.
+ * {@code segment.live()} itself. A collector may keep the segment and its {@code matches} to count them at {@link #finish} (a
+ * histogram whose bucket boundaries depend on every matched value): both stay valid until the executor returns, since it closes the
+ * snapshots and drops the bitmaps only after every facet finished.
  */
 public interface FacetCollector {
   void beginBucket(int bucketId, ColumnarSnapshot snapshot, CrossBucketOrdinalMap map);
@@ -49,5 +51,18 @@ public interface FacetCollector {
    * failed before {@link #finish}. Idempotent, and a no-op after {@link #finish}.
    */
   default void release() {
+  }
+
+  /**
+   * How the facet was computed (the merged collectors included), for EXPLAIN and PROFILE; complete once {@link #finish} returned.
+   * Null for a collector that keeps none.
+   */
+  default FacetExecutionStats stats() {
+    return null;
+  }
+
+  /** The grants of the memory budget that were not immediate, this collector's and the merged ones'. */
+  default int budgetWaits() {
+    return 0;
   }
 }

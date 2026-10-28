@@ -204,13 +204,18 @@ public final class FacetSpecCompiler {
       final Object from = resolve(alias, r.from, ctx);
       final Object to = resolve(alias, r.to, ctx);
       if (from != null && to != null && isEmpty(from, to))
-        throw new CommandSQLParsingException("FACETS " + alias + ": empty range [" + from + ", " + to + ")");
+        throw emptyRange(alias, from, to);
       final String key = r.label != null ? r.label : bound(from) + "-" + bound(to);
       if (!keys.add(key))
         throw new CommandSQLParsingException("FACETS " + alias + ": duplicate range key '" + key + "'");
       ranges.add(new RangeBound(from, to, key));
     }
     return ranges;
+  }
+
+  /** The refusal of a range that holds no value; the range collector raises it too, once the bounds are in the column's encoding. */
+  static CommandSQLParsingException emptyRange(final String alias, final Object from, final Object to) {
+    return new CommandSQLParsingException("FACETS " + alias + ": empty range [" + from + ", " + to + ")");
   }
 
   private static String bound(final Object bound) {
@@ -262,6 +267,20 @@ public final class FacetSpecCompiler {
 
   private static void validateZoneAndOffset(final String alias, final boolean calendar, final HistogramInterval interval,
       final String timezone, final String offset) {
+    if (!calendar && interval.fixedNumber() > 0) {
+      // a numeric histogram: buckets start at OFFSET + k * step (a number), a zone means nothing to numbers
+      if (timezone != null)
+        throw new CommandSQLParsingException("FACETS " + alias + ": TIMEZONE applies only to time histograms (CALENDAR, or FIXED with a duration)");
+      if (offset != null)
+        try {
+          final double value = Double.parseDouble(offset.trim());
+          if (!Double.isFinite(value))
+            throw new NumberFormatException();
+        } catch (final NumberFormatException e) {
+          throw new CommandSQLParsingException("FACETS " + alias + ": the OFFSET of a numeric histogram must be a number, found '" + offset + "'");
+        }
+      return;
+    }
     try {
       if (!calendar && interval.fixedMillis() > 0) {
         // a FIXED time histogram follows the ts.timeBucket rules: one of timezone or offset, and a fixed-offset zone

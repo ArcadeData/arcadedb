@@ -249,6 +249,16 @@ class FacetSpecCompilerTest {
   }
 
   @Test
+  void numericHistogramTakesANumberOffsetAndNoTimezone() {
+    assertThat(((HistogramFacetSpec) only("h: n HISTOGRAM FIXED 100 OFFSET '+50'")).offset()).isEqualTo("+50");
+    assertThat(((HistogramFacetSpec) only("h: n HISTOGRAM FIXED 0.5 OFFSET '-0.25'")).offset()).isEqualTo("-0.25");
+    assertThatThrownBy(() -> only("h: n HISTOGRAM FIXED 100 OFFSET '1h'")).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("OFFSET of a numeric histogram must be a number");
+    assertThatThrownBy(() -> only("h: n HISTOGRAM FIXED 100 TIMEZONE 'UTC'")).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("TIMEZONE applies only to time histograms");
+  }
+
+  @Test
   void fixedUppercaseYearAndQuarterGetCalendarHint() {
     assertThatThrownBy(() -> FacetSpecCompiler.parseInterval(false, "1Y")).hasMessageContaining("use CALENDAR");
     assertThatThrownBy(() -> FacetSpecCompiler.parseInterval(false, "1Q")).hasMessageContaining("use CALENDAR");
