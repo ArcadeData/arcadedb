@@ -86,11 +86,12 @@ import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
 import io.github.jbellis.jvector.quantization.ImmutablePQVectors;
-import io.github.jbellis.jvector.quantization.MutablePQVectors;
+import io.github.jbellis.jvector.quantization.KMeansPlusPlusClusterer;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 import io.github.jbellis.jvector.util.Bits;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+import io.github.jbellis.jvector.vector.VectorUtil;
 import io.github.jbellis.jvector.vector.types.ByteSequence;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
@@ -113,6 +114,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.PrimitiveIterator;
@@ -132,6 +134,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -362,6 +365,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile PQCodes              pqCodes;
   /** How many vectors the last codebook was trained on; -1 until one has been. */
   private volatile int                  lastPqTrainingSampleSize = -1;
+  // How many PQ codes the most recent build carried over from the previous one instead of encoding (issue #10847)
+  private volatile int                  lastPqReusedCodes        = -1;
   private static final long             PQ_TRAINING_SAMPLE_SEED  = 0x10514L;
 
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
@@ -1018,6 +1023,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (held != null && held.ordinalMap() == oldOrdinalMap)
         pqCodes = held.boundTo(renumbered);
     }
+    // Codes bound to any other map name their vectors by ids that were just reissued to other vectors: unbound, so neither a
+    // search nor the next build, which carries codes over by vector id (issue #10847), reads them by the new ids
+    final PQCodes stale = pqCodes;
+    if (stale != null && stale.ordinalMap() != null && stale.ordinalMap() != ordinalToVectorId)
+      pqCodes = stale.boundTo(null);
 
     final List<DeltaVectorEntry> renumberedDelta = new ArrayList<>(deltaVectors.size());
     for (final DeltaVectorEntry entry : deltaVectors) {
@@ -1526,7 +1536,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
               final PQVectors loaded = pqFile.getPQVectors();
               // Bound to no map yet: no graph is chosen, and the reopen route that chooses one adopts them only for the
               // graph their recorded fingerprint names (issues #10698, #10786)
-              this.pqCodes = loaded != null ? new PQCodes(pqFile.getProductQuantization(), loaded, null) : null;
+              this.pqCodes = loaded != null ?
+                  new PQCodes(pqFile.getProductQuantization(), loaded, null, pqFile.codebookStatsOf(loaded)) :
+                  null;
               LogManager.instance().log(this, Level.INFO,
                   "PQ data loaded for index %s: %d vectors ready for zero-disk-I/O search",
                   indexName, loaded != null ? loaded.count() : 0);
@@ -4066,37 +4078,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final BuildScoreProvider scoreProvider;
       PQVectors earlyPqVectors = null;
       ProductQuantization earlyPq = null;
+      LSMVectorIndexPQFile.CodebookStats earlyPqStats = null;
 
       if (metadata.quantizationType == VectorQuantizationType.PRODUCT && isPQTrainable(vectors.size())) {
         LogManager.instance().log(this, Level.INFO,
             "PQ-accelerated graph build: computing PQ codebooks before graph construction for index: %s", indexName);
         final long pqStart = System.currentTimeMillis();
 
-        // Compute PQ subspaces
-        final int pqSubspaces = resolvePQSubspaces();
-
-        // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
-        earlyPq = trainProductQuantization(vectors, pqSubspaces);
-
-        // Encode all vectors. An ordinal whose vector cannot be read yields the placeholder, not null, and encoding
-        // that would put a PQ code carrying the placeholder's own direction into the table - a code the approximate
-        // search then scores as if it meant something. setZero records "no information here" instead, and unlike
-        // skipping the ordinal it keeps the code array dense (issue #5558).
-        final MutablePQVectors mutablePqVectors = new MutablePQVectors(earlyPq);
-        final ArcadePageVectorValues earlyPageValues =
-            vectors instanceof final ArcadePageVectorValues p ? p : null;
-        for (int i = 0; i < vectors.size(); i++) {
-          final VectorFloat<?> vector = vectors.getVector(i);
-          if (vector == null || (earlyPageValues != null && earlyPageValues.isDeletedSentinel(vector)))
-            mutablePqVectors.setZero(i);
-          else
-            mutablePqVectors.encodeAndSet(i, vector);
-        }
-        earlyPqVectors = mutablePqVectors;
+        // Keeps the codebook of the previous build while it fits, and encodes only the vectors it has no code for (issue
+        // #10847). An ordinal whose vector cannot be read yields the placeholder, not null, and encoding that would put a
+        // PQ code carrying the placeholder's own direction into the table: it gets the all-zero code, "no information
+        // here", which keeps the code array dense (issue #5558).
+        final PQEncoding encoding = encodeProductQuantization(vectors, finalActiveVectorIds);
+        earlyPq = encoding.quantization();
+        earlyPqVectors = encoding.codes();
+        earlyPqStats = encoding.stats();
 
         LogManager.instance().log(this, Level.INFO,
-            "PQ computed in %d ms (%d vectors encoded, %d subspaces). Using PQ scores for graph build.",
-            System.currentTimeMillis() - pqStart, mutablePqVectors.count(), pqSubspaces);
+            "PQ computed in %d ms (%d vectors, %d encoded, %d subspaces). Using PQ scores for graph build.",
+            System.currentTimeMillis() - pqStart, earlyPqVectors.count(), earlyPqVectors.count() - encoding.reused(),
+            earlyPq.getSubspaceCount());
 
         scoreProvider = BuildScoreProvider.pqBuildScoreProvider(metadata.similarityFunction, earlyPqVectors);
       } else {
@@ -4579,7 +4580,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // PQ was already computed for accelerated graph build — just persist it
               LogManager.instance().log(this, Level.INFO,
                   "Persisting PQ computed during accelerated graph build for index: %s", indexName);
-              persistProductQuantization(earlyPq, earlyPqVectors, finalActiveVectorIds, certifiedFingerprint);
+              persistProductQuantization(earlyPq, earlyPqVectors, finalActiveVectorIds, certifiedFingerprint, earlyPqStats);
             } else {
               buildAndPersistPQ(vectors, finalActiveVectorIds,
                   vectors.size() == finalActiveVectorIds.length ? certifiedFingerprint : null);
@@ -4921,13 +4922,243 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link ProductQuantization#MAX_PQ_TRAINING_SET_SIZE} on its own, so the effective size is capped at that too and
    * {@link #getLastPqTrainingSampleSize()} reports what the codebook really saw.
    */
-  private ProductQuantization trainProductQuantization(final RandomAccessVectorValues vectors, final int pqSubspaces) {
+  private ProductQuantization trainProductQuantization(final RandomAccessVectorValues vectors, final int pqSubspaces,
+      final ForkJoinPool pool) {
     final int total = vectors.size();
     final int sample = Math.min(total, Math.min(Math.max(metadata.pqTrainingLimit, metadata.pqClusters),
         ProductQuantization.MAX_PQ_TRAINING_SET_SIZE));
     lastPqTrainingSampleSize = sample;
     final RandomAccessVectorValues training = sample >= total ? vectors : new SampledVectorValues(vectors, sampleOrdinals(total, sample));
-    return ProductQuantization.compute(training, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
+    // On the graph-build pool, not on JVector's default executors, so arcadedb.vectorIndex.graphBuildParallelism bounds the
+    // CPU of the whole rebuild and nothing of it lands on the common pool (issue #10847)
+    return ProductQuantization.compute(training, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally,
+        KMeansPlusPlusClusterer.UNWEIGHTED, pool, pool);
+  }
+
+  // How many vectors the reconstruction error of a codebook is measured on: enough for a stable mean, few enough that the
+  // measure costs nothing next to the build (issue #10847)
+  private static final int PQ_ERROR_SAMPLE_SIZE = 1024;
+  // Below this many vectors added since the codebook was trained, their error says nothing yet: the growth factor decides
+  private static final int PQ_ERROR_MIN_NEW_VECTORS = 32;
+  // One chunk of codes is one byte array: below the array limit, with room to spare
+  private static final int PQ_CODES_CHUNK_BYTES = 1 << 30;
+
+  /**
+   * The codebook and the codes a build publishes: the codes of {@code vectors}, one per ordinal of {@code ordinalMap}.
+   *
+   * @param reused how many codes were carried over from the previous build rather than encoded
+   */
+  record PQEncoding(ProductQuantization quantization, PQVectors codes, LSMVectorIndexPQFile.CodebookStats stats, int reused) {
+  }
+
+  /**
+   * Encodes {@code vectors} with Product Quantization, keeping the codebook of the previous build while it still fits the
+   * data (issue #10847). Every rebuild used to train a new codebook and encode every vector again, also when a few percent
+   * of them had changed: at 1M vectors the PQ step alone took 26-37 s of every rebuild.
+   * <p>
+   * The codebook in hand is kept when it was built with the same configuration, it encoded vectors this build still has
+   * (its codes are bound to the ordinal map they were encoded by), and it passes the two tests of
+   * {@link GlobalConfiguration#VECTOR_INDEX_PQ_RETRAIN_GROWTH_FACTOR} and
+   * {@link GlobalConfiguration#VECTOR_INDEX_PQ_RETRAIN_ERROR_RATIO}: the index has not outgrown it, and the vectors added
+   * since are not encoded measurably worse than the ones it was trained on. A kept codebook keeps the code of every vector
+   * it already encoded: a vector id is never reissued for another vector (an update of a record mints a new id, and the
+   * renumbering of a compaction carries the codes over to the new ids), so the same id is the same vector. Only the vectors
+   * added since are encoded. Anything else trains a new codebook, as {@code REBUILD INDEX} does by building a new index.
+   * <p>
+   * Training and encoding run on the graph-build pool.
+   *
+   * @param ordinalMap the ordinal map {@code vectors} is laid out by, or {@code null} when it is laid out by none: then no
+   *                   code can be carried over
+   */
+  PQEncoding encodeProductQuantization(final RandomAccessVectorValues vectors, final int[] ordinalMap) {
+    final ForkJoinPool pool = getOrCreateGraphBuildPool();
+    final int pqSubspaces = resolvePQSubspaces();
+    final int count = vectors.size();
+
+    final PQCodes held = pqCodes;
+    final String keptBecause = reusableCodebookVerdict(held, pqSubspaces, count, ordinalMap);
+    if (keptBecause == null) {
+      final int[] previousOrdinals = previousOrdinalsOf(held.ordinalMap(), ordinalMap);
+      final int[] reused = new int[1];
+      final PQVectors codes = encodeVectors(held.quantization(), vectors, previousOrdinals, held.codes(), pool, reused);
+      final double ratio = getDatabase().getConfiguration().getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PQ_RETRAIN_ERROR_RATIO);
+      final double error = ratio > 0 ? meanErrorOfNewVectors(held.quantization(), vectors, previousOrdinals) : Double.NaN;
+      final double baseline = held.stats().baselineError();
+      if (Double.isNaN(error) || error <= Math.max(baseline, Double.MIN_NORMAL) * ratio) {
+        lastPqReusedCodes = reused[0];
+        LogManager.instance().log(this, Level.INFO,
+            "PQ codebook of index %s kept (trained at %d vectors, now %d): %d codes carried over, %d vectors encoded%s",
+            indexName, held.stats().trainedAtCount(), count, reused[0], count - reused[0],
+            Double.isNaN(error) ? "" : String.format(Locale.ENGLISH, ", reconstruction error %.4g against %.4g", error, baseline));
+        return new PQEncoding(held.quantization(), codes, held.stats(), reused[0]);
+      }
+      LogManager.instance().log(this, Level.INFO,
+          "PQ codebook of index %s trained again: the vectors added since it was trained are encoded with a reconstruction error of "
+              + "%.4g against %.4g, past the ratio %.2f of %s", indexName, error, baseline, ratio,
+          GlobalConfiguration.VECTOR_INDEX_PQ_RETRAIN_ERROR_RATIO.getKey());
+    } else
+      LogManager.instance().log(this, Level.FINE, "PQ codebook of index %s trained: %s", indexName, keptBecause);
+
+    final ProductQuantization quantization = trainProductQuantization(vectors, pqSubspaces, pool);
+    final PQVectors codes = encodeVectors(quantization, vectors, null, null, pool, new int[1]);
+    lastPqReusedCodes = 0;
+    final double baseline = meanRelativeError(quantization, vectors, sampleOrdinals(count, Math.min(count, PQ_ERROR_SAMPLE_SIZE)));
+    return new PQEncoding(quantization, codes,
+        new LSMVectorIndexPQFile.CodebookStats(count, Double.isNaN(baseline) ? 0D : baseline), 0);
+  }
+
+  /**
+   * {@code null} when the codebook of {@code held} may be kept for a build of {@code count} vectors laid out by
+   * {@code ordinalMap}, else why it may not.
+   */
+  private String reusableCodebookVerdict(final PQCodes held, final int pqSubspaces, final int count, final int[] ordinalMap) {
+    if (held == null || held.quantization() == null || held.codes() == null)
+      return "no codebook in hand";
+    if (held.stats() == null)
+      return "the codebook in hand carries no statistics (written by an older build)";
+    if (held.ordinalMap() == null || ordinalMap == null || held.ordinalMap().length != held.codes().count()
+        || ordinalMap.length != count)
+      return "the codes in hand, or the vectors to encode, are not laid out by an ordinal map";
+    final ProductQuantization quantization = held.quantization();
+    if (quantization.getSubspaceCount() != pqSubspaces || quantization.getClusterCount() != metadata.pqClusters
+        || quantization.getOriginalDimension() != metadata.dimensions
+        || (quantization.getGlobalCentroid() != null) != metadata.pqCenterGlobally)
+      return "the PQ configuration changed";
+    final float growth = getDatabase().getConfiguration().getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PQ_RETRAIN_GROWTH_FACTOR);
+    if (growth <= 0)
+      return GlobalConfiguration.VECTOR_INDEX_PQ_RETRAIN_GROWTH_FACTOR.getKey() + " retrains on every rebuild";
+    if (count > held.stats().trainedAtCount() * (double) growth)
+      return "the index grew from " + held.stats().trainedAtCount() + " to " + count + " vectors, past the factor " + growth;
+    if (!isAscending(held.ordinalMap()) || !isAscending(ordinalMap))
+      return "an ordinal map is not in vector id order";
+    return null;
+  }
+
+  /**
+   * For each ordinal of {@code current}, the ordinal of {@code previous} holding the same vector id, or -1 when the vector
+   * is new. Both maps list vector ids in ascending order (a dead id of a renumbered map is -1, and matches nothing), so one
+   * merge pass answers, without a lookup structure.
+   */
+  static int[] previousOrdinalsOf(final int[] previous, final int[] current) {
+    final int[] result = new int[current.length];
+    int p = 0;
+    for (int i = 0; i < current.length; i++) {
+      final int id = current[i];
+      while (p < previous.length && previous[p] < id)
+        p++;
+      result[i] = id >= 0 && p < previous.length && previous[p] == id ? p : -1;
+    }
+    return result;
+  }
+
+  private static boolean isAscending(final int[] map) {
+    int last = Integer.MIN_VALUE;
+    for (final int id : map) {
+      // A dead entry of a renumbered map (-1) is skipped: it sorts nowhere and matches nothing
+      if (id < 0)
+        continue;
+      if (id <= last)
+        return false;
+      last = id;
+    }
+    return true;
+  }
+
+  /**
+   * Encodes one code per ordinal of {@code vectors} on {@code pool}, into contiguous chunks rather than one object per code.
+   * An ordinal whose {@code previousOrdinals} entry names a code of {@code previousCodes} gets a copy of it; an unreadable
+   * vector, or a deleted one, gets the all-zero code that means "no information here" (issue #5558); every other one is
+   * encoded. A carried-over all-zero code is encoded again, since it may stand for a vector that could not be read then.
+   *
+   * @param reused set to the number of codes carried over
+   */
+  private static PQVectors encodeVectors(final ProductQuantization quantization, final RandomAccessVectorValues vectors,
+      final int[] previousOrdinals, final PQVectors previousCodes, final ForkJoinPool pool, final int[] reused) {
+    final int count = vectors.size();
+    final int codeSize = quantization.compressedVectorSize();
+    final int perChunk = Math.max(1, Math.min(count, PQ_CODES_CHUNK_BYTES / codeSize));
+    final int chunkCount = (count + perChunk - 1) / perChunk;
+    final ByteSequence<?>[] chunks = new ByteSequence<?>[chunkCount];
+    for (int c = 0; c < chunkCount; c++)
+      chunks[c] = vts.createByteSequence(Math.min(perChunk, count - c * perChunk) * codeSize);
+
+    final Supplier<RandomAccessVectorValues> perThread = vectors.threadLocalSupplier();
+    final LongAdder carried = new LongAdder();
+    pool.submit(() -> IntStream.range(0, count).parallel().forEach(ordinal -> {
+      final ByteSequence<?> chunk = chunks[ordinal / perChunk];
+      final int offset = (ordinal % perChunk) * codeSize;
+      final int previous = previousOrdinals != null ? previousOrdinals[ordinal] : -1;
+      if (previous >= 0 && copyNonZeroCode(previousCodes.get(previous), chunk, offset, codeSize)) {
+        carried.increment();
+        return;
+      }
+      final RandomAccessVectorValues values = perThread.get();
+      final VectorFloat<?> vector = values.getVector(ordinal);
+      if (vector == null || (values instanceof final ArcadePageVectorValues page && page.isDeletedSentinel(vector)))
+        return; // THE CHUNK IS ZEROED: THE ALL-ZERO CODE
+      quantization.encodeTo(vector, chunk.slice(offset, codeSize));
+    })).join();
+
+    reused[0] = carried.intValue();
+    return new ImmutablePQVectors(quantization, chunks, count, perChunk);
+  }
+
+  /** Copies {@code code} into {@code chunk} at {@code offset} unless it is the all-zero code, and says whether it did. */
+  private static boolean copyNonZeroCode(final ByteSequence<?> code, final ByteSequence<?> chunk, final int offset, final int codeSize) {
+    boolean zero = true;
+    for (int k = 0; k < codeSize && zero; k++)
+      zero = code.get(k) == 0;
+    if (zero)
+      return false;
+    // Element by element: a code read from the codes is a slice, which ByteSequence.copyFrom does not take as a source
+    for (int k = 0; k < codeSize; k++)
+      chunk.set(offset + k, code.get(k));
+    return true;
+  }
+
+  /**
+   * The mean relative reconstruction error of {@code quantization} on a sample of the vectors that are new since the
+   * previous build ({@code previousOrdinals} -1), or {@code NaN} when there are too few of them to say anything.
+   */
+  private static double meanErrorOfNewVectors(final ProductQuantization quantization, final RandomAccessVectorValues vectors,
+      final int[] previousOrdinals) {
+    int added = 0;
+    for (final int previous : previousOrdinals)
+      if (previous < 0)
+        added++;
+    if (added < PQ_ERROR_MIN_NEW_VECTORS)
+      return Double.NaN;
+
+    // Every stride-th new vector, so the sample spans the whole id range rather than its head
+    final int sample = Math.min(added, PQ_ERROR_SAMPLE_SIZE);
+    final int stride = added / sample;
+    final int[] ordinals = new int[sample];
+    for (int ordinal = 0, seen = 0, taken = 0; ordinal < previousOrdinals.length && taken < sample; ordinal++)
+      if (previousOrdinals[ordinal] < 0 && seen++ % stride == 0)
+        ordinals[taken++] = ordinal;
+    return meanRelativeError(quantization, vectors, ordinals);
+  }
+
+  /**
+   * The mean of {@code |v - decode(encode(v))|^2 / |v|^2} over the vectors at {@code ordinals}: relative, so a codebook is
+   * judged the same way whatever the magnitude of the vectors. Unreadable, deleted and zero vectors are not counted;
+   * {@code NaN} when none is left.
+   */
+  static double meanRelativeError(final ProductQuantization quantization, final RandomAccessVectorValues vectors, final int[] ordinals) {
+    final ArcadePageVectorValues page = vectors instanceof final ArcadePageVectorValues p ? p : null;
+    double sum = 0;
+    int counted = 0;
+    for (final int ordinal : ordinals) {
+      final VectorFloat<?> vector = vectors.getVector(ordinal);
+      if (vector == null || (page != null && page.isDeletedSentinel(vector)))
+        continue;
+      final double norm = VectorUtil.dotProduct(vector, vector);
+      if (!(norm > 0))
+        continue;
+      sum += quantization.reconstructionError(vector) / norm;
+      counted++;
+    }
+    return counted > 0 ? sum / counted : Double.NaN;
   }
 
   /**
@@ -5007,14 +5238,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * @return how many PQ codes the most recent build of this index carried over from the previous one, 0 when it trained a
+   * new codebook, -1 when no PQ was built yet (issue #10847)
+   */
+  int getLastPqReusedCodes() {
+    return lastPqReusedCodes;
+  }
+
+  /**
    * PQ codes, the codebook that encoded them, and the ordinal map they are laid out by: the code of ordinal {@code i}
    * encodes the vector of {@code ordinalMap[i]} (issue #10786). {@code ordinalMap} is {@code null} for codes read from the
    * PQ file before a graph was chosen: those are bound to a map only when a reopen route has checked, against the
    * fingerprint the file records, that they were built for the graph it publishes.
    */
-  record PQCodes(ProductQuantization quantization, PQVectors codes, int[] ordinalMap) {
+  record PQCodes(ProductQuantization quantization, PQVectors codes, int[] ordinalMap, LSMVectorIndexPQFile.CodebookStats stats) {
     PQCodes boundTo(final int[] map) {
-      return new PQCodes(quantization, codes, map);
+      return new PQCodes(quantization, codes, map, stats);
     }
   }
 
@@ -5169,9 +5408,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param ordinalMap       the ordinal map the codes were encoded with, which they are published bound to (issue
    *                         #10786), or {@code null} when they are not laid out by one: searches then never use them
    * @param graphFingerprint the fingerprint certified for the ordinal map the codes were built with, or {@code null}
+   * @param stats            what the codebook was trained on, which the next build judges it by (issue #10847)
    */
   private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes, final int[] ordinalMap,
-      final Long graphFingerprint) {
+      final Long graphFingerprint, final LSMVectorIndexPQFile.CodebookStats stats) {
     // One code per ordinal, or the codes are not that map's: anything else is published bound to no map
     final int[] boundTo = ordinalMap != null && ordinalMap.length == codes.count() ? ordinalMap : null;
     if (boundTo == null)
@@ -5185,7 +5425,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // on disk, which would only say which graph is persisted NOW. Recorded only with exactly one code per ordinal: any
       // other pairing is not that graph's, and codes without an identity send the reopen down the walk.
       final Long builtFor = graphFingerprint != null && boundTo != null ? graphFingerprint : null;
-      pqFile.writePQ(pq, codes, builtFor);
+      pqFile.writePQ(pq, codes, builtFor, stats);
       persistedPQKnownStale = false;
     } catch (final Throwable e) {
       // Throwable, not IndexException: writePQ wraps every Exception in it, but an Error (an OutOfMemoryError while
@@ -5210,7 +5450,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     // Bound to the map they were encoded with: a search pins the map beside the graph, so a graph published since (a
     // later build, or this build's own graph when the codes are a reopen's) is not walked through them (issue #10786)
-    this.pqCodes = new PQCodes(pq, codes, boundTo);
+    this.pqCodes = new PQCodes(pq, codes, boundTo, stats);
   }
 
   /**
@@ -5286,43 +5526,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       final long startTime = System.currentTimeMillis();
 
-      // Compute PQ subspaces (M) - auto-calculate if not specified
-      final int pqSubspaces = resolvePQSubspaces();
-
-      final int pqClusters = metadata.pqClusters;
-      final boolean centerGlobally = metadata.pqCenterGlobally;
-
       LogManager.instance().log(this, Level.INFO,
           "PQ configuration: M=%d subspaces, K=%d clusters, globalCentering=%b",
-          pqSubspaces, pqClusters, centerGlobally);
+          resolvePQSubspaces(), metadata.pqClusters, metadata.pqCenterGlobally);
 
-      // Build ProductQuantization codebook (trains on at most metadata.pqTrainingLimit vectors)
-      final ProductQuantization pq = trainProductQuantization(vectors, pqSubspaces);
-
-      LogManager.instance().log(this, Level.INFO,
-          "PQ codebook computed in %d ms (trained on %d of %d vectors)",
-          System.currentTimeMillis() - startTime, lastPqTrainingSampleSize, vectorCount);
-
-      // Encode all vectors with PQ
-      final long encodeStart = System.currentTimeMillis();
-      final MutablePQVectors encodedVectors = new MutablePQVectors(pq);
-      // Same as the early-PQ loop above: the placeholder is not null, and a PQ code built from it would carry its
-      // direction into approximate scoring. Record "no information here" instead (issue #5558).
-      final ArcadePageVectorValues encodePageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
-      for (int i = 0; i < vectorCount; i++) {
-        final VectorFloat<?> vector = vectors.getVector(i);
-        if (vector == null || (encodePageValues != null && encodePageValues.isDeletedSentinel(vector)))
-          encodedVectors.setZero(i);
-        else
-          encodedVectors.encodeAndSet(i, vector);
-      }
+      // The same encoding as the early PQ of a graph build: the codebook in hand is kept while it fits, and only the
+      // vectors without a code are encoded (issue #10847). The placeholder of an unreadable vector gets the all-zero code,
+      // "no information here", never a code carrying the placeholder's own direction (issue #5558).
+      final PQEncoding encoding = encodeProductQuantization(vectors, ordinalMap);
+      final ProductQuantization pq = encoding.quantization();
+      final int pqSubspaces = pq.getSubspaceCount();
 
       LogManager.instance().log(this, Level.INFO,
-          "PQ encoding completed in %d ms (%d vectors encoded)",
-          System.currentTimeMillis() - encodeStart, encodedVectors.count());
+          "PQ encoding completed in %d ms (%d vectors, %d encoded, %d codes carried over)",
+          System.currentTimeMillis() - startTime, encoding.codes().count(), encoding.codes().count() - encoding.reused(),
+          encoding.reused());
 
       // Persist PQ data to file and cache it in memory for immediate zero-disk-I/O search
-      persistProductQuantization(pq, encodedVectors, ordinalMap, graphFingerprint);
+      persistProductQuantization(pq, encoding.codes(), ordinalMap, graphFingerprint, encoding.stats());
 
       final long totalTime = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,

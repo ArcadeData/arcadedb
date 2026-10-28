@@ -155,7 +155,8 @@ class Issue10754JsonArrayDetectionTest {
       assertThat(db.countType("Document", true)).isEqualTo(2);
       try (final ResultSet rs = db.query("sql", "select from Document where id = 1")) {
         final Document first = rs.next().getRecord().get().asDocument();
-        assertThat(first.get("count")).isEqualTo(42L);
+        // the value the HTTP API reads from the same token: one JSON number decoder (issue #10756)
+        assertThat(first.get("count")).isEqualTo(42);
         assertThat(first.get("bigId")).isEqualTo(9007199254740993L);
         assertThat(first.get("price")).isEqualTo(1.5);
       }
@@ -175,7 +176,7 @@ class Issue10754JsonArrayDetectionTest {
     }
   }
 
-  /** An integer read as a LONG still lands as the declared type of a property the schema already holds. */
+  /** An integer read as an INTEGER still lands as the declared type of a property the schema already holds. */
   @Test
   void integerIntoAnExistingDoublePropertyIsConverted() throws Exception {
     final File source = new File("target/importer-10754-declared.json");
@@ -240,15 +241,14 @@ class Issue10754JsonArrayDetectionTest {
     }
   }
 
-  /** JSON's only non-canonical integer within the long range is "-0": it is the LONG zero, not a DECIMAL. */
+  /** JSON's only non-canonical integer within the long range is "-0": it is the integer zero, not a DECIMAL. */
   @Test
-  void negativeZeroIsTheLongZero() throws Exception {
+  void negativeZeroIsTheIntegerZero() throws Exception {
     final String databasePath = importSource("importer-10754-negzero.json",
         "[{\"id\":1,\"z\":-0,\"min\":" + Long.MIN_VALUE + "}]", "");
     try (final Database db = new DatabaseFactory(databasePath).open()) {
       final Document doc = db.iterateType("Document", true).next().asDocument();
-      assertThat(doc.get("z")).isEqualTo(0L);
-      // the one value parseLong() also answers for "not canonical": still read as the LONG it is
+      assertThat(doc.get("z")).isEqualTo(0);
       assertThat(doc.get("min")).isEqualTo(Long.MIN_VALUE);
     } finally {
       dropDatabase(databasePath);

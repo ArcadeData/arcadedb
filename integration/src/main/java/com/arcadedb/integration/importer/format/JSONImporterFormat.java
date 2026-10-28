@@ -30,7 +30,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
-import com.arcadedb.integration.importer.CanonicalNumber;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -42,13 +41,13 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -317,27 +316,45 @@ public class JSONImporterFormat implements FormatImporter {
   }
 
   /**
-   * A JSON number as the value it spells: a {@code Long} when it is an integer a {@code long} holds, a
-   * {@code BigDecimal} when it is an integer that is larger or a magnitude a {@code double} cannot hold, a
-   * {@code Double} otherwise. Every number used to be read
-   * as a {@code double}, so {@code 42} was stored as {@code 42.0} and {@code 9007199254740993} as
-   * {@code 9007199254740992} (issue #10754).
+   * A JSON number as the value it spells, decoded by {@link JSONObject#parseNumber(String)}, the same decoder the HTTP API
+   * and every other JSON reader of the project use: an {@code Integer} or a {@code Long} for an integer, a {@code Double}
+   * when a double holds the token, a {@code BigDecimal} otherwise. Every number used to be read as a {@code double}, so
+   * {@code 42} was stored as {@code 42.0} and {@code 9007199254740993} as {@code 9007199254740992} (issues #10754, #10756),
+   * and a second decoder here then disagreed with that one on decimals of more than 17 digits and on hostile tokens.
    */
-  private static Object readNumber(final JsonReader reader) throws IOException {
-    final String text = reader.nextString();
-    // ONE SCAN: THE SENTINEL IS ALSO Long.MIN_VALUE'S OWN VALUE, WHICH isLong() TELLS APART ONLY THEN
-    final long value = CanonicalNumber.parseLong(text);
-    if (value != CanonicalNumber.NOT_CANONICAL_LONG || CanonicalNumber.isLong(text))
-      return value;
-    if (text.indexOf('.') < 0 && text.indexOf('e') < 0 && text.indexOf('E') < 0)
-      // JSON FORBIDS LEADING ZEROS AND A '+', SO AN INTEGER THAT IS NOT A CANONICAL LONG IS EITHER "-0" OR ONE TOO
-      // LARGE FOR A LONG
-      return "-0".equals(text) ? Long.valueOf(0L) : new BigDecimal(text);
-    // A MAGNITUDE A DOUBLE CANNOT HOLD - 1e309 OVERFLOWS TO INFINITY, 1e-400 UNDERFLOWS TO ZERO - IS KEPT EXACT INSTEAD
-    final double decimal = Double.parseDouble(text);
-    if (Double.isFinite(decimal) && (decimal != 0D || new BigDecimal(text).signum() == 0))
-      return decimal;
-    return new BigDecimal(text);
+  private Object readNumber(final JsonReader reader, final ImporterSettings settings, final AtomicBoolean recordFailed)
+      throws IOException {
+    final String path = reader.getPath();
+    final String token = reader.nextString();
+    try {
+      return JSONObject.parseNumber(token);
+    } catch (final JSONException e) {
+      // A TOKEN ONLY A HOSTILE PAYLOAD WRITES (1e999999999). THE TOKEN IS CONSUMED, SO THE READER STAYS IN STEP: THE
+      // ENCLOSING TOP-LEVEL RECORD IS DISCARDED THE WAY A FAILED NESTED OBJECT DISCARDS IT, NOT BY UNWINDING MID-OBJECT
+      if (!settings.isSkipOnRowError())
+        throw e;
+      logSkippedRecord("JSON number at " + path, e);
+      recordFailed.set(true);
+      return null;
+    }
+  }
+
+  /**
+   * The type of the unique {@code @id} property, declared from the first record's value when the mapping names no
+   * {@code @idType}. The first value is one sample of a whole column, so a number declares the widest type of its kind
+   * rather than its own: an INTEGER id column refuses the first id past 2^31, and a DOUBLE one rounds two decimal ids
+   * that differ past the 17th digit into one key of the unique index, which then discards the second record as an
+   * already imported one (issue #10756).
+   */
+  static Type idTypeOf(final Object idValue) {
+    return switch (idValue) {
+      case Integer i -> Type.LONG;
+      case Long l -> Type.LONG;
+      case Short s -> Type.LONG;
+      case Byte b -> Type.LONG;
+      case Number n -> Type.DECIMAL;
+      default -> Type.getTypeByValue(idValue);
+    };
   }
 
   private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,
@@ -377,7 +394,7 @@ public class JSONImporterFormat implements FormatImporter {
         attributeValue = reader.nextString();
         break;
       case NUMBER:
-        attributeValue = readNumber(reader);
+        attributeValue = readNumber(reader, settings, recordFailed);
         break;
       case BOOLEAN:
         attributeValue = reader.nextBoolean();
@@ -554,7 +571,7 @@ public class JSONImporterFormat implements FormatImporter {
           return null;
         }
 
-        Type propType = Type.getTypeByValue(idValue);
+        Type propType = idTypeOf(idValue);
         if (mapping.has("@idType"))
           propType = Type.getTypeByName(mapping.getString("@idType").toUpperCase(Locale.ENGLISH));
 
@@ -664,7 +681,7 @@ public class JSONImporterFormat implements FormatImporter {
         entryValue = reader.nextString();
         break;
       case NUMBER:
-        entryValue = readNumber(reader);
+        entryValue = readNumber(reader, settings, recordFailed);
         break;
       case BOOLEAN:
         entryValue = reader.nextBoolean();

@@ -85,6 +85,7 @@ import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -136,6 +137,49 @@ public class BinarySerializer {
   public BinarySerializer(final ContextConfiguration configuration) {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+  }
+
+  private static final BooleanSupplier ALWAYS = () -> true;
+
+  /**
+   * Whether a {@code float[]} / {@code double[]} is written in its fixed-width form ({@link BinaryTypes#TYPE_ARRAY_OF_FLOATS_FIXED},
+   * {@link BinaryTypes#TYPE_ARRAY_OF_DOUBLES_FIXED}) rather than as varints (issue #10856). Always, unless the database is
+   * replicated: a node of a build that predates the form cannot read it, so the HA layer answers "only once every peer
+   * advertises that it decodes it", and the varint form, which every build reads, is written until then.
+   */
+  private volatile BooleanSupplier fixedWidthFloatArrays = ALWAYS;
+
+  /** Sets who decides whether float and double arrays are written in their fixed-width form; {@code null} restores "always". */
+  public void setFixedWidthFloatArrays(final BooleanSupplier policy) {
+    this.fixedWidthFloatArrays = policy != null ? policy : ALWAYS;
+  }
+
+  /**
+   * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
+   * array when {@link #fixedWidthFloatArrays} allows it, {@code type} itself otherwise. Only the record's own type bytes go
+   * through here; an index key is written under its declared type, so an index page never changes form.
+   */
+  private byte storageTypeOf(final byte type) {
+    if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
+      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
+    if (type == BinaryTypes.TYPE_ARRAY_OF_DOUBLES)
+      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED : type;
+    return type;
+  }
+
+  /** A {@code Float[]} with no null element (a null one makes the value a TYPE_LIST, see BinaryTypes.getTypeFromValue). */
+  private static float[] unbox(final Float[] boxed) {
+    final float[] values = new float[boxed.length];
+    for (int i = 0; i < boxed.length; i++)
+      values[i] = boxed[i];
+    return values;
+  }
+
+  private static double[] unbox(final Double[] boxed) {
+    final double[] values = new double[boxed.length];
+    for (int i = 0; i < boxed.length; i++)
+      values[i] = boxed[i];
+    return values;
   }
 
   public Binary serialize(final DatabaseInternal database, final Record record) {
@@ -821,6 +865,7 @@ public class BinarySerializer {
               entryType = BinaryTypes.TYPE_NULL;
               valueToWrite = null;
             }
+            entryType = storageTypeOf(entryType);
             content.putByte(entryType);
             serializeValue(database, content, entryType, valueToWrite, applyEncryption);
           } catch (Exception e) {
@@ -900,6 +945,7 @@ public class BinarySerializer {
       for (int i = 0; i < validCount; ++i) {
         content.putByte(keyTypes[i]);
         serializeValue(database, content, keyTypes[i], keys[i], applyEncryption);
+        valueTypes[i] = storageTypeOf(valueTypes[i]);
         content.putByte(valueTypes[i]);
         serializeValue(database, content, valueTypes[i], values[i], applyEncryption);
       }
@@ -992,6 +1038,18 @@ public class BinarySerializer {
       }
       break;
     }
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED: {
+      final float[] floats = value instanceof float[] array ? array : unbox((Float[]) value);
+      content.putUnsignedNumber(floats.length);
+      content.putFloatArray(floats);
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED: {
+      final double[] doubles = value instanceof double[] array ? array : unbox((Double[]) value);
+      content.putUnsignedNumber(doubles.length);
+      content.putDoubleArray(doubles);
+      break;
+    }
     default:
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '%s', type not supported", value);
     }
@@ -1027,6 +1085,7 @@ public class BinarySerializer {
         entryType = BinaryTypes.TYPE_NULL;
         valueToWrite = null;
       }
+      entryType = storageTypeOf(entryType);
       content.putByte(entryType);
       serializeValue(database, content, entryType, valueToWrite, applyEncryption);
     }
@@ -1207,6 +1266,12 @@ public class BinarySerializer {
       value = array;
       break;
     }
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED:
+      value = content.getFloatArray(checkDeserializedCount(content.getUnsignedNumber(), content));
+      break;
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED:
+      value = content.getDoubleArray(checkDeserializedCount(content.getUnsignedNumber(), content));
+      break;
 
     default:
       throw new SerializationException("Error on deserializing value of unknown type " + type);
@@ -1356,7 +1421,8 @@ public class BinarySerializer {
     for (int i = 0; i < validCount; i++) {
       final String propertyName = validNames[i];
       Object value = validValues[i];
-      byte type = validTypes[i];
+      // INLINE AND EXTERNAL ALIKE: THE EXTERNAL BLOB CARRIES THE SAME TYPE BYTE (issue #10856)
+      byte type = storageTypeOf(validTypes[i]);
 
       // WRITE PROPERTY ID FROM THE DICTIONARY
       header.putUnsignedNumber(dictionary.getIdByName(propertyName, true));

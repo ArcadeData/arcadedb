@@ -4111,7 +4111,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     for (final RaftPeer peer : peers) {
       if (peer.getId().equals(leaderId))
         continue;
-      final String reader = resolveRoutingAddress(protocol, declared, peer.getId());
+      // From the peer in hand, which is the live configuration's entry: resolving it by id against the server list gave
+      // nothing for a peer that joined at runtime, and the reader was skipped without a word (issue #10861)
+      final String reader = resolveRoutingAddress(protocol, declared, peer);
       if (reader == null)
         continue;
       addresses[resolved] = reader;
@@ -4270,7 +4272,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * seen here trips the same one-time warning.
    */
   public Map<RaftPeerId, PeerHttpEndpoint> getPeerHttpEndpoints() {
-    final Collection<RaftPeer> peers = raftGroup.getPeers();
+    // Every known peer, not the server list alone: a peer that joined at runtime is reported by /api/v1/cluster too, and
+    // without an httpAddress it was invisible to anything discovering the nodes there (issue #10861)
+    final Collection<RaftPeer> peers = knownPeers();
     final String[] addresses = new String[peers.size()];
     final boolean[] fromConfig = new boolean[addresses.length];
     final RaftPeerId[] owners = new RaftPeerId[addresses.length];
@@ -4310,10 +4314,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return null;
 
     final Map<RaftPeerId, String> declared = https ? httpsAddresses : httpAddresses;
-    final Collection<RaftPeer> peers = raftGroup.getPeers();
-    // Index 0 is always the peer asked about. The +1 is not slack: raftGroup holds the peers HA_SERVER_LIST was
-    // parsed into, so a peer that joined at runtime (addPeer, the Kubernetes auto-join) is not in getPeers() and
-    // occupies a slot beyond it - the same sizing getRoutingTable uses, for the same reason.
+    // Every known peer can claim the address, a peer that joined at runtime included (issue #10861).
+    final Collection<RaftPeer> peers = knownPeers();
+    // Index 0 is always the peer asked about. The +1 is not slack: the peer asked about need not be among the known
+    // peers (one removed since the caller read its id), and then it occupies a slot beyond them - the same sizing
+    // getRoutingTable uses, for the same reason.
     final String[] addresses = new String[peers.size() + 1];
     final boolean[] fromConfig = new boolean[addresses.length];
     final RaftPeerId[] owners = new RaftPeerId[addresses.length];
@@ -4325,7 +4330,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     for (final RaftPeer peer : peers) {
       if (peer.getId().equals(peerId))
         continue;
-      final String other = https ? resolveHttpsAddress(peer.getId()) : resolveHttpAddress(peer);
+      final String other = https ? resolveHttpsAddress(peer) : resolveHttpAddress(peer);
       if (other == null)
         continue;
       addresses[resolved] = other;
@@ -4520,8 +4525,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String configured = declared.get(peerId);
     if (configured != null)
       return configured;
+    return deriveRoutingAddressWithWarning(protocol, peerRaftAddress(peerId));
+  }
+
+  /** Overload that avoids the peer lookup when the {@link RaftPeer} is already in hand. */
+  private String resolveRoutingAddress(final HAServerPlugin.ROUTING_PROTOCOL protocol,
+      final Map<RaftPeerId, String> declared, final RaftPeer peer) {
+    final String configured = declared.get(peer.getId());
+    if (configured != null)
+      return configured;
+    return deriveRoutingAddressWithWarning(protocol, peer.getAddress());
+  }
+
+  private String deriveRoutingAddressWithWarning(final HAServerPlugin.ROUTING_PROTOCOL protocol, final String raftAddress) {
     final int localPort = localRoutingPort(protocol);
-    final String derived = deriveRoutingAddress(peerRaftAddress(peerId), localPort);
+    final String derived = deriveRoutingAddress(raftAddress, localPort);
     if (derived != null && routingFallbackWarned.get(protocol).compareAndSet(false, true)) {
       final String field = routingConfigField(protocol);
       LogManager.instance().log(this, Level.WARNING,
@@ -4615,6 +4633,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return deriveHttpsAddressWithWarning(peerRaftAddress(peerId));
   }
 
+  /** Overload that avoids the peer lookup when the {@link RaftPeer} is already in hand. */
+  private String resolveHttpsAddress(final RaftPeer peer) {
+    final String configured = httpsAddresses.get(peer.getId());
+    if (configured != null)
+      return configured;
+    return deriveHttpsAddressWithWarning(peer.getAddress());
+  }
+
   private String deriveHttpsAddressWithWarning(final String raftAddress) {
     if (raftAddress == null)
       return null;
@@ -4633,12 +4659,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return derived;
   }
 
-  /** Returns the configured Raft address (host:port) of a peer, or {@code null} if not found. */
+  /**
+   * Returns the Raft address (host:port) of a peer, or {@code null} if this node knows no such peer. The live Raft
+   * configuration is asked first, then the server list: a peer that joined at runtime (the Kubernetes auto-join,
+   * {@code addPeer}) is in the first only, and every address handed to a client or an operator derives from this - the
+   * Bolt/gRPC routing table, the HTTP and HTTPS endpoints, the capability probe - so a joined peer was replicated to and
+   * never routed to (issue #10861). A declared peer the configuration dropped still resolves through the second, which
+   * the step-down and handoff paths rely on (issue #7040). The same precedence {@link ClusterMembership#knownPeers} gives
+   * an id present in both: the address the cluster committed, not the one declared.
+   */
   private String peerRaftAddress(final RaftPeerId peerId) {
+    for (final RaftPeer peer : getLivePeers())
+      if (peer.getId().equals(peerId))
+        return peer.getAddress();
     for (final RaftPeer peer : raftGroup.getPeers())
       if (peer.getId().equals(peerId))
         return peer.getAddress();
     return null;
+  }
+
+  /**
+   * Every peer this node knows: the server list reconciled with the live configuration ({@link ClusterMembership#knownPeers}).
+   * The view of a caller that reports, disambiguates or fans out to the addresses of members AND of declared peers that are
+   * not (or no longer) members, which a peer that joined at runtime must be part of (issue #10861): the server list alone
+   * left such a peer out of the cluster status, the routing table, a logout's token revocation and a cross-node verify.
+   */
+  List<RaftPeer> knownPeers() {
+    return ClusterMembership.knownPeers(raftGroup.getPeers(), getLivePeers());
   }
 
   /**
@@ -7865,6 +7912,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Drops the cached {@link #canStateFullTextCorpusDeltas} answer; called when the membership changes. */
   void invalidateFullTextCorpusDeltaCapability() {
     fullTextCorpusDeltaCapability.invalidate();
+  }
+
+  /** Drops the cached {@link #canWriteFixedWidthFloatArrays} answer; called when the membership changes. */
+  void invalidateFixedWidthFloatArraysCapability() {
+    fixedWidthFloatArraysCapability.invalidate();
+  }
+
+  // Asked on every write of a float or double array, so the same short-lived, membership-aware verdict as the two above
+  private final TxPreparedAtCapabilityCache fixedWidthFloatArraysCapability = new TxPreparedAtCapabilityCache(
+      () -> allPeersSupport(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS), System::currentTimeMillis, 1_000L);
+
+  /**
+   * Whether every peer reads the fixed-width form of a float or double array, so a record may be written in it (issue #10856).
+   * Until then the varint form is written, which every build reads: a "no" costs bytes, a wrong "yes" an unreadable record on
+   * the peer that predates the form.
+   */
+  public boolean canWriteFixedWidthFloatArrays() {
+    return fixedWidthFloatArraysCapability.isCapable();
   }
 
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */

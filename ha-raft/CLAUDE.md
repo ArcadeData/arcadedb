@@ -62,6 +62,15 @@ Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : lo
 
 **Any change to what "replica" means must be applied to all three.** This has already caused one incomplete fix that review caught, twice: the second time (#7040) `/api/v1/cluster` learned to tell a declared peer from a member of the live Raft configuration while these three still iterated the static `raftGroup.getPeers()`. Since then the membership itself comes from one place - `ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers()`, read through `RaftHAServer.configuredPeers()` - and `GetClusterHandler` reads the same reconciliation. Grep `RaftHAServer.java` for `raftGroup.getPeers()` before claiming such a fix is complete: the only legitimate direct readers left are the ones that want the *declared* list on purpose (`getConfiguredServers()`, `getDeclaredPeers()`, the presence matrix, the membership reconciliation itself).
 
+**Addresses follow the same rule as membership (#10861).** A peer that joined at runtime (the Kubernetes auto-join,
+`addPeer`) is in the live configuration only, so every path that turns a peer into an ADDRESS for a client or an
+operator must see it: `peerRaftAddress()` asks the live configuration first and the server list second (a declared peer
+the configuration dropped still resolves, the step-down and handoff paths rely on it), `routingTableFor` resolves each
+reader from the `RaftPeer` it iterates, and the reporting / fan-out loops (`getPeerHttpEndpoints`,
+`unambiguousPeerAddress`, `getClusterPeers`, the logout revocation, `VERIFY DATABASE`) iterate `knownPeers()`, the server
+list reconciled with the live configuration. Before that the Bolt `ROUTE` table silently dropped every joined pod and
+`/api/v1/cluster` reported it without an `httpAddress`, although the leader replicated to it and had learnt its address.
+
 `getDeclaredPeers()` is the newest of those (#7136): `RaftClusterStatusExporter` reconciles the declared list against the committed membership itself, to decide which declared peers are still *pending a join* rather than *removed*. It reads the committed side through `getCommittedPeersOrNull()`, not `getLivePeers()` - the latter substitutes the declared list when the division is unreadable, and folding that fallback into the "have I ever seen this peer committed" record would mark every declared peer as once-committed and silence the convergence note for good. A caller that must not mistake the declared list for a committed membership reads `getCommittedPeersOrNull()` and treats `null` as "no information this tick".
 
 ## A peer's HTTP address is LEARNT, and the capability round is what writes it

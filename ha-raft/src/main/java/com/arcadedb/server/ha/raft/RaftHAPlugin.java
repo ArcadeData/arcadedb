@@ -1124,7 +1124,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (raftHAServer == null)
       return List.of();
     final List<ClusterPeer> peers = new ArrayList<>();
-    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+    for (final RaftPeer peer : raftHAServer.knownPeers()) {
       if (peer.getId().equals(raftHAServer.getLocalPeerId()))
         continue;
       // The guard that every other peer-to-peer dial in the cluster goes through (issues #6191, #6202, #6221): an address that

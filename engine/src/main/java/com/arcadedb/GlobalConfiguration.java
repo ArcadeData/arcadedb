@@ -1468,6 +1468,24 @@ public enum GlobalConfiguration {
       clamped rather than failing the build.""",
       Integer.class, 0),
 
+  VECTOR_INDEX_PQ_RETRAIN_GROWTH_FACTOR("arcadedb.vectorIndex.pqRetrainGrowthFactor", SCOPE.DATABASE,
+      """
+      A graph rebuild of a PRODUCT-quantized vector index keeps the PQ codebook it has and encodes only the vectors added \
+      since, as long as the codebook still fits the data (issue #10847). This is the first of the two tests of that fit: \
+      the codebook is trained again, and every vector encoded again, once the index holds more than this many times the \
+      vectors it held when the codebook was trained. 0 or less retrains on every rebuild, as before #10847. \
+      REBUILD INDEX always trains a new codebook.""",
+      Float.class, 2.0f),
+
+  VECTOR_INDEX_PQ_RETRAIN_ERROR_RATIO("arcadedb.vectorIndex.pqRetrainErrorRatio", SCOPE.DATABASE,
+      """
+      The second test of whether a PRODUCT-quantized vector index keeps its PQ codebook across a graph rebuild (issue \
+      #10847): the mean relative reconstruction error of a sample of the vectors added since the codebook was trained, \
+      against the same error measured on the vectors it was trained on. Once the new vectors are encoded more than this \
+      many times worse, their distribution has drifted away from the codebook, and it is trained again. 0 or less \
+      disables the test, leaving the growth factor alone to decide.""",
+      Float.class, 1.25f),
+
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       """
       Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. \
