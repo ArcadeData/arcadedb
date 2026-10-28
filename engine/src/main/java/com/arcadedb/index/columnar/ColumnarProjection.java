@@ -140,6 +140,13 @@ public final class ColumnarProjection {
   private volatile ColumnarOverlay               overlay;
   private volatile Map<String, GlobalDictionary> dictionaries = Map.of();
   private volatile ColumnarManifest              manifest;
+  /**
+   * By column index file id, the conversion counts {@code {failures, coerced}} of the values extracted into this projection since the
+   * column was last extracted from every record (see {@link ColumnarManifest}); a column without an entry has unknown counts. Restored
+   * from the manifest at open, grown by the apply passes before they publish (so a manifest naming a row also counts its value), and
+   * replaced by a rebuild. Guarded by itself.
+   */
+  private final    Map<Integer, long[]>          conversions  = new HashMap<>();
   private volatile String                        unusableReason;
   private volatile Consumer<String>              rebuildRequester = reason -> {
   };
@@ -276,6 +283,7 @@ public final class ColumnarProjection {
         if (found != null) {
           seedFromManifest(found);
           loadFiles(found, readers, loaded);
+          restoreConversions(found);
         }
       } catch (final NoSuchFileException e) {
         reason = MISSING;
@@ -300,6 +308,8 @@ public final class ColumnarProjection {
         readers.clear();
         loaded.clear();
         found = null;
+        // the rebuild that follows extracts every value again and records what it counted
+        restoreConversions(null);
         owners = new ContentOwnerMap();
         if (externalOwnersLock != null)
           externalOwners = new ContentOwnerMap();
@@ -308,8 +318,10 @@ public final class ColumnarProjection {
           ColumnarStore.deleteUnreferenced(bucketDir, found.files(), inFlightFiles);
       } else if (!isEmpty(bucket))
         reason = MISSING;
-      else if (!readOnly)
+      else if (!readOnly) {
         found = publishEmpty(Path.of(db.getDatabasePath()), db.getTransactionManager().getLastTransactionId(), loaded);
+        restoreConversions(found);
+      }
 
       publish(found, readers.toArray(NO_SEGMENTS), new ColumnarSegmentView[] { overlay.publish() }, Map.copyOf(loaded), reason == null);
       unusableReason = reason;
@@ -493,8 +505,12 @@ public final class ColumnarProjection {
         final GlobalDictionary.DurableState durable = dictionary.fsync();
         entries.add(new ColumnarManifest.DictionaryEntry(column.indexFileId(), generation, name, durable.entries(), durable.bytes()));
       }
+      // an empty bucket holds no value: nothing failed or was converted
+      final List<ColumnarManifest.ConversionEntry> none = new ArrayList<>(columns.length);
+      for (final ColumnDefinition column : columns)
+        none.add(new ColumnarManifest.ConversionEntry(column.indexFileId(), 0, 0));
       final ColumnarManifest empty = new ColumnarManifest(1, bucketId, bucketName, maxRecordsInPage, columns, List.of(), entries, null,
-          null, lastTransactionId);
+          null, lastTransactionId, none);
       empty.publish(bucketDir);
       return empty;
     } catch (final IOException | RuntimeException e) {
@@ -872,8 +888,8 @@ public final class ColumnarProjection {
     if (closed || dropped)
       return false;
     final ProjectionState next = new ProjectionState(manifest == null ? 0 : manifest.generation(), segments, overlays, dictionaries,
-        manifest == null ? Set.of() : manifest.files(), manifest == null ? new ColumnDefinition[0] : manifest.columnsView(), usable,
-        this::stateReleased);
+        manifest == null ? Set.of() : manifest.files(), manifest == null ? new ColumnDefinition[0] : manifest.columnsView(),
+        conversionsCopy(), usable, this::stateReleased);
     for (final SegmentReader reader : segments)
       if (openReaders.add(reader))
         segmentFiles.putIfAbsent(fileName(reader), reader.file());
@@ -1333,6 +1349,68 @@ public final class ColumnarProjection {
       return true;
     } finally {
       endMaintenance();
+    }
+  }
+
+  /** Replaces the conversion counts with those of the manifest; null forgets them all (unknown). */
+  void restoreConversions(final ColumnarManifest from) {
+    synchronized (conversions) {
+      conversions.clear();
+      if (from != null)
+        for (final ColumnarManifest.ConversionEntry entry : from.conversions())
+          conversions.put(entry.indexFileId(), new long[] { entry.failures(), entry.coerced() });
+    }
+  }
+
+  /** The conversion counts now, for the state being published: a query reads them from the snapshot it holds (review N2). */
+  private Map<Integer, long[]> conversionsCopy() {
+    synchronized (conversions) {
+      if (conversions.isEmpty())
+        return Map.of();
+      final Map<Integer, long[]> copy = new HashMap<>(conversions.size() * 2);
+      for (final Map.Entry<Integer, long[]> entry : conversions.entrySet())
+        copy.put(entry.getKey(), entry.getValue().clone());
+      return copy;
+    }
+  }
+
+  /** Adds values an apply pass extracted to the column's counts; a column whose counts are unknown stays unknown. */
+  void countConversions(final int indexFileId, final long failures, final long coerced) {
+    synchronized (conversions) {
+      final long[] counts = conversions.get(indexFileId);
+      if (counts != null) {
+        counts[0] = saturatedAdd(counts[0], failures);
+        counts[1] = saturatedAdd(counts[1], coerced);
+      }
+    }
+  }
+
+  private static long saturatedAdd(final long a, final long b) {
+    final long sum = a + b;
+    return sum < 0 ? Long.MAX_VALUE : sum;
+  }
+
+  /** The known conversion counts of the columns, for a manifest that names them. */
+  List<ColumnarManifest.ConversionEntry> conversionEntries(final ColumnDefinition[] manifestColumns) {
+    synchronized (conversions) {
+      final List<ColumnarManifest.ConversionEntry> entries = new ArrayList<>(manifestColumns.length);
+      for (final ColumnDefinition column : manifestColumns) {
+        final long[] counts = conversions.get(column.indexFileId());
+        if (counts != null)
+          entries.add(new ColumnarManifest.ConversionEntry(column.indexFileId(), counts[0], counts[1]));
+      }
+      return entries;
+    }
+  }
+
+  /**
+   * The conversion counts {@code {failures, coerced}} of the column with that index file id, null when unknown (a projection persisted
+   * without them, until a rebuild extracts the column again). A copy.
+   */
+  public long[] conversionCounts(final int indexFileId) {
+    synchronized (conversions) {
+      final long[] counts = conversions.get(indexFileId);
+      return counts == null ? null : counts.clone();
     }
   }
 
@@ -2076,6 +2154,11 @@ public final class ColumnarProjection {
         if (published.equals(property))
           return true;
       return false;
+    }
+
+    @Override
+    public long[] conversionCounts(final int indexFileId) {
+      return state.conversionCounts(indexFileId);
     }
 
     @Override

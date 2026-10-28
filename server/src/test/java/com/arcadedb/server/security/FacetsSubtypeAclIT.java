@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
@@ -332,6 +333,42 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
     assertThat(faceted.getMessage()).isEqualTo(plain.getMessage());
   }
 
+  /**
+   * Plan 5 Task 13: a GROUP BY the projection could answer, run by a user who may not read Image's buckets, is answered by the normal
+   * chain, which fails exactly as with the acceleration off: never a count of the readable buckets only. Root's is answered from the
+   * projection.
+   */
+  @Test
+  void groupByOverAnUnreadableSubtypeFailsLikeTheNormalPlan() {
+    final String sql = "SELECT brand, count(*) FROM " + SUPER + " GROUP BY brand";
+    final Database server = getServerDatabase(0, getDatabaseName());
+    final ColumnarStats stats = ((LocalDatabase) ((DatabaseInternal) server).getEmbedded()).getColumnarIndexManager().getStats();
+    assertThat(rootProfile(sql)).contains("path: columnar");
+
+    final long accelerated = stats.groupByAcceleratedCount();
+    final Throwable withStep = catchThrowable(() -> {
+      try (final RemoteDatabase remote = remote(); final ResultSet rs = remote.query("sql", sql)) {
+        rs.stream().count();
+      }
+    });
+    // never counted from the projection: on a server the refusal comes before the step runs (its fallback counter does not move), and
+    // where it would not, the step's own READ check sends the user to the normal chain
+    assertThat(stats.groupByAcceleratedCount()).isEqualTo(accelerated);
+
+    final Throwable normal;
+    try (final FacetOracle.NormalPlan off = FacetOracle.normalPlan(server)) {
+      normal = catchThrowable(() -> {
+        try (final RemoteDatabase remote = remote(); final ResultSet rs = remote.query("sql", sql)) {
+          rs.stream().count();
+        }
+      });
+    }
+    assertThat(normal).as("the normal plan refuses the user").isNotNull();
+    assertThat(withStep).isNotNull();
+    assertThat(withStep.getClass()).isEqualTo(normal.getClass());
+    assertThat(withStep.getMessage()).isEqualTo(normal.getMessage());
+  }
+
   @Test
   void rootSeesEverything() {
     final String sql = "SELECT FROM " + SUPER + " FACETS " + FACETS + " LIMIT 0";
@@ -437,7 +474,8 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
 
   private Map<Object, Long> groupBy(final String sql) {
     final Map<Object, Long> counts = new HashMap<>();
-    try (final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", sql)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(getServerDatabase(0, getDatabaseName()));
+        final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", sql)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         final Object value = row.getProperty("v");

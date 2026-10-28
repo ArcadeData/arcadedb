@@ -674,6 +674,66 @@ class ColumnarRebuilderTest extends TestHelper {
     assertMatchesGroupBy("color");
   }
 
+  /**
+   * Plan 5 Task 13 review N1: a LONG column added while a check_fix waits for a permit is extracted by apply passes and flushed into
+   * segments; the check_fix then publishes the column for the first time but copies those rows from the segments, so it never saw
+   * their values: the column's conversion counts are unknown, never the run's (which would say nothing failed or was converted).
+   */
+  @Test
+  void aColumnFirstPublishedByARebuildThatCopiedRowsHasUnknownConversions() throws Exception {
+    createIndexedAssets(1_000);
+    manager().flushNow();
+    final int bucketId = bucketIds()[0];
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final int brandId = columnarIndex("brand").columnDefinition().indexFileId();
+    assertThat(projection.conversionCounts(brandId)).containsExactly(0, 0);
+
+    final int permits = ColumnarRebuilder.REBUILD_SEMAPHORE.drainPermits();
+    try {
+      ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CHECK_FIX);
+      database.command("sql", "CREATE PROPERTY Asset.weight LONG");
+      database.command("sql", "CREATE INDEX ON Asset (weight) COLUMNAR");
+      // new pages, applied with the new column and flushed into segments that carry it
+      database.transaction(() -> {
+        for (int i = 0; i < 3_000; i++)
+          database.newDocument("Asset").set("brand", "w" + (i % 5)).set("weight", (long) i).save();
+      });
+      for (int i = 0; i < WAIT_MS && !pendingIsEmpty(projection); i++)
+        Thread.sleep(1);
+      assertThat(pendingIsEmpty(projection)).as("the new pages were applied").isTrue();
+      manager().flushNow();
+      assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CHECK_FIX)).isZero();
+    } finally {
+      ColumnarRebuilder.REBUILD_SEMAPHORE.release(permits);
+    }
+    ColumnarRebuilder.drainWaiting();
+    awaitRebuildEnded(projection);
+    awaitCaughtUp();
+    assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CHECK_FIX)).isEqualTo(1);
+    assertThat(stats().rebuildPagesReusedCount("Asset")).as("the check_fix copied rows").isGreaterThan(0);
+
+    final int weightId = columnarIndex("weight").columnDefinition().indexFileId();
+    assertThat(projection.conversionCounts(weightId)).as("a first-published column with copied rows").isNull();
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      assertThat(snapshot.publishes("weight")).isTrue();
+      assertThat(snapshot.conversionCounts(weightId)).isNull();
+    }
+    // a column the previous state published keeps its counts (previous plus the run's)
+    assertThat(projection.conversionCounts(brandId)).containsExactly(0, 0);
+    // and the GROUP BY over it declines
+    try (final ResultSet rs = database.query("sql", "PROFILE SELECT brand, sum(weight) FROM Asset GROUP BY brand")) {
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("are unknown until its next rebuild");
+    }
+  }
+
+  private static boolean pendingIsEmpty(final ColumnarProjection projection) {
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      return snapshot.pendingPositions().isEmpty();
+    }
+  }
+
   private ColumnarIndex subIndex(final String name) {
     return (ColumnarIndex) ((TypeIndex) database.getSchema().getIndexByName(name)).getSubIndexes().getFirst();
   }
@@ -902,7 +962,8 @@ class ColumnarRebuilderTest extends TestHelper {
   /** The GROUP BY of the property equals what the projections answer (the null group left out: a missing value is not counted). */
   private void assertMatchesGroupBy(final String property) {
     final Map<Object, Long> expected = new HashMap<>();
-    try (final ResultSet result = database.query("sql", "SELECT " + property + " AS v, count(*) AS n FROM Asset GROUP BY " + property)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet result = database.query("sql", "SELECT " + property + " AS v, count(*) AS n FROM Asset GROUP BY " + property)) {
       while (result.hasNext()) {
         final Result row = result.next();
         final Object value = row.getProperty("v");

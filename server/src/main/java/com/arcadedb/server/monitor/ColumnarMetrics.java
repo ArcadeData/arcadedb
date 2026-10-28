@@ -84,7 +84,7 @@ public final class ColumnarMetrics implements AutoCloseable {
       "query.filter.fallbacks", "groupby.accelerated", "groupby.fallbacks" };
 
   private static final String[] PROPERTY_KINDS = { "dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
-      "dictionary.size", "cardinality.exceeded" };
+      "conversion.coerced", "dictionary.size", "cardinality.exceeded" };
 
   /** The meters of one database and the stats object they read. */
   private static final class Bound {
@@ -239,6 +239,9 @@ public final class ColumnarMetrics implements AutoCloseable {
         counter(b, name, tags, "Projection rebuilds by reason; a normal open and crash recovery never count", s -> s.rebuilds(type, reason));
     case "conversion.failures" ->
         counter(b, name, tags, "Values the column kind cannot hold, counted as missing", s -> s.conversionFailures(type, property));
+    case "conversion.coerced" -> counter(b, name, tags,
+        "Values stored as another type than the property declares, held in the column as the declared type", s -> s.coercedValues(type,
+            property));
     case "apply.pages" -> counter(b, name, tags, "Pages applied to the projection", s -> s.applyPagesCount(type));
     case "apply.placeholders.resolved" ->
         counter(b, name, tags, "Placeholder records resolved by apply passes", s -> s.placeholdersResolvedCount(type));

@@ -47,9 +47,9 @@ import java.util.Set;
 
 /**
  * Decides whether a GROUP BY can be answered from the COLUMNAR projection of its target ({@link ColumnarGroupByStep}). Only one shape
- * is taken, and anything else keeps the normal plan: one schema type as target, one bare property as key, a projection of that key and
- * plain aggregates over projected properties, and no clause that changes which rows are grouped or which groups are returned before the
- * ORDER BY. The checks are made against the schema only: whether the projection can answer (usable, the columns published with the
+ * is taken, and anything else keeps the normal plan: one schema type as target, no WHERE, one bare property as key, a projection of
+ * that key and plain aggregates over projected properties, and no clause that changes which rows are grouped or which groups are
+ * returned before the ORDER BY. The checks are made against the schema only: whether the projection can answer (usable, the columns published with the
  * schema's encoding, readable buckets) is decided by the step at every execution, which runs the normal aggregation chain whenever it
  * cannot.
  */
@@ -64,10 +64,9 @@ final class ColumnarGroupByPlanner {
    * @param groupType     the declared type of the key
    * @param outputAliases the alias of every item of the statement's projection, in order
    * @param aggregates    the aggregate of every item of the statement's projection, in order; a null entry is the group key
-   * @param whereless     true when the statement has no WHERE: every record of the buckets is a match, without reading upstream
    */
   record ColumnarGroupByPlan(String typeName, int[] bucketIds, String groupProperty, ColumnKind groupKind, Type groupType,
-                             String[] outputAliases, AggregateSpec[] aggregates, boolean whereless) {
+                             String[] outputAliases, AggregateSpec[] aggregates) {
   }
 
   /**
@@ -102,6 +101,11 @@ final class ColumnarGroupByPlanner {
    */
   static ColumnarGroupByPlan analyze(final Projection statementProjection, final QueryPlanningInfo info, final CommandContext context) {
     if (info.groupBy == null || info.writtenGroupBy == null || info.distinctRewrittenAsGroupBy || info.facets != null)
+      return null;
+    // a WHERE, even one an index answers (R22: decided before the index search consumes it): its rows would be filtered on the version
+    // upstream reads and counted from a projection state taken before, so only the statements that group every record are answered
+    // (WHERE acceleration, with a second snapshot validating the first, is a tuning item: #10662)
+    if (!info.whereless)
       return null;
     if (info.distinct || info.expand || info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent
         || info.globalLetClause != null)
@@ -164,7 +168,7 @@ final class ColumnarGroupByPlanner {
     }
 
     return new ColumnarGroupByPlan(type.getName(), bucketIds, groupProperty, groupColumn.kind(), groupColumn.propertyType(),
-        outputAliases, aggregates, info.whereless);
+        outputAliases, aggregates);
   }
 
   /** The target when it is one schema type named by an identifier (not a variable, bucket, index, subquery or RIDs), else null. */
