@@ -44,6 +44,7 @@ import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 
 import java.lang.ref.Cleaner;
+import java.lang.ref.Reference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -65,7 +66,8 @@ import java.util.logging.Level;
  *   <li>{@code rows}: every row is recorded;</li>
  *   <li>{@code index}: the fetch below is an {@link IndexedMatchSource} the whole WHERE was handed to, which adds every match by RID
  *       without loading a record;</li>
- *   <li>{@code projection}: no WHERE and no FILTER over a type or buckets: {@link MatchSet#fromProjection} holds every record;
+ *   <li>{@code projection}: no WHERE over a type or buckets, and no FILTER but those an evaluator answers by RID (INDEX, PROJECTION):
+ *       {@link MatchSet#fromProjection} holds every record, and each gets its fail mask by RID ({@link MatchSet#withFailMasks});
  *       {@code projection+scan} when it does not cover every bucket (no usable projection, or changed by the caller's open
  *       transaction): the records of those buckets are read by a scan of them. Both are taken when the facets are computed, after the
  *       rows (D20): the projection snapshots are not held while the application pages through the rows, and a bucket the application's
@@ -120,19 +122,21 @@ public class FacetCollectStep extends AbstractExecutionStep {
       return taken;
     }
 
-    /** By the cleaner: the step became unreachable without being closed. */
+    /** By the cleaner (the step became unreachable without being closed), or by {@link #close()} once it released everything. */
     @Override
     public void run() {
-      final boolean leaked;
-      synchronized (this) {
-        leaked = open;
-      }
-      if (!leaked)
-        return;
-      LogManager.instance().log(this, Level.WARNING,
-          "A FACETS result set was not closed: what it held (memory reservations, projection snapshots) was released only once it was "
-              + "garbage collected. Close every result set");
+      if (releaseIfOpen())
+        LogManager.instance().log(this, Level.WARNING,
+            "A FACETS result set was not closed: what it held (memory reservations, projection snapshots) was released only once it was "
+                + "garbage collected. Close every result set");
+    }
+
+    /** Releases what is held unless it was released already, in one step: a close racing the cleaner releases once, and never warns. */
+    private synchronized boolean releaseIfOpen() {
+      if (!open)
+        return false;
       release();
+      return true;
     }
 
     /** Releases the builder's reservations and every evaluator, each whatever the others do; idempotent. */
@@ -162,13 +166,15 @@ public class FacetCollectStep extends AbstractExecutionStep {
 
   private final FacetsClause               clause;
   private final int[]                      filterIndexByFacet;
-  /** Whether a facet carries a FILTER: the rows must then be masked one by one, so neither the index nor the projection serves. */
+  /** Whether a facet carries a FILTER: every match needs its fail mask, which the index source does not give. */
   private final boolean                    anyFilter;
   private final List<FacetFilterEvaluator> evaluators;
   private final String                     targetType;
   private final int[]                      projectionBuckets;
 
   private final Held                       held;
+  /** Registered when the step first opens: a plan-cache template or copy that never runs holds nothing and costs no registration. */
+  private       Cleaner.Cleanable          cleanable;
 
   /** Compiled when the step opens, against the context of the execution (a cached plan is copied without one). */
   private List<FacetSpec>  specs;
@@ -192,8 +198,8 @@ public class FacetCollectStep extends AbstractExecutionStep {
    * @param filterIndexByFacet per facet, the index of its FILTER in {@code evaluators}, -1 for none
    * @param evaluators         one per FILTER; bit {@code i} of a row's fail mask is set when evaluator {@code i} refuses it
    * @param targetType         the type the query selects from, null when it is not one (a subquery)
-   * @param projectionBuckets  the buckets the match set may be taken from {@link MatchSet#fromProjection} (no WHERE, no FILTER, a type
-   *                           or buckets as target), null when the matches must come from the rows
+   * @param projectionBuckets  the buckets the match set may be taken from {@link MatchSet#fromProjection} (no WHERE, a type or buckets
+   *                           as target, no FILTER that only the row answers), null when the matches must come from the rows
    */
   public FacetCollectStep(final FacetsClause clause, final int[] filterIndexByFacet, final List<FacetFilterEvaluator> evaluators,
       final String targetType, final int[] projectionBuckets, final CommandContext context) {
@@ -208,7 +214,11 @@ public class FacetCollectStep extends AbstractExecutionStep {
     this.targetType = targetType;
     this.projectionBuckets = projectionBuckets;
     this.held = new Held(evaluators);
-    CLEANER.register(this, held);
+  }
+
+  /** Whether the step is registered with the cleaner: from its first open to its close. */
+  boolean registeredWithCleaner() {
+    return cleanable != null;
   }
 
   /** Per facet, the index of its FILTER among the facets that carry one, -1 for none. */
@@ -294,13 +304,23 @@ public class FacetCollectStep extends AbstractExecutionStep {
     if (!recordRows && evaluators.isEmpty())
       return 0;
     final RID rid = row.getIdentity().orElseThrow(() -> new CommandExecutionException("FACETS needs rows that are records: " + row));
+    final int failMask = failMask(rid, row, context);
+    if (recordRows)
+      // refused once over the memory budget: the rows keep flowing, the facets are unavailable
+      builder.add(rid, failMask);
+    return failMask;
+  }
+
+  /**
+   * Bit {@code i} set when evaluator {@code i} refuses the record.
+   *
+   * @param row the record's row, null to have it answered by RID (an evaluator that cannot loads the record)
+   */
+  private int failMask(final RID rid, final Result row, final CommandContext context) {
     int failMask = 0;
     for (int i = 0; i < evaluators.size(); i++)
       if (!evaluators.get(i).passes(rid, row, context))
         failMask |= 1 << i;
-    if (recordRows)
-      // refused once over the memory budget: the rows keep flowing, the facets are unavailable
-      builder.add(rid, failMask);
     return failMask;
   }
 
@@ -316,15 +336,16 @@ public class FacetCollectStep extends AbstractExecutionStep {
       builder = MatchSet.builder(database, evaluators.size(), budgetWaitMs);
       // held before any evaluator opens: what one acquires is released by close(), or by the cleaner for an abandoned step
       held.opened(builder);
+      if (cleanable == null)
+        cleanable = CLEANER.register(this, held);
       for (final FacetFilterEvaluator evaluator : evaluators)
         evaluator.open(context);
       recordRows = true;
       matchSource = ROWS;
-      if (anyFilter)
-        return;
 
+      // the index adds its matches without a fail mask: a FILTER needs the rows (or, without WHERE, the projection)
       final List<ExecutionStepInternal> bucketFilters = new ArrayList<>();
-      final IndexedMatchSource indexed = indexedSource(bucketFilters);
+      final IndexedMatchSource indexed = anyFilter ? null : indexedSource(bucketFilters);
       if (indexed != null && indexed.collectAllMatches(context, builder, acceptedBuckets(bucketFilters))) {
         recordRows = false;
         matchSource = INDEX;
@@ -485,8 +506,12 @@ public class FacetCollectStep extends AbstractExecutionStep {
       final Iterator<Record> records = database.iterateBucket(database.getSchema().getBucketById(bucketId).getName());
       while (records.hasNext()) {
         guard.checkPeriodically(++ticks);
+        final Record record = records.next();
+        final RID rid = record.getIdentity();
+        // the record is loaded already: a FILTER is answered on it
+        final int failMask = evaluators.isEmpty() ? 0 : failMask(rid, new ResultInternal(record), context);
         // refused once over the memory budget: the facets are unavailable
-        if (!builder.add(records.next().getIdentity(), 0))
+        if (!builder.add(rid, failMask))
           return;
       }
     }
@@ -547,6 +572,12 @@ public class FacetCollectStep extends AbstractExecutionStep {
         // the facets are unavailable: nothing was scanned into the builder
         matches = projection;
         projection = null;
+      } else if (projection != null && !evaluators.isEmpty()) {
+        // each of the projection's matches gets its fail mask by RID (final review C-I4): no record is read where the evaluators can tell
+        final MatchSet masked = MatchSet.withFailMasks(projection, builder, rid -> failMask(rid, null, context),
+            WorkGuard.forCommandDeadline(context));
+        projection = null;
+        matches = masked;
       } else {
         matches = builder.build();
         if (projection != null) {
@@ -585,8 +616,15 @@ public class FacetCollectStep extends AbstractExecutionStep {
     if (!closed) {
       closed = true;
       releaseResources();
+      if (cleanable != null) {
+        // released above: the cleaner's action finds nothing held, and the registration goes
+        cleanable.clean();
+        cleanable = null;
+      }
     }
     super.close();
+    // reachable until here, so the cleaner never runs while close() releases
+    Reference.reachabilityFence(this);
   }
 
   @Override
@@ -624,9 +662,12 @@ public class FacetCollectStep extends AbstractExecutionStep {
         result.append(" [").append(evaluator.kind());
         if (context.isProfiling() && opened && evaluator instanceof FacetFilterEvaluator.Projection projectionFilter)
           result.append(" column=").append(projectionFilter.columnAnswers()).append(" record=").append(projectionFilter.recordAnswers());
-        else if (context.isProfiling() && opened && evaluator instanceof FacetFilterEvaluator.Index indexFilter
-            && indexFilter.fallback() != null)
-          result.append(" fallback=RECORD (").append(indexFilter.fallback()).append(")");
+        else if (context.isProfiling() && opened && evaluator instanceof FacetFilterEvaluator.Index indexFilter) {
+          if (indexFilter.fallback() != null)
+            result.append(" fallback=RECORD (").append(indexFilter.fallback()).append(")");
+          else
+            result.append(" rids=").append(indexFilter.rids());
+        }
         result.append("]");
       }
       final FacetExecutionStats facetStats = specs != null && i < specs.size() ? stats.get(specs.get(i).alias()) : null;
@@ -653,8 +694,9 @@ public class FacetCollectStep extends AbstractExecutionStep {
     result.setProperty(InternalExecutionPlan.JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
     result.setProperty("description", getDescription());
+    // the server's query profiler keeps this result for every plan it records: the figures of the facets, no value of the data
     if (facets != null)
-      result.setProperty("facets", facets.toJSON().toMap());
+      result.setProperty("facets", facets.toProfileJSON().toMap());
     return result;
   }
 

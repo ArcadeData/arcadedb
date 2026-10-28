@@ -97,10 +97,13 @@ class FacetsApiSpecTest {
     assertThat(((Schema<?>) schema("FacetResult").getProperties().get("reason")).getDescription()).contains("unavailable");
   }
 
+  /** Final review B-M2: the facets are a member of the stats trailer, not an event of their own. */
   @Test
-  void ndjsonEventHasFacetsLine() {
+  void ndjsonStatsTrailerCarriesTheFacets() {
     final Schema<?> event = schema("NdJsonQueryEvent");
-    assertThat(((Schema<?>) event.getProperties().get("facets")).get$ref()).endsWith("/Facets");
+    assertThat(event.getProperties()).doesNotContainKey("facets");
+    final Schema<?> stats = (Schema<?>) event.getProperties().get("stats");
+    assertThat(((Schema<?>) stats.getProperties().get("facets")).get$ref()).endsWith("/Facets");
     assertThat(event.getDescription()).contains("facets");
   }
 

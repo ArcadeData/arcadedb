@@ -33,12 +33,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,24 +104,29 @@ class FacetsVsGroupByBenchmark extends TestHelper {
 
     try (final AutoCloseable hold = manager().suspendApply()) {
       data.mutate(database, LAG_UPDATES);
-      // default patch budget: a page-granular pending set covers most matches of a broad WHERE; within patchBudgetRatio of the
-      // matches the answer is still patched and exact
+      // default settings: a page-granular pending set covers most matches of a broad WHERE (about 60% at 200k records), and
+      // patchBudgetRatio 1 lets a query patch up to all of its matches, so every case is patched and exact
       for (final Case c : cases)
-        measure(buckets, "lagging", c);
-      // a budget above the match count, so the cost of patching every match is measured and the answers are exact
-      final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
-      GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(Integer.MAX_VALUE);
+        measure(buckets, "lagging", c, true);
+      // the absolute budget alone (ratio 0): a broad patch set exceeds it and the answer is counted from the projection, inexact
+      final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
       try {
         for (final Case c : cases)
-          measure(buckets, "lag+bud", c);
+          measure(buckets, "lag-abs", c, false);
       } finally {
-        GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+        GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
       }
     }
     FacetOracle.awaitCaughtUp(database);
   }
 
   private void measure(final int buckets, final String lag, final Case c) {
+    measure(buckets, lag, c, false);
+  }
+
+  /** @param mustBeExact whether the settings of the round promise an exact answer: then an inexact one fails the run */
+  private void measure(final int buckets, final String lag, final Case c, final boolean mustBeExact) {
     final String filter = c.where == null ? "" : " WHERE " + c.where;
     final String facetSql = "SELECT @rid FROM " + TYPE + filter + " " + FACETS_CLAUSE + " LIMIT 20";
     final FacetResults[] last = new FacetResults[1];
@@ -136,10 +139,12 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     });
 
     final Map<Object, Long>[] brandCounts = new Map[1];
+    final Map<Object, Long>[] tagCounts = new Map[1];
     final Map<Long, Long>[] sizeCounts = new Map[1];
     final Timing groupBy = time(() -> {
       brandCounts[0] = groupBy("SELECT brand AS v, count(*) AS c FROM " + TYPE + filter + " GROUP BY brand");
-      groupBy("SELECT t AS v, count(*) AS c FROM (SELECT tags AS t FROM " + TYPE + filter + " UNWIND t) GROUP BY t");
+      // each tag once per record, as the facet counts documents
+      tagCounts[0] = groupBy("SELECT t AS v, count(*) AS c FROM (SELECT tags.asSet() AS t FROM " + TYPE + filter + " UNWIND t) GROUP BY t");
       final Map<Object, Long> sizes = groupBy("SELECT fileSize / " + MIB + " AS v, count(*) AS c FROM " + TYPE + filter + " GROUP BY fileSize / "
           + MIB);
       // the division may be exact (a fraction per key): the key is cut to its range, the counts of one range are added
@@ -150,16 +155,17 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     // correctness, on the last round only
     final FacetResults results = last[0];
     assertThat(results).isNotNull();
+    assertThat(results.exact() || !mustBeExact).as("exact " + c.name + " " + lag).isTrue();
     if (!results.exact()) {
       logResult(buckets, lag, c, facets, groupBy, results, "INEXACT (patch budget exceeded, correctness not compared)");
       return;
     }
-    // the oracle counts a tag once per record (the facet counts documents), the timed UNWIND query once per occurrence
     assertThat(counts(results.get("brand"))).as("brand " + c.name + " " + lag).isEqualTo(
         withoutMissing(FacetOracle.expectedCounts(database, TYPE, "brand", c.where)));
     assertThat(counts(results.get("tags"))).as("tags " + c.name + " " + lag).isEqualTo(
         withoutMissing(FacetOracle.expectedCounts(database, TYPE, "tags", c.where)));
     assertThat(brandCounts[0]).as("timed brand GROUP BY " + c.name + " " + lag).isEqualTo(counts(results.get("brand")));
+    assertThat(tagCounts[0]).as("timed tags GROUP BY " + c.name + " " + lag).isEqualTo(counts(results.get("tags")));
     final List<FacetBucket> ranges = results.get("size").buckets();
     assertThat(ranges).hasSize(4);
     for (int i = 0; i < 4; i++)

@@ -19,9 +19,13 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.query.facet.FacetResultsSamples;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +45,26 @@ class ParseResultSetFromJsonFacetsTest {
     final String sample = FacetResultsSamples.plan5Members().toJSON().toString();
     final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson("{\"result\":[],\"facets\":" + sample + "}");
     assertThat(new JSONObject(rs.getFacets().toJSON().toString()).toString()).isEqualTo(sample);
+  }
+
+  /**
+   * Final review C-I8: the follower keeps the leader's row values as the JSON parse gives them, and the facet values the same way: a
+   * date written as the row's text, a decimal and an integral number come back as the row's do, whatever type hint the facet carries.
+   */
+  @Test
+  void facetValuesAreReadAsTheRowsAre() {
+    final String body = "{\"result\":[{\"d\":\"2024-02-29\",\"p\":12.5,\"n\":7,\"s\":\"NaN\"}],\"facets\":{\"meta\":{\"exact\":true},"
+        + "\"d\":{\"type\":\"terms\",\"source\":\"index\",\"@props\":\"value:" + Type.DATE.getId() + "\",\"buckets\":[{\"value\":\"2024-02-29\",\"count\":1}]},"
+        + "\"p\":{\"type\":\"terms\",\"source\":\"scan\",\"buckets\":[{\"value\":12.5,\"count\":1}]},"
+        + "\"n\":{\"type\":\"terms\",\"source\":\"index\",\"buckets\":[{\"value\":7,\"count\":1}]},"
+        + "\"s\":{\"type\":\"terms\",\"source\":\"index\",\"buckets\":[{\"value\":\"NaN\",\"count\":1}]}}}";
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(body);
+    final Result row = rs.next();
+    for (final String alias : List.of("d", "p", "n", "s")) {
+      final Object facetValue = rs.getFacets().get(alias).buckets().getFirst().value();
+      assertThat(facetValue).as(alias).isEqualTo(row.getProperty(alias));
+      assertThat(facetValue.getClass()).as(alias).isEqualTo(row.getProperty(alias).getClass());
+    }
   }
 
   @Test

@@ -22,6 +22,8 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
+import com.arcadedb.query.facet.FacetResults;
+
 import java.util.List;
 
 /**
@@ -86,6 +88,18 @@ public class IfExecutionPlan implements InternalExecutionPlan {
   @Override
   public boolean canBeCached() {
     return false;
+  }
+
+  /**
+   * The facets of the branch that ran, when its last statement is a {@code SELECT ... FACETS}: an IF answers the rows of that branch,
+   * so it answers its facets too. Null before the condition was evaluated, and for a branch that did not run or has no facets.
+   */
+  @Override
+  public FacetResults getFacets() {
+    if (step == null || step.conditionMet == null)
+      return null;
+    final ScriptExecutionPlan branch = step.conditionMet ? step.positivePlan : step.negativePlan;
+    return branch == null ? null : branch.getFacets();
   }
 
   public ExecutionStepInternal executeUntilReturn() {

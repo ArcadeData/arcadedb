@@ -36,9 +36,8 @@ import java.util.logging.Level;
  * newline-delimited JSON line off the connection per row, so a caller iterating it holds one row at a time
  * instead of the whole result.
  * <p>
- * The stream is self-delimiting. A {@code record} line is a row; a {@code facets} line carries the facets of a
- * {@code SELECT ... FACETS} query and is kept for {@link #getFacets()}; the {@code stats} line is the trailer and ends
- * the iteration; an {@code error} line is a failure the server raised after it had already answered 200, and is
+ * The stream is self-delimiting. A {@code record} line is a row; the {@code stats} line is the trailer and ends
+ * the iteration (for a {@code SELECT ... FACETS} query it carries the facets, kept for {@link #getFacets()}); an {@code error} line is a failure the server raised after it had already answered 200, and is
  * rethrown here because the status code could no longer carry it. A stream that ends without any of the three -
  * a dropped connection - is reported as such rather than silently read as an empty or complete result, which is
  * the failure mode a bare line-per-row encoding would have.
@@ -57,6 +56,7 @@ public class RemoteStreamingResultSet implements ResultSet {
   private final Function<JSONObject, Result>           rowMapper;
   private final boolean                                warnOnTruncation;
   private final Function<JSONObject, RuntimeException> errorMapper;
+  private final Function<JSONObject, FacetResults>     facetsMapper;
 
   private Result       next;
   private boolean      closed;
@@ -84,10 +84,21 @@ public class RemoteStreamingResultSet implements ResultSet {
    */
   public RemoteStreamingResultSet(final BufferedReader reader, final Function<JSONObject, Result> rowMapper,
       final boolean warnOnTruncation, final Function<JSONObject, RuntimeException> errorMapper) {
+    this(reader, rowMapper, warnOnTruncation, errorMapper, FacetResults::fromJSON);
+  }
+
+  /**
+   * @param facetsMapper turns the {@code facets} member of the trailer into the facets, decoding their values as
+   *                     {@code rowMapper} decodes a row's
+   */
+  public RemoteStreamingResultSet(final BufferedReader reader, final Function<JSONObject, Result> rowMapper,
+      final boolean warnOnTruncation, final Function<JSONObject, RuntimeException> errorMapper,
+      final Function<JSONObject, FacetResults> facetsMapper) {
     this.reader = reader;
     this.rowMapper = rowMapper;
     this.warnOnTruncation = warnOnTruncation;
     this.errorMapper = errorMapper;
+    this.facetsMapper = facetsMapper;
   }
 
   @Override
@@ -99,7 +110,7 @@ public class RemoteStreamingResultSet implements ResultSet {
 
     // A loop rather than a recursive call: blank lines are how the server says it is alive while the next row is slow to
     // produce (issue #8565), and a proxy or a hostile peer can send any number of them, so recursing once per line would
-    // turn that into a StackOverflowError. The facets line is not a row either and is read past the same way.
+    // turn that into a StackOverflowError.
     String line;
     JSONObject event;
     while (true) {
@@ -143,21 +154,21 @@ public class RemoteStreamingResultSet implements ResultSet {
         close();
         throw new RemoteException("Error while converting a row of the streamed result", e);
       }
-
-      if (!event.has("facets"))
-        break;
-      try {
-        // Kept for getFacets(), parsed into the one shape every transport shares; the stats trailer still follows
-        facets = FacetResults.fromJSON(event.getJSONObject("facets"));
-      } catch (final RuntimeException e) {
-        close();
-        throw new RemoteException("Error while reading the facets of the streamed result", e);
-      }
+      break;
     }
 
     if (event.has("stats")) {
       trailerSeen = true;
-      warnIfTruncated(event.getJSONObject("stats"));
+      final JSONObject stats = event.getJSONObject("stats");
+      if (stats.has("facets"))
+        try {
+          // the facets of a SELECT ... FACETS query ride in the trailer: kept for getFacets()
+          facets = facetsMapper.apply(stats.getJSONObject("facets"));
+        } catch (final RuntimeException e) {
+          close();
+          throw new RemoteException("Error while reading the facets of the streamed result", e);
+        }
+      warnIfTruncated(stats);
       close();
       return false;
     }
@@ -177,7 +188,7 @@ public class RemoteStreamingResultSet implements ResultSet {
   }
 
   /**
-   * The facets of a {@code SELECT ... FACETS} query, from the {@code facets} line the server sends after the last row. Null until
+   * The facets of a {@code SELECT ... FACETS} query, from the {@code stats} trailer the server sends after the last row. Null until
    * the rows have been consumed up to that line (this result set never reads ahead of the caller to find it), and null for any
    * other statement.
    */

@@ -1102,6 +1102,10 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("after", SpecBuilders.anyValue("""
         Cursor to pass to AFTER to get the next page of buckets; null when no value follows. Present only when \
         the facet was paged."""));
+    schema.addProperty("@props", SpecBuilders.string("""
+        Present only when the request asked for type hints ('typeHints') and the facet's values are of a type JSON \
+        does not round-trip (a date, a decimal, a long, ...): 'value:<type id>', the hint a result row carries for a \
+        column of that type, to restore the bucket values as such a column's."""));
     schema.addProperty("value", SpecBuilders.integer("DISTINCT: the number of distinct values"));
     schema.addProperty("exact", SpecBuilders.bool("DISTINCT: false when the number of distinct values is approximate"));
     schema.addProperty("count", SpecBuilders.integer("STATS: the number of matching records with a value"));
@@ -1117,7 +1121,9 @@ public class CoreApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("""
         One bucket of a facet. A term bucket carries 'value'; a range or histogram bucket carries 'key' and its \
         bounds; the bucket of the records without a value carries 'value' null and 'missing' true.""");
-    schema.addProperty("value", SpecBuilders.anyValue("The term: a string, a number or a boolean, null for the missing bucket"));
+    schema.addProperty("value", SpecBuilders.anyValue("""
+        The term, written as a row's value of the faceted property is (a date in the database's date format, a \
+        date-time in its date-time format, a non-finite number by its name); null for the missing bucket"""));
     schema.addProperty("missing", SpecBuilders.bool("True on the bucket of the records without a value"));
     schema.addProperty("key", SpecBuilders.string("Label of a range or histogram bucket"));
     schema.addProperty("from", SpecBuilders.anyValue("Inclusive lower bound of a range or histogram bucket; absent when unbounded"));
@@ -1139,23 +1145,25 @@ public class CoreApiSpec implements OpenApiContributor {
    */
   private Schema<?> createNdJsonQueryEventSchema() {
     final Schema<Object> schema = SpecBuilders.object("""
-        One line of a newline-delimited streaming response. Exactly one of 'record', 'facets', 'stats' or \
-        'error' is present.""");
+        One line of a newline-delimited streaming response. Exactly one of 'record', 'stats' or 'error' is \
+        present; the 'stats' trailer of a SELECT with a FACETS clause also carries its facets.""");
     schema.addProperty("record", SpecBuilders.freeFormObject("""
         One result row, identical to an element of the 'result' array of the buffered application/json \
         response. An open map: a row's keys are the projections the statement asked for, plus the '@rid' and \
         '@type' markers JsonSerializer writes into every serialized record."""));
 
-    final Schema<?> facets = SpecBuilders.ref("Facets");
-    schema.addProperty("facets", facets);
-
     final Schema<Object> stats = SpecBuilders.object("""
         Trailer, always the last line of a complete stream. Carries the same three numbers the buffered \
-        response reports at top level.""");
+        response reports at top level, and the facets of a SELECT with a FACETS clause.""");
     stats.addProperty("limit", SpecBuilders.integer("Effective row cap applied while streaming, -1 when uncapped"));
     stats.addProperty("returned", SpecBuilders.integer("Number of rows that reached the client"));
     stats.addProperty("truncated", SpecBuilders.bool(
         "True when the cap stopped the stream with rows still pending, so the result is incomplete"));
+    final Schema<?> facets = SpecBuilders.ref("Facets");
+    facets.setDescription("""
+        The facets of a SELECT with a FACETS clause, exactly the 'facets' member of the buffered response. Present only \
+        when the statement asked for facets; a client that does not know them ignores the member.""");
+    stats.addProperty("facets", facets);
     schema.addProperty("stats", stats);
 
     final Schema<Object> error = SpecBuilders.object("""

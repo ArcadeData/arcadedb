@@ -57,6 +57,8 @@ import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
 
@@ -193,7 +195,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
    * {@code p = v} or {@code p IN [...]} over an {@code LSM_TREE} index on {@code p} alone: the RIDs of the keys are looked up once per
    * execution into a {@link RidHashSet}, in the caller's transaction (the index answers with its changes). A row of a bucket the index
    * does not cover, and every row when the index is gone, not ready, folds case ({@code COLLATE ci}), or a key is not exactly of the
-   * property's kind (a number for a STRING, a decimal for a LONG, a null), is evaluated on the row instead.
+   * property's kind (a number for a STRING, a decimal for a LONG, a null), is evaluated on the row instead. The RIDs of the buckets the
+   * current user may not read are left out of the set, uncharged: nothing this evaluator does depends on records the user cannot see.
    * <p>
    * The set is charged to {@link FacetMemoryBudget} in 1 MiB steps while the cursor fills it (waiting up to
    * {@code COLUMNAR_QUERY_BUDGET_WAIT} per step). A refused step drops the partial set and releases its reservations: every row is then
@@ -212,6 +215,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     private       boolean[]                           coveredBuckets;
     /** Why this execution answers every row from the row instead of the RID set, null when the set answers. */
     private       String                              fallback;
+    /** The RIDs the set of this execution holds, for PROFILE; kept after {@link #close()}. */
+    private       long                                rids;
 
     private Index(final WhereClause filter, final String typeName, final String property, final Type propertyType) {
       super(filter);
@@ -237,6 +242,7 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     public void open(final CommandContext ctx) {
       close();
       fallback = null;
+      rids = 0;
       final DatabaseInternal db = ctx.getDatabase();
       final ColumnarStats stats = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().getStats();
       openIndex(ctx, db, stats);
@@ -260,6 +266,21 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
         return;
       }
 
+      final List<IndexInternal> subIndexes = index.getSubIndexes();
+      int maxBucket = -1;
+      for (final IndexInternal sub : subIndexes)
+        maxBucket = Math.max(maxBucket, sub.getAssociatedBucketId());
+      // the buckets the current user may read: the RIDs of the others are neither kept nor charged (final review B-M3), so neither the
+      // budget nor a fallback depends on records the user cannot see, and such a bucket is not covered (its rows, never asked, would be
+      // evaluated on the row)
+      final SecurityDatabaseUser user = SecurityHelper.currentUser(db);
+      final boolean[] covered = new boolean[maxBucket + 1];
+      for (final IndexInternal sub : subIndexes) {
+        final int bucketId = sub.getAssociatedBucketId();
+        if (bucketId >= 0 && (user == null || user.requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD)))
+          covered[bucketId] = true;
+      }
+
       final FacetMemoryBudget budget = FacetMemoryBudget.instance();
       final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
       final Runnable countWait = () -> stats.queryBudgetWaits(1);
@@ -269,7 +290,11 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
         final IndexCursor cursor = index.get(new Object[] { key });
         while (cursor.hasNext()) {
           final Identifiable next = cursor.next();
-          if (next == null || !found.add(next.getIdentity()))
+          if (next == null)
+            continue;
+          final RID rid = next.getIdentity();
+          final int bucketId = rid.getBucketId();
+          if (bucketId < 0 || bucketId >= covered.length || !covered[bucketId] || !found.add(rid))
             continue;
           // charged as the set grows, at the set's cost per RID (its free slots included), step by step
           while ((long) found.size() * RidHashSet.BYTES_PER_ENTRY > reserved) {
@@ -285,16 +310,9 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
           }
         }
       }
-      final List<IndexInternal> subIndexes = index.getSubIndexes();
-      int maxBucket = -1;
-      for (final IndexInternal sub : subIndexes)
-        maxBucket = Math.max(maxBucket, sub.getAssociatedBucketId());
-      final boolean[] covered = new boolean[maxBucket + 1];
-      for (final IndexInternal sub : subIndexes)
-        if (sub.getAssociatedBucketId() >= 0)
-          covered[sub.getAssociatedBucketId()] = true;
       coveredBuckets = covered;
       matches = found;
+      rids = found.size();
     }
 
     private static boolean foldsCase(final TypeIndex index) {
@@ -354,6 +372,11 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     /** Why this execution answers from the rows ({@code memory budget}, {@code index not ready}, ...), null when the index does. */
     public String fallback() {
       return fallback;
+    }
+
+    /** The RIDs of the readable buckets the index answered this execution with (0 when the rows answer). */
+    public long rids() {
+      return rids;
     }
 
     private void releaseReservations() {

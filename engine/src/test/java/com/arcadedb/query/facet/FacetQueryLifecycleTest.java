@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
+import com.arcadedb.index.columnar.ColumnarTestAccess;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -98,6 +99,9 @@ class FacetQueryLifecycleTest extends TestHelper {
   @Timeout(120)
   void writesWhileIteratingAProjectionSourceAreCountedWhenTheFacetsAreComputed() {
     load();
+    final long fullBudget = FacetMemoryBudget.instance().available();
+    final int bucketId = database.getSchema().getType(TYPE).getBuckets(true).getFirst().getFileId();
+    final int references = ColumnarTestAccess.stateReferences(manager(), bucketId);
     database.begin();
     try {
       final FacetResults facets;
@@ -109,6 +113,10 @@ class FacetQueryLifecycleTest extends TestHelper {
           rows++;
           if (first) {
             first = false;
+            // nothing is taken while the rows stream: the projection's match set (its charged bitmaps, its snapshots) is made after them
+            assertThat(FacetMemoryBudget.instance().available()).isEqualTo(fullBudget);
+            assertThat(ColumnarTestAccess.stateReferences(manager(), bucketId)).as("no snapshot held while the rows stream")
+                .isEqualTo(references);
             row.getElement().orElseThrow().asDocument().modify().set("brand", "updated").save();
             database.newDocument(TYPE).set("brand", "inserted").set("color", "color-1").set("price", -1L).save();
           }
@@ -128,7 +136,11 @@ class FacetQueryLifecycleTest extends TestHelper {
 
   /** Opens a FACETS query, reads one row and drops the result set without closing it. */
   private void abandonAfterOneRow() {
-    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " WHERE price >= 0 FACETS brand TERMS LIMIT 20");
+    abandonAfterOneRow("SELECT FROM " + TYPE + " WHERE price >= 0 FACETS brand TERMS LIMIT 20");
+  }
+
+  private void abandonAfterOneRow(final String sql) {
+    final ResultSet rs = database.query("sql", sql);
     assertThat(rs.hasNext()).isTrue();
     rs.next();
   }
@@ -146,6 +158,29 @@ class FacetQueryLifecycleTest extends TestHelper {
     abandonAfterOneRow();
     // the rows source reserved its first match bitmap step for the row read
     assertThat(budget.available()).isLessThan(full);
+    await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofMillis(50)).until(() -> {
+      System.gc();
+      return budget.available() == full;
+    });
+  }
+
+  /**
+   * Final fix batch 2 (r1 M9): the same for what the FILTER evaluators hold. An INDEX evaluator charges the RID set it looked up when the
+   * step opened; a query with no WHERE takes its matches from the projection only after the rows, so the evaluator is all it holds.
+   */
+  @Test
+  @Timeout(120)
+  void anAbandonedResultSetGivesTheBudgetOfItsFilterEvaluatorsBack() {
+    load();
+    database.command("sql", "CREATE INDEX ON " + TYPE + " (color) NOTUNIQUE");
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final long full = budget.available();
+    final String sql = "SELECT FROM " + TYPE + " FACETS brand TERMS FILTER color = 'color-1', c: color TERMS LIMIT 20";
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("[INDEX]");
+    }
+    abandonAfterOneRow(sql);
+    assertThat(budget.available()).as("the INDEX evaluator's RID set").isLessThan(full);
     await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofMillis(50)).until(() -> {
       System.gc();
       return budget.available() == full;

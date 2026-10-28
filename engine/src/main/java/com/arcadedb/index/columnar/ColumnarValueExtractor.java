@@ -166,6 +166,15 @@ public final class ColumnarValueExtractor {
     extract(record, column(property), dictionary, false, sink);
   }
 
+  /**
+   * {@link #extract(Document, String, GlobalDictionary, ValueSink)} with an explicit column definition instead of this extractor's own:
+   * a reader decoding segments written with that definition (a query that planned its counters before the column was redefined) reads
+   * the record in the same encoding.
+   */
+  public void extract(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final ValueSink sink) {
+    extract(record, column, dictionary, false, sink);
+  }
+
   /** Apply thread only: adds the values the dictionary does not hold yet and counts the failing values. */
   void extractForApply(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final ValueSink sink) {
     countFailures(column, extract(record, column, dictionary, true, sink));

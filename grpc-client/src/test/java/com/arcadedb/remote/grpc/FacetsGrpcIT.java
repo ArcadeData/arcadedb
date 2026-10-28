@@ -22,9 +22,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.http.FacetsHttpIT;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.ExecuteCommandRequest;
@@ -35,16 +38,21 @@ import com.arcadedb.server.grpc.FacetProtocol;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.grpc.QueryResult;
 import com.arcadedb.server.grpc.StreamQueryRequest;
+import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import io.grpc.Status;
 import io.grpc.stub.BlockingClientCall;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -106,6 +114,48 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
     super.endTest();
   }
 
+  /**
+   * Final review C-I8: the facet values travel as the rows' values do, so the client reads a DATE, a DATETIME, a DECIMAL and a NaN term
+   * as objects equal to (and of the class of) the same property's values in a row, on the unary and the streamed path.
+   */
+  @Test
+  void facetValuesDecodeAsRowValues() {
+    FacetsHttpIT.createTypedValues(getServerDatabase(0, getDatabaseName()));
+    final String facets = "SELECT FROM Typed FACETS d: day TERMS, a: at TERMS, p: price TERMS, s: score TERMS";
+    final Map<String, Set<Object>> rows = new HashMap<>();
+    try (final ResultSet rs = database.query("sql", "SELECT day AS d, at AS a, price AS p, score AS s FROM Typed")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        for (final String alias : List.of("d", "a", "p", "s"))
+          rows.computeIfAbsent(alias, k -> new HashSet<>()).add(row.getProperty(alias));
+      }
+    }
+    final FacetResults unary;
+    try (final ResultSet rs = database.query("sql", facets)) {
+      unary = rs.getFacets();
+    }
+    final FacetResults streamed;
+    try (final ResultSet rs = database.queryStream("sql", facets, BATCH)) {
+      while (rs.hasNext())
+        rs.next();
+      streamed = rs.getFacets();
+    }
+    for (final String alias : List.of("d", "a", "p", "s")) {
+      assertThat(termValues(unary.get(alias))).as("unary " + alias).isEqualTo(rows.get(alias));
+      assertThat(termValues(streamed.get(alias))).as("streamed " + alias).isEqualTo(rows.get(alias));
+    }
+    assertThat(rows.get("p").iterator().next()).isInstanceOf(BigDecimal.class);
+    assertThat(rows.get("s")).contains(Double.NaN);
+  }
+
+  private static Set<Object> termValues(final FacetResult result) {
+    final Set<Object> values = new HashSet<>();
+    for (final FacetBucket bucket : result.buckets())
+      if (!bucket.isMissing())
+        values.add(bucket.value());
+    return values;
+  }
+
   @Test
   void unaryQueryCarriesFacets() {
     try (final ResultSet rs = database.query("sql", QUERY)) {
@@ -151,7 +201,7 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
     assertThat(messages.getFirst().getIsLastBatch()).isTrue();
     assertThat(messages.getFirst().hasFacets()).isTrue();
 
-    final FacetResults facets = FacetProtocol.fromProto(messages.getFirst().getFacets());
+    final FacetResults facets = FacetProtocol.fromProto(messages.getFirst().getFacets(), ProtoUtils::fromGrpcValue);
     assertThat(facets.exact()).isTrue();
     for (final String alias : facets.aliases()) {
       final FacetResult result = facets.get(alias);
@@ -221,7 +271,7 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
 
     assertThat(response.getResults(0).getRecordsCount()).isEqualTo(3);
     assertThat(response.hasFacets()).isTrue();
-    assertSameFacets(FacetProtocol.fromProto(response.getFacets()), QUERY);
+    assertSameFacets(FacetProtocol.fromProto(response.getFacets(), ProtoUtils::fromGrpcValue), QUERY);
   }
 
   @Test

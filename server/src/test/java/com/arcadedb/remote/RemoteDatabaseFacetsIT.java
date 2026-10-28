@@ -21,12 +21,23 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Database;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.facet.FacetBucket;
+import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.FacetsHttpIT;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -103,6 +114,50 @@ public class RemoteDatabaseFacetsIT extends BaseGraphServerTest {
         assertThat(rs.getFacets()).isNull();
       }
     }
+  }
+
+  /**
+   * Final review C-I8: the Java client decodes a facet's values as it decodes a row's value of the same property, on the buffered and
+   * the streamed path: a DATE, a DATETIME, a DECIMAL and a NaN term are objects equal to (and of the class of) the row's.
+   */
+  @Test
+  void facetValuesDecodeAsRowValues() {
+    FacetsHttpIT.createTypedValues(getServerDatabase(0, getDatabaseName()));
+    final String facets = "SELECT FROM Typed FACETS d: day TERMS, a: at TERMS, p: price TERMS, s: score TERMS";
+    try (final RemoteDatabase remote = remote()) {
+      final Map<String, Set<Object>> rows = new HashMap<>();
+      try (final ResultSet rs = remote.query("sql", "SELECT day AS d, at AS a, price AS p, score AS s FROM Typed")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          for (final String alias : List.of("d", "a", "p", "s"))
+            rows.computeIfAbsent(alias, k -> new HashSet<>()).add(row.getProperty(alias));
+        }
+      }
+      final FacetResults buffered;
+      try (final ResultSet rs = remote.query("sql", facets)) {
+        buffered = rs.getFacets();
+      }
+      final FacetResults streamed;
+      try (final ResultSet rs = remote.queryStream("sql", facets)) {
+        rs.stream().count();
+        streamed = rs.getFacets();
+      }
+      for (final String alias : List.of("d", "a", "p", "s")) {
+        assertThat(termValues(buffered.get(alias))).as("buffered " + alias).isEqualTo(rows.get(alias));
+        assertThat(termValues(streamed.get(alias))).as("streamed " + alias).isEqualTo(rows.get(alias));
+      }
+      // the rows' own types, restored from the type hints: a date, not its text
+      assertThat(rows.get("d").iterator().next()).isNotInstanceOf(String.class);
+      assertThat(rows.get("p").iterator().next()).isInstanceOf(BigDecimal.class);
+    }
+  }
+
+  private static Set<Object> termValues(final FacetResult result) {
+    final Set<Object> values = new HashSet<>();
+    for (final FacetBucket bucket : result.buckets())
+      if (!bucket.isMissing())
+        values.add(bucket.value());
+    return values;
   }
 
   private void assertSameFacets(final FacetResults remoteFacets) {
