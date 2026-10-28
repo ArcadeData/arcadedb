@@ -54,9 +54,9 @@ public class ContinuousAggregateRefresher {
   private static final String[] CLAUSES_AFTER_WHERE = { "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" };
 
   /**
-   * The key the after-commit refresh of a continuous aggregate is registered under in a transaction
-   * ({@code TransactionContext.addAfterCommitCallbackIfAbsent}), so that every change of its source in one transaction asks for one
-   * refresh at commit.
+   * The key the refresh of a continuous aggregate is registered under in a transaction
+   * ({@code TransactionContext.addAfterCompletionCallbackIfAbsent}), so that every change of its source in one transaction asks for
+   * one refresh when it ends.
    */
   public static String refreshCallbackKey(final String aggregateName) {
     return "ca-refresh:" + aggregateName;
@@ -147,7 +147,13 @@ public class ContinuousAggregateRefresher {
       // refresh trusted it and skipped the very window that had just been lost.
       final Long[] advancedWatermark = new Long[1];
 
-      database.transaction(() -> {
+      // #10688: IN A TRANSACTION OF ITS OWN, NEVER THE CALLER'S. Joining one open on the thread (a REFRESH, a refresh() or a CREATE
+      // run inside BEGIN) returned without committing anything, and the watermark below was installed and saved over rows the
+      // caller's rollback then took back: every bucket behind it was lost for good, with the aggregate reported VALID. The refresh is
+      // no more part of the caller's unit of work than the samples it reads are (#7410), and the materialized view refresh made the
+      // same choice (#3941). The answer is what says the rows committed: with joinCurrentTx=false it is always a transaction of its
+      // own, committed before returning, or an exception
+      final boolean committed = database.transaction(() -> {
         // RESET FIRST. database.transaction() retries this very lambda on a NeedRetryException, rolling back in
         // between, and advancedWatermark outlives the attempt that wrote it - so a watermark computed by an attempt
         // that was then DISCARDED would survive into one that committed a smaller result, advancing the watermark
@@ -202,7 +208,10 @@ public class ContinuousAggregateRefresher {
         // it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
         if (maxBucketSeen && (cleanRebuild || !watermarkSet || maxBucketTs > watermark))
           advancedWatermark[0] = maxBucketTs;
-      });
+      }, false);
+      if (!committed)
+        throw new IllegalStateException("The refresh of continuous aggregate '" + ca.getName()
+            + "' joined a transaction instead of committing its own: its watermark was not advanced");
 
       // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
       if (advancedWatermark[0] != null)
@@ -299,9 +308,12 @@ public class ContinuousAggregateRefresher {
   }
 
   /**
-   * Refreshes, once the current transaction commits, every continuous aggregate whose source is {@code sourceTypeName}: the
-   * statements that change the samples of a TimeSeries type outside the append of {@code INSERT} (issue #10428) are not part of the
-   * transaction they run in, so with none open the aggregates are refreshed at once. A failing refresh is logged, never raised: the
+   * Refreshes every continuous aggregate whose source is {@code sourceTypeName}, after a change of its samples: with no transaction
+   * open at once, inside one once that transaction ENDS, whether it commits or rolls back (issue #10687). The change is not part of
+   * the transaction it runs in (an append commits its own, #7410; a delete or a truncate is not transactional, #10428), so a rollback
+   * leaves it in place, and the refresh it owes cannot be conditional on a commit either: an after-commit callback was discarded with
+   * the rollback, and left the aggregate describing samples that no longer existed, or missing samples that did. Deferred rather
+   * than run at once so that every change of the transaction asks for one refresh. A failing refresh is logged, never raised: the
    * statement that scheduled it did its own work.
    */
   public static void refreshAggregatesOver(final DatabaseInternal database, final String sourceTypeName) {
@@ -314,6 +326,9 @@ public class ContinuousAggregateRefresher {
       if (!(aggregate instanceof ContinuousAggregateImpl impl) || !sourceTypeName.equals(impl.getSourceTypeName()))
         continue;
       final Runnable refresh = () -> {
+        // run at the end of a transaction, which a close does not wait for: a closed database has nothing to refresh
+        if (!database.isOpen())
+          return;
         try {
           incrementalRefresh(database, impl);
         } catch (final Exception e) {
@@ -323,7 +338,7 @@ public class ContinuousAggregateRefresher {
         }
       };
       if (inTransaction)
-        database.getTransaction().addAfterCommitCallbackIfAbsent(refreshCallbackKey(impl.getName()), refresh);
+        database.getTransaction().addAfterCompletionCallbackIfAbsent(refreshCallbackKey(impl.getName()), refresh);
       else
         refresh.run();
     }

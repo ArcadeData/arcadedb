@@ -1038,6 +1038,13 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public void onClusterTokenRefused(final String caller) {
+    final RaftHAServer s = raftHAServer;
+    if (s != null)
+      s.reportClusterTokenRefusal(caller);
+  }
+
+  @Override
   public String getClusterName() {
     return raftHAServer != null ? raftHAServer.getClusterName() : null;
   }
