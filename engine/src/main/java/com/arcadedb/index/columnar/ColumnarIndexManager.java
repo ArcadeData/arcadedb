@@ -161,8 +161,6 @@ public final class ColumnarIndexManager {
   /** Oldest pending mark age past which the pacing falls back to the base interval, whatever the ingest. */
   static final long   APPLY_PACING_LAG_LIMIT_MS = 500L;
 
-  /** Permits of {@link #fallbackScans()}; plan 4 reads them from {@code arcadedb.columnar.maxFallbackScans}. */
-  private static final int    FALLBACK_SCANS  = 2;
   private static final long   LOG_THROTTLE_MS = 60_000L;
   private static final long[] NO_SEGMENTS     = new long[0];
 
@@ -216,7 +214,8 @@ public final class ColumnarIndexManager {
   private final LocalDatabase database;
   private final boolean       readOnly;
   private final ColumnarStats stats        = new ColumnarStats();
-  private final Semaphore     fallbackScans = new Semaphore(FALLBACK_SCANS);
+  /** Permits of {@link #fallbackScans()}: {@code arcadedb.columnar.maxFallbackScans}, read at construction. */
+  private final Semaphore     fallbackScans;
   private final AtomicLong    reconcileRequests = new AtomicLong();
   /** The value of {@link #reconcileRequests} the last ended reconcile started from; written by the pass thread (one per database). */
   private volatile long       reconciledRequests;
@@ -310,6 +309,7 @@ public final class ColumnarIndexManager {
   public ColumnarIndexManager(final LocalDatabase database) {
     this.database = database;
     this.readOnly = database.getMode() == ComponentFile.MODE.READ_ONLY;
+    this.fallbackScans = new Semaphore(database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS));
   }
 
   /** The database this manager belongs to. */

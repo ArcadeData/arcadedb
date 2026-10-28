@@ -411,6 +411,28 @@ public enum GlobalConfiguration {
       "Ratio (0-1) of unreferenced ordinals above which a COLUMNAR dictionary is compacted into a new generation. Default is 0.5",
       Float.class, 0.5f),
 
+  COLUMNAR_PATCH_BUDGET("arcadedb.columnar.patchBudget", SCOPE.SERVER,
+      "Maximum number of record positions, summed over the buckets, that a FACETS query may read from the records to correct the "
+          + "projection for the writes it has not applied yet. Above it the query counts from the projection alone and reports "
+          + "meta.exact=false. Default is 10000", Integer.class, 10000),
+
+  COLUMNAR_QUERY_MEMORY_BUDGET("arcadedb.columnar.queryMemoryBudget", SCOPE.JVM,
+      "Bytes of counting memory (dense counters, hash counters, match bitmaps) that all concurrent FACETS queries of the JVM may hold "
+          + "together. Default is 268435456 (256MB)", Long.class, 268435456L),
+
+  COLUMNAR_QUERY_BUDGET_WAIT("arcadedb.columnar.queryBudgetWait", SCOPE.SERVER,
+      "Milliseconds a FACETS query waits for counting memory (see arcadedb.columnar.queryMemoryBudget) before the facet is reported "
+          + "as unavailable. Default is 5000", Long.class, 5000L),
+
+  COLUMNAR_TOP_MAX("arcadedb.columnar.topMax", SCOPE.SERVER,
+      "Maximum value accepted by the TOP option of a FACETS clause. A larger value is a parse error. Default is 1000",
+      Integer.class, 1000),
+
+  COLUMNAR_MAX_FALLBACK_SCANS("arcadedb.columnar.maxFallbackScans", SCOPE.DATABASE,
+      "Maximum number of FACETS queries of a database that may run a fallback scan of the records at the same time (a facet on a "
+          + "property with no COLUMNAR index, or on a bucket whose projection is unusable). Read when the database is opened. "
+          + "Default is 2", Integer.class, 2),
+
   FLUSH_ALL_PAGES_TIMEOUT("arcadedb.flushAllPagesTimeout", SCOPE.DATABASE,
       """
       Milliseconds of NO FLUSH PROGRESS after which waiting for all of a database's pages to reach the \
