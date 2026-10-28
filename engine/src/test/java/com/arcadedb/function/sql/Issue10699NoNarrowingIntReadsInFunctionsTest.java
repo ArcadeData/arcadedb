@@ -61,9 +61,7 @@ class Issue10699NoNarrowingIntReadsInFunctionsTest {
       "FunctionOptions.java", 1,
       // narrow a COMPUTED result back to the Integer type of the input (pow(int), sqrt(int)), not an argument
       "math/SQLFunctionPow.java", 1, //
-      "math/SQLFunctionSquareRoot.java", 1,
-      // the astar/dijkstra option bag (a MAP entry, not a positional argument): out of #10699's scope, tracked as #10788
-      "graph/SQLFunctionHeuristicPathFinderAbstract.java", 2));
+      "math/SQLFunctionSquareRoot.java", 1));
 
   @Test
   void noSqlFunctionReadsAnIntegerArgumentThroughANarrowingConversion() throws IOException {
