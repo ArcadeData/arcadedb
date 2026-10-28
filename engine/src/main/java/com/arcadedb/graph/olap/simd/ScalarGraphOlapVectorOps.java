@@ -144,6 +144,20 @@ public final class ScalarGraphOlapVectorOps implements GraphOlapVectorOps {
   }
 
   @Override
+  public void bitmaskAndNot(final long[] a, final long[] b, final long[] out, final int length) {
+    for (int i = 0; i < length; i++)
+      out[i] = a[i] & ~b[i];
+  }
+
+  @Override
+  public int bitmaskAndPopcount(final long[] a, final long[] b, final int length) {
+    int count = 0;
+    for (int i = 0; i < length; i++)
+      count += Long.bitCount(a[i] & b[i]);
+    return count;
+  }
+
+  @Override
   public int bitmaskPopcount(final long[] bitmask, final int length) {
     int count = 0;
     for (int i = 0; i < length; i++)
