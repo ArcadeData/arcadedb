@@ -10156,8 +10156,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
           // without this the beam fills with nodes the post-filter below then drops (issue #5558).
+          // The guard as on the exact path (issue #9896): a selective allow-list keeps this walk going over most of the
+          // graph, testing a record per candidate, and the filter is the one place inside it ArcadeDB code runs (#10782)
           final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, pinnedOrdinalMap, vectorIndex(),
-              supersededRIDs(overlay));
+              supersededRIDs(overlay), guard);
 
           // Execute search using the PQ-based score provider
           // The graph structure is typically small enough to stay in OS page cache

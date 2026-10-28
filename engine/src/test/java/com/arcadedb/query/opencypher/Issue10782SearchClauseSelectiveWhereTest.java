@@ -35,8 +35,10 @@ import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -113,6 +115,46 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
     assertThatThrownBy(() -> DbIndexVectorQueryNodes.search("Doc[vector]", 3, new float[] { 0f, 1f }, small, context, "test"))
         .isInstanceOf(TimeoutException.class);
     assertThat(tested[0]).as("no record is tested past the deadline").isEqualTo(10);
+  }
+
+  @Test
+  void aProductQuantizedFilteredWalkStopsAtTheDeadline() {
+    createDocs(2_000, 5, ", \"quantization\": \"PRODUCT\", \"pqClusters\": 16");
+    final LSMVectorIndex index = indexOf();
+    index.buildVectorGraphNow();
+    assertThat(index.isPQSearchAvailable()).as("the PQ path must be the one tested").isTrue();
+
+    // A plain allow-list, not a predicate one, so nothing but the walk's own filter can stop it. Unbounded in size, so the
+    // walk is taken rather than the pre-filter plan; the deadline passes on its first membership test
+    final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
+    final boolean[] slept = new boolean[1];
+    final Set<RID> slowAllowList = new AbstractSet<>() {
+      @Override
+      public boolean contains(final Object o) {
+        if (!slept[0]) {
+          slept[0] = true;
+          try {
+            Thread.sleep(2_500);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        }
+        return "small".equals(((RID) o).asDocument().getString("tenant"));
+      }
+
+      @Override
+      public int size() {
+        return Integer.MAX_VALUE;
+      }
+
+      @Override
+      public Iterator<RID> iterator() {
+        throw new UnsupportedOperationException();
+      }
+    };
+
+    assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
+        .isInstanceOf(TimeoutException.class);
   }
 
   @Test
