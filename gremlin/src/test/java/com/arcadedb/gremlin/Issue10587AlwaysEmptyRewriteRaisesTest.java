@@ -147,6 +147,19 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
       }
   }
 
+  @Test
+  void aGraphStepIdThatIsNotARidAnswersAsWithoutTheStrategy() {
+    // A NUMBER IS SKIPPED BY ArcadeGraph.vertices(), A STRING IS PARSED AS A RID AND A MALFORMED ONE RAISES: BOTH MUST STAY AS THEY ARE
+    assertSameAnswer(g -> g.V(1).filter(__.limit(0)).count());
+    assertSameAnswer(g -> g.V(1L).out().filter(__.limit(0)).count());
+    assertSameAnswer(g -> g.V("not-a-rid").filter(__.limit(0)).count());
+    assertSameAnswer(g -> g.V().filter(__.V("not-a-rid").limit(0)).count());
+    assertSameAnswer(g -> g.E("#999:0").filter(__.limit(0)).count());
+    final Object rid = graph.traversal().V().has("n", 1L).id().next();
+    assertSameAnswer(g -> g.V(rid.toString()).out().filter(__.limit(0)).count());
+    assertSameAnswer(g -> g.V(graph.traversal().V().has("n", 1L).next()).out().filter(__.limit(0)).count());
+  }
+
   private void assertSameAnswer(final Function<GraphTraversalSource, GraphTraversal<?, ?>> query) {
     final Object withStrategy = outcome(query, graph.traversal());
     final Object withoutStrategy = outcome(query, graph.traversal().withoutStrategies(ArcadeTraversalStrategy.class));
@@ -159,8 +172,7 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
 
   private static Object outcome(final Function<GraphTraversalSource, GraphTraversal<?, ?>> query, final GraphTraversalSource g) {
     try {
-      final List<?> rows = query.apply(g).toList();
-      return rows;
+      return query.apply(g).toList();
     } catch (final RuntimeException e) {
       return "raised " + e.getClass().getName() + ": " + e.getMessage();
     }

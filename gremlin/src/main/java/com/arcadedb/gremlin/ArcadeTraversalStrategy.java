@@ -111,6 +111,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   private static final int ANY           = 0;
   private static final int VERTEX        = 1;
   private static final int EDGE          = 2;
+  // ELEMENT IS "A VERTEX OR AN EDGE, NOT KNOWN WHICH": A STEP THAT NEEDS ONE OF THE TWO (current != VERTEX) REJECTS IT TOO, ON PURPOSE
   private static final int ELEMENT       = VERTEX | EDGE;
 
   @Override
