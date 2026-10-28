@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.*;
@@ -67,6 +68,15 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
 
   default Optional<QueryStatistics> getStatistics() {
     return Optional.empty();
+  }
+
+  /**
+   * The facets of a {@code SELECT ... FACETS} query, over every record its WHERE matched whatever SKIP and LIMIT kept; null for any
+   * other statement. Computed once: when the rows are exhausted, or by this call, which then reads the matches the rows did not reach
+   * and ends the rows (read the rows first, then ask for the facets).
+   */
+  default FacetResults getFacets() {
+    return null;
   }
 
   default void reset() {

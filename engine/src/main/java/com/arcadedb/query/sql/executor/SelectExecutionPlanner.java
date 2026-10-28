@@ -37,6 +37,8 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetSpec;
+import com.arcadedb.query.facet.FacetSpecCompiler;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
@@ -48,6 +50,9 @@ import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FacetItem;
+import com.arcadedb.query.sql.parser.FacetRangeItem;
+import com.arcadedb.query.sql.parser.FacetsClause;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.FunctionCall;
@@ -165,6 +170,10 @@ public class SelectExecutionPlanner {
    * then reads the types it targets without their key indexes, which a concurrent DDL cannot take away under it.
    */
   private              boolean           withoutKeyIndexes;
+  /** The FACETS clause the plan computes (a copy of the statement's), null without one. */
+  private              FacetsClause      facetsClause;
+  /** Whether the FACETS statement has no WHERE (an always-true one dropped): every record of the target is a match. */
+  private              boolean           facetsWithoutWhere;
 
   public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
@@ -225,6 +234,109 @@ public class SelectExecutionPlanner {
     // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
     if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
       info.whereClause = null;
+
+    initFacets(context);
+  }
+
+  /**
+   * Compiles the FACETS clause and takes SKIP and LIMIT away while the match source is planned: the facets count every match of the
+   * WHERE, so no fetch may be cut short (D6). They are put back by {@link #chainFacetCollect}, before the projections. Runs after
+   * {@link #rewriteDistinctAsGroupBy}, whose decision has to see the LIMIT.
+   */
+  private void initFacets(final CommandContext context) {
+    facetsClause = null;
+    facetsWithoutWhere = false;
+    if (statement.getFacets() == null)
+      return;
+
+    final FromItem item = info.target == null ? null : info.target.getItem();
+    if (item == null || !(item.getStatement() != null || item.getBucket() != null || item.getBucketList() != null || (
+        item.getIdentifier() != null && item.getModifier() == null && !item.getIdentifier().getStringValue().startsWith("$"))))
+      throw new CommandSQLParsingException("FACETS needs a type, a bucket or a subquery as target");
+
+    // a copy: the statement's own nodes are shared by every execution of the cached statement. Compiled here to refuse an invalid
+    // clause at planning and to plan by its FILTERs; the collect step compiles it again, against the context of each execution
+    facetsClause = statement.getFacets().copy();
+    info.facets = FacetSpecCompiler.compile(facetsClause, context);
+    if (facetsDependOnInputParameters(facetsClause))
+      planDependsOnInputParameters = true;
+    // decided before the WHERE is planned: an index search or an indexed function consumes info.whereClause
+    facetsWithoutWhere = info.whereClause == null;
+
+    info.deferredSkip = info.skip;
+    info.deferredLimit = info.limit;
+    info.skip = null;
+    info.limit = null;
+  }
+
+  /** Whether a bound, an interval or an INCLUDE value of the clause is an input parameter, resolved into the compiled facets. */
+  private static boolean facetsDependOnInputParameters(final FacetsClause clause) {
+    for (final FacetItem item : clause.items) {
+      if (item.interval instanceof InputParameter || item.boundsFrom instanceof InputParameter || item.boundsTo instanceof InputParameter)
+        return true;
+      if (item.ranges != null)
+        for (final FacetRangeItem range : item.ranges)
+          if (range.from instanceof InputParameter || range.to instanceof InputParameter)
+            return true;
+      if (item.include != null)
+        for (final Expression value : item.include)
+          if (value.containsInputParameter())
+            return true;
+    }
+    return false;
+  }
+
+  /**
+   * Chains the {@link FacetCollectStep} after the match source (fetch, LET, WHERE) and puts SKIP and LIMIT back for the rows. No-op
+   * without FACETS.
+   */
+  private void chainFacetCollect(final SelectExecutionPlan plan, final CommandContext context) {
+    if (info.facets == null)
+      return;
+
+    final DatabaseInternal db = context.getDatabase();
+    final FromItem item = info.target.getItem();
+    final int[] targetBuckets;
+    String targetType = null;
+    if (item.getIdentifier() != null) {
+      targetType = item.getIdentifier().getStringValue();
+      targetBuckets = db.getSchema().existsType(targetType) ? toBucketIds(db.getSchema().getType(targetType).getBuckets(true)) : null;
+    } else if (item.getBucket() != null || item.getBucketList() != null) {
+      final List<Bucket> buckets = item.getBucket() != null ? List.of(item.getBucket()) : item.getBucketList().toListOfClusters();
+      targetBuckets = new int[buckets.size()];
+      for (int i = 0; i < targetBuckets.length; i++) {
+        final Bucket bucket = buckets.get(i);
+        targetBuckets[i] = bucket.getBucketName() != null ? db.getSchema().getBucketByName(bucket.getBucketName()).getFileId()
+            : bucket.getBucketNumber();
+        final DocumentType type = db.getSchema().getTypeByBucketId(targetBuckets[i]);
+        final String typeName = type == null ? null : type.getName();
+        targetType = i == 0 ? typeName : Objects.equals(targetType, typeName) ? targetType : null;
+      }
+    } else
+      targetBuckets = null;
+
+    boolean anyFilter = false;
+    for (final FacetSpec spec : info.facets)
+      anyFilter |= spec.filter() != null;
+    // no WHERE and no FILTER: every record of the target buckets is a match, which the projection holds without a record read
+    final int[] projectionBuckets = facetsWithoutWhere && !anyFilter ? targetBuckets : null;
+
+    plan.chain(new FacetCollectStep(facetsClause, FacetCollectStep.filterIndexByFacet(info.facets), List.of(), targetType,
+        projectionBuckets, context));
+    info.skip = info.deferredSkip;
+    info.limit = info.deferredLimit;
+  }
+
+  private static int[] toBucketIds(final List<com.arcadedb.engine.Bucket> buckets) {
+    final int[] ids = new int[buckets.size()];
+    for (int i = 0; i < ids.length; i++)
+      ids[i] = buckets.get(i).getFileId();
+    return ids;
+  }
+
+  /** The LIMIT a fetch sub-plan may stop at: none with FACETS, whose facets count every match. */
+  private Limit fetchLimit() {
+    return info.facets != null ? null : statement.getLimit();
   }
 
   /**
@@ -300,8 +412,8 @@ public class SelectExecutionPlanner {
     // If it depends on runtime context (e.g., LET variables), use 0 for now
     int fetchLimitValue = 0;
     try {
-      if (statement.getLimit() != null)
-        fetchLimitValue = statement.getLimit().getValue(context);
+      if (fetchLimit() != null)
+        fetchLimitValue = fetchLimit().getValue(context);
     } catch (final Exception e) {
       // Limit value depends on runtime context, use 0 for now
       fetchLimitValue = 0;
@@ -323,6 +435,8 @@ public class SelectExecutionPlanner {
       handleWhere(selectExecutionPlan, info, context);
 
       buildExecutionPlan(selectExecutionPlan, info);
+
+      chainFacetCollect(selectExecutionPlan, context);
 
       handleProjectionsBlock(selectExecutionPlan, info, context);
 
@@ -385,6 +499,9 @@ public class SelectExecutionPlanner {
     info.fetchExecutionPlan = null;
 
     plan.chain(new EmptySourceStep(context, reason));
+
+    // no match: the facets are empty, and exact
+    chainFacetCollect(plan, context);
 
     handleProjectionsBlock(plan, info, context);
 
@@ -575,6 +692,9 @@ public class SelectExecutionPlanner {
   }
 
   private boolean handleHardwiredOptimizations(final SelectExecutionPlan result, final CommandContext context) {
+    // a hardwired plan answers without the rows the facets are collected from
+    if (info.facets != null)
+      return false;
     return handleHardwiredCountOnIndex(result, info, context) || handleHardwiredCountOnType(result, info, context)
         || handleHardwiredMaxMinOnIndex(result, info, context);
   }
@@ -780,7 +900,8 @@ public class SelectExecutionPlanner {
    * unranged {@code ORDER BY}.
    */
   private void rewriteRangeMinMaxAsOrderedFetch(final CommandContext context) {
-    if (info.whereClause == null || info.projection == null || info.target == null || info.distinct || info.expand
+    // the ordered fetch stops at the first row, the facets need every match
+    if (info.facets != null || info.whereClause == null || info.projection == null || info.target == null || info.distinct || info.expand
         || info.groupBy != null || info.orderBy != null || info.skip != null || info.limit != null || info.unwind != null
         || info.perRecordLetClause != null || info.timeout != null || statement.getLetClause() != null)
       return;
@@ -1657,7 +1778,7 @@ public class SelectExecutionPlanner {
       final List<InternalExecutionPlan> plans = new ArrayList<>();
       for (final InputParameter param : target.getInputParams()) {
         final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-            statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+            fetchLimit() != null ? fetchLimit().getValue(context) : 0);
         handleInputParamAsTarget(subPlan, info.buckets, info, param, context);
         plans.add(subPlan);
       }
@@ -4319,7 +4440,7 @@ public class SelectExecutionPlanner {
               bestIndex.additionalRangeCondition, true, context);
 
           SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+              fetchLimit() != null ? fetchLimit().getValue(context) : 0);
           subPlan.chain(step);
           List<Integer> filterClusterIds = null;
           if (filterClusters != null)
@@ -4345,7 +4466,7 @@ public class SelectExecutionPlanner {
         } else {
           FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(typez.getName(), filterClusters, context, true);
           SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+              fetchLimit() != null ? fetchLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
             if (refersToLet(block.getSubBlocks(), info.perRecordLetClause)) {
@@ -4430,7 +4551,7 @@ public class SelectExecutionPlanner {
           }
         } else {
           SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-              statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+              fetchLimit() != null ? fetchLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
             // Same guard as every sibling branch: a residual that reads a per-record LET variable has to be filtered
@@ -5058,7 +5179,7 @@ public class SelectExecutionPlanner {
         return false;
 
       final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-          statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+          fetchLimit() != null ? fetchLimit().getValue(context) : 0);
       subSteps.forEach(x -> subPlan.chain(x));
       subTypePlans.add(subPlan);
     }
@@ -5113,7 +5234,7 @@ public class SelectExecutionPlanner {
           return null;
         }
         final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-            statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+            fetchLimit() != null ? fetchLimit().getValue(context) : 0);
         subSteps.forEach(subPlan::chain);
         subTypePlans.add(subPlan);
       }
@@ -5352,7 +5473,7 @@ public class SelectExecutionPlanner {
     final List<InternalExecutionPlan> subPlans = new ArrayList<>();
     for (final IndexSearchDescriptor desc : indexSearchDescriptors) {
       final SelectExecutionPlan subPlan = new SelectExecutionPlan(context,
-          statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
+          fetchLimit() != null ? fetchLimit().getValue(context) : 0);
       subPlan.chain(new FetchFromIndexStep(desc.index, desc.keyCondition, desc.additionalRangeCondition, context));
       List<Integer> filterClusterIds = null;
       if (filterClusters != null)
@@ -5405,7 +5526,8 @@ public class SelectExecutionPlanner {
       return null;
     if (aggregates) {
       // Groups come out in the order they are first met: without an ORDER BY, a LIMIT or SKIP picks different ones
-      if (info.groupBy != null && info.orderBy == null && (info.limit != null || info.skip != null))
+      if (info.groupBy != null && info.orderBy == null && (info.limit != null || info.skip != null || info.deferredLimit != null
+          || info.deferredSkip != null))
         return null;
       // An aggregate such as list() keeps the rows' order in its value, which no outer ORDER BY re-sorts
       if (!onlyOrderInsensitiveAggregates(info.aggregateProjection) || !onlyOrderInsensitiveAggregates(info.projection))

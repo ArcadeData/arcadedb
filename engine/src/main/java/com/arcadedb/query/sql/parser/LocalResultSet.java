@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
@@ -80,6 +81,11 @@ public class LocalResultSet implements ResultSet {
   @Override
   public Optional<ExecutionPlan> getExecutionPlan() {
     return Optional.of(executionPlan);
+  }
+
+  @Override
+  public FacetResults getFacets() {
+    return executionPlan.getFacets();
   }
 
   @Override
