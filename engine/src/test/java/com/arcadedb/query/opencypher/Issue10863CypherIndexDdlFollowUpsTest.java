@@ -88,6 +88,20 @@ class Issue10863CypherIndexDdlFollowUpsTest extends TestHelper {
   }
 
   @Test
+  void valuesThatAreNoVectorAreSkippedWhenTheDimensionsAreTakenFromTheData() {
+    // a scalar, a string a vector could be parsed from, a list of strings and an empty list come before the first vector
+    command("CREATE (:L {id: 'n', e: 5})");
+    command("CREATE (:L {id: 's', e: '[1.0, 2.0]'})");
+    command("CREATE (:L {id: 'l', e: ['x', 'y']})");
+    command("CREATE (:L {id: 'z', e: []})");
+    command("CREATE (:L {id: 'a', e: [1.0, 0.0, 0.0, 0.0]})");
+
+    command("CREATE VECTOR INDEX v FOR (n:L) ON n.e");
+
+    assertThat(vectorIndex((TypeIndex) database.getSchema().getIndexByName("v")).getDimensions()).isEqualTo(4);
+  }
+
+  @Test
   void vectorIndexWithOptionsButWithoutDimensionsTakesThemFromTheData() {
     command("CREATE (:L {id: 'a', e: [1.0, 0.0]})");
 

@@ -1611,21 +1611,30 @@ public class OpenCypherQueryEngine implements QueryEngine {
     while (it.hasNext()) {
       if (!(it.next() instanceof Document doc))
         continue;
-      final Object value = doc.get(propertyName);
-      // a string is no vector here, though VectorUtils parses one written as text: '3' is not a vector of one dimension
-      if (value == null || value instanceof String)
-        continue;
-      final float[] vector;
-      try {
-        vector = VectorUtils.toFloatArray(value);
-      } catch (final IllegalArgumentException | ClassCastException e) {
-        // not a vector: no length to take from it
-        continue;
-      }
-      if (vector != null && vector.length > 0)
-        return vector.length;
+      final int length = vectorLength(doc.get(propertyName));
+      if (length > 0)
+        return length;
     }
     return -1;
+  }
+
+  /**
+   * The number of dimensions of {@code value} when it is a vector - an array of primitive numbers, or an array or a list of
+   * numbers - or -1. Read off the shape, without converting the value or throwing for one that is no vector, so a walk over
+   * records that hold something else in the property costs neither an allocation nor an exception per record. A string is no
+   * vector here, though {@link VectorUtils#toFloatArray(Object)} parses one written as text: '3' is not a vector of one
+   * dimension.
+   */
+  private static int vectorLength(final Object value) {
+    return switch (value) {
+      case float[] a -> a.length;
+      case double[] a -> a.length;
+      case long[] a -> a.length;
+      case int[] a -> a.length;
+      case Object[] a -> a.length > 0 && a[0] instanceof Number ? a.length : -1;
+      case List<?> l -> !l.isEmpty() && l.getFirst() instanceof Number ? l.size() : -1;
+      case null, default -> -1;
+    };
   }
 
   /**
