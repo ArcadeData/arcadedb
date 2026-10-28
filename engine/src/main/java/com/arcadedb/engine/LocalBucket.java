@@ -4126,6 +4126,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     MutablePage currentPage = null;
     int recordPositionInPage = 0;
     int availablePositionIndex = 0;
+    // Set when a record too large for a page sealed the page being filled: the allocator is asked again before a new page is
+    // opened, so the room left on the sealed page is used by the records that follow
+    boolean askAllocator = false;
 
     for (; i < to; i++) {
       final Binary buffer = buffers[i];
@@ -4146,7 +4149,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           currentPage = null;
         }
         ridsOut[i - from] = createRecordInternal(buffer, false, true);
+        askAllocator = true;
         continue;
+      }
+
+      if (askAllocator) {
+        final RID rid = createRecordInternal(buffer, false, false);
+        if (rid != null) {
+          ridsOut[i - from] = rid;
+          continue;
+        }
+        askAllocator = false;
       }
 
       if (currentPage == null || availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > maxContent) {

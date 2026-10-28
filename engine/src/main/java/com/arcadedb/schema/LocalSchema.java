@@ -4586,7 +4586,8 @@ public class LocalSchema implements Schema {
             continue;
           }
 
-          // A schema written before #10750 can name the type by an alias: bound to the type's own name here, and saved so
+          // A schema written before #10750 can name the type by an alias: the trigger registered and saved below is the one bound
+          // to the type's own name, so the next save repairs the file
           trigger = bindToTypeName(trigger);
 
           // A trigger of this name already installed is being REPLACED by this one, not joined by it - the map
