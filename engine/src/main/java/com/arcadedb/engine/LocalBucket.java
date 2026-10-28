@@ -60,6 +60,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -951,6 +952,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       for (int slot = 0; slot < recordCountInPage; ++slot)
         offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
       return version;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * The positions of the slots of a COMMITTED page that hold a record of their own (in place, behind a placeholder pointer, or the head
+   * of a chunk chain), in ascending order: the slots {@link #visitCommittedPage} reports as RECORD, read the same way (newest committed
+   * version through the page manager, no transaction, no permission check) but without resolving any record: only the record count,
+   * the slot table and each slot's size marker are read. A slot whose marker cannot be decoded is reported, so a caller that confirms
+   * each position by reading it never misses one.
+   *
+   * @return the version of the page that was read, or -1 when the page is not committed yet (nothing is reported)
+   */
+  public long forEachCommittedRecordSlot(final int pageNumber, final LongConsumer position) {
+    if (pageNumber < 0 || pageNumber >= pageCount.get())
+      return -1L;
+
+    try {
+      final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+      if (page == null)
+        return -1L;
+
+      // clamped: a corrupted count must not send the loop past the slot table
+      final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
+      for (int slot = 0; slot < recordCountInPage; ++slot) {
+        boolean record;
+        try {
+          final int recordPositionInPage = getRecordPositionInPage(page, slot);
+          if (recordPositionInPage == 0)
+            continue;
+          final long marker = page.readNumberAndSize(recordPositionInPage)[0];
+          record = marker > 0 || marker == RECORD_PLACEHOLDER_POINTER || marker == FIRST_CHUNK;
+        } catch (final PageCorruptionException | IllegalArgumentException | IndexOutOfBoundsException | BufferUnderflowException e) {
+          record = true;
+        }
+        if (record)
+          position.accept(recordPosition(pageNumber, maxRecordsInPage, slot));
+      }
+      return page.getVersion();
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
     }

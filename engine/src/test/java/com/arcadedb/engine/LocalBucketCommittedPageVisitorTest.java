@@ -133,6 +133,60 @@ class LocalBucketCommittedPageVisitorTest extends BucketPageLayoutTestSupport {
       assertThat(collector.at(rids.get(i).getPosition()).kind).isEqualTo(CommittedSlotVisitor.RECORD);
   }
 
+  /** The positions {@link LocalBucket#forEachCommittedRecordSlot} reports, ascending. */
+  private static List<Long> recordSlots(final LocalBucket bucket, final int page) {
+    final List<Long> positions = new ArrayList<>();
+    assertThat(bucket.forEachCommittedRecordSlot(page, positions::add)).isGreaterThanOrEqualTo(0L);
+    return positions;
+  }
+
+  private static List<Long> recordSlotsOfTheVisit(final Collector collector) {
+    return collector.slots.stream().filter(s -> s.kind == CommittedSlotVisitor.RECORD).map(Slot::position).toList();
+  }
+
+  @Test
+  void recordSlotsAreTheRecordsOfTheVisit() {
+    createType("Occupied");
+    final List<RID> rids = new ArrayList<>();
+    for (int i = 0; i < 6; i++)
+      rids.add(create("Occupied", "value-" + i));
+    final RID chunked = create("Occupied", "h".repeat(200 * 1024));
+    database.transaction(() -> {
+      rids.get(1).asDocument(true).delete();
+      rids.get(4).asDocument(true).delete();
+    });
+
+    final LocalBucket bucket = bucketOf("Occupied");
+    final List<Long> occupied = recordSlots(bucket, 0);
+    assertThat(occupied).containsExactly(rids.get(0).getPosition(), rids.get(2).getPosition(), rids.get(3).getPosition(),
+        rids.get(5).getPosition());
+    assertThat(occupied).isEqualTo(recordSlotsOfTheVisit(visit(bucket, 0)));
+    // the head of the chunk chain is a record slot, the pages of its continuation chunks hold no record of their own
+    final int headPage = (int) (chunked.getPosition() / bucket.getMaxRecordsInPage());
+    assertThat(recordSlots(bucket, headPage)).contains(chunked.getPosition()).isEqualTo(recordSlotsOfTheVisit(visit(bucket, headPage)));
+    for (final int page : visit(bucket, headPage).at(chunked.getPosition()).pages)
+      assertThat(recordSlots(bucket, page)).isEqualTo(recordSlotsOfTheVisit(visit(bucket, page)));
+    assertThat(bucket.forEachCommittedRecordSlot(1_000, p -> {
+      throw new AssertionError("a page that is not committed reports nothing");
+    })).isEqualTo(-1L);
+  }
+
+  @Test
+  void placeholderContentIsNotARecordSlot() {
+    createType("OccupiedHolder");
+    final RID tiny = create("OccupiedHolder", "p");
+    sealFirstPage(database, "OccupiedHolder");
+    database.transaction(() -> tiny.asDocument(true).modify().set("v", "b".repeat(20 * 1024)).save());
+    assertThat((Long) bucketStats("OccupiedHolder").get("totalPlaceholderRecords")).as("the fixture must be a placeholder").isEqualTo(1L);
+
+    final LocalBucket bucket = bucketOf("OccupiedHolder");
+    final Slot owner = visit(bucket, 0).at(tiny.getPosition());
+    assertThat(recordSlots(bucket, 0)).contains(tiny.getPosition()).isEqualTo(recordSlotsOfTheVisit(visit(bucket, 0)));
+    final long[] target = new long[1];
+    database.transaction(() -> onSlot(tiny, page -> target[0] = page.readLong(recordOffsetOf(page, tiny) + 1)));
+    assertThat(recordSlots(bucket, owner.pages[0])).doesNotContain(target[0]).isEqualTo(recordSlotsOfTheVisit(visit(bucket, owner.pages[0])));
+  }
+
   @Test
   void placeholderPointerOwnerGetsTargetPage() {
     createType("Holder");

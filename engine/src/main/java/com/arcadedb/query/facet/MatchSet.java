@@ -256,8 +256,10 @@ public final class MatchSet implements AutoCloseable {
   }
 
   /**
-   * The no-WHERE match set: per bucket the OR of every segment's {@code live()} and the snapshot's pending positions (never a record
-   * scan; a pending position is confirmed or dropped by the patcher). A bucket with no projection, a throwing {@code acquire()} or an
+   * The no-WHERE match set: per bucket the OR of every segment's {@code live()} and the snapshot's pending positions that hold a
+   * committed record (one slot-table read per pending page, never a record read; a pending position is confirmed or dropped by the
+   * patcher). It is not built for buckets the caller's open transaction changed (their records are not what the projection or the
+   * committed pages hold). A bucket with no projection, a throwing {@code acquire()} or an
    * unusable snapshot has no entry: its matches are collected from rows instead. The snapshots stay open, reachable through
    * {@link #snapshot(int)}, until {@link #close()}; they are also closed on every failure path here. When the memory budget refuses
    * a step the result is {@link #isOverBudget() over budget} and holds nothing.
@@ -291,7 +293,7 @@ public final class MatchSet implements AutoCloseable {
           continue;
         }
 
-        final PositionBitmap pending = snapshot.pendingPositions();
+        final PositionBitmap pending = occupied((LocalBucket) db.getSchema().getBucketById(bucketId), snapshot.pendingPositions());
         // charge the union's stripes before allocating it
         final PageSet pages = new PageSet();
         long stripes = 0;
@@ -340,6 +342,22 @@ public final class MatchSet implements AutoCloseable {
     for (final ColumnarSnapshot snapshot : acquired)
       snapshots[snapshot.bucketId()] = snapshot;
     return new MatchSet(byBucket, size, false, waits, reservations, snapshots);
+  }
+
+  /**
+   * The pending positions that hold a committed record. Pending is page-granular (every slot of a dirty page, plus the owners of the
+   * content on it): reading each pending page's slot table once ({@link LocalBucket#forEachCommittedRecordSlot}, no record decoded)
+   * drops its empty and content slots, so the size of the match set, the counters sized from it and the patch budget count records
+   * that exist rather than slots.
+   */
+  private static PositionBitmap occupied(final LocalBucket bucket, final PositionBitmap pending) {
+    final PositionBitmap occupied = new PositionBitmap(pending.maxRecordsInPage());
+    for (final int page : pending.pages())
+      bucket.forEachCommittedRecordSlot(page, position -> {
+        if (pending.get(position))
+          occupied.set(position);
+      });
+    return occupied;
   }
 
   /**
@@ -395,6 +413,11 @@ public final class MatchSet implements AutoCloseable {
     if (matches.failedOnly != null && matches.failedOnly[filterIndex] != null)
       result.or(matches.failedOnly[filterIndex]);
     return result;
+  }
+
+  /** True when {@link #forFacet} answers this set's own bitmap for the facet (no FILTER): the caller copies it before writing. */
+  public boolean sharesFacetMatches(final int facetIndex) {
+    return filterIndexByFacet[facetIndex] < 0;
   }
 
   /** The buckets that have matches, ascending. */
