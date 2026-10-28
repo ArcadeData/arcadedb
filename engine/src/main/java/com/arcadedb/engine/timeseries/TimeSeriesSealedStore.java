@@ -2735,7 +2735,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         throw e;
       }
 
-      refuseSwapOfClosedStore(tempPath);
+      refuseSwapOfClosedStore();
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
@@ -3650,7 +3650,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw e;
     }
 
-    refuseSwapOfClosedStore(tempPath);
+    refuseSwapOfClosedStore();
 
     // Atomic file swap: close handles first (required on Windows), then atomically replace.
     // If the move fails, reopen the original file so the store remains usable.
@@ -4072,7 +4072,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath) throws IOException {
     directoryLock.writeLock().lock();
     try {
-      refuseSwapOfClosedStore(tempPath);
+      refuseSwapOfClosedStore();
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
@@ -4334,7 +4334,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         throw e;
       }
 
-      refuseSwapOfClosedStore(tempPath);
+      refuseSwapOfClosedStore();
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
@@ -5418,7 +5418,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * the handles are touched: a refused swap must not reopen them. The temp path is left alone: the drop deleted what this store had
    * written there, and a file there now belongs to the store of a type created since under the same name (see {@link #openTempFile}).
    */
-  private void refuseSwapOfClosedStore(final String tempPath) throws IOException {
+  private void refuseSwapOfClosedStore() throws IOException {
     if (!closed)
       return;
     throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
