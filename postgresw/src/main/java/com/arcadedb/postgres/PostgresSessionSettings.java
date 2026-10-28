@@ -101,6 +101,16 @@ final class PostgresSessionSettings {
   static final String[] REPORTED_PARAMETERS = { "application_name", "client_encoding", "DateStyle", "integer_datetimes",
       "IntervalStyle", "is_superuser", "server_encoding", "server_version", "standard_conforming_strings", "TimeZone" };
 
+  /**
+   * The compile-time limits of a stock PostgreSQL build, which are read-only ({@code internal}) parameters there too and which
+   * drivers read before they build a statement: pgjdbc's {@code getImportedKeys()} sizes its key arrays by
+   * {@code max_index_keys} (issue #10591). An empty value would make it fail to parse the number.
+   */
+  private static final Map<String, String> SERVER_LIMITS = Map.of("max_index_keys", "32", "max_identifier_length", "63",
+      "max_function_args", "100", "block_size", "8192");
+  /** {@code server_version_num}: {@link PostgresNetworkExecutor#PG_SERVER_VERSION} as PostgreSQL 10+ spells it, major * 10000 + minor. */
+  private static final String SERVER_VERSION_NUM = serverVersionNum(PostgresNetworkExecutor.PG_SERVER_VERSION);
+
   private static final String  PARAMETERS_RESOURCE = "postgresql-parameters.txt";
   // PostgreSQL's parameters by lower-cased name: canonical spelling and pg_settings context (issue #8573)
   private static final Map<String, String[]> KNOWN_PARAMETERS = loadKnownParameters();
@@ -362,7 +372,8 @@ final class PostgresSessionSettings {
     for (final String reported : REPORTED_PARAMETERS)
       names.add(reported.toLowerCase(Locale.ENGLISH));
     names.addAll(List.of("role", "session_authorization", "transaction_isolation", "default_transaction_isolation",
-        "transaction_read_only", "default_transaction_read_only", SEARCH_PATH, STATEMENT_TIMEOUT));
+        "transaction_read_only", "default_transaction_read_only", "server_version_num", SEARCH_PATH, STATEMENT_TIMEOUT));
+    names.addAll(SERVER_LIMITS.keySet());
     names.addAll(resetValues.keySet());
     names.addAll(sessionValues.keySet());
     for (final Map.Entry<String, String> local : localValues.entrySet())
@@ -391,7 +402,11 @@ final class PostgresSessionSettings {
       case "default_transaction_isolation" -> isolationName(defaultIsolation.get());
       case "transaction_read_only", "default_transaction_read_only" -> "off";
       case SEARCH_PATH -> currentSchema;
+      case "server_version_num" -> SERVER_VERSION_NUM;
       default -> {
+        final String limit = SERVER_LIMITS.get(key);
+        if (limit != null)
+          yield limit;
         final String value = current(key);
         if (value != null)
           yield value;
@@ -512,6 +527,22 @@ final class PostgresSessionSettings {
 
   private static SettingException unrecognized(final String name) {
     return new SettingException("unrecognized configuration parameter \"" + name + "\"", SQLSTATE_UNDEFINED_OBJECT);
+  }
+
+  /**
+   * The {@code pg_settings} context of a parameter PostgreSQL knows ({@code user}, {@code internal}, ...), null for one it does not:
+   * a custom placeholder, or a name only the startup packet named.
+   */
+  static String contextOf(final String name) {
+    final String[] known = KNOWN_PARAMETERS.get(name.toLowerCase(Locale.ENGLISH));
+    return known != null ? known[1] : null;
+  }
+
+  private static String serverVersionNum(final String version) {
+    final String[] parts = version.split("\\.");
+    final int major = Integer.parseInt(parts[0]);
+    final int minor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+    return Integer.toString(major * 10000 + minor);
   }
 
   private static Map<String, String[]> loadKnownParameters() {
