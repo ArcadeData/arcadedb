@@ -650,7 +650,9 @@ public final class VectorUtils {
      * {@code k}.
      *
      * @param fetchK       the candidates to ask each index for
-     * @param staleSkipped incremented once per candidate skipped because its record no longer exists
+     * @param staleSkipped incremented once per candidate skipped because its record no longer exists, or because a filter
+     *                     of the caller rejected it (the {@code SEARCH} clause, issue #10776): either way the answer is
+     *                     short of a candidate the index could replace. Local to the search, no metric reads it
      * @param saturated    set to true when an index answered with all {@code fetchK} candidates, so it may hold more
      */
     R run(int fetchK, int[] staleSkipped, boolean[] saturated);

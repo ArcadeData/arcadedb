@@ -116,6 +116,7 @@ import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -744,8 +745,18 @@ public class SelectExecutionPlanner {
     if (index == null)
       return false;
 
+    // The aggregate is over the records of the target, its subtypes included, and nothing else: the index of a subtype is routinely
+    // its ancestor's, which holds the entries of every sibling type too, so the step reads the target's buckets only. A bucket of the
+    // target the index has no sub-index on holds values the index cannot give: the scan answers then (issue #10748)
+    final List<Integer> polymorphicBuckets = documentType.getBucketIds(true);
+    final int[] targetBuckets = new int[polymorphicBuckets.size()];
+    for (int i = 0; i < targetBuckets.length; i++)
+      targetBuckets[i] = polymorphicBuckets.get(i);
+    if (!coversBuckets(index, targetBuckets))
+      return false;
+
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, targetBuckets, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -932,6 +943,21 @@ public class SelectExecutionPlanner {
       return null;
 
     return new MaxMinInfo(suffix.identifier.getStringValue(), isMax);
+  }
+
+  /** True when the index has a sub-index on every one of the buckets, so that it holds the entries of all their records. */
+  private static boolean coversBuckets(final RangeIndex index, final int[] bucketIds) {
+    if (!(index instanceof TypeIndex typeIndex))
+      return false;
+    final IndexInternal[] subIndexes = typeIndex.getIndexesOnBuckets();
+    final int[] covered = new int[subIndexes.length];
+    for (int i = 0; i < subIndexes.length; i++)
+      covered[i] = subIndexes[i].getAssociatedBucketId();
+    Arrays.sort(covered);
+    for (final int bucketId : bucketIds)
+      if (Arrays.binarySearch(covered, bucketId) < 0)
+        return false;
+    return true;
   }
 
   /**
@@ -2662,11 +2688,16 @@ public class SelectExecutionPlanner {
    * the runtime caller lets it propagate as a genuine execution error.
    */
   private static Object resolveInRightHandRawValue(final InCondition in, final CommandContext context) {
+    final Object value;
     if (in.getRightMathExpression() != null)
-      return in.getRightMathExpression().execute((Result) null, context);
-    if (in.getRightParam() != null)
-      return in.getRightParam().getValue(context.getInputParameters());
-    return NOT_A_RESOLVABLE_RID_SHAPE;
+      value = in.getRightMathExpression().execute((Result) null, context);
+    else if (in.getRightParam() != null)
+      value = in.getRightParam().getValue(context.getInputParameters());
+    else
+      return NOT_A_RESOLVABLE_RID_SHAPE;
+    // a Java array bound to the placeholder ('@rid IN ?' with a RID[]) is the list of its elements, as a scan reads it: taken for
+    // one RID it resolved to none and the fetch answered no row (issue #10721)
+    return MultiValue.isSequenceArray(value) ? MultiValue.getMultiValueIterable(value) : value;
   }
 
   /**
@@ -5891,8 +5922,9 @@ public class SelectExecutionPlanner {
 
     AndBlock indexKeyValue = new AndBlock();
     BinaryCondition additionalRangeCondition = null;
-    // Conditions answered through the lower-casing of a CI index key, which must still be checked on what the index returns
-    List<BooleanExpression> lowerCaseRewrites = null;
+    // Conditions the index answers with a superset of their rows, which must still be checked on what the index returns: one answered
+    // through the lower-casing of a CI index key, or one the index looks up by a part of its operand (a CONTAINSALL, issue #10757)
+    List<BooleanExpression> rechecks = null;
 
     for (String indexField : indexFields) {
       final String baseFieldName = Index.basePropertyName(indexField);
@@ -5920,10 +5952,10 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
-          if (ciCollation && needsLowerCaseResidual(singleExp, info)) {
-            if (lowerCaseRewrites == null)
-              lowerCaseRewrites = new ArrayList<>(2);
-            lowerCaseRewrites.add(singleExp);
+          if (singleExp.needsRecheckAfterIndexLookup() || (ciCollation && needsLowerCaseResidual(singleExp, info))) {
+            if (rechecks == null)
+              rechecks = new ArrayList<>(2);
+            rechecks.add(singleExp);
           }
           if (singleExp instanceof BetweenCondition
               || (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator())) {
@@ -5956,6 +5988,9 @@ public class SelectExecutionPlanner {
       if (indexFieldFound) {
         found = true;
       }
+      // an answer that read a parameter's value holds for this binding only
+      if (info.isPlanDependsOnValue())
+        planDependsOnInputParameters = true;
       if (!indexFieldFound || rangeOp) {
         break;
       }
@@ -5971,9 +6006,9 @@ public class SelectExecutionPlanner {
       // The user wrote field.toLowerCase() <op> X, but a CI index lower-cases X as well before probing, and its keys hold
       // the lower-cased field. That answers the question only when X is already lower case (and a range over 'A'..'C'
       // becomes one over 'a'..'c'), so the condition stays as a filter on what the index returns (issue #8560)
-      if (lowerCaseRewrites != null)
-        for (final BooleanExpression rewrite : lowerCaseRewrites)
-          blockCopy.getSubBlocks().add(rewrite.copy());
+      if (rechecks != null)
+        for (final BooleanExpression recheck : rechecks)
+          blockCopy.getSubBlocks().add(recheck.copy());
       return new IndexSearchDescriptor((RangeIndex) index, indexKeyValue, additionalRangeCondition, blockCopy);
     }
 

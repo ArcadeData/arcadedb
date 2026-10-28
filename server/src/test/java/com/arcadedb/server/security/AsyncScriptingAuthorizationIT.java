@@ -66,7 +66,7 @@ class AsyncScriptingAuthorizationIT extends BaseGraphServerTest {
             .as("async command is accepted for scheduling").isEqualTo(202);
 
         // Drain the async pipeline so the worker thread has certainly attempted the script.
-        getServer(serverIndex).getDatabase(getDatabaseName()).async().waitCompletion();
+        getServer(serverIndex).getDatabaseForOperator(getDatabaseName()).async().waitCompletion();
 
         // The escalation must NOT have happened: the worker-thread principal binding makes the polyglot gate reject it.
         assertThat(security.existsUser(PWN_USER))
@@ -77,7 +77,7 @@ class AsyncScriptingAuthorizationIT extends BaseGraphServerTest {
         assertThat(command(serverIndex, basicAuth("root", DEFAULT_PASSWORD_FOR_TESTS), "js",
             "database.getSecurity().createUser('admin5j4x', 'pwn'); true", false))
             .as("admin async command accepted").isEqualTo(202);
-        getServer(serverIndex).getDatabase(getDatabaseName()).async().waitCompletion();
+        getServer(serverIndex).getDatabaseForOperator(getDatabaseName()).async().waitCompletion();
         assertThat(security.existsUser("admin5j4x"))
             .as("admin async js path is live and creates users").isTrue();
       } finally {
@@ -107,13 +107,13 @@ class AsyncScriptingAuthorizationIT extends BaseGraphServerTest {
         assertThat(command(serverIndex, readerAuth, "sql",
             "INSERT INTO " + VERTEX1_TYPE_NAME + " SET tag = '" + marker + "'", false))
             .as("async command is accepted for scheduling").isEqualTo(202);
-        getServer(serverIndex).getDatabase(getDatabaseName()).async().waitCompletion();
+        getServer(serverIndex).getDatabaseForOperator(getDatabaseName()).async().waitCompletion();
 
         assertThat(countMarker(serverIndex, marker))
             .as("reader must NOT be able to insert a record via async sql").isZero();
       } finally {
         // Remove any marker records that may have leaked, so the shared server database stays clean.
-        getServer(serverIndex).getDatabase(getDatabaseName())
+        getServer(serverIndex).getDatabaseForOperator(getDatabaseName())
             .command("sql", "DELETE FROM " + VERTEX1_TYPE_NAME + " WHERE tag = ?", marker);
         deleteUser(serverIndex, READER_USER);
       }
@@ -121,7 +121,7 @@ class AsyncScriptingAuthorizationIT extends BaseGraphServerTest {
   }
 
   private long countMarker(final int serverIndex, final String marker) {
-    return getServer(serverIndex).getDatabase(getDatabaseName())
+    return getServer(serverIndex).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) AS c FROM " + VERTEX1_TYPE_NAME + " WHERE tag = ?", marker)
         .next().<Number>getProperty("c").longValue();
   }

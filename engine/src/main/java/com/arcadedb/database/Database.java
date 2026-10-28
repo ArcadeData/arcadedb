@@ -53,8 +53,16 @@ public interface Database extends BasicDatabase {
    * yet).</li>
    * <li>{@code REPEATABLE_READ}: pages read by the transaction are cached in the transaction context and re-read
    * from there, giving repeatable reads at the page level. The cache is unbounded: a transaction that scans a
-   * large portion of the database retains every visited page in RAM until commit or rollback.</li>
+   * large portion of the database retains every visited page in RAM until commit or rollback. The record counter of
+   * a bucket behind {@code count(*)} and {@code countType()} is read the same way: the first count of a bucket in the
+   * transaction is kept, plus the transaction's own changes, so a count repeats too.</li>
    * </ul>
+   * NEITHER LEVEL IS A SNAPSHOT (issue #10712). A page is pinned when it is first read, not when the transaction
+   * begins, so a scan of a type, which reads its pages one after the other, can see some pages of a concurrent
+   * multi-page commit and not the others at both levels: a type that only ever holds whole commits of N records can
+   * be scanned at a count that is not a multiple of N. A count and a scan of the same type pin at different moments
+   * and can disagree inside one {@code REPEATABLE_READ} transaction. A reader that needs one committed state of a
+   * whole type has to exclude the writers for the duration of the read ({@code LOCK TYPE}).
    */
   enum TRANSACTION_ISOLATION_LEVEL {
     READ_COMMITTED, REPEATABLE_READ
@@ -307,11 +315,10 @@ public interface Database extends BasicDatabase {
   Database setReadYourWrites(boolean value);
 
   /**
-   * Sets the transaction isolation level between the available ones:
+   * Sets the transaction isolation level between the available ones, see {@link TRANSACTION_ISOLATION_LEVEL}:
    * <ul>
    *   <li><b>READ_COMMITTED</b></li>
    *   <li><b>REPEATABLE_READ</b></li>
-   *   <li><b>SERIALIZABLE</b></li>
    * </ul>
    *
    * @param level The isolation level
@@ -320,11 +327,10 @@ public interface Database extends BasicDatabase {
   Database setTransactionIsolationLevel(TRANSACTION_ISOLATION_LEVEL level);
 
   /**
-   * returns the transaction isolation level between the available ones:
+   * returns the transaction isolation level between the available ones, see {@link TRANSACTION_ISOLATION_LEVEL}:
    * <ul>
    *   <li><b>READ_COMMITTED</b></li>
    *   <li><b>REPEATABLE_READ</b></li>
-   *   <li><b>SERIALIZABLE</b></li>
    * </ul>
    *
    * @return Current isolation level.

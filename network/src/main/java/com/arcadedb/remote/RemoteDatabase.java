@@ -26,6 +26,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionRetryPolicy;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
@@ -262,7 +263,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (attempts < 1)
       attempts = 1;
 
-    boolean duplicatedKeyRetried = false;
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.fromClient();
 
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
@@ -332,14 +333,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           throw e;
         }
 
-        if (e instanceof DuplicatedKeyException) {
-          // #4959, ported from LocalDatabase.transaction(): a genuine duplicate is deterministic and fails identically
-          // on every attempt. Only racing a commit that landed between attempts can succeed on a retry, and one retry
-          // is enough to tell: fail fast instead of burning the remaining attempts and their pauses (issue #8617).
-          if (duplicatedKeyRetried)
-            throw e;
-          duplicatedKeyRetried = true;
-        }
+        // #4959, ported from LocalDatabase.transaction(): a genuine duplicate is deterministic and fails identically on
+        // every attempt. Only racing a commit that landed between attempts can succeed on a retry, and one retry is enough
+        // to tell: fail fast instead of burning the remaining attempts and their pauses (issue #8617). The client policy
+        // keeps retrying a node-bound refusal: the next attempt can reach another node. Shared with every retry loop (#10759)
+        if (!retryPolicy.mayRetry(e))
+          throw e;
 
         if (retry + 1 < attempts)
           pauseBeforeRetry(retry, e);

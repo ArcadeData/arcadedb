@@ -500,7 +500,8 @@ public class ListIndexByItemTest extends TestHelper {
       });
     }
 
-    // Issue #2774: multi-value CONTAINSALL intentionally avoids the index and returns the correct INTERSECTION
+    // Issue #2774: multi-value CONTAINSALL returns the correct INTERSECTION. Since #10757 it looks up one item in the index and
+    // re-checks the condition on the rows it returns
     @Test
     void containsAllMultipleValuesReturnsCorrectResults() {
       database.transaction(() -> {
@@ -518,7 +519,8 @@ public class ListIndexByItemTest extends TestHelper {
             .next()
             .getProperty("executionPlan")
             .toString();
-        assertThat(explain).contains("FETCH FROM TYPE doc");
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+        assertThat(explain).contains("FILTER ITEMS WHERE");
       });
     }
 
@@ -695,7 +697,8 @@ public class ListIndexByItemTest extends TestHelper {
       });
     }
 
-    // Issue #2802: multi-value CONTAINSALL on a nested map-list bypasses the index to preserve INTERSECTION semantics
+    // Issue #2802: multi-value CONTAINSALL on a nested map-list preserves INTERSECTION semantics: since #10757 the index looks up
+    // one item and the condition is re-checked on the rows it returns
     @Test
     void containsAllOperatorReturnsCorrectResults() {
       database.transaction(() -> {
@@ -705,7 +708,8 @@ public class ListIndexByItemTest extends TestHelper {
 
         final String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSALL [2, 3]")
             .next().getProperty("executionPlan").toString();
-        assertThat(explain).contains("FETCH FROM TYPE");
+        assertThat(explain).contains("FETCH FROM INDEX");
+        assertThat(explain).contains("FILTER ITEMS WHERE");
       });
     }
 
@@ -746,7 +750,7 @@ public class ListIndexByItemTest extends TestHelper {
       });
     }
 
-    // Issue #2802: multi-value CONTAINSALL on a simple list bypasses the index for INTERSECTION correctness
+    // Issue #2802: multi-value CONTAINSALL on a simple list keeps INTERSECTION correctness (index on one item + re-check, #10757)
     @Test
     void containsAllSimpleListReturnsCorrectResults() {
       database.transaction(() -> {
@@ -776,7 +780,8 @@ public class ListIndexByItemTest extends TestHelper {
 
         explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple', 'banana']")
             .next().getProperty("executionPlan").toString();
-        assertThat(explain).contains("FETCH FROM TYPE");
+        assertThat(explain).contains("FETCH FROM INDEX");
+        assertThat(explain).contains("FILTER ITEMS WHERE");
 
         explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple']")
             .next().getProperty("executionPlan").toString();

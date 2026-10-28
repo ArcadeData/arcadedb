@@ -60,7 +60,7 @@ class RemoteSchemaPartialAccessIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocuments" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       database.getSchema().getOrCreateVertexType("AllowedDocument");
       database.getSchema().getOrCreateVertexType("RestrictedVertex");
       database.getSchema().getOrCreateEdgeType("RestrictedEdge");
@@ -106,7 +106,7 @@ class RemoteSchemaPartialAccessIT {
       assertThat(rootRemote.getSchema().existsType("RestrictedVertex")).isTrue();
       assertThat(rootRemote.getSchema().existsType("RestrictedEdge")).isTrue();
     } finally {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       if (database.getSchema().existsType("RestrictedEdge"))
         database.getSchema().dropType("RestrictedEdge");
       if (database.getSchema().existsType("RestrictedVertex"))
@@ -129,7 +129,7 @@ class RemoteSchemaPartialAccessIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocuments" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       database.getSchema().getOrCreateVertexType("AllowedDocument");
       database.getSchema().getOrCreateVertexType("RestrictedVertex");
 
@@ -148,7 +148,7 @@ class RemoteSchemaPartialAccessIT {
       assertThat(rootRemote.getSchema().existsBucket("AllowedDocument_0")).isTrue();
       assertThat(rootRemote.getSchema().existsBucket("RestrictedVertex_0")).isTrue();
     } finally {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       if (database.getSchema().existsType("RestrictedVertex"))
         database.getSchema().dropType("RestrictedVertex");
       if (database.getSchema().existsType("AllowedDocument"))
@@ -183,7 +183,7 @@ class RemoteSchemaPartialAccessIT {
     if (SERVER != null && SERVER.isStarted()) {
       // Drop the test database so the AfterAll cleanup leaves no orphan files behind.
       if (SERVER.existsDatabase(DATABASE_NAME))
-        ((DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)).getEmbedded().drop();
+        ((DatabaseInternal) SERVER.getDatabaseForOperator(DATABASE_NAME)).getEmbedded().drop();
       SERVER.stop();
     }
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);

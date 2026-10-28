@@ -851,7 +851,7 @@ public final class SnapshotInstaller {
       // (best effort) and leave the database absent rather than registered-but-broken.
       publishStaging(staging, dbPath);
       try {
-        server.getDatabase(databaseName);
+        server.getDatabaseForOperator(databaseName);
       } catch (final RuntimeException openEx) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Acquired snapshot for new database '%s' was validated but failed to open after publish; removing it "
@@ -1027,7 +1027,7 @@ public final class SnapshotInstaller {
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName)) {
       try {
-        return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+        return ((DatabaseInternal) server.getDatabaseForOperator(databaseName)).getDatabasePath();
       } catch (final DatabaseNotAvailableException e) {
         // Registered but not open, with the .snapshot-pending marker on disk: getDatabase refuses to open it, and
         // refusing here too failed every install driver before the install could reconcile that marker - the one
@@ -1622,7 +1622,7 @@ public final class SnapshotInstaller {
 
     final DatabaseInternal db;
     try {
-      db = (DatabaseInternal) server.getDatabase(databaseName);
+      db = (DatabaseInternal) server.getDatabaseForOperator(databaseName);
     } catch (final DatabaseNotAvailableException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Database '%s' is registered but did not resolve before its directory is swapped or repaired: %s. Only "
