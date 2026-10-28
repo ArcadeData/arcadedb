@@ -37,6 +37,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetFilterEvaluator;
 import com.arcadedb.query.facet.FacetSpec;
 import com.arcadedb.query.facet.FacetSpecCompiler;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
@@ -315,13 +316,16 @@ public class SelectExecutionPlanner {
     } else
       targetBuckets = null;
 
-    boolean anyFilter = false;
+    // one evaluator per FILTER, in the order of the facets carrying one (D8)
+    final DocumentType facetType = targetType != null && db.getSchema().existsType(targetType) ? db.getSchema().getType(targetType) : null;
+    final List<FacetFilterEvaluator> evaluators = new ArrayList<>();
     for (final FacetSpec spec : info.facets)
-      anyFilter |= spec.filter() != null;
+      if (spec.filter() != null)
+        evaluators.add(FacetFilterEvaluator.choose(spec.filter(), facetType, db));
     // no WHERE and no FILTER: every record of the target buckets is a match, which the projection holds without a record read
-    final int[] projectionBuckets = facetsWithoutWhere && !anyFilter ? targetBuckets : null;
+    final int[] projectionBuckets = facetsWithoutWhere && evaluators.isEmpty() ? targetBuckets : null;
 
-    plan.chain(new FacetCollectStep(facetsClause, FacetCollectStep.filterIndexByFacet(info.facets), List.of(), targetType,
+    plan.chain(new FacetCollectStep(facetsClause, FacetCollectStep.filterIndexByFacet(info.facets), evaluators, targetType,
         projectionBuckets, context));
     info.skip = info.deferredSkip;
     info.limit = info.deferredLimit;
