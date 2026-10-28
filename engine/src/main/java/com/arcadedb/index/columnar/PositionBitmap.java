@@ -238,8 +238,31 @@ public final class PositionBitmap {
   }
 
   long[] stripeForTesting(final int page) {
+    return stripe(page);
+  }
+
+  /**
+   * The stripe of the page ({@code maxRecordsInPage / 64} words, bit {@code slot & 63} of word {@code slot >>> 6}), null when the page
+   * has no bit. Shared with this bitmap: read-only for the caller, and valid only while no one writes this bitmap.
+   */
+  long[] stripe(final int page) {
     final int index = Arrays.binarySearch(pageNumbers, 0, size, page);
     return index < 0 ? null : stripes[index];
+  }
+
+  /**
+   * ORs {@code maxRecordsInPage / 64} words from {@code words[offset]} into the stripe of the page; nothing happens when they are all
+   * zero, so no empty stripe is ever created. Appending pages in ascending order never shifts the page index.
+   */
+  void orStripe(final int page, final long[] words, final int offset) {
+    boolean any = false;
+    for (int w = 0; w < wordsPerStripe && !any; w++)
+      any = words[offset + w] != 0;
+    if (!any)
+      return;
+    final long[] stripe = writableStripe(indexOrInsert(page));
+    for (int w = 0; w < wordsPerStripe; w++)
+      stripe[w] |= words[offset + w];
   }
 
   private void checkCompatible(final PositionBitmap other) {

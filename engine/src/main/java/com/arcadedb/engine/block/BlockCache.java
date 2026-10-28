@@ -221,6 +221,28 @@ public final class BlockCache {
     return misses.sum();
   }
 
+  /** Whether the key is held, without counting a hit or a miss and without touching the access order. */
+  public boolean containsForTesting(final long fileId, final long blockId, final int column) {
+    final Key key = new Key(fileId, blockId, column);
+    final Stripe stripe = stripes[spread(key.hashCode()) & mask];
+    synchronized (stripe) {
+      return stripe.entries.containsKey(key);
+    }
+  }
+
+  /** The number of entries held for the file, walked entry by entry. */
+  public long entriesForTesting(final long fileId) {
+    long total = 0;
+    for (final Stripe stripe : stripes) {
+      synchronized (stripe) {
+        for (final Key key : stripe.entries.keySet())
+          if (key.fileId() == fileId)
+            total++;
+      }
+    }
+    return total;
+  }
+
   /** The sum of the held charges walked entry by entry, to check the running totals in tests. */
   long recountBytes() {
     long total = 0;
