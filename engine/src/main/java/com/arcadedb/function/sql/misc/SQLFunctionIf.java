@@ -22,6 +22,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+
 /**
  * Returns different values based on the condition. If it's true the first value is returned, otherwise the second one.
  * <br>
@@ -75,7 +78,7 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
     switch (condition) {
     case Boolean boolean1 -> result = boolean1;
     case String s -> result = Boolean.parseBoolean(s);
-    case Number number -> result = number.intValue() > 0;
+    case Number number -> result = isPositive(number);
     case null, default -> {
       return null;
     }
@@ -87,6 +90,22 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
     // WITH THE OVER-READ - A GENUINE ERROR RAISED WHILE PRODUCING THE CHOSEN BRANCH IS THE CALLER'S TO SEE - AND THE
     // WRONG ARGUMENT COUNTS IT ALSO HID ARE NOW A CLEAN 400 FROM checkArity()
     return result ? params[1] : params.length > 2 ? params[2] : null;
+  }
+
+  /**
+   * The sign of the condition, read without narrowing it first: {@code intValue()} read {@code 0.5} as 0 and
+   * {@code 3000000000} as a negative int, so both took the false branch (issue #10699). NaN is not positive.
+   */
+  private static boolean isPositive(final Number number) {
+    return switch (number) {
+      case BigDecimal bigDecimal -> bigDecimal.signum() > 0;
+      case BigInteger bigInteger -> bigInteger.signum() > 0;
+      case Integer i -> i > 0;
+      case Long l -> l > 0;
+      case Short s -> s > 0;
+      case Byte b -> b > 0;
+      default -> number.doubleValue() > 0;
+    };
   }
 
   @Override

@@ -202,6 +202,33 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
   }
 
   /**
+   * The strict counterpart of {@link #requireIntArgument(Object, String)}, for an argument whose value IS the request -
+   * a bound, a count, a size - where saturating would answer a question the caller did not ask: a number that is not a
+   * whole number in the int range ({@code 2.5}, {@code 3000000000}, NaN) is refused, as is a text that does not parse as
+   * one, instead of being read as a different, plausible int (issue #10699). {@code 7.0} and {@code '7'} are accepted.
+   *
+   * @param value        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @return the value as an int
+   *
+   * @throws IllegalArgumentException if the value is null or is not a whole number in the int range
+   */
+  protected int requireWholeIntArgument(final Object value, final String argumentName) {
+    try {
+      if (value instanceof Number number)
+        return NumberUtils.toIntWhole(number);
+      if (value instanceof CharSequence text && text.length() <= NumberUtils.MAX_NUMERIC_LITERAL_LENGTH)
+        return Integer.parseInt(text.toString().trim());
+    } catch (final ArithmeticException | NumberFormatException e) {
+      // FALL THROUGH TO THE TYPED ERROR BELOW
+    }
+    throw new IllegalArgumentException(
+        getName() + "() requires a whole number <" + argumentName + "> in the int range, but received "
+            + NumberUtils.describeRejectedNumber(value));
+  }
+
+  /**
    * Converts various input types (float[], double[], Object[], List) to a float array.
    * Delegates to {@link com.arcadedb.index.vector.VectorUtils#toFloatArray(Object)}.
    *
