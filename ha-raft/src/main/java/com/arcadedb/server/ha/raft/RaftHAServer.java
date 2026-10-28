@@ -1483,7 +1483,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * is logging support and must not break the recovery path it annotates.
    */
   private String resolvePeerAddresses(final RaftPeerId peerId) {
-    final String rpcAddress = peerRaftAddress(peerId);
+    // The server list only, never peerRaftAddress(): this runs on the misdirected-request recovery path, which must not
+    // read the live configuration (issue #10088: the division can be parked while it initializes). A peer that joined at
+    // runtime is named without its resolved addresses, which costs a diagnostic, not a decision
+    String rpcAddress = null;
+    for (final RaftPeer peer : raftGroup.getPeers())
+      if (peer.getId().equals(peerId)) {
+        rpcAddress = peer.getAddress();
+        break;
+      }
     if (rpcAddress == null)
       return "<unknown peer address>";
     final String host = extractHost(rpcAddress);
@@ -4685,7 +4693,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * left such a peer out of the cluster status, the routing table, a logout's token revocation and a cross-node verify.
    */
   List<RaftPeer> knownPeers() {
-    return ClusterMembership.knownPeers(raftGroup.getPeers(), getLivePeers());
+    // Through the accessors, like the loops this replaced (getRaftGroup().getPeers()), so a node built for a test answers the
+    // same group here as everywhere else
+    return ClusterMembership.knownPeers(getRaftGroup().getPeers(), getLivePeers());
   }
 
   /**
