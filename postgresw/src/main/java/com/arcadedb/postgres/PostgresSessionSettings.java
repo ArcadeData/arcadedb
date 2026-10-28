@@ -538,11 +538,23 @@ final class PostgresSessionSettings {
     return known != null ? known[1] : null;
   }
 
-  private static String serverVersionNum(final String version) {
-    final String[] parts = version.split("\\.");
-    final int major = Integer.parseInt(parts[0]);
-    final int minor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
-    return Integer.toString(major * 10000 + minor);
+  /**
+   * The leading {@code major[.minor]} digits of a version text, anything after them ignored, so a version spelled with a suffix
+   * ({@code "16.4 (ArcadeDB)"}) cannot fail the class initialization. Digits that are not there count as 0.
+   */
+  static String serverVersionNum(final String version) {
+    final int[] parts = new int[2];
+    int part = 0;
+    for (int i = 0; i < version.length() && part < parts.length; i++) {
+      final char c = version.charAt(i);
+      if (c >= '0' && c <= '9')
+        parts[part] = Math.min(parts[part] * 10 + (c - '0'), 9999);
+      else if (c == '.')
+        ++part;
+      else
+        break;
+    }
+    return Integer.toString(parts[0] * 10000 + parts[1]);
   }
 
   private static Map<String, String[]> loadKnownParameters() {

@@ -431,6 +431,15 @@ public class PostgresCatalog {
     // max_index_keys from here before it asks for the keys of a table
     relation("pg_settings", null, "name", "setting", "unit", "category", "short_desc", "extra_desc", "context", "vartype", "source",
         "min_val", "max_val", "enumvals", "boot_val", "reset_val", "sourcefile", "sourceline", "pending_restart");
+
+    // The three lists name the same relations in three places: a relation answered with no rows must be read by the join path,
+    // and the join path must know its columns. A drift fails the class here rather than as a refusal in a client.
+    for (final String relation : JOINED_RELATIONS)
+      if (!RELATIONS.containsKey(relation))
+        throw new IllegalStateException("Joined catalog relation '" + relation + "' has no columns");
+    for (final String relation : NEVER_HAVE_ROWS)
+      if (!JOINED_RELATIONS.contains(relation))
+        throw new IllegalStateException("Catalog relation '" + relation + "' with no rows is not read by the join path");
   }
 
   private PostgresCatalog() {

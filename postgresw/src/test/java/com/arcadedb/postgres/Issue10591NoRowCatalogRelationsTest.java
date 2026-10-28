@@ -193,6 +193,16 @@ class Issue10591NoRowCatalogRelationsTest {
   }
 
   @Test
+  void serverVersionNumReadsTheLeadingDigitsOfTheVersion() {
+    assertThat(PostgresSessionSettings.serverVersionNum("12.0")).isEqualTo("120000");
+    assertThat(PostgresSessionSettings.serverVersionNum("16.4 (ArcadeDB)")).isEqualTo("160004");
+    assertThat(PostgresSessionSettings.serverVersionNum("17")).isEqualTo("170000");
+    assertThat(PostgresSessionSettings.serverVersionNum("devel")).isEqualTo("0");
+    assertThat(new PostgresSessionSettings().show("server_version_num")).isEqualTo(
+        PostgresSessionSettings.serverVersionNum(PostgresNetworkExecutor.PG_SERVER_VERSION));
+  }
+
+  @Test
   void pgTablespaceListsTheTwoEveryPostgresqlHas() {
     final PostgresCatalog.Answer answer = resolve(
         "SELECT spcname AS \"Name\", pg_catalog.pg_get_userbyid(spcowner) AS \"Owner\", pg_catalog.pg_tablespace_location(oid) "
