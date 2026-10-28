@@ -732,6 +732,8 @@ public class ResultInternal implements Result {
    * than on a new row and map per vertex (issue #10818). "No other state" means no other binding, removed property,
    * temporary property, metadata, element or value, on a plain {@link #ResultInternal()} row: whatever was written to the
    * row belongs to the vertex it was written for.
+   * <p>
+   * Engine-internal: public only because the openCypher operators live in another package.
    */
   public boolean rebindSingleProperty(final String name, final Object newValue) {
     if (getClass() != ResultInternal.class || content == null || content.size() != 1 || !content.containsKey(name)

@@ -70,9 +70,10 @@ class Issue10818LabelScanReusesRejectedRowTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < ROWS; i++)
         database.newVertex("D").set("id", i, "grp", i % GROUPS).save();
-      // 20 cities per code, one of which is in IT: the join seeks 20 and its node predicate rejects 19
+      // 20 cities per code, the 11th of which is in IT: every seek rejects ten cities, matches one with the row the last
+      // rejection left, then rejects nine more
       for (int i = 0; i < 2_000; i++)
-        database.newVertex("City").set("id", i, "code", "C" + (i % 100), "country", i % 20 == 0 ? "IT" : "FR").save();
+        database.newVertex("City").set("id", i, "code", "C" + (i % 100), "country", i / 100 == 10 ? "IT" : "FR").save();
       // few people against many cities: seeking the cities is cheaper than reading them all
       for (int i = 0; i < PEOPLE; i++)
         database.newVertex("Person").set("id", i, "cityCode", "C" + i).save();
@@ -265,7 +266,7 @@ class Issue10818LabelScanReusesRejectedRowTest extends TestHelper {
   @Test
   void indexNestedLoopJoinRebindsOnlyRejectedRows() {
     final String query = "MATCH (p:Person), (c:City) WHERE c.code = p.cityCode AND c.country = 'IT' RETURN p.id AS p, c.id AS c";
-    assertThat(profile(query, Map.of())).contains("IndexNestedLoopJoin(c:City)");
+    assertThat(profile(query, Map.of())).contains("IndexNestedLoopJoin(c:City)").contains("[filter: c.country = 'IT']");
 
     final Set<String> pairs = new HashSet<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
@@ -274,12 +275,12 @@ class Issue10818LabelScanReusesRejectedRowTest extends TestHelper {
         assertThat(pairs.add(row.getProperty("p") + "->" + row.getProperty("c"))).isTrue();
       }
     }
-    // person i lives in code Ci, whose only IT city is the one with id % 20 == 0 among the ids that are i modulo 100
+    // person i lives in code Ci, whose only IT city is 1000 + i
     final Set<String> expected = new HashSet<>();
     for (int i = 0; i < 2_000; i++)
-      if (i % 20 == 0 && i % 100 < PEOPLE)
+      if (i / 100 == 10 && i % 100 < PEOPLE)
         expected.add((i % 100) + "->" + i);
-    assertThat(expected).isNotEmpty();
+    assertThat(expected).hasSize(PEOPLE);
     assertThat(pairs).isEqualTo(expected);
   }
 
