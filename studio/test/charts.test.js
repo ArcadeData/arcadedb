@@ -127,7 +127,9 @@ test("no Studio source uses ApexCharts, and only studio-charts.js creates an ECh
   assert.ok(sources.includes(path.join(JS_DIR, "studio-charts.js")), "the census reaches the page scripts");
   for (const file of sources) {
     const name = path.relative(STUDIO, file);
-    const code = fs.readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\S]*?-->/g, "").replace(/^\s*\/\/.*$/gm, "");
+    // A page is read whole: a comment naming ApexCharts in a page is as much a leftover as a tag loading it
+    const text = fs.readFileSync(file, "utf8");
+    const code = file.endsWith(".html") ? text : text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     assert.ok(!/apexcharts/i.test(code), name + " still uses ApexCharts");
     if (path.basename(file) !== "studio-charts.js") assert.ok(!/echarts\.init\s*\(/.test(code), name + " creates a chart without studio-charts.js");
   }
