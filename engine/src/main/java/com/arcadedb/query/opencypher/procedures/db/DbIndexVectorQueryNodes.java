@@ -191,13 +191,10 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
         break;
       if (!emitted.add(neighbor.getFirst()))
         continue;
-      // The indexes answer only what the allow-list accepted. Asked again, from its memo and before the load, so a row the
-      // filter rejected cannot reach the answer through a path of an index that does not consult it; such a row is a lost
-      // candidate, and the search widens past it like a stale one
-      if (allowedRIDs != null && !allowedRIDs.contains(neighbor.getFirst())) {
-        staleSkipped[0]++;
-        continue;
-      }
+      // The indexes answer only what the allow-list accepted. Asserted rather than skipped (PR #10834 review): a search path
+      // that ignored the allow-list would otherwise be hidden by a silent widening, and Surefire runs with -ea
+      assert allowedRIDs == null || allowedRIDs.contains(neighbor.getFirst()) :
+          "the vector index answered " + neighbor.getFirst() + ", which the SEARCH clause's WHERE rejected";
 
       final Document record;
       try {

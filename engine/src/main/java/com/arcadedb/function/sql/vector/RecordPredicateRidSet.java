@@ -62,8 +62,9 @@ import java.util.function.Predicate;
  * so a slow load holds no other worker back. Only a SQL condition is evaluated under this set's lock, because it evaluates in
  * the caller's {@link CommandContext}, which is not meant to be shared between threads. Two workers meeting the same candidate
  * may both test it; the answer is the same. A caller's predicate ({@link #matching}) is evaluated under the lock too, for the
- * same reason: the {@code SEARCH} clause's evaluates in the caller's context, rebinding one row to each candidate. The memo holds one entry per candidate the search met, which the search itself
- * bounds (its beam, its fetch budget), and lives as long as the call.
+ * same reason: the {@code SEARCH} clause's evaluates in the caller's context, rebinding one row to each candidate. The memo
+ * holds one entry per candidate the search met, which the search itself bounds (its beam, its fetch budget), and lives as
+ * long as the call.
  * <p>
  * The cost follows the predicate's selectivity. A predicate that keeps a fair share of the records is met within the graph walk,
  * after testing a few candidates per result. One that keeps few or none leaves the walk short of {@code k}, and the dense index
@@ -76,6 +77,9 @@ import java.util.function.Predicate;
  * <p>
  * Only {@link #contains}, {@link #isEmpty}, {@link #size} and, with a {@code filter}, {@link #iterator} are meaningful.
  * {@link #equals}, {@link #hashCode} and {@link #toString} are identity-based and never enumerate the set.
+ * <p>
+ * Public for {@link #matching} alone, the entry point of a caller outside this package (the Cypher {@code SEARCH} clause);
+ * the option parsing of {@code of} stays with the vector functions of this package.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -229,8 +233,14 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
 
   @Override
   public String toString() {
-    return "where(" + (condition != null ? condition : predicate != null ? predicate : equalities) + (restrictTo != null ? ", filter of " + restrictTo.size() : "")
-        + ", " + decided.size() + " decided)";
+    final Object test;
+    if (condition != null)
+      test = condition;
+    else if (predicate != null)
+      test = predicate;
+    else
+      test = equalities;
+    return "where(" + test + (restrictTo != null ? ", filter of " + restrictTo.size() : "") + ", " + decided.size() + " decided)";
   }
 
   /** Never empty: an empty allow-list reads as "no filter" to the indexes. */
