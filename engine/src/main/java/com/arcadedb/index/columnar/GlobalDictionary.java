@@ -457,7 +457,8 @@ public final class GlobalDictionary {
     try {
       final int headBytes = head.remaining();
       writeFully(channel, head, start);
-      // the second write: a crash between the two leaves a header without payload (kill point "dictionary.appendPartial")
+      // the second write: a crash between the two leaves a header without payload
+      ColumnarTestHooks.reach("dictionary.appendPartial");
       writeFully(channel, ByteBuffer.wrap(bytes, 1, total - 1), start + headBytes);
       return start + headBytes + total - 1;
     } catch (final IOException e) {
