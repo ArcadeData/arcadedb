@@ -30,7 +30,7 @@ import java.math.BigInteger;
  * {@link Long}, a {@link BigDecimal}, a {@link Double} (only NaN and the infinities survive normalization as doubles, but any
  * double is accepted), a {@link Boolean} or a {@link RID}. The layout is one type byte followed by the payload of that type.
  */
-final class DictionaryValueCodec {
+public final class DictionaryValueCodec {
   static final byte STRING  = 0;
   static final byte LONG    = 1;
   static final byte DECIMAL = 2;
@@ -41,7 +41,7 @@ final class DictionaryValueCodec {
   private DictionaryValueCodec() {
   }
 
-  static boolean isSupported(final Object normalized) {
+  public static boolean isSupported(final Object normalized) {
     return normalized instanceof String || normalized instanceof Long || normalized instanceof BigDecimal || normalized instanceof Double
         || normalized instanceof Boolean || normalized instanceof RID;
   }
@@ -111,7 +111,7 @@ final class DictionaryValueCodec {
    * total and transitive for NORMALIZED values only (what the dictionary holds); for arbitrary mixed input, such as a BigDecimal
    * equal to a Long in value, no such guarantee is given.
    */
-  static int compareValues(final Object a, final Object b) {
+  public static int compareValues(final Object a, final Object b) {
     final int classA = classOf(typeOf(a));
     final int classB = classOf(typeOf(b));
     if (classA != classB)
