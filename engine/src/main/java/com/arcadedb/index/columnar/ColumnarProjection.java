@@ -52,6 +52,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.function.IntUnaryOperator;
 import java.util.logging.Level;
 
 /**
@@ -1097,6 +1098,57 @@ public final class ColumnarProjection {
       result.replacePage(OverlayPageBlock.build(page, maxRecordsInPage, next, block.pageVersion(), rows));
     }
     return result;
+  }
+
+  /**
+   * Dictionary compaction (Task 24), under {@link #applyLock()}, so no apply pass changes the overlay meanwhile: a NEW block for every
+   * page of the live overlay, seeded from its current block ({@link RowBuffer#seed}) with the ordinals of the column of the index file
+   * id re-encoded through {@code remap}. The published blocks are never touched (R13): a snapshot acquired before keeps decoding them
+   * with the generation it holds. {@link #compactionPublished} makes the new blocks the overlay's content. Empty when the projection has
+   * no such column.
+   *
+   * @throws IllegalStateException when the apply lock is not held
+   */
+  OverlayPageBlock[] remapOverlay(final int indexFileId, final IntUnaryOperator remap) {
+    if (!applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Re-encoding the overlay of the columnar projection of bucket '" + bucketName + "' needs its apply lock");
+    final ColumnDefinition[] current = columns;
+    int k = current.length - 1;
+    while (k >= 0 && current[k].indexFileId() != indexFileId)
+      k--;
+    final int[] pages = overlay.pages();
+    if (k < 0 || pages.length == 0)
+      return new OverlayPageBlock[0];
+    final OverlayPageBlock[] result = new OverlayPageBlock[pages.length];
+    final RowBuffer rows = new RowBuffer(maxRecordsInPage, current);
+    for (int i = 0; i < pages.length; i++) {
+      final OverlayPageBlock block = overlay.page(pages[i]);
+      rows.seed(block);
+      rows.remapOrdinals(k, remap);
+      result[i] = OverlayPageBlock.build(pages[i], maxRecordsInPage, current, block.pageVersion(), rows);
+    }
+    return result;
+  }
+
+  /**
+   * Dictionary compaction, inside the publish of its manifest (under {@link #applyLock()} and {@link #publishLock()}, once the manifest
+   * is renamed): makes the blocks of {@link #remapOverlay} the live overlay's content and returns the overlay views of the new state,
+   * the live one only, as a compaction never runs beside a frozen overlay (V-B6). The writer dictionary switches with the state the
+   * caller publishes in the same critical section, so the next apply pass encodes with the new generation. Defensive only, as the
+   * manifest publish already checks it under the same lock: a closed or dropped projection keeps its overlay and its current views.
+   *
+   * @throws IllegalStateException when a lock is not held, or an overlay is frozen
+   */
+  ColumnarSegmentView[] compactionPublished(final OverlayPageBlock[] blocks) {
+    if (!publishLock.isHeldByCurrentThread() || !applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Publishing a dictionary compaction of bucket '" + bucketName + "' needs its apply and publish locks");
+    if (closed || dropped)
+      return state.get().overlays();
+    if (frozenOverlay != null)
+      throw new IllegalStateException("A dictionary compaction of bucket '" + bucketName + "' cannot publish beside a frozen overlay");
+    for (final OverlayPageBlock block : blocks)
+      overlay.replacePage(block);
+    return new ColumnarSegmentView[] { overlay.publish() };
   }
 
   /**

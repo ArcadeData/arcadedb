@@ -19,6 +19,7 @@
 package com.arcadedb.index.columnar;
 
 import java.util.Arrays;
+import java.util.function.IntUnaryOperator;
 
 /**
  * Per-page staging of {@link RowValues}: the apply pass puts the rows of one bucket page whose live value is in the overlay, in any slot
@@ -110,6 +111,40 @@ final class RowBuffer {
         block.readRow(row, seedRow);
         put((w << 6) + Long.numberOfTrailingZeros(word), seedRow);
       }
+  }
+
+  /**
+   * Re-encodes the ordinals staged in column {@code k} (an ORDINAL or ORDINAL_LIST column) through {@code remap}, lists sorted ascending
+   * again; the other columns are untouched. A dictionary compaction rewrites a seeded copy of a published block this way.
+   *
+   * @throws IllegalArgumentException when column {@code k} is not an ordinal kind, or an ordinal maps to a negative one
+   */
+  void remapOrdinals(final int k, final IntUnaryOperator remap) {
+    final ColumnKind kind = columns[k].kind();
+    if (kind != ColumnKind.ORDINAL && kind != ColumnKind.ORDINAL_LIST)
+      throw new IllegalArgumentException("Column " + columns[k].property() + " holds no ordinals");
+    for (int w = 0; w < staged.length; w++)
+      for (long word = staged[w]; word != 0; word &= word - 1) {
+        final int slot = (w << 6) + Long.numberOfTrailingZeros(word);
+        if (!present[k][slot])
+          continue;
+        if (kind == ColumnKind.ORDINAL) {
+          scalars[k][slot] = mapped(remap, (int) scalars[k][slot]);
+          continue;
+        }
+        final int[] list = lists[k][slot];
+        final int count = listCounts[k][slot];
+        for (int i = 0; i < count; i++)
+          list[i] = mapped(remap, list[i]);
+        Arrays.sort(list, 0, count);
+      }
+  }
+
+  private static int mapped(final IntUnaryOperator remap, final int ordinal) {
+    final int result = remap.applyAsInt(ordinal);
+    if (result < 0)
+      throw new IllegalArgumentException("Ordinal " + ordinal + " maps to " + result);
+    return result;
   }
 
   /** Forgets the row staged at the slot, if any. */

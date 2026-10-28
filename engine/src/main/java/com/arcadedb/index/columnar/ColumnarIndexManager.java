@@ -48,6 +48,8 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -89,7 +91,9 @@ import java.util.logging.Level;
  * A busy maintenance slot is no failure; a failed flush or merge delays the next attempt of that projection exponentially
  * ({@link #MAINTENANCE_BACKOFF_BASE_MS}, doubled per
  * consecutive failure up to {@link #MAINTENANCE_BACKOFF_MAX_MS}); a merge failing {@link #CORRUPT_MERGES_BEFORE_REBUILD} times in a
- * row with a {@link BlockCorruptionException} marks the projection {@code corrupt}, which requests its rebuild.
+ * row with a {@link BlockCorruptionException} marks the projection {@code corrupt}, which requests its rebuild. A merge that dropped
+ * rows is followed, in the same job, by the dictionary compaction check of each ordinal column (spec 5.4, {@link DictionaryCompactor}),
+ * at most once per {@link #COMPACTION_CHECK_INTERVAL_MS} per column.
  * <p>
  * <b>Startup and recovery (spec 6.5).</b> {@link #startApplying(boolean)} runs once, after the WAL replay: the projections that need a
  * rebuild get one ({@code columnar/REBUILD} marker, then {@code missing} or {@code corrupt} files, then a {@code NOWAL} marker on an
@@ -116,6 +120,8 @@ public final class ColumnarIndexManager {
   static final int  CORRUPT_MERGES_BEFORE_REBUILD = 3;
   /** Bound of the drain of {@link #close()}, of the wait of {@link #suspendApply()} for a running pass, and of {@link #flushNow()}. */
   static final long DRAIN_TIMEOUT_MS              = 30_000L;
+  /** Least time between two compaction checks of one column of a projection after a merge (spec 5.4). */
+  static final long COMPACTION_CHECK_INTERVAL_MS  = 600_000L;
   /** Reached before the projection of a bucket is opened, or given a new column, by the registration. */
   static final String OPEN_PROJECTION = "manager.openProjection";
   /** Reached by {@link #persistRecoverySet()} once the recovery set is renamed, before it returns to {@code cleanWALFiles}. */
@@ -144,6 +150,8 @@ public final class ColumnarIndexManager {
     volatile long            backoffMs;
     volatile boolean         mergeWanted;
     int                      corruptMerges;
+    /** The clock time of the last compaction check of each ordinal column, by index file id ({@link #compactAfterMerge}). */
+    final Map<Integer, Long> compactionCheckedMs = new ConcurrentHashMap<>();
     // written by close() only
     boolean                  cleanlyFlushed;
     long                     noWalEpochAtClose;
@@ -1621,11 +1629,14 @@ public final class ColumnarIndexManager {
       final long[] selected = selectMerge(projection);
       slot.mergeWanted = selected.length > 0;
       if (selected.length > 0) {
+        final boolean dropsRows = dropsRows(projection, selected);
         merging = true;
         ColumnarFlusher.merge(projection, selected);
         merging = false;
         slot.corruptMerges = 0;
         slot.mergeWanted = selectMerge(projection).length > 0;
+        if (dropsRows)
+          compactAfterMerge(slot);
       }
       slot.backoffMs = 0;
       slot.nextAttemptMs = 0;
@@ -1643,6 +1654,48 @@ public final class ColumnarIndexManager {
       if (merging)
         slot.corruptMerges = 0;
       failed(slot, e);
+    }
+  }
+
+  /** Whether a segment the merge rewrites holds dead rows, which the merge drops. */
+  private static boolean dropsRows(final ColumnarProjection projection, final long[] selected) {
+    for (final ColumnarManifest.SegmentEntry entry : projection.manifest().segments())
+      for (final long id : selected)
+        if (entry.segmentId() == id && entry.deadRows() > 0)
+          return true;
+    return false;
+  }
+
+  /**
+   * Spec 5.4 trigger, in the maintenance job of the projection (on {@link ColumnarMaintenancePool}), after a merge that dropped rows:
+   * each ordinal column checked at most once per {@link #COMPACTION_CHECK_INTERVAL_MS} is compacted when
+   * {@link DictionaryCompactor#shouldCompact} with {@code arcadedb.columnar.dictionaryCompactRatio}. A failed compaction is logged
+   * as such and never delays the projection's flushes.
+   */
+  private void compactAfterMerge(final Slot slot) {
+    final ColumnarProjection projection = slot.projection;
+    final float ratio = database.getConfiguration().getValueAsFloat(GlobalConfiguration.COLUMNAR_DICTIONARY_COMPACT_RATIO);
+    final long now = clockMs.getAsLong();
+    for (final ColumnDefinition column : projection.columns()) {
+      if (column.kind() != ColumnKind.ORDINAL && column.kind() != ColumnKind.ORDINAL_LIST)
+        continue;
+      final Long checked = slot.compactionCheckedMs.get(column.indexFileId());
+      if (checked != null && now - checked < COMPACTION_CHECK_INTERVAL_MS)
+        continue;
+      try {
+        if (DictionaryCompactor.shouldCompact(projection, column.property(), ratio))
+          DictionaryCompactor.compact(projection, column.property());
+      } catch (final ColumnarFlusher.MaintenanceBusyException e) {
+        // a rebuild or reconcile took the slot after the merge: not checked, so the next merge that drops rows checks again
+        continue;
+      } catch (final ColumnarTestHooks.SimulatedCrash e) {
+        throw e;
+      } catch (final IOException | RuntimeException e) {
+        // not a flush or merge failure: no backoff of the flushes; the check interval spaces the retries
+        logFailure("Columnar dictionary compaction of database '%s' failed on bucket '%s', property '%s'", e, projection.bucketName(),
+            column.property());
+      }
+      slot.compactionCheckedMs.put(column.indexFileId(), now);
     }
   }
 
@@ -1708,12 +1761,16 @@ public final class ColumnarIndexManager {
     }
   }
 
-  private void logFailure(final String message, final Throwable e) {
+  /** Logs at most once per {@link #LOG_THROTTLE_MS}; the database name is the first format argument, {@code args} the next ones. */
+  private void logFailure(final String message, final Throwable e, final Object... args) {
     final long now = System.currentTimeMillis();
     if (now - lastFailureLogMs < LOG_THROTTLE_MS)
       return;
     lastFailureLogMs = now;
-    LogManager.instance().log(this, Level.SEVERE, message, e, database.getName());
+    final Object[] all = new Object[args.length + 1];
+    all[0] = database.getName();
+    System.arraycopy(args, 0, all, 1, args.length);
+    LogManager.instance().log(this, Level.SEVERE, message, e, all);
   }
 
   /**
@@ -1797,6 +1854,54 @@ public final class ColumnarIndexManager {
         maintenanceRunning.decrementAndGet();
       }
     }
+  }
+
+  /**
+   * Test hook (plans 4 and 5): compacts the dictionary of the property of the bucket's projection now ({@link DictionaryCompactor}) on
+   * {@link ColumnarMaintenancePool} and waits for it, counted as a running maintenance job (a close stops it and waits for it). A
+   * running flush, merge or rebuild of the projection is waited for first, {@link #DRAIN_TIMEOUT_MS} at most, by parking a maintenance
+   * pool thread: not for production callers.
+   *
+   * @return true when a new dictionary generation was published; false when the bucket has no projection with a dictionary of the
+   * property, the dictionary holds fewer than {@link DictionaryCompactor#MIN_ENTRIES} entries, nothing is reclaimable, or the database
+   * is READ_ONLY
+   *
+   * @throws ColumnarFlusher.MaintenanceBusyException when another job still holds the projection's slot at the deadline
+   * @throws UncheckedIOException                      when the compaction fails to write
+   */
+  public boolean compactDictionaryNow(final int bucketId, final String property) throws InterruptedException {
+    final Slot slot = readOnly ? null : slot(bucketId);
+    if (slot == null)
+      return false;
+    final ColumnarProjection projection = slot.projection;
+    final GlobalDictionary before = projection.dictionary(property);
+    if (before == null || before.size() < DictionaryCompactor.MIN_ENTRIES)
+      return false;
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DRAIN_TIMEOUT_MS);
+    final AtomicBoolean published = new AtomicBoolean();
+    final Future<?> done = ColumnarMaintenancePool.getInstance().getExecutorService().submit(() -> runMaintenanceBody(slot, () -> {
+      for (; ; )
+        try {
+          published.set(DictionaryCompactor.compact(projection, property));
+          return;
+        } catch (final ColumnarFlusher.MaintenanceBusyException e) {
+          if (System.nanoTime() - deadline >= 0)
+            throw e;
+          LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+    }));
+    try {
+      done.get();
+    } catch (final ExecutionException e) {
+      if (e.getCause() instanceof RuntimeException runtime)
+        throw runtime;
+      if (e.getCause() instanceof Error error)
+        throw error;
+      throw new IllegalStateException(e.getCause());
+    }
+    return published.get();
   }
 
   // ------------------------------------------------------------------------------------------------------------------ lifecycle

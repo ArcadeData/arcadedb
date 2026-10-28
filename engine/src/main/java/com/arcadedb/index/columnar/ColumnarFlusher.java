@@ -29,6 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -247,7 +249,7 @@ final class ColumnarFlusher {
       final String name = SegmentFormat.segmentFileName(segmentId);
       attempt.written.add(name);
       final Path segmentFile = p.bucketDir().resolve(name);
-      final long rows = writeMerged(p, inputs, columns, segmentFile, segmentId);
+      final long rows = writeMerged(p, inputs, columns, segmentFile, segmentId, null);
       ColumnarTestHooks.reach(MERGE_SEGMENT_WRITTEN);
 
       p.applyLock().lock();
@@ -314,7 +316,7 @@ final class ColumnarFlusher {
   }
 
   /** {@code into} plus the positions dead now and not when the merge read the input (dead sets only grow); null while empty. */
-  private static PositionBitmap addDeadSince(PositionBitmap into, final PositionBitmap now, final PositionBitmap then) {
+  static PositionBitmap addDeadSince(PositionBitmap into, final PositionBitmap now, final PositionBitmap then) {
     if (now == null || now == then)
       return into;
     final PositionBitmap since = now.copy();
@@ -347,11 +349,12 @@ final class ColumnarFlusher {
 
   /**
    * Writes the live rows of the inputs (oldest first) into a new segment, window by window of {@link #MERGE_WINDOW_PAGES} pages. A
-   * position is live in at most one input (spec 5.2); the newest wins should two disagree. Returns the rows written; with none, the
-   * file is not kept.
+   * position is live in at most one input (spec 5.2); the newest wins should two disagree. Each row read passes through
+   * {@code transform} (null for none: a merge) before it is written; a dictionary compaction re-encodes its column there. Returns the
+   * rows written; with none, the file is not kept.
    */
-  private static long writeMerged(final ColumnarProjection p, final SegmentReader[] inputs, final ColumnDefinition[] columns,
-      final Path file, final long segmentId) throws IOException {
+  static long writeMerged(final ColumnarProjection p, final SegmentReader[] inputs, final ColumnDefinition[] columns, final Path file,
+      final long segmentId, final Consumer<RowValues> transform) throws IOException {
     final int maxRecordsInPage = p.maxRecordsInPage();
     final int words = maxRecordsInPage / 64;
     int minPage = Integer.MAX_VALUE;
@@ -401,6 +404,8 @@ final class ColumnarFlusher {
               final long position = base + ((long) w << 6) + Long.numberOfTrailingZeros(bit);
               for (int k = 0; k < columns.length; k++)
                 ColumnarProjection.readValue(readers[source][k], position, columns[k], k, row);
+              if (transform != null)
+                transform.accept(row);
               writer.addRow(position, version, row);
               rows++;
             }
@@ -436,6 +441,18 @@ final class ColumnarFlusher {
    */
   private static void publish(final ColumnarProjection p, final SegmentReader[] next, final ColumnarSegmentView[] overlays,
       final long lastTransactionId, final Attempt attempt, final Runnable onPublished) throws IOException {
+    publish(p, next, () -> overlays, p.dictionaries(), null, lastTransactionId, attempt, onPublished);
+  }
+
+  /**
+   * {@link #publish(ColumnarProjection, SegmentReader[], ColumnarSegmentView[], long, Attempt, Runnable)} with the writer dictionaries
+   * the new state is encoded with (a dictionary compaction swaps one generation, {@code swapped}: the manifest names it in place of the
+   * current generation of its column, null for none) and the overlay views asked for inside the swap, under the publish lock once the
+   * manifest is renamed, so a publisher can switch the live overlay's content in the same critical section.
+   */
+  static void publish(final ColumnarProjection p, final SegmentReader[] next, final Supplier<ColumnarSegmentView[]> overlays,
+      final Map<String, GlobalDictionary> writerDictionaries, final ColumnarManifest.DictionaryEntry swapped, final long lastTransactionId,
+      final Attempt attempt, final Runnable onPublished) throws IOException {
     checkPublishing(p);
     final ColumnarManifest current = p.manifest();
     final Path dir = p.bucketDir();
@@ -469,17 +486,17 @@ final class ColumnarFlusher {
         p.externalOwnersLock().readLock(), SegmentFormat.externalOwnerMapFileName(generation), written);
     ColumnarTestHooks.reach(SEGMENTS_SYNCED);
 
-    final Map<String, GlobalDictionary> writerDictionaries = p.dictionaries();
     final List<ColumnarManifest.DictionaryEntry> dictionaries = new ArrayList<>(current.dictionaries().size());
-    for (final ColumnarManifest.DictionaryEntry entry : current.dictionaries()) {
-      final String property = p.propertyOf(entry.indexFileId());
+    for (final ColumnarManifest.DictionaryEntry published : current.dictionaries()) {
+      final String property = p.propertyOf(published.indexFileId());
       if (property == null)
         continue; // a column the reconciler dropped: its dictionary file is deleted once no state names it
       final GlobalDictionary dictionary = writerDictionaries.get(property);
       if (dictionary == null) {
-        dictionaries.add(entry); // a column a rebuild did not publish again yet (RETYPE): kept as published
+        dictionaries.add(published); // a column a rebuild did not publish again yet (RETYPE): kept as published
         continue;
       }
+      final ColumnarManifest.DictionaryEntry entry = swapped != null && swapped.indexFileId() == published.indexFileId() ? swapped : published;
       final GlobalDictionary.DurableState durable = dictionary.fsync();
       dictionaries.add(new ColumnarManifest.DictionaryEntry(entry.indexFileId(), entry.generation(), entry.file(), durable.entries(),
           durable.bytes()));
@@ -489,7 +506,7 @@ final class ColumnarFlusher {
     final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), p.maxRecordsInPage(),
         p.manifestColumns(current), segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
     publishManifest(p, manifest, attempt, () -> {
-      if (!p.publish(manifest, next, overlays, writerDictionaries, p.currentState().isUsable()))
+      if (!p.publish(manifest, next, overlays.get(), writerDictionaries, p.currentState().isUsable()))
         return false;
       p.ownersPublished();
       onPublished.run();
@@ -498,7 +515,7 @@ final class ColumnarFlusher {
   }
 
   /**
-   * The last step of every publish (flush, merge, rebuild): writes the manifest's tmp file outside the publish lock (the published
+   * The last step of every publish (flush, merge, rebuild, dictionary compaction): writes the manifest's tmp file outside the publish lock (the published
    * manifest is untouched until the rename), then under the publish lock renames it and runs {@code swap}, which makes the new state
    * current and answers whether it did. The caller holds the apply lock and has made every file the manifest names durable. A failed
    * rename whose manifest is found on disk is adopted; otherwise the generation is recorded as uncertain and the failure thrown.
@@ -569,7 +586,7 @@ final class ColumnarFlusher {
     return true;
   }
 
-  /** One flush's, merge's or rebuild's files and how far its publish got, which decides what a failure may clean up. */
+  /** One flush's, merge's, rebuild's or compaction's files and how far its publish got, which decides what a failure may clean up. */
   static final class Attempt {
     final List<String>        written = new ArrayList<>();
     /** The new segments' readers, owned here until a published state owns them. */
@@ -638,7 +655,7 @@ final class ColumnarFlusher {
       throw new PublishingStoppedException(p.bucketName());
   }
 
-  private static void beginMaintenance(final ColumnarProjection p) {
+  static void beginMaintenance(final ColumnarProjection p) {
     if (!p.tryBeginMaintenance())
       throw new MaintenanceBusyException(p.bucketName());
   }
