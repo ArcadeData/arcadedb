@@ -33,6 +33,7 @@ import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -99,7 +100,7 @@ public final class FacetFallbackScanner {
     if (column != null) {
       final ColumnarValueExtractor extractor = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName());
       if (extractor != null && extractor.hasColumn(property))
-        return new Source(spec, Read.COLUMN, column, extractor, ColumnConversion.of(extractor));
+        return new Source(spec, Read.COLUMN, column, extractor, ColumnConversion.of(extractor, column));
     }
     if (spec instanceof TermsFacetSpec)
       return new Source(spec, Read.TERMS, null, null, null);
@@ -135,29 +136,31 @@ public final class FacetFallbackScanner {
 
   /**
    * Reads every matched record of the bucket once and hands its value to the sink, for every facet scanned here whose own matches
-   * ({@link MatchSet#forFacet}) hold the record.
+   * ({@link MatchSet#facetMatches}) hold the record.
    *
    * @param sources  the facets of the query by index, null for a facet that is not scanned in this bucket
    * @param ctx      the context the expressions of expression facets are evaluated in
    * @param patch    the bucket's patch set for the facets that are not scanned in it, null for none: its records (all of them matches
    *                 of the bucket, D11) are handed to {@code patching} from the same read
    * @param patching the patching of those facets, null with {@code patch}
+   * @param guard    the query's deadline and termination, checked every few positions
    *
    * @return the records read for the scanned facets
    */
   static long scan(final DatabaseInternal db, final MatchSet matches, final int bucketId, final List<Source> sources,
-      final CommandContext ctx, final ScanSink sink, final PositionBitmap patch, final FacetPatcher.Patching patching) {
+      final CommandContext ctx, final ScanSink sink, final PositionBitmap patch, final FacetPatcher.Patching patching,
+      final WorkGuard guard) {
     final PositionBitmap base = matches.forBucket(bucketId);
     if (base == null || base.isEmpty())
       return 0;
     final int facetCount = sources.size();
-    final PositionBitmap[] facetMatches = new PositionBitmap[facetCount];
+    final MatchSet.FacetMatches[] facetMatches = new MatchSet.FacetMatches[facetCount];
     GlobalDictionary noValues = null;
     for (int f = 0; f < facetCount; f++) {
       final Source source = sources.get(f);
       if (source == null)
         continue;
-      facetMatches[f] = matches.forFacet(f, bucketId);
+      facetMatches[f] = matches.facetMatches(f, bucketId);
       if (source.read() == Read.COLUMN && noValues == null)
         // never grown: a dictionary value is reported by value, which the collectors merge with the projection's ordinals
         noValues = GlobalDictionary.createInMemory();
@@ -167,7 +170,9 @@ public final class FacetFallbackScanner {
     final PatchedValue value = new PatchedValue();
     final HashSet<Object> seen = new HashSet<>();
     final long[] read = new long[1];
+    final int[] ticks = new int[1];
     base.forEach(position -> {
+      guard.checkPeriodically(++ticks[0]);
       final boolean patched = patch != null && patch.get(position);
       boolean scanned = false;
       for (int f = 0; f < facetCount && !scanned; f++)

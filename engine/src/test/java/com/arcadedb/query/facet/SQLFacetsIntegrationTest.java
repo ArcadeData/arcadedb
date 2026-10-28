@@ -595,4 +595,25 @@ class SQLFacetsIntegrationTest extends TestHelper {
       assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", "fileSize < 1048576"));
     }
   }
+
+  /** Final review B-M1: a bucket named by an input parameter is a target as the same bucket named in the text is (no planning NPE). */
+  @Test
+  @Timeout(300)
+  void aBucketNamedByAnInputParameterIsATarget() {
+    final ColumnarTestData data = data();
+    data.buckets = 2;
+    load(data, 2_000);
+    final String bucket = database.getSchema().getType(TYPE).getBuckets(false).getFirst().getName();
+    final Map<Object, Long> expected;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM bucket:" + bucket + " FACETS brand TERMS TOP 1000")) {
+      expected = counts(rs.getFacets().get("brand"));
+    }
+    assertThat(expected).isNotEmpty();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM bucket::b FACETS brand TERMS TOP 1000", Map.of("b", bucket))) {
+      assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(expected);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT FROM bucket:? FACETS brand TERMS TOP 1000", bucket)) {
+      assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(expected);
+    }
+  }
 }

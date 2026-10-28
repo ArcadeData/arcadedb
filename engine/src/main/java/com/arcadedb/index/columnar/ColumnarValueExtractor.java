@@ -222,7 +222,12 @@ public final class ColumnarValueExtractor {
 
   /** The unit of the epoch counts a date column stores, null for a column that is not a date. */
   public TimeUnit dateUnit(final String property) {
-    return switch (column(property).propertyType()) {
+    return dateUnit(column(property).propertyType());
+  }
+
+  /** The unit of the epoch counts a date column of the type stores, null for a type that is not a date. */
+  public static TimeUnit dateUnit(final Type propertyType) {
+    return switch (propertyType) {
       case DATE -> TimeUnit.DAYS;
       case DATETIME_SECOND -> TimeUnit.SECONDS;
       case DATETIME -> TimeUnit.MILLISECONDS;

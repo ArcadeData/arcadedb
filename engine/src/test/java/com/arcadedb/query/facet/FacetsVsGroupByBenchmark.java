@@ -106,7 +106,8 @@ class FacetsVsGroupByBenchmark extends TestHelper {
 
     try (final AutoCloseable hold = manager().suspendApply()) {
       data.mutate(database, LAG_UPDATES);
-      // default patch budget: a page-granular pending set covers every match of a broad WHERE, so those answers are inexact
+      // default patch budget: a page-granular pending set covers most matches of a broad WHERE; within patchBudgetRatio of the
+      // matches the answer is still patched and exact
       for (final Case c : cases)
         measure(buckets, "lagging", c);
       // a budget above the match count, so the cost of patching every match is measured and the answers are exact

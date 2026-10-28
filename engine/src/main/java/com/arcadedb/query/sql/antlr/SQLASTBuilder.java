@@ -27,6 +27,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
@@ -685,8 +686,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       checkFacetOptionOnce(item, item.include, "INCLUDE");
       final List<SQLParser.ExpressionContext> values = option.arrayLiteral().expression();
       item.include = new ArrayList<>(values.size());
-      for (final SQLParser.ExpressionContext value : values)
-        item.include.add((Expression) visit(value));
+      for (final SQLParser.ExpressionContext value : values) {
+        final Expression include = (Expression) visit(value);
+        // evaluated when the facets are planned (EXPLAIN included) and again per execution: a value, never a statement that runs
+        if (!SqlAstInspector.allNodesMatch(include,
+            node -> !(node instanceof Statement || node instanceof StatementExpression || node instanceof SubqueryExpression)))
+          throw new CommandSQLParsingException(
+              "FACETS INCLUDE accepts literals, input parameters and expressions without a nested statement or subquery, found: "
+                  + value.getText());
+        item.include.add(include);
+      }
     } else if (option.MISSING() != null) {
       checkFacetOptionOnce(item, item.missing ? Boolean.TRUE : null, "MISSING");
       item.missing = true;

@@ -19,6 +19,7 @@
 package com.arcadedb.query.facet;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.sql.executor.Result;
@@ -31,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FacetsExplainTest extends TestHelper {
   private static final String TYPE  = ColumnarTestData.TYPE;
@@ -103,5 +105,31 @@ class FacetsExplainTest extends TestHelper {
     for (final FacetBucket bucket : brand.buckets())
       sum += bucket.count();
     assertThat(sum).isEqualTo(count(WHERE));
+  }
+
+  /**
+   * Final review B-I1: an INCLUDE value is evaluated when the facets are planned, so a nested statement there would run under EXPLAIN
+   * (a read-only statement) and once more per execution. INCLUDE refuses any nested statement or subquery when it is parsed.
+   */
+  @Test
+  @Timeout(120)
+  void includeRefusesNestedStatementsAndWritesNothing() {
+    load();
+    database.command("sql", "CREATE DOCUMENT TYPE Audit");
+    final String insert = "SELECT FROM " + TYPE + " FACETS brand TERMS INCLUDE [(INSERT INTO Audit SET x = 1)]";
+    assertThatThrownBy(() -> plan("EXPLAIN", insert)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("INCLUDE");
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.command("sql", insert)) {
+        rs.getFacets();
+      }
+    }).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("INCLUDE");
+    final String subquery = "SELECT FROM " + TYPE + " FACETS brand TERMS INCLUDE [(SELECT brand FROM " + TYPE + " LIMIT 1)]";
+    assertThatThrownBy(() -> plan("EXPLAIN", subquery)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("INCLUDE");
+    assertThat(database.countType("Audit", false)).isZero();
+
+    // an expression without a nested statement is still a value
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " FACETS brand TERMS INCLUDE [format('brand-%d', 3)]")) {
+      assertThat(rs.getFacets().get("brand").buckets()).extracting(FacetBucket::value).contains("brand-3");
+    }
   }
 }

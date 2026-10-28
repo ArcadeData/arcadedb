@@ -55,6 +55,13 @@ public interface ColumnarSnapshot extends AutoCloseable {
    */
   boolean publishes(String property);
 
+  /**
+   * The definition the snapshot's segments of the property were written with, when it {@link #publishes} the property; null otherwise.
+   * Captured at acquire: a column redefined afterwards (retyped, or dropped and created again) keeps answering the old definition here,
+   * which a reader compares with the schema's before decoding anything.
+   */
+  ColumnDefinition publishedColumn(String property);
+
   /** Releases the snapshot; calling it again does nothing. */
   @Override
   void close();

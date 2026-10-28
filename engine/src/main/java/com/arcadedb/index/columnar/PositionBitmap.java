@@ -229,6 +229,39 @@ public final class PositionBitmap {
   }
 
   /**
+   * Visits every position set in this bitmap and in none of {@code others}, in ascending order, word by word: the visiting sibling of
+   * {@link #andNot} over the union of {@code others}, with no bitmap allocated.
+   */
+  public void forEachAndNotAny(final PositionBitmap[] others, final LongConsumer position) {
+    for (final PositionBitmap other : others)
+      checkCompatible(other);
+    final long[][] otherStripes = new long[others.length][];
+    for (int i = 0; i < size; i++) {
+      final int page = pageNumbers[i];
+      for (int o = 0; o < others.length; o++)
+        otherStripes[o] = others[o].stripe(page);
+      final long pageBase = (long) page * maxRecordsInPage;
+      final long[] stripe = stripes[i];
+      for (int w = 0; w < wordsPerStripe; w++) {
+        long word = stripe[w];
+        for (int o = 0; o < otherStripes.length && word != 0; o++)
+          if (otherStripes[o] != null)
+            word &= ~otherStripes[o][w];
+        final long wordBase = pageBase + ((long) w << 6);
+        while (word != 0) {
+          position.accept(wordBase + Long.numberOfTrailingZeros(word));
+          word &= word - 1;
+        }
+      }
+    }
+  }
+
+  /** The number of page stripes the bitmap holds (the length of {@link #pages()}, without its copy), to size what a copy costs. */
+  public int pageCount() {
+    return size;
+  }
+
+  /**
    * @return the pages holding at least one bit, ascending
    */
   public int[] pages() {

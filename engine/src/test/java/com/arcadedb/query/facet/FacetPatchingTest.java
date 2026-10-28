@@ -33,6 +33,7 @@ import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -227,7 +228,10 @@ class FacetPatchingTest extends TestHelper {
     FacetOracle.awaitCaughtUp(database);
 
     final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
     GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(5);
+    // the absolute budget alone: the share of the matches would let this patch set through
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
     try (final AutoCloseable hold = suspendApply()) {
       database.transaction(() -> {
         for (int i = 0; i < 50; i++)
@@ -245,6 +249,46 @@ class FacetPatchingTest extends TestHelper {
       assertThat(FacetOracle.expectedCounts(database, TYPE, "fileSize", null).get(4_000L)).isEqualTo(1L);
     } finally {
       GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
+    }
+  }
+
+  /**
+   * Final review ruling (relative patch budget): above the absolute budget a query stays exact while what it patches is at most
+   * {@code patchBudgetRatio} of its matches; a ratio of 0 keeps the absolute budget alone.
+   */
+  @Test
+  @Timeout(300)
+  void aPatchSetWithinTheRatioOfTheMatchesStaysExact() throws Exception {
+    final ColumnarTestData data = data(1);
+    data.createSchema(database);
+    final List<RID> rids = data.insertAssets(database, 2_000);
+    FacetOracle.awaitCaughtUp(database);
+
+    final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(5);
+    try (final AutoCloseable hold = suspendApply()) {
+      // neighbors: a few dirty pages, so the patch set stays a small share of the 2,000 matches
+      database.transaction(() -> {
+        for (int i = 0; i < 50; i++)
+          database.lookupByRID(rids.get(i), true).asDocument().modify().set("fileSize", 4_000L + i).save();
+      });
+      final long overflowsBefore = manager().getStats().queryPatchOverflowsCount();
+      final FacetResults exact = run(null);
+      assertThat(exact.exact()).isTrue();
+      assertThat(exact.patched()).isGreaterThan(5).isLessThanOrEqualTo(1_000);
+      assertThat(manager().getStats().queryPatchOverflowsCount()).isEqualTo(overflowsBefore);
+      assertEqualsOracle(exact, null);
+
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
+      final FacetResults absolute = run(null);
+      assertThat(absolute.exact()).isFalse();
+      assertThat(absolute.patched()).isZero();
+      assertThat(manager().getStats().queryPatchOverflowsCount()).isEqualTo(overflowsBefore + 1);
+    } finally {
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
     }
   }
 
@@ -283,7 +327,9 @@ class FacetPatchingTest extends TestHelper {
 
     final List<RID> mine = firstMatches("author = 'author-7'", 3);
     final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
     GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(1);
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
     final long scansBefore = manager().getStats().queryFallbackScansCount();
     database.begin();
     try {
@@ -298,6 +344,7 @@ class FacetPatchingTest extends TestHelper {
     } finally {
       database.rollback();
       GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
     }
     assertThat(manager().fallbackScans().availablePermits())
         .isEqualTo(database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS));
@@ -407,6 +454,7 @@ class FacetPatchingTest extends TestHelper {
   /** Records which positions reach {@link #collectPatched}. */
   private static final class RecordingCollector implements FacetCollector {
     private final List<Long> patched = new ArrayList<>();
+    private final List<Long> missing = new ArrayList<>();
 
     @Override
     public void beginBucket(final int bucketId, final ColumnarSnapshot snapshot, final CrossBucketOrdinalMap map) {
@@ -419,6 +467,8 @@ class FacetPatchingTest extends TestHelper {
     @Override
     public void collectPatched(final long position, final PatchedValue value) {
       patched.add(position);
+      if (value.isMissing())
+        missing.add(position);
     }
 
     @Override
@@ -456,11 +506,42 @@ class FacetPatchingTest extends TestHelper {
       final RecordingCollector tags = new RecordingCollector();
       try (final ColumnarSnapshot snapshot = manager().projection(bucketId).acquire()) {
         final long read = FacetPatcher.countPatched((DatabaseInternal) database, matches, snapshot, patch,
-            List.of(facets().get(0), facets().get(1)), Arrays.asList(brand, tags));
+            List.of(facets().get(0), facets().get(1)), Arrays.asList(brand, tags), WorkGuard.forCommandDeadline(null));
         assertThat(read).isEqualTo(2);
       }
       assertThat(brand.patched).containsExactly(matched.getPosition());
       assertThat(tags.patched).containsExactly(matched.getPosition());
+    }
+  }
+
+  /**
+   * Final review A-M4: a patched record whose type lost the facet's column meanwhile (its COLUMNAR index dropped while the query counts)
+   * is still a match of the facet: it reaches the collector as missing, never silently dropped.
+   */
+  @Test
+  @Timeout(300)
+  void aPatchedRecordWithoutTheColumnAnyMoreIsCountedAsMissing() throws Exception {
+    final ColumnarTestData data = data(1);
+    data.createSchema(database);
+    data.insertAssets(database, 500);
+    FacetOracle.awaitCaughtUp(database);
+    final int bucketId = bucketIds()[0];
+
+    try (final MatchSet matches = MatchSet.fromProjection((DatabaseInternal) database, bucketIds(), 0)) {
+      matches.setFacetFilterIndex(new int[] { -1 });
+      final RID matched = firstMatches("brand IS NOT NULL", 1).getFirst();
+      final PositionBitmap patch = new PositionBitmap(matches.forBucket(bucketId).maxRecordsInPage());
+      patch.set(matched.getPosition());
+      final RecordingCollector brand = new RecordingCollector();
+      try (final ColumnarSnapshot snapshot = manager().projection(bucketId).acquire()) {
+        // the type keeps its other COLUMNAR indexes (it still has an extractor), without the brand column
+        database.command("sql", "DROP INDEX `" + database.getSchema().getType(TYPE).getPolymorphicColumnarIndex("brand").getName() + "`");
+        final long read = FacetPatcher.countPatched((DatabaseInternal) database, matches, snapshot, patch, List.of(facets().get(0)),
+            Arrays.asList(brand), WorkGuard.forCommandDeadline(null));
+        assertThat(read).isEqualTo(1);
+      }
+      assertThat(brand.patched).containsExactly(matched.getPosition());
+      assertThat(brand.missing).containsExactly(matched.getPosition());
     }
   }
 
@@ -474,7 +555,9 @@ class FacetPatchingTest extends TestHelper {
 
     final List<RID> mine = firstMatches("author = 'author-7'", 3);
     final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
     GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(1);
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
     final Semaphore permits = manager().fallbackScans();
     final int held = permits.drainPermits();
     final long scansBefore = manager().getStats().queryFallbackScansCount();
@@ -492,6 +575,7 @@ class FacetPatchingTest extends TestHelper {
       database.rollback();
       permits.release(held);
       GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
     }
   }
 
@@ -504,7 +588,9 @@ class FacetPatchingTest extends TestHelper {
     FacetOracle.awaitCaughtUp(database);
 
     final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
     GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(1);
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
     try (final AutoCloseable hold = suspendApply()) {
       data.mutate(database, 300);
       final RID mine = firstMatches("brand IS NOT NULL", 1).getFirst();
@@ -521,6 +607,7 @@ class FacetPatchingTest extends TestHelper {
       }
     } finally {
       GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
     }
   }
 

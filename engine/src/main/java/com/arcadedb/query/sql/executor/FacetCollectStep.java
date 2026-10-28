@@ -20,11 +20,14 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.facet.FacetExecutionStats;
 import com.arcadedb.query.facet.FacetExecutor;
 import com.arcadedb.query.facet.FacetFilterEvaluator;
@@ -40,6 +43,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 
+import java.lang.ref.Cleaner;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -47,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.function.IntPredicate;
+import java.util.logging.Level;
 
 /**
  * Collects the matches of a FACETS query and computes its facets (D7). Pass-through: no row is buffered. Each row the WHERE produced
@@ -62,10 +67,16 @@ import java.util.function.IntPredicate;
  *       without loading a record;</li>
  *   <li>{@code projection}: no WHERE and no FILTER over a type or buckets: {@link MatchSet#fromProjection} holds every record;
  *       {@code projection+scan} when it does not cover every bucket (no usable projection, or changed by the caller's open
- *       transaction): the records of those buckets are read by a scan of them when the step opens.</li>
+ *       transaction): the records of those buckets are read by a scan of them. Both are taken when the facets are computed, after the
+ *       rows (D20): the projection snapshots are not held while the application pages through the rows, and a bucket the application's
+ *       transaction writes meanwhile is scanned, as the transaction reads it. When no bucket has a projection the transaction did not
+ *       change already when the step opens, the rows are the source.</li>
  * </ul>
  * The index and the projection hold the records of every bucket; a bucket the current user may not read is left out of the match set
  * when it is built, so its records reach no count, no memory reservation and no PROFILE figure (the executor skips such a bucket too).
+ * <p>
+ * A result set dropped before it was read to its end and never closed gives back what the step holds (memory reservations, the
+ * snapshots of PROJECTION filters) once it is unreachable: a {@link Cleaner} releases them and logs a warning.
  * <p>
  * {@link ParallelRowPipeline#of} stops at this step, so an aggregation above it stays sequential: intended, it must see the rows the
  * facets were collected from.
@@ -76,6 +87,79 @@ public class FacetCollectStep extends AbstractExecutionStep {
   private static final String PROJECTION = "projection";
   private static final String SCAN       = "scan";
 
+  /** Releases what an abandoned step still holds, once it is unreachable (the same approach as the query heap budget). */
+  private static final Cleaner CLEANER = Cleaner.create(runnable -> {
+    final Thread thread = new Thread(runnable, "ArcadeDB-FacetQuery-Cleaner");
+    thread.setDaemon(true);
+    return thread;
+  });
+
+  /**
+   * What the step holds across rows: the match set builder (its memory reservations) and the filter evaluators (their snapshots and
+   * reservations). Kept apart from the step, and never referring to it, so the {@link Cleaner} can release it once the step is
+   * unreachable. Synchronized: the cleaner runs on its own thread.
+   */
+  private static final class Held implements Runnable {
+    private final List<FacetFilterEvaluator> evaluators;
+    private       MatchSet.Builder           builder;
+    private       boolean                    open;
+
+    private Held(final List<FacetFilterEvaluator> evaluators) {
+      this.evaluators = evaluators;
+    }
+
+    private synchronized void opened(final MatchSet.Builder builder) {
+      this.builder = builder;
+      open = true;
+    }
+
+    /** The builder, which the caller now owns. */
+    private synchronized MatchSet.Builder takeBuilder() {
+      final MatchSet.Builder taken = builder;
+      builder = null;
+      return taken;
+    }
+
+    /** By the cleaner: the step became unreachable without being closed. */
+    @Override
+    public void run() {
+      final boolean leaked;
+      synchronized (this) {
+        leaked = open;
+      }
+      if (!leaked)
+        return;
+      LogManager.instance().log(this, Level.WARNING,
+          "A FACETS result set was not closed: what it held (memory reservations, projection snapshots) was released only once it was "
+              + "garbage collected. Close every result set");
+      release();
+    }
+
+    /** Releases the builder's reservations and every evaluator, each whatever the others do; idempotent. */
+    private synchronized void release() {
+      open = false;
+      try {
+        if (builder != null) {
+          builder.close();
+          builder = null;
+        }
+      } finally {
+        RuntimeException failure = null;
+        for (final FacetFilterEvaluator evaluator : evaluators)
+          try {
+            evaluator.close();
+          } catch (final RuntimeException e) {
+            if (failure == null)
+              failure = e;
+            else
+              failure.addSuppressed(e);
+          }
+        if (failure != null)
+          throw failure;
+      }
+    }
+  }
+
   private final FacetsClause               clause;
   private final int[]                      filterIndexByFacet;
   /** Whether a facet carries a FILTER: the rows must then be masked one by one, so neither the index nor the projection serves. */
@@ -84,11 +168,15 @@ public class FacetCollectStep extends AbstractExecutionStep {
   private final String                     targetType;
   private final int[]                      projectionBuckets;
 
+  private final Held                       held;
+
   /** Compiled when the step opens, against the context of the execution (a cached plan is copied without one). */
   private List<FacetSpec>  specs;
   private DatabaseInternal database;
+  /** The builder {@link #held} holds, read here on every row without its lock; null once the match set is built. */
   private MatchSet.Builder builder;
-  private MatchSet         projection;
+  /** The buckets of {@code projectionBuckets} the user may read, when the projection is the source (taken at facet time); else null. */
+  private int[]            projectionReadable;
   private boolean          recordRows;
   private String           matchSource;
   private ResultSet        prevResult;
@@ -119,6 +207,8 @@ public class FacetCollectStep extends AbstractExecutionStep {
     this.evaluators = evaluators;
     this.targetType = targetType;
     this.projectionBuckets = projectionBuckets;
+    this.held = new Held(evaluators);
+    CLEANER.register(this, held);
   }
 
   /** Per facet, the index of its FILTER among the facets that carry one, -1 for none. */
@@ -223,9 +313,11 @@ public class FacetCollectStep extends AbstractExecutionStep {
       database = (DatabaseInternal) context.getDatabase();
       specs = FacetSpecCompiler.compile(clause, context);
       final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
+      builder = MatchSet.builder(database, evaluators.size(), budgetWaitMs);
+      // held before any evaluator opens: what one acquires is released by close(), or by the cleaner for an abandoned step
+      held.opened(builder);
       for (final FacetFilterEvaluator evaluator : evaluators)
         evaluator.open(context);
-      builder = MatchSet.builder(database, evaluators.size(), budgetWaitMs);
       recordRows = true;
       matchSource = ROWS;
       if (anyFilter)
@@ -237,7 +329,7 @@ public class FacetCollectStep extends AbstractExecutionStep {
         recordRows = false;
         matchSource = INDEX;
       } else if (projectionBuckets != null)
-        openProjection(budgetWaitMs, context);
+        openProjection();
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
@@ -290,53 +382,80 @@ public class FacetCollectStep extends AbstractExecutionStep {
   }
 
   /**
-   * Takes the matches of the buckets the caller's open transaction did not change from the projection; the records of the others (and
-   * of those without a usable projection) are read by a scan of them. A bucket the current user may not read is left out of both: its
-   * records are no match of the facets.
+   * Decides, when the step opens, whether the projection is the source: it is when a bucket the user may read has a projection and the
+   * caller's open transaction did not change it yet, or when a bucket is hidden from the user (draining the rows would read it). The
+   * match set itself is taken by {@link #projectionMatches} once the rows are done. Otherwise the rows are the source, as they cost
+   * nothing more than reading them.
    */
-  private void openProjection(final long budgetWaitMs, final CommandContext context) {
+  private void openProjection() {
     final int[] readable = readable(projectionBuckets);
-    int[] eligible = readable;
-    if (database.isTransactionActive()) {
-      final TransactionContext transaction = database.getTransaction();
-      final int[] unchanged = new int[eligible.length];
-      int count = 0;
-      for (final int bucketId : eligible) {
-        final IntHashSet single = new IntHashSet(1);
-        single.add(bucketId);
-        if (!transaction.hasChangesInFiles(single))
-          unchanged[count++] = bucketId;
-      }
-      eligible = count == eligible.length ? eligible : Arrays.copyOf(unchanged, count);
-    }
-    // with a bucket hidden from the user the rows are no source: draining them would read the hidden bucket
     final boolean hidden = readable.length < projectionBuckets.length;
-    if (eligible.length == 0 && !hidden)
+    if (!hidden && unchanged(projectionsOf(readable)).length == 0)
       return;
-
-    if (eligible.length > 0) {
-      projection = MatchSet.fromProjection(database, eligible, budgetWaitMs);
-      if (projection.isOverBudget()) {
-        // the facets are unavailable: recording the rows would only spend more of the budget
-        recordRows = false;
-        matchSource = PROJECTION;
-        return;
-      }
-    }
-    final int[] coveredIds = projection != null ? projection.bucketIds() : new int[0];
-    if (coveredIds.length == 0 && !hidden)
-      return;
-    final boolean[] covered = new boolean[coveredIds.length == 0 ? 0 : coveredIds[coveredIds.length - 1] + 1];
-    for (final int bucketId : coveredIds)
-      covered[bucketId] = true;
+    projectionReadable = readable;
     recordRows = false;
-    if (coveredIds.length == readable.length)
-      matchSource = PROJECTION;
-    else {
+    matchSource = PROJECTION;
+  }
+
+  /**
+   * The match set of the projection source, taken when the facets are computed (D20): the buckets the caller's open transaction did
+   * not change by now are taken from their projection, the records of the others (and of those without a usable projection) are read
+   * by a scan of them, as the transaction reads them, into the builder. A bucket the current user may not read is left out of both:
+   * its records are no match of the facets.
+   *
+   * @return the projection's match set, null when no bucket is taken from a projection; over budget when the budget refused it (the
+   *     facets are then unavailable and nothing is scanned)
+   */
+  private MatchSet projectionMatches(final CommandContext context) {
+    final int[] eligible = unchanged(projectionsOf(projectionReadable));
+    final MatchSet projection = eligible.length == 0 ? null :
+        MatchSet.fromProjection(database, eligible, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
+    if (projection != null && projection.isOverBudget())
+      return projection;
+    try {
+      final int[] coveredIds = projection != null ? projection.bucketIds() : new int[0];
+      if (coveredIds.length == projectionReadable.length)
+        return projection;
+      final boolean[] covered = new boolean[coveredIds.length == 0 ? 0 : coveredIds[coveredIds.length - 1] + 1];
+      for (final int bucketId : coveredIds)
+        covered[bucketId] = true;
       // the other buckets are read here, by themselves: drained from the rows, they would cost a read of every covered record too
-      scanUncovered(readable, covered, context);
+      scanUncovered(projectionReadable, covered, context);
       matchSource = PROJECTION + "+" + SCAN;
+      return projection;
+    } catch (final RuntimeException | Error e) {
+      if (projection != null)
+        projection.close();
+      throw e;
     }
+  }
+
+  /** The buckets of {@code bucketIds} that have a columnar projection. */
+  private int[] projectionsOf(final int[] bucketIds) {
+    final ColumnarIndexManager manager = ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager();
+    final int[] withProjection = new int[bucketIds.length];
+    int count = 0;
+    for (final int bucketId : bucketIds)
+      if (manager.projection(bucketId) != null)
+        withProjection[count++] = bucketId;
+    return count == bucketIds.length ? bucketIds : Arrays.copyOf(withProjection, count);
+  }
+
+  /** The buckets of {@code bucketIds} the caller's open transaction did not change (all of them without a transaction). */
+  private int[] unchanged(final int[] bucketIds) {
+    if (bucketIds.length == 0 || !database.isTransactionActive())
+      return bucketIds;
+    final TransactionContext transaction = database.getTransaction();
+    final IntHashSet single = new IntHashSet(1);
+    final int[] unchanged = new int[bucketIds.length];
+    int count = 0;
+    for (final int bucketId : bucketIds) {
+      single.clear();
+      single.add(bucketId);
+      if (!transaction.hasChangesInFiles(single))
+        unchanged[count++] = bucketId;
+    }
+    return count == bucketIds.length ? bucketIds : Arrays.copyOf(unchanged, count);
   }
 
   /** The buckets of {@code bucketIds} the current user may read records of. */
@@ -420,12 +539,20 @@ public class FacetCollectStep extends AbstractExecutionStep {
       return;
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     MatchSet matches = null;
+    MatchSet projection = null;
     try {
-      matches = builder.build();
-      builder = null;
-      if (projection != null) {
-        matches = MatchSet.union(projection, matches);
+      if (projectionReadable != null)
+        projection = projectionMatches(context);
+      if (projection != null && projection.isOverBudget()) {
+        // the facets are unavailable: nothing was scanned into the builder
+        matches = projection;
         projection = null;
+      } else {
+        matches = builder.build();
+        if (projection != null) {
+          matches = MatchSet.union(projection, matches);
+          projection = null;
+        }
       }
       matchCount = matches.size();
       matches.setFacetFilterIndex(filterIndexByFacet);
@@ -433,10 +560,23 @@ public class FacetCollectStep extends AbstractExecutionStep {
           targetType) : null;
       facets = FacetExecutor.execute(database, matches, specs, context, type);
     } finally {
-      if (matches != null)
-        matches.close();
-      if (context.isProfiling())
-        cost += System.nanoTime() - begin;
+      // built or not, the builder is done: closing it releases its reservations unless the match set owns them now
+      builder = null;
+      final MatchSet.Builder taken = held.takeBuilder();
+      try {
+        if (taken != null)
+          taken.close();
+      } finally {
+        try {
+          if (projection != null)
+            projection.close();
+        } finally {
+          if (matches != null)
+            matches.close();
+          if (context.isProfiling())
+            cost += System.nanoTime() - begin;
+        }
+      }
     }
   }
 
@@ -452,41 +592,19 @@ public class FacetCollectStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     releaseResources();
-    builder = null;
     prevResult = null;
     upstreamDone = false;
     opened = false;
     closed = false;
+    projectionReadable = null;
     matchCount = 0;
     facets = null;
   }
 
-  /** Releases the match set (budget reservations, projection snapshots) and every evaluator, each whatever the others do. */
+  /** Releases the builder (budget reservations) and every evaluator, each whatever the others do. */
   private void releaseResources() {
-    try {
-      if (builder != null)
-        builder.close();
-    } finally {
-      try {
-        if (projection != null) {
-          projection.close();
-          projection = null;
-        }
-      } finally {
-        RuntimeException failure = null;
-        for (final FacetFilterEvaluator evaluator : evaluators)
-          try {
-            evaluator.close();
-          } catch (final RuntimeException e) {
-            if (failure == null)
-              failure = e;
-            else
-              failure.addSuppressed(e);
-          }
-        if (failure != null)
-          throw failure;
-      }
-    }
+    builder = null;
+    held.release();
   }
 
   @Override

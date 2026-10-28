@@ -30,6 +30,7 @@ import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.index.columnar.PositionBitmap;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.List;
@@ -50,20 +51,49 @@ public final class FacetPatcher {
    * OR live of any segment))}, that is the matches minus those a segment view holds live on a page that is not pending. A match no view
    * covers and no dirty page explains is read from its record, so a projection bug costs time, never a wrong count.
    *
-   * @return a new bitmap owned by the caller, empty when the bucket has no matches
+   * @return a new bitmap owned by the caller, empty when the bucket has no matches; it allocates at most
+   *     {@link #patchSetBytes} of {@link #patchSetSize}
    */
   public static PositionBitmap patchSet(final MatchSet matches, final ColumnarSnapshot snapshot, final int bucketId) {
     final PositionBitmap base = matches.forBucket(bucketId);
     final PositionBitmap pending = snapshot.pendingPositions();
+    final PositionBitmap patch = new PositionBitmap(pending.maxRecordsInPage());
     if (base == null)
-      return new PositionBitmap(pending.maxRecordsInPage());
-    final PositionBitmap uncovered = base.copy();
-    for (final ColumnarSegmentView view : snapshot.segments())
-      uncovered.andNot(view.live());
-    final PositionBitmap patch = pending.copy();
-    patch.and(base);
-    patch.or(uncovered);
+      return patch;
+    // the matches no view holds live, then those on pending pages: only the stripes of the patch set are allocated
+    base.forEachAndNotAny(lives(snapshot), patch::set);
+    base.forEachAnd(pending, patch::set);
     return patch;
+  }
+
+  /**
+   * An upper bound of the positions of {@link #patchSet}, counted without allocating anything: zero exactly when the patch set is empty
+   * (no match on a pending page, every match live in a view). A position both pending and uncovered is counted twice.
+   */
+  public static long patchSetSize(final MatchSet matches, final ColumnarSnapshot snapshot, final int bucketId) {
+    final PositionBitmap base = matches.forBucket(bucketId);
+    if (base == null)
+      return 0;
+    final long[] uncovered = new long[1];
+    base.forEachAndNotAny(lives(snapshot), position -> uncovered[0]++);
+    return uncovered[0] + base.andCardinality(snapshot.pendingPositions());
+  }
+
+  /** An upper bound of the bytes a patch set of at most {@code size} positions in the bucket allocates: a page index and stripes. */
+  public static long patchSetBytes(final MatchSet matches, final int bucketId, final long size) {
+    final PositionBitmap base = matches.forBucket(bucketId);
+    if (base == null || size == 0)
+      return 0;
+    // per page: the stripe and its array header, the index entry (page, stripe reference, generation) twice for the index's growth
+    return Math.min(size, base.pageCount()) * (2 * (4 + 8 + 8) + 16 + base.maxRecordsInPage() / 8);
+  }
+
+  private static PositionBitmap[] lives(final ColumnarSnapshot snapshot) {
+    final List<ColumnarSegmentView> views = snapshot.segments();
+    final PositionBitmap[] lives = new PositionBitmap[views.size()];
+    for (int i = 0; i < lives.length; i++)
+      lives[i] = views.get(i).live();
+    return lives;
   }
 
   /**
@@ -83,6 +113,9 @@ public final class FacetPatcher {
     for (final int bucketId : bucketIds)
       buckets.add(bucketId);
     final TransactionContext transaction = db.getTransaction();
+    // the match set of the projection is taken once the rows are done, from the buckets the transaction did not change then: a write
+    // to one of them can only come from inside the facet computation, which writes nothing
+
     if (!transaction.hasChangesInFiles(buckets))
       return null;
     final List<RID> written = transaction.getWrittenRecordIdsIn(buckets);
@@ -112,18 +145,21 @@ public final class FacetPatcher {
 
   /**
    * Reads each record of {@code patch} once and hands its value to the collector of every facet whose own matches
-   * ({@link MatchSet#forFacet}) hold the position, however the match set was made. A position with no record (deleted) is skipped.
+   * ({@link MatchSet#facetMatches}) hold the position, however the match set was made. A position with no record (deleted) is skipped.
    * The collectors were begun on this bucket.
    *
    * @param collectors one per facet, in the order of {@code facets}; null for a facet that does not count this bucket
+   * @param guard      the query's deadline and termination, checked every few records
    *
    * @return the records read
    */
   public static long countPatched(final DatabaseInternal db, final MatchSet matches, final ColumnarSnapshot snapshot,
-      final PositionBitmap patch, final List<FacetSpec> facets, final List<FacetCollector> collectors) {
+      final PositionBitmap patch, final List<FacetSpec> facets, final List<FacetCollector> collectors, final WorkGuard guard) {
     final Patching patching = new Patching(db, matches, snapshot, facets, collectors);
     final int bucketId = snapshot.bucketId();
+    final int[] ticks = new int[1];
     patch.forEach(position -> {
+      guard.checkPeriodically(++ticks[0]);
       final Document record = recordAt(db, new RID(bucketId, position));
       if (record != null)
         patching.accept(record, position);
@@ -138,7 +174,7 @@ public final class FacetPatcher {
   static final class Patching {
     private final List<FacetSpec>      facets;
     private final List<FacetCollector> collectors;
-    private final PositionBitmap[]     facetMatches;
+    private final MatchSet.FacetMatches[] facetMatches;
     private final GlobalDictionary[]   dictionaries;
     private final ColumnarIndexManager manager;
     private final PatchedValue         value = new PatchedValue();
@@ -151,14 +187,14 @@ public final class FacetPatcher {
       this.collectors = collectors;
       final int bucketId = snapshot.bucketId();
       final int facetCount = facets.size();
-      facetMatches = new PositionBitmap[facetCount];
+      facetMatches = new MatchSet.FacetMatches[facetCount];
       dictionaries = new GlobalDictionary[facetCount];
       GlobalDictionary empty = null;
       for (int f = 0; f < facetCount; f++) {
         if (collectors.get(f) == null)
           continue;
         // whatever made the match set: a facet counts only its own matches (a FILTER of another facet may exclude a record)
-        facetMatches[f] = matches.forFacet(f, bucketId);
+        facetMatches[f] = matches.facetMatches(f, bucketId);
         dictionaries[f] = snapshot.dictionary(facets.get(f).property());
         if (dictionaries[f] == null) {
           // a LONG or DOUBLE column: no ordinal is ever read; any other column then reports every value by value
@@ -170,18 +206,22 @@ public final class FacetPatcher {
       manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
     }
 
-    /** Hands the patched record's value to the collector of every facet whose matches hold the position. */
+    /**
+     * Hands the patched record's value to the collector of every facet whose matches hold the position. A record whose type has no
+     * extractor any more (its COLUMNAR index dropped while the query counts) is still a match: it is counted as missing, never dropped.
+     */
     void accept(final Document record, final long position) {
       final ColumnarValueExtractor extractor = manager.extractor(record.getTypeName());
-      if (extractor == null)
-        return;
       read++;
       for (int f = 0; f < facetMatches.length; f++) {
         final FacetCollector collector = collectors.get(f);
         if (collector == null || facetMatches[f] == null || !facetMatches[f].get(position))
           continue;
         value.reset();
-        extractor.extract(record, facets.get(f).property(), dictionaries[f], value);
+        if (extractor == null || !extractor.hasColumn(facets.get(f).property()))
+          value.missing();
+        else
+          extractor.extract(record, facets.get(f).property(), dictionaries[f], value);
         collector.collectPatched(position, value);
       }
     }
