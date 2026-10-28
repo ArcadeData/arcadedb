@@ -71,6 +71,14 @@ final class CollectorReservations {
     return waits;
   }
 
+  /** Releases one reservation before the others (a table a counter outgrew); idempotent. */
+  void release(final FacetMemoryBudget.Reservation reservation) {
+    if (reservations.remove(reservation)) {
+      reservation.close();
+      bytes -= reservation.bytes();
+    }
+  }
+
   /** Releases every reservation; idempotent. */
   void release() {
     for (final FacetMemoryBudget.Reservation reservation : reservations)

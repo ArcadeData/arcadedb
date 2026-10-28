@@ -80,6 +80,35 @@ interface ColumnConversion {
   }
 
   /**
+   * The raw values of a date or datetime property as the epoch counts of its declared type: days for a DATE, the declared precision for
+   * a DATETIME (seconds to nanoseconds), as a COLUMNAR column of that type stores them. A DISTINCT facet reads a scanned bucket this way,
+   * so two instants a millisecond read would fold into one stay apart.
+   */
+  static ColumnConversion declaredDates(final DatabaseInternal database, final Type type) {
+    final TimeUnit unit = ColumnarValueExtractor.dateUnit(type);
+    return new ColumnConversion() {
+      @Override
+      public long toColumnLong(final String property, final Object value) {
+        final Long epoch;
+        try {
+          epoch = type == Type.DATE ? DateUtils.dateToEpochDays(value) :
+              DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromType(type));
+        } catch (final RuntimeException e) {
+          throw new IllegalArgumentException("Not a " + type + ": " + value, e);
+        }
+        if (epoch == null)
+          throw new IllegalArgumentException("Not a " + type + ": " + value);
+        return epoch;
+      }
+
+      @Override
+      public TimeUnit dateUnit(final String property) {
+        return unit;
+      }
+    };
+  }
+
+  /**
    * The raw values of a date or datetime property as epoch milliseconds: {@code Date}, {@code Calendar}, {@code Instant},
    * {@code LocalDate} (its UTC midnight), {@code LocalDateTime} (a UTC wall clock, as a DATETIME stores it), {@code ZonedDateTime},
    * {@code OffsetDateTime}, a number as epoch milliseconds, a date string in the database's formats ({@link DateUtils#dateTimeToTimestamp}).
