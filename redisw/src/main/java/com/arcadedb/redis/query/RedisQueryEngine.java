@@ -21,7 +21,6 @@ package com.arcadedb.redis.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -727,10 +726,9 @@ public class RedisQueryEngine implements QueryEngine {
 
     final String firstArg = parts.get(1);
 
-    // Check if it's a RID
-    if (firstArg.startsWith("#")) {
-      return (Document) database.lookupByRID(new RID(firstArg), true);
-    }
+    // Check if it's a RID: no record is a null answer, as on the RESP wire path (#10765)
+    if (firstArg.startsWith("#"))
+      return RedisRecords.lookupByRid(database, RedisRecords.parseRid(firstArg));
 
     // It's an index lookup
     if (parts.size() < 3) {
@@ -763,7 +761,7 @@ public class RedisQueryEngine implements QueryEngine {
         if (!rid.startsWith("#")) {
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
         }
-        results.add((Document) database.lookupByRID(new RID(rid), true));
+        results.add(RedisRecords.lookupByRid(database, RedisRecords.parseRid(rid)));
       }
     } else {
       // It's an index lookup
@@ -792,15 +790,10 @@ public class RedisQueryEngine implements QueryEngine {
 
     final String firstArg = parts.get(1);
 
-    // Check if it's a RID
-    if (firstArg.startsWith("#")) {
-      try {
-        final Record record = database.lookupByRID(new RID(firstArg), true);
-        return record != null ? 1 : 0;
-      } catch (Exception e) {
-        return 0;
-      }
-    }
+    // Check if it's a RID. Only "not found" answers 0: a refused or failed lookup used to be answered 0 too, by a catch of every
+    // exception (#10765)
+    if (firstArg.startsWith("#"))
+      return RedisRecords.lookupByRid(database, RedisRecords.parseRid(firstArg)) != null ? 1 : 0;
 
     // It's an index lookup
     if (parts.size() < 3) {

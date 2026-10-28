@@ -30,6 +30,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
+import com.arcadedb.integration.importer.CanonicalNumber;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -47,6 +48,7 @@ import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -89,6 +91,15 @@ public class JSONImporterFormat implements FormatImporter {
       while (reader.hasNext()) {
         JsonToken token = reader.peek();
 
+        if (mapping == null && token == BEGIN_ARRAY) {
+          // A TOP-LEVEL ARRAY WITH NO MAPPING: EVERY OBJECT IN IT IS A RECORD, IMPORTED AS AN ANONYMOUS DOCUMENT LIKE THE
+          // SINGLE TOP-LEVEL OBJECT BELOW, EACH IN ITS OWN TRANSACTION SO -onRowError skip CAN DISCARD ONE. IT USED TO
+          // REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID NOT
+          // KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
+          parseRecords(reader, parser, database, settings, context, null, false);
+          return;
+        }
+
         if (mapping == null) {
           // A single top-level object: there is no sibling record to continue with on failure, so -onRowError skip
           // has no recovery to do here - any error still aborts the import.
@@ -101,7 +112,7 @@ public class JSONImporterFormat implements FormatImporter {
           // mapping is null, before any type conversion that could actually throw.
           final Object record = parseRecord(reader, settings, context, database, mapping, false, new AtomicBoolean());
           if (record instanceof Map)
-            saveAnonymousRecord(database, settings, (Map<String, Object>) record);
+            saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
           return;
         }
 
@@ -208,8 +219,14 @@ public class JSONImporterFormat implements FormatImporter {
         }
         throw e;
       }
-      if (next != BEGIN_OBJECT)
+      if (next != BEGIN_OBJECT) {
+        if (next != END_ARRAY)
+          // NAMED HERE: reader.endArray() BELOW WOULD REFUSE IT TOO, BUT AS "Expected END_ARRAY but was NUMBER". THE
+          // TRANSACTION THIS LOOP HOLDS IS ROLLED BACK BY parseRecords()'s CATCH
+          throw new ImportException(
+              "Cannot import the JSON array entry at " + reader.getPath() + ": it is a " + next + ", only an object is a record");
         break;
+      }
       ++recordIndex;
 
       if (mappingValue instanceof JSONObject object) {
@@ -240,7 +257,7 @@ public class JSONImporterFormat implements FormatImporter {
         // THE MAPPING PHASE) - MATERIALIZING IT INTO settings.documentTypeName SAVED EXACTLY WHAT THE IMPORTER HAD
         // JUST LOGGED AS SKIPPED (ISSUE #6812)
         if (record instanceof Map && mappingObject == null)
-          saveAnonymousRecord(database, settings, (Map<String, Object>) record);
+          saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
 
         // Cleared BEFORE the call, not after it: commit() pops the transaction in a finally, so a commit that throws
         // has already taken our level off the stack and whatever isTransactionActive() reports below belongs to
@@ -299,11 +316,29 @@ public class JSONImporterFormat implements FormatImporter {
     reader.endArray();
   }
 
+  /**
+   * A JSON number as the value it spells: a {@code Long} when it is an integer a {@code long} holds, a
+   * {@code BigDecimal} when it is an integer that is larger, a {@code Double} otherwise. Every number used to be read
+   * as a {@code double}, so {@code 42} was stored as {@code 42.0} and {@code 9007199254740993} as
+   * {@code 9007199254740992} (issue #10754).
+   */
+  private static Object readNumber(final JsonReader reader) throws IOException {
+    final String text = reader.nextString();
+    if (CanonicalNumber.isLong(text))
+      return Long.parseLong(text);
+    if (text.indexOf('.') < 0 && text.indexOf('e') < 0 && text.indexOf('E') < 0)
+      return new BigDecimal(text);
+    return Double.parseDouble(text);
+  }
+
   private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,
-      final Map<String, Object> map) {
-    // NO MAPPING, SAVE THE RECORD AS A DOCUMENT
+      final ImporterContext context, final Map<String, Object> map) {
+    // NO MAPPING, SAVE THE RECORD AS A DOCUMENT. COUNTED LIKE EVERY MAPPED ONE, OR THE IMPORT REPORTS 0 DOCUMENTS FOR A
+    // SOURCE IT IMPORTED (ISSUE #10754)
     database.getSchema().getOrCreateDocumentType(settings.documentTypeName);
-    return database.newDocument(settings.documentTypeName).set(map).save();
+    final MutableDocument document = database.newDocument(settings.documentTypeName).set(map).save();
+    context.createdDocuments.incrementAndGet();
+    return document;
   }
 
   /**
@@ -333,7 +368,7 @@ public class JSONImporterFormat implements FormatImporter {
         attributeValue = reader.nextString();
         break;
       case NUMBER:
-        attributeValue = reader.nextDouble();
+        attributeValue = readNumber(reader);
         break;
       case BOOLEAN:
         attributeValue = reader.nextBoolean();
@@ -620,7 +655,7 @@ public class JSONImporterFormat implements FormatImporter {
         entryValue = reader.nextString();
         break;
       case NUMBER:
-        entryValue = reader.nextDouble();
+        entryValue = readNumber(reader);
         break;
       case BOOLEAN:
         entryValue = reader.nextBoolean();
