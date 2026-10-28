@@ -21,6 +21,8 @@ package com.arcadedb.engine;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -77,10 +79,40 @@ class Issue10709ReinsertAfterBulkDeleteTest extends TestHelper {
         .isLessThanOrEqualTo(2L * pagesAfterFill);
   }
 
+  /**
+   * A gather that fails backs off like any other, so it must not lose where the room is: the scan that runs once the timeout is
+   * over starts at the page the full map turned away, not wherever the cursor was.
+   */
+  @Test
+  void aGatherThatFailsStillStartsTheNextOneAtTheRoomTurnedAway() {
+    // the delete leaves the first quarter of the file alone, so the room turned away lies past the page the cursor is on
+    final LocalBucket bucket = fillThenDelete("a % 10 < 3 AND a >= " + RECORDS / 4);
+    final int roomFrom = bucket.getUnlistedRoomFromForTesting();
+    // the premise: the full map turned room away, past the page the cursor is on
+    assertThat(roomFrom).isGreaterThan(bucket.getGatherResumePageForTesting());
+
+    final int fileId = bucket.getFileId();
+    PageManager.setPageReadFaultInjector(pageId -> {
+      if (pageId.getFileId() == fileId)
+        throw new IOException("injected by Issue10709ReinsertAfterBulkDeleteTest");
+    });
+    try {
+      bucket.gatherPageStatistics();
+    } finally {
+      PageManager.setPageReadFaultInjector(null);
+    }
+
+    assertThat(bucket.getGatherResumePageForTesting()).isEqualTo(roomFrom);
+  }
+
   private LocalBucket fillThenDeleteThreeRowsInTen() {
+    return fillThenDelete("a % 10 < 3");
+  }
+
+  private LocalBucket fillThenDelete(final String where) {
     database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(1).create();
     insert(0, RECORDS);
-    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE a % 10 < 3").close());
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE " + where).close());
     return (LocalBucket) database.getSchema().getType("Doc").getBuckets(false).get(0);
   }
 

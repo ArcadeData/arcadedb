@@ -7862,6 +7862,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       timeOfLastStats = System.currentTimeMillis();
   }
 
+  /** The lowest page whose room the full free-space map turned away, -1 for none (#10709). Package-private: for tests only. */
+  int getUnlistedRoomFromForTesting() {
+    return unlistedRoomFrom;
+  }
+
+  /** The page the next gather scan starts at (#8660, #10709). Package-private: for tests only. */
+  int getGatherResumePageForTesting() {
+    synchronized (freeSpaceInPages) {
+      return gatherResumePage;
+    }
+  }
+
   /** The pages the free-space map currently lists. Package-private: for tests only. */
   int[] getListedFreeSpacePagesForTesting() {
     synchronized (freeSpaceInPages) {
@@ -7919,10 +7931,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           gatherTruncated = false;
 
           // #10709: the scan starts at the room the full map turned away, the room it is asked for. A lap goes round the whole
-          // file wherever it starts, so it still visits every page
+          // file wherever it starts, so it still visits every page. The cursor is moved there before anything is read: a scan
+          // that fails backs off like any other (below) and the next one, once the timeout is over, still starts at that room
           final int roomFrom = unlistedRoomFrom;
           unlistedRoomFrom = -1;
-          int pageId = roomFrom >= 0 && roomFrom < pagesToScan ? roomFrom : gatherResumePage < pagesToScan ? gatherResumePage : 0;
+          if (roomFrom >= 0 && roomFrom < pagesToScan)
+            gatherResumePage = roomFrom;
+          int pageId = gatherResumePage < pagesToScan ? gatherResumePage : 0;
           int scanned = 0;
           while (scanned < pagesThisScan) {
             final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
