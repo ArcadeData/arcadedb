@@ -36,6 +36,7 @@ public final class FacetExecutionStats {
   private long         budgetBytes;
   private int          cardinality;
   private long         counterBytes;
+  private long         nodeVisits;
   private String       source;
 
   /** Segment views (segments and overlays) whose matched live rows were counted. */
@@ -71,6 +72,11 @@ public final class FacetExecutionStats {
     return counterBytes;
   }
 
+  /** The hierarchy nodes a HIERARCHY facet counted a document in, summed over the documents (0 for the other kinds). */
+  public long nodeVisits() {
+    return nodeVisits;
+  }
+
   /** The {@link FacetResult#source()} of the facet. */
   public String source() {
     return source;
@@ -82,6 +88,10 @@ public final class FacetExecutionStats {
 
   void segmentSkipped() {
     segmentsSkipped++;
+  }
+
+  void nodeVisits(final long visits) {
+    nodeVisits += visits;
   }
 
   void counterBytes(final long bytes) {
@@ -115,6 +125,7 @@ public final class FacetExecutionStats {
     budgetBytes += other.budgetBytes;
     cardinality += other.cardinality;
     counterBytes += other.counterBytes;
+    nodeVisits += other.nodeVisits;
   }
 
   void source(final String source) {
@@ -124,6 +135,6 @@ public final class FacetExecutionStats {
   @Override
   public String toString() {
     return "segmentsScanned=" + segmentsScanned + ", segmentsSkipped=" + segmentsSkipped + ", countingMode=" + countingMode + ", budgetBytes="
-        + budgetBytes + ", counterBytes=" + counterBytes + ", cardinality=" + cardinality + ", source=" + source;
+        + budgetBytes + ", counterBytes=" + counterBytes + ", cardinality=" + cardinality + ", nodeVisits=" + nodeVisits + ", source=" + source;
   }
 }

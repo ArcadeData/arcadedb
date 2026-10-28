@@ -671,11 +671,14 @@ public class FacetCollectStep extends AbstractExecutionStep {
         result.append("]");
       }
       final FacetExecutionStats facetStats = specs != null && i < specs.size() ? stats.get(specs.get(i).alias()) : null;
-      if (facetStats != null)
+      if (facetStats != null) {
         result.append("\n").append(spaces).append("    source=").append(facetStats.source()).append(" segments=")
             .append(facetStats.segmentsScanned()).append(" skipped=").append(facetStats.segmentsSkipped()).append(" counting=")
             .append(facetStats.countingMode()).append(" budget=").append(facetStats.budgetBytes()).append(" cardinality=")
             .append(facetStats.cardinality());
+        if (facetStats.nodeVisits() > 0)
+          result.append(" nodeVisits=").append(facetStats.nodeVisits());
+      }
     }
     if (context.isProfiling() && opened) {
       result.append("\n").append(spaces).append("  matchSource=").append(matchSource).append(" matches=").append(matchCount);

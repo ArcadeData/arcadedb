@@ -346,7 +346,8 @@ public final class FacetExecutor {
 
       for (final FacetPlan plan : plans) {
         final FacetResult result = plan.finish(db, manager, target);
-        final Type valueType = plan.spec instanceof TermsFacetSpec ? declaredType(db, target, bucketIds, plan.spec.property()) : null;
+        final Type valueType = plan.spec instanceof TermsFacetSpec || plan.spec instanceof HierarchyFacetSpec ?
+            declaredType(db, target, bucketIds, plan.spec.property()) : null;
         results.put(plan.spec.alias(), valueType != null ? asRowValues(result, valueType) : result);
         stats.put(plan.spec.alias(), plan.stats);
       }
@@ -448,7 +449,7 @@ public final class FacetExecutor {
   public static FacetCollector collectorFor(final FacetSpec spec, final DocumentType type, final ColumnarProjection projection,
       final long matchCount) {
     if (type == null)
-      return collectorFor(spec, null, matchCount, null, null);
+      return collectorFor(spec, null, matchCount, null, null, null);
     return columnCollector(spec, type, column(type, spec.property()), matchCount);
   }
 
@@ -457,20 +458,23 @@ public final class FacetExecutor {
       final long matchCount) {
     final DatabaseInternal db = (DatabaseInternal) type.getSchema().getEmbedded().getDatabase();
     return collectorFor(spec, column, matchCount, db,
-        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column));
+        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column), type.getName());
   }
 
   /**
-   * @param column    the column counted (a real one, or the synthetic column of the raw values a fallback scan reads), null for none
-   * @param extractor converts literals (and raw scanned values) into the column's LONG encoding
+   * @param column        the column counted (a real one, or the synthetic column of the raw values a fallback scan reads), null for none
+   * @param extractor     converts literals (and raw scanned values) into the column's LONG encoding
+   * @param declaringType the type of the COLUMNAR index of the property in the counted buckets (whose METADATA holds a HIERARCHY
+   *                      facet's hierarchy), null when unknown or when they have none
    */
   private static FacetCollector collectorFor(final FacetSpec spec, final ColumnDefinition column, final long matchCount,
-      final DatabaseInternal db, final ColumnConversion extractor) {
+      final DatabaseInternal db, final ColumnConversion extractor, final String declaringType) {
     final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
     return switch (spec) {
       case TermsFacetSpec terms -> new TermsCollector(terms, column, matchCount, budgetWaitMs, db, extractor);
       case RangeFacetSpec range -> new RangeCollector(range, column, budgetWaitMs, db, extractor);
       case HistogramFacetSpec histogram -> new HistogramCollector(histogram, column, budgetWaitMs, db, extractor);
+      case HierarchyFacetSpec hierarchy -> new HierarchyFacetCollector(hierarchy, column, matchCount, db, declaringType, budgetWaitMs);
       default -> throw new CommandExecutionException("FACETS " + spec.alias() + ": " + kindKeyword(spec) + " facets are not supported");
     };
   }
@@ -523,7 +527,11 @@ public final class FacetExecutor {
         continue;
       if (dates && FacetFallbackScanner.isUndeclared(db.getSchema().getTypeByBucketId(bucketIds[i]), source))
         plan.scanSourceOf[i] = source = FacetFallbackScanner.asDates(db, source);
-      final String key = source.read() == FacetFallbackScanner.Read.COLUMN ? "column " + source.column().indexFileId() : source.read().name();
+      String key = source.read() == FacetFallbackScanner.Read.COLUMN ? "column " + source.column().indexFileId() : source.read().name();
+      if (spec instanceof HierarchyFacetSpec)
+        // one hierarchy per declaring type: the scanned buckets of each are counted over its own view; the buckets of a type without
+        // the index have none, and their collector reports which type that is
+        key += " of " + hierarchyGroupOf(db.getSchema().getTypeByBucketId(bucketIds[i]), property);
       scanGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
     }
 
@@ -587,7 +595,11 @@ public final class FacetExecutor {
           matchCount += facetMatches.cardinality();
       }
       final FacetFallbackScanner.Source source = scanSourceOf[members.getFirst()];
-      final FacetCollector collector = collectorFor(spec, source.column(), matchCount, db, source.conversion());
+      final DocumentType bucketType = db.getSchema().getTypeByBucketId(bucketIds[members.getFirst()]);
+      final FacetCollector collector = spec instanceof HierarchyFacetSpec hierarchy ?
+          new HierarchyFacetCollector(hierarchy, source.column(), matchCount, db, declaringTypeName(bucketType, spec.property()),
+              bucketType != null ? bucketType.getName() : null, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong()) :
+          collectorFor(spec, source.column(), matchCount, db, source.conversion(), null);
       collectors.add(collector);
       for (final int i : members)
         scanCollectorOf[i] = collector;
@@ -718,6 +730,18 @@ public final class FacetExecutor {
       for (final CrossBucketOrdinalMap map : maps)
         map.close();
     }
+  }
+
+  /** The scan group of a HIERARCHY facet's bucket of {@code type}: its declaring type, else the type itself (it has no hierarchy). */
+  private static String hierarchyGroupOf(final DocumentType type, final String property) {
+    final String declaring = declaringTypeName(type, property);
+    return declaring != null ? declaring : "unindexed " + (type != null ? type.getName() : null);
+  }
+
+  /** The name of the type declaring the property's COLUMNAR index that {@code type} answers through, null when it has none. */
+  private static String declaringTypeName(final DocumentType type, final String property) {
+    final TypeIndex index = type == null || property == null ? null : type.getPolymorphicColumnarIndex(property);
+    return index == null ? null : index.getTypeName();
   }
 
   /**

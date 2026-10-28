@@ -239,6 +239,11 @@ class FacetPatchingTest extends TestHelper {
         for (int i = 0; i < 50; i++)
           database.lookupByRID(rids.get(i * 37), true).asDocument().modify().set("fileSize", 4_000L + i).save();
       });
+      // the lag is whole milliseconds since the pending epoch started, at the latest by this commit's return: a query in that same
+      // millisecond reads 0. Once the clock passed the commit, a reported lag of 0 means the result did not see it
+      final long committedMs = System.currentTimeMillis();
+      while (System.currentTimeMillis() <= committedMs)
+        Thread.onSpinWait();
       final long overflowsBefore = manager().getStats().queryPatchOverflowsCount();
       final FacetResults results = run(null);
       assertThat(results.exact()).isFalse();
