@@ -1910,6 +1910,21 @@ public class LocalSchema implements Schema {
     return createBucket(bucketName, pageSize, databasePath, LocalBucket.CURRENT_VERSION);
   }
 
+  /**
+   * Refuses a page a bucket of the file format {@code version} could not write a record into ({@link LocalBucket#minimumPageSize}),
+   * naming the setting the size comes from when the caller did not choose one (issue #10876). Asked before anything is created, so
+   * the refusal comes where the size was given, and not at the first insert into a bucket that cannot take one.
+   */
+  public static void checkBucketPageSize(final String bucketName, final int pageSize, final int version) {
+    final int minimum = LocalBucket.minimumPageSize(version);
+    if (pageSize < minimum)
+      throw new SchemaException("Cannot create bucket '" + bucketName + "' with a page size of " + pageSize
+          + " bytes: the minimum is " + minimum + " bytes, the room a page needs for its header, its slot table and one record. "
+          + "Without an explicit page size it comes from the database setting '" + (version >= LocalBucket.EXTERNAL_BUCKET_VERSION ?
+          GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE.getKey() :
+          GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey()) + "'");
+  }
+
   /** Creates the bucket file under {@code parentDirectory} instead of the database directory; null/empty falls back. */
   public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory) {
     return createBucket(bucketName, pageSize, parentDirectory, LocalBucket.CURRENT_VERSION);
@@ -1924,6 +1939,7 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     checkValidBucketName(bucketName);
+    checkBucketPageSize(bucketName, pageSize, version);
 
     if (lookupBucket(bucketName) != null)
       throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,

@@ -111,9 +111,16 @@ public class PostgresWJdbcIT extends PostgresWireProtocolTestBase {
   void parsingErrorMgmt() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
-        assertThatThrownBy(() -> st.executeQuery("SELECT 'abc \\u30 def';"))
+        // An E'...' literal processes escapes and refuses a malformed one, as PostgreSQL does. In a plain literal a backslash
+        // is an ordinary character with standard_conforming_strings on, so the same text there is no error (issue #10871)
+        assertThatThrownBy(() -> st.executeQuery("SELECT E'abc \\u30 def';"))
             .isInstanceOf(PSQLException.class)
-            .hasMessageContaining("Syntax error");
+            .hasMessageContaining("Syntax error")
+            .hasMessageContaining("invalid Unicode escape");
+        try (var rs = st.executeQuery("SELECT 'abc \\u30 def' AS v")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("v")).isEqualTo("abc \\u30 def");
+        }
       }
     }
   }
