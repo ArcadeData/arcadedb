@@ -324,8 +324,10 @@ public class JSONImporterFormat implements FormatImporter {
    */
   private static Object readNumber(final JsonReader reader) throws IOException {
     final String text = reader.nextString();
-    if (CanonicalNumber.isLong(text))
-      return Long.parseLong(text);
+    // ONE SCAN: THE SENTINEL IS ALSO Long.MIN_VALUE'S OWN VALUE, WHICH isLong() TELLS APART ONLY THEN
+    final long value = CanonicalNumber.parseLong(text);
+    if (value != CanonicalNumber.NOT_CANONICAL_LONG || CanonicalNumber.isLong(text))
+      return value;
     if (text.indexOf('.') < 0 && text.indexOf('e') < 0 && text.indexOf('E') < 0)
       // JSON FORBIDS LEADING ZEROS AND A '+', SO AN INTEGER THAT IS NOT A CANONICAL LONG IS EITHER "-0" OR ONE TOO
       // LARGE FOR A LONG

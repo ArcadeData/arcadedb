@@ -177,9 +177,13 @@ class Issue10754JsonArrayDetectionTest {
   /** JSON's only non-canonical integer within the long range is "-0": it is the LONG zero, not a DECIMAL. */
   @Test
   void negativeZeroIsTheLongZero() throws Exception {
-    final String databasePath = importSource("importer-10754-negzero.json", "[{\"id\":1,\"z\":-0}]", "");
+    final String databasePath = importSource("importer-10754-negzero.json",
+        "[{\"id\":1,\"z\":-0,\"min\":" + Long.MIN_VALUE + "}]", "");
     try (final Database db = new DatabaseFactory(databasePath).open()) {
-      assertThat(db.iterateType("Document", true).next().asDocument().get("z")).isEqualTo(0L);
+      final Document doc = db.iterateType("Document", true).next().asDocument();
+      assertThat(doc.get("z")).isEqualTo(0L);
+      // the one value parseLong() also answers for "not canonical": still read as the LONG it is
+      assertThat(doc.get("min")).isEqualTo(Long.MIN_VALUE);
     } finally {
       dropDatabase(databasePath);
     }
