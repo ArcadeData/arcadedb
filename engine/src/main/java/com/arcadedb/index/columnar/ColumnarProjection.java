@@ -99,8 +99,9 @@ public final class ColumnarProjection {
   private static final String          DICTIONARY_SUFFIX = ".dic";
 
   private final int              bucketId;
-  private final String           bucketName;
-  private final String           typeName;
+  /** The bucket's and its type's names, replaced by a {@link #rename} (the directory is keyed by the file id, R9). */
+  private volatile String        bucketName;
+  private volatile String        typeName;
   private final Path             bucketDir;
   private final boolean          readOnly;
   private final int              maxRecordsInPage;
@@ -359,6 +360,12 @@ public final class ColumnarProjection {
       if (reader.segmentId() != entry.segmentId() || reader.rowCount() != entry.rows())
         throw new BlockCorruptionException("Segment " + entry.file() + " holds segment " + reader.segmentId() + " with " + reader.rowCount()
             + " rows, the manifest says " + entry.segmentId() + " with " + entry.rows());
+      // a RENAME the files do not record yet: the segment answers under the schema's names
+      final SegmentReader named = reader.withColumnNames(columns);
+      if (named != reader) {
+        readers.set(readers.size() - 1, named);
+        reader.close();
+      }
     }
 
     if (found.ownerMapFile() != null)
@@ -653,15 +660,53 @@ public final class ColumnarProjection {
     return applyLock;
   }
 
-  /** True when the current state is valid and its manifest has the column of the index file id. */
+  /**
+   * True when the current state is valid and its manifest has the column of the index file id with the definition the projection has
+   * for it ({@link ColumnarReconciler#sameData}, the property name aside): a column added, or retyped, after the last publish is not
+   * published until a rebuild publishes it.
+   */
   boolean isPublishedWith(final int indexFileId) {
     final ColumnarManifest current = manifest;
     if (current == null || !isUsable())
       return false;
+    final ColumnDefinition own = column(indexFileId);
+    if (own == null)
+      return false;
     for (final ColumnDefinition column : current.columns())
       if (column.indexFileId() == indexFileId)
+        return ColumnarReconciler.sameData(column, own);
+    return false;
+  }
+
+  /** The columns of the projection whose definition the current manifest does not publish, see {@link #isPublishedWith}. */
+  boolean hasUnpublishedColumn() {
+    for (final ColumnDefinition column : columns)
+      if (!isPublishedWith(column.indexFileId()))
         return true;
     return false;
+  }
+
+  /**
+   * I2: a column the current manifest publishes with another definition than the projection's (a RETYPE whose {@code schema} rebuild
+   * did not publish before a close); false without a valid manifest.
+   */
+  boolean hasRetypedColumn() {
+    final ColumnarManifest current = manifest;
+    if (current == null || !isUsable())
+      return false;
+    for (final ColumnDefinition published : current.columns()) {
+      final ColumnDefinition own = column(published.indexFileId());
+      if (own != null && !ColumnarReconciler.sameData(published, own))
+        return true;
+    }
+    return false;
+  }
+
+  private ColumnDefinition column(final int indexFileId) {
+    for (final ColumnDefinition column : columns)
+      if (column.indexFileId() == indexFileId)
+        return column;
+    return null;
   }
 
   /** True when the current state is valid: a manifest was loaded or published and no {@link #markUnusable} came after it. */
@@ -1004,7 +1049,10 @@ public final class ColumnarProjection {
     }
   }
 
-  /** A new overlay over {@code next} holding the rows of {@code from}; values are carried by index file id, other columns are missing. */
+  /**
+   * A new overlay over {@code next} holding the rows of {@code from}; values are carried by index file id when the column stores the
+   * same data (a rename included, {@link ColumnarReconciler#sameData}), other columns are missing.
+   */
   private ColumnarOverlay rekey(final ColumnarOverlay from, final ColumnDefinition[] previous, final ColumnDefinition[] next) {
     final ColumnarOverlay result = new ColumnarOverlay(maxRecordsInPage, next, System::currentTimeMillis);
     if (from.rows() == 0)
@@ -1013,7 +1061,7 @@ public final class ColumnarProjection {
     for (int k = 0; k < next.length; k++) {
       source[k] = -1;
       for (int j = 0; j < previous.length; j++)
-        if (previous[j].indexFileId() == next[k].indexFileId())
+        if (ColumnarReconciler.sameData(previous[j], next[k]))
           source[k] = j;
     }
     final RowBuffer rows = new RowBuffer(maxRecordsInPage, next);
@@ -1040,6 +1088,104 @@ public final class ColumnarProjection {
       result.replacePage(OverlayPageBlock.build(page, maxRecordsInPage, next, block.pageVersion(), rows));
     }
     return result;
+  }
+
+  /**
+   * The reconciler (spec 6.4): makes {@code next} the columns, keyed by index file id. A column of {@code next} that stores the same
+   * data as a current one ({@link ColumnarReconciler#sameData}) keeps its values and its dictionary under its new property name
+   * (RENAME: the segments of the current state answer under the new names through {@link SegmentReader#withColumnNames}); a current
+   * column {@code next} lacks is dropped with its writer dictionary; a column whose type changed (RETYPE) keeps the dictionary of its
+   * stored values but is not published ({@link #isPublishedWith}) and its new rows read as missing until a rebuild publishes it; a new
+   * column reads as missing until then too. The overlays (live, and frozen by a failed flush) are re-keyed and a state is published with them,
+   * under the apply and publish locks. The manifest names the new columns at the next publish ({@link #manifestColumns}).
+   * <p>
+   * Takes the maintenance slot for the change, so no flush, merge, compaction or rebuild built on the old columns publishes after it.
+   *
+   * @return false, changing nothing, when another job holds the maintenance slot: the caller retries later
+   */
+  boolean redefineColumns(final ColumnDefinition[] next) {
+    if (!tryBeginMaintenance())
+      return false;
+    try {
+      applyLock.lock();
+      try {
+        final ColumnDefinition[] previous = columns;
+        final ColumnarOverlay rekeyed = rekey(overlay, previous, next);
+        final ColumnarOverlay rekeyedFrozen = frozenOverlay == null ? null : rekey(frozenOverlay, previous, next);
+        // by index file id: a renamed column's dictionary under its new name; a retyped one keeps the dictionary its segments are
+        // encoded with until the schema rebuild replaces it (the column is not published meanwhile, see isPublishedWith)
+        final Map<String, GlobalDictionary> carried = new HashMap<>();
+        for (final ColumnDefinition column : next)
+          for (final ColumnDefinition was : previous)
+            if (was.indexFileId() == column.indexFileId() && dictionaries.get(was.property()) != null)
+              carried.put(column.property(), dictionaries.get(was.property()));
+        publishLock.lock();
+        try {
+          overlay = rekeyed;
+          columns = next.clone();
+          final ColumnarSegmentView[] overlays;
+          if (rekeyedFrozen != null) {
+            frozenOverlay = rekeyedFrozen;
+            frozenView = rekeyedFrozen.publish();
+            final ColumnarSegmentView frozen = supersededInFrozen.isEmpty() ? frozenView : new MaskedView(frozenView, supersededInFrozen.snapshot());
+            supersededChanged = false;
+            overlays = new ColumnarSegmentView[] { frozen, rekeyed.publish() };
+          } else
+            overlays = new ColumnarSegmentView[] { rekeyed.publish() };
+          final ProjectionState current = state.get();
+          final SegmentReader[] segments = current.segments();
+          final SegmentReader[] named = segments.clone();
+          for (int i = 0; i < named.length; i++)
+            named[i] = segments[i].withColumnNames(columns);
+          if (!publish(manifest, named, overlays, Map.copyOf(carried), current.isUsable()))
+            for (int i = 0; i < named.length; i++)
+              if (named[i] != segments[i])
+                named[i].close();
+        } finally {
+          publishLock.unlock();
+        }
+      } finally {
+        applyLock.unlock();
+      }
+      return true;
+    } finally {
+      endMaintenance();
+    }
+  }
+
+  /**
+   * The columns a publish built on {@code current} names: those of {@code current} the projection still has, under the projection's
+   * definition when it stores the same data (a RENAME), else as published (a RETYPE is named once its rebuild publishes); a column the
+   * reconciler dropped is left out.
+   */
+  ColumnDefinition[] manifestColumns(final ColumnarManifest current) {
+    final ColumnDefinition[] own = columns;
+    final List<ColumnDefinition> result = new ArrayList<>(own.length);
+    for (final ColumnDefinition published : current.columns())
+      for (final ColumnDefinition column : own)
+        if (column.indexFileId() == published.indexFileId()) {
+          result.add(ColumnarReconciler.sameData(published, column) ? column : published);
+          break;
+        }
+    return result.toArray(new ColumnDefinition[0]);
+  }
+
+  /**
+   * The reconciler, after {@code ALTER TYPE ... NAME} (the bucket files are renamed in place, the directory keyed by the file id stays,
+   * R9): the bucket and type names the next manifest and the stats use. The segment count moves to the new type name.
+   */
+  void rename(final String newBucketName, final String newTypeName) {
+    publishLock.lock();
+    try {
+      if (!newTypeName.equals(typeName)) {
+        stats.addSegments(typeName, -reportedSegments);
+        stats.addSegments(newTypeName, reportedSegments);
+        typeName = newTypeName;
+      }
+      bucketName = newBucketName;
+    } finally {
+      publishLock.unlock();
+    }
   }
 
   /**

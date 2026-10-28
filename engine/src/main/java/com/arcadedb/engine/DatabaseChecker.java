@@ -23,6 +23,7 @@ import com.arcadedb.database.BaseDocument;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.RID;
@@ -36,6 +37,7 @@ import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarSchemaEvent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -496,6 +498,10 @@ public class DatabaseChecker {
     // modes, does not name an index no run would ever rebuild. The message is therefore phrased for both: it states
     // what this check does not cover, not what a repair attempt failed to do.
     affectedIndexes.removeIf(index -> {
+      // R19: an index the transaction does not maintain (COLUMNAR) holds no entry to rebuild; dropping and re-creating it would give it
+      // a new file id, which its projection would read as a new column. The projection is rebuilt by the check_fix event of the bucket
+      if (index.getType() != null && !index.getType().isMaintainedInTransaction())
+        return true;
       if (index.isAutomatic())
         return false;
       addWarning("index '" + index.getName() + "': it is a manual index. Its entries are not derived from any record, "
@@ -2433,6 +2439,12 @@ public class DatabaseChecker {
       // arrives with one open, so the bucket repairs of a production CHECK DATABASE FIX would never have been bounded.
       final Map<String, Object> stats = bucket.check(verboseLevel, fix);
 
+      // spec 6.4: a repair may have changed records without the commits a projection follows; the projection of a repaired bucket is
+      // rebuilt
+      if (fix && repaired(bucket.getFileId(), stats) && database.getEmbedded() instanceof LocalDatabase local
+          && local.getColumnarIndexManager() != null)
+        local.getColumnarIndexManager().onSchemaEvent(ColumnarSchemaEvent.rebuild(bucket.getFileId(), ColumnarSchemaEvent.CHECK_FIX));
+
       updateStats(stats);
 
       // Through addWarning, not addAll: the bucket walk is the one pass whose warnings used to bypass BOTH the
@@ -2450,6 +2462,23 @@ public class DatabaseChecker {
         0F);
 
     stepComplete();
+  }
+
+  /**
+   * Whether the FIX changed records of the bucket: its walk deleted records, reclaimed or repaired chunks, or fixed placeholder
+   * pointers, or an earlier pass of this run found a corrupted record in it.
+   */
+  private boolean repaired(final int bucketId, final Map<String, Object> stats) {
+    final Object deleted = stats.get("deletedRecordsAfterFix");
+    if (deleted instanceof Collection<?> c && !c.isEmpty())
+      return true;
+    for (final String counter : new String[] { "orphanedChunksReclaimed", "crossLinkedChunksRepaired", "danglingPlaceholderPointersFixed" })
+      if (stats.get(counter) instanceof Long n && n > 0)
+        return true;
+    for (final RID rid : (Collection<RID>) result.get("corruptedRecords"))
+      if (rid != null && rid.getBucketId() == bucketId)
+        return true;
+    return false;
   }
 
   /**

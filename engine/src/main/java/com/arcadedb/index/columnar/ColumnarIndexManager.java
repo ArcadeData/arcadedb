@@ -20,10 +20,13 @@ package com.arcadedb.index.columnar;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.block.BlockCorruptionException;
+import com.arcadedb.index.Index;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.ColumnarIndexMetadata;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalSchema;
@@ -37,11 +40,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -50,6 +56,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -93,6 +100,12 @@ import java.util.logging.Level;
  * <p>
  * READ_ONLY databases (R16): no tick, no flush, no rebuild, no file written or deleted; the startup only records why a projection is
  * not usable.
+ * <p>
+ * <b>Schema events (spec 6.4).</b> The schema calls {@link #requestReconcile()} after each change; the next pass compares the COLUMNAR
+ * columns of the schema, and the fingerprints of the types the hierarchies read, with those of the previous reconcile
+ * ({@link ColumnarReconciler}) and applies the differences: projections dropped, columns dropped, renamed or retyped, {@code create}
+ * rebuilds of columns no build covered. {@link #onSchemaEvent} takes the events sent from outside (a {@code check_fix} rebuild), and
+ * every event reaches the {@link #addSchemaEventListener listeners}.
  */
 public final class ColumnarIndexManager {
   /** Delay after the first failed flush or merge of a projection; doubled per consecutive failure. */
@@ -107,6 +120,8 @@ public final class ColumnarIndexManager {
   static final String OPEN_PROJECTION = "manager.openProjection";
   /** Reached by {@link #persistRecoverySet()} once the recovery set is renamed, before it returns to {@code cleanWALFiles}. */
   static final String RECOVERY_SET_PERSISTED = "recoverySet.persisted";
+  /** Reached by the reconcile of a pass before it reads the schema. */
+  static final String RECONCILE = "manager.reconcile";
 
   /** Permits of {@link #fallbackScans()}; plan 4 reads them from {@code arcadedb.columnar.maxFallbackScans}. */
   private static final int    FALLBACK_SCANS  = 2;
@@ -155,6 +170,11 @@ public final class ColumnarIndexManager {
   private final ColumnarStats stats        = new ColumnarStats();
   private final Semaphore     fallbackScans = new Semaphore(FALLBACK_SCANS);
   private final AtomicLong    reconcileRequests = new AtomicLong();
+  /** The value of {@link #reconcileRequests} the last ended reconcile started from; written by the pass thread (one per database). */
+  private volatile long       reconciledRequests;
+  /** The last reconcile recorded definitions or hierarchy fingerprints: one is due on request even with no projection left. */
+  private volatile boolean    reconcileTracked;
+  private final List<Consumer<ColumnarSchemaEvent>> schemaListeners = new CopyOnWriteArrayList<>();
   private final Runnable      tick         = this::tick;
 
   private final ReentrantLock                         registryLock = new ReentrantLock();
@@ -166,6 +186,9 @@ public final class ColumnarIndexManager {
   /** Columns whose projection could not be opened (or given the column), by bucket: retried by the passes, with a backoff. */
   private final Map<Integer, List<ColumnDefinition>>  failedOpens  = new LinkedHashMap<>();
   private long                                        openRetryBackoffMs;
+  /** The definitions and the hierarchy fingerprints of the last reconcile (V-B4, R20). */
+  private Map<Integer, ColumnDefinition[]>            lastDefinitions = Map.of();
+  private Map<String, String>                         lastFingerprints = Map.of();
   private boolean                                     closed;
   // published copies, replaced whole under registryLock
   private volatile Slot[]                             slots        = new Slot[0];
@@ -330,7 +353,10 @@ public final class ColumnarIndexManager {
     return projection != null && projection.isPublishedWith(index.columnDefinition().indexFileId()) && !failedBuckets.contains(bucketId);
   }
 
-  /** Asks for the projections to be reconciled with the COLUMNAR indexes of the schema (columns added or dropped). */
+  /**
+   * Asks for the projections to be reconciled with the COLUMNAR indexes of the schema (spec 6.4, see {@link #reconcile(Map, Map)}): the
+   * next apply pass does it, before it applies. Called by the schema after every change it publishes or persists (V-B5).
+   */
   public void requestReconcile() {
     reconcileRequests.incrementAndGet();
   }
@@ -338,6 +364,293 @@ public final class ColumnarIndexManager {
   /** The number of {@link #requestReconcile()} calls so far. */
   long reconcileRequests() {
     return reconcileRequests.get();
+  }
+
+  /**
+   * The leader's {@link ColumnarIndex#build}: opens the projections of the indexes bound by now and schedules the {@code create}
+   * rebuild of the index's projection unless it publishes the column already (an empty bucket is published with its columns at open,
+   * V-B1). Under the registry lock, so a reconcile never sees the projection opened and its rebuild not scheduled yet: its
+   * {@code ADD_COLUMN} then finds the rebuild queued, running or published and counts no second one (V-M14).
+   */
+  void buildRegistered(final ColumnarIndex index) {
+    registryLock.lock();
+    try {
+      openRegistered();
+      final ColumnarProjection projection = projection(index.getAssociatedBucketId());
+      if (projection != null && !projection.isPublishedWith(index.columnDefinition().indexFileId()))
+        ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
+    } finally {
+      registryLock.unlock();
+    }
+    requestReconcile();
+  }
+
+  // -------------------------------------------------------------------------------------------------------------- schema events
+
+  /**
+   * Receives every schema event this manager applies or is sent ({@link ColumnarSchemaEvent}), on the thread that applies it: for a
+   * reconcile that is a {@link ColumnarApplyPool} thread shared by every database of the JVM, so a listener hands long work off.
+   */
+  public void addSchemaEventListener(final Consumer<ColumnarSchemaEvent> listener) {
+    schemaListeners.add(listener);
+  }
+
+  /**
+   * An event sent from outside the reconcile: a {@code REBUILD} schedules the rebuild of the bucket's projection with its reason
+   * (nothing, and no listener called, for a bucket with no projection); every event then reaches the listeners.
+   */
+  public void onSchemaEvent(final ColumnarSchemaEvent event) {
+    if (event.kind() == ColumnarSchemaEvent.Kind.REBUILD) {
+      final ColumnarProjection projection = projection(event.bucketFileId());
+      if (projection == null)
+        return;
+      ColumnarRebuilder.schedule(this, projection, event.reason());
+    }
+    notifyListeners(event);
+  }
+
+  private void notifyListeners(final ColumnarSchemaEvent event) {
+    for (final Consumer<ColumnarSchemaEvent> listener : schemaListeners)
+      try {
+        listener.accept(event);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "A columnar schema event listener of database '%s' failed on %s", e,
+            database.getName(), event);
+      }
+  }
+
+  /** A reconcile was requested since the last one, and there is something to reconcile (a projection, or a tracked definition). */
+  private boolean isReconcileDue() {
+    return (reconcileTracked || slots.length > 0) && reconcileRequests.get() != reconciledRequests;
+  }
+
+  /** A pass, before its apply: reconciles with the schema when a reconcile was requested since the last one. */
+  private void reconcileIfRequested() {
+    // read before the schema is: a request arriving meanwhile runs another reconcile
+    final long requested = reconcileRequests.get();
+    if (requested == reconciledRequests)
+      return;
+    ColumnarTestHooks.reach(RECONCILE);
+    final boolean complete = reconcile(schemaDefinitions(), schemaFingerprints());
+    // only now, and not after a reconcile that threw (the next tick retries it): a reconcile is due (awaitCaughtUp waits) until its
+    // events reached the listeners
+    reconciledRequests = requested;
+    if (!complete)
+      reconcileRequests.incrementAndGet();
+  }
+
+  /** {@link #reconcile(Map, Map)} with the definitions given and the hierarchy fingerprints of the schema. */
+  void reconcile(final Map<Integer, ColumnDefinition[]> fromSchema) {
+    reconcile(fromSchema, schemaFingerprints());
+  }
+
+  /**
+   * Spec 6.4: applies the events {@link ColumnarReconciler#diff} finds between the definitions of the previous reconcile and
+   * {@code fromSchema}, and {@link ColumnarReconciler#hierarchyDiff} between the hierarchy fingerprints, then calls the listeners.
+   * <ul>
+   * <li>{@code DROP_PROJECTION}: the projection is dropped (its directory deleted once the last reader releases, P52);</li>
+   * <li>{@code DROP_COLUMN}, {@code RENAME}, {@code RETYPE_COLUMN}: the projection's columns become the schema's
+   * ({@link ColumnarProjection#redefineColumns}); a RETYPE is rebuilt with reason {@code schema};</li>
+   * <li>{@code ADD_COLUMN}: a {@code create} rebuild, only when the published manifest lacks the column and no rebuild of the
+   * projection is queued or running (R17, V-B4: the leader's {@link ColumnarIndex#build} covered it otherwise);</li>
+   * <li>{@code CREATE_EMPTY}, {@code HIERARCHY_SOURCE_CHANGED}: the listeners only.</li>
+   * </ul>
+   * A projection whose bucket or type was renamed takes the new names ({@code RENAME} with no index file id). The registered indexes
+   * the schema no longer has are forgotten, and the extractor cache is dropped (a supertype change changes the columns of a type).
+   * A bucket the schema projects and this node did not open yet is left out of the recorded definitions, so a later reconcile sees it
+   * as new.
+   *
+   * @return false when a projection could not take its new columns (its maintenance slot was busy): its events are reported by the
+   * reconcile that applies them
+   */
+  private boolean reconcile(final Map<Integer, ColumnDefinition[]> fromSchema, final Map<String, String> fingerprints) {
+    final List<ColumnarSchemaEvent> delivered = new ArrayList<>();
+    boolean complete = true;
+    registryLock.lock();
+    try {
+      if (closed)
+        return true;
+      final Map<Integer, ColumnDefinition[]> applied = new HashMap<>();
+      for (final Map.Entry<Integer, ColumnDefinition[]> entry : fromSchema.entrySet())
+        if (slotsByBucket.containsKey(entry.getKey()))
+          applied.put(entry.getKey(), entry.getValue().clone());
+
+      final List<ColumnarSchemaEvent> events = ColumnarReconciler.diff(lastDefinitions, applied, this::isBucketEmpty);
+      final Set<Integer> redefined = new TreeSet<>();
+      final Set<Integer> retyped = new TreeSet<>();
+      final Set<Integer> deferred = new TreeSet<>();
+      for (final ColumnarSchemaEvent event : events)
+        switch (event.kind()) {
+        case DROP_PROJECTION -> {
+          // a bucket the schema still projects and this node has no projection of (its open failed): retried, not dropped
+          if (!fromSchema.containsKey(event.bucketFileId()))
+            dropProjection(event.bucketFileId());
+          else
+            deferred.add(event.bucketFileId());
+        }
+        case DROP_COLUMN, RENAME -> redefined.add(event.bucketFileId());
+        case RETYPE_COLUMN -> {
+          redefined.add(event.bucketFileId());
+          retyped.add(event.bucketFileId());
+        }
+        default -> {
+          // ADD_COLUMN below; CREATE_EMPTY: the projection was opened usable by the registration
+        }
+        }
+
+      for (final int bucketId : redefined) {
+        final ColumnarProjection projection = slotsByBucket.get(bucketId).projection;
+        if (!projection.redefineColumns(redefinedColumns(projection.columns(), applied.get(bucketId)))) {
+          // retried by the next reconcile, which finds the same differences again
+          deferred.add(bucketId);
+          applied.put(bucketId, lastDefinitions.get(bucketId));
+          complete = false;
+        } else if (retyped.contains(bucketId))
+          ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.SCHEMA);
+      }
+
+      for (final ColumnarSchemaEvent event : events) {
+        if (deferred.contains(event.bucketFileId()))
+          continue;
+        if (event.kind() == ColumnarSchemaEvent.Kind.ADD_COLUMN) {
+          final ColumnarProjection projection = slotsByBucket.get(event.bucketFileId()).projection;
+          // a column the registration did not add (its open came first): added, missing until a rebuild publishes it
+          for (final ColumnDefinition column : applied.get(event.bucketFileId()))
+            if (column.indexFileId() == event.indexFileId())
+              projection.addColumn(column);
+          // a running rebuild that captured the columns before this one is followed by a create (rebuildPublished, I3)
+          if (!projection.isPublishedWith(event.indexFileId()) && !ColumnarRebuilder.isQueuedOrRunning(projection))
+            ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
+        }
+        delivered.add(event);
+      }
+
+      renameProjections(delivered);
+      forgetIndexesNotIn(fromSchema);
+      publishRegistry();
+
+      delivered.addAll(ColumnarReconciler.hierarchyDiff(lastFingerprints, fingerprints));
+      lastDefinitions = applied;
+      lastFingerprints = fingerprints;
+      reconcileTracked = !applied.isEmpty() || !fingerprints.isEmpty();
+    } finally {
+      registryLock.unlock();
+    }
+    for (final ColumnarSchemaEvent event : delivered)
+      notifyListeners(event);
+    return complete;
+  }
+
+  /**
+   * Under {@link #registryLock}: the columns a projection takes from the schema's: its own in their order, each replaced by the schema's
+   * definition of the same index file id or left out when the schema has none, then the schema's it does not have yet.
+   */
+  private static ColumnDefinition[] redefinedColumns(final ColumnDefinition[] own, final ColumnDefinition[] schema) {
+    final List<ColumnDefinition> result = new ArrayList<>(schema.length);
+    for (final ColumnDefinition column : own)
+      for (final ColumnDefinition defined : schema)
+        if (defined.indexFileId() == column.indexFileId()) {
+          result.add(defined);
+          break;
+        }
+    for (final ColumnDefinition defined : schema)
+      if (result.stream().noneMatch(c -> c.indexFileId() == defined.indexFileId()))
+        result.add(defined);
+    return result.toArray(new ColumnDefinition[0]);
+  }
+
+  /** Under {@link #registryLock}: drops the bucket's projection and forgets its indexes (a dropped type or bucket, a follower). */
+  private void dropProjection(final int bucketId) {
+    indexes.values().removeIf(index -> index.getAssociatedBucketId() == bucketId);
+    failedOpens.remove(bucketId);
+    final Slot slot = slotsByBucket.remove(bucketId);
+    if (slot == null)
+      return;
+    publishRegistry();
+    slot.projection.drop();
+    forgetMarkerRebuild(slot.projection);
+  }
+
+  /** Under {@link #registryLock}: gives every projection the current names of its bucket and type, recording a RENAME per change. */
+  private void renameProjections(final List<ColumnarSchemaEvent> delivered) {
+    for (final Slot slot : slotsByBucket.values()) {
+      final ColumnarProjection projection = slot.projection;
+      final Bucket bucket = database.getSchema().getBucketByIdIfExists(projection.bucketId());
+      if (bucket == null)
+        continue;
+      final DocumentType type = database.getSchema().getTypeByBucketId(projection.bucketId());
+      final String typeName = type == null ? projection.typeName() : type.getName();
+      if (bucket.getName().equals(projection.bucketName()) && typeName.equals(projection.typeName()))
+        continue;
+      projection.rename(bucket.getName(), typeName);
+      delivered.add(new ColumnarSchemaEvent(ColumnarSchemaEvent.Kind.RENAME, projection.bucketId(), -1, null, null));
+    }
+  }
+
+  /** Under {@link #registryLock}: forgets the registered indexes, and the failed opens, of columns the schema does not have. */
+  private void forgetIndexesNotIn(final Map<Integer, ColumnDefinition[]> fromSchema) {
+    final IntHashSet known = new IntHashSet();
+    for (final ColumnDefinition[] columns : fromSchema.values())
+      for (final ColumnDefinition column : columns)
+        known.add(column.indexFileId());
+    indexes.keySet().removeIf(fileId -> !known.contains(fileId));
+    for (final Iterator<List<ColumnDefinition>> it = failedOpens.values().iterator(); it.hasNext(); ) {
+      final List<ColumnDefinition> failed = it.next();
+      failed.removeIf(column -> !known.contains(column.indexFileId()));
+      if (failed.isEmpty())
+        it.remove();
+    }
+  }
+
+  /** Whether the bucket has no record; false when it cannot be read (an {@code ADD_COLUMN} then rebuilds, which costs a scan only). */
+  private boolean isBucketEmpty(final int bucketId) {
+    try {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(bucketId);
+      return bucket.getCommittedPageCount() == 0 || bucket.count() == 0;
+    } catch (final RuntimeException e) {
+      return false;
+    }
+  }
+
+  /** The COLUMNAR columns of the schema, by bucket file id, of every index bound to its bucket. */
+  private Map<Integer, ColumnDefinition[]> schemaDefinitions() {
+    final Map<Integer, List<ColumnDefinition>> byBucket = new HashMap<>();
+    for (final Index index : database.getSchema().getIndexes())
+      if (index instanceof ColumnarIndex columnar && isBound(columnar))
+        byBucket.computeIfAbsent(columnar.getAssociatedBucketId(), k -> new ArrayList<>()).add(columnar.columnDefinition());
+    final Map<Integer, ColumnDefinition[]> result = new HashMap<>();
+    for (final Map.Entry<Integer, List<ColumnDefinition>> entry : byBucket.entrySet())
+      result.put(entry.getKey(), entry.getValue().toArray(new ColumnDefinition[0]));
+    return result;
+  }
+
+  /** The fingerprints of the types the COLUMNAR hierarchies of the schema read (R20). */
+  private Map<String, String> schemaFingerprints() {
+    final List<ColumnarIndexMetadata> withHierarchy = new ArrayList<>();
+    for (final Index index : database.getSchema().getIndexes())
+      if (index instanceof ColumnarIndex columnar && columnar.getColumnarMetadata() != null
+          && columnar.getColumnarMetadata().getHierarchy() != null)
+        withHierarchy.add(columnar.getColumnarMetadata());
+    return ColumnarReconciler.hierarchyFingerprints(database.getSchema(), withHierarchy);
+  }
+
+  /** Startup, before the tick: the schema as it is now is the base the first reconcile compares with (no event for it). */
+  private void recordReconcileBase() {
+    reconciledRequests = reconcileRequests.get();
+    final Map<Integer, ColumnDefinition[]> fromSchema = schemaDefinitions();
+    final Map<String, String> fingerprints = schemaFingerprints();
+    registryLock.lock();
+    try {
+      final Map<Integer, ColumnDefinition[]> base = new HashMap<>();
+      for (final Map.Entry<Integer, ColumnDefinition[]> entry : fromSchema.entrySet())
+        if (slotsByBucket.containsKey(entry.getKey()))
+          base.put(entry.getKey(), entry.getValue());
+      lastDefinitions = base;
+      lastFingerprints = fingerprints;
+      reconcileTracked = !base.isEmpty() || !fingerprints.isEmpty();
+    } finally {
+      registryLock.unlock();
+    }
   }
 
   /** The schema has set the bucket, type and property of the index (the factory registers it before). */
@@ -772,6 +1085,7 @@ public final class ColumnarIndexManager {
     recover(opened, uncleanOpen);
     if (readOnly || closing || applying)
       return;
+    recordReconcileBase();
     ColumnarApplyPool.getInstance().register(tick, () -> database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL));
     applying = true;
   }
@@ -830,6 +1144,9 @@ public final class ColumnarIndexManager {
       installRebuildRequester(projection);
       if (reason != null)
         ColumnarRebuilder.schedule(this, projection, reason);
+      else if (projection.hasRetypedColumn())
+        // I2: a RETYPE whose schema rebuild did not publish before the close: the schema's definition is the one to build
+        ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.SCHEMA);
     }
   }
 
@@ -882,6 +1199,10 @@ public final class ColumnarIndexManager {
 
   /** {@link ColumnarRebuilder}, once a rebuild of the projection published: ends the obligations the rebuild discharged. */
   void rebuildPublished(final ColumnarProjection projection) {
+    // I3: a column added after the rebuild captured its columns is still not published: built by a create (coalesced, this rebuild
+    // is still running, so it runs once more after it)
+    if (projection.hasUnpublishedColumn())
+      ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
     // a NOWAL marker no no-WAL commit of this session wrote describes pages the scan read as they are now
     synchronized (projection.noWalMarkerLock) {
       if (projection.noWalMarkerEpoch == -1)
@@ -1003,14 +1324,14 @@ public final class ColumnarIndexManager {
   /** No lock: volatile reads, then a CAS, then a submit. */
   private void tick() {
     // a database with no COLUMNAR index pays these reads only, never a configuration read or a pass
-    if (slots.length == 0 && !watchersPending && failedBuckets.isEmpty())
+    if (slots.length == 0 && !watchersPending && failedBuckets.isEmpty() && !isReconcileDue())
       return;
     // a rebuild that found no free permit starts here once one is free (a test, or a rebuild of another JVM component, held it)
     if (ColumnarRebuilder.hasWaiting())
       ColumnarRebuilder.drainWaiting();
     if (closing || suspensions.get() > 0)
       return;
-    if (!watchersPending && !hasPendingApply() && !isOpenRetryDue() && !isUnreadableRetryDue()
+    if (!watchersPending && !isReconcileDue() && !hasPendingApply() && !isOpenRetryDue() && !isUnreadableRetryDue()
         && System.currentTimeMillis() - lastPassMs < database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL))
       return;
     if (passScheduled.compareAndSet(false, true))
@@ -1055,6 +1376,7 @@ public final class ColumnarIndexManager {
       if (closing || suspensions.get() > 0)
         return;
       lastPassMs = System.currentTimeMillis();
+      reconcileInPass();
       for (final Slot slot : slots) {
         if (closing || suspensions.get() > 0)
           return;
@@ -1068,6 +1390,19 @@ public final class ColumnarIndexManager {
       logFailure("Columnar apply pass of database '%s' failed", e);
     } finally {
       passScheduled.set(false);
+    }
+  }
+
+  /** The reconcile of a pass, in a database context (the emptiness of a new bucket is read through the database). */
+  private void reconcileInPass() {
+    try {
+      ColumnarApplier.inDatabaseContext(database, () -> {
+        reconcileIfRequested();
+        return null;
+      });
+    } catch (final RuntimeException e) {
+      // the request stays due: the next tick retries
+      logFailure("Columnar schema reconcile of database '%s' failed", e);
     }
   }
 
@@ -1288,7 +1623,7 @@ public final class ColumnarIndexManager {
   }
 
   private boolean isCaughtUp() {
-    if (!failedBuckets.isEmpty())
+    if (!failedBuckets.isEmpty() || applying && isReconcileDue())
       return false;
     for (final Slot slot : slots)
       if (!slot.projection.isUsable() || hasPendingApply(slot.projection))

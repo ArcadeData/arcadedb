@@ -1134,6 +1134,15 @@ public class LocalSchema implements Schema {
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.SEVERE, "Cannot open the columnar projections of the loaded schema", e);
       }
+    // a published generation (a follower's schema entry included) may have added, dropped or renamed COLUMNAR columns (V-B5)
+    if (committed)
+      requestColumnarReconcile();
+  }
+
+  /** Spec 6.4: the columnar projections are reconciled with the COLUMNAR indexes of the schema by the next apply pass. */
+  private void requestColumnarReconcile() {
+    if (database.getEmbedded() instanceof LocalDatabase local && local.getColumnarIndexManager() != null)
+      local.getColumnarIndexManager().requestReconcile();
   }
 
   /**
@@ -5114,6 +5123,9 @@ public class LocalSchema implements Schema {
 
       savedGeneration = capturedGeneration;
 
+      // every successful DDL persists through here (V-B5)
+      requestColumnarReconcile();
+
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
           databasePath + File.separator + SCHEMA_FILE_NAME);
@@ -6428,6 +6440,7 @@ public class LocalSchema implements Schema {
     published = new SchemaState(published.types(), maps[0], maps[1]);
     bucketTypeMapsStale = false;
     ++bucketTypeMapRebuilds;
+    requestColumnarReconcile();
   }
 
   /** Full rebuilds of the published bucket maps so far: visible to the test of issue #10247, which counts them. */
