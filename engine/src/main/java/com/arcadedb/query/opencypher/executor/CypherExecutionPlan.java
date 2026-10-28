@@ -1471,8 +1471,11 @@ public class CypherExecutionPlan {
 
         case SET: {
           final SetClause setClause = entry.getTypedClause();
-          if (!setClause.isEmpty() && !absorbsSet(currentStep, setClause)) {
-            if (currentStep != null && eagerness.needsBarrier(setClause))
+          // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889): it gets the barrier,
+          // so the MERGE step must not absorb it
+          final boolean afterMerge = !setClause.isEmpty() && eagerness.needsBarrierAfterMerge(setClause);
+          if (!setClause.isEmpty() && (afterMerge || !absorbsSet(currentStep, setClause))) {
+            if (currentStep != null && (afterMerge || eagerness.needsBarrier(setClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
@@ -1497,7 +1500,7 @@ public class CypherExecutionPlan {
         case REMOVE: {
           final RemoveClause removeClause = entry.getTypedClause();
           if (!removeClause.isEmpty()) {
-            if (currentStep != null && eagerness.needsBarrier(removeClause))
+            if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
             removeStep.setPrevious(currentStep);
@@ -1509,12 +1512,13 @@ public class CypherExecutionPlan {
 
         case MERGE: {
           final MergeClause mergeClause = entry.getTypedClause();
-          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables))
+          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables) || eagerness.needsBarrierAfterMerge(mergeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
           eagerness.observeWriteClause();
+          eagerness.observeMergeRead(mergeClause);
           break;
         }
 
@@ -1816,6 +1820,8 @@ public class CypherExecutionPlan {
         }
       };
     }
+    // The one-row source the clauses start from (the dummy row, or the seed row of a CALL subquery body), or null
+    final AbstractExecutionStep singleRowSource = currentStep;
 
     // Process clauses in order (indexed loop to support look-ahead for optimizations)
     for (int entryIndex = 0; entryIndex < clausesInOrder.size(); entryIndex++) {
@@ -1913,8 +1919,11 @@ public class CypherExecutionPlan {
 
       case MERGE:
         final MergeClause mergeClause = entry.getTypedClause();
-        if (currentStep != null && eagerness.needsBarrier(mergeClause, boundVariables))
+        if (currentStep != null && (eagerness.needsBarrier(mergeClause, boundVariables)
+            || eagerness.needsBarrierAfterMerge(mergeClause)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
+        // A MERGE that starts the statement runs its lookup once: no later write can change what it finds (issue #10889)
+        final boolean mergeRunsPerRow = currentStep != null && currentStep != singleRowSource;
         final MergeStep mergeStep =
             new MergeStep(mergeClause, context, functionFactory);
         if (currentStep != null) {
@@ -1922,6 +1931,8 @@ public class CypherExecutionPlan {
         }
         currentStep = mergeStep;
         eagerness.observeWrite(mergeClause);
+        if (mergeRunsPerRow)
+          eagerness.observeMergeRead(mergeClause);
         // What the MERGE binds is as much a bound name as what a MATCH binds: a MATCH after it that ends at one of them
         // starts from that entity instead of scanning the side it leaves open (issue #10515)
         collectPatternVariables(List.of(mergeClause.getPathPattern()), boundVariables);
@@ -1946,9 +1957,12 @@ public class CypherExecutionPlan {
         final SetClause setClause = entry.getTypedClause();
         if (!setClause.isEmpty() && currentStep != null) {
           // absorbsSet() hands the clause over to the step, so it is asked exactly once: a second call finds the
-          // clause already taken, answers false and plans the SET a second time as a step of its own (issue #8809)
-          if (!absorbsSet(currentStep, setClause)) {
-            if (eagerness.needsBarrier(setClause))
+          // clause already taken, answers false and plans the SET a second time as a step of its own (issue #8809).
+          // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889): it gets the
+          // barrier, so the MERGE step must not absorb it.
+          final boolean afterMerge = eagerness.needsBarrierAfterMerge(setClause);
+          if (afterMerge || !absorbsSet(currentStep, setClause)) {
+            if (afterMerge || eagerness.needsBarrier(setClause))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
                 new SetStep(setClause, context, functionFactory);
@@ -1963,7 +1977,7 @@ public class CypherExecutionPlan {
       case REMOVE:
         final RemoveClause removeClause = entry.getTypedClause();
         if (!removeClause.isEmpty() && currentStep != null) {
-          if (eagerness.needsBarrier(removeClause))
+          if (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
               new RemoveStep(removeClause, context, functionFactory);
@@ -2024,7 +2038,8 @@ public class CypherExecutionPlan {
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && graphReadFollows(clausesInOrder, entryIndex);
-        if (currentStep != null && eagerness.needsBarrier(foreachClause, boundVariables))
+        if (currentStep != null && (eagerness.needsBarrier(foreachClause, boundVariables)
+            || eagerness.needsBarrierAfterMerge(foreachClause)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
@@ -2192,48 +2207,57 @@ public class CypherExecutionPlan {
       currentStep = withStep;
     }
 
-    // Apply ORDER BY if present in WITH
-    if (withClause.getOrderByClause() != null) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results
-      Integer limitVal = withClause.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-              new ResultInternal(), context) : null;
-      final Integer originalLimitVal = limitVal;
-      if (limitVal != null && withClause.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
+  }
+
+  /**
+   * Chains the ORDER BY, SKIP and LIMIT of a WITH after the step that projects it. A plain {@link WithStep} pages its own
+   * rows when there is no ORDER BY, but an aggregating WITH is projected by an aggregation step that knows nothing of SKIP
+   * and LIMIT, so they are chained after it here: without them {@code WITH collect(x) AS q LIMIT 0} still passed its row on,
+   * and a CREATE behind it ran (issue #10892).
+   */
+  private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
+      final CommandContext context, final CypherFunctionFactory functionFactory) {
+    final boolean ordered = withClause.getOrderByClause() != null;
+    if (!ordered && !withClause.hasAggregations())
+      return currentStep;
+
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+    final Integer skipVal = withClause.getSkip() != null ?
+        evaluator.evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context) : null;
+    final Integer limitVal = withClause.getLimit() != null ?
+        evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
+
+    if (ordered) {
+      // Top-K keeps SKIP + LIMIT rows so enough survive the skip; a sum past int range sorts everything instead
+      Integer topKVal = null;
+      if (limitVal != null) {
+        final long topK = (long) limitVal + (skipVal != null ? skipVal : 0);
+        topKVal = topK <= Integer.MAX_VALUE ? (int) topK : null;
       }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = withClause.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-      final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
+      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
-
-      // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-      if (skipVal != null) {
-        final SkipStep skipStep = new SkipStep(skipVal, context);
-        skipStep.setPrevious(currentStep);
-        currentStep = skipStep;
-      }
-      if (withClause.getLimit() != null) {
-        final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-        limitStep.setPrevious(currentStep);
-        currentStep = limitStep;
-      }
-
-      // Strip non-projected variables that were kept for ORDER BY evaluation
-      currentStep = addWithProjection(withClause, currentStep, context);
     }
 
+    // Pagination happens after sorting and after aggregating
+    if (skipVal != null) {
+      final SkipStep skipStep = new SkipStep(skipVal, context);
+      if (currentStep != null)
+        skipStep.setPrevious(currentStep);
+      currentStep = skipStep;
+    }
+    if (limitVal != null) {
+      final LimitStep limitStep = new LimitStep(limitVal, context);
+      if (currentStep != null)
+        limitStep.setPrevious(currentStep);
+      currentStep = limitStep;
+    }
+
+    // Strip non-projected variables that were kept for ORDER BY evaluation
+    if (ordered)
+      currentStep = addWithProjection(withClause, currentStep, context);
     return currentStep;
   }
 
@@ -2280,43 +2304,7 @@ public class CypherExecutionPlan {
       currentStep = withStep;
     }
 
-    // Apply ORDER BY if present in WITH
-    if (withClause.getOrderByClause() != null) {
-      Integer limitVal = withClause.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-              new ResultInternal(), context) : null;
-      final Integer originalLimitVal = limitVal;
-      if (limitVal != null && withClause.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      final Integer skipVal = withClause.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-      final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
-      orderByStep.setPrevious(currentStep);
-      currentStep = orderByStep;
-
-      if (skipVal != null) {
-        final SkipStep skipStep = new SkipStep(skipVal, context);
-        skipStep.setPrevious(currentStep);
-        currentStep = skipStep;
-      }
-      if (withClause.getLimit() != null) {
-        final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-        limitStep.setPrevious(currentStep);
-        currentStep = limitStep;
-      }
-
-      currentStep = addWithProjection(withClause, currentStep, context);
-    }
-
-    return currentStep;
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
   }
 
   /**
@@ -4069,47 +4057,7 @@ public class CypherExecutionPlan {
         currentStep = withStep;
       }
 
-      // Apply ORDER BY if present in WITH
-      if (withClause.getOrderByClause() != null) {
-        // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-        // When SKIP is also present, TopK must keep SKIP + LIMIT results
-        Integer limitVal = withClause.getLimit() != null ?
-            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-                new ResultInternal(), context) : null;
-        final Integer originalLimitVal = limitVal;
-        if (limitVal != null && withClause.getSkip() != null) {
-          final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context);
-          limitVal = limitVal + skipVal;
-        }
-
-        // Top-K must account for SKIP so enough rows survive after skipping
-        final Integer skipVal = withClause.getSkip() != null ?
-            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-                new ResultInternal(), context) : null;
-        final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-        final OrderByStep orderByStep =
-            new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
-        if (currentStep != null)
-          orderByStep.setPrevious(currentStep);
-        currentStep = orderByStep;
-
-        // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-        if (skipVal != null) {
-          final SkipStep skipStep = new SkipStep(skipVal, context);
-          skipStep.setPrevious(currentStep);
-          currentStep = skipStep;
-        }
-        if (withClause.getLimit() != null) {
-          final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-          limitStep.setPrevious(currentStep);
-          currentStep = limitStep;
-        }
-
-        // Strip non-projected variables that were kept for ORDER BY evaluation
-        currentStep = addWithProjection(withClause, currentStep, context);
-      }
+      currentStep = addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
     }
 
     // The read/write barrier analysis of buildExecutionStepsWithOrder(), over the flat clause lists this
@@ -4130,6 +4078,8 @@ public class CypherExecutionPlan {
       // MERGE is typically standalone, but can be chained
       if (currentStep != null) {
         mergeStep.setPrevious(currentStep);
+        // run once per row: a later write of what it matches on needs the barrier (issue #10889)
+        eagerness.observeMergeRead(statement.getMergeClause());
       }
       currentStep = mergeStep;
       eagerness.observeWriteClause();
@@ -4150,9 +4100,10 @@ public class CypherExecutionPlan {
     }
 
     // Step 5: SET clause - update properties
+    final boolean setAfterMerge = eagerness.needsBarrierAfterMerge(statement.getSetClause());
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null
-        && !absorbsSet(currentStep, statement.getSetClause())) {
-      if (eagerness.needsBarrier(statement.getSetClause()))
+        && (setAfterMerge || !absorbsSet(currentStep, statement.getSetClause()))) {
+      if (setAfterMerge || eagerness.needsBarrier(statement.getSetClause()))
         currentStep = withEagerBarrier(currentStep, context, eagerness);
       final SetStep setStep = new SetStep(
           statement.getSetClause(), context, functionFactory);
@@ -4180,7 +4131,7 @@ public class CypherExecutionPlan {
     // Step 6a: REMOVE clauses - remove properties
     for (final RemoveClause removeClause : statement.getRemoveClauses()) {
       if (!removeClause.isEmpty() && currentStep != null) {
-        if (eagerness.needsBarrier(removeClause))
+        if (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
         removeStep.setPrevious(currentStep);

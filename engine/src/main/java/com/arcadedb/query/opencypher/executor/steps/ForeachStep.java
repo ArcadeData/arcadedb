@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
@@ -315,16 +316,29 @@ public class ForeachStep extends AbstractExecutionStep {
    * new {@link com.arcadedb.graph.Vertex}); the outer input row still points at the pre-mutation
    * snapshot. Restricting the sync to names already present in the input row (as documents) avoids
    * leaking the loop variable or clause-bound temporaries into the query output.
+   * <p>
+   * A path the input row carries is synced the same way: the write already pointed the iteration row's copy of the path at
+   * the record it produced ({@link com.arcadedb.query.opencypher.executor.RowAliases}), so
+   * {@code FOREACH (item IN nodes(p) | SET item.value = 20) RETURN [x IN nodes(p) | x.value]} answers with the new value
+   * (issue #10890).
    */
   private void propagateMutationsToInputRow(final Result inputRow, final ResultInternal iterationRow) {
     if (!(inputRow instanceof ResultInternal outer))
       return;
     for (final String propName : inputRow.getPropertyNames()) {
       final Object outerValue = inputRow.getProperty(propName);
-      if (!(outerValue instanceof Document))
+      final Object innerValue;
+      if (outerValue instanceof Document) {
+        innerValue = iterationRow.getProperty(propName);
+        if (!(innerValue instanceof Document))
+          continue;
+      } else if (outerValue instanceof TraversalPath) {
+        innerValue = iterationRow.getProperty(propName);
+        if (!(innerValue instanceof TraversalPath))
+          continue;
+      } else
         continue;
-      final Object innerValue = iterationRow.getProperty(propName);
-      if (innerValue instanceof Document && innerValue != outerValue)
+      if (innerValue != outerValue)
         outer.setProperty(propName, innerValue);
     }
   }
