@@ -4954,8 +4954,9 @@ public class LocalSchema implements Schema {
   /**
    * Runs {@code change} of the refresh state of the continuous aggregates (the range of samples appended behind a watermark) inside
    * a schema recording session, so that under HA the followers receive it as well and a follower promoted to leader refreshes with
-   * it (issue #10634). An append ships it before committing its samples (issue #10673). The state a refresh writes is not shipped this way: see {@code ContinuousAggregateRefresher}. Takes the
-   * database write lock: never call it from code running under the read lock, such as an after-commit callback.
+   * it (issue #10634). An append ships it before committing its samples (issue #10673). The state a refresh writes is not shipped
+   * this way: see {@code ContinuousAggregateRefresher}. Takes the database write lock: never call it from code running under the
+   * read lock, such as an after-commit callback.
    */
   public void recordContinuousAggregateChange(final Runnable change) {
     recordChange(change);

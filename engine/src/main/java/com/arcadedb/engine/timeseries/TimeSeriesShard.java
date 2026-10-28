@@ -75,7 +75,9 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
    * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
-   * have left them.
+   * have left them. Public only because the test that sets it is an HA integration test in another module
+   * ({@code Issue10673LateSampleRecordShippedBeforeTheSamplesIT}); nothing outside tests may set it, and a test that does clears it
+   * in a {@code finally}. Read once per append that committed: one volatile read.
    */
   public static volatile Runnable TEST_AFTER_APPEND_COMMIT_HOOK = null;
 
@@ -364,6 +366,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * The source is read once per retry attempt, and its timestamps once more when the type has a continuous aggregate (issue
    * #10502): after the commit off HA, before it under HA (issue #10673). It is never retained.
+   * <p>
+   * Under HA the late-sample record ships before the samples, judged against the watermark seen then. A refresh that starts after
+   * that check and ends before the commit can make the samples late only once they commit: their record then ships after the
+   * commit, as it did before #10673 (tracked as issue #10857).
    */
   public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
