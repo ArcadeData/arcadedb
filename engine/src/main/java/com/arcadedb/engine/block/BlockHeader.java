@@ -196,8 +196,9 @@ public final class BlockHeader {
 
   /** CRC32 of an absolute region. Does not move the position of {@code data}; works on heap, direct and mapped buffers. */
   public static int crc32(final ByteBuffer data, final int offset, final int length) {
+    if (offset < 0 || length < 0 || (long) offset + length > data.limit())
+      throw new IllegalArgumentException("Region [" + offset + ", +" + length + ") is outside the buffer limit " + data.limit());
     final ByteBuffer region = data.duplicate();
-    region.clear();
     region.limit(offset + length).position(offset);
     final CRC32 crc = new CRC32();
     crc.update(region);

@@ -330,7 +330,7 @@ public enum GlobalConfiguration {
       segments). It is one budget for the whole JVM whatever the number of databases, types and buckets. The cache is \
       split across 16 stripes, so an entry above a sixteenth of this value is never held, only returned to the \
       caller. 0 disables caching. When left unset it auto-scales with the JVM max heap (heap/32, never below 16MB). \
-      A change applies at the next admission. The time-series decoded column cache keeps its own per-shard budget, \
+      A change applies at the next touch of a stripe (hit or miss). The time-series decoded column cache keeps its own per-shard budget, \
       arcadedb.timeSeriesDecodedBlockCacheRAM.""",
       Long.class, 16L * 1024 * 1024, null, value -> {
         final long floor = 16L * 1024 * 1024;

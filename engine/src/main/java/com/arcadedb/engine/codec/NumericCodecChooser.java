@@ -72,7 +72,7 @@ public final class NumericCodecChooser {
       throw new IllegalArgumentException("Unknown numeric codec id: empty encoding");
     final byte id = encoded[0];
     if (id != BitPackedCodec.CODEC_ID && id != LinearCodec.CODEC_ID && id != BlockwiseLinearCodec.CODEC_ID)
-      throw new IllegalArgumentException("Unknown numeric codec id " + id);
+      throw new IllegalArgumentException("Unknown numeric codec id " + (id & 0xFF));
     return id;
   }
 }

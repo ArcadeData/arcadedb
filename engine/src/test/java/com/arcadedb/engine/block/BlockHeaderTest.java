@@ -231,4 +231,15 @@ class BlockHeaderTest {
     assertThat(h.columnSize(0)).isEqualTo(3);
     assertThat(h.totalSize()).isEqualTo(h.headerSize() + 7);
   }
+
+  @Test
+  void crc32RefusesARegionOutsideTheBufferLimit() {
+    final ByteBuffer buf = ByteBuffer.allocate(100);
+    buf.limit(50).position(7);
+    assertThatThrownBy(() -> BlockHeader.crc32(buf, 40, 20)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BlockHeader.crc32(buf, 0, -1)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BlockHeader.crc32(buf, -1, 4)).isInstanceOf(IllegalArgumentException.class);
+    assertThat(buf.position()).isEqualTo(7);
+    assertThat(buf.limit()).isEqualTo(50);
+  }
 }

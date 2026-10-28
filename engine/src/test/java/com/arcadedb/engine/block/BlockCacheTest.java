@@ -108,7 +108,7 @@ class BlockCacheTest {
   }
 
   @Test
-  void budgetShrinkAppliesAtTheNextAdmission() {
+  void budgetShrinkAppliesAtTheNextTouchOfAStripe() {
     final long[] budget = { 10 * (100 + BlockCache.ENTRY_OVERHEAD) };
     final BlockCache cache = new BlockCache(() -> budget[0], 1);
     for (int i = 0; i < 10; i++) {
@@ -374,5 +374,16 @@ class BlockCacheTest {
         all.add(id);
       }
     assertThat(all).hasSize(10_000);
+  }
+
+  @Test
+  void sizeNearLongMaxIsReturnedUncachedWithoutOverflowingTheCharge() {
+    final BlockCache cache = new BlockCache(() -> 100_000L, 1);
+    cache.get(1, 1, 0, () -> "kept", v -> 100L);
+    final long before = cache.usedBytes();
+    final String loaded = cache.get(1, 2, 0, () -> "huge", v -> Long.MAX_VALUE - 10);
+    assertThat(loaded).isEqualTo("huge");
+    assertThat(cache.usedBytes()).isEqualTo(before);
+    assertThat(cache.usedBytes()).isEqualTo(cache.recountBytes());
   }
 }

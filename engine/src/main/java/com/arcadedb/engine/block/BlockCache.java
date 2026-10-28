@@ -83,7 +83,7 @@ public final class BlockCache {
   private final LongAdder    misses  = new LongAdder();
 
   /**
-   * @param maxBytes read on every admission, so a change of the setting applies at the next one
+   * @param maxBytes read on every call, so a change of the setting applies at the next touch of a stripe (hit or miss)
    * @param stripes  the number of stripes, a power of two
    */
   BlockCache(final LongSupplier maxBytes, final int stripes) {
@@ -136,9 +136,10 @@ public final class BlockCache {
     final long size = sizer.applyAsLong(loaded);
     if (size < 0)
       throw new IllegalArgumentException("Negative block size: " + size);
-    final long charge = size + ENTRY_OVERHEAD;
-    if (charge > share)
+    // Compared before adding the overhead, so a size near Long.MAX_VALUE cannot overflow into a negative charge.
+    if (size > share - ENTRY_OVERHEAD)
       return loaded;
+    final long charge = size + ENTRY_OVERHEAD;
 
     synchronized (stripe) {
       // The file was invalidated while this load was in flight: the value may describe bytes that no longer exist.
