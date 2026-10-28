@@ -210,7 +210,13 @@ public class GraphQLResultSet implements ResultSet {
 
     // VALIDATED BEFORE ANY RECORD IS READ, SO A DOCUMENT THE SPECIFICATION REJECTS IS REJECTED ALSO WHEN NO RECORD MATCHES
     if (projections != null)
-      checkScalarLeafs(projections, returnType);
+      try {
+        checkScalarLeafs(projections, returnType);
+      } catch (final RuntimeException e) {
+        // the caller never receives this wrapper, so nobody else would close the result set it wraps
+        resultSet.close();
+        throw e;
+      }
   }
 
   /**

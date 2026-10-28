@@ -295,6 +295,8 @@ public class TransactionContext implements Transaction {
   // leave part of the transaction visible, and on disk with a synchronous flush, so the transaction must not be rolled back even
   // when no WAL record exists (txWAL=false) - see concludePhase2Internal
   private       boolean                              phase2PublicationStarted;
+  // Handed to PageManager.publishPages, which runs it once its waits are over: one instance per context, not one per commit
+  private final Runnable                             markPublicationStarted = () -> phase2PublicationStarted = true;
   // Group commit (arcadedb.txWalGroupCommit): raised by commit() around its 2nd phase, the only path that waits for the
   // deferred flush. The ticket is what that flush owes this transaction, 0 when nothing is owed
   private       boolean                              deferWALSync;
@@ -3500,11 +3502,11 @@ public class TransactionContext implements Transaction {
           page.setWALSyncTicket(pageWALSyncTicket);
       }
       // THE SECOND POINT OF NO RETURN, THE ONE THAT HOLDS WITHOUT A WAL (#10768): the pages reach the read cache one by one, and
-      // with a synchronous flush the file one by one, so a failure from here can leave some of them visible and the rest not.
+      // with a synchronous flush the file one by one, so a failure from there can leave some of them visible and the rest not.
       // Rolling back over that told the caller nothing happened and reset the identities of records that did land, so a retry
-      // inserted them twice
-      phase2PublicationStarted = true;
-      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
+      // inserted them twice. Raised by the page manager once its waits for flush capacity are over, right before the first page
+      // is handed over: a wait that fails or is interrupted has published nothing, and is still rolled back
+      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());

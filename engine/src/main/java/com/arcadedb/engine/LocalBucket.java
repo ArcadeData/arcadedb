@@ -4111,7 +4111,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
     int i = from;
-    // FIRST THE ROOM THE BUCKET ALREADY HAS, AS LONG AS THE ALLOCATOR FINDS SOME
+    // FIRST THE ROOM THE BUCKET ALREADY HAS, AS LONG AS THE ALLOCATOR FINDS SOME. The per-record search is paid only for the records
+    // that land in that room: on a bucket being imported into, that is the free tail of the last page the previous flush filled,
+    // listed by finishBulkPage, so a flush searches at most one page's worth of records before it appends
     for (; i < to; i++) {
       final RID rid = createRecordInternal(buffers[i], false, false);
       if (rid == null)
