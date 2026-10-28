@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphViewPins;
@@ -31,25 +32,39 @@ import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
-import org.apache.tinkerpop.gremlin.process.traversal.step.LambdaHolder;
-import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
-import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
-import org.apache.tinkerpop.gremlin.process.traversal.step.SideEffectCapable;
+import org.apache.tinkerpop.gremlin.process.traversal.lambda.AbstractLambdaTraversal;
+import org.apache.tinkerpop.gremlin.process.traversal.step.Scoping;
 import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
+import org.apache.tinkerpop.gremlin.process.traversal.step.branch.LocalStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.branch.UnionStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DedupGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.IsStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.filter.NotStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.RangeGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.TraversalFilterStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.WhereTraversalStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.CallStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.ConstantStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.EdgeVertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.FailStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.IdStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.LabelStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.NoOpBarrierStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.PropertiesStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.TraversalFlatMapStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.TraversalMapStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IdentityStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.InjectStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.StartStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.TraversalSideEffectStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.EmptyStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.traverser.TraverserRequirement;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
+import org.apache.tinkerpop.gremlin.structure.Element;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -90,12 +105,13 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   private static final String LABEL_KEY = "~label";
 
-  // THE STEPS OF TINKERPOP DO NOTHING BUT READ UNLESS THEY ARE MARKED OTHERWISE (SEE hasNoEffect()), AND SO DO THESE OF THIS MODULE,
-  // NAMED ONE BY ONE: A STEP NOT LISTED, A FUTURE ONE OF THIS MODULE INCLUDED, IS UNKNOWN, AND AN UNKNOWN STEP IS ASSUMED TO HAVE AN
-  // EFFECT
-  private static final String           TINKERPOP_STEP_PACKAGE = "org.apache.tinkerpop.gremlin.process.traversal.step.";
-  private static final Set<Class<?>>    ARCADE_READ_ONLY_STEPS = Set.of(ArcadeCountGlobalStep.class, ArcadeEdgeCountFilterStep.class,
-      ArcadeFilterByIndexStep.class, ArcadeFilterByTypeStep.class, ArcadeGAVFusedStep.class, ArcadeGAVVertexStep.class);
+  // WHAT A STEP IS KNOWN TO BE FED OR TO PRODUCE, AS FAR AS THE ALWAYS-EMPTY REWRITE NEEDS TO KNOW IT (SEE readOnlyOutput()): A STEP
+  // THAT READS AN ELEMENT RAISES A ClassCastException OR AN IllegalStateException WHEN IT IS FED ANYTHING ELSE
+  private static final int NOT_READ_ONLY = -1;
+  private static final int ANY           = 0;
+  private static final int VERTEX        = 1;
+  private static final int EDGE          = 2;
+  private static final int ELEMENT       = VERTEX | EDGE;
 
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
@@ -252,22 +268,30 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
    * of it produced each one: {@code g.V(x).out('E').filter(__.limit(0))} expanded every neighbor of {@code x}, to throw each of them
    * away. A {@code limit(0)} in the traversal itself stops at the first traverser it is offered, which is the same answer: nothing.
    * <p>
-   * Only when nothing in front of the filter has an effect of its own ({@link #hasNoEffect}): stopping at the first traverser also
-   * stops what the steps in front would have done for the others, and TinkerPop's answer includes it. A mutation, a side effect that
-   * is read back ({@code aggregate('x')...cap('x')}), a lambda, a service call and any step this module does not know all keep the
-   * filter where it is.
+   * Only when nothing in front of the filter, and nothing in its child, has an effect of its own ({@link #readOnlyOutput}): the
+   * {@code limit(0)} stops before the steps in front run even once, and that also stops what they would have done, and TinkerPop's
+   * answer includes it. A mutation, a side effect that is read back ({@code aggregate('x')...cap('x')}), a lambda, a service call, an
+   * exception ({@code math('1/0')}, {@code values()} over a number) and any step not known to do nothing but read all keep the filter
+   * where it is.
    */
   private static void applyAlwaysEmptyFilterOptimization(final Traversal.Admin<?, ?> traversal) {
     final List<Step> steps = traversal.getSteps();
+    int input = NOT_READ_ONLY;
     for (int i = 0; i < steps.size(); i++) {
       final Step<?, ?> step = steps.get(i);
       if (!(step instanceof TraversalFilterStep<?> || step instanceof WhereTraversalStep<?>))
         continue;
 
       final List<?> children = ((TraversalParent) step).getLocalChildren();
-      // THE CHILD TOO: ITS STEPS IN FRONT OF THE limit(0) RUN ONCE FOR EVERY TRAVERSER THE FILTER IS OFFERED, AND THE FILTER IS GONE
-      if (children.size() != 1 || !neverEmitsAnything((Traversal.Admin<?, ?>) children.get(0))
-          || !hasNoEffect(((Traversal.Admin<?, ?>) children.get(0)).getSteps()) || !hasNoEffect(steps.subList(0, i)))
+      if (children.size() != 1 || !neverEmitsAnything((Traversal.Admin<?, ?>) children.get(0)))
+        continue;
+
+      // THE STEPS IN FRONT OF THE FILTER, AND WHAT THEY FEED IT. THE CHILD TOO: ITS STEPS IN FRONT OF THE limit(0) RUN ONCE FOR EVERY
+      // TRAVERSER THE FILTER IS OFFERED, AND THE FILTER IS GONE
+      if (input == NOT_READ_ONLY)
+        input = inputOf(traversal);
+      final int fed = readOnlyOutput(steps.subList(0, i), input);
+      if (fed == NOT_READ_ONLY || readOnlyOutput(((Traversal.Admin<?, ?>) children.get(0)).getSteps(), fed) == NOT_READ_ONLY)
         continue;
 
       final RangeGlobalStep<?> stop = new RangeGlobalStep<>(traversal, 0L, 0L);
@@ -281,7 +305,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   /**
    * Whether the traversal emits nothing whatever it is fed: it ends with a {@code limit(0)}, which lets no traverser through. The
    * steps in front of it still run, once for each traverser the traversal is offered, before the {@code limit(0)} stops it: whoever
-   * drops the traversal has to know they have no effect ({@link #hasNoEffect}).
+   * drops the traversal has to know they have no effect ({@link #readOnlyOutput}).
    */
   private static boolean neverEmitsAnything(final Traversal.Admin<?, ?> child) {
     final List<? extends Step> childSteps = child.getSteps();
@@ -291,29 +315,120 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   /**
    * Whether running the steps does nothing but read the graph, so that running them for fewer traversers changes nothing but the
-   * work: no mutation, no side effect another step can read, no lambda, no service call, no step that is not TinkerPop's or this
-   * module's. The children of a step are asked too.
+   * work, and what they produce: the kind of traverser that comes out of the last one ({@link #VERTEX}, {@link #EDGE},
+   * {@link #ELEMENT} or {@link #ANY}), or {@link #NOT_READ_ONLY}.
+   * <p>
+   * An effect is the default and doing nothing but read the exception (issue #10587): raising an exception is an effect too, the one
+   * the rewrite would never let the step raise, and almost every step can raise one, over the data it is fed ({@code math()} over a
+   * string, {@code values()} over a number) as much as over its own arguments ({@code math('1/0')}). So the steps are named one by one,
+   * each with what it must be fed not to raise, and any other step, a future one of TinkerPop or of this module included, is assumed to
+   * have an effect. The children of a step are asked too, fed what the step itself is fed.
    */
-  private static boolean hasNoEffect(final Iterable<? extends Step> steps) {
+  private static int readOnlyOutput(final List<? extends Step> steps, final int input) {
+    int current = input;
     for (final Step<?, ?> step : steps) {
-      // A FailStep IS AN EFFECT TOO: IT ENDS THE TRAVERSAL WITH AN EXCEPTION THE REWRITE WOULD NEVER LET IT RAISE
-      if (step instanceof Mutating || step instanceof SideEffectCapable || step instanceof ReadWriting || step instanceof LambdaHolder
-          || step instanceof CallStep || step instanceof FailStep)
-        return false;
+      if (step instanceof TraversalParent parent && !childrenAreReadOnly(parent, current))
+        return NOT_READ_ONLY;
 
-      if (!step.getClass().getName().startsWith(TINKERPOP_STEP_PACKAGE) && !ARCADE_READ_ONLY_STEPS.contains(step.getClass()))
-        return false;
+      final Class<?> c = step.getClass();
+      if (c == GraphStep.class) {
+        // A GraphStep IGNORES WHAT IT IS FED, BUT NOT ITS IDS: A STRING THAT IS NOT A RID RAISES
+        if (!idsAreRids(((GraphStep<?, ?>) step).getIds()))
+          return NOT_READ_ONLY;
+        current = ((GraphStep<?, ?>) step).returnsVertex() ? VERTEX : EDGE;
+      } else if (c == ArcadeFilterByTypeStep.class || c == ArcadeFilterByIndexStep.class)
+        // THE REPLACEMENTS OF A GraphStep AND ITS has(): THEY IGNORE WHAT THEY ARE FED
+        current = ELEMENT;
+      else if (c == VertexStep.class) {
+        if (current != VERTEX)
+          return NOT_READ_ONLY;
+        current = ((VertexStep<?>) step).returnsVertex() ? VERTEX : EDGE;
+      } else if (c == EdgeVertexStep.class) {
+        // NOT otherV(): IT READS THE PATH FOR THE VERTEX THE EDGE WAS REACHED FROM, AND RAISES ON AN EDGE THAT WAS NOT REACHED FROM ONE
+        if (current != EDGE)
+          return NOT_READ_ONLY;
+        current = VERTEX;
+      } else if (c == ArcadeGAVVertexStep.class || c == ArcadeGAVFusedStep.class || c == ArcadeEdgeCountFilterStep.class) {
+        if (current != VERTEX)
+          return NOT_READ_ONLY;
+      } else if (c == HasStep.class) {
+        if (current == ANY)
+          return NOT_READ_ONLY;
+      } else if (c == PropertiesStep.class || c == IdStep.class || c == LabelStep.class) {
+        if (current == ANY)
+          return NOT_READ_ONLY;
+        current = ANY;
+      } else if (c == DedupGlobalStep.class) {
+        // dedup('a') READS THE PATH, AND A LABEL THE PATH DOES NOT HOLD RAISES
+        if (!((DedupGlobalStep<?>) step).getScopeKeys().isEmpty())
+          return NOT_READ_ONLY;
+      } else if (c == WhereTraversalStep.WhereStartStep.class || c == WhereTraversalStep.WhereEndStep.class) {
+        // THE SAME FOR where()'S OWN ENDS: ONE THAT NAMES A LABEL READS THE PATH
+        if (!((Scoping) step).getScopeKeys().isEmpty())
+          return NOT_READ_ONLY;
+      } else if (c == InjectStep.class || c == ConstantStep.class || c == CountGlobalStep.class || c == ArcadeCountGlobalStep.class)
+        current = ANY;
+      else if (c == StartStep.class) {
+        if (((StartStep<?>) step).getStart() != null)
+          current = ANY;
+      } else if (c != IdentityStep.class && c != NoOpBarrierStep.class && c != RangeGlobalStep.class && c != IsStep.class
+          && c != TraversalFilterStep.class && c != WhereTraversalStep.class && c != NotStep.class)
+        return NOT_READ_ONLY;
+    }
+    return current;
+  }
 
-      if (step instanceof TraversalParent parent) {
-        for (final Object child : parent.getLocalChildren())
-          if (!hasNoEffect(((Traversal.Admin<?, ?>) child).getSteps()))
-            return false;
-        for (final Object child : parent.getGlobalChildren())
-          if (!hasNoEffect(((Traversal.Admin<?, ?>) child).getSteps()))
-            return false;
+  private static boolean childrenAreReadOnly(final TraversalParent parent, final int input) {
+    for (final Traversal.Admin<?, ?> child : parent.getLocalChildren())
+      if (child instanceof AbstractLambdaTraversal || readOnlyOutput(child.getSteps(), input) == NOT_READ_ONLY)
+        return false;
+    for (final Traversal.Admin<?, ?> child : parent.getGlobalChildren())
+      if (child instanceof AbstractLambdaTraversal || readOnlyOutput(child.getSteps(), input) == NOT_READ_ONLY)
+        return false;
+    return true;
+  }
+
+  private static boolean idsAreRids(final Object[] ids) {
+    for (final Object id : ids) {
+      if (id instanceof String string) {
+        try {
+          new RID(string);
+        } catch (final RuntimeException e) {
+          return false;
+        }
+      } else if (id instanceof Element element) {
+        if (!(element.id() instanceof RID))
+          return false;
       }
+      // ANY OTHER ID, A RID INCLUDED, IS LOOKED UP OR SKIPPED BY ArcadeGraph.vertices()/edges() WITHOUT RAISING
     }
     return true;
+  }
+
+  /**
+   * What the traversal is fed: what flows into the step that owns it when that step feeds its children its own input (a filter, a
+   * union, a local()...), and {@link #ANY} for the traversal at the root or any other child.
+   */
+  private static int inputOf(final Traversal.Admin<?, ?> traversal) {
+    final Step<?, ?> parent = traversal.getParent().asStep();
+    if (parent instanceof EmptyStep)
+      return ANY;
+    final Class<?> c = parent.getClass();
+    if (c != TraversalFilterStep.class && c != NotStep.class && c != UnionStep.class && c != LocalStep.class
+        && c != TraversalMapStep.class && c != TraversalFlatMapStep.class && c != TraversalSideEffectStep.class)
+      return ANY;
+
+    final Traversal.Admin<?, ?> owner = parent.getTraversal();
+    final List<Step> ownerSteps = owner.getSteps();
+    // BY IDENTITY: TWO STEPS OF THE SAME SHAPE ARE equals()
+    int index = -1;
+    for (int i = 0; i < ownerSteps.size() && index < 0; i++)
+      if (ownerSteps.get(i) == parent)
+        index = i;
+    if (index < 0)
+      return ANY;
+    final int output = readOnlyOutput(ownerSteps.subList(0, index), inputOf(owner));
+    return output == NOT_READ_ONLY ? ANY : output;
   }
 
   /**
