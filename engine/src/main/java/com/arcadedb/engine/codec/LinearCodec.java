@@ -106,6 +106,19 @@ public final class LinearCodec {
     return BitPackedCodec.count(encoded, base + HEADER_BYTES);
   }
 
+  /** Length of the encoding starting at {@code base}, read from its header in O(1); refuses a malformed header. */
+  static int encodedLength(final byte[] encoded, final int base) {
+    final int count = count(encoded, base);
+    final int w = encoded[base + HEADER_BYTES + 1] & 0xFF;
+    if (w > 64)
+      throw new IllegalArgumentException("Invalid bit width " + w);
+    try {
+      return HEADER_BYTES + BitPackedCodec.sizeForWidth(count, w);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException("Invalid count " + count, e);
+    }
+  }
+
   static long predict(final long intercept, final double slope, final int i) {
     return intercept + (long) (slope * i);
   }
