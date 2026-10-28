@@ -31,6 +31,7 @@ import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
+import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
@@ -68,12 +69,22 @@ public final class FacetExecutor {
   private FacetExecutor() {
   }
 
+  /** {@link #execute(DatabaseInternal, MatchSet, List, CommandContext, DocumentType)} without the type the query selects from. */
+  public static FacetResults execute(final DatabaseInternal db, final MatchSet matches, final List<FacetSpec> facets,
+      final CommandContext ctx) {
+    return execute(db, matches, facets, ctx, null);
+  }
+
   /**
    * @param matches the matched records, owned by the caller; {@link MatchSet#setFacetFilterIndex} was called with one entry per facet
    * @param ctx     the context of the query
+   * @param target  the type the query selects from, null when unknown. A facet that counts no bucket (an empty match set) still
+   *                converts its literals (BOUNDS, range bounds, INCLUDE) with the column of the property's declaring type in it, exactly as
+   *                a facet that counts one does; without it, or without a COLUMNAR index on the property there, a number is taken as is
+   *                and a date as epoch milliseconds
    */
   public static FacetResults execute(final DatabaseInternal db, final MatchSet matches, final List<FacetSpec> facets,
-      final CommandContext ctx) {
+      final CommandContext ctx, final DocumentType target) {
     final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
     if (matches.budgetWaits() > 0)
       manager.getStats().queryBudgetWaits(matches.budgetWaits());
@@ -127,7 +138,7 @@ public final class FacetExecutor {
         manager.getStats().queryFallbackScan();
       }
 
-      final long patched = count(db, manager, matches, facets, bucketIds, snapshots, patches, scanned, results, stats);
+      final long patched = count(db, manager, matches, facets, target, bucketIds, snapshots, patches, scanned, results, stats);
       if (patched > 0)
         manager.getStats().queryPatched(patched);
       final FacetResults facetResults = new FacetResults(exact, patched, lagMs, results);
@@ -188,7 +199,7 @@ public final class FacetExecutor {
    * @return the records read to patch the projection (not those of scanned buckets)
    */
   private static long count(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
-      final List<FacetSpec> facets, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches,
+      final List<FacetSpec> facets, final DocumentType target, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches,
       final boolean[] scanned, final LinkedHashMap<String, FacetResult> results, final LinkedHashMap<String, FacetExecutionStats> stats) {
     final FacetPlan[] plans = new FacetPlan[facets.size()];
     try {
@@ -212,7 +223,7 @@ public final class FacetExecutor {
       }
 
       for (final FacetPlan plan : plans) {
-        results.put(plan.spec.alias(), plan.finish(manager));
+        results.put(plan.spec.alias(), plan.finish(db, manager, target));
         stats.put(plan.spec.alias(), plan.stats);
       }
       return patched;
@@ -230,18 +241,26 @@ public final class FacetExecutor {
    * @param projection the projection of one bucket of the type; no collector of this plan reads it, those of plan 5 do
    * @param matchCount the records the facet counts in the type, to size the counter
    *
-   * @throws CommandExecutionException for a kind of facet no collector computes yet
+   * @throws CommandExecutionException for a kind of facet no collector computes yet, and for a range or histogram over a column it cannot
+   *                                   bucket (a string column, a bound that is not a value of the column)
    */
   public static FacetCollector collectorFor(final FacetSpec spec, final DocumentType type, final ColumnarProjection projection,
       final long matchCount) {
-    if (spec instanceof TermsFacetSpec terms) {
-      if (type == null)
-        return new TermsCollector(terms, null, matchCount, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong(), null, null);
-      final DatabaseInternal db = (DatabaseInternal) type.getSchema().getEmbedded().getDatabase();
-      return new TermsCollector(terms, column(type, terms.property()), matchCount, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong(),
-          db, ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()));
+    final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
+    DatabaseInternal db = null;
+    ColumnarValueExtractor extractor = null;
+    ColumnDefinition column = null;
+    if (type != null) {
+      db = (DatabaseInternal) type.getSchema().getEmbedded().getDatabase();
+      extractor = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName());
+      column = column(type, spec.property());
     }
-    throw new CommandExecutionException("FACETS " + spec.alias() + ": " + kindKeyword(spec) + " facets are not supported");
+    return switch (spec) {
+      case TermsFacetSpec terms -> new TermsCollector(terms, column, matchCount, budgetWaitMs, db, extractor);
+      case RangeFacetSpec range -> new RangeCollector(range, column, budgetWaitMs, db, extractor);
+      case HistogramFacetSpec histogram -> new HistogramCollector(histogram, column, budgetWaitMs, db, extractor);
+      default -> throw new CommandExecutionException("FACETS " + spec.alias() + ": " + kindKeyword(spec) + " facets are not supported");
+    };
   }
 
   /**
@@ -378,25 +397,31 @@ public final class FacetExecutor {
       return collector;
     }
 
-    /** Merges the collectors of the declaring types and ranks the facet. */
-    private FacetResult finish(final ColumnarIndexManager manager) {
+    /**
+     * Merges the collectors of the declaring types and ranks the facet.
+     *
+     * @param target the type the query selects from, null when unknown: a facet that counts no bucket converts its literals with the
+     *               column of the property's declaring type in it
+     */
+    private FacetResult finish(final DatabaseInternal db, final ColumnarIndexManager manager, final DocumentType target) {
       if (unavailable) {
         stats.source(FacetResult.UNAVAILABLE);
         return FacetResult.unavailable(kindName(spec), TermsCollector.MEMORY_BUDGET);
       }
       if (collectors.isEmpty())
-        collectors.add(collectorFor(spec, null, null, 0));
+        collectors.add(collectorFor(spec, declaringType(db, target, spec.property()), null, 0));
 
       final FacetCollector first = collectors.getFirst();
       for (int i = 1; i < collectors.size(); i++)
         first.merge(collectors.get(i));
       FacetResult result = first.finish();
-      if (first instanceof TermsCollector terms) {
-        stats.add(terms.stats());
-        stats.source(terms.stats().source());
-        if (terms.budgetWaits() > 0)
-          manager.getStats().queryBudgetWaits(terms.budgetWaits());
+      final FacetExecutionStats collected = first.stats();
+      if (collected != null) {
+        stats.add(collected);
+        stats.source(collected.source());
       }
+      if (first.budgetWaits() > 0)
+        manager.getStats().queryBudgetWaits(first.budgetWaits());
       if (scanned && !FacetResult.UNAVAILABLE.equals(result.source())) {
         result = result.withSource(SCAN);
         stats.source(SCAN);
@@ -410,6 +435,17 @@ public final class FacetExecutor {
       for (final CrossBucketOrdinalMap map : maps)
         map.close();
     }
+  }
+
+  /**
+   * The declaring type of the property's COLUMNAR index in {@code target} (the type a match of {@code target} would be counted with),
+   * null when there is no target, no plain property or no such index.
+   */
+  private static DocumentType declaringType(final DatabaseInternal db, final DocumentType target, final String property) {
+    if (target == null || property == null)
+      return null;
+    final TypeIndex index = target.getPolymorphicColumnarIndex(property);
+    return index == null ? null : db.getSchema().getType(index.getTypeName());
   }
 
   private static ColumnDefinition column(final DocumentType type, final String property) {

@@ -166,7 +166,8 @@ public final class CalendarBoundaries {
     return OffsetDateTime.ofInstant(instant, zone).toString();
   }
 
-  private static CommandExecutionException tooMany(final String alias) {
+  /** The refusal of a histogram above the bucket cap (D18), shared by the numeric histogram. */
+  static CommandExecutionException tooMany(final String alias) {
     return new CommandExecutionException("HISTOGRAM " + alias + " would produce more than 100000 buckets: use a coarser interval or BOUNDS");
   }
 

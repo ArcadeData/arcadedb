@@ -43,7 +43,10 @@ public final class FacetExecutionStats {
     return segmentsScanned;
   }
 
-  /** Segment views holding no matched live row: nothing was read from them. */
+  /**
+   * Segment views no value was decoded from: those holding no matched live row, and for a range or histogram facet those whose
+   * {@code [minLong, maxLong]} lies in one interval or bucket (counted by presence alone).
+   */
   public long segmentsSkipped() {
     return segmentsSkipped;
   }
@@ -98,12 +101,19 @@ public final class FacetExecutionStats {
     this.cardinality += cardinality;
   }
 
+  /** Counting memory reserved by a collector that has no {@link CountingMode} (the counters of a range or histogram facet). */
+  void reserved(final long bytes) {
+    budgetBytes += bytes;
+  }
+
   /** Folds the statistics of the collector of another declaring type of the same facet into these. */
   void add(final FacetExecutionStats other) {
     segmentsScanned += other.segmentsScanned;
     segmentsSkipped += other.segmentsSkipped;
-    if (other.countingMode != null)
-      counter(other.countingMode, other.budgetBytes, other.cardinality);
+    if (countingMode == null)
+      countingMode = other.countingMode;
+    budgetBytes += other.budgetBytes;
+    cardinality += other.cardinality;
     counterBytes += other.counterBytes;
   }
 
