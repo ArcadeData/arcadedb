@@ -152,6 +152,43 @@ message QueryResult {
   int32  total_records_in_batch = 2;
   int64  running_total_emitted  = 3;
   bool   is_last_batch          = 4;
+  GrpcFacets facets             = 5; // FACETS queries only, on the terminal batch (is_last_batch=true)
+}
+
+// -----------------------------------------------------------------------------
+// Facets of a FACETS query: the HTTP "facets" object (FacetResults.toJSON) in typed form
+// -----------------------------------------------------------------------------
+
+message GrpcFacetBucket {
+  // Facet values (value, from, to) use the scalar kinds only: string (decimal logical_type for exact decimals), int64,
+  // double, bool. A client that meets another kind should treat that facet as unavailable rather than fail the response.
+  GrpcValue value           = 1; // terms value; unset for a range/histogram bucket and for a null value
+  optional string key       = 2; // range/histogram key; unset for a terms bucket
+  GrpcValue from            = 3; // lower bound; unset when unbounded or not a range/histogram bucket
+  GrpcValue to              = 4; // upper bound; unset when unbounded or not a range/histogram bucket
+  int64 count               = 5;
+  bool missing              = 6; // the bucket of the records without a value
+  bool is_default           = 7; // the range DEFAULT bucket
+  string attributes_json    = 8; // any other member of the bucket as a JSON object text; empty when none
+}
+
+message GrpcFacetResult {
+  string type               = 1; // terms, range, histogram, hierarchy, distinct, stats
+  string source             = 2; // index, scan, unavailable
+  optional string reason    = 3; // set when source is unavailable
+  repeated GrpcFacetBucket buckets = 4;
+  int64 other_count         = 5;
+  int64 missing             = 6;
+  bool has_counts           = 7; // false for an unavailable facet, which carries no buckets or counts
+  string extensions_json    = 8; // any other member of the result (after, distinct value/exact, stats) as JSON object text
+}
+
+message GrpcFacets {
+  bool exact                = 1;
+  int64 patched             = 2;
+  int64 lag_ms              = 3;
+  repeated string aliases   = 4; // declaration order, which the map does not keep
+  map<string, GrpcFacetResult> results = 5;
 }
 
 service ArcadeDbService {
@@ -491,6 +528,8 @@ message ExecuteCommandResponse {
   repeated GrpcRecord records = 5; // optional row payload if return_rows=true
 
   QueryUpdateStats stats = 6; // present only for write commands that mutated data
+
+  GrpcFacets facets = 7; // FACETS queries only
 }
 
 message QueryUpdateStats {
@@ -530,6 +569,7 @@ message ExecuteQueryResponse {
   repeated QueryResult results = 1;
   int64 execution_time_ms = 2;
   string query_plan = 3;
+  GrpcFacets facets = 4; // FACETS queries only; covers every match, not only the rows the limit returned
 }
 
 // -----------------------------------------------------------------------------

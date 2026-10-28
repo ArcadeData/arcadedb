@@ -84,6 +84,7 @@ import com.arcadedb.server.grpc.ExecuteCommandRequest;
 import com.arcadedb.server.grpc.ExecuteCommandResponse;
 import com.arcadedb.server.grpc.ExecuteQueryRequest;
 import com.arcadedb.server.grpc.ExecuteQueryResponse;
+import com.arcadedb.server.grpc.FacetProtocol;
 import com.arcadedb.server.grpc.FullTextSearchRequest;
 import com.arcadedb.server.grpc.FullTextSearchResponse;
 import com.arcadedb.server.grpc.GetProgressRequest;
@@ -1148,8 +1149,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             }
 
             // Create QueryBatch with Results instead of Records
+            // FACETS queries: the facets ride on the terminal batch only, which is yielded even when it holds no records
             nextBatch = new QueryBatch(convertedResults, totalInBatch, qr.getRunningTotalEmitted(),
-                qr.getIsLastBatch());
+                qr.getIsLastBatch(), qr.hasFacets() ? FacetProtocol.fromProto(qr.getFacets()) : null);
 
             if (qr.getIsLastBatch()) {
               drained = true;
@@ -1183,6 +1185,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     };
   }
 
+  /**
+   * Low-level stream of the raw records. It does not expose the facets of a FACETS query: use the {@code queryStream} overloads
+   * returning a {@link ResultSet} ({@link ResultSet#getFacets()}), {@link #queryStreamBatched} or
+   * {@link #queryStreamBatchesIterator} ({@link QueryBatch#facets()}) for them.
+   */
   public Iterator<GrpcRecord> queryStream(final String database, final String sql, final Map<String, Object> params,
                                           final int batchSize,
                                           final StreamQueryRequest.RetrievalMode mode, final TransactionContext tx,
@@ -2132,6 +2139,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         resultSet.add(grpcRecordToResult(record));
       }
     }
+    if (response.hasFacets())
+      resultSet.setFacets(FacetProtocol.fromProto(response.getFacets()));
     return resultSet;
   }
 
@@ -2140,6 +2149,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     for (GrpcRecord record : response.getRecordsList()) {
       resultSet.add(grpcRecordToResult(record));
     }
+    if (response.hasFacets())
+      resultSet.setFacets(FacetProtocol.fromProto(response.getFacets()));
     return resultSet;
   }
 

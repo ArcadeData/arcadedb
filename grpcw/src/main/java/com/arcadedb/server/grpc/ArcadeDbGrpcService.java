@@ -68,6 +68,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -154,6 +155,9 @@ import java.util.logging.Level;
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
   /** The {@code protocol} tag every query this service runs is metered under. */
   private static final String GRPC_PROTOCOL = GrpcProtocolContextInterceptor.GRPC_PROTOCOL;
+
+  /** The refusal of a PAGED stream over a FACETS query: every page would recompute the facets of the whole match set. */
+  static final String PAGED_FACETS_MESSAGE = "PAGED retrieval cannot carry FACETS: use CURSOR or MATERIALIZE_ALL";
 
   // Pick serializer once
   private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
@@ -930,6 +934,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       long serializationAccum = 0L;
       final long engineStart = System.nanoTime();
       QueryStatistics writeStats = null;
+      FacetResults facets = null;
 
       try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
@@ -997,6 +1002,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
 
           writeStats = rs.getStatistics().orElse(null);
+          // before the try closes the result set, which discards the facets
+          facets = rs.getFacets();
         }
       }
 
@@ -1042,6 +1049,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       final long serFinalStart = System.nanoTime();
       out.setAffectedRecords(affected).setExecutionTimeMs(ms);
+      if (facets != null)
+        out.setFacets(FacetProtocol.toProto(facets));
       if (writeStats != null && writeStats.containsUpdates())
         out.setStats(QueryUpdateStats.newBuilder()
             .setNodesCreated(writeStats.getNodesCreated())
@@ -1792,6 +1801,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                     + " rows (arcadedb.server.grpcQueryMaxResultRows); add a LIMIT or use StreamQuery with CURSOR/PAGED retrieval mode for large results")
                 .asRuntimeException();
         }
+        // Before the try closes the result set. A client limit stopped the rows early: the facets still cover every match
+        final FacetResults facets = resultSet.getFacets();
         profile.addEngineNanos(System.nanoTime() - engineStart - serializationAccum);
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): count = %s", count);
@@ -1801,9 +1812,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         long executionTime = System.currentTimeMillis() - startTime;
 
-        ExecuteQueryResponse response = ExecuteQueryResponse.newBuilder().addResults(resultBuilder.build())
-            .setExecutionTimeMs(executionTime)
-            .build();
+        final ExecuteQueryResponse.Builder responseBuilder = ExecuteQueryResponse.newBuilder().addResults(resultBuilder.build())
+            .setExecutionTimeMs(executionTime);
+        if (facets != null)
+          responseBuilder.setFacets(FacetProtocol.toProto(facets));
+        final ExecuteQueryResponse response = responseBuilder.build();
         profile.addSerializationNanos(serializationAccum + (System.nanoTime() - serBuildStart));
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s",
@@ -2444,6 +2457,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // end. This keeps is_last_batch correct when the total row count is an exact multiple of batchSize
     // (previously the final full batch went out with is_last_batch=false and no terminal followed).
     QueryResult pending = null;
+    final FacetResults facets;
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2484,6 +2498,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           inBatch = 0;
         }
       }
+      // before the try closes the result set, which discards the facets
+      facets = rs.getFacets();
     }
 
     if (cancelled.get())
@@ -2492,11 +2508,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (inBatch > 0) {
       // Trailing partial batch is the terminal batch.
       safeOnNext(scso, cancelled,
-          batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(true).build());
+          withFacets(batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(true), facets).build());
     } else if (pending != null) {
       // Exact-multiple boundary: the last full batch is the terminal batch.
-      safeOnNext(scso, cancelled, pending.toBuilder().setIsLastBatch(true).build());
+      safeOnNext(scso, cancelled, withFacets(pending.toBuilder().setIsLastBatch(true), facets).build());
+    } else if (facets != null) {
+      // No row matched: the facets still need a terminal batch to travel on
+      safeOnNext(scso, cancelled, emptyTerminalBatch(running, facets));
     }
+  }
+
+  /** Attaches the facets of a FACETS query (null for any other query) to the terminal batch. */
+  private static QueryResult.Builder withFacets(final QueryResult.Builder terminalBatch, final FacetResults facets) {
+    if (facets != null)
+      terminalBatch.setFacets(FacetProtocol.toProto(facets));
+    return terminalBatch;
+  }
+
+  private static QueryResult emptyTerminalBatch(final long running, final FacetResults facets) {
+    return withFacets(QueryResult.newBuilder().setTotalRecordsInBatch(0).setRunningTotalEmitted(running).setIsLastBatch(true), facets)
+        .build();
   }
 
   /**
@@ -2515,6 +2546,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // RESOURCE_EXHAUSTED so the client can fall back to CURSOR/PAGED streaming.
     final int maxMaterializedRows = serverConfiguration().getValueAsInteger(
         GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS);
+    final FacetResults facets;
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2546,6 +2578,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               .asRuntimeException();
         }
       }
+      // before the try closes the result set, which discards the facets
+      facets = rs.getFacets();
+    }
+
+    if (all.isEmpty() && facets != null) {
+      // No row matched: the facets still need a terminal batch to travel on
+      safeOnNext(scso, cancelled, emptyTerminalBatch(0L, facets));
+      return;
     }
 
     long running = 0L;
@@ -2564,8 +2604,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         b.addRecords(all.get(j));
 
       running += end - i;
-      safeOnNext(scso, cancelled,
-          b.setTotalRecordsInBatch(end - i).setRunningTotalEmitted(running).setIsLastBatch(end == all.size()).build());
+      final boolean last = end == all.size();
+      b.setTotalRecordsInBatch(end - i).setRunningTotalEmitted(running).setIsLastBatch(last);
+      safeOnNext(scso, cancelled, (last ? withFacets(b, facets) : b).build());
     }
   }
 
@@ -2590,7 +2631,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               "PAGED retrieval mode reserves the parameter names '_skip' and '_limit'; rename the conflicting query parameter or use CURSOR retrieval mode")
           .asRuntimeException();
 
-    final String pagedSql = wrapWithSkipLimit(db, request.getQuery()); // see helper below
+    // One parse serves both checks below; it goes through the statement cache, so it costs one parse per distinct query text
+    final Statement statement = parseForPaging(db, request.getQuery());
+    // PAGED re-runs the query per page: the facets would be recomputed on every page, and the wrapper would nest the FACETS clause
+    if (statement instanceof SelectStatement select && select.getFacets() != null)
+      throw Status.INVALID_ARGUMENT.withDescription(PAGED_FACETS_MESSAGE).asRuntimeException();
+
+    final String pagedSql = wrapWithSkipLimit(statement, request.getQuery()); // see helper below
     int offset = 0;
     long running = 0L;
     // A full page is held back one step so the terminal page carries is_last_batch=true even when the total
@@ -2706,41 +2753,47 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * query to the next; adding a unique tie-break such as {@code @rid} to the query's own ORDER BY is the caller's
    * call to make, exactly as it would be against any other paged API.
    */
-  private String wrapWithSkipLimit(final Database db, final String originalSql) {
-    final String outerOrderBy = hasOrderBy(db, originalSql) ? "" : " ORDER BY @rid";
+  private static String wrapWithSkipLimit(final Statement statement, final String originalSql) {
+    final String outerOrderBy = hasOrderBy(statement) ? "" : " ORDER BY @rid";
     return "SELECT FROM (" + originalSql + ")" + outerOrderBy + " SKIP :_skip LIMIT :_limit";
   }
 
   /**
-   * Reports whether an SQL statement carries its own ORDER BY. Parsing goes through the database statement cache, so
-   * the answer costs one parse per distinct query text rather than one per page. It is not free: the cache is keyed by
-   * the exact SQL string, and the pages execute the *wrapped* statement, so that is a second entry and a second parse.
-   * One extra parse per distinct PAGED query is the price of not silently discarding the caller's ordering.
+   * Parses the SQL of a PAGED stream once, for the checks {@link #streamPaged} makes before the first page (FACETS, ORDER BY).
+   * Parsing goes through the database statement cache, so it costs one parse per distinct query text rather than one per
+   * page. It is not free: the cache is keyed by the exact SQL string, and the pages execute the *wrapped* statement, so that
+   * is a second entry and a second parse. One extra parse per distinct PAGED query is the price of not silently discarding
+   * the caller's ordering.
    * <p>
-   * SELECT and MATCH are the two statement shapes in this dialect that can carry an ORDER BY, and they do not share
-   * an accessor for it, so both are asked. A statement that does not parse, or that is neither of those, is reported
-   * as unordered and gets the {@code @rid} wrapper: the page query would fail on execution anyway, and the caller
-   * gets the same error it would have got without the wrapper.
+   * A statement that does not parse is returned as null, which is reported as unordered and gets the {@code @rid} wrapper:
+   * the page query would fail on execution anyway, and the caller gets the same error it would have got without the wrapper.
    */
-  private boolean hasOrderBy(final Database db, final String sql) {
+  private Statement parseForPaging(final Database db, final String sql) {
     try {
-      // the parameterized lookup (issue #8307): whether there is an ORDER BY does not depend on the literal values
-      final Statement statement = ((DatabaseInternal) db).getStatementCache().getParameterized(sql).statement();
-
-      final OrderBy orderBy;
-      if (statement instanceof SelectStatement select)
-        orderBy = select.getOrderBy();
-      else if (statement instanceof MatchStatement match)
-        orderBy = match.getOrderBy();
-      else
-        orderBy = null;
-
-      return orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty();
+      // the parameterized lookup (issue #8307): neither check depends on the literal values
+      return ((DatabaseInternal) db).getStatementCache().getParameterized(sql).statement();
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Could not parse the query to look for an ORDER BY, paging by @rid: %s", e, sql);
+      return null;
     }
-    return false;
+  }
+
+  /**
+   * Reports whether a statement carries its own ORDER BY. SELECT and MATCH are the two statement shapes in this dialect
+   * that can carry one, and they do not share an accessor for it, so both are asked. A null statement (it did not parse),
+   * or one that is neither of those, is reported as unordered.
+   */
+  private static boolean hasOrderBy(final Statement statement) {
+    final OrderBy orderBy;
+    if (statement instanceof SelectStatement select)
+      orderBy = select.getOrderBy();
+    else if (statement instanceof MatchStatement match)
+      orderBy = match.getOrderBy();
+    else
+      orderBy = null;
+
+    return orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty();
   }
 
   private void safeOnNext(ServerCallStreamObserver<QueryResult> scso, AtomicBoolean cancelled, QueryResult payload) {
