@@ -274,6 +274,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     // sends both: the snapshot download carries the token and the principal it stands for, never an Authorization header.
     if (carriesClusterToken(exchange)
         && !isValidClusterToken(exchange.getRequestHeaders().getFirst(PeerRequest.CLUSTER_TOKEN_HEADER))) {
+      // Tells the operator, rate-limited, where this node's token came from and why a peer's may differ (issue #10601)
+      HAServerPlugin.reportClusterTokenRefusal(httpServer.getServer(), String.valueOf(exchange.getSourceAddress()));
       exchange.setStatusCode(401);
       exchange.getResponseSender().send("Invalid cluster token");
       return;

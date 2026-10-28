@@ -2539,11 +2539,13 @@ public enum GlobalConfiguration {
       """
       Shared secret for inter-node request forwarding authentication. \
       Must be identical on all cluster nodes. \
-      If empty, a random token is auto-generated and stored in raft-storage at startup. \
-      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
-      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
-      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
-      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
+      If empty (and arcadedb.ha.clusterTokenPath is not set either), every node derives the token at each start from \
+      arcadedb.ha.clusterName and the root password (arcadedb.server.rootPassword, or the content of the file at \
+      arcadedb.server.rootPasswordPath); the derived token is never stored, so changing either input changes the token \
+      at the next start of each node, and nodes holding different tokens refuse each other's requests. \
+      SECURITY: set an explicit high-entropy value in production. The derivation uses a fixed public salt, so a weak \
+      root password plus a reachable replication HTTP port could let an attacker forge the token and impersonate the \
+      root user via forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
@@ -2552,6 +2554,18 @@ public enum GlobalConfiguration {
       Used to keep the secret off the command line (e.g. a Kubernetes Secret mounted on tmpfs). \
       Read only when arcadedb.ha.clusterToken is not set; the file content is trimmed of surrounding whitespace.""",
       String.class, ""),
+
+  HA_CLUSTER_TOKEN_ALLOW_ROTATION("arcadedb.ha.clusterTokenAllowRotation", SCOPE.SERVER,
+      """
+      Allows a node whose cluster token is derived from the root password file (arcadedb.server.rootPasswordPath, with \
+      neither arcadedb.ha.clusterToken nor arcadedb.ha.clusterTokenPath set) to start with a token that differs from \
+      the one it last ran with. A node records a fingerprint of that derived token beside its Raft storage and, by \
+      default, refuses to start when the file now derives a different one: the file was rewritten in place (e.g. a \
+      rotated Kubernetes Secret), and a node starting with the new token is refused by every peer still on the old one. \
+      Set to true on every node only to rotate the token deliberately, with a full-cluster restart, then remove it. \
+      The check needs persisted Raft storage (arcadedb.ha.raftPersistStorage): a node that discards its storage at every \
+      start keeps no record and is not protected.""",
+      Boolean.class, false),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
@@ -4715,6 +4729,9 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
+    // A plain flag whose key happens to contain "clusterToken": an operator must be able to see it is on (issue #10601).
+    if (this == HA_CLUSTER_TOKEN_ALLOW_ROTATION)
+      return hidden;
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 
