@@ -731,13 +731,18 @@ public class PostgresCatalog {
   }
 
   /**
-   * Whether the FROM clause names one relation more than once, a shape the one-row-per-entity model cannot represent: a
-   * {@link Row} carries one map per relation, so two aliases of it would read the same map. A second alias would answer with the
-   * first one's values; one on the right of a LEFT JOIN would read NULL whenever its condition does not hold within that one shared
-   * row ({@code arr.oid = t.typarray} never does), although the relation has the row it asks for (issue #10593); and one nothing
-   * reads would not multiply the rows, so {@code count(*)} over a self cross join would count one relation and the work budget
-   * would never see the product. Such a statement is answered by {@link #resolveJoined}, which binds every entry to its own rows,
-   * whether the query reads the alias or not.
+   * Whether the FROM clause names one relation more than once (the relation names {@code parseFrom} reads are lowercased and
+   * stripped of {@code pg_catalog.}). The one-row-per-entity model cannot represent that shape: a {@link Row} carries one map per
+   * relation, so two aliases of it would read the same map, and
+   * <ul>
+   * <li>a second alias would answer with the first one's values;</li>
+   * <li>one on the right of a LEFT JOIN would read NULL whenever its condition does not hold within that one shared row
+   * ({@code arr.oid = t.typarray} never does), although the relation has the row it asks for (issue #10593);</li>
+   * <li>one nothing reads would not multiply the rows, so {@code count(*)} over a self cross join would count one relation and the
+   * work budget would never see the product.</li>
+   * </ul>
+   * Such a statement is answered by {@link #resolveJoined}, which binds every entry to its own rows, whether the query reads the
+   * alias or not.
    * <p>
    * The self-join that matters most in practice - {@code FROM pg_type t, pg_type e WHERE t.oid = N AND t.typelem = e.oid}, the
    * JDBC driver's array-element lookup - is answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own

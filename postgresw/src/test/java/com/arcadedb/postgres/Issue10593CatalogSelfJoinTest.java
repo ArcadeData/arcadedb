@@ -143,8 +143,9 @@ class Issue10593CatalogSelfJoinTest {
     final long classes = count("select count(*) from pg_catalog.pg_class");
     assertThat(classes).isGreaterThan(1);
     assertThat(count("select count(*) from pg_class a, pg_class b")).isEqualTo(classes * classes);
-    // the two spellings of one relation are one relation
+    // the spellings of one relation are one relation: with or without its schema, in any case
     assertThat(count("select count(*) from pg_catalog.pg_class a, pg_class b")).isEqualTo(classes * classes);
+    assertThat(count("select count(*) from PG_Class a, pg_class b")).isEqualTo(classes * classes);
     assertThat(count("select count(*) from pg_class a, pg_class b where a.oid > 0 and b.oid > 0")).isEqualTo(classes * classes);
     assertThat(resolve("select a.relname as x, b.relname as y from pg_class a, pg_class b").rows).hasSize((int) (classes * classes));
     assertThat(count("select count(*) from (select a.relname as x, b.relname as y from pg_class a, pg_class b) t"))
@@ -153,7 +154,7 @@ class Issue10593CatalogSelfJoinTest {
 
   @Test
   void anUnreadCrossJoinIsChargedToTheWorkBudget() {
-    // enough columns that six of pg_attribute pair more rows than one statement may spend: 20^6 is 64 million
+    // enough columns that six of pg_attribute pair more rows than one statement may spend: at least 20^6, 64 million
     database.transaction(() -> {
       final VertexType wide = database.getSchema().createVertexType("Wide");
       for (int i = 0; i < 16; i++)
