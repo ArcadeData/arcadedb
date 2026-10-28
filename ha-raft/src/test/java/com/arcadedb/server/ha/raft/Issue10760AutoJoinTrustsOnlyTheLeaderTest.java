@@ -95,6 +95,20 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
     assertThat(probe.addsThrough).containsExactly("D");
   }
 
+  @Test
+  void aNamedLeaderWithAnIllegalAddressIsNotDialled() {
+    // B's configuration holds D at an address no peer address may take: the probe does not follow it
+    final RaftPeer brokenD = RaftPeer.newBuilder().setId(D.getId()).setAddress("pod-d:0").build();
+    final ScriptedProbe probe = new ScriptedProbe()
+        .answer(B, follower(D.getId(), SELF, B, brokenD))
+        .answer(C, follower(D.getId(), SELF, B, brokenD))
+        .answer(D, leader(SELF, B, C, D));
+
+    assertThat(autoJoin(probe).tryAutoJoin()).isEqualTo(KubernetesAutoJoin.Outcome.NO_LEADER_ANSWERED);
+    assertThat(probe.asked).containsExactly("B", "C");
+    assertThat(probe.addsThrough).isEmpty();
+  }
+
   /**
    * The guarantee, as a table: over every combination of non-leader answers from the two peers, no round yields
    * {@code ALREADY_MEMBER} or {@code JOINED}, and no {@code Mode.ADD} is sent.

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
@@ -112,91 +113,6 @@ public class KubernetesAutoJoin {
   // backoff (up to RETRY_BACKOFF_MAX_MS) already covers retrying the probe over the longer term.
   static final RetryPolicy PROBE_RETRY_POLICY =
       RetryPolicies.retryUpToMaximumCountWithFixedSleep(5, TimeDuration.valueOf(500, TimeUnit.MILLISECONDS));
-
-  /** Result of a single auto-join probe round. */
-  public enum Outcome {
-    /** This node was added to the cluster's committed configuration. */
-    JOINED,
-    /** The live configuration already contains this node; nothing to do. */
-    ALREADY_MEMBER,
-    /** No reachable peer reported an existing cluster (cold start, or every probe failed/was rejected). */
-    NO_CLUSTER_FOUND,
-    /**
-     * Peers answered, but none as the leader (issue #10760): a cold start still electing, or followers whose
-     * configuration may predate this node's removal or addition. Their answers decide nothing, so the round is retried
-     * until a leader answers.
-     */
-    NO_LEADER_ANSWERED,
-    /** A peer accepted the probe but rejected the configuration change (e.g. no settled leader yet). */
-    ADD_REJECTED,
-    /** The probing thread was interrupted (shutdown). */
-    INTERRUPTED
-  }
-
-  /** Pluggable sleeper so tests can drive the jitter/backoff deterministically. */
-  @FunctionalInterface
-  interface Sleeper {
-    void sleep(long ms) throws InterruptedException;
-  }
-
-  /**
-   * What one peer answered to the {@code GroupInfo} probe (issue #10760): whether it answered as the LEADER, the leader
-   * it follows when it did not ({@code null} when it knows none), and the peers of ITS OWN configuration. Ratis builds
-   * the reply's group from the answering server's {@code getRaftConf()}, so only a leader's members are the cluster's.
-   */
-  record GroupAnswer(boolean leader, RaftPeerId leaderId, List<RaftPeer> members) {
-  }
-
-  /** The transport of a probe round: a seam so the decision can be driven with scripted per-peer answers. */
-  interface ClusterProbe {
-    /**
-     * Asks {@code peer} about the group.
-     *
-     * @return its answer, or {@code null} when it answered without success
-     * @throws Exception when the peer cannot be reached
-     */
-    GroupAnswer ask(RaftPeer peer) throws Exception;
-
-    /**
-     * Submits the atomic {@code Mode.ADD} of {@code localPeer} to {@code leader}.
-     *
-     * @return {@code null} when the change committed, otherwise the reason it was rejected
-     * @throws Exception when the leader cannot be reached
-     */
-    String addThrough(RaftPeer leader, RaftPeer localPeer) throws Exception;
-  }
-
-  /**
-   * The configuration of the peer that answered as the LEADER, the only input membership is decided from (issue #10760).
-   * Only {@link #of} builds one, and it refuses any other role, so {@link Outcome#ALREADY_MEMBER} and the {@code Mode.ADD}
-   * cannot come from a follower whose configuration predates this node's removal (it would say "member" and park the pod
-   * as a non-member nobody dials) or its addition (it would say "not a member" and re-add a member).
-   */
-  static final class LeaderConfiguration {
-    private final RaftPeer       leader;
-    private final List<RaftPeer> members;
-
-    private LeaderConfiguration(final RaftPeer leader, final List<RaftPeer> members) {
-      this.leader = leader;
-      this.members = members;
-    }
-
-    /** The configuration {@code answer} carries when it is a leader's, otherwise {@code null}. */
-    static LeaderConfiguration of(final RaftPeer respondent, final GroupAnswer answer) {
-      return answer != null && answer.leader() ? new LeaderConfiguration(respondent, List.copyOf(answer.members())) : null;
-    }
-
-    RaftPeer leader() {
-      return leader;
-    }
-
-    boolean contains(final RaftPeerId peerId) {
-      for (final RaftPeer member : members)
-        if (member.getId().equals(peerId))
-          return true;
-      return false;
-    }
-  }
 
   private final ArcadeDBServer server;
   private final RaftGroup      raftGroup;
@@ -366,15 +282,31 @@ public class KubernetesAutoJoin {
 
       nonLeaderAnswers.put(peer.getId().toString(),
           answer.leaderId() != null ? "follows " + answer.leaderId() : "knows no leader");
-      // The leader this follower names is asked next, at the address the follower's configuration holds for it
+      // The leader this follower names is asked next, at the address the follower's configuration holds for it. That
+      // address is the group's, not this node's declaration, so it is held to the rule every peer address is
+      // (validatePeerAddress) before it is dialled; nothing is added through it unless it then answers as the LEADER.
       if (answer.leaderId() != null && !answer.leaderId().equals(localPeerId) && !asked.contains(answer.leaderId()))
         for (final RaftPeer member : answer.members())
           if (member.getId().equals(answer.leaderId())) {
-            toAsk.addFirst(member);
+            if (isDialableAddress(member.getAddress()))
+              toAsk.addFirst(member);
+            else
+              probeFailures.put(member.getId().toString(),
+                  "leader named by " + peer.getId() + " has an illegal address '" + member.getAddress() + "'");
             break;
           }
     }
     return null;
+  }
+
+  /** Whether {@code address} passes {@link RaftPeerAddressResolver#validatePeerAddress}. */
+  private static boolean isDialableAddress(final String address) {
+    try {
+      RaftPeerAddressResolver.validatePeerAddress(address);
+      return true;
+    } catch (final ConfigurationException e) {
+      return false;
+    }
   }
 
   /**
@@ -530,5 +462,93 @@ public class KubernetesAutoJoin {
     RaftServerConfigKeys.Rpc.setRequestTimeout(props,
         TimeDuration.valueOf(AUTO_JOIN_RPC_TIMEOUT_MAX_SECS, TimeUnit.SECONDS));
     return props;
+  }
+
+  // The nested types are declared last rather than first so they do not sit between the class header and the fields:
+  // PMD's FieldDeclarationsShouldBeAtStartOfClass counts a nested type as the start of the method section.
+
+  /** Result of a single auto-join probe round. */
+  public enum Outcome {
+    /** This node was added to the cluster's committed configuration. */
+    JOINED,
+    /** The live configuration already contains this node; nothing to do. */
+    ALREADY_MEMBER,
+    /** No reachable peer reported an existing cluster (cold start, or every probe failed/was rejected). */
+    NO_CLUSTER_FOUND,
+    /**
+     * Peers answered, but none as the leader (issue #10760): a cold start still electing, or followers whose
+     * configuration may predate this node's removal or addition. Their answers decide nothing, so the round is retried
+     * until a leader answers.
+     */
+    NO_LEADER_ANSWERED,
+    /** A peer accepted the probe but rejected the configuration change (e.g. no settled leader yet). */
+    ADD_REJECTED,
+    /** The probing thread was interrupted (shutdown). */
+    INTERRUPTED
+  }
+
+  /** Pluggable sleeper so tests can drive the jitter/backoff deterministically. */
+  @FunctionalInterface
+  interface Sleeper {
+    void sleep(long ms) throws InterruptedException;
+  }
+
+  /**
+   * What one peer answered to the {@code GroupInfo} probe (issue #10760): whether it answered as the LEADER, the leader
+   * it follows when it did not ({@code null} when it knows none), and the peers of ITS OWN configuration. Ratis builds
+   * the reply's group from the answering server's {@code getRaftConf()}, so only a leader's members are the cluster's.
+   */
+  record GroupAnswer(boolean leader, RaftPeerId leaderId, List<RaftPeer> members) {
+  }
+
+  /** The transport of a probe round: a seam so the decision can be driven with scripted per-peer answers. */
+  interface ClusterProbe {
+    /**
+     * Asks {@code peer} about the group.
+     *
+     * @return its answer, or {@code null} when it answered without success
+     * @throws Exception when the peer cannot be reached
+     */
+    GroupAnswer ask(RaftPeer peer) throws Exception;
+
+    /**
+     * Submits the atomic {@code Mode.ADD} of {@code localPeer} to {@code leader}.
+     *
+     * @return {@code null} when the change committed, otherwise the reason it was rejected
+     * @throws Exception when the leader cannot be reached
+     */
+    String addThrough(RaftPeer leader, RaftPeer localPeer) throws Exception;
+  }
+
+  /**
+   * The configuration of the peer that answered as the LEADER, the only input membership is decided from (issue #10760).
+   * Only {@link #of} builds one, and it refuses any other role, so {@link Outcome#ALREADY_MEMBER} and the {@code Mode.ADD}
+   * cannot come from a follower whose configuration predates this node's removal (it would say "member" and park the pod
+   * as a non-member nobody dials) or its addition (it would say "not a member" and re-add a member).
+   */
+  static final class LeaderConfiguration {
+    private final RaftPeer       leader;
+    private final List<RaftPeer> members;
+
+    private LeaderConfiguration(final RaftPeer leader, final List<RaftPeer> members) {
+      this.leader = leader;
+      this.members = members;
+    }
+
+    /** The configuration {@code answer} carries when it is a leader's, otherwise {@code null}. */
+    static LeaderConfiguration of(final RaftPeer respondent, final GroupAnswer answer) {
+      return answer != null && answer.leader() ? new LeaderConfiguration(respondent, List.copyOf(answer.members())) : null;
+    }
+
+    RaftPeer leader() {
+      return leader;
+    }
+
+    boolean contains(final RaftPeerId peerId) {
+      for (final RaftPeer member : members)
+        if (member.getId().equals(peerId))
+          return true;
+      return false;
+    }
   }
 }
