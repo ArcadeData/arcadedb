@@ -143,6 +143,15 @@ public class PageSnapshot implements AutoCloseable {
   private final List<SnapshotConfigFile> configurationFiles;
   private final PageShadow       shadow;
   private final long             openedOn = System.currentTimeMillis();
+  /**
+   * #10657: who opened the window, for the report a close prints when it has waited too long for it. The thread name
+   * is always kept (one reference); the stack only when {@code arcadedb.pageSnapshotTrackOpeners} is on, because a
+   * leaked window is otherwise anonymous: no thread is doing anything with it, so no thread dump names it.
+   */
+  private final String           openerThread = Thread.currentThread().getName();
+  private final Throwable        openerStack  = GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.getValueAsBoolean() ?
+      new Throwable("snapshot window opened here") :
+      null;
 
   /**
    * Capture operations currently touching the shadow. {@link #close()} unpublishes the window first and then waits
@@ -319,6 +328,24 @@ public class PageSnapshot implements AutoCloseable {
   }
 
   // ---------------------------------------------------------------------------------------------- ENGINE INTERNALS
+
+  /**
+   * #10657: appends who opened this window, how long ago and in which state, then the opening stack when it was
+   * recorded, every line terminated by {@code eol}.
+   */
+  void describeOpener(final StringBuilder buffer, final String eol) {
+    buffer.append("database '").append(database.getName()).append("', opened ")
+        .append(System.currentTimeMillis() - openedOn).append(" ms ago by thread '").append(openerThread)
+        .append("', status ").append(status).append(eol);
+    if (openerStack == null) {
+      buffer.append("    (opening stack not recorded: set ").append(GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.getKey())
+          .append("=true to record it)").append(eol);
+      return;
+    }
+    for (final StackTraceElement frame : openerStack.getStackTrace())
+      buffer.append("    at ").append(frame).append(eol);
+  }
+
 
   /**
    * A page carries whichever {@code Database} instance created it, which on a server is not necessarily the same
