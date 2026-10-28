@@ -21,6 +21,7 @@ package com.arcadedb.index.columnar;
 import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -133,9 +134,9 @@ final class ColumnarFlusher {
       if (frozen != null) {
         final int segmentId = p.reserveSegmentId();
         final String name = SegmentFormat.segmentFileName(segmentId);
-        attempt.written.add(name);
+        attempt.held.add(name);
         segmentFile = p.bucketDir().resolve(name);
-        writeFrozen(p, frozen, columns, segmentFile, segmentId);
+        writeFrozen(p, frozen, columns, segmentFile, segmentId, attempt);
         ColumnarTestHooks.reach(FLUSH_SEGMENT_WRITTEN);
       }
 
@@ -188,9 +189,10 @@ final class ColumnarFlusher {
 
   /** Writes the frozen overlay's rows, pages and slots ascending, each with its block's page version. */
   private static void writeFrozen(final ColumnarProjection p, final ColumnarOverlay frozen, final ColumnDefinition[] columns,
-      final Path file, final long segmentId) throws IOException {
+      final Path file, final long segmentId, final Attempt attempt) throws IOException {
     final int maxRecordsInPage = p.maxRecordsInPage();
     try (final SegmentWriter writer = new SegmentWriter(file, segmentId, maxRecordsInPage, columns, p.segmentBlockRows())) {
+      attempt.created(file);
       final RowValues row = new RowValues(columns.length);
       for (final int page : frozen.pages()) {
         checkPublishing(p);
@@ -247,9 +249,9 @@ final class ColumnarFlusher {
     try {
       final int segmentId = p.reserveSegmentId();
       final String name = SegmentFormat.segmentFileName(segmentId);
-      attempt.written.add(name);
+      attempt.held.add(name);
       final Path segmentFile = p.bucketDir().resolve(name);
-      final long rows = writeMerged(p, inputs, columns, segmentFile, segmentId, null);
+      final long rows = writeMerged(p, inputs, columns, segmentFile, segmentId, null, attempt);
       ColumnarTestHooks.reach(MERGE_SEGMENT_WRITTEN);
 
       p.applyLock().lock();
@@ -351,10 +353,10 @@ final class ColumnarFlusher {
    * Writes the live rows of the inputs (oldest first) into a new segment, window by window of {@link #MERGE_WINDOW_PAGES} pages. A
    * position is live in at most one input (spec 5.2); the newest wins should two disagree. Each row read passes through
    * {@code transform} (null for none: a merge) before it is written; a dictionary compaction re-encodes its column there. Returns the
-   * rows written; with none, the file is not kept.
+   * rows written; with none, the file is not kept. The file is recorded as created by the attempt once its create succeeded.
    */
   static long writeMerged(final ColumnarProjection p, final SegmentReader[] inputs, final ColumnDefinition[] columns, final Path file,
-      final long segmentId, final Consumer<RowValues> transform) throws IOException {
+      final long segmentId, final Consumer<RowValues> transform, final Attempt attempt) throws IOException {
     final int maxRecordsInPage = p.maxRecordsInPage();
     final int words = maxRecordsInPage / 64;
     int minPage = Integer.MAX_VALUE;
@@ -367,6 +369,7 @@ final class ColumnarFlusher {
 
     long rows = 0;
     try (final SegmentWriter writer = new SegmentWriter(file, segmentId, maxRecordsInPage, columns, p.segmentBlockRows())) {
+      attempt.created(file);
       final RowValues row = new RowValues(columns.length);
       final PositionBitmap[] live = new PositionBitmap[inputs.length];
       final int[][] pagesOf = new int[inputs.length][];
@@ -457,7 +460,6 @@ final class ColumnarFlusher {
     final ColumnarManifest current = p.manifest();
     final Path dir = p.bucketDir();
     final long generation = p.nextGeneration();
-    final List<String> written = attempt.written;
 
     final Map<Long, ColumnarManifest.SegmentEntry> previous = new HashMap<>();
     for (final ColumnarManifest.SegmentEntry entry : current.segments())
@@ -471,19 +473,26 @@ final class ColumnarFlusher {
         // a version an uncertain publish may have named stays held: never written again
         do
           deadVersion++;
-        while (p.isHeld(SegmentFormat.deadFileName(reader.segmentId(), deadVersion)));
+        while (p.isHeld(SegmentFormat.deadFileName(reader.segmentId(), deadVersion)) || Files.exists(dir.resolve(
+            SegmentFormat.deadFileName(reader.segmentId(), deadVersion))));
         final String name = SegmentFormat.deadFileName(reader.segmentId(), deadVersion);
-        hold(p, written, name);
+        hold(p, attempt, name);
         DeadSetFile.write(dir.resolve(name), reader.deadSet());
+        attempt.created(dir.resolve(name));
       }
       segments.add(new ColumnarManifest.SegmentEntry(reader.segmentId(), SegmentFormat.segmentFileName(reader.segmentId()),
           reader.rowCount(), deadVersion, deadRows, reader.minPage(), reader.maxPage()));
     }
 
-    final String ownerMapFile = writeOwnerMap(p, p.owners(), p.ownersLock().readLock(), SegmentFormat.ownerMapFileName(generation),
-        written);
-    final String externalOwnerMapFile = p.externalOwnersLock() == null ? null : writeOwnerMap(p, p.externalOwners(),
-        p.externalOwnersLock().readLock(), SegmentFormat.externalOwnerMapFileName(generation), written);
+    final String ownerMapFile;
+    final String externalOwnerMapFile;
+    try {
+      ownerMapFile = writeOwnerMap(p, p.owners(), p.ownersLock().readLock(), SegmentFormat.ownerMapFileName(generation), attempt);
+      externalOwnerMapFile = p.externalOwnersLock() == null ? null : writeOwnerMap(p, p.externalOwners(),
+          p.externalOwnersLock().readLock(), SegmentFormat.externalOwnerMapFileName(generation), attempt);
+    } catch (final FileAlreadyExistsException e) {
+      throw generationTaken(p, generation, e);
+    }
     ColumnarTestHooks.reach(SEGMENTS_SYNCED);
 
     final List<ColumnarManifest.DictionaryEntry> dictionaries = new ArrayList<>(current.dictionaries().size());
@@ -588,12 +597,23 @@ final class ColumnarFlusher {
 
   /** One flush's, merge's, rebuild's or compaction's files and how far its publish got, which decides what a failure may clean up. */
   static final class Attempt {
+    /** The names the attempt reserved or held ({@link #hold}, a segment id, a dictionary generation): released when it ends. */
+    final List<String>        held    = new ArrayList<>();
+    /**
+     * The files the attempt created, each recorded once its create succeeded (final review A-I3): a failed exclusive create never puts the
+     * name of another owner's file here, so a failure path never deletes it.
+     */
     final List<String>        written = new ArrayList<>();
     /** The new segments' readers, owned here until a published state owns them. */
     final List<SegmentReader> readers = new ArrayList<>();
     /** The manifest rename was attempted: a manifest naming {@link #written} may be on disk. */
     boolean            manifestEntered;
     boolean            published;
+
+    /** The file was created by this attempt, whose failure path deletes it. */
+    void created(final Path file) {
+      written.add(file.getFileName().toString());
+    }
   }
 
   /**
@@ -608,32 +628,52 @@ final class ColumnarFlusher {
         return;
       discard(p, attempt.written);
     }
-    p.releaseFiles(attempt.written.toArray(new String[0]));
+    p.releaseFiles(attempt.held.toArray(new String[0]));
   }
 
   /**
    * Writes the owner map (under its read lock, null for a map no other thread writes) as a new file; null, writing nothing, for an empty
-   * map.
+   * map. The name is held before the read lock is taken (final review A-M1): holding takes the publish lock, which the declared order
+   * (applyLock, publishLock, owner lock) puts before an owner lock.
    */
   static String writeOwnerMap(final ColumnarProjection p, final ContentOwnerMap owners, final Lock lock, final String name,
-      final List<String> written) throws IOException {
+      final Attempt attempt) throws IOException {
+    hold(p, attempt, name);
+    final boolean empty;
     if (lock != null)
       lock.lock();
     try {
-      if (owners.isEmpty())
-        return null;
-      hold(p, written, name);
-      owners.writeTo(p.bucketDir().resolve(name));
-      return name;
+      empty = owners.isEmpty();
+      if (!empty) {
+        final Path file = p.bucketDir().resolve(name);
+        owners.writeTo(file);
+        attempt.created(file);
+      }
     } finally {
       if (lock != null)
         lock.unlock();
     }
+    if (!empty)
+      return name;
+    // released with no owner lock held, for the same reason
+    attempt.held.remove(name);
+    p.releaseFiles(name);
+    return null;
   }
 
-  static void hold(final ColumnarProjection p, final List<String> written, final String name) {
+  /**
+   * A file of another owner (an orphan, or a writer this projection does not know) already has a name of the generation: it is not this
+   * attempt's to delete (final review A-I3), so the next publish takes a higher generation instead. The caller holds the apply lock.
+   */
+  static FileAlreadyExistsException generationTaken(final ColumnarProjection p, final long generation, final FileAlreadyExistsException e) {
+    p.publishUncertain(generation);
+    return e;
+  }
+
+  /** Holds the name until the attempt ends ({@link #settle}). */
+  static void hold(final ColumnarProjection p, final Attempt attempt, final String name) {
     p.holdFiles(name);
-    written.add(name);
+    attempt.held.add(name);
   }
 
   /** Deletes the files an unpublished flush or merge wrote; a failure is logged, the next writable open deletes the orphan. */

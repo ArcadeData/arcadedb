@@ -93,6 +93,8 @@ public final class ColumnarProjection {
   static final String ACQUIRE_BETWEEN = "acquire.pendingRead";
   /** Reached by {@link #open} before it reads the files of the bucket directory. */
   static final String LOAD_FILES      = "projection.loadFiles";
+  /** Reached by {@link #rebuildPublished} once the rebuilt state is current, holding the apply and publish locks. */
+  static final String REBUILD_SWAPPED = "rebuild.stateSwapped";
 
   private static final SegmentReader[] NO_SEGMENTS       = new SegmentReader[0];
   private static final String          SEGMENT_PREFIX    = "seg-";
@@ -160,6 +162,11 @@ public final class ColumnarProjection {
   private final ColumnarApplier.UnreadablePages unreadablePages = new ColumnarApplier.UnreadablePages();
   private       ColumnarApplier.Pass            applyScratch;
 
+  /**
+   * Moved by each rebuild publish, written under publishLock between the re-mark of the pages applied during its scan and the swap of its
+   * state, read lock free by {@link #acquire()} (final review A-I1).
+   */
+  private volatile long                  rebuildSequence;
   // guarded by publishLock
   /** Pages the apply pass completed since the last freeze (R14, V-B2): a flush keeps them unflushed. */
   private final IntHashSet               appliedSinceFreeze  = new IntHashSet();
@@ -483,14 +490,30 @@ public final class ColumnarProjection {
 
   /**
    * A consistent view for a query. The pending positions (both trackers, R7) are read BEFORE the state: a page leaves the pending set
-   * only after the apply pass published its rows, so a page that is not pending any more is in the state read afterwards. Takes no
-   * publish lock; only the owner map read locks.
+   * only after the apply pass published its rows, so a page that is not pending any more is in the state read afterwards. A rebuild is
+   * the one publish whose content can go backwards on a page (final review A-I1): it marks such pages pending before its state becomes
+   * current and moves the rebuild sequence in between, so a view whose pending read may precede that mark while its state is the
+   * rebuilt one (the sequence moved between the two reads) is read again. Takes no publish lock; only the owner map read locks.
    *
    * @throws IllegalStateException when the projection is closed or dropped
    */
   public ColumnarSnapshot acquire() {
     if (closed || dropped)
       throw new IllegalStateException("Columnar projection of bucket '" + bucketName + "' is " + (dropped ? "dropped" : "closed"));
+    while (true) {
+      final long sequence = rebuildSequence;
+      final PositionBitmap pending = pendingPositions();
+      final long oldest = oldestPendingEpochStartMs();
+      ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
+      final ProjectionState current = retainState();
+      if (sequence == rebuildSequence)
+        return new Snapshot(bucketId, current, pending, oldest);
+      current.release();
+    }
+  }
+
+  /** The pending positions of both trackers, read in movement order under the owner map read locks. */
+  private PositionBitmap pendingPositions() {
     final PositionBitmap pending;
     ownersLock.readLock().lock();
     try {
@@ -498,7 +521,6 @@ public final class ColumnarProjection {
     } finally {
       ownersLock.readLock().unlock();
     }
-    long oldest = tracker.oldestPendingEpochStartMs();
     if (externalTracker != null) {
       externalOwnersLock.readLock().lock();
       try {
@@ -506,11 +528,17 @@ public final class ColumnarProjection {
       } finally {
         externalOwnersLock.readLock().unlock();
       }
-      final long external = externalTracker.oldestPendingEpochStartMs();
-      oldest = oldest == 0 ? external : external == 0 ? oldest : Math.min(oldest, external);
     }
-    ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
-    return new Snapshot(bucketId, retainState(), pending, oldest);
+    return pending;
+  }
+
+  /** Start of the oldest pending epoch of both trackers, 0 when nothing is pending. */
+  private long oldestPendingEpochStartMs() {
+    final long oldest = tracker.oldestPendingEpochStartMs();
+    if (externalTracker == null)
+      return oldest;
+    final long external = externalTracker.oldestPendingEpochStartMs();
+    return oldest == 0 ? external : external == 0 ? oldest : Math.min(oldest, external);
   }
 
   /**
@@ -1576,8 +1604,10 @@ public final class ColumnarProjection {
    * Rebuild, last step, under {@link #applyLock()} and {@link #publishLock()} once its manifest is renamed: the rebuilt segments,
    * dictionaries and owner maps replace the current ones in one publish (usable), with a new empty live overlay over the current
    * columns. The previous state's files go through the last-release path (R1/R2). Every page an apply pass completed during the scan is
-   * marked dirty again, so it is re-applied over the rebuilt state; the other unflushed pages leave the trackers (the rebuilt state holds
-   * their committed content). A frozen overlay left by a failed flush is dropped, and the unreadable page retries are forgotten.
+   * marked dirty again BEFORE the swap and the rebuild sequence moves (final review A-I1), so it is re-applied over the rebuilt state and
+   * no reader pairs the rebuilt state with a pending set read before that mark ({@link #acquire()}); the other unflushed pages leave the
+   * trackers after the swap (the rebuilt state holds their committed content). A frozen overlay left by a failed flush is dropped, and the
+   * unreadable page retries are forgotten.
    *
    * @return false, publishing nothing, when the projection is closed or dropped
    */
@@ -1587,6 +1617,12 @@ public final class ColumnarProjection {
       throw new IllegalStateException("Publishing the rebuild of bucket '" + bucketName + "' needs its apply and publish locks");
     if (closed || dropped)
       return false;
+    // final review A-I1: the pages applied during the scan are pending BEFORE the rebuilt state, which lacks their newest rows, becomes
+    // current; then the sequence moves, so a reader that read the pending pages before this mark retries (see acquire)
+    markApplied(tracker, appliedDuringRebuild);
+    if (externalTracker != null)
+      markApplied(externalTracker, externalAppliedDuringRebuild);
+    rebuildSequence++;
     ownersLock.writeLock().lock();
     try {
       owners = rebuiltOwners;
@@ -1607,22 +1643,30 @@ public final class ColumnarProjection {
     clearFreezeRecords();
     publish(rebuilt, segments, new ColumnarSegmentView[] { overlay.publish() }, rebuiltDictionaries, true);
     ownersPublished();
+    ColumnarTestHooks.reach(REBUILD_SWAPPED);
     unreadablePages.clear();
-    remarkAndForgetUnflushed(tracker, appliedDuringRebuild);
+    forgetUnflushed(tracker);
     if (externalTracker != null)
-      remarkAndForgetUnflushed(externalTracker, externalAppliedDuringRebuild);
+      forgetUnflushed(externalTracker);
     appliedDuringRebuild = null;
     externalAppliedDuringRebuild = null;
     lastFlushMs = System.currentTimeMillis();
     return true;
   }
 
-  /** Marks the applied pages dirty first, then clears the unflushed ones: a page is always in one place of the tracker. */
-  private static void remarkAndForgetUnflushed(final DirtyPageTracker target, final IntHashSet applied) {
+  /** Marks the pages applied during the scan dirty again, so they are re-applied over the rebuilt state. */
+  private static void markApplied(final DirtyPageTracker target, final IntHashSet applied) {
     if (applied != null && applied.size() > 0) {
       final int[] pages = applied.toArray();
       target.mark(pages, pages.length);
     }
+  }
+
+  /**
+   * Clears the unflushed pages once the rebuilt state holds their committed content; the ones applied during the scan were marked dirty
+   * first ({@link #markApplied}), so a page is always in one place of the tracker.
+   */
+  private static void forgetUnflushed(final DirtyPageTracker target) {
     final int[] unflushed = target.unflushedPages();
     target.flushed(unflushed, unflushed.length, page -> false);
   }
