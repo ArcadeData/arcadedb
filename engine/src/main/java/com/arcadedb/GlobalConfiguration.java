@@ -4688,6 +4688,9 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
+    // A plain flag whose key happens to contain "clusterToken": an operator must be able to see it is on (issue #10601).
+    if (this == HA_CLUSTER_TOKEN_ALLOW_ROTATION)
+      return hidden;
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 

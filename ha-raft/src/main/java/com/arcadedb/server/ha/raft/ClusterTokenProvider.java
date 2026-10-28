@@ -34,6 +34,7 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -321,6 +322,11 @@ class ClusterTokenProvider {
       // Written to a temporary file and moved over the record, so a crash mid-write never leaves a partial record that
       // the next start would read as a rotated password.
       final Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+      Files.deleteIfExists(tmp);
+      // Owner-only where the filesystem supports POSIX modes: the record identifies the token, so it is not left to the
+      // umask to decide who else can read it.
+      if (tmp.getFileSystem().supportedFileAttributeViews().contains("posix"))
+        Files.createFile(tmp, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
       Files.writeString(tmp, fingerprint, StandardCharsets.UTF_8);
       try {
         Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);

@@ -27,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -200,6 +201,21 @@ class Issue10601DerivedClusterTokenRotationTest {
 
     assertThat(Files.readString(fingerprint.toPath())).isEqualTo(ClusterTokenProvider.tokenFingerprint(provider.getClusterToken()));
     assertThat(fingerprint.toPath().resolveSibling(fingerprint.getName() + ".tmp")).doesNotExist();
+  }
+
+  @Test
+  void theRecordIsOwnerOnlyAndTheRotationFlagIsNotMaskedAsASecret(@TempDir final Path tmp) throws Exception {
+    final Path passwordFile = tmp.resolve("rootPassword");
+    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    Files.writeString(passwordFile, "Secret-v1!\n");
+    fileDerived(passwordFile).verifyDerivedTokenFingerprint(fingerprint, false);
+    if (fingerprint.toPath().getFileSystem().supportedFileAttributeViews().contains("posix"))
+      assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(fingerprint.toPath()))).isEqualTo("rw-------");
+
+    // An operator must be able to see in the settings report that rotation is left on.
+    assertThat(GlobalConfiguration.HA_CLUSTER_TOKEN_ALLOW_ROTATION.isHidden()).isFalse();
+    assertThat(GlobalConfiguration.HA_CLUSTER_TOKEN.isHidden()).isTrue();
+    assertThat(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH.isHidden()).isTrue();
   }
 
   @Test
