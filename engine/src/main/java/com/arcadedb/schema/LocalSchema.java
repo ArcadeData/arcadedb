@@ -1925,6 +1925,19 @@ public class LocalSchema implements Schema {
           GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey()) + "'");
   }
 
+  /**
+   * {@link #checkBucketPageSize} for the paired EXTERNAL-property bucket of {@code primaryBucketName}, when it would have to be
+   * created: a caller about to attach a primary bucket to a type with EXTERNAL properties asks it first, so a refused pairing
+   * cannot leave the primary bucket attached without its pair (issue #10876).
+   */
+  public void checkPairedExternalBucketPageSize(final String primaryBucketName) {
+    final String externalName = InternalBucketNaming.externalPropertyBucketName(primaryBucketName);
+    if (lookupBucket(externalName) == null)
+      checkBucketPageSize(externalName,
+          database.getConfiguration().getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE),
+          LocalBucket.EXTERNAL_BUCKET_VERSION);
+  }
+
   /** Creates the bucket file under {@code parentDirectory} instead of the database directory; null/empty falls back. */
   public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory) {
     return createBucket(bucketName, pageSize, parentDirectory, LocalBucket.CURRENT_VERSION);

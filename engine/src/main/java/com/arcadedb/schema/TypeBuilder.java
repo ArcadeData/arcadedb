@@ -267,7 +267,7 @@ public class TypeBuilder<T> {
       // would keep them (issue #10317)
       if (t.buckets.size() < buckets) {
         checkAutoNamedBucketsAreFree(schema, t.buckets.size());
-        checkPageSizeOfNewBuckets(schema, t.buckets.size());
+        checkPageSizeOfNewBuckets(schema, t.buckets.size(), t.hasExternalProperties() || anyHasExternalProperties(toLink));
       }
 
       // ONE FRAME for the growth and the links, as for a type made from nothing (issue #10537): every bucket created and every super
@@ -335,7 +335,7 @@ public class TypeBuilder<T> {
       // which left the type behind with the buckets before it (issue #10317)
       if (bucketInstances.isEmpty()) {
         checkAutoNamedBucketsAreFree(schema, 0);
-        checkPageSizeOfNewBuckets(schema, 0);
+        checkPageSizeOfNewBuckets(schema, 0, superTypes != null && anyHasExternalProperties(superTypes));
       } else
         checkBucketInstancesAreFree(schema);
 
@@ -436,17 +436,25 @@ public class TypeBuilder<T> {
 
   /**
    * Refuses, before the schema is touched, a page size the buckets this builder is about to create could not write a record into
-   * (issue #10876). The buckets it finds under their names are reused as they are, so only the first one it would create is asked:
-   * they all get the same page size.
+   * (issue #10876): its primary buckets from {@code firstBucket} on, the ones it does not find under their names, and with
+   * {@code pairedExternal} - the type has or inherits EXTERNAL properties - the paired external-property bucket of every bucket of
+   * the type that has none yet, which the attach or the super type link creates after the type has changed.
    */
-  private void checkPageSizeOfNewBuckets(final LocalSchema schema, final int firstBucket) {
-    for (int i = firstBucket; i < buckets; ++i) {
+  private void checkPageSizeOfNewBuckets(final LocalSchema schema, final int firstBucket, final boolean pairedExternal) {
+    for (int i = 0; i < buckets; ++i) {
       final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
-      if (!schema.existsBucket(bucketName)) {
+      if (i >= firstBucket && !schema.existsBucket(bucketName))
         LocalSchema.checkBucketPageSize(bucketName, pageSize, LocalBucket.CURRENT_VERSION);
-        return;
-      }
+      if (pairedExternal)
+        schema.checkPairedExternalBucketPageSize(bucketName);
     }
+  }
+
+  private static boolean anyHasExternalProperties(final List<LocalDocumentType> types) {
+    for (final LocalDocumentType type : types)
+      if (type.hasExternalProperties())
+        return true;
+    return false;
   }
 
   /**

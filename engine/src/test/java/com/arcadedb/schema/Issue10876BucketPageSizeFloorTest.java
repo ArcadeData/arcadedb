@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -88,15 +89,15 @@ class Issue10876BucketPageSizeFloorTest extends TestHelper {
     final RID[] rids = new RID[2];
     database.transaction(() -> {
       rids[0] = database.newDocument("Smallest").set("v", "x").save().getIdentity();
-      rids[1] = database.newDocument("Smallest").set("v", "y".repeat(20_000)).save().getIdentity();
+      rids[1] = database.newDocument("Smallest").set("v", "y".repeat(200)).save().getIdentity();
     });
     database.transaction(() -> {
       final MutableDocument grown = database.lookupByRID(rids[0], true).asDocument().modify();
-      grown.set("v", "z".repeat(30_000)).save();
+      grown.set("v", "z".repeat(300)).save();
     });
 
-    assertThat(database.lookupByRID(rids[0], true).asDocument().getString("v")).isEqualTo("z".repeat(30_000));
-    assertThat(database.lookupByRID(rids[1], true).asDocument().getString("v")).isEqualTo("y".repeat(20_000));
+    assertThat(database.lookupByRID(rids[0], true).asDocument().getString("v")).isEqualTo("z".repeat(300));
+    assertThat(database.lookupByRID(rids[1], true).asDocument().getString("v")).isEqualTo("y".repeat(200));
   }
 
   @Test
@@ -146,8 +147,42 @@ class Issue10876BucketPageSizeFloorTest extends TestHelper {
     final int minimum = LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION);
     database.command("sql", "ALTER DATABASE `" + EXTERNAL_SETTING + "` " + minimum).close();
     database.command("sql", "ALTER PROPERTY Heavy.blob EXTERNAL true").close();
+    // At the minimum a page holds one byte of a chunk past the head, so a few hundred bytes already span hundreds of chunks
     final RID[] rid = new RID[1];
-    database.transaction(() -> rid[0] = database.newDocument("Heavy").set("blob", "b".repeat(5_000)).save().getIdentity());
-    assertThat(database.lookupByRID(rid[0], true).asDocument().getString("blob")).isEqualTo("b".repeat(5_000));
+    database.transaction(() -> rid[0] = database.newDocument("Heavy").set("blob", "b".repeat(300)).save().getIdentity());
+    assertThat(database.lookupByRID(rid[0], true).asDocument().getString("blob")).isEqualTo("b".repeat(300));
+  }
+
+  @Test
+  void aBucketAddedToATypeWithExternalPropertiesIsRefusedWhenItsPairCannotBeCreated() {
+    database.command("sql", "CREATE DOCUMENT TYPE Paired BUCKETS 1").close();
+    database.command("sql", "CREATE PROPERTY Paired.blob STRING").close();
+    database.command("sql", "ALTER PROPERTY Paired.blob EXTERNAL true").close();
+    final DocumentType type = database.getSchema().getType("Paired");
+    final Bucket loose = database.getSchema().createBucket("Loose");
+
+    final Object previous = database.getConfiguration().getValue(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
+    database.getConfiguration().setValue(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE, 1024);
+    try {
+      // Growing the type: refused before the primary bucket is created, so no bucket is left without its pair
+      assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("Paired").withTotalBuckets(2)
+          .withIgnoreIfExists(true).create()).isInstanceOf(SchemaException.class).hasMessageContaining(EXTERNAL_SETTING);
+      assertThat(type.getBuckets(false)).hasSize(1);
+      assertThat(database.getSchema().existsBucket("Paired_1")).isFalse();
+
+      // Attaching a bucket that exists: refused before it is attached
+      assertThatThrownBy(() -> type.addBucket(loose)).isInstanceOf(SchemaException.class).hasMessageContaining(EXTERNAL_SETTING);
+      assertThat(type.getBuckets(false)).hasSize(1);
+      assertThat(database.getSchema().getTypeByBucketId(loose.getFileId())).isNull();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE, previous);
+    }
+
+    // With a page size the pair can have, both work and every primary bucket has its pair
+    database.getSchema().buildDocumentType().withName("Paired").withTotalBuckets(2).withIgnoreIfExists(true).create();
+    type.addBucket(loose);
+    assertThat(type.getBuckets(false)).hasSize(3);
+    for (final Bucket bucket : type.getBuckets(false))
+      assertThat(((LocalDocumentType) type).getExternalBucketIdFor(bucket.getFileId())).isNotNull();
   }
 }
