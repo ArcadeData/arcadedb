@@ -32,7 +32,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,7 +48,9 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue10880ListBackupsUnreadableArchiveTest extends BaseGraphServerTest {
-  private Path backupDir;
+  private Path                     backupDir;
+  // the permissions the shared backup root had before the test, given back as they were
+  private Set<PosixFilePermission> rootPermissions;
 
   @BeforeEach
   void prepareBackupDirectory() throws IOException {
@@ -54,17 +58,19 @@ class Issue10880ListBackupsUnreadableArchiveTest extends BaseGraphServerTest {
         getDatabaseName()).toPath();
     FileUtils.deleteRecursively(backupDir.toFile());
     Files.createDirectories(backupDir);
+    if (isPosix())
+      rootPermissions = Files.getPosixFilePermissions(backupDir.getParent());
   }
 
   @AfterEach
   void removeBackupDirectory() throws IOException {
     if (backupDir != null) {
-      // the backup root is shared with every other backup test of the module: give both directories back their access
-      // before deleting, or what is left behind fails the next test
-      if (backupDir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
-        for (final Path dir : new Path[] { backupDir.getParent(), backupDir })
-          if (Files.exists(dir, LinkOption.NOFOLLOW_LINKS))
-            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwxr-xr-x"));
+      // the backup root is shared with every other backup test of the module: give it back the access it had, and the
+      // test's own directory the access its deletion needs, or what is left behind fails the next test
+      if (rootPermissions != null) {
+        Files.setPosixFilePermissions(backupDir.getParent(), rootPermissions);
+        if (Files.exists(backupDir, LinkOption.NOFOLLOW_LINKS))
+          Files.setPosixFilePermissions(backupDir, PosixFilePermissions.fromString("rwx------"));
       }
       FileUtils.deleteRecursively(backupDir.toFile());
       assertThat(backupDir).as("the test leaves nothing behind").doesNotExist();
@@ -168,6 +174,10 @@ class Issue10880ListBackupsUnreadableArchiveTest extends BaseGraphServerTest {
   }
 
   private void assumePosix() {
-    assumeThat(backupDir.getFileSystem().supportedFileAttributeViews()).contains("posix");
+    assumeThat(isPosix()).as("POSIX permissions").isTrue();
+  }
+
+  private boolean isPosix() {
+    return backupDir.getFileSystem().supportedFileAttributeViews().contains("posix");
   }
 }
