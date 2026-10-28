@@ -32,6 +32,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -128,6 +129,55 @@ final class BoltHandlerProbe {
     }
   }
 
+  /** What {@link #dispatch} observed: the signature of the reply, the FAILURE code if it was one, and the state after. */
+  record Dispatch(byte reply, String code, String stateAfter) {
+  }
+
+  /**
+   * Runs {@code message} through the private {@code processMessage}, the dispatcher every request read off the socket goes
+   * through, on an executor put in {@code state} first, and reports the reply and the state it left (issue #10771).
+   * <p>
+   * Only the messages a state refuses (and RESET/GOODBYE, which touch no server) can be driven this way: a message the state
+   * accepts runs its real handler, which would need a real server behind the double.
+   */
+  @SuppressWarnings("unchecked")
+  static Dispatch dispatch(final BoltMessage message, final String state) throws Exception {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    withPassThroughSecurity(server);
+    server.returns("getConfiguration", new ContextConfiguration());
+
+    try (final Socket socket = new Socket()) {
+      final BoltNetworkExecutor executor = new BoltNetworkExecutor(server, socket, null);
+      final ByteArrayOutputStream wire = new ByteArrayOutputStream();
+
+      set(executor, "output", new BoltChunkedOutput(wire));
+      set(executor, "protocolVersion", 0x00000405);
+      set(executor, "state", stateNamed(state));
+
+      final Method processMessage = BoltNetworkExecutor.class.getDeclaredMethod("processMessage", BoltMessage.class);
+      processMessage.setAccessible(true);
+      processMessage.invoke(executor, message);
+
+      final Field stateField = BoltNetworkExecutor.class.getDeclaredField("state");
+      stateField.setAccessible(true);
+      final String stateAfter = ((Enum<?>) stateField.get(executor)).name();
+
+      final byte[] bytes = wire.toByteArray();
+      if (bytes.length == 0)
+        return new Dispatch((byte) 0, null, stateAfter);
+
+      final byte[] reply = new BoltChunkedInput(new ByteArrayInputStream(bytes)).readMessage();
+      String code = null;
+      if (reply[1] == BoltMessage.FAILURE) {
+        final PackStreamReader reader = new PackStreamReader(reply);
+        reader.readRawByte();
+        reader.readRawByte();
+        code = String.valueOf(((Map<String, Object>) reader.readValue()).get("code"));
+      }
+      return new Dispatch(reply[1], code, stateAfter);
+    }
+  }
+
   /**
    * Runs the private {@code ensureDatabase()} against {@code server} and returns the FAILURE metadata it sent,
    * or {@code null} when it resolved a database instead.
@@ -214,7 +264,7 @@ final class BoltHandlerProbe {
    * that {@code BoltNetworkExecutor} was refactored and this file has to follow it (PR #7939 review).
    */
   private static void set(final Object target, final String field, final Object value) throws Exception {
-    final java.lang.reflect.Field f;
+    final Field f;
     try {
       f = BoltNetworkExecutor.class.getDeclaredField(field);
     } catch (final NoSuchFieldException e) {

@@ -61,7 +61,7 @@ public class ServerImportDatabaseIT extends BaseGraphServerTest {
   @Test
   void checkDefaultDatabases() {
     getServer(0).getSecurity().authenticate("albert", "einstein", "Movies");
-    final Database database = getServer(0).getDatabase("Movies");
+    final Database database = getServer(0).getDatabaseForOperator("Movies");
     assertThat(database.countType("Person", true)).isEqualTo(500);
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
   }

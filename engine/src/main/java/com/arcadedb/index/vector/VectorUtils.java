@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -358,38 +359,46 @@ public final class VectorUtils {
     if (arrayObj instanceof long[] src) {
       final int[] out = new int[src.length];
       for (int i = 0; i < src.length; i++)
-        out[i] = (int) src[i];
+        out[i] = toIndex(src[i]);
       return out;
     }
     if (arrayObj instanceof Integer[] arr) {
       final int[] out = new int[arr.length];
       for (int i = 0; i < arr.length; i++)
-        out[i] = arr[i];
+        out[i] = toIndex(arr[i]);
       return out;
     }
     if (arrayObj instanceof Object[] objArray) {
       final int[] out = new int[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num)
-          out[i] = num.intValue();
-        else
-          throw new IllegalArgumentException("Array elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-      }
+      for (int i = 0; i < objArray.length; i++)
+        out[i] = toIndex(objArray[i]);
       return out;
     }
     if (arrayObj instanceof List<?> list) {
       final int[] out = new int[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num)
-          out[i] = num.intValue();
-        else
-          throw new IllegalArgumentException("Array elements must be numbers, found: " + elem.getClass().getSimpleName());
-      }
+      for (int i = 0; i < out.length; i++)
+        out[i] = toIndex(list.get(i));
       return out;
     }
     throw new IllegalArgumentException("Array must be int[], long[], Integer[], Object[] or List<Number>, found: "
-        + arrayObj.getClass().getSimpleName());
+        + (arrayObj == null ? "null" : arrayObj.getClass().getSimpleName()));
+  }
+
+  /**
+   * One element of {@link #toIntArray(Object)}. A cast or {@code intValue()} read {@code 1.5} as index 1 and
+   * {@code 3000000000} as a negative one, so an element that is not a whole number in the int range is refused (issue
+   * #10699). {@code 2.0} is a whole number and is accepted.
+   */
+  private static int toIndex(final Object element) {
+    if (!(element instanceof Number number))
+      throw new IllegalArgumentException(
+          "Array elements must be numbers, found: " + (element == null ? "null" : element.getClass().getSimpleName()));
+    try {
+      return NumberUtils.toIntWhole(number);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException(
+          "Array elements must be whole numbers in the int range, found: " + NumberUtils.describeRejectedNumber(number));
+    }
   }
 
   /**
@@ -641,7 +650,9 @@ public final class VectorUtils {
      * {@code k}.
      *
      * @param fetchK       the candidates to ask each index for
-     * @param staleSkipped incremented once per candidate skipped because its record no longer exists
+     * @param staleSkipped incremented once per candidate skipped because its record no longer exists, or because a filter
+     *                     of the caller rejected it (the {@code SEARCH} clause, issue #10776): either way the answer is
+     *                     short of a candidate the index could replace. Local to the search, no metric reads it
      * @param saturated    set to true when an index answered with all {@code fetchK} candidates, so it may hold more
      */
     R run(int fetchK, int[] staleSkipped, boolean[] saturated);

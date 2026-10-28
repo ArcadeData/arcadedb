@@ -206,7 +206,8 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /**
    * Refreshes the continuous aggregates over this type after an append (issue #10686): once the transaction open on the calling
-   * thread commits, or at once with none open, exactly as an SQL {@code INSERT} does. An append that is not a statement - the line
+   * thread ends, committed or rolled back (the samples stay either way, #10687), or at once with none open, exactly as an SQL
+   * {@code INSERT} does. An append that is not a statement - the line
    * protocol, the Prometheus remote write and the gRPC ingest (all through {@link TimeSeriesStorableRows#appendTo}), the importers,
    * the engine API, the async executor - used to refresh nothing, so an aggregate kept the buckets of its creation for good. With
    * a transaction open the refresh is registered once per aggregate, however many appends the transaction makes, which is what
@@ -217,7 +218,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * <b>Cost:</b> with no transaction open the refresh runs on the calling thread before the append returns, once per call for every
    * aggregate over the type: an incremental refresh re-reads the source from the watermark, i.e. the open bucket. A caller appending
    * one sample per call pays it per sample; batch the samples ({@link #appendBatch(TimeSeriesRowSource)}) or append inside a
-   * transaction, which refreshes once at its commit. An autocommit SQL {@code INSERT} pays the same, once per statement.
+   * transaction, which refreshes once at its end. An autocommit SQL {@code INSERT} pays the same, once per statement.
    */
   public void refreshContinuousAggregates() {
     ContinuousAggregateRefresher.refreshAggregatesOver(database.getWrappedDatabaseInstance(), this);

@@ -56,7 +56,7 @@ class Issue8270WriteRefusalTest extends TestHelper {
 
   @Override
   protected void endTest() {
-    local().acceptWrites();
+    local().acceptWrites(REASON);
   }
 
   private LocalDatabase local() {
@@ -110,7 +110,7 @@ class Issue8270WriteRefusalTest extends TestHelper {
     local().refuseWrites(REASON);
     database.begin();
     database.newDocument(TYPE).set("name", "begun-refused").save();
-    local().acceptWrites();
+    local().acceptWrites(REASON);
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(NeedRetryException.class).hasMessageContaining(REASON);
     database.rollback();
@@ -173,7 +173,7 @@ class Issue8270WriteRefusalTest extends TestHelper {
     local().refuseWrites(REASON);
     assertThat(local().getWriteRefusal()).isEqualTo(REASON);
 
-    local().acceptWrites();
+    local().acceptWrites(REASON);
     assertThat(local().getWriteRefusal()).isNull();
 
     database.transaction(() -> database.command("sql", "INSERT INTO " + TYPE + " SET name = 'accepted'"));

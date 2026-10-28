@@ -463,6 +463,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    */
   private static final class ComponentWalk {
     private final Database     database;
+    // GRAPH_GHOST_EDGE_PROBE, read once per walk (issue #10658)
+    private final boolean      ghostProbe;
     private final Filters      filters;
     private final int          minLevel;
     private final int          limit;
@@ -475,6 +477,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     private ComponentWalk(final Database database, final Filters filters, final int minLevel, final int limit,
         final List<Vertex> reachableNodes) {
       this.database = database;
+      this.ghostProbe = GhostEdgeReporter.isProbing(database);
       this.filters = filters;
       this.minLevel = minLevel;
       this.limit = limit;
@@ -535,7 +538,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
 
     /** Reaches {@code neighborId} through the entry naming {@code edgeId}, unless that edge is a ghost or the filters turn it away. */
     private void reach(final RID edgeId, final RID neighborId) {
-      if (!GhostEdgeReporter.isLiveEntry(database, edgeId))
+      if (ghostProbe && !GhostEdgeReporter.isLiveEntry(database, edgeId))
         return;
 
       if (!visitedNodes.add(neighborId))

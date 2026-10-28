@@ -60,7 +60,7 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
   @Test
   void aDatabaseTheServerDidNotOpenIsOpenedByItsFirstRequest() throws Exception {
     // AS WITH databaseLoadAtStartup=false: ON DISK, NOT OPEN, NOT CLOSED BY ANYBODY
-    getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+    getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded().close();
     getServer(0).removeDatabase(getDatabaseName());
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
 
@@ -72,7 +72,7 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
 
   @Test
   void concurrentFirstRequestsOpenTheDatabaseOnce() throws Exception {
-    getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+    getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded().close();
     getServer(0).removeDatabase(getDatabaseName());
 
     final int requests = 8;
@@ -95,7 +95,7 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
 
     // ONE OPEN INSTANCE SERVES THEM ALL: A SECOND OPEN OF THE SAME DIRECTORY WOULD HAVE BEEN REFUSED AS ALREADY IN USE
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
-    assertThat(getServer(0).getDatabase(getDatabaseName()).isOpen()).isTrue();
+    assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).isOpen()).isTrue();
   }
 
   @Test
@@ -141,7 +141,7 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
   /** What a close that failed leaves: the mark is taken back, and the database is served again. */
   @Test
   void aMarkTakenBackServesTheDatabaseAgain() throws Exception {
-    getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+    getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded().close();
     getServer(0).removeDatabase(getDatabaseName());
     getServer(0).markClosedByCommand(getDatabaseName());
     assertThat(postQuery(getDatabaseName(), "select 1").statusCode()).isNotEqualTo(200);
@@ -248,12 +248,12 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
     });
     try {
       final QueryWarmUp second = new QueryWarmUp(getServer(0));
-      final Object queriesBefore = getServer(0).getDatabase(getDatabaseName()).getEmbedded().getStats().get("queries");
+      final Object queriesBefore = getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded().getStats().get("queries");
       second.run();
       assertThat(second.getExecutedStatements()).isEqualTo(QueryWarmUp.EXECUTED_STATEMENTS.size());
       assertThat(spans.get()).as("spans opened by the warm-up").isZero();
       // NOT COUNTED AMONG THE QUERIES OF THE DATABASE EITHER
-      assertThat(getServer(0).getDatabase(getDatabaseName()).getEmbedded().getStats().get("queries")).isEqualTo(queriesBefore);
+      assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded().getStats().get("queries")).isEqualTo(queriesBefore);
     } finally {
       QueryTracer.Holder.register(previous);
     }

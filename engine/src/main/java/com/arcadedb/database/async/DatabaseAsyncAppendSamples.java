@@ -52,7 +52,7 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
     try {
       engine.getShard(shardIndex).appendSamples(source);
       // issue #10686: the continuous aggregates over the type owe the samples a refresh. The worker's batch transaction is open, so
-      // it is registered once per aggregate and runs when the batch commits, not once per task
+      // it is registered once per aggregate and runs when the batch ends, not once per task
       engine.refreshContinuousAggregates();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,

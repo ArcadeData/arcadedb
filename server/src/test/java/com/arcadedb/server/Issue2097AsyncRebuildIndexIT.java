@@ -78,7 +78,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
   @Test
   void rebuildIndexAsyncDoesNotDeleteIndexes() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
 
       // Setup: Create multiple document types with indexed properties
       // The issue is more likely to occur with multiple indexes
@@ -179,7 +179,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
   @Test
   void rebuildIndexSyncWorksCorrectly() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
 
       // Setup: Create document type with indexed property
       database.transaction(() -> {
@@ -236,7 +236,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
   @Test
   void rebuildSpecificIndexAsyncDoesNotDeleteIndex() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
 
       // Setup: Create document type with indexed property
       final String typeName = DOC_TYPE_NAME + "Specific";

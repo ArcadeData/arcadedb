@@ -387,7 +387,7 @@ public class CallStep extends AbstractExecutionStep {
 
     // Check the procedure registry first (built-in Neo4j-compatible procedures like db.labels() are registered
     // here too, so their declared yield fields are available to CypherSemanticValidator for YIELD * - issue #6148)
-    final CypherProcedure procedure = CypherProcedureRegistry.get(procedureName);
+    final CypherProcedure procedure = callClause.resolveProcedure();
     if (procedure != null)
       return executeProcedure(procedure, args.toArray(), inputRow, context);
 
@@ -693,7 +693,7 @@ public class CallStep extends AbstractExecutionStep {
       for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
         row.setProperty(yieldItem.getOutputName(), null);
     } else {
-      final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+      final CypherProcedure procedure = callClause.resolveProcedure();
       if (procedure != null && procedure.getYieldFields() != null)
         for (final String field : procedure.getYieldFields())
           row.setProperty(field, null);

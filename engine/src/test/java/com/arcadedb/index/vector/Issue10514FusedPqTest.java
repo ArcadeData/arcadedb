@@ -40,7 +40,6 @@ import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
@@ -95,7 +94,7 @@ class Issue10514FusedPqTest extends TestHelper {
       assertThat(graph.getIdUpperBound()).isEqualTo(VECTORS);
     }
 
-    final PQVectors pqVectors = (PQVectors) field("pqVectors").get(index);
+    final PQVectors pqVectors = index.pqCodesForPublishedGraphForTest();
     assertThat(pqVectors).isNotNull();
     final VectorSimilarityFunction similarity = VectorSimilarityFunction.EUCLIDEAN;
     // The graph numbers its nodes by ordinal; the vid of an ordinal is found by the vector it holds
@@ -203,12 +202,6 @@ class Issue10514FusedPqTest extends TestHelper {
 
   private LSMVectorIndex indexOf() {
     return (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]")).getIndexesOnBuckets()[0];
-  }
-
-  private static Field field(final String name) throws Exception {
-    final Field f = LSMVectorIndex.class.getDeclaredField(name);
-    f.setAccessible(true);
-    return f;
   }
 
   private void load(final float[][] base) {

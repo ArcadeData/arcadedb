@@ -291,6 +291,12 @@ public class TransactionContext implements Transaction {
   // Set by publishCommittedPages once the WAL append crossed the point of no return; drives the failure regime of
   // the 2nd phase whichever thread concludes it.
   private       boolean                              phase2WalAppended;
+  // Set by publishCommittedPages right before the first page is handed to the page manager (#10768): from there a failure can
+  // leave part of the transaction visible, and on disk with a synchronous flush, so the transaction must not be rolled back even
+  // when no WAL record exists (txWAL=false) - see concludePhase2Internal
+  private       boolean                              phase2PublicationStarted;
+  // Handed to PageManager.publishPages, which runs it once its waits are over: one instance per context, not one per commit
+  private final Runnable                             markPublicationStarted = () -> phase2PublicationStarted = true;
   // Group commit (arcadedb.txWalGroupCommit): raised by commit() around its 2nd phase, the only path that waits for the
   // deferred flush. The ticket is what that flush owes this transaction, 0 when nothing is owed
   private       boolean                              deferWALSync;
@@ -405,6 +411,11 @@ public class TransactionContext implements Transaction {
   private volatile Object                             requester;
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
+  // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
+  private       Map<String, Runnable>                afterCompletionCallbacks    = null;
+  private       Thread                               afterCompletionOwner        = null;
+  // Read by begin() on the thread that runs the callbacks, which is the one that sets it
+  private       boolean                              runningAfterCompletion      = false;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
   // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
   // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
@@ -1295,7 +1306,25 @@ public class TransactionContext implements Transaction {
     for (final Record r : newRecords)
       ((RecordInternal) r).setIdentity(null);
 
+    // Taken before reset(), which drops them, and run once it is done: the work they do is owed whatever the outcome (#10687). Only
+    // by the thread that registered them: a sweep rolling back the transaction of a dead thread runs on a thread that is in the
+    // middle of work of its own, and has no business refreshing on the dead thread's behalf
+    final Map<String, Runnable> completion = afterCompletionCallbacks;
+    final Thread completionOwner = afterCompletionOwner;
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
+
     reset();
+
+    if (completion != null) {
+      if (completionOwner == Thread.currentThread())
+        fireAfterCompletionCallbacks(completion);
+      else
+        LogManager.instance().log(this, Level.INFO,
+            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
+                + "the continuous aggregates they would have refreshed catch up at their next refresh",
+            null, completion.size());
+    }
   }
 
   /**
@@ -1366,6 +1395,60 @@ public class TransactionContext implements Transaction {
     return registeredCallbackKeys != null && registeredCallbackKeys.contains(key);
   }
 
+  /**
+   * Registers, under {@code key}, work this transaction owes whether it commits or rolls back (issue #10687): the counterpart of
+   * {@link #addAfterCommitCallbackIfAbsent(String, Runnable)} for a change made beside the transaction rather than in it, which a
+   * rollback does not take back - a write to a TIMESERIES type commits its own transaction (#7410), and the refresh of the continuous
+   * aggregates over the type is owed as unconditionally as the write. Deferred to the end rather than run at once, so that every
+   * write of the transaction asks for one run.
+   * <p>
+   * The callback runs once the transaction has ended - after the after-commit callbacks of a commit, after the record state is
+   * restored by a {@link #rollback()} - with no transaction of this context active: work that writes has to begin a transaction of
+   * its own. A statement that fails inside the transaction does not take it back: what it wrote beside the transaction stays written.
+   * A conclusion that is neither a commit nor a rollback (a commit that failed past its point of no return, or whose WAL flush
+   * failed: both fence the database) drops it, and so does a rollback run by another thread than the registering one, the sweep of
+   * a dead thread. A commit runs it on the thread that concludes the commit, as it runs the after-commit callbacks. Exceptions are
+   * logged and do not affect the outcome of the transaction or the other callbacks; an {@link Error} is not caught, as it is not by
+   * the after-commit callbacks.
+   *
+   * @return true if the callback was registered, false if one is registered under {@code key} already
+   */
+  public boolean addAfterCompletionCallbackIfAbsent(final String key, final Runnable callback) {
+    if (afterCompletionCallbacks == null) {
+      afterCompletionCallbacks = new LinkedHashMap<>(4);
+      afterCompletionOwner = Thread.currentThread();
+    }
+    return afterCompletionCallbacks.putIfAbsent(key, callback) == null;
+  }
+
+  public boolean hasAfterCompletionCallbackKey(final String key) {
+    return afterCompletionCallbacks != null && afterCompletionCallbacks.containsKey(key);
+  }
+
+  /**
+   * Whether this context is running the after-completion callbacks of the transaction that just ended on it. A transaction begun
+   * meanwhile must not reuse it (see {@code LocalDatabase.begin()}): the transaction ended inside a failed commit too, whose caller
+   * is about to read {@link #getCommitCount()} to tell a retryable failure from a half-committed block (#7916), and a commit of the
+   * callback's own counted on this context would read as the latter.
+   */
+  public boolean isRunningAfterCompletionCallbacks() {
+    return runningAfterCompletion;
+  }
+
+  private void fireAfterCompletionCallbacks(final Map<String, Runnable> callbacks) {
+    runningAfterCompletion = true;
+    try {
+      for (final Runnable callback : callbacks.values())
+        try {
+          callback.run();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error in after-completion callback: %s", e, e.getMessage());
+        }
+    } finally {
+      runningAfterCompletion = false;
+    }
+  }
+
   private void resetAndFireCallbacks() {
     // #7667: the single point both commit paths converge on once the commit has actually concluded - commit() for a
     // transaction with nothing to write (phase1 == null), and concludePhase2(committed) for every other one,
@@ -1377,6 +1460,10 @@ public class TransactionContext implements Transaction {
     final List<Runnable> callbacks = afterCommitCallbacks;
     // They run below, so reset() has no abandonment to owe on their behalf
     afterCommitCallbacks = null;
+    // ... and these after them: they are owed by the transaction ending, not by its success (#10687)
+    final Map<String, Runnable> completion = afterCompletionCallbacks;
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
     final boolean commitPointWasReached = commitPointReached;
     final long walSyncTicket = deferredWALSyncTicket;
     // reset() clears the id, which the failure of the flush has to name
@@ -1390,25 +1477,34 @@ public class TransactionContext implements Transaction {
       } catch (final RuntimeException e) {
         if (callbacks != null && commitPointWasReached)
           abandonOrderedCallbacks(callbacks, 0);
+        // the after-completion callbacks are dropped with them: the failed flush fenced the database, and the work they would begin
+        // could only be refused by the fence
         throw e;
       }
     }
-    if (callbacks != null) {
-      int next = 0;
-      try {
-        while (next < callbacks.size()) {
-          final Runnable callback = callbacks.get(next++);
-          try {
-            callback.run();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+    try {
+      if (callbacks != null) {
+        int next = 0;
+        try {
+          while (next < callbacks.size()) {
+            final Runnable callback = callbacks.get(next++);
+            try {
+              callback.run();
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+            }
           }
+        } finally {
+          // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
+          if (commitPointWasReached && next < callbacks.size())
+            abandonOrderedCallbacks(callbacks, next);
         }
-      } finally {
-        // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
-        if (commitPointWasReached && next < callbacks.size())
-          abandonOrderedCallbacks(callbacks, next);
       }
+    } finally {
+      // the transaction is committed and durable here: an Error escaping an after-commit callback still propagates, but does not cost
+      // the work owed by the transaction ending
+      if (completion != null)
+        fireAfterCompletionCallbacks(completion);
     }
   }
 
@@ -1756,16 +1852,7 @@ public class TransactionContext implements Transaction {
    * Looks for the page in the TX context first, then delegates to the database.
    */
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
-    BasePage page = null;
-
-    if (modifiedPages != null)
-      page = modifiedPages.get(pageId);
-
-    if (page == null && newPages != null)
-      page = newPages.get(pageId);
-
-    if (page == null)
-      page = immutablePages.get(pageId);
+    BasePage page = getPageHeldByTransaction(pageId);
 
     if (page == null) {
       // NOT FOUND, DELEGATES TO THE DATABASE
@@ -1796,6 +1883,42 @@ public class TransactionContext implements Transaction {
         }
       }
     }
+
+    return page;
+  }
+
+  /**
+   * {@link #getPage(PageId, int)} for a reader that reads the page only at absolute positions ({@code readInt}, {@code readLong},
+   * {@code readShort}, {@code readByte}, {@code slice()}, {@code getPageId()}), as an index lookup does (#10654). A page the
+   * transaction holds is answered as {@code getPage} answers it. On a {@code READ_COMMITTED} miss the answer is the page cache's
+   * shared view of the page, the one every thread reads, instead of a new {@code ImmutablePage}, {@code Binary} and buffer per
+   * call: {@code getPage} keeps nothing on that path either, so the reader sees the same bytes. {@code REPEATABLE_READ} goes
+   * through {@code getPage}, because the page it returns is the one the transaction keeps and hands to every later
+   * {@code getPage}, whose caller may move its buffer position.
+   */
+  public BasePage getPageForAbsoluteReads(final PageId pageId, final int size) throws IOException {
+    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+      return getPage(pageId, size);
+
+    final BasePage page = getPageHeldByTransaction(pageId);
+    return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
+   * The page this transaction holds for {@code pageId}, looked up in the order both {@link #getPage} and
+   * {@link #getPageForAbsoluteReads} rely on: modified, new, then the immutable pages it keeps. {@code null} when it holds none.
+   */
+  private BasePage getPageHeldByTransaction(final PageId pageId) {
+    BasePage page = null;
+
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+
+    if (page == null)
+      page = immutablePages.get(pageId);
 
     return page;
   }
@@ -2155,41 +2278,127 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Per-page record-slot writes this transaction made, retained for the disjoint-slot merge (#5381). Small maps
-   * keyed by the in-page slot index; only populated on pages that receive at least one rebasable write, and only
-   * while the feature is on. Released on {@link #reset()}.
+   * Per-page record-slot writes this transaction made, retained for the disjoint-slot merge (#5381). Arrays indexed
+   * by the in-page slot, which is a small dense number: no boxed key, no map entry per write (#10661). Only populated
+   * on pages that receive at least one rebasable write, and only while the feature is on. Released on
+   * {@link #reset()}.
    */
   private static final class SlotRebaseBuffer {
-    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins. A NULL value
-    // is the third kind (#5569): the slot was DELETED by this transaction, so the replay frees it instead of writing
-    // a body. HashMap allows null values, so one map still describes every tracked slot of the page.
-    private final Map<Integer, byte[]> finalBody     = new HashMap<>();
-    // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts).
-    private final Map<Integer, byte[]> baseBody      = new HashMap<>();
-    // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
-    // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
-    private final Set<Integer>         insertedSlots = new HashSet<>();
-    // slot -> what SHAPE the two images above describe (#6129). Only present for the shapes that are not a plain
+    // the slot has an entry: its final image is in finalBody, or on the transaction's own page (FROM_PAGE)
+    private static final byte TRACKED   = 1;
+    // the slot holds a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
+    // transaction stays an insert (no base image) rather than being mistaken for an in-place update
+    private static final byte INSERTED  = 2;
+    // the final image is the one the slot holds on the page this transaction wrote, read back only if the page has to
+    // be replayed (#10661). Set by an insert: the page holds exactly the bytes a copy would have kept, and every later
+    // write to the slot either tracks an image of its own (an update, a delete) or poisons the page
+    private static final byte FROM_PAGE = 4;
+
+    // per slot, a combination of the flags above; 0 = not tracked
+    private byte[]   state = new byte[16];
+    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins. A TRACKED slot
+    // with a null image and no FROM_PAGE flag is the third kind (#5569): the slot was DELETED by this transaction, so
+    // the replay frees it instead of writing a body.
+    private byte[][] finalBody;
+    // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts). Allocated
+    // with the first update or delete: a page that only received inserts never needs it.
+    private byte[][] baseBody;
+    // slot -> what SHAPE the two images above describe (#6129). Only allocated for the shapes that are not a plain
     // in-place record: the replay has to check the committed marker against it, because the very same bytes mean a
-    // different record depending on the marker that precedes them. Absent entry = SLOT_KIND_RECORD, which is why this
-    // one map - unlike its neighbours above - is allocated only if a page ever holds a shape that is not that: on
-    // everything but a bucket of outgrown records, it never is.
-    private       Map<Integer, Byte>   kinds;
+    // different record depending on the marker that precedes them. 0 = SLOT_KIND_RECORD, which is why this array is
+    // allocated only if a page ever holds a shape that is not that: on everything but a bucket of outgrown records, it
+    // never is.
+    private byte[]   kinds;
+
+    private void ensureSlot(final int slot) {
+      if (slot < state.length)
+        return;
+      final int newSize = Math.max(slot + 1, state.length * 2);
+      state = Arrays.copyOf(state, newSize);
+      if (finalBody != null)
+        finalBody = Arrays.copyOf(finalBody, newSize);
+      if (baseBody != null)
+        baseBody = Arrays.copyOf(baseBody, newSize);
+      if (kinds != null)
+        kinds = Arrays.copyOf(kinds, newSize);
+    }
+
+    private boolean isTracked(final int slot) {
+      return slot < state.length && (state[slot] & TRACKED) != 0;
+    }
+
+    private boolean isInserted(final int slot) {
+      return slot < state.length && (state[slot] & INSERTED) != 0;
+    }
+
+    private boolean isFinalImageOnPage(final int slot) {
+      return slot < state.length && (state[slot] & FROM_PAGE) != 0;
+    }
+
+    /** True when the slot is tracked as a DELETE: no image of its own and none on the page. */
+    private boolean isDeleted(final int slot) {
+      return isTracked(slot) && !isFinalImageOnPage(slot) && finalBodyOf(slot) == null;
+    }
+
+    private byte[] finalBodyOf(final int slot) {
+      return finalBody == null || slot >= finalBody.length ? null : finalBody[slot];
+    }
+
+    private byte[] baseBodyOf(final int slot) {
+      return baseBody == null || slot >= baseBody.length ? null : baseBody[slot];
+    }
+
+    /** Tracks the slot as an INSERT whose final image is read back from the page. Returns the image it released. */
+    private byte[] trackInsert(final int slot) {
+      ensureSlot(slot);
+      final byte[] prev = finalBodyOf(slot);
+      if (prev != null)
+        finalBody[slot] = null;
+      state[slot] |= TRACKED | INSERTED | FROM_PAGE;
+      return prev;
+    }
+
+    /** Sets the final image of the slot ({@code null} for a delete). Returns the image it replaced. */
+    private byte[] trackFinal(final int slot, final byte[] body) {
+      ensureSlot(slot);
+      if (finalBody == null) {
+        if (body == null) {
+          state[slot] = (byte) ((state[slot] | TRACKED) & ~FROM_PAGE);
+          return null;
+        }
+        finalBody = new byte[state.length][];
+      }
+      final byte[] prev = finalBody[slot];
+      finalBody[slot] = body;
+      state[slot] = (byte) ((state[slot] | TRACKED) & ~FROM_PAGE);
+      return prev;
+    }
+
+    /** First-touch base wins. Returns true when {@code body} was stored, false when the slot already had a base. */
+    private boolean trackBaseIfAbsent(final int slot, final byte[] body) {
+      ensureSlot(slot);
+      if (baseBody == null)
+        baseBody = new byte[state.length][];
+      else if (baseBody[slot] != null)
+        return false;
+      baseBody[slot] = body;
+      return true;
+    }
 
     private byte kindOf(final int slot) {
-      if (kinds == null)
+      if (kinds == null || slot >= kinds.length)
         return SLOT_KIND_RECORD;
-      final Byte kind = kinds.get(slot);
-      return kind == null ? SLOT_KIND_RECORD : kind;
+      return kinds[slot];
     }
 
     private void trackKind(final int slot, final byte kind) {
       if (kind == SLOT_KIND_RECORD)
-        // The default: recording it would allocate the map for every page the merge tracks, to say nothing.
+        // The default: recording it would allocate the array for every page the merge tracks, to say nothing.
         return;
+      ensureSlot(slot);
       if (kinds == null)
-        kinds = new HashMap<>();
-      kinds.put(slot, kind);
+        kinds = new byte[state.length];
+      kinds[slot] = kind;
     }
   }
 
@@ -2309,8 +2518,11 @@ public class TransactionContext implements Transaction {
    * page-version conflict caused only by concurrent writes to OTHER slots of that page can be resolved by
    * replaying this insert on the newer committed page. No-op when the feature is off or the page is poisoned.
    * The caller ({@link LocalBucket}) passes the already-computed page/slot so no schema lookup happens per write.
+   * <p>
+   * No image of the record is passed or kept (#10661): the replay reads the bytes the slot holds on the page this
+   * transaction wrote, which is also the right image for an insert this transaction overwrote in place afterwards.
    */
-  public void trackRebasableInsert(final int fileId, final int pageNumber, final int slot, final byte[] finalBody) {
+  public void trackRebasableInsert(final int fileId, final int pageNumber, final int slot) {
     if (!slotMerge)
       return;
     final long key = packPageKey(fileId, pageNumber);
@@ -2326,7 +2538,7 @@ public class TransactionContext implements Transaction {
       poisonSlotRebasePage(fileId, pageNumber);
       return;
     }
-    if (buffer.finalBody.containsKey(slot) && buffer.finalBody.get(slot) == null && !buffer.insertedSlots.contains(slot)) {
+    if (buffer.isDeleted(slot) && !buffer.isInserted(slot)) {
       // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
       // hands back a slot this transaction has just freed (guarded by
       // Issue5279ConcurrentInsertTest.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
@@ -2335,11 +2547,12 @@ public class TransactionContext implements Transaction {
       poisonSlotRebasePage(fileId, pageNumber);
       return;
     }
-    final byte[] prev = buffer.finalBody.put(slot, finalBody);
-    buffer.insertedSlots.add(slot);
-    // Account the NET change in retained bytes: a repeated write to the same slot replaces its image, it does not
-    // add one - so the running total tracks bytes actually held, matching the cap's retained-heap intent.
-    accountTrackedBytes(finalBody.length - (prev != null ? prev.length : 0));
+    // #10661: no copy of the record is kept. The page this transaction wrote holds the very bytes, and the replay reads
+    // them back from it only when the page really conflicts, so an insert retains nothing until commit. Account the NET
+    // change in retained bytes: an image an earlier write kept for the slot is released, so it leaves the total.
+    final byte[] prev = buffer.trackInsert(slot);
+    if (prev != null)
+      accountTrackedBytes(-prev.length);
   }
 
   /**
@@ -2362,7 +2575,7 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
-    if (buffer.finalBody.containsKey(slot) && buffer.kindOf(slot) != kind) {
+    if (buffer.isTracked(slot) && buffer.kindOf(slot) != kind) {
       // The slot CHANGED SHAPE inside this transaction (a record that spilled into a chunk chain, a placeholder
       // rebuilt as a plain record): the pre-image kept for the first write no longer describes what the second one
       // started from, so the two writes cannot be replayed as one. The writers of those transitions poison the page
@@ -2371,12 +2584,12 @@ public class TransactionContext implements Transaction {
       return;
     }
     buffer.trackKind(slot, kind);
-    final byte[] prevFinal = buffer.finalBody.put(slot, finalBody);
+    final byte[] prevFinal = buffer.trackFinal(slot, finalBody);
     long delta = finalBody.length - (prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
     // intermediate one. An insert-then-update keeps insert semantics (no base recorded). Only the FIRST base
     // capture for a slot adds to the retained-byte total.
-    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+    if (!buffer.isInserted(slot) && buffer.trackBaseIfAbsent(slot, baseBody))
       delta += baseBody.length;
     accountTrackedBytes(delta);
   }
@@ -2406,12 +2619,12 @@ public class TransactionContext implements Transaction {
       return;
     }
     // A null final image marks the slot as deleted. The image the slot held so far (if any) is released.
-    final byte[] prevFinal = buffer.finalBody.put(slot, null);
+    final byte[] prevFinal = buffer.trackFinal(slot, null);
     long delta = -(prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins, as for an update: a record this transaction already updated must still be diffed
     // against the COMMITTED pre-image, not against the intermediate image it wrote itself. A slot this transaction
     // INSERTED has no committed pre-image at all: it stays an insert-and-delete, replayed as nothing.
-    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+    if (!buffer.isInserted(slot) && buffer.trackBaseIfAbsent(slot, baseBody))
       delta += baseBody.length;
     accountTrackedBytes(delta);
   }
@@ -2452,6 +2665,7 @@ public class TransactionContext implements Transaction {
    * exceeds {@link GlobalConfiguration#TX_PAGE_SLOT_MERGE_MAX_BYTES}, the merge is disabled for the remainder of the
    * transaction. Already-tracked pages are dropped (freeing their images) so a conflict on any of them now falls
    * back to a normal retry - a huge transaction degrades to plain MVCC instead of holding ~2x its touched records.
+   * Only image bytes count: the per-page slot arrays of {@code SlotRebaseBuffer} are bounded by the page's slot count.
    */
   private void accountTrackedBytes(final long added) {
     slotRebaseTrackedBytes += added;
@@ -2476,7 +2690,7 @@ public class TransactionContext implements Transaction {
     if (!slotMerge || slotRebaseByPage == null)
       return false;
     final SlotRebaseBuffer buffer = slotRebaseByPage.get(packPageKey(fileId, pageNumber));
-    return buffer != null && buffer.insertedSlots.contains(slot);
+    return buffer != null && buffer.isInserted(slot);
   }
 
   /**
@@ -2574,6 +2788,9 @@ public class TransactionContext implements Transaction {
    * is stable), and only for a page whose every modification this transaction made was a tracked disjoint-slot
    * insert or an update that stayed inside the page.
    *
+   * @param ownPage the page as this transaction wrote it: the final images of the slots it INSERTED are read from it
+   *                (#10661), everything else comes from the images tracked at write time.
+   *
    * @return the freshly rebased page, ALREADY COMPRESSED and ready to be version-checked and committed. The
    * compression is part of the contract, not the caller's job: see the note at the end of the method body (#5608).
    *
@@ -2581,22 +2798,36 @@ public class TransactionContext implements Transaction {
    *                                         or the page can no longer host a record: the caller falls back to a
    *                                         normal full-transaction retry.
    */
-  private MutablePage rebaseSlots(final PageId pageId) throws IOException {
+  private MutablePage rebaseSlots(final MutablePage ownPage) throws IOException {
+    final PageId pageId = ownPage.getPageId();
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     final SlotRebaseBuffer buffer = slotRebaseByPage.get(key);
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(pageId.getFileId());
 
-    // Drop the stale copies so the reload observes the current committed version of the page.
+    // Drop the stale copies so the reload observes the current committed version of the page. The page this transaction
+    // wrote ({@code ownPage}, already out of modifiedPages) is where the images of the inserted slots are read back
+    // from (#10661).
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
     final MutablePage committed = getPageToModify(pageId, bucket.getPageSize(), false);
 
-    for (final Map.Entry<Integer, byte[]> entry : buffer.finalBody.entrySet()) {
-      final int slot = entry.getKey();
-      final byte[] finalBody = entry.getValue();
-      final boolean insertedHere = buffer.insertedSlots.contains(slot);
+    // ascending slot order; entries past the last slot written are simply untracked (state 0)
+    for (int slot = 0; slot < buffer.state.length; slot++) {
+      if (!buffer.isTracked(slot))
+        continue;
+      final boolean insertedHere = buffer.isInserted(slot);
+      final byte[] finalBody;
+      if (buffer.isFinalImageOnPage(slot)) {
+        finalBody = bucket.readPlainRecordBody(ownPage, slot);
+        if (finalBody == null)
+          // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
+          // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
+          throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
+              + " (the inserted record is no longer a plain record on the transaction's page). Please retry the operation");
+      } else
+        finalBody = buffer.finalBodyOf(slot);
 
       if (finalBody == null) {
         // DELETE (#5569). A slot this transaction both CREATED and deleted never existed on the committed page: its
@@ -2604,13 +2835,13 @@ public class TransactionContext implements Transaction {
         // would turn a perfectly mergeable transaction into a conflict.
         if (insertedHere)
           continue;
-        if (!bucket.rebaseRecordDeleteOnPage(committed, slot, buffer.baseBody.get(slot)))
+        if (!bucket.rebaseRecordDeleteOnPage(committed, slot, buffer.baseBodyOf(slot)))
           throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
               + " (concurrent change to the record being deleted). Please retry the operation");
         continue;
       }
 
-      final byte[] baseBody = insertedHere ? null : buffer.baseBody.get(slot);
+      final byte[] baseBody = insertedHere ? null : buffer.baseBodyOf(slot);
       if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
@@ -2965,7 +3196,8 @@ public class TransactionContext implements Transaction {
     // Issue #8270: a database opened by an HA server before it is wrapped for replication refuses anything that
     // would change it, and so does a transaction that BEGAN while it did, whatever has happened since. Same
     // placement as the rollback-only refusal above and for the same reason: the status has not moved yet, so the
-    // caller's error handling can still roll the transaction back. A read-only transaction commits as usual.
+    // caller's error handling can still roll the transaction back. A read-only transaction commits as usual. A restore
+    // replacing the database refuses the same way (issue #10689), so a transaction begun before it cannot commit into it.
     if (database instanceof LocalDatabase local && (begunUnderWriteRefusal != null || local.getWriteRefusal() != null)
         && (updatedRecords != null || hasChanges())) {
       local.checkWritesAccepted();
@@ -3130,7 +3362,8 @@ public class TransactionContext implements Transaction {
       }
 
       List<PageId> pagesToRebase = null;
-      List<PageId> slotPagesToRebase = null;
+      // the page itself, not only its id: it leaves modifiedPages here, and the replay reads the inserted slots back from it (#10661)
+      List<MutablePage> slotPagesToRebase = null;
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
         final MutablePage p = it.next();
 
@@ -3160,7 +3393,7 @@ public class TransactionContext implements Transaction {
             // of this page; replay this transaction's slot writes on the newer committed page (after the loop).
             if (slotPagesToRebase == null)
               slotPagesToRebase = new ArrayList<>();
-            slotPagesToRebase.add(p.getPageId());
+            slotPagesToRebase.add(p);
             it.remove();
           } else {
             if (isLeader)
@@ -3182,8 +3415,8 @@ public class TransactionContext implements Transaction {
         }
 
       if (slotPagesToRebase != null)
-        for (final PageId pageId : slotPagesToRebase) {
-          final MutablePage rebased = rebaseSlots(pageId);
+        for (final MutablePage ownPage : slotPagesToRebase) {
+          final MutablePage rebased = rebaseSlots(ownPage);
           pageManager.checkPageVersion(rebased, false);
           pages.add(rebased);
         }
@@ -3357,10 +3590,10 @@ public class TransactionContext implements Transaction {
               .queueTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
         else
           database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
-        // Only a REAL append crosses the point of no return (#5053/#4940): with useWAL=false (bulk loads)
-        // changes.result is null, nothing is durable and there is no WAL record for recovery to replay - a
-        // publish failure must then behave like any pre-durability failure (full rollback of user-held
-        // record state, no fence: fencing would promise a replay that cannot happen).
+        // Only a REAL append crosses the WAL point of no return (#5053/#4940): with useWAL=false (bulk loads)
+        // changes.result is null, nothing is durable and there is no WAL record for recovery to replay. A failure
+        // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
+        // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
       }
 
@@ -3385,7 +3618,12 @@ public class TransactionContext implements Transaction {
         if (pageWALSyncTicket > 0)
           page.setWALSyncTicket(pageWALSyncTicket);
       }
-      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
+      // THE SECOND POINT OF NO RETURN, THE ONE THAT HOLDS WITHOUT A WAL (#10768): the pages reach the read cache one by one, and
+      // with a synchronous flush the file one by one, so a failure from there can leave some of them visible and the rest not.
+      // Rolling back over that told the caller nothing happened and reset the identities of records that did land, so a retry
+      // inserted them twice. Raised by the page manager once its waits for flush capacity are over, right before the first page
+      // is handed over: a wait that fails or is interrupted has published nothing, and is still rolled back
+      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
@@ -3505,8 +3743,19 @@ public class TransactionContext implements Transaction {
   }
 
   private void fenceIfPastPointOfNoReturn(final Throwable cause) {
-    if (phase2WalAppended && database.getEmbedded() instanceof LocalDatabase localDatabase)
-      localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", cause);
+    if ((phase2WalAppended || phase2PublicationStarted) && database.getEmbedded() instanceof LocalDatabase localDatabase)
+      localDatabase.fenceForRecovery(fenceReason(), cause);
+  }
+
+  /**
+   * Why a failed 2nd phase fences the database: past the WAL append the reopen replays the transaction; past the start of a
+   * publication that has no WAL record (txWAL=false) nothing can, and the files may keep part of it (#10768).
+   */
+  private String fenceReason() {
+    return phase2WalAppended ?
+        "commit of tx " + txId + " failed after its WAL append" :
+        "commit of tx " + txId + " failed after its pages started to be published, with no WAL record to replay it "
+            + "(txWAL=false): the database may hold part of the transaction, check it with CHECK DATABASE after reopening it";
   }
 
   /**
@@ -3550,9 +3799,17 @@ public class TransactionContext implements Transaction {
       // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
       // exceptional post-append failure) is the acceptable side.
       if (database.getEmbedded() instanceof LocalDatabase localDatabase)
-        localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", commitFailureCause);
+        localDatabase.fenceForRecovery(fenceReason(), commitFailureCause);
       // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
       // makes them real): release resources WITHOUT touching user-held record state.
+      reset();
+    } else if (phase2PublicationStarted) {
+      // #10768: NO WAL RECORD (txWAL=false), BUT THE PUBLICATION STARTED, SO PART OF THE TRANSACTION MAY BE VISIBLE, AND ON DISK.
+      // Not "nothing happened": a rollback() here reset the identities of records that did land, and the caller's retry
+      // inserted them a second time. Concluded as the appended case is - fenced, so nothing commits on top of the half
+      // published state, and released without touching user-held record state - minus the replay, which nothing can make
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+        localDatabase.fenceForRecovery(fenceReason(), commitFailureCause);
       reset();
     } else if (remotelyCommitted)
       // #5064: the replication QUORUM already durably committed this transaction cluster-wide; only the
@@ -3794,6 +4051,7 @@ public class TransactionContext implements Transaction {
 
     remotelyCommitted = false;
     phase2WalAppended = false;
+    phase2PublicationStarted = false;
     deferredWALSyncTicket = 0;
     status = STATUS.INACTIVE;
     // The refusal belonged to the transaction that is ending here, not to the context, which begin() reuses.
@@ -3847,6 +4105,9 @@ public class TransactionContext implements Transaction {
     }
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
+    // Reached with some only when the transaction ends neither by a commit nor by a rollback, which take them out first and run them
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
     attachments = null;
     clientManaged = false;
     commitLockTimeout = null;

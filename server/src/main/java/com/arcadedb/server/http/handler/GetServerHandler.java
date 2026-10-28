@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndexMetrics;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
@@ -154,7 +155,14 @@ public class GetServerHandler extends AbstractServerHttpHandler {
         // Never expose reserved internal databases (e.g. the Raft control directory '.raft').
         if (ArcadeDBServer.isReservedDatabaseName(dbName))
           continue;
-        final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
+        final ServerDatabase db;
+        try {
+          // allowLoad=false: a database closed between getDatabaseNames() and here is left out of the listing, never reopened
+          // by a GET - which would also end a 'close database' mark for every client (issue #10690)
+          db = httpServer.getServer().getDatabase(dbName, false, false);
+        } catch (final DatabaseNotAvailableException e) {
+          continue;
+        }
         final JSONObject databaseJSON = new JSONObject();
         databaseJSON.put("name", db.getName());
         if (db.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)

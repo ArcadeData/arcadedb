@@ -18,11 +18,16 @@
  */
 package com.arcadedb.function.sql;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.NumberUtils;
+
+import java.util.List;
+import java.util.Map;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.
@@ -118,6 +123,12 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    * threw for something as ordinary as {@code max([1, 'a'])} (issue #6389). Numeric widening is the caller's job -
    * both functions run {@code Type.castComparableNumber} first, so this only ever sees values already brought to a
    * common numeric class, or values of genuinely different kinds.
+   * <p>
+   * The order is {@link BinaryComparator#compareTo}, the one of {@code ORDER BY}, the index keys and the comparison operators,
+   * so a BINARY value orders by its unsigned bytes, a map or a list by its entries, and two Java representations of one instant
+   * by that instant, where a raw cast refused them all: the aggregate answered over one row and threw over two (issue #10697).
+   * The comparator answers every pair, ordering unrelated kinds by class name so an index stays total; an aggregate has no
+   * such need, and two values of different kinds stay refused here, as before.
    *
    * @param left  the value to place
    * @param right the value to place it against
@@ -126,18 +137,33 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    *
    * @throws IllegalArgumentException if the two values cannot be compared with each other
    */
-  @SuppressWarnings("unchecked")
   protected int compareValues(final Object left, final Object right) {
-    // STRINGS ORDER BY CODE POINT, AS IN THE INDEX, ORDER BY AND THE COMPARISON OPERATORS (ISSUE #8975)
-    if (left instanceof String leftString && right instanceof String rightString)
-      return BinaryComparator.compareStrings(leftString, rightString);
-    try {
-      return ((Comparable<Object>) left).compareTo(right);
-    } catch (final ClassCastException e) {
+    if (!isSameKind(left, right))
       throw new IllegalArgumentException(
+          getName() + "() cannot compare a value of type " + left.getClass().getSimpleName() + " with a value of type "
+              + right.getClass().getSimpleName());
+    try {
+      if (left instanceof Identifiable leftRecord && right instanceof Identifiable rightRecord && left.getClass() != right.getClass())
+        // a record against its RID, or two kinds of record: by identity, which the comparator would answer by class name
+        return BinaryComparator.compareTo(leftRecord.getIdentity(), rightRecord.getIdentity());
+      return BinaryComparator.compareTo(left, right);
+    } catch (final ClassCastException | IllegalArgumentException e) {
+      // two values of one class that has no order (an embedded document), or a pair the comparator refuses
+      throw new IllegalArgumentException(left.getClass() == right.getClass() ?
+          getName() + "() cannot compare values of type " + left.getClass().getSimpleName() + ": the type has no order" :
           getName() + "() cannot compare a value of type " + left.getClass().getSimpleName() + " with a value of type "
               + right.getClass().getSimpleName(), e);
     }
+  }
+
+  /**
+   * Whether two values are of one kind {@link BinaryComparator#compareTo} orders as such, rather than by the name of their class.
+   * Kept in step with the arms of that method: a kind added there that relates two classes belongs here too.
+   */
+  private static boolean isSameKind(final Object left, final Object right) {
+    return left.getClass() == right.getClass() || left instanceof Number && right instanceof Number
+        || DateUtils.isDate(left) && DateUtils.isDate(right) || left instanceof Map && right instanceof Map
+        || left instanceof List && right instanceof List || left instanceof Identifiable && right instanceof Identifiable;
   }
 
   /**
@@ -199,6 +225,33 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
     throw new IllegalArgumentException(
         getName() + "() requires a numeric <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(
             value));
+  }
+
+  /**
+   * The strict counterpart of {@link #requireIntArgument(Object, String)}, for an argument whose value IS the request -
+   * a bound, a count, a size - where saturating would answer a question the caller did not ask: a number that is not a
+   * whole number in the int range ({@code 2.5}, {@code 3000000000}, NaN) is refused, as is a text that does not parse as
+   * one, instead of being read as a different, plausible int (issue #10699). {@code 7.0} and {@code '7'} are accepted.
+   *
+   * @param value        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @return the value as an int
+   *
+   * @throws IllegalArgumentException if the value is null or is not a whole number in the int range
+   */
+  protected int requireWholeIntArgument(final Object value, final String argumentName) {
+    try {
+      if (value instanceof Number number)
+        return NumberUtils.toIntWhole(number);
+      if (value instanceof CharSequence text && text.length() <= NumberUtils.MAX_NUMERIC_LITERAL_LENGTH)
+        return Integer.parseInt(text.toString().trim());
+    } catch (final ArithmeticException | NumberFormatException e) {
+      // FALL THROUGH TO THE TYPED ERROR BELOW
+    }
+    throw new IllegalArgumentException(
+        getName() + "() requires a whole number <" + argumentName + "> in the int range, but received "
+            + NumberUtils.describeRejectedNumber(value));
   }
 
   /**
