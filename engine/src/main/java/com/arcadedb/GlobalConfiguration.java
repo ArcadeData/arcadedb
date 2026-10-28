@@ -325,6 +325,20 @@ public enum GlobalConfiguration {
         return Math.max(4L, maxHeap / 512 / 1024 / 1024);
       }),
 
+  BLOCK_CACHE_MAX_BYTES("arcadedb.blockCache.maxBytes", SCOPE.JVM, """
+      Server-wide memory budget, in BYTES, for decoded column blocks read through BlockCache (columnar index \
+      segments). It is one budget for the whole JVM whatever the number of databases, types and buckets. The cache is \
+      split across 16 stripes, so an entry above a sixteenth of this value is never held, only returned to the \
+      caller. 0 disables caching. When left unset it auto-scales with the JVM max heap (heap/32, never below 16MB). \
+      A change applies at the next admission. The time-series decoded column cache keeps its own per-shard budget, \
+      arcadedb.timeSeriesDecodedBlockCacheRAM.""",
+      Long.class, 16L * 1024 * 1024, null, value -> {
+        final long floor = 16L * 1024 * 1024;
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        // Heap is unbounded (no -Xmx): keep the floor rather than a budget derived from a number that means "no limit".
+        return maxHeap == Long.MAX_VALUE ? floor : Math.max(floor, maxHeap / 32);
+      }),
+
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
       String.class, "high", Set.of("low", "medium", "high")),
