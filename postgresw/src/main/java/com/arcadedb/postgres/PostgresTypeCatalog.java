@@ -713,9 +713,10 @@ public class PostgresTypeCatalog {
       return new Operand(qualifier, tokens.get(from + 2).text.toLowerCase(Locale.ENGLISH), null, 3);
     }
 
+    /** ASCII digits only: Character.isDigit, and Integer.parseInt after it, would also read other scripts' digits as an OID. */
     private static boolean isDigits(final String text) {
       for (int i = 0; i < text.length(); i++)
-        if (!Character.isDigit(text.charAt(i)))
+        if (text.charAt(i) < '0' || text.charAt(i) > '9')
           return false;
       return !text.isEmpty();
     }
@@ -798,7 +799,11 @@ public class PostgresTypeCatalog {
       return alias != null ? alias : "pg_type";
     }
 
-    /** {@code cond [AND cond]...} up to the next WHERE or the end, each condition stripped of the parentheses around it. */
+    /**
+     * {@code cond [AND cond]...} up to the next WHERE or the end, each condition stripped of the parentheses around it. The split
+     * does not track parenthesis depth: {@code (a AND b)} becomes the fragments {@code (a} and {@code b)}, which no operand reads,
+     * so a nested conjunction declines the statement rather than being misread.
+     */
     boolean conditions(final List<List<PostgresCatalogToken>> conditions) {
       int start = position;
       while (true) {
