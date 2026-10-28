@@ -152,6 +152,10 @@ public final class ColumnarProjection {
   private final    AtomicBoolean       maintenance         = new AtomicBoolean();
   private volatile long                lastFlushMs         = System.currentTimeMillis();
 
+  // apply pass state, under applyLock (the retry clock of unreadablePages is also read lock-free by the tick)
+  private final ColumnarApplier.UnreadablePages unreadablePages = new ColumnarApplier.UnreadablePages();
+  private       ColumnarApplier.Pass            applyScratch;
+
   // guarded by publishLock
   /** Pages the apply pass completed since the last freeze (R14, V-B2): a flush keeps them unflushed. */
   private final IntHashSet               appliedSinceFreeze  = new IntHashSet();
@@ -829,6 +833,52 @@ public final class ColumnarProjection {
     }
     out.present[column] = false;
     return LOOKUP_ABSENT;
+  }
+
+  /**
+   * Apply thread, under {@link #applyLock()}: fills {@code out} ({@code maxRecordsInPage / 64} words) with the slots of the page that
+   * {@link #liveValueLookup} answers live: the rows of the live overlay, those of the frozen overlay it did not
+   * {@link #supersedeFrozen supersede}, and the rows of every segment its dead set does not hold. Allocates only for the segments
+   * covering the page.
+   */
+  void liveSlots(final int page, final long[] out) {
+    Arrays.fill(out, 0L);
+    final OverlayPageBlock live = overlay.page(page);
+    if (live != null)
+      or(out, live.liveStripe());
+    final ColumnarOverlay frozen = frozenOverlay;
+    final OverlayPageBlock frozenBlock = frozen == null ? null : frozen.page(page);
+    if (frozenBlock != null) {
+      final long[] stored = frozenBlock.liveStripe();
+      final long[] hidden = supersededInFrozen.stripe(page);
+      for (int w = 0; w < out.length; w++)
+        out[w] |= hidden == null ? stored[w] : stored[w] & ~hidden[w];
+    }
+    for (final SegmentReader segment : state.get().segments())
+      if (segment.minPage() >= 0 && page >= segment.minPage() && page <= segment.maxPage()) {
+        final long[] rows = segment.live(page, page + 1).stripe(page);
+        if (rows != null)
+          or(out, rows);
+      }
+  }
+
+  private static void or(final long[] target, final long[] words) {
+    for (int w = 0; w < target.length; w++)
+      target[w] |= words[w];
+  }
+
+  /** The pages whose last apply found an unreadable record, retried with a backoff (apply thread, under {@link #applyLock()}). */
+  ColumnarApplier.UnreadablePages unreadablePages() {
+    return unreadablePages;
+  }
+
+  /** The apply pass's reusable buffers, null before the first pass; under {@link #applyLock()}. */
+  ColumnarApplier.Pass applyScratch() {
+    return applyScratch;
+  }
+
+  void setApplyScratch(final ColumnarApplier.Pass scratch) {
+    this.applyScratch = scratch;
   }
 
   /** Reads the value of column k at the position from the overlay into {@code out}; false when the overlay holds no row there. */

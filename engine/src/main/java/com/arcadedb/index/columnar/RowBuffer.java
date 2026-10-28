@@ -34,6 +34,7 @@ final class RowBuffer {
   private final int[][][]          lists;
   private final int[][]            listCounts;
   private int                      size;
+  private RowValues                seedRow;
 
   RowBuffer(final int maxRecordsInPage, final ColumnDefinition[] columns) {
     if (maxRecordsInPage <= 0 || maxRecordsInPage % 64 != 0)
@@ -86,6 +87,37 @@ final class RowBuffer {
     if ((staged[slot >>> 6] & bit) == 0) {
       staged[slot >>> 6] |= bit;
       size++;
+    }
+  }
+
+  /**
+   * Stages every row of the block, replacing what was staged: the apply pass starts a page from its current overlay content, because
+   * {@link ColumnarOverlay#replacePage} makes the block it builds the page's WHOLE content.
+   *
+   * @throws IllegalArgumentException when the block has another page size or other columns
+   */
+  void seed(final OverlayPageBlock block) {
+    if (block.maxRecordsInPage() != maxRecordsInPage || !Arrays.equals(block.columnsView(), columns))
+      throw new IllegalArgumentException("Block of page " + block.page() + " does not fit rows staged for " + maxRecordsInPage
+          + " slots per page and columns " + Arrays.toString(columns));
+    clear();
+    if (seedRow == null)
+      seedRow = new RowValues(columns.length);
+    final long[] stripe = block.liveStripe();
+    int row = 0;
+    for (int w = 0; w < stripe.length; w++)
+      for (long word = stripe[w]; word != 0; word &= word - 1, row++) {
+        block.readRow(row, seedRow);
+        put((w << 6) + Long.numberOfTrailingZeros(word), seedRow);
+      }
+  }
+
+  /** Forgets the row staged at the slot, if any. */
+  void remove(final int slot) {
+    final long bit = 1L << slot;
+    if ((staged[slot >>> 6] & bit) != 0) {
+      staged[slot >>> 6] &= ~bit;
+      size--;
     }
   }
 

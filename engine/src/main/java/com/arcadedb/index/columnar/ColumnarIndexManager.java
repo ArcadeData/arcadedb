@@ -74,10 +74,11 @@ import java.util.logging.Level;
  * <p>
  * <b>Scheduling (P53).</b> {@link #startApplying()} registers one tick with {@link ColumnarApplyPool}. The tick takes no lock: it reads
  * the trackers' pending clocks (volatile) and CASes {@link #passScheduled} to submit at most one pass of this database at a time,
- * when a tracker has pending pages, a watcher is pending, or a flush interval went by since the last pass. A pass applies the pending
- * pages of each projection ({@link ColumnarApplier}), runs the pending watchers, and queues on {@link ColumnarMaintenancePool} the
- * flush, then merge, of each projection that needs one, at most one job per projection. A busy maintenance slot is no failure; a
- * failed flush or merge delays the next attempt of that projection exponentially ({@link #MAINTENANCE_BACKOFF_BASE_MS}, doubled per
+ * when a tracker has pending pages, a watcher is pending, the retry of a page with an unreadable record is due, or a flush interval went
+ * by since the last pass. A pass applies the pending pages of each projection ({@link ColumnarApplier}), runs the pending watchers, and
+ * queues on {@link ColumnarMaintenancePool} the flush, then merge, of each projection that needs one, at most one job per projection.
+ * A busy maintenance slot is no failure; a failed flush or merge delays the next attempt of that projection exponentially
+ * ({@link #MAINTENANCE_BACKOFF_BASE_MS}, doubled per
  * consecutive failure up to {@link #MAINTENANCE_BACKOFF_MAX_MS}); a merge failing {@link #CORRUPT_MERGES_BEFORE_REBUILD} times in a
  * row with a {@link BlockCorruptionException} marks the projection {@code corrupt}, which requests its rebuild.
  * <p>
@@ -733,7 +734,7 @@ public final class ColumnarIndexManager {
     // a database with no COLUMNAR index pays these reads only, never a configuration read or a pass
     if (slots.length == 0 && !watchersPending && failedBuckets.isEmpty() || closing || suspensions.get() > 0)
       return;
-    if (!watchersPending && !hasPendingApply() && !isOpenRetryDue()
+    if (!watchersPending && !hasPendingApply() && !isOpenRetryDue() && !isUnreadableRetryDue()
         && System.currentTimeMillis() - lastPassMs < database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL))
       return;
     if (passScheduled.compareAndSet(false, true))
@@ -752,6 +753,20 @@ public final class ColumnarIndexManager {
     return false;
   }
 
+  /** A page of some projection whose record was unreadable is due for its retry; lock free. */
+  private boolean isUnreadableRetryDue() {
+    final long now = clockMs.getAsLong();
+    for (final Slot slot : slots)
+      if (slot.projection.unreadablePages().isDue(now))
+        return true;
+    return false;
+  }
+
+  /** The clock of the maintenance schedule and of the retries of unreadable pages. */
+  long nowMs() {
+    return clockMs.getAsLong();
+  }
+
   /** Pages in an epoch or in flight; lock free. */
   private static boolean hasPendingApply(final ColumnarProjection projection) {
     final DirtyPageTracker external = projection.externalTracker();
@@ -767,7 +782,7 @@ public final class ColumnarIndexManager {
       for (final Slot slot : slots) {
         if (closing || suspensions.get() > 0)
           return;
-        if (hasPendingApply(slot.projection))
+        if (hasPendingApply(slot.projection) || slot.projection.unreadablePages().isDue(clockMs.getAsLong()))
           apply(slot.projection);
       }
       runWatchers();
@@ -920,7 +935,7 @@ public final class ColumnarIndexManager {
     return maintenanceInFlight.get() == 0;
   }
 
-  /** Freezes, or moves, the clock of the maintenance schedule. */
+  /** Freezes, or moves, the clock of the maintenance schedule and of the unreadable page retries. */
   void setClockForTesting(final LongSupplier clock) {
     this.clockMs = clock;
   }
