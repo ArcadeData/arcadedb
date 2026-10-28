@@ -236,10 +236,11 @@ class MatchSetTest extends TestHelper {
       final MatchSet lagging = MatchSet.fromProjection((DatabaseInternal) database, bucketIds, 0);
       try {
         assertThat(lagging.isOverBudget()).isFalse();
-        // pending is tracked per dirty page: the new positions are in, and so is the rest of their page
+        // pending is tracked per dirty page, but only its slots holding a committed record are matches: the new positions, not the
+        // empty rest of their page
         for (final RID rid : inserted)
           assertThat(lagging.forBucket(rid.getBucketId()).get(rid.getPosition())).as("pending " + rid).isTrue();
-        assertThat(cardinality(lagging, bucketIds)).isGreaterThan(110);
+        assertThat(cardinality(lagging, bucketIds)).isEqualTo(110);
         assertThat(lagging.size()).isEqualTo(cardinality(lagging, bucketIds));
         assertThat(lagging.snapshot(bucketIds[0])).isNotNull();
       } finally {

@@ -100,6 +100,11 @@ public final class FacetResult {
     return new FacetResult(kind, source, reason, buckets, otherCount, missing, distinct, stats, after, true);
   }
 
+  /** The same result with another {@link #source()}: the executor marks a facet {@code scan} once a bucket of it was read from records. */
+  FacetResult withSource(final String source) {
+    return new FacetResult(kind, source, reason, buckets, otherCount, missing, distinct, stats, after, hasAfter);
+  }
+
   public String kind() {
     return kind;
   }

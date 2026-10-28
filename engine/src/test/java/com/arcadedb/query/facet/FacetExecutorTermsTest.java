@@ -476,24 +476,72 @@ class FacetExecutorTermsTest extends TestHelper {
   void includeLiteralsAreConvertedPerSubtypeOnTheMergedPath() {
     createSiblingSubtypes();
     final long day2020 = LocalDate.of(2020, 1, 1).toEpochDay();
-    // each literal, on each subtype alone (the single-type path), matches what the extraction rules convert it to there: the date
-    // string the DATETIME midnight (a DATE column does not take a string, a LONG column neither), the number the DATE's day and the
-    // LONG's value (on the DATETIME column it is a millisecond of 1970 nobody holds)
-    final Object[] literals = { "2020-01-01", day2020 };
-    final long[] expectedAlone = { 3, 4 };
+    // each literal, on each subtype alone (the single-type path), matches what a WHERE on the same literal matches there (the schema
+    // conversion of the literal to the property's type); the merged path over the three differently typed columns matches their sum
+    final Object[] literals = { "2020-01-01", day2020, 42L };
+    final long[] merged = new long[literals.length];
     for (int l = 0; l < literals.length; l++) {
       long alone = 0;
-      for (final String subtype : List.of("Clip", "Shot", "Note"))
-        alone += includedCount(subtype, literals[l]);
-      assertThat(alone).as("single-type matches of " + literals[l]).isEqualTo(expectedAlone[l]);
-      // the merged path over the three differently typed columns matches the same terms
+      for (final String subtype : List.of("Clip", "Shot", "Note")) {
+        final long included = includedCount(subtype, literals[l]);
+        assertThat(included).as(subtype + " INCLUDE " + literals[l]).isEqualTo(whereCount(subtype, literals[l]));
+        alone += included;
+      }
+      merged[l] = alone;
       assertThat(mediaFacet(include(literals[l])).buckets().getFirst().count()).as("merged matches of " + literals[l]).isEqualTo(alone);
     }
+    assertThat(merged[0]).as("the date string matches the DATE day and the DATETIME midnight").isEqualTo(2 + 3);
+    assertThat(merged[2]).as("42 matches the LONG value only").isEqualTo(1);
 
     final FacetResult both = mediaFacet(new TermsFacetSpec("ts", "ts", null, null, 10, 1, FacetOrder.COUNT_DESC,
-        List.of("2020-01-01", day2020, "Nobody"), false, null));
-    assertThat(both.buckets().stream().map(FacetBucket::count).toList()).containsExactly(4L, 3L, 0L);
-    assertThat(both.otherCount()).isEqualTo(6 + 5 + 4 - 7);
+        List.of("2020-01-01", 42L, "Nobody"), false, null));
+    assertThat(both.buckets().stream().map(FacetBucket::count).toList()).containsExactly(merged[0], merged[2], 0L);
+    assertThat(both.otherCount()).isEqualTo(6 + 5 + 4 - merged[0] - merged[2]);
+  }
+
+  /** {@code count()} of a WHERE comparing the property with the literal, the conversion an INCLUDE must match. */
+  private long whereCount(final String type, final Object literal) {
+    final String sql = "SELECT count() AS c FROM " + type + " WHERE ts = " + (literal instanceof String ? "'" + literal + "'" : literal);
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.hasNext() ? rs.next().<Number>getProperty("c").longValue() : 0L;
+    }
+  }
+
+  @Test
+  @Timeout(120)
+  void includeLiteralIsConvertedAsWhereConvertsIt() {
+    final ColumnarTestData data = data(1);
+    data.dateColumn = true;
+    data.createSchema(database);
+    data.insertAssets(database, 500);
+    FacetOracle.awaitCaughtUp(database);
+
+    final String day;
+    try (final ResultSet rs = database.query("sql", "SELECT day FROM " + TYPE + " WHERE day IS NOT NULL LIMIT 1")) {
+      day = rs.next().<Object>getProperty("day").toString();
+    }
+    final long matching;
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM " + TYPE + " WHERE day = '" + day + "'")) {
+      matching = rs.next().<Number>getProperty("c").longValue();
+    }
+    assertThat(matching).as("records WHERE day = '" + day + "'").isPositive();
+
+    // a date string on a DATE column, and a number given as a string on a LONG column
+    final TermsFacetSpec byDay = new TermsFacetSpec("day", "day", null, null, 10, 1, FacetOrder.COUNT_DESC, List.of(day), false, null);
+    assertThat(execute(null, byDay).get("day").buckets().getFirst().count()).isEqualTo(matching);
+
+    final long size;
+    try (final ResultSet rs = database.query("sql", "SELECT fileSize FROM " + TYPE + " WHERE fileSize IS NOT NULL LIMIT 1")) {
+      size = rs.next().<Number>getProperty("fileSize").longValue();
+    }
+    final long sizeMatching;
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM " + TYPE + " WHERE fileSize = '" + size + "'")) {
+      sizeMatching = rs.next().<Number>getProperty("c").longValue();
+    }
+    assertThat(sizeMatching).isPositive();
+    final TermsFacetSpec bySize = new TermsFacetSpec("fileSize", "fileSize", null, null, 10, 1, FacetOrder.COUNT_DESC, List.of(String.valueOf(size)),
+        false, null);
+    assertThat(execute(null, bySize).get("fileSize").buckets().getFirst().count()).isEqualTo(sizeMatching);
   }
 
   private static TermsFacetSpec include(final Object literal) {

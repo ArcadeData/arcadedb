@@ -487,13 +487,26 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
    * ({@link ColumnarValueExtractor#toColumnLong}), else, or when it is unconvertible (counted 0), the literal itself, normalized.
    */
   private Object includeKey(final Object value) {
-    if (kind == ColumnKind.LONG && value != null && extractor != null)
+    final Object literal = schemaConverted(value);
+    if (kind == ColumnKind.LONG && literal != null && extractor != null)
       try {
-        return extractor.toColumnLong(spec.property(), value);
+        return extractor.toColumnLong(spec.property(), literal);
       } catch (final IllegalArgumentException e) {
         // not a value of the column: counted 0
       }
-    return FacetValueComparator.normalize(value);
+    return FacetValueComparator.normalize(literal);
+  }
+
+  /**
+   * An INCLUDE literal converted to the property's type as a WHERE comparing the property with it converts it
+   * ({@link Type#convertOrNull}), so INCLUDE {@code '2020-01-01'} on a DATE property matches what {@code WHERE day = '2020-01-01'}
+   * matches. The literal itself when it does not convert, and for a list indexed BY ITEM (the column knows no item type).
+   */
+  private Object schemaConverted(final Object value) {
+    if (value == null || propertyType == null || database == null || kind == ColumnKind.ORDINAL_LIST)
+      return value;
+    final Object converted = Type.convertOrNull(database, value, propertyType.getJavaImplementation(database));
+    return converted != null ? converted : value;
   }
 
   // ------------------------------------------------------------------------------------------------------------------- ranking
@@ -508,7 +521,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
     if (hasInclude()) {
       final LinkedHashMap<Object, long[]> included = new LinkedHashMap<>();
       for (final Object value : spec.include()) {
-        final Object normalized = FacetValueComparator.normalize(value);
+        final Object normalized = FacetValueComparator.normalize(schemaConverted(value));
         final int merged = map.mergedOf(normalized);
         included.putIfAbsent(normalized, new long[] { merged >= 0 && merged < cardinality ? counter.get(merged) : 0L });
       }
