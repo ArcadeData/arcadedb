@@ -318,8 +318,10 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   /**
    * Records the samples an append has just committed with timestamps in {@code [minTs, maxTs]}, when some of them are behind the
    * watermark (issue #10502): the incremental refresh reads only the samples at or after the watermark, so those would never reach
-   * their buckets. Called once the append has committed, never before: a refresh that read the source before the commit and cleared
-   * the record would lose the samples. The caller persists the schema when the answer is {@code true}.
+   * their buckets. Called once the append has committed: a refresh that read the source before the commit and cleared the record
+   * would lose the samples. Under HA it is also called before the commit, only to ship the record to the followers ahead of the
+   * samples (issue #10673); the call after the commit is what the leader relies on. The caller persists the schema when the answer
+   * is {@code true}.
    * <p>
    * The range recorded is widened to whole buckets on the grid the watermark is a start of, and clipped to before the watermark (the
    * samples at or after it are read by the refresh anyway). A bucket is recomputed whole whatever part of it the range covers, so
