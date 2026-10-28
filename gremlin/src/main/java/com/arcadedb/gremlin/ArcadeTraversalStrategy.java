@@ -387,17 +387,19 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       } else if (c != IdentityStep.class && c != NoOpBarrierStep.class && c != RangeGlobalStep.class
           && c != TraversalFilterStep.class && c != WhereTraversalStep.class && c != NotStep.class)
         return NOT_READ_ONLY;
+      // ELSE A STEP THAT LETS THROUGH, OR DROPS, THE TRAVERSER IT IS FED: WHAT COMES OUT IS WHAT CAME IN (ITS CHILDREN WERE ASKED ABOVE)
     }
     return current;
   }
 
   private static boolean childrenAreReadOnly(final TraversalParent parent, final int input) {
+    return childrenAreReadOnly(parent.getLocalChildren(), input) && childrenAreReadOnly(parent.getGlobalChildren(), input);
+  }
+
+  private static boolean childrenAreReadOnly(final List<? extends Traversal.Admin<?, ?>> children, final int input) {
     // A by('key') OR by(T.id) MODULATOR IS AN AbstractLambdaTraversal: IT RAISES ON A TRAVERSER WITHOUT THE KEY, SO dedup().by('k') AND
     // order().by('k') KEEP THE FILTER, CONSERVATIVELY
-    for (final Traversal.Admin<?, ?> child : parent.getLocalChildren())
-      if (child instanceof AbstractLambdaTraversal || readOnlyOutput(child.getSteps(), input) == NOT_READ_ONLY)
-        return false;
-    for (final Traversal.Admin<?, ?> child : parent.getGlobalChildren())
+    for (final Traversal.Admin<?, ?> child : children)
       if (child instanceof AbstractLambdaTraversal || readOnlyOutput(child.getSteps(), input) == NOT_READ_ONLY)
         return false;
     return true;
@@ -423,12 +425,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   private static boolean idsAreRids(final Object[] ids) {
     for (final Object id : ids) {
+      // RID.is() IS STRICTER THAN THE PARSE ArcadeGraph RUNS: A STRING IT REJECTS ONLY KEEPS THE FILTER
       if (id instanceof String string) {
-        try {
-          new RID(string);
-        } catch (final RuntimeException e) {
+        if (!RID.is(string))
           return false;
-        }
       } else if (id instanceof Element element) {
         if (!(element.id() instanceof RID))
           return false;

@@ -143,6 +143,7 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
         t -> t.has("s", P.gt(1)), t -> t.has("n", P.lt("a")), t -> t.has("n", P.within("a", 1L)), t -> t.has("n", TextP.containing("x")),
         t -> t.has("s", TextP.regex("^x")), t -> t.has("n", P.between("a", "z")), t -> t.is(P.gt("a")), t -> t.is(TextP.startingWith("x")),
         t -> t.is(P.neq(null)), t -> t.has("n", P.not(P.eq("a"))), t -> t.has("n", TextP.notContaining("q")),
+        // THE CASTS ARE FOR THE GENERICS ONLY: AN and() OF A NUMBER COMPARISON AND A TEXT PREDICATE
         t -> t.is(P.gt((Object) 1).and((P) TextP.containing("x"))), t -> t.has("s", P.gt(1).or(P.within("x"))));
 
     for (final Function<GraphTraversalSource, GraphTraversal<?, ?>> feeder : feeders)
