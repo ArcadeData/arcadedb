@@ -2123,6 +2123,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.tokenProvider = new ClusterTokenProvider(configuration);
     this.tokenProvider.initClusterToken();
+    // A token derived from a root password file is held to the one this node last ran with (issue #10601): a file
+    // rewritten in place would otherwise move this node to a token its peers do not hold, silently, at this restart.
+    if (persistStorage)
+      this.tokenProvider.verifyDerivedTokenFingerprint(clusterTokenFingerprintFile(storageDir),
+          configuration.getValueAsBoolean(GlobalConfiguration.HA_CLUSTER_TOKEN_ALLOW_ROTATION));
 
     // When persistent storage is requested and the storage directory already has data,
     // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
@@ -3047,6 +3052,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Where the fingerprint of the cluster token a node derived from its root password file is recorded (issue #10601): a
+   * sibling of the Raft storage directory, like {@link #runtimeJoinMarkerFile}, so the divergence reformat of
+   * {@link #restartRatis(boolean)} does not take the record of the token this node ran with along with the log.
+   */
+  static File clusterTokenFingerprintFile(final File raftStorageDir) {
+    return new File(raftStorageDir.getAbsoluteFile().getParentFile(), raftStorageDir.getName() + ".cluster-token-fingerprint");
+  }
+
+  /**
+   * Logs, rate-limited, why a cluster-token hop from {@code caller} was refused (issue #10601). No-op before the token
+   * is resolved.
+   */
+  public void reportClusterTokenRefusal(final String caller) {
+    final ClusterTokenProvider p = tokenProvider;
+    if (p != null && p.getSource() != null)
+      p.reportClusterTokenRefusal(caller, System.currentTimeMillis());
+  }
+
+  /**
    * Wipes the Raft storage of a node that does not persist it across starts ({@code arcadedb.ha.raftPersistStorage}
    * false), together with the crash-loop escalation record kept beside it: that record describes a crash loop on the
    * storage being discarded, and the fresh log this start formats has not crash-looped yet. Before issue #8380 the
@@ -3055,6 +3079,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static void discardNonPersistentRaftStorage(final File raftStorageDir) {
     if (raftStorageDir.exists())
       deleteRecursive(raftStorageDir);
+    // The token fingerprint describes the previous run of a node that keeps nothing across starts (issue #10601).
+    final File fingerprint = clusterTokenFingerprintFile(raftStorageDir);
+    if (fingerprint.exists() && !fingerprint.delete() && fingerprint.exists())
+      LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+          "Cannot delete the cluster token fingerprint '%s' of the discarded Raft storage", fingerprint.getAbsolutePath());
     final File record = crashLoopEscalationMarkerFile(raftStorageDir);
     if (record.exists() && !record.delete() && record.exists())
       LogManager.instance().log(RaftHAServer.class, Level.WARNING,
@@ -7152,7 +7181,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return subdirs != null && subdirs.length > 0;
   }
 
-  private File getRaftStorageDir() {
+  File getRaftStorageDir() {
     final File dir = resolveRaftStorageDir(
         configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY),
         configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
