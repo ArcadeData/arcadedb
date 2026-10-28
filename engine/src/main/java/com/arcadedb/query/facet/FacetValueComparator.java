@@ -28,7 +28,8 @@ import java.util.Comparator;
  * patched values agree: strings, numbers (exact across LONG, DECIMAL and DOUBLE, NaN last), booleans, RIDs; null last. Numbers are
  * first normalized with {@link Type#normalizeNumberForKey}, as the dictionary and GROUP BY keys are, so raw values (a Float, an
  * Integer, {@code -0.0d}, a BigDecimal of any scale) order exactly as their normalized form. A value of any other class sorts after
- * those, by class name and then by {@code toString}.
+ * those, by class name, then (two values of one {@link Comparable} class, such as dates and times) by their own order, else by
+ * {@code toString}.
  * <p>
  * {@link #compare} normalizes both sides on every call; a caller sorting many values calls {@link #normalize} once per value and
  * {@link #compareNormalized} on the results.
@@ -41,6 +42,9 @@ public final class FacetValueComparator implements Comparator<Object> {
 
   /** The canonical form of a facet value (null stays null; only numbers change). */
   public static Object normalize(final Object value) {
+    // a non-finite Float is kept as a Float by normalizeNumberForKey: as its Double it sorts with the other numbers
+    if (value instanceof Float f && !Float.isFinite(f))
+      return f.doubleValue();
     return Type.normalizeNumberForKey(value);
   }
 
@@ -60,6 +64,16 @@ public final class FacetValueComparator implements Comparator<Object> {
     if (supportedX != supportedY)
       return supportedX ? -1 : 1;
     final int byClass = x.getClass().getName().compareTo(y.getClass().getName());
-    return byClass != 0 ? byClass : x.toString().compareTo(y.toString());
+    if (byClass != 0)
+      return byClass;
+    // two values of one comparable class (a Date, a LocalDate, a LocalDateTime, ...) in their own order: time order for temporals
+    if (x instanceof Comparable)
+      return compareSameClass(x, y);
+    return x.toString().compareTo(y.toString());
+  }
+
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  private static int compareSameClass(final Object x, final Object y) {
+    return ((Comparable) x).compareTo(y);
   }
 }

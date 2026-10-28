@@ -90,6 +90,29 @@ class ColumnarStatsTest {
   }
 
   @Test
+  void queryCountersAreDatabaseWide() {
+    final ColumnarStats stats = new ColumnarStats();
+    assertThat(stats.queryPatchedCount()).isZero();
+    assertThat(stats.queryBudgetWaitsCount()).isZero();
+    assertThat(stats.queryPatchOverflowsCount()).isZero();
+    assertThat(stats.queryFallbackScansCount()).isZero();
+
+    stats.queryPatched(40);
+    stats.queryPatched(2);
+    stats.queryBudgetWaits(3);
+    stats.queryPatchOverflow();
+    stats.queryFallbackScan();
+    stats.queryFallbackScan();
+
+    assertThat(stats.queryPatchedCount()).isEqualTo(42);
+    assertThat(stats.queryBudgetWaitsCount()).isEqualTo(3);
+    assertThat(stats.queryPatchOverflowsCount()).isEqualTo(1);
+    assertThat(stats.queryFallbackScansCount()).isEqualTo(2);
+    // database-wide counters, not cells keyed by type
+    assertThat(stats.hasCells()).isFalse();
+  }
+
+  @Test
   void forEachKeyListsEveryRegisteredCell() {
     final ColumnarStats stats = new ColumnarStats();
     writeEveryCell(stats);

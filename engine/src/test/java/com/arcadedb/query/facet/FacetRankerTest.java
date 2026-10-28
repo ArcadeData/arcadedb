@@ -22,9 +22,11 @@ import com.arcadedb.index.columnar.GlobalDictionary;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -203,6 +205,26 @@ class FacetRankerTest {
     assertThat(cmp.compare(new StringBuilder("a"), true)).isPositive();
     assertThat(cmp.compare(new StringBuilder("a"), new StringBuilder("b"))).isNegative();
     assertThat(cmp.compare(new StringBuilder("a"), null)).isNegative();
+  }
+
+  @Test
+  void datesOfOneClassOrderInTime() {
+    final FacetValueComparator cmp = FacetValueComparator.INSTANCE;
+    // Date.toString() is not chronological ("Mon ..." before "Sat ..."): the class's own order must win
+    assertThat(cmp.compare(new Date(0L), new Date(86_400_000L * 5))).isNegative();
+    assertThat(cmp.compare(LocalDate.of(2024, 1, 31), LocalDate.of(2024, 2, 1))).isNegative();
+    assertThat(cmp.compare(LocalDate.of(2024, 1, 31), LocalDate.of(2024, 1, 31))).isZero();
+  }
+
+  @Test
+  void nonFiniteFloatOrdersAsItsDouble() {
+    final FacetValueComparator cmp = FacetValueComparator.INSTANCE;
+    assertThat(FacetValueComparator.normalize(Float.NaN)).isEqualTo(Double.NaN);
+    assertThat(cmp.compare(Float.NaN, Double.NaN)).isZero();
+    assertThat(cmp.compare(Float.POSITIVE_INFINITY, Double.POSITIVE_INFINITY)).isZero();
+    assertThat(cmp.compare(Float.NEGATIVE_INFINITY, -1L)).isNegative();
+    // a number, not an unsupported class: it sorts before a value of a class the dictionary cannot hold
+    assertThat(cmp.compare(Float.POSITIVE_INFINITY, new StringBuilder("a"))).isNegative();
   }
 
   @Test

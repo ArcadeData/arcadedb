@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -34,14 +35,19 @@ import java.util.function.Consumer;
  * consecutive states and closed by the projection when no retained state names them (V-M8).
  */
 final class ProjectionState {
+  private static final ColumnDefinition[] NO_COLUMNS    = new ColumnDefinition[0];
+  private static final String[]           NO_PROPERTIES = new String[0];
+
   private final long                          generation;
   private final SegmentReader[]               segments;
   private final ColumnarSegmentView[]         overlays;
   private final Map<String, GlobalDictionary> dictionaries;
   private final Set<String>                   files;
+  private final ColumnDefinition[]            publishedColumns;
   private final boolean                       usable;
   private final Consumer<ProjectionState>     onLastRelease;
   private final AtomicInteger                 references = new AtomicInteger(1);
+  private volatile PublishedProperties        publishedProperties;
 
   /**
    * Takes one reference on the {@link SegmentFile} of every segment, and starts with one reference of its own (the owner's).
@@ -58,6 +64,15 @@ final class ProjectionState {
   ProjectionState(final long generation, final SegmentReader[] segments, final ColumnarSegmentView[] overlays,
       final Map<String, GlobalDictionary> dictionaries, final Set<String> files, final boolean usable,
       final Consumer<ProjectionState> onLastRelease) {
+    this(generation, segments, overlays, dictionaries, files, NO_COLUMNS, usable, onLastRelease);
+  }
+
+  /**
+   * @param publishedColumns the column definitions of the manifest the state was built from (empty for none); shared, never written
+   */
+  ProjectionState(final long generation, final SegmentReader[] segments, final ColumnarSegmentView[] overlays,
+      final Map<String, GlobalDictionary> dictionaries, final Set<String> files, final ColumnDefinition[] publishedColumns,
+      final boolean usable, final Consumer<ProjectionState> onLastRelease) {
     for (int i = 0; i < segments.length; i++) {
       try {
         segments[i].file().retain();
@@ -72,6 +87,7 @@ final class ProjectionState {
     this.overlays = overlays;
     this.dictionaries = dictionaries;
     this.files = files;
+    this.publishedColumns = publishedColumns;
     this.usable = usable;
     this.onLastRelease = onLastRelease;
   }
@@ -144,6 +160,34 @@ final class ProjectionState {
 
   boolean isUsable() {
     return usable;
+  }
+
+  /** The published properties computed for one array of the projection's column definitions. */
+  private record PublishedProperties(ColumnDefinition[] own, String[] properties) {
+  }
+
+  /**
+   * The properties of {@code own} (the projection's column definitions) whose column the state's manifest publishes
+   * ({@link ColumnarProjection#isPublished}), under their {@code own} names; none for an unusable state. Memoized on the identity of
+   * {@code own}, which the projection replaces copy-on-write: a query's acquire allocates nothing until the columns change. The result
+   * is shared, never write it.
+   */
+  String[] publishedProperties(final ColumnDefinition[] own) {
+    final PublishedProperties memo = publishedProperties;
+    if (memo != null && memo.own == own)
+      return memo.properties;
+    String[] properties = NO_PROPERTIES;
+    if (usable) {
+      properties = new String[own.length];
+      int count = 0;
+      for (final ColumnDefinition column : own)
+        if (ColumnarProjection.isPublished(publishedColumns, column))
+          properties[count++] = column.property();
+      if (count < properties.length)
+        properties = Arrays.copyOf(properties, count);
+    }
+    publishedProperties = new PublishedProperties(own, properties);
+    return properties;
   }
 
   int referencesForTesting() {
