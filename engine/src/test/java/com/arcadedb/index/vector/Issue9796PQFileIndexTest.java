@@ -92,8 +92,8 @@ class Issue9796PQFileIndexTest extends TestHelper {
     final Path pqPath = pqFile.getFilePath();
     assertThat(pqPath).exists();
 
-    final ProductQuantization pq = (ProductQuantization) field("productQuantization").get(index);
-    final PQVectors liveCodes = (PQVectors) field("pqVectors").get(index);
+    final ProductQuantization pq = index.pqCodesForTest().quantization();
+    final PQVectors liveCodes = index.pqCodesForPublishedGraphForTest();
     assertThat(pq).isNotNull();
     assertThat(liveCodes).isNotNull();
 
@@ -103,11 +103,11 @@ class Issue9796PQFileIndexTest extends TestHelper {
         new Issue9796PQFileAtomicRewriteTest.FailingPQVectors(pq, liveCodes.count(), 64, failure);
 
     final Method persist = LSMVectorIndex.class.getDeclaredMethod("persistProductQuantization", ProductQuantization.class,
-        PQVectors.class, int.class, Long.class);
+        PQVectors.class, int[].class, Long.class);
     persist.setAccessible(true);
     Throwable escaped = null;
     try {
-      persist.invoke(index, pq, failing, liveCodes.count(), null);
+      persist.invoke(index, pq, failing, index.getOrdinalToVectorIdForTest(), null);
     } catch (final InvocationTargetException e) {
       escaped = e.getCause();
     }
@@ -118,7 +118,8 @@ class Issue9796PQFileIndexTest extends TestHelper {
     assertThat(temporariesNextTo(pqPath)).isEmpty();
     assertThat(pqFile.hasUsableData()).isFalse();
     if (escaped == null)
-      assertThat(field("pqVectors").get(index)).as("the codes in hand are right for the graph in memory").isSameAs(failing);
+      assertThat(index.pqCodesForPublishedGraphForTest()).as("the codes in hand are right for the graph in memory")
+          .isSameAs(failing);
     return escaped;
   }
 

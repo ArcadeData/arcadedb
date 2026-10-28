@@ -44,11 +44,11 @@ import java.util.stream.Stream;
  * {@code db.index.vector.queryNodes} answers them, with the clause's own {@code WHERE} applied while the index is searched
  * rather than to its top k, so {@code LIMIT 10} answers 10 matching rows when the index holds them.
  * <p>
- * <b>Cost of a selective {@code WHERE}.</b> A rejected candidate is skipped and the search asked again with twice the
- * candidates, until k rows match, the index has handed over everything it holds, or the budget reaches
- * {@link com.arcadedb.index.vector.VectorUtils#MAX_FETCH_CANDIDATES} (issue #10782). Every candidate up to there is loaded
- * and evaluated, so a filter that matches few records walks a large part of the index; the command's deadline still bounds
- * it.
+ * <b>Cost of a selective {@code WHERE}.</b> The {@code WHERE} is the index's allow-list (issue #10782): the walk tests each
+ * candidate it meets, once per call, skips the ones it rejects, and keeps expanding until it holds k matches or has met
+ * every vector it can reach, so the answer has k rows whenever the index holds k matching records, however far from the
+ * query they are. A filter that matches few records therefore loads and tests a large part of the index, up to every record
+ * of it once; the command's deadline bounds it.
  * <p>
  * Not registered in the procedure registry: one instance is built per {@code SEARCH} clause by the parser, since it carries
  * that clause's binding variable and its {@code WHERE}. Arguments, evaluated per input row: the index name, the query

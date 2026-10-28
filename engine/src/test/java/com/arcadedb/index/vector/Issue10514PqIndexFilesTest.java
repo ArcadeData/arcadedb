@@ -97,8 +97,8 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     final LSMVectorIndex index = indexOf("DocPq");
     index.buildVectorGraphNow();
 
-    final ProductQuantization pq = (ProductQuantization) field("productQuantization").get(index);
-    final PQVectors pqVectors = (PQVectors) field("pqVectors").get(index);
+    final ProductQuantization pq = index.pqCodesForTest().quantization();
+    final PQVectors pqVectors = index.pqCodesForPublishedGraphForTest();
     final ImmutableGraphIndex graph = (ImmutableGraphIndex) field("graphIndex").get(index);
     assertThat(pq).isNotNull();
     assertThat(pqVectors).isNotNull();

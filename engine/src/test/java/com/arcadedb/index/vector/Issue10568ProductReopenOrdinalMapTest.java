@@ -428,6 +428,11 @@ class Issue10568ProductReopenOrdinalMapTest {
       try {
         final LSMVectorIndex index = vectorIndex(db);
         final List<Pair<RID, Float>> results = capturingLogs(logs, () -> index.findNeighborsFromVector(embedding(1), 10, 64));
+        // Whichever route the reopen took, codes it kept or rebuilt are bound to the graph it published: codes left bound
+        // to no map would silently turn every approximate search into an exact one (issue #10786)
+        if (index.isPQSearchAvailable())
+          assertThat(index.pqCodesForPublishedGraphForTest()).as("the PQ codes serve the graph the reopen published")
+              .isNotNull();
         checks.accept(index, results);
       } finally {
         db.drop();
