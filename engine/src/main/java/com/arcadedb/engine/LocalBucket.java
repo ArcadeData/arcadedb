@@ -7693,7 +7693,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // Written BEFORE this page changes, and kept off it: the page has far less free tail than a chunk header. The new
     // chunk is linked from this chunk's next-chunk pointer, whose offset the shift below does not move. Should the write
     // fail part way, whatever it allocated lives only in this transaction's pages and goes with its rollback. The pointer
-    // is rewritten under no coverage span: the caller poisons this page, so no merge replays any write on it.
+    // is rewritten under no coverage span: the caller poisons this page, so no merge replays any write on it. The page
+    // the new chunk lands on is never this one, so the offsets the caller re-derives here are not disturbed by it.
     writeContinuationChunks(page, nextChunkPointerOffset, 0, movedContent, 0, bytesNeeded,
             page.getPageId().getPageNumber(), chainTail);
 
