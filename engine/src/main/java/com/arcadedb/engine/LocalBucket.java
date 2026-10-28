@@ -7767,6 +7767,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || tx.isDeletedInTransaction(bucketId,
             next)))
       next++;
+    // Slots read: 1..next when the walk stopped on a free slot (next of them), 1..totalRecords-1 when it ran off the table.
     insertSlotsRead.addAndGet(Math.min(totalRecords, next + 1) - 1);
     return next;
   }
