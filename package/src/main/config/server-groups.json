@@ -12,6 +12,13 @@
             }
           }
         },
+        "crud": {
+          "access": [],
+          "resultSetLimit": -1,
+          "types": {
+            "*": { "access": ["createRecord", "readRecord", "updateRecord", "deleteRecord"] }
+          }
+        },
         "readonly": {
           "access": [],
           "resultSetLimit": -1,
