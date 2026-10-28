@@ -2148,6 +2148,8 @@ public class PostgresCatalog {
   /**
    * {@code pg_settings}: a row per parameter {@code SHOW ALL} lists for this connection, with the value {@code SHOW} answers, so that
    * the two cannot disagree (issue #10591). A parameter this server has no value for is absent, as it is from {@code SHOW ALL}.
+   * Only name, setting, context and pending_restart are filled: the type, unit, bounds and descriptions of a parameter are not
+   * modelled, and a client that reads one of them reads NULL.
    */
   private static List<Map<String, Object>> settingRows(final Context context) {
     final List<String[]> settings = context.settings().showAll();

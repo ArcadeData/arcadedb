@@ -167,6 +167,9 @@ class Issue10591NoRowCatalogRelationsTest {
         .extracting(row -> row.get("s")).containsExactly("Pe");
     assertThat(resolve("select substring(relname, 2, 3) as s from pg_class where relname = 'Person'").rows)
         .extracting(row -> row.get("s")).containsExactly("ers");
+    // a text FROM is PostgreSQL's regular-expression extract, not a position: it is declined, never answered as one
+    assertThat(PostgresCatalog.resolve("select substring(relname from 'P.r') as s from pg_class where relname = 'Person'", database,
+        USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
   @Test
