@@ -93,6 +93,23 @@ class FacetsExplainTest extends TestHelper {
 
   @Test
   @Timeout(120)
+  void profileShowsHierarchyExecution() {
+    final ColumnarTestData data = new ColumnarTestData(42);
+    data.tagHierarchy = new JSONObject().put("vertexType", ColumnarTestData.TAG_TYPE).put("key", "path")
+        .put("parentEdge", ColumnarTestData.PARENT_EDGE);
+    data.createSchema(database);
+    data.tagValues = ColumnarTestData.createTagTree(database, 42, 3, 3);
+    data.insertAssets(database, 500);
+    FacetOracle.awaitCaughtUp(database);
+
+    final String text = plan("PROFILE", "SELECT FROM " + TYPE + " WHERE " + WHERE + " FACETS t: tags HIERARCHY TOP 5")
+        .getProperty("executionPlanAsString");
+    assertThat(text).contains("+ COLLECT FACET MATCHES", "HIERARCHY", "source=index", "budget=", "nodeVisits=");
+    assertThat(text).containsPattern("counting=(DENSE|HASH)");
+  }
+
+  @Test
+  @Timeout(120)
   void profileWithLimitStillComputesFacets() {
     load();
     final Result plan = plan("PROFILE", QUERY + " LIMIT 2");

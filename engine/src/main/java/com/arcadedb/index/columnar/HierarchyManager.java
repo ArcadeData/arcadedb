@@ -138,8 +138,11 @@ public final class HierarchyManager {
       refreshSources(schemaVersion());
   }
 
-  /** The watched file ids, sorted; empty when the hierarchy is unavailable. */
-  int[] watchedFileIds() {
+  /**
+   * The watched file ids, sorted; empty when the hierarchy is unavailable. A facet reads the hierarchy only for a user who may read
+   * the records of every one of them (the shared view is built with no user).
+   */
+  public int[] watchedFileIds() {
     return files.ids().clone();
   }
 

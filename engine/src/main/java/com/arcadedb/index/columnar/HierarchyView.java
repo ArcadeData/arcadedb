@@ -20,6 +20,7 @@ package com.arcadedb.index.columnar;
 
 import com.arcadedb.query.facet.FacetValueComparator;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -60,6 +61,28 @@ public final class HierarchyView {
     this.cycleSignature = cycleSignature;
     this.duplicateKeys = duplicateKeys;
     this.nullKeys = nullKeys;
+  }
+
+  /**
+   * A view built by hand (tests): generation 0, no cycle, duplicate or null key counted. The parents of each node must already be
+   * deduplicated and in {@code [0, values.length)}, and the values distinct.
+   *
+   * @param values the key value of each node, normalized here as {@link #nodeOfValue} looks them up
+   * @param orphan the orphan flag of each node, null for none
+   */
+  public static HierarchyView of(final int[] parentOffsets, final int[] parents, final Object[] values, final int[] depth,
+      final boolean[] orphan) {
+    if (parentOffsets.length != values.length + 1 || depth.length != values.length || orphan != null && orphan.length != values.length)
+      throw new IllegalArgumentException("A view of " + values.length + " nodes needs " + (values.length + 1) + " parent offsets and "
+          + values.length + " depths and orphan flags");
+    final Object[] normalized = new Object[values.length];
+    final Map<Object, Integer> keyToNode = new HashMap<>(values.length * 2);
+    for (int node = 0; node < values.length; node++) {
+      normalized[node] = FacetValueComparator.normalize(values[node]);
+      if (keyToNode.put(normalized[node], node) != null)
+        throw new IllegalArgumentException("The value " + values[node] + " is the key of two nodes");
+    }
+    return new HierarchyView(0L, parentOffsets, parents, normalized, depth, orphan, keyToNode, 0, 0L, 0, 0);
   }
 
   public int nodeCount() {

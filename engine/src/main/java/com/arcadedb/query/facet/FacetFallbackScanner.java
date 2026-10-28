@@ -54,7 +54,8 @@ import java.util.List;
  *   {@link PatchedValue#unknown}, a list item once per distinct value), merged with the projection's counts by the collectors'
  *   converted merge;</li>
  *   <li>any other property is its raw value ({@link DocumentIndexer#getPropertyValue}), an expression facet the value of its expression
- *   on the record. For a terms facet ({@link Read#TERMS}) a list (or array) counts each distinct item once per document, nulls left out.
+ *   on the record, and so is the property of a HIERARCHY facet (and of a DISTINCT facet over a dictionary column). For a terms,
+ *   hierarchy or distinct facet ({@link Read#TERMS}) a list (or array) counts each distinct item once per document, nulls left out.
  *   For a range or histogram facet the property's schema type decides: a date or datetime is read as epoch milliseconds
  *   ({@link Read#EPOCH_MS}), an integral type as a long ({@link Read#INTEGER}), anything else (a floating type, an undeclared property,
  *   an expression) as a double ({@link Read#NUMBER}); a value that does not convert counts as missing. A type that does not declare the
@@ -92,11 +93,16 @@ public final class FacetFallbackScanner {
 
   /**
    * Decides how the facet is scanned in a bucket of {@code type}: the property's column when it is one of the type's (and its
-   * extractor knows it), else its raw value, read by the property's schema type.
+   * extractor knows it), else its raw value, read by the property's schema type. A HIERARCHY facet, and a DISTINCT facet over a
+   * dictionary column, read the raw values ({@link Read#TERMS}): they compare values, never ordinals, so the extraction against a
+   * dictionary buys them nothing.
    */
   static Source sourceOf(final DatabaseInternal db, final DocumentType type, final FacetSpec spec) {
     final String property = spec.property();
     final ColumnDefinition column = column(type, property);
+    if (spec instanceof HierarchyFacetSpec || spec instanceof DistinctFacetSpec && column != null && (column.kind() == ColumnKind.ORDINAL
+        || column.kind() == ColumnKind.ORDINAL_LIST))
+      return new Source(spec, Read.TERMS, null, null, null);
     if (column != null) {
       final ColumnarValueExtractor extractor = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName());
       if (extractor != null && extractor.hasColumn(property))

@@ -27,6 +27,8 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.facet.FacetBucket;
@@ -45,6 +47,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
@@ -169,6 +172,57 @@ public final class FacetOracle {
         if (where == null)
           assertLiveRowsAreTheRecords(snapshot, bucketMatches);
         countBucket(db, manager, snapshot, column, bucketMatches, patchPending, counts);
+      }
+    }
+    return counts;
+  }
+
+  /**
+   * Reference of a HIERARCHY facet: per record of {@code SELECT <property> FROM <type> WHERE <where>} (polymorphic), the set of its
+   * values (normalized, deduplicated) plus every ancestor reached from the vertices of {@code vertexType} keyed by each value
+   * ({@link Database#lookupByKey}) through {@code getVertices(IN, parentEdge)}, walked with a visited set of its own; a value no vertex
+   * has counts only itself. Each value of the set counts the record once, and a record with no value counts once under
+   * {@link #MISSING}. Shares no code with the production path: no view, no expander, no projection.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static Map<Object, Long> hierarchicalCounts(final Database db, final String type, final String property, final String where,
+      final String vertexType, final String key, final String parentEdge) {
+    final Map<Object, Long> counts = new HashMap<>();
+    final Set<Object> values = new HashSet<>();
+    final Set<Object> closure = new HashSet<>();
+    final Set<RID> visited = new HashSet<>();
+    final ArrayDeque<Vertex> pending = new ArrayDeque<>();
+    try (final ResultSet rs = db.query("sql", "SELECT " + quote(property) + " AS v FROM " + quote(type) + where(where))) {
+      while (rs.hasNext()) {
+        values.clear();
+        closure.clear();
+        visited.clear();
+        collectItemKeys(rs.next().getProperty("v"), values);
+        if (values.isEmpty()) {
+          add(counts, MISSING, 1L);
+          continue;
+        }
+        for (final Object value : values) {
+          closure.add(value);
+          final IndexCursor tags = db.lookupByKey(vertexType, key, value);
+          while (tags.hasNext())
+            pending.add(tags.next().asVertex());
+        }
+        while (!pending.isEmpty()) {
+          final Vertex tag = pending.poll();
+          if (!visited.add(tag.getIdentity()))
+            continue;
+          final Object tagKey = ordinalKey(tag.get(key));
+          // a vertex without a key is no node of the hierarchy: nothing is reached through it
+          if (tagKey == MISSING)
+            continue;
+          closure.add(tagKey);
+          for (final Vertex parent : tag.getVertices(Vertex.DIRECTION.IN, parentEdge))
+            pending.add(parent);
+        }
+        for (final Object node : closure)
+          add(counts, node, 1L);
       }
     }
     return counts;

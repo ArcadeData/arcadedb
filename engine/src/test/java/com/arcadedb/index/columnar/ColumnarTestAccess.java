@@ -61,6 +61,11 @@ public final class ColumnarTestAccess {
     }
   }
 
+  /** Closes the hierarchy manager as a database close or a dropped index does: a build running on another thread is cancelled. */
+  public static void closeHierarchy(final HierarchyManager hierarchy) {
+    hierarchy.close();
+  }
+
   private static ColumnarProjection projection(final ColumnarIndexManager manager, final int bucketId) {
     final ColumnarProjection projection = manager.projection(bucketId);
     if (projection == null)
