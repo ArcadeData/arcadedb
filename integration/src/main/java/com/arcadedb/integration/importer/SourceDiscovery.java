@@ -942,14 +942,14 @@ public class SourceDiscovery {
       // BETWEEN ITS VALUES AND DECLARED IT CSV, SO THE WHOLE ARRAY BECAME ONE HEADER ROW AND THE IMPORT CREATED NOTHING
       // AND REPORTED SUCCESS (ISSUE #10754). THE NEXT SIGNIFICANT CHARACTER DECIDES: AN OBJECT, A NESTED ARRAY OR THE
       // END OF AN EMPTY ONE. A DELIMITED-TEXT HEADER THAT MERELY OPENS WITH '[' - "[id],[name]" - IS LEFT TO THE
-      // SNIFFING THAT FOLLOWS
-      for (int i = 0; i < 1024 && parser.isAvailable(); ++i) {
-        currentChar = parser.nextChar();
-        if (isJsonWhitespace(currentChar))
-          continue;
-        if (currentChar == '{' || currentChar == '[' || currentChar == ']')
-          return new JSONImporterFormat();
-        break;
+      // SNIFFING THAT FOLLOWS. THE WHITESPACE BETWEEN IS SKIPPED WHATEVER ITS LENGTH, AS A JSON PARSER WOULD
+      if (parser.isAvailable()) {
+        parser.nextChar();
+        if (skipJsonWhitespace(parser)) {
+          currentChar = parser.getCurrentChar();
+          if (currentChar == '{' || currentChar == '[' || currentChar == ']')
+            return new JSONImporterFormat();
+        }
       }
     }
 

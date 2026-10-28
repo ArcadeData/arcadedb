@@ -174,6 +174,23 @@ class Issue10754JsonArrayDetectionTest {
     }
   }
 
+  /** JSON's only non-canonical integer within the long range is "-0": it is the LONG zero, not a DECIMAL. */
+  @Test
+  void negativeZeroIsTheLongZero() throws Exception {
+    final String databasePath = importSource("importer-10754-negzero.json", "[{\"id\":1,\"z\":-0}]", "");
+    try (final Database db = new DatabaseFactory(databasePath).open()) {
+      assertThat(db.iterateType("Document", true).next().asDocument().get("z")).isEqualTo(0L);
+    } finally {
+      dropDatabase(databasePath);
+    }
+  }
+
+  /** The whitespace between the '[' and the first record is skipped whatever its length. */
+  @Test
+  void longWhitespaceAfterTheBracketIsSkipped() throws Exception {
+    assertTwoRecords(importSource("importer-10754-wide.txt", "[" + " ".repeat(5000) + ONE_LINE.substring(1), ""));
+  }
+
   private static String importSource(final String fileName, final String content, final String extraArgs) throws Exception {
     final File source = new File("target/" + fileName);
     Files.writeString(source.toPath(), content, StandardCharsets.UTF_8);

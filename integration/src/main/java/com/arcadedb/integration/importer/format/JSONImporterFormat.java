@@ -327,7 +327,9 @@ public class JSONImporterFormat implements FormatImporter {
     if (CanonicalNumber.isLong(text))
       return Long.parseLong(text);
     if (text.indexOf('.') < 0 && text.indexOf('e') < 0 && text.indexOf('E') < 0)
-      return new BigDecimal(text);
+      // JSON FORBIDS LEADING ZEROS AND A '+', SO AN INTEGER THAT IS NOT A CANONICAL LONG IS EITHER "-0" OR ONE TOO
+      // LARGE FOR A LONG
+      return "-0".equals(text) ? Long.valueOf(0L) : new BigDecimal(text);
     return Double.parseDouble(text);
   }
 
