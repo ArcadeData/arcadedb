@@ -6747,8 +6747,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
 
       // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
-      writeNextChunkPointer(currentPage, nextChunkPointerOffset,
-              (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage,
+      linkNextChunk(originalRID, currentPage, nextChunkPointerOffset, nextPage, recordIdInPage,
               currentPage == firstPage ? firstChunkCoverage : 0);
 
       // The free tail this chunk is about to bite into, measured against the page's maximum content size - the same
@@ -6832,6 +6831,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static int headChunkPageToAvoid(final MutablePage headChunkPage, final int firstChunkCoverage) {
     return firstChunkCoverage == 0 ? -1 : headChunkPage.getPageId().getPageNumber();
+  }
+
+  /**
+   * Links the chunk whose pointer field is at {@code offset} of {@code page} to the continuation chunk just placed at
+   * {@code slot} of {@code nextPage}. Refuses a link whose value would be 0 - position 0 of the bucket - because 0 is the
+   * pointer's "no next chunk" value: written, it would cut the chain at this chunk and leave the record undecodable on its
+   * next read, while the commit reports nothing (#10701). The allocator never offers that slot to a continuation chunk; this
+   * is what makes an allocator that one day does fail the write instead of truncating a record.
+   */
+  private void linkNextChunk(final RID originalRID, final MutablePage page, final int offset, final MutablePage nextPage,
+                             final int slot, final int coverage) {
+    final long pointer = (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + slot;
+    if (pointer == 0L)
+      throw new DatabaseOperationException("Cannot link a continuation chunk of record " + originalRID
+              + " at position 0 of bucket '" + getName() + "': that value means 'no next chunk' and would truncate the record");
+    writeNextChunkPointer(page, offset, pointer, coverage);
   }
 
   /**
@@ -7028,8 +7043,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
-        writeNextChunkPointer(currentPage, nextChunkPointerOffset,
-                (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage,
+        linkNextChunk(originalRID, currentPage, nextChunkPointerOffset, nextPage, recordIdInPage,
                 currentPage == firstPage ? firstChunkCoverage : 0);
 
         // Both branches above - a page the allocator reused and a page created for this chunk - hand out the free
@@ -7617,8 +7631,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
-   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param multiPageRecord true for a CONTINUATION chunk of a multi-page record, which may never be given position 0 of the
+   *                        bucket (slot 0 of page 0): a next-chunk pointer of 0 means "no next chunk", so a chunk there
+   *                        would be linked with the end-of-chain sentinel and cut off the chain (#10701). The rule lives
+   *                        here and in {@link #getFreeSpaceInPage} - under every path of {@link #findAvailableSpace} -
+   *                        rather than beside any one of them.
    */
   private PageAnalysis getAvailableSpaceInPage(final int pageNumber, final int spaceNeeded, final boolean multiPageRecord)
           throws IOException {
@@ -7627,7 +7644,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     result.totalRecordsInPage = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     if (result.totalRecordsInPage > 0) {
-      getFreeSpaceInPage(result);
+      getFreeSpaceInPage(result, multiPageRecord);
 
       if (!result.createNewPage && result.spaceAvailableInCurrentPage > -1) {
         if (spaceNeeded + SPARE_SPACE_FOR_GROWTH > result.spaceAvailableInCurrentPage)
@@ -7646,7 +7663,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return result;
   }
 
-  private void getFreeSpaceInPage(final PageAnalysis pageAnalysis) throws IOException {
+  /**
+   * @param multiPageRecord true for a continuation chunk: the slot offered is then never position 0 of the bucket (#10701),
+   *                        whichever way it was found - the record-table summary of #10612, the full walk, or the fallback
+   *                        to a new slot at the end of the table. The summary itself keeps describing the page as it is,
+   *                        hole at slot 0 included, so an ordinary record still reuses that hole.
+   */
+  private void getFreeSpaceInPage(final PageAnalysis pageAnalysis, final boolean multiPageRecord) throws IOException {
     if (pageAnalysis.totalRecordsInPage >= maxRecordsInPage) {
       pageAnalysis.createNewPage = true;
       return;
@@ -7677,7 +7700,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         ownPage.advanceSlotScan(slot);
       }
 
-      pageAnalysis.availablePositionIndex = slot;
+      pageAnalysis.availablePositionIndex = multiPageRecord ? slotForContinuationChunk(pageAnalysis, slot) : slot;
       pageAnalysis.lastRecordPositionInPage = ownPage.getSlotScanLastPosition();
       pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
       pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
@@ -7705,8 +7728,34 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       ownPage.rememberSlotScan(totalRecords, pageAnalysis.lastRecordPositionInPage, pageAnalysis.availablePositionIndex,
               PAGE_RECORD_TABLE_OFFSET + totalRecords * INT_SERIALIZED_SIZE);
 
+    // Screened AFTER the summary is written: the summary is the page's first reusable slot for every later caller, and slot 0
+    // stays a perfectly good slot for anything but a continuation chunk.
+    if (multiPageRecord)
+      pageAnalysis.availablePositionIndex = slotForContinuationChunk(pageAnalysis, pageAnalysis.availablePositionIndex);
+
     pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
     pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
+  }
+
+  /**
+   * The slot a continuation chunk takes on the analysed page, given the one any other record would take (#10701). Only
+   * position 0 of the bucket is refused - it is the value a next-chunk pointer uses for "no next chunk" - and then the next
+   * reusable hole is taken (a slot freed by an earlier transaction; one this transaction freed is not reused, as in the
+   * walk), or a new slot at the end of the record table when there is none.
+   */
+  private int slotForContinuationChunk(final PageAnalysis pageAnalysis, final int slot) throws IOException {
+    if (slot != 0 || pageAnalysis.page.getPageId().getPageNumber() != 0)
+      return slot;
+
+    final int totalRecords = pageAnalysis.totalRecordsInPage;
+    final TransactionContext tx = database.getTransaction();
+    final int bucketId = file.getFileId();
+    int next = 1;
+    while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || tx.isDeletedInTransaction(bucketId,
+            next)))
+      next++;
+    insertSlotsRead.addAndGet(Math.min(totalRecords, next + 1) - 1);
+    return next;
   }
 
   /**
@@ -7716,8 +7765,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if no page has enough space, use the last page
    * 4. if the last page is full, create a new page
    *
-   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
-   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param multiPageRecord true for a continuation chunk of a multi-page record: no path of this method then offers position 0
+   *                        of the bucket, the next-chunk pointer's "no next chunk" value (#10701). Every path asks
+   *                        {@link #getAvailableSpaceInPage}, which is where that rule is applied.
    * @param avoidPageNumber a page this allocation may NOT use, or -1 for none (#6175). Used by the continuation
    *                        chunks of a multi-page record to keep off the page holding that record's HEAD chunk when
    *                        the caller tracked that slot for the disjoint-slot merge: a continuation chunk is written
@@ -7796,8 +7846,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
-   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param multiPageRecord true for a continuation chunk: see {@link #findAvailableSpace(int, int, int, boolean, int)}.
    * @param avoidPageNumber a page this allocation may NOT use, or -1 for none: see
    *                        {@link #findAvailableSpace(int, int, int, boolean, int)}.
    */
@@ -7876,10 +7925,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               freeSpaceInPages.put(pageId, pageAnalysis.spaceAvailableInCurrentPage);
           }
 
-          if (multiPageRecord && pageAnalysis.page.pageId.getPageNumber() == 0 && pageAnalysis.availablePositionIndex == 0)
-            // AVOID REUSING THE FIRST RECORD IF IT'S A MULTI-PAGE RECORD
-            continue;
-
           bestPageAnalysis = pageAnalysis;
           break;
         } else if (pageAnalysis.spaceAvailableInCurrentPage > -1 && pageAnalysis.spaceAvailableInCurrentPage < pageStats) {
@@ -7919,6 +7964,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** How many record-table slots the inserts of this bucket read to find where to put a record since it was opened. Package-private: for tests only. */
   long getInsertSlotsReadForTesting() {
     return insertSlotsRead.get();
+  }
+
+  /**
+   * The slot the allocator would offer on {@code pageNumber} to a record of one byte, or -1 when it would open a new page
+   * instead (#10701). {@code multiPageRecord} is what every continuation chunk passes. Must run inside a transaction.
+   * Package-private: for tests only.
+   */
+  int getSlotOfferedInPageForTesting(final int pageNumber, final boolean multiPageRecord) {
+    try {
+      final PageAnalysis analysis = getAvailableSpaceInPage(pageNumber, 1, multiPageRecord);
+      return analysis.createNewPage ? -1 : analysis.availablePositionIndex;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot analyze page " + pageNumber + " of bucket " + getName(), e);
+    }
   }
 
   /** Overrides how many pages one gather scan reads at most. Package-private: for tests only. */
