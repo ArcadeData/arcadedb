@@ -55,6 +55,7 @@ import java.math.BigDecimal;
  *   <li>in a projection without an alias: the column is named after the text of the expression;</li>
  *   <li>in GROUP BY and ORDER BY: their items are matched against the projections by their text;</li>
  *   <li>in SKIP, LIMIT, TIMEOUT and BATCH: the planner folds or sizes on the value, and ignores a TIMEOUT parameter;</li>
+ *   <li>in FACETS: the planner sizes and buckets on the values;</li>
  *   <li>in the FROM target: a parameter there may name a type;</li>
  *   <li>in a MATCH filter other than {@code where:} and {@code while:}, and in a MATCH traversal method
  *       ({@code .out('Friend')}): the planner reads them while it builds the pattern;</li>
@@ -198,7 +199,8 @@ public class SQLLiteralParameterizer extends LiteralParameterizer<Statement> {
       return !refersToData(condition);
     return node instanceof SQLParser.GroupByContext || node instanceof SQLParser.OrderByContext
         || node instanceof SQLParser.SkipContext || node instanceof SQLParser.LimitContext
-        || node instanceof SQLParser.TimeoutContext || node instanceof SQLParser.TraverseProjectionItemContext
+        || node instanceof SQLParser.TimeoutContext || node instanceof SQLParser.FacetsClauseContext
+        || node instanceof SQLParser.TraverseProjectionItemContext
         || node instanceof SQLParser.MatchMethodCallContext;
   }
 
