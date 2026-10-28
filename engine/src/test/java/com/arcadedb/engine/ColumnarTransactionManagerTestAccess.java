@@ -30,6 +30,11 @@ public final class ColumnarTransactionManagerTestAccess {
     transactionManager.rotateAndDropWALForTesting();
   }
 
+  /** Stops the periodic WAL housekeeping of the open database, so only the test rotates and drops WAL files. */
+  public static void cancelHousekeeping(final TransactionManager transactionManager) {
+    transactionManager.cancelHousekeepingForTesting();
+  }
+
   /** The two-argument {@code cleanWALFiles(dropFiles, force)} pass (no data fsync), as the close and kill paths run it. */
   public static boolean cleanWALFiles(final TransactionManager transactionManager, final boolean dropFiles, final boolean force) {
     return transactionManager.cleanWALFilesForTesting(dropFiles, force, false);
