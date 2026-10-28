@@ -112,6 +112,10 @@ public class RedisNetworkExecutor extends Thread {
   // since those only fire once a token has actually been parsed (issue #5895 review, round 6).
   private static final int MAX_TOKEN_LENGTH = 64;
 
+  // The longest inline command line accepted, the bound Redis itself applies (PROTO_INLINE_MAX_SIZE): a client that sends
+  // no LF is refused once this much has arrived (issue #10597)
+  private static final int MAX_INLINE_LENGTH = 64 * 1024;
+
   /**
    * Bound of the buffer the replies of a batch are encoded into before they leave together: a larger reply is encoded into
    * its own array, and the buffer is written out when it would overflow, so one large value does not stay pinned.
@@ -343,7 +347,8 @@ public class RedisNetworkExecutor extends Thread {
       if (!(cmd instanceof String)) {
         // cmd can be null here (issue #5911: a RESP2 null bulk string, $-1, is now a legal array element),
         // so guard the diagnostic itself rather than calling getClass() on a possibly-null reference.
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
+        // FINE, not SEVERE: a pre-auth client controls how often this fires, one record per few bytes sent (issue #10597)
+        LogManager.instance().log(this, Level.FINE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
             cmd == null ? "null" : cmd.getClass());
         return;
       }
@@ -529,7 +534,9 @@ public class RedisNetworkExecutor extends Thread {
       appendCrLf();
 
     } else
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+      // A top-level simple string, integer or bulk string is not a command. Logged with no reply, the client waited forever
+      // and every such message wrote a SEVERE record (issue #10597)
+      throw new RedisProtocolLimitException("Protocol error: a command must be a RESP array or an inline command");
   }
 
   /** Who this connection is, for the listing of running statements: the same for every command, so built once. */
@@ -1341,10 +1348,139 @@ public class RedisNetworkExecutor extends Thread {
       for (int i = 0; i < arraySize; ++i)
         array.add(parseNext(depth + 1));
       return array;
-    } else {
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s'", (char) b);
-      return null;
+    } else if (depth == 0)
+      // Not a RESP type marker at the start of a command: the inline form RESP defines (a line of space-separated
+      // words), which is what nc, telnet and health probes send. Answering it is the only way to resynchronize, since
+      // a line is the one framing such a client gives (issue #10597). Stricter than Redis, which reads anything but '*'
+      // as inline: a top-level '+', ':' or '$' value is parsed as RESP and refused by executeCommand with a close
+      return parseInlineCommand(b);
+    else
+      // Inside an array RESP has no framing to resynchronize to: logging and reading on wrote two SEVERE records per
+      // byte, for as long as the client kept writing (issue #10597)
+      throw new RedisProtocolLimitException("Protocol error: expected '$', got '" + printable(b) + "'");
+  }
+
+  /**
+   * Reads an inline command: everything up to LF (a trailing CR is dropped), split into arguments the way Redis splits
+   * them, quotes included. The line is bounded like Redis bounds it, so a client that never sends LF is refused once
+   * {@link #MAX_INLINE_LENGTH} bytes have arrived instead of being buffered for as long as it keeps writing, and its
+   * arguments are bounded by {@code maxMultiBulkLength} like a RESP array's. A blank line, or a line cut short by a
+   * shutdown, is an empty command, which gets no reply.
+   */
+  private List<Object> parseInlineCommand(final byte first) throws IOException {
+    byte[] line = new byte[64];
+    int length = 0;
+    byte b = first;
+    while (b != '\n' && !shutdown) {
+      if (length >= MAX_INLINE_LENGTH)
+        throw new RedisProtocolLimitException("Protocol error: too big inline request");
+      if (length == line.length)
+        line = Arrays.copyOf(line, Math.min(MAX_INLINE_LENGTH, line.length * 2));
+      line[length++] = b;
+      b = readNext();
     }
+    if (shutdown)
+      // closed mid-line: what was read is a truncated command, never to be executed
+      return new ArrayList<>();
+    if (length > 0 && line[length - 1] == '\r')
+      --length;
+    final List<Object> args = splitInlineArguments(line, length);
+    // the configured bound on a command's arguments holds for the inline form too, not only for a RESP array
+    if (args.size() > maxMultiBulkLength)
+      throw new RedisProtocolLimitException(
+          "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
+    return args;
+  }
+
+  /**
+   * Splits an inline command into its arguments with the rules of Redis' {@code sdssplitargs}: words separated by
+   * blanks, a double-quoted word with the {@code \n \r \t \b \a \xHH} escapes, a single-quoted word with {@code \'}.
+   * A closing quote must end the word.
+   */
+  static List<Object> splitInlineArguments(final byte[] line, final int length) throws RedisProtocolLimitException {
+    final List<Object> args = new ArrayList<>();
+    final byte[] current = new byte[length];
+    int i = 0;
+    while (true) {
+      while (i < length && isInlineBlank(line[i]))
+        ++i;
+      if (i >= length)
+        return args;
+
+      int n = 0;
+      boolean inDoubleQuotes = false;
+      boolean inSingleQuotes = false;
+      boolean done = false;
+      while (!done) {
+        if (inDoubleQuotes) {
+          if (i >= length)
+            throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+          final byte c = line[i];
+          if (c == '\\' && i + 3 < length && line[i + 1] == 'x' && hexDigit(line[i + 2]) >= 0 && hexDigit(line[i + 3]) >= 0) {
+            current[n++] = (byte) (hexDigit(line[i + 2]) * 16 + hexDigit(line[i + 3]));
+            i += 3;
+          } else if (c == '\\' && i + 1 < length) {
+            ++i;
+            current[n++] = switch (line[i]) {
+              case 'n' -> '\n';
+              case 'r' -> '\r';
+              case 't' -> '\t';
+              case 'b' -> '\b';
+              case 'a' -> 7;
+              default -> line[i];
+            };
+          } else if (c == '"') {
+            if (i + 1 < length && !isInlineBlank(line[i + 1]))
+              throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+            done = true;
+          } else
+            current[n++] = c;
+        } else if (inSingleQuotes) {
+          if (i >= length)
+            throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+          final byte c = line[i];
+          if (c == '\\' && i + 1 < length && line[i + 1] == '\'') {
+            ++i;
+            current[n++] = '\'';
+          } else if (c == '\'') {
+            if (i + 1 < length && !isInlineBlank(line[i + 1]))
+              throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+            done = true;
+          } else
+            current[n++] = c;
+        } else if (i >= length || isInlineBlank(line[i]))
+          done = true;
+        else if (line[i] == '"')
+          inDoubleQuotes = true;
+        else if (line[i] == '\'')
+          inSingleQuotes = true;
+        else
+          current[n++] = line[i];
+
+        if (i < length)
+          ++i;
+      }
+      args.add(RedisBinaryCodec.decode(current, n));
+    }
+  }
+
+  private static boolean isInlineBlank(final byte b) {
+    return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == 0x0B || b == '\f';
+  }
+
+  private static int hexDigit(final byte b) {
+    if (b >= '0' && b <= '9')
+      return b - '0';
+    if (b >= 'a' && b <= 'f')
+      return b - 'a' + 10;
+    if (b >= 'A' && b <= 'F')
+      return b - 'A' + 10;
+    return -1;
+  }
+
+  /** A client byte as it can appear in an error reply: printable ASCII as is, anything else as {@code \xHH}. */
+  private static String printable(final byte b) {
+    return b >= 0x20 && b < 0x7F ? String.valueOf((char) b) : String.format("\\x%02x", b & 0xFF);
   }
 
   /**
@@ -1390,17 +1526,17 @@ public class RedisNetworkExecutor extends Thread {
     return parseLength(new String(tokenBytes, 0, length, StandardCharsets.ISO_8859_1), what);
   }
 
+  /**
+   * Consumes the CRLF that ends a bulk string. Anything else means the declared length did not match what was sent, so the
+   * stream position can no longer be trusted: refused like every other malformed message (issue #10597).
+   */
   private void skipLF() throws IOException {
     final byte b = readNext();
-    if (b == '\r') {
-      final byte b2 = readNext();
-      if (b2 == '\n') {
-      } else
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\n"
-            , (char) b2);
-    } else
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\r",
-          (char) b);
+    if (b != '\r')
+      throw new RedisProtocolLimitException("Protocol error: expected CRLF after the bulk string, got '" + printable(b) + "'");
+    final byte b2 = readNext();
+    if (b2 != '\n')
+      throw new RedisProtocolLimitException("Protocol error: expected CRLF after the bulk string, got CR then '" + printable(b2) + "'");
   }
 
   private String parseValueUntilLF() throws IOException {
@@ -1429,10 +1565,9 @@ public class RedisNetworkExecutor extends Thread {
       } else {
         if (b == '\n')
           break;
-        else
-          LogManager.instance().log(this, Level.SEVERE, """
-              Redis wrapper: Error on parsing value waiting for LF, but \
-              found '%s' after /r""", (char) b);
+        // A CR inside a token is never valid RESP. Logging each following byte and reading on had no bound: the
+        // MAX_TOKEN_LENGTH check only counts the bytes before the CR (issue #10597)
+        throw new RedisProtocolLimitException("Protocol error: expected CRLF, got CR then '" + printable(b) + "'");
       }
     }
     return length;
