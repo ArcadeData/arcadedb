@@ -64,6 +64,16 @@ final class SegmentFormat {
     return String.format("seg-%016x.dead.%d", segmentId, version);
   }
 
+  /** {@code owners-<manifestGeneration>.own}: the content owner map published with that manifest generation. */
+  static String ownerMapFileName(final long manifestGeneration) {
+    return "owners-" + manifestGeneration + ".own";
+  }
+
+  /** {@code ext-owners-<manifestGeneration>.own}: the owner map of the paired external-property bucket (R7). */
+  static String externalOwnerMapFileName(final long manifestGeneration) {
+    return "ext-owners-" + manifestGeneration + ".own";
+  }
+
   /** {@code dict-<indexFileId>.<generation>.dic}: one generation of a column's dictionary in its bucket directory. */
   static String dictionaryFileName(final int indexFileId, final int generation) {
     return "dict-" + indexFileId + "." + generation + ".dic";

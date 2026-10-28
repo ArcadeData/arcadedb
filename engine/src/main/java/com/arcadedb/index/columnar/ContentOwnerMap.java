@@ -72,6 +72,7 @@ public final class ContentOwnerMap {
   private int             nodeHighWater;
   private int             freeNode = NONE;
   private int             liveNodes;
+  private long            modifications;
   private LongLongHashMap ownerToFirstPageNode;
   private int             removedOwners;
 
@@ -92,6 +93,7 @@ public final class ContentOwnerMap {
    * @throws IllegalArgumentException for a negative owner or page, or a count outside {@code contentPages}
    */
   public void setOwnerPages(final long owner, final int[] contentPages, final int count) {
+    modifications++;
     if (owner < 0)
       throw new IllegalArgumentException("Invalid owner position " + owner);
     if (count < 0 || count > contentPages.length)
@@ -118,6 +120,7 @@ public final class ContentOwnerMap {
 
   /** Drops every content page of the owner; nothing happens for an unknown owner. */
   public void removeOwner(final long owner) {
+    modifications++;
     final long first = ownerToFirstPageNode.get(owner, ABSENT);
     if (first < 0)
       return;
@@ -140,6 +143,16 @@ public final class ContentOwnerMap {
       count++;
     }
     return count;
+  }
+
+  /** Number of {@link #setOwnerPages} and {@link #removeOwner} calls on this instance, so a flush can tell the map is unchanged. */
+  long modifications() {
+    return modifications;
+  }
+
+  /** True when no owner has a content page. */
+  public boolean isEmpty() {
+    return liveNodes == 0;
   }
 
   /** The number of owners of the content page (exact, so an upper bound for {@link #owners}), 0 for a page nobody owns. */

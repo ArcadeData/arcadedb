@@ -202,6 +202,30 @@ final class DirtyPageTracker {
     }
   }
 
+  /** The unflushed pages, ascending: what a flush freezing the overlay now covers once it is published. */
+  int[] unflushedPages() {
+    movementLock.lock();
+    try {
+      final int[] pages = new int[unflushed.cardinality()];
+      int i = 0;
+      for (int page = unflushed.nextSetBit(0); page >= 0; page = unflushed.nextSetBit(page + 1))
+        pages[i++] = page;
+      return pages;
+    } finally {
+      movementLock.unlock();
+    }
+  }
+
+  /** True when some page was applied to the overlay and not yet flushed. */
+  boolean hasUnflushed() {
+    movementLock.lock();
+    try {
+      return !unflushed.isEmpty();
+    } finally {
+      movementLock.unlock();
+    }
+  }
+
   /**
    * Adds epochs, in flight and unflushed pages to {@code out}, read in movement order. Guarantee: every page whose mark returned
    * before the sample started is in the sample, or was flushed by an apply that read it after it became visible. Dropping WAL
