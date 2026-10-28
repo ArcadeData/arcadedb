@@ -380,8 +380,9 @@ public class SaveElementStep extends AbstractExecutionStep {
   }
 
   /**
-   * Inside a transaction the continuous aggregates over the type are refreshed once it commits, as an after-commit callback
-   * registered once per aggregate. With no transaction open there is no commit to wait for, and a callback registered on the
+   * Inside a transaction the continuous aggregates over the type are refreshed once it ends, committed or rolled back (the samples
+   * stay either way, issue #10687), as an after-completion callback registered once per aggregate. With no transaction open there is
+   * no end to wait for, and a callback registered on the
    * inactive transaction context would never run at the end of the statement: it would stay there and run at the next, unrelated,
    * commit of the thread (issue #10632). The type is remembered instead, and its aggregates refreshed by {@link #close()}, once per
    * statement however many rows it appended.
