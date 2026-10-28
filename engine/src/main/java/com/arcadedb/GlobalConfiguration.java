@@ -368,6 +368,47 @@ public enum GlobalConfiguration {
       0 = available cores (min 2); consider capping explicitly on very high core-count machines""",
       Integer.class, 0),
 
+  COLUMNAR_FLUSH_INTERVAL("arcadedb.columnar.flushInterval", SCOPE.DATABASE,
+      "Milliseconds after which the in-memory overlay of a COLUMNAR index is flushed to an immutable segment even if it is below "
+          + "arcadedb.columnar.flushMaxRows. Default is 1000", Long.class, 1000L),
+
+  COLUMNAR_FLUSH_MAX_ROWS("arcadedb.columnar.flushMaxRows", SCOPE.DATABASE,
+      "Rows held by the in-memory overlay of a COLUMNAR index that trigger a flush to an immutable segment. Default is 65536",
+      Integer.class, 65536),
+
+  COLUMNAR_MERGE_DEAD_RATIO("arcadedb.columnar.mergeDeadRatio", SCOPE.DATABASE,
+      "Ratio (0-1) of dead rows in a COLUMNAR segment above which the segment is rewritten by a merge. Default is 0.3",
+      Float.class, 0.3f),
+
+  COLUMNAR_MERGE_MAX_SEGMENTS("arcadedb.columnar.mergeMaxSegments", SCOPE.DATABASE,
+      "Number of segments of one COLUMNAR projection above which the smallest ones are merged. Default is 10", Integer.class, 10),
+
+  COLUMNAR_MAX_CARDINALITY("arcadedb.columnar.maxCardinality", SCOPE.DATABASE,
+      "Distinct values per dictionary-encoded property of a COLUMNAR index above which a warning is raised "
+          + "(arcadedb.columnar.cardinality.exceeded). Default is 1000000", Integer.class, 1_000_000),
+
+  COLUMNAR_SEGMENT_BLOCK_ROWS("arcadedb.columnar.segmentBlockRows", SCOPE.DATABASE,
+      "Rows per column block of a COLUMNAR segment. Default is 16384", Integer.class, 16384),
+
+  COLUMNAR_APPLY_INTERVAL("arcadedb.columnar.applyInterval", SCOPE.DATABASE,
+      "Milliseconds between two checks for committed pages to apply to the COLUMNAR indexes of a database. The JVM-wide ticker "
+          + "wakes up every 10ms and honors this value per database, at every check. Default is 100", Long.class, 100L),
+
+  COLUMNAR_APPLY_THREADS("arcadedb.columnar.applyThreads", SCOPE.JVM,
+      "Threads of the JVM-wide pool that applies committed pages to COLUMNAR indexes (at most one pass per database at a time). "
+          + "Read once, at the pool's lazy initialization. Default is 2", Integer.class, 2),
+
+  COLUMNAR_MAINTENANCE_THREADS("arcadedb.columnar.maintenanceThreads", SCOPE.JVM,
+      "Threads of the JVM-wide pool that runs COLUMNAR flush, merge, dictionary compaction and rebuild, so a long merge never "
+          + "delays the apply passes. Read once, at the pool's lazy initialization. Default is 2", Integer.class, 2),
+
+  COLUMNAR_REBUILD_CONCURRENCY("arcadedb.columnar.rebuildConcurrency", SCOPE.JVM,
+      "Number of COLUMNAR projection rebuilds that may run at the same time in the JVM. Default is 1", Integer.class, 1),
+
+  COLUMNAR_DICTIONARY_COMPACT_RATIO("arcadedb.columnar.dictionaryCompactRatio", SCOPE.DATABASE,
+      "Ratio (0-1) of unreferenced ordinals above which a COLUMNAR dictionary is compacted into a new generation. Default is 0.5",
+      Float.class, 0.5f),
+
   FLUSH_ALL_PAGES_TIMEOUT("arcadedb.flushAllPagesTimeout", SCOPE.DATABASE,
       """
       Milliseconds of NO FLUSH PROGRESS after which waiting for all of a database's pages to reach the \
