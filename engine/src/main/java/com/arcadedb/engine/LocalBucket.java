@@ -929,7 +929,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (pageNumber < 0 || pageNumber >= pageCount.get())
       return -1L;
 
-    OffPagePages offPages = null;
     try {
       final BasePage page = database.getPageManager()
               .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
@@ -939,58 +938,98 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final long version = page.getVersion();
       // clamped: a corrupted count must not send the loop past the slot table
       final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
-      for (int slot = 0; slot < recordCountInPage; ++slot) {
-        final long position = recordPosition(pageNumber, maxRecordsInPage, slot);
-        int kind = CommittedSlotVisitor.RECORD;
-        Binary content = null;
-        int offPageCount = 0;
-
-        try {
-          final int recordPositionInPage = getRecordPositionInPage(page, slot);
-          if (recordPositionInPage == 0) {
-            visitor.onSlot(position, CommittedSlotVisitor.EMPTY, null, NO_PAGES, 0);
-            continue;
-          }
-
-          final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-          if (recordSize[0] == 0)
-            kind = CommittedSlotVisitor.EMPTY;
-          else if (recordSize[0] > 0)
-            content = page.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
-          else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
-            if (offPages == null)
-              offPages = new OffPagePages();
-            offPages.clear();
-            content = committedPlaceholderContent(RID.create(database, fileId, position), offPages);
-            offPageCount = offPages.count;
-          } else if (recordSize[0] == FIRST_CHUNK) {
-            if (offPages == null)
-              offPages = new OffPagePages();
-            offPages.clear();
-            content = committedMultiPageRecord(RID.create(database, fileId, position), page.getPageId(), slot, FIRST_CHUNK,
-                    offPages);
-            offPageCount = offPages.count;
-          } else
-            // NEXT_CHUNK, FIRST_CHUNK_PLACEHOLDER_CONTENT, a negated size: somebody else's bytes
-            kind = CommittedSlotVisitor.CONTENT;
-        } catch (final PageCorruptionException | ConcurrentModificationException | IllegalArgumentException
-                       | IndexOutOfBoundsException | BufferUnderflowException e) {
-          // A slot that cannot be decoded, or a record in motion: reported as an unreadable RECORD, never as a failure of the page
-          LogManager.instance().log(this, Level.FINE, "Unreadable slot %d of committed page %d of bucket '%s'", e, slot, pageNumber,
-                  componentName);
-          content = null;
-          offPageCount = 0;
-        }
-
-        if (content == null)
-          // the resolution may have collected pages before it failed validation
-          offPageCount = 0;
-        visitor.onSlot(position, kind, content, offPages != null ? offPages.pages : NO_PAGES, offPageCount);
-      }
+      OffPagePages offPages = null;
+      for (int slot = 0; slot < recordCountInPage; ++slot)
+        offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
       return version;
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
     }
+  }
+
+  /**
+   * {@link #visitCommittedPage} for the one slot of the position: the same committed read, the same resolution and the same report,
+   * for a caller that needs one record of a page it does not otherwise read (the columnar apply pass re-reading the owner of a content
+   * page). Nothing is reported when the slot is past the page's record count, or the page is not committed.
+   *
+   * @return the version of the page that was read, or -1 when the page is not committed yet (past the committed page count)
+   */
+  public long visitCommittedRecord(final long position, final CommittedSlotVisitor visitor) {
+    if (position < 0)
+      return -1L;
+    final long pageNumber = position / maxRecordsInPage;
+    if (pageNumber >= pageCount.get())
+      return -1L;
+
+    try {
+      final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), (int) pageNumber), pageSize, false, false);
+      if (page == null)
+        return -1L;
+
+      final long version = page.getVersion();
+      final int slot = (int) (position % maxRecordsInPage);
+      if (slot < Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage))
+        visitCommittedSlot(page, (int) pageNumber, slot, null, visitor);
+      return version;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * Reports one slot of a committed page; returns the collector of off-page pages, allocated on the first slot that needs one and
+   * reused by the next slots.
+   */
+  private OffPagePages visitCommittedSlot(final BasePage page, final int pageNumber, final int slot, OffPagePages offPages,
+          final CommittedSlotVisitor visitor) throws IOException {
+    final long position = recordPosition(pageNumber, maxRecordsInPage, slot);
+    int kind = CommittedSlotVisitor.RECORD;
+    Binary content = null;
+    int offPageCount = 0;
+
+    try {
+      final int recordPositionInPage = getRecordPositionInPage(page, slot);
+      if (recordPositionInPage == 0) {
+        visitor.onSlot(position, CommittedSlotVisitor.EMPTY, null, NO_PAGES, 0);
+        return offPages;
+      }
+
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] == 0)
+        kind = CommittedSlotVisitor.EMPTY;
+      else if (recordSize[0] > 0)
+        content = page.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
+      else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+        if (offPages == null)
+          offPages = new OffPagePages();
+        offPages.clear();
+        content = committedPlaceholderContent(RID.create(database, fileId, position), offPages);
+        offPageCount = offPages.count;
+      } else if (recordSize[0] == FIRST_CHUNK) {
+        if (offPages == null)
+          offPages = new OffPagePages();
+        offPages.clear();
+        content = committedMultiPageRecord(RID.create(database, fileId, position), page.getPageId(), slot, FIRST_CHUNK,
+                offPages);
+        offPageCount = offPages.count;
+      } else
+        // NEXT_CHUNK, FIRST_CHUNK_PLACEHOLDER_CONTENT, a negated size: somebody else's bytes
+        kind = CommittedSlotVisitor.CONTENT;
+    } catch (final PageCorruptionException | ConcurrentModificationException | IllegalArgumentException
+                   | IndexOutOfBoundsException | BufferUnderflowException e) {
+      // A slot that cannot be decoded, or a record in motion: reported as an unreadable RECORD, never as a failure of the page
+      LogManager.instance().log(this, Level.FINE, "Unreadable slot %d of committed page %d of bucket '%s'", e, slot, pageNumber,
+              componentName);
+      content = null;
+      offPageCount = 0;
+    }
+
+    if (content == null)
+      // the resolution may have collected pages before it failed validation
+      offPageCount = 0;
+    visitor.onSlot(position, kind, content, offPages != null ? offPages.pages : NO_PAGES, offPageCount);
+    return offPages;
   }
 
   /** Distinct page numbers collected while a committed record is resolved; reused across the slots of one visit. */

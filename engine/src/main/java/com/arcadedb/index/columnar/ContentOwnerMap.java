@@ -145,6 +145,32 @@ public final class ContentOwnerMap {
     return count;
   }
 
+  /**
+   * True when the owner's content pages are exactly the distinct entries among the first {@code count} of {@code contentPages}; with a
+   * count of 0, when the owner has no content page. The apply pass asks it first, so an owner whose pages did not change costs no
+   * {@link #modifications()} (a flush would otherwise rewrite the owner map for nothing).
+   */
+  public boolean ownsExactly(final long owner, final int[] contentPages, final int count) {
+    final long first = ownerToFirstPageNode.get(owner, ABSENT);
+    if (first < 0)
+      return count == 0;
+    int nodes = 0;
+    for (int node = (int) first; node != NONE; node = nextOfOwner(node)) {
+      final int page = pageOf(node);
+      boolean listed = false;
+      for (int i = 0; i < count && !listed; i++)
+        listed = contentPages[i] == page;
+      if (!listed)
+        return false;
+      nodes++;
+    }
+    // every node is a distinct listed page: the lists match when every listed page is a node too
+    for (int i = 0; i < count; i++)
+      if (!chainHolds((int) first, contentPages[i]))
+        return false;
+    return nodes > 0;
+  }
+
   /** Number of {@link #setOwnerPages} and {@link #removeOwner} calls on this instance, so a flush can tell the map is unchanged. */
   long modifications() {
     return modifications;

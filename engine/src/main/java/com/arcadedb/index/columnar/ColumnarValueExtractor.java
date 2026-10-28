@@ -36,9 +36,9 @@ import java.util.concurrent.TimeUnit;
  * Turns the property values of a record into column values with the rules GROUP BY keys by: the raw value is read as an index reads
  * it ({@link DocumentIndexer#getPropertyValue}) and numbers are normalized by {@link Type#normalizeNumberForKey}, so the ordinals
  * fed to a {@link GlobalDictionary} are exactly the group keys of the same data. A value the column kind cannot hold is reported as
- * {@link ValueSink#missing()} and counted in {@link ColumnarStats#conversionFailure} by {@code extractForApply} only (once per projected record
- * and failing value); read-only extractions (queries, patching) report {@code missing} but do not count, so a failure is not counted
- * once per query. Null or an absent property is missing without a failure.
+ * {@link ValueSink#missing()} and counted in {@link ColumnarStats#conversionFailure} on the apply path only: {@code extractForApply}
+ * counts at once, the apply pass uses {@code extractForApplyUncounted} and counts once per staged record version and failing value.
+ * Read-only extractions (queries, patching) report {@code missing} but do not count, so a failure is not counted once per query. Null or an absent property is missing without a failure.
  * <p>
  * Where this deliberately differs from GROUP BY (all reachable only through schemaless or mistyped data, the plan accepts them): a
  * DATE or DATETIME column also accepts the numbers and strings {@code DateUtils} converts, and a {@code Date} and a
@@ -163,9 +163,25 @@ public final class ColumnarValueExtractor {
     extract(record, column(property), dictionary, false, sink);
   }
 
-  /** Apply thread only: adds the values the dictionary does not hold yet. */
+  /** Apply thread only: adds the values the dictionary does not hold yet and counts the failing values. */
   void extractForApply(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final ValueSink sink) {
-    extract(record, column, dictionary, true, sink);
+    countFailures(column, extract(record, column, dictionary, true, sink));
+  }
+
+  /**
+   * {@link #extractForApply} without counting: returns the number of failing values (a scalar the column kind cannot hold, or an item
+   * of a list), which the apply pass counts with {@link #countFailures} only when it stages the record, so a re-read of an unchanged
+   * record counts nothing.
+   */
+  int extractForApplyUncounted(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary,
+      final ValueSink sink) {
+    return extract(record, column, dictionary, true, sink);
+  }
+
+  /** Counts {@code failures} conversion failures of the column. */
+  void countFailures(final ColumnDefinition column, final int failures) {
+    for (int i = 0; i < failures; i++)
+      stats.conversionFailure(typeName, column.property());
   }
 
   /**
@@ -206,65 +222,69 @@ public final class ColumnarValueExtractor {
     return column;
   }
 
-  private void extract(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final boolean grow,
+  /** Returns the number of failing values; counts nothing. */
+  private int extract(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final boolean grow,
       final ValueSink sink) {
     final Object raw = DocumentIndexer.getPropertyValue(record, column.property());
     if (raw == null) {
       sink.missing();
-      return;
+      return 0;
     }
     switch (column.kind()) {
     case ORDINAL -> {
       final Object normalized = normalize(raw);
       if (!DictionaryValueCodec.isSupported(normalized)) {
-        failed(column, grow, sink);
-        return;
+        return failed(sink);
       }
       final int ordinal = grow ? dictionary.getOrAdd(normalized) : dictionary.ordinalOf(normalized);
       if (ordinal >= 0)
         sink.ordinal(ordinal);
       else
         sink.unknownValue(normalized);
+      return 0;
     }
-    case ORDINAL_LIST -> extractList(raw, column, dictionary, grow, sink);
+    case ORDINAL_LIST -> {
+      return extractList(raw, dictionary, grow, sink);
+    }
     case LONG -> {
       final long value;
       try {
         value = toLong(column.propertyType(), raw);
       } catch (final Unconvertible e) {
-        failed(column, grow, sink);
-        return;
+        return failed(sink);
       }
       sink.longValue(value);
+      return 0;
     }
     case DOUBLE -> {
-      if (raw instanceof Number number) {
-        final double value = raw instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
-        // -0.0 and 0.0 are one GROUP BY key (Long 0)
-        sink.doubleValue(value == 0d ? 0d : value);
-      } else
-        failed(column, grow, sink);
+      if (!(raw instanceof Number number))
+        return failed(sink);
+      final double value = raw instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
+      // -0.0 and 0.0 are one GROUP BY key (Long 0)
+      sink.doubleValue(value == 0d ? 0d : value);
+      return 0;
     }
+    default -> throw new IllegalStateException("Unknown column kind " + column.kind());
     }
   }
 
-  private void extractList(final Object raw, final ColumnDefinition column, final GlobalDictionary dictionary, final boolean grow,
-      final ValueSink sink) {
+  private int extractList(final Object raw, final GlobalDictionary dictionary, final boolean grow, final ValueSink sink) {
     final OrdinalBuffer buffer = buffers.get();
     buffer.reset();
+    int failures = 0;
     if (raw instanceof Iterable<?> items) {
       for (final Object item : items)
-        addItem(item, column, dictionary, grow, buffer);
+        failures += addItem(item, dictionary, grow, buffer);
     } else if (raw instanceof Object[] items) {
       for (final Object item : items)
-        addItem(item, column, dictionary, grow, buffer);
+        failures += addItem(item, dictionary, grow, buffer);
     } else if (raw.getClass().isArray()) {
       final int length = Array.getLength(raw);
       for (int i = 0; i < length; i++)
-        addItem(Array.get(raw, i), column, dictionary, grow, buffer);
+        failures += addItem(Array.get(raw, i), dictionary, grow, buffer);
     } else
       // a lone value is unwound to itself, as UNWIND does
-      addItem(raw, column, dictionary, grow, buffer);
+      failures += addItem(raw, dictionary, grow, buffer);
 
     try {
       for (int i = 0; i < buffer.unknownCount; i++)
@@ -277,30 +297,30 @@ public final class ColumnarValueExtractor {
     } finally {
       buffer.reset();
     }
+    return failures;
   }
 
-  /** Buffers the ordinal of the item, or the item itself (once per distinct value) when the dictionary does not hold it. */
-  private void addItem(final Object item, final ColumnDefinition column, final GlobalDictionary dictionary, final boolean grow,
-      final OrdinalBuffer buffer) {
+  /**
+   * Buffers the ordinal of the item, or the item itself (once per distinct value) when the dictionary does not hold it; returns 1 for
+   * an item the dictionary cannot hold, 0 otherwise.
+   */
+  private static int addItem(final Object item, final GlobalDictionary dictionary, final boolean grow, final OrdinalBuffer buffer) {
     if (item == null)
-      return;
+      return 0;
     final Object normalized = normalize(item);
-    if (!DictionaryValueCodec.isSupported(normalized)) {
-      if (grow)
-        stats.conversionFailure(typeName, column.property());
-      return;
-    }
+    if (!DictionaryValueCodec.isSupported(normalized))
+      return 1;
     final int ordinal = grow ? dictionary.getOrAdd(normalized) : dictionary.ordinalOf(normalized);
     if (ordinal >= 0)
       buffer.add(ordinal);
     else
       buffer.addUnknown(normalized);
+    return 0;
   }
 
-  private void failed(final ColumnDefinition column, final boolean grow, final ValueSink sink) {
-    if (grow)
-      stats.conversionFailure(typeName, column.property());
+  private static int failed(final ValueSink sink) {
     sink.missing();
+    return 1;
   }
 
   /** What GROUP BY keys a scalar as: numbers are canonicalized, anything else is kept (an unsupported kind is refused by the caller). */
