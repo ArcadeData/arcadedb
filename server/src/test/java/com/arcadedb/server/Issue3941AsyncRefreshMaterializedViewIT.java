@@ -56,7 +56,7 @@ class Issue3941AsyncRefreshMaterializedViewIT extends BaseGraphServerTest {
   @Test
   void refreshMaterializedViewAsyncUpdatesView() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
 
       // Setup: create document type, insert initial record, then create view
       // The INSERT must be committed before CREATE MATERIALIZED VIEW so the initial
@@ -111,7 +111,7 @@ class Issue3941AsyncRefreshMaterializedViewIT extends BaseGraphServerTest {
   @Test
   void refreshMaterializedViewSyncUpdatesView() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
 
       final String syncDocType = DOC_TYPE_NAME + "Sync";
       final String syncViewName = VIEW_NAME + "Sync";

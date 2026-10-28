@@ -88,7 +88,7 @@ class Issue4749SnapshotInstallClosesRegisteredDatabaseIT extends BaseRaftHATest 
     // Precondition that defined the bug: the follower's database is OPEN and registered, and the
     // ServerDatabase wrapper returned by the server forbids close(). The buggy install called this
     // exact method and crashed with UnsupportedOperationException.
-    final ServerDatabase wrapper = followerServer.getDatabase(dbName);
+    final ServerDatabase wrapper = followerServer.getDatabaseForOperator(dbName);
     assertThat(followerServer.existsDatabase(dbName)).as("Follower DB is open and registered").isTrue();
     assertThatThrownBy(wrapper::close)
         .as("Closing the shared ServerDatabase wrapper is rejected (the bug's trigger)")

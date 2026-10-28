@@ -103,7 +103,7 @@ class Issue6752AutoBackupScheduleLifecycleIT extends BaseGraphServerTest {
     if (server != null) {
       try {
         // getDatabase() reopens it from disk when a test left it closed, so this drops it either way.
-        server.getDatabase(RUNTIME_DATABASE).getEmbedded().drop();
+        server.getDatabaseForOperator(RUNTIME_DATABASE).getEmbedded().drop();
         server.removeDatabase(RUNTIME_DATABASE);
       } catch (final Exception e) {
         // NEVER CREATED BY THIS TEST: NOTHING TO CLEAN UP
@@ -143,13 +143,13 @@ class Issue6752AutoBackupScheduleLifecycleIT extends BaseGraphServerTest {
 
     assertThat(scheduler.getScheduledDatabases()).contains(getDatabaseName());
 
-    server.getDatabase(getDatabaseName()).getEmbedded().close();
+    server.getDatabaseForOperator(getDatabaseName()).getEmbedded().close();
     server.removeDatabase(getDatabaseName());
     try {
       assertThat(scheduler.getScheduledDatabases()).doesNotContain(getDatabaseName());
     } finally {
       // REOPEN SO THE REST OF THE SUITE (AND THE BASE CLASS TEARDOWN) STILL FINDS THE DATABASE.
-      server.getDatabase(getDatabaseName());
+      server.getDatabaseForOperator(getDatabaseName());
     }
 
     // REOPENING RE-REGISTERS IT, SO THE SCHEDULE IS BACK.
@@ -169,7 +169,7 @@ class Issue6752AutoBackupScheduleLifecycleIT extends BaseGraphServerTest {
 
     assertThat(scheduler.getScheduledDatabases()).contains(getDatabaseName());
 
-    final File override = new File(server.getDatabase(getDatabaseName()).getDatabasePath(),
+    final File override = new File(server.getDatabaseForOperator(getDatabaseName()).getDatabasePath(),
         AutoBackupConfig.CONFIG_FILE_NAME);
     try (final FileWriter writer = new FileWriter(override)) {
       writer.write("{\"enabled\": false}");

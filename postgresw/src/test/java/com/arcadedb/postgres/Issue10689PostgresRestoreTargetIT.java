@@ -45,7 +45,7 @@ public class Issue10689PostgresRestoreTargetIT extends PostgresWireProtocolTestB
   @Test
   void aSessionOpenedBeforeTheRestoreReadsAndCannotWrite() throws Exception {
     final ArcadeDBServer server = getServer(0);
-    server.getDatabase(getDatabaseName()).getSchema().createDocumentType(TYPE);
+    server.getDatabaseForOperator(getDatabaseName()).getSchema().createDocumentType(TYPE);
 
     try (final Connection connection = openConnection(); final Statement statement = connection.createStatement()) {
       statement.execute("INSERT INTO " + TYPE + " SET v = 1");

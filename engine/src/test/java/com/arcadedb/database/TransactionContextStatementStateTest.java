@@ -84,6 +84,10 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("slotRebaseByPage", POISONED);
     CLASSIFICATION.put("slotRebasePoisonedPages", POISONED);
     CLASSIFICATION.put("attachments", DELEGATED);
+    // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
+    // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction
+    CLASSIFICATION.put("afterCompletionCallbacks", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("afterCompletionOwner", NOT_STATEMENT_STATE);
 
     // What a statement reads or the commit writes, and the services of the context
     CLASSIFICATION.put("database", NOT_STATEMENT_STATE);
@@ -99,6 +103,8 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("requester", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("statement", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("pooledStatement", NOT_STATEMENT_STATE);
+    // Issue #10768: a final callback of the context the page manager calls when the commit starts publishing, holding no state
+    CLASSIFICATION.put("markPublicationStarted", NOT_STATEMENT_STATE);
     // Issue #10588. bucketFirstWriteSequences: when the transaction first wrote to a bucket, to know which indexes bound since owe
     // the writes an entry. A statement taken back leaves the note of a write it undid, which can only be EARLY: the commit then asks
     // for a reconciliation that finds nothing to queue, or refuses retryably a transaction that wrote after the index, never queues

@@ -59,7 +59,7 @@ class RaftServerDatabaseSqlScriptIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
 
-    final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database database = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     database.command("sql", "create vertex type RaftPhotos if not exists");
     database.command("sql", "create edge type RaftConnected if not exists");
 
