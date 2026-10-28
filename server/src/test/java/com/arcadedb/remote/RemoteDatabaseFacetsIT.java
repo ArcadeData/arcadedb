@@ -18,9 +18,11 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.facet.AdvancedFacetsFixture;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
@@ -33,6 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -54,11 +57,8 @@ public class RemoteDatabaseFacetsIT extends BaseGraphServerTest {
   @Override
   protected void populateDatabase() {
     super.populateDatabase();
-    final Database db = getDatabase(0);
-    final ColumnarTestData data = new ColumnarTestData(11);
-    data.createSchema(db);
-    data.insertAssets(db, 1_000);
-    FacetOracle.awaitCaughtUp(db);
+    // assets tagged from a tag tree (plan 5 HIERARCHY) and the measures of the plan 5 STATS types
+    AdvancedFacetsFixture.load(getDatabase(0), 11L, 1_000);
   }
 
   /** The server reopened the database: its projections are awaited again before a test compares facets. */
@@ -150,6 +150,89 @@ public class RemoteDatabaseFacetsIT extends BaseGraphServerTest {
       assertThat(rows.get("d").iterator().next()).isNotInstanceOf(String.class);
       assertThat(rows.get("p").iterator().next()).isInstanceOf(BigDecimal.class);
     }
+  }
+
+  /**
+   * Plan 5 Task 14: HIERARCHY attributes, DISTINCT, STATS (LONG, DATETIME, FLOAT, SHORT, INTEGER) and the typed cursor reach the Java
+   * client with the values and Java types the embedded API gives, on the buffered, command and streamed paths; and a STATS facet
+   * equals the {@code min()}, {@code max()}, {@code sum()} and {@code avg()} the same client reads from rows, value and class.
+   */
+  @Test
+  void plan5KindsDecodeAsTheEmbeddedApi() {
+    final Database server = getServerDatabase(0, getDatabaseName());
+    try (final RemoteDatabase remote = remote()) {
+      for (final String query : List.of(AdvancedFacetsFixture.ASSET_QUERY, AdvancedFacetsFixture.MEASURE_QUERY)) {
+        final FacetResults embedded = AdvancedFacetsFixture.facets(server, query);
+        try (final ResultSet rs = remote.query("sql", query)) {
+          AdvancedFacetsFixture.assertSameValues("buffered", rs.getFacets(), embedded);
+        }
+        try (final ResultSet rs = remote.command("sql", query)) {
+          AdvancedFacetsFixture.assertSameValues("command", rs.getFacets(), embedded);
+        }
+        try (final ResultSet rs = remote.queryStream("sql", query)) {
+          rs.stream().count();
+          AdvancedFacetsFixture.assertSameValues("streamed", rs.getFacets(), embedded);
+        }
+      }
+      AdvancedFacetsFixture.assertStatsEqualRows("remote", AdvancedFacetsFixture.facets(remote, AdvancedFacetsFixture.MEASURE_QUERY),
+          AdvancedFacetsFixture.measureAggregates(remote));
+      AdvancedFacetsFixture.assertStatsEqualRows("embedded", AdvancedFacetsFixture.facets(server, AdvancedFacetsFixture.MEASURE_QUERY),
+          AdvancedFacetsFixture.measureAggregates(server));
+    }
+  }
+
+  /** The typed cursor a remote page returns, sent back as AFTER, starts the next page where the embedded paging starts it. */
+  @Test
+  void typedCursorPagesAsEmbedded() {
+    final Database server = getServerDatabase(0, getDatabaseName());
+    final String first = "SELECT FROM " + TYPE + " FACETS pd: publishDate TERMS TOP 4 ORDER BY VALUE LIMIT 1";
+    final String next = "SELECT FROM " + TYPE + " FACETS pd: publishDate TERMS TOP 4 AFTER :c LIMIT 1";
+    try (final RemoteDatabase remote = remote()) {
+      FacetResult remotePage = AdvancedFacetsFixture.facets(remote, first).get("pd");
+      FacetResult embeddedPage = AdvancedFacetsFixture.facets(server, first).get("pd");
+      for (int page = 0; page < 3; page++) {
+        assertThat(remotePage.after()).as("page %d", page).isNotNull();
+        assertThat(remotePage.after()).isEqualTo(embeddedPage.after());
+        assertThat(remotePage.after().getClass()).isEqualTo(embeddedPage.after().getClass());
+        final Object remoteCursor = remotePage.after();
+        final Object embeddedCursor = embeddedPage.after();
+        try (final ResultSet rs = remote.query("sql", next, Map.of("c", remoteCursor))) {
+          remotePage = rs.getFacets().get("pd");
+        }
+        try (final ResultSet rs = server.query("sql", next, Map.of("c", embeddedCursor))) {
+          embeddedPage = rs.getFacets().get("pd");
+        }
+        assertThat(termList(remotePage)).as("page %d", page + 1).isEqualTo(termList(embeddedPage));
+      }
+    }
+  }
+
+  /** {@code facet.searchValues} rows read by the Java client: value and count of the embedded rows, the count a Long. */
+  @Test
+  void searchValuesRowsAsEmbedded() {
+    final String sql = "SELECT expand(facet.searchValues('Asset', 'tags', 't/2', 6))";
+    try (final RemoteDatabase remote = remote()) {
+      final List<Map<String, Object>> remoteRows = rows(remote, sql);
+      assertThat(remoteRows).hasSize(6);
+      assertThat(remoteRows).isEqualTo(rows(getServerDatabase(0, getDatabaseName()), sql));
+      assertThat(remoteRows.getFirst().get("count")).isInstanceOf(Long.class);
+    }
+  }
+
+  private static List<Map<String, Object>> rows(final BasicDatabase db, final String sql) {
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    try (final ResultSet rs = db.query("sql", sql)) {
+      while (rs.hasNext())
+        rows.add(rs.next().toMap());
+    }
+    return rows;
+  }
+
+  private static List<Object> termList(final FacetResult result) {
+    final List<Object> values = new ArrayList<>();
+    for (final FacetBucket bucket : result.buckets())
+      values.add(bucket.isMissing() ? "<missing>" : bucket.value() + "=" + bucket.count());
+    return values;
   }
 
   private static Set<Object> termValues(final FacetResult result) {

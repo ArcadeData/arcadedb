@@ -33,9 +33,9 @@ import java.util.function.Function;
 /**
  * Converts {@link FacetResults} to and from {@link GrpcFacets}. The shape is the JSON of every other transport: each result's members
  * are those of {@link FacetResult#toJSON()}, and the members that have no proto field (bucket attributes, the DISTINCT members, the
- * counts, sum and average of a STATS facet) travel as JSON object text.
+ * count of a STATS facet) travel as JSON object text.
  * <p>
- * The values of the data (a term, a bound, the cursor, a STATS facet's min and max) are {@link GrpcValue}s encoded exactly as the
+ * The values of the data (a term, a bound, the cursor, a STATS facet's min, max, sum and average) are {@link GrpcValue}s encoded exactly as the
  * rows of the same transport encode theirs (final review C-I8): the server hands its row encoder, a client its row decoder, so a date term arrives as the temporal a row's date
  * does, a decimal as the {@code BigDecimal}, NaN as NaN (the engine already gives every term the Java type a row of its property
  * holds). A received value of a kind no facet value takes (a list, a map, bytes, a link: a newer server)
@@ -52,6 +52,8 @@ public final class FacetProtocol {
   private static final String AFTER       = "after";
   private static final String MIN         = "min";
   private static final String MAX         = "max";
+  private static final String SUM         = "sum";
+  private static final String AVG         = "avg";
 
   private FacetProtocol() {
   }
@@ -110,8 +112,8 @@ public final class FacetProtocol {
       }
       case OTHER_COUNT -> out.setOtherCount(json.getLong(OTHER_COUNT));
       case MISSING -> out.setMissing(json.getLong(MISSING)).setHasCounts(true);
-      // typed below: values of the property
-      case AFTER, MIN, MAX -> {
+      // typed below: values of the property, and the sum and average (values of their own type)
+      case AFTER, MIN, MAX, SUM, AVG -> {
       }
       default -> extensions.put(name, json.opt(name));
       }
@@ -123,6 +125,10 @@ public final class FacetProtocol {
         out.setMin(encoder.apply(stats.min()));
       if (stats.max() != null)
         out.setMax(encoder.apply(stats.max()));
+      if (stats.sum() != null)
+        out.setSum(encoder.apply(stats.sum()));
+      if (stats.avg() != null)
+        out.setAvg(encoder.apply(stats.avg()));
     }
     if (result.hasAfter()) {
       out.setHasAfter(true);
@@ -147,11 +153,12 @@ public final class FacetProtocol {
     FacetResult result = FacetResult.fromJSON(json);
     if (proto.getHasCounts())
       result = result.withBuckets(buckets);
+    // a typed member replaces what the extensions of a server without it carried, which fromJSON has read already
     final FacetStats stats = result.stats();
-    if (stats != null && (proto.hasMin() || proto.hasMax()))
-      result = FacetResult.ofStats(result.source(), new FacetStats(stats.count(), stats.missing(),
-          proto.hasMin() ? decode(proto.getMin(), decoder) : null, proto.hasMax() ? decode(proto.getMax(), decoder) : null, stats.sum(),
-          stats.avg()));
+    if (stats != null && (proto.hasMin() || proto.hasMax() || proto.hasSum() || proto.hasAvg()))
+      result = result.withStats(new FacetStats(stats.count(), stats.missing(), proto.hasMin() ? decode(proto.getMin(), decoder) : stats.min(),
+          proto.hasMax() ? decode(proto.getMax(), decoder) : stats.max(), proto.hasSum() ? number(proto.getSum(), decoder) : stats.sum(),
+          proto.hasAvg() ? number(proto.getAvg(), decoder) : stats.avg()));
     // a server without the typed cursor sends it in the extensions, which fromJSON has read already
     if (proto.getHasAfter())
       result = result.withAfter(proto.hasAfter() ? decode(proto.getAfter(), decoder) : null);
@@ -222,6 +229,14 @@ public final class FacetProtocol {
     for (final String name : extra.keySet())
       if (!target.has(name))
         target.put(name, extra.opt(name));
+  }
+
+  /** A STATS sum or average: a number kind only. */
+  private static Number number(final GrpcValue value, final Function<GrpcValue, Object> decoder) {
+    return switch (value.getKindCase()) {
+      case INT32_VALUE, INT64_VALUE, FLOAT_VALUE, DOUBLE_VALUE, DECIMAL_VALUE -> (Number) decoder.apply(value);
+      default -> throw new UnsupportedValueKindException(value.getKindCase());
+    };
   }
 
   /** @throws UnsupportedValueKindException for a kind no facet value takes (a list, a map, bytes, a link, ...) */

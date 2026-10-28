@@ -20,9 +20,11 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 
@@ -135,10 +137,13 @@ class FacetResultsJsonTest {
     final JSONObject member = json.getJSONObject("st");
     assertThat(member.getString("min")).isEqualTo("enc:INTEGER:4");
     assertThat(member.getString("max")).isEqualTo("enc:INTEGER:9");
-    // the sum and the average are no values of the property (a FLOAT's mean is a double): written as they are
-    assertThat(member.getLong("sum")).isEqualTo(20L);
+    // the sum and the average are no values of the property (a FLOAT's mean is a double): written as values of their own type, which
+    // the encoder is not told (plan 5 Task 14, Task 9 M1: a non-finite one is written by its name as a row's is)
+    assertThat(member.getString("sum")).isEqualTo("enc:null:20");
+    assertThat(member.getString("avg")).isEqualTo("enc:null:" + 20 / 3d);
+    member.put("sum", 20L).put("avg", 20 / 3d);
     member.put(FacetResult.VALUE_TYPE_HINT, "value:" + Type.INTEGER.getId());
-    final FacetStats back = FacetResults.fromJSON(json, (value, type) -> "dec:" + type + ":" + value).get("st").stats();
+    final FacetStats back = FacetResults.fromJSON(json, (value, type) -> type == null ? value : "dec:" + type + ":" + value).get("st").stats();
     assertThat(back.min()).isEqualTo("dec:INTEGER:enc:INTEGER:4");
     assertThat(back.max()).isEqualTo("dec:INTEGER:enc:INTEGER:9");
     assertThat(back.count()).isEqualTo(3L);
@@ -148,6 +153,44 @@ class FacetResultsJsonTest {
     final JSONObject none = new FacetResults(true, 0, 0, map("st", empty)).toJSON((value, type) -> "enc:" + value).getJSONObject("st");
     assertThat(none.opt("min")).isNull();
     assertThat(FacetResults.fromJSON(new FacetResults(true, 0, 0, map("st", empty)).toJSON()).get("st").stats().min()).isNull();
+  }
+
+  /**
+   * Plan 5 Task 14: the facet's {@code @props} names the type of each member that has one, in the form a row's hint takes: the values
+   * (buckets, min, max, cursor) under {@code value}, the sum and the average under their own names.
+   */
+  @Test
+  void typeHintNamesEachMember() {
+    final JSONObject json = new JSONObject().put("type", "stats").put("source", "index").put("count", 2L).put("missing", 0L)
+        .put("min", "a").put("max", "b").put("sum", "c").put("avg", "d")
+        .put(FacetResult.VALUE_TYPE_HINT, "value:" + Type.DATE.getId() + ",sum:" + Type.LONG.getId() + ",avg:" + Type.DECIMAL.getId());
+    final FacetResults back = FacetResults.fromJSON(new JSONObject().put("st", json), (value, type) -> type == Type.DATE ? "date:" + value :
+        type == Type.LONG ? (Object) 7L : type == Type.DECIMAL ? (Object) BigDecimal.TEN : value);
+    final FacetResult result = back.get("st");
+    assertThat(result.valueType()).isEqualTo(Type.DATE);
+    assertThat(result.stats().min()).isEqualTo("date:a");
+    assertThat(result.stats().max()).isEqualTo("date:b");
+    assertThat(result.stats().sum()).isEqualTo(7L);
+    assertThat(result.stats().avg()).isEqualTo(BigDecimal.TEN);
+
+    // a hint naming one member only, or none this version knows, leaves the others as JSON holds them
+    final JSONObject terms = new JSONObject().put("type", "terms").put("source", "index").put("buckets",
+        new JSONArray().put(new JSONObject().put("value", "x").put("count", 1L))).put(FacetResult.VALUE_TYPE_HINT,
+        "sum:" + Type.LONG.getId() + ",value:junk");
+    final FacetResult plain = FacetResults.fromJSON(new JSONObject().put("t", terms), (value, type) -> type + ":" + value).get("t");
+    assertThat(plain.valueType()).isNull();
+    assertThat(plain.buckets().getFirst().value()).isEqualTo("null:x");
+  }
+
+  /** Task 9 M8: replacing the statistics of a result keeps every other member (its value type, its cursor). */
+  @Test
+  void withStatsKeepsTheOtherMembers() {
+    final FacetResult stats = FacetResult.ofStats("scan", new FacetStats(1L, 0L, 1, 1, 1, 1.0)).withValueType(Type.INTEGER);
+    final FacetResult replaced = stats.withStats(new FacetStats(2L, 1L, 2, 3, 5, 2.5));
+    assertThat(replaced.valueType()).isEqualTo(Type.INTEGER);
+    assertThat(replaced.source()).isEqualTo("scan");
+    assertThat(replaced.missing()).isEqualTo(1L);
+    assertThat(replaced.stats()).isEqualTo(new FacetStats(2L, 1L, 2, 3, 5, 2.5));
   }
 
   @Test
