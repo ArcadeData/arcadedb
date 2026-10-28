@@ -5169,6 +5169,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final Long graphFingerprint) {
     // One code per ordinal, or the codes are not that map's: anything else is published bound to no map
     final int[] boundTo = ordinalMap != null && ordinalMap.length == codes.count() ? ordinalMap : null;
+    if (boundTo == null)
+      LogManager.instance().log(this, Level.FINE,
+          "PQ codes of index %s (%d) are not one per ordinal of the map they were built with (%d): published bound to no graph, "
+              + "so searches stay exact until a build publishes codes for its own map (issue #10786)", indexName, codes.count(),
+          ordinalMap != null ? ordinalMap.length : -1);
     try {
       // Which graph these codes were built for, written into the file (issue #10584): the fingerprint certified for the
       // very ordinal map the caller encoded them with, handed over by the caller rather than re-read from the manifest

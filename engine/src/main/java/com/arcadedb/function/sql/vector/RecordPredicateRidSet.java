@@ -63,8 +63,9 @@ import java.util.function.Predicate;
  * the caller's {@link CommandContext}, which is not meant to be shared between threads. Two workers meeting the same candidate
  * may both test it; the answer is the same. A caller's predicate ({@link #matching}) is evaluated under the lock too, for the
  * same reason: the {@code SEARCH} clause's evaluates in the caller's context, rebinding one row to each candidate. The memo
- * holds one entry per candidate the search met, which the search itself bounds (its beam, its fetch budget), and lives as
- * long as the call.
+ * holds one entry per candidate the search met and lives as long as the call. A selective predicate keeps the walk going
+ * until it holds k members, so in the worst case (fewer than k matches) that is one entry per record of the index, each one
+ * paid for by the record load that decided it, which dwarfs it; the statement's deadline bounds the walk (issue #10782).
  * <p>
  * The cost follows the predicate's selectivity. A predicate that keeps a fair share of the records is met within the graph walk,
  * after testing a few candidates per result. One that keeps few or none leaves the walk short of {@code k}, and the dense index
