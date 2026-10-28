@@ -358,7 +358,9 @@
                     <forkCount>1</forkCount>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
-                        <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it -->
+                        <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it. Cost: one
+                             Throwable per window opened (a backup or an HA snapshot), next to a barrier that drains
+                             and suspends the flush pipeline - nothing on the read, write or commit paths -->
                         <arcadedb.pageSnapshotTrackOpeners>true</arcadedb.pageSnapshotTrackOpeners>
                     </systemPropertyVariables>
                     <argLine>
@@ -417,7 +419,9 @@
                     <forkCount>1</forkCount>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
-                        <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it -->
+                        <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it. Cost: one
+                             Throwable per window opened (a backup or an HA snapshot), next to a barrier that drains
+                             and suspends the flush pipeline - nothing on the read, write or commit paths -->
                         <arcadedb.pageSnapshotTrackOpeners>true</arcadedb.pageSnapshotTrackOpeners>
                     </systemPropertyVariables>
                     <argLine>

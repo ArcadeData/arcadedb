@@ -1018,7 +1018,10 @@ public class PageManager extends LockContext {
    * published: when it throws, the exception replaces {@code openSnapshot}'s return value and the caller never receives
    * the window. Nobody else can ever close it then, and every later close or drop of the database would wait for it
    * forever in {@link #beginDatabaseClose} (#10657). So the window is released here before the failure propagates, and
-   * the barrier is counted as failed: its consumer falls back exactly as for any other failed barrier.
+   * the barrier is counted as failed. A {@link RuntimeException} leaves {@link #openSnapshot} wrapped in a
+   * {@link PageSnapshotException}, so its consumer falls back exactly as for any other failed barrier. An {@link Error}
+   * propagates as itself, as it does from every other step of the barrier: it is not a reason to fall back to
+   * suspend-and-freeze, but the window is released before it leaves all the same.
    */
   private void resumeAfterBarrier(final PageManagerFlushThread thread, final Database database,
       final PageSnapshot published) {

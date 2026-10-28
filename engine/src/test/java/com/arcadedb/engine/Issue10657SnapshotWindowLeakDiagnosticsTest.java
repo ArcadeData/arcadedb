@@ -94,6 +94,33 @@ class Issue10657SnapshotWindowLeakDiagnosticsTest extends TestHelper {
   }
 
   @Test
+  void aBarrierThatFailsWithAnErrorAfterPublishingTheWindowReleasesItAndRethrowsTheError() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManager pageManager = db.getPageManager();
+    final PageManagerFlushThread flushThread = pageManager.getFlushThread();
+
+    // AN Error IS NOT A FAILED BARRIER TO FALL BACK FROM: openSnapshot WRAPS ONLY Exception INTO PageSnapshotException,
+    // SO THE Error ITSELF REACHES THE CALLER - BUT THE WINDOW MUST STILL BE RELEASED ON THE WAY OUT
+    final AssertionError failure = new AssertionError("simulated error resuming the flush after the barrier");
+    flushThread.testHookAfterDeferredBacklogSnapshot = () -> {
+      throw failure;
+    };
+    try {
+      assertThatThrownBy(() -> pageManager.openSnapshot(db)).isSameAs(failure);
+    } finally {
+      flushThread.testHookAfterDeferredBacklogSnapshot = null;
+    }
+
+    assertThat(pageManager.countSnapshotWindows(db)).isZero();
+    assertThat(pageManager.isSnapshotWindowOpen(db)).isFalse();
+    assertThat(pageManager.isPageFlushingSuspended(db)).isFalse();
+
+    try (final PageSnapshot snapshot = pageManager.openSnapshot(db)) {
+      assertThat(snapshot.getStatus()).isEqualTo(PageSnapshot.STATUS.ACTIVE);
+    }
+  }
+
+  @Test
   void aCloseWaitingPastTheThresholdNamesTheWindowAndTheStackThatOpenedIt() throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_TRACK_OPENERS.setValue(true);
     final String report;
