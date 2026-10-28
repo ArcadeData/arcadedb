@@ -175,6 +175,7 @@ public final class ColumnarProjection {
   private final Map<Integer, Integer>    nextGeneration      = new HashMap<>();
   private int                            nextSegmentId;
   private int                            reportedSegments;
+  private int                            reportedOpenFiles;
   private boolean                        ownReferenceDropped;
   private boolean                        directoryDeleted;
   private volatile boolean               closed;
@@ -761,10 +762,18 @@ public final class ColumnarProjection {
       unusableReason = null;
     stats.addSegments(typeName, segments.length - reportedSegments);
     reportedSegments = segments.length;
+    reportOpenFiles();
     final ProjectionState previous = state.getAndSet(next);
     if (previous != null)
       previous.release();
     return true;
+  }
+
+  /** Under the publish lock: moves the type's open segment file count by what changed since the last report. */
+  private void reportOpenFiles() {
+    final int open = openReaders.size();
+    stats.addOpenFiles(typeName, open - reportedOpenFiles);
+    reportedOpenFiles = open;
   }
 
   private static boolean sameReaders(final SegmentReader[] a, final SegmentReader[] b) {
@@ -1180,6 +1189,8 @@ public final class ColumnarProjection {
       if (!newTypeName.equals(typeName)) {
         stats.addSegments(typeName, -reportedSegments);
         stats.addSegments(newTypeName, reportedSegments);
+        stats.addOpenFiles(typeName, -reportedOpenFiles);
+        stats.addOpenFiles(newTypeName, reportedOpenFiles);
         typeName = newTypeName;
       }
       bucketName = newBucketName;
@@ -1286,6 +1297,7 @@ public final class ColumnarProjection {
           it.remove();
         }
       }
+      reportOpenFiles();
 
       if (dropped) {
         if (retained.isEmpty())
@@ -1344,6 +1356,7 @@ public final class ColumnarProjection {
     for (final SegmentReader reader : openReaders)
       reader.close();
     openReaders.clear();
+    reportOpenFiles();
     for (final SegmentFile file : segmentFiles.values())
       file.deleted();
     segmentFiles.clear();

@@ -843,6 +843,121 @@ public final class ColumnarIndexManager {
     return stats;
   }
 
+  // ------------------------------------------------------------------------------------------------------ scrape-time gauges
+  // Computed over the live projections of a type when a meter is read: lock free (volatile reads of published state, no apply or
+  // publish lock), nothing is written on the apply, flush or merge paths, and a dropped or closed projection stops contributing.
+  // A COLUMNAR index is polymorphic, so "the projections of a type" are those of every bucket the type owns, subtypes included: the
+  // buckets a facet query over the type reads.
+
+  /** Dead rows over rows of the manifests of every bucket projection the type covers; 0 when it has no rows. */
+  public double deadRatio(final String type) {
+    final int[] buckets = bucketsOf(type);
+    long rows = 0;
+    long dead = 0;
+    for (final Slot slot : slots) {
+      final ColumnarProjection projection = slot.projection;
+      final ColumnarManifest manifest = projection.manifest();
+      if (manifest == null || !covers(buckets, projection))
+        continue;
+      for (final ColumnarManifest.SegmentEntry entry : manifest.segments()) {
+        rows += entry.rows();
+        dead += entry.deadRows();
+      }
+    }
+    return rows == 0 ? 0 : (double) dead / rows;
+  }
+
+  /** The largest dictionary of the property among the bucket projections the type covers: the size the cardinality limit is compared with. */
+  public int dictionarySize(final String type, final String property) {
+    final int[] buckets = bucketsOf(type);
+    int max = 0;
+    for (final Slot slot : slots) {
+      final ColumnarProjection projection = slot.projection;
+      if (!covers(buckets, projection))
+        continue;
+      final GlobalDictionary dictionary = projection.dictionary(property);
+      if (dictionary != null)
+        max = Math.max(max, dictionary.size());
+    }
+    return max;
+  }
+
+  /** True when the dictionary of the property of ANY bucket projection the type covers holds more values than its effective limit. */
+  public boolean cardinalityExceeded(final String type, final String property) {
+    final int size = dictionarySize(type, property);
+    return size > 0 && size > cardinalityLimit(type, property);
+  }
+
+  /**
+   * The limit a dictionary of the property is held to: the lowest over the COLUMNAR indexes of the property that cover the type, each
+   * with its own {@code maxCardinality} metadata (which may be above the database's) or else the database's
+   * {@code arcadedb.columnar.maxCardinality}, read now. The database's value is used only when no index matches.
+   */
+  int cardinalityLimit(final String type, final String property) {
+    final int configured = database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_MAX_CARDINALITY);
+    int limit = Integer.MAX_VALUE;
+    boolean matched = false;
+    for (final ColumnarIndex index : registered) {
+      if (!property.equals(index.columnDefinition().property()))
+        continue;
+      final String indexType = index.getTypeName();
+      if (indexType != null && !indexType.equals(type)) {
+        final DocumentType documentType = database.getSchema().getTypeOrNull(type);
+        if (documentType == null || !documentType.instanceOf(indexType))
+          continue;
+      }
+      final int own = index.getColumnarMetadata().getMaxCardinality();
+      limit = Math.min(limit, own > 0 ? own : configured);
+      matched = true;
+    }
+    return matched ? limit : configured;
+  }
+
+  /**
+   * Age of the oldest committed page not yet applied, the maximum over the bucket projections the type covers; 0 when none is pending.
+   * The trackers are stamped with the system clock, this reads the manager's (the same in production, injectable in tests).
+   */
+  public long applyLagMs(final String type) {
+    final int[] buckets = bucketsOf(type);
+    final long now = nowMs();
+    long lag = 0;
+    for (final Slot slot : slots) {
+      final ColumnarProjection projection = slot.projection;
+      if (!covers(buckets, projection))
+        continue;
+      lag = Math.max(lag, lagOf(projection.tracker(), now));
+      if (projection.externalTracker() != null)
+        lag = Math.max(lag, lagOf(projection.externalTracker(), now));
+    }
+    return lag;
+  }
+
+  private static long lagOf(final DirtyPageTracker tracker, final long now) {
+    final long oldest = tracker.oldestPendingEpochStartMs();
+    return oldest == 0 ? 0 : Math.max(0, now - oldest);
+  }
+
+  /** The file ids of the buckets the type owns, subtypes included; none when the type does not exist (any more). */
+  private int[] bucketsOf(final String type) {
+    final DocumentType documentType = database.getSchema().getTypeOrNull(type);
+    if (documentType == null)
+      return new int[0];
+    final List<Bucket> buckets = documentType.getBuckets(true);
+    final int[] ids = new int[buckets.size()];
+    for (int i = 0; i < ids.length; i++)
+      ids[i] = buckets.get(i).getFileId();
+    return ids;
+  }
+
+  private static boolean covers(final int[] buckets, final ColumnarProjection projection) {
+    if (projection.isClosedOrDropped())
+      return false;
+    for (final int bucket : buckets)
+      if (bucket == projection.bucketId())
+        return true;
+    return false;
+  }
+
   /** Conversion failures counted for the property of the type, see {@link ColumnarStats#conversionFailures}. */
   public long conversionFailures(final String type, final String property) {
     return stats.conversionFailures(type, property);
