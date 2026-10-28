@@ -186,7 +186,7 @@ class Issue10678CypherVectorAndFulltextIndexDdlTest extends TestHelper {
     final String fulltext = createStatement("f");
     final String relFulltext = createStatement("g");
     assertThat(vector).isEqualTo("CREATE VECTOR INDEX `v` FOR (n:`L`) ON n.`e` OPTIONS {indexConfig: {`vector.dimensions`: 3, "
-        + "`vector.similarity_function`: 'cosine'}}");
+        + "`vector.similarity_function`: 'cosine', `vector.quantization.type`: 'none'}}");
     assertThat(fulltext).isEqualTo(
         "CREATE FULLTEXT INDEX `f` FOR (n:`L`) ON EACH [n.`a`, n.`b`] OPTIONS {indexConfig: {`fulltext.analyzer`: 'whitespace'}}");
     assertThat(relFulltext).isEqualTo("CREATE FULLTEXT INDEX `g` FOR ()-[r:`R`]-() ON EACH [r.`c`]");

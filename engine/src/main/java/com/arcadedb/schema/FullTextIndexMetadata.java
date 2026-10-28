@@ -22,6 +22,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -300,6 +301,19 @@ public class FullTextIndexMetadata extends IndexMetadata {
   @Override
   protected boolean isUserMetadataKey(final String key) {
     return USER_METADATA_KEYS.contains(key) || key.endsWith(ANALYZER_SUFFIX) || key.endsWith(BOOST_SUFFIX);
+  }
+
+  /** The fixed keys and the per-field ones of the fields this definition configures. */
+  @Override
+  protected Set<String> getUserSettingKeys() {
+    if (fieldAnalyzers.isEmpty() && fieldBoosts.isEmpty())
+      return USER_METADATA_KEYS;
+    final Set<String> keys = new HashSet<>(USER_METADATA_KEYS);
+    for (final String field : fieldAnalyzers.keySet())
+      keys.add(field + ANALYZER_SUFFIX);
+    for (final String field : fieldBoosts.keySet())
+      keys.add(field + BOOST_SUFFIX);
+    return keys;
   }
 
   @Override
