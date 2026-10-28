@@ -150,7 +150,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // or a save that fails after serializing leaves them unsaved, because only a completed write marks a generation saved
   private final AtomicLong countersGeneration      = new AtomicLong(0L);
   private volatile long    countersSavedGeneration = 0L;
-  // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
+  // Set when the counters are known to be wrong (a clamp, a scan result that could not be proven exact, a delta that could not be
+  // applied): the next drift check must rescan even if the document counts agree. Cleared only by an exact scan. PERSISTED with the
+  // pair it speaks against (ft_rescanRequired, issue #10735): the reloaded pair passes every other check, so a proof kept in memory
+  // only was lost by the first restart. Every arming bumps countersGeneration AFTER setting it, so a save that serialized the pair
+  // before the arming stays unsaved and the next one (at the latest, the close) writes it
   private final AtomicBoolean rescanRequired = new AtomicBoolean(false);
   private volatile boolean countersValid = false;
   // WHAT THE PERSISTED sumDocLength WAS MEASURED WITH (SEE getLengthSignature()). NULL = NOT KNOWN: THE COUNTERS WERE PERSISTED BEFORE
@@ -161,7 +165,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // HAS BOUND IT
   private volatile String  lengthRule;
   // Times a counter was driven below zero and floored there. Each is an arithmetic error the counters cannot repair by themselves:
-  // it arms the rescan, and is counted so an operator can see it happened (issue #10606). Not persisted
+  // it arms the rescan, and is counted so an operator can see it happened (issue #10606). Not persisted: it is this session's
+  // diagnostic, while what a clamp proves about the pair is the persisted rescanRequired
   private final AtomicLong clamps = new AtomicLong(0L);
   private final AtomicLong lastClampLogged = new AtomicLong(0L);
   // Not persisted (no toJSON/fromJSON): whether the persisted counters have already been checked for staleness against the live
@@ -258,6 +263,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
     this.countersEpoch.set(metadata.getLong("ft_countersEpoch", 0L));
     this.countersMeasuredWith = metadata.getString("ft_lengthSignature", null);
+    this.rescanRequired.set(metadata.getBoolean("ft_rescanRequired", false));
 
     // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost). Clear first so a fromJSON() on an
     // already-populated instance replaces the per-field config rather than merging stale entries into it (these maps are now
@@ -441,6 +447,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
         // What the pair was measured with, read with it: a scan that publishes a new pair publishes its signature under the same
         // lock, so a save never records the signature of a scan next to the pair from before it
         measuredWith = countersMeasuredWith;
+        // What is known AGAINST the pair, read with it (issue #10735): a reader of this definition cannot obtain the pair without
+        // also obtaining the proof that it is wrong. Only written when armed, so a sound pair keeps the definition as it was
+        if (rescanRequired.get())
+          metadata.put("ft_rescanRequired", true);
       }
       // What the pair was measured with, NOT what the index analyzes with now: a save between a change of the analyzer and the
       // rescan it arms must not record the new one next to the old counters, or no later session would ever find them off.
@@ -721,6 +731,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Whether the counters are known to be wrong and the next drift check must rescan whatever the document counts say. Unlike
+   * {@link #consumeRescanRequired()} it leaves the flag armed: only a scan whose result is exact clears it
+   * ({@link #publishScannedCounters}), so a scan that fails or races a writer leaves the proof in place, persisted (issue #10735).
+   */
+  public boolean isRescanRequired() {
+    return rescanRequired.get();
+  }
+
+  /**
    * Atomically claims the one-per-session staleness check: returns true to exactly one caller (which must then run the
    * live-count validation), false to everyone else. Prevents concurrent first-queries from all rescanning the type.
    */
@@ -801,7 +820,6 @@ public class FullTextIndexMetadata extends IndexMetadata {
     }
     this.countersValid = true;
     scans.incrementAndGet();
-    countersGeneration.incrementAndGet();
     // A delta that took a counter below zero means writers removed more than the counters held while the scan ran. The floor can
     // make the published pair EQUAL to the scan result by accident (both zero), so the clamp is what says it is not exact
     if (clamped)
@@ -810,6 +828,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
     final boolean exact = !clamped && mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
     this.rescanRequired.set(!exact);
     this.staleChecked.set(exact);
+    // After the flag, so a save that serialized the new pair without its flag records a generation this one supersedes
+    countersGeneration.incrementAndGet();
     return exact;
   }
 
@@ -1019,10 +1039,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
   /**
    * Arms the drift check again: the next search compares the live count with the counters and rescans when they disagree, or
    * unconditionally. For a node that knows it missed a change to them.
+   * <p>
+   * The armed state is part of what the schema persists with the pair, so arming dirties the counters even when it moves neither
+   * of them (crash recovery, a delta that could not be applied): otherwise a close before the first search wrote nothing, and the
+   * next session trusted the pair (issue #10735). The generation moves AFTER the flag is set, for the save that races it.
    */
   public void requireRescan() {
     rescanRequired.set(true);
     staleChecked.set(false);
+    countersGeneration.incrementAndGet();
   }
 
   /**
@@ -1105,6 +1130,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
       // THE PAIR IS REPLACED WHOLE, SO WHAT IT WAS MEASURED WITH IS TOO: A PAIR WITHOUT A SIGNATURE IS NOT THE ONE THIS NODE FOUND OFF,
       // AND KEEPING THE SIGNATURE OF THE OLD ONE WOULD RESCAN COUNTERS THE LEADER JUST RECOMPUTED
       countersMeasuredWith = definition.getString("ft_lengthSignature", null);
+      // AND SO IS WHAT IS KNOWN AGAINST IT (ISSUE #10735): A PAIR THE LEADER KNEW TO BE WRONG IS RESCANNED HERE TOO, AND WHAT THIS NODE
+      // KNEW AGAINST ITS OWN PAIR DOES NOT SPEAK AGAINST THE ONE THAT REPLACES IT
+      rescanRequired.set(definition.getBoolean("ft_rescanRequired", false));
     }
     // Counted as a mutation so a scan racing this adoption does not call its own result exact
     mutations.incrementAndGet();

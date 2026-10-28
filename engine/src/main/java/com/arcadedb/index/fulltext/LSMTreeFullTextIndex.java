@@ -860,7 +860,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   private double resolveAvgDocLength() {
     if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
-      return ftMetadata.avgDocLength();
+      // A count with no length (every document analyzes to no token, or a pair torn by a clamp) averages 0.0, which the scorer
+      // replaces with the neutral 1.0: answer what it normalizes by, so EXPLAIN does not report a divisor nothing uses
+      return BM25Scorer.lengthNormalizer(ftMetadata.avgDocLength());
     return 1.0;
   }
 
@@ -922,7 +924,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         for (final Bucket bucket : corpusBuckets())
           liveCount += bucket.count();
         final long persisted = ftMetadata.getTotalDocs();
-        final boolean rescan = ftMetadata.consumeRescanRequired();
+        // Read, not consumed: only the exact scan that repairs the pair disarms it, so a scan that fails or races a writer leaves the
+        // proof armed, and persisted, for the next check (issue #10735)
+        final boolean rescan = ftMetadata.isRescanRequired();
         // The count above vouches for the document count only. The sum of the lengths, which decides avgdl and so every score, depends
         // on the analyzer that measured it: a corpus whose record count is right and whose lengths are not is told by that (issue #10397)
         final boolean anotherAnalyzer = ftMetadata.isMeasuredWithAnotherAnalyzer();
@@ -1043,6 +1047,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     result.put("epoch", metadata.getCountersEpoch());
     // Times a counter was driven below zero and floored there: each one is an arithmetic error that armed a rescan (issue #10606)
     result.put("clamps", metadata.getClamps());
+    // Whether the pair is known to be wrong and the next search rescans it: persisted with it, so unlike the clamps above it still
+    // says so after a restart (issue #10735)
+    result.put("rescanRequired", metadata.isRescanRequired());
     return result;
   }
 

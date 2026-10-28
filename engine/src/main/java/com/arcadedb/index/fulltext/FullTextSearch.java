@@ -417,9 +417,11 @@ public class FullTextSearch {
 
     // Both counters are clamped to the neutral values BM25 uses when no statistics are available. A type whose indexed
     // properties analyze to no tokens counts every document but sums a zero length, leaving a zero average that would
-    // otherwise be rejected by BM25ScoringContext; length normalization is meaningless for such a corpus anyway.
+    // otherwise be rejected by BM25ScoringContext; length normalization is meaningless for such a corpus anyway. The average
+    // goes through the scorer's own rule and not a floor of 1.0: a corpus averaging less than one token per document (most of
+    // them empty) normalizes by its real average here exactly as on the bucket-level path (issue #10735).
     return new BM25ScoringContext(Math.max(1L, first.getTypeWideDocumentCount()),
-        Math.max(1.0, first.getTypeWideAverageDocumentLength()), documentFrequencies);
+        BM25Scorer.lengthNormalizer(first.getTypeWideAverageDocumentLength()), documentFrequencies);
   }
 
   /**
