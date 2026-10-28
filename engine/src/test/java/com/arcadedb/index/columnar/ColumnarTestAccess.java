@@ -48,6 +48,19 @@ public final class ColumnarTestAccess {
     return manifest == null ? 0 : manifest.segments().size();
   }
 
+  /**
+   * The references held on the bucket's current projection state, the projection's own one and one per open snapshot included. Only
+   * comparable between two reads while nothing publishes a new state (caught up, no flush or merge running).
+   */
+  public static int stateReferences(final ColumnarIndexManager manager, final int bucketId) {
+    final ProjectionState state = projection(manager, bucketId).retainState();
+    try {
+      return state.referencesForTesting() - 1;
+    } finally {
+      state.release();
+    }
+  }
+
   private static ColumnarProjection projection(final ColumnarIndexManager manager, final int bucketId) {
     final ColumnarProjection projection = manager.projection(bucketId);
     if (projection == null)
