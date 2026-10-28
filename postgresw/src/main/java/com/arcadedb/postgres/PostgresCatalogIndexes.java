@@ -21,7 +21,6 @@ package com.arcadedb.postgres;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 
 import java.util.AbstractList;
@@ -52,6 +51,12 @@ import java.util.logging.Level;
  * constraint. So each unique index is also a constraint of the same name, which is what makes {@code information_schema}'s
  * constraint views and psql's {@code UNIQUE CONSTRAINT} listing say what the schema enforces. There is no primary key, and no
  * foreign key or check constraint, in ArcadeDB, so no row says there is.
+ * <p>
+ * <b>A key that is no column is an expression.</b> A key over a property the table does not list as a column - one that is
+ * {@code HIDDEN} - is what PostgreSQL calls an expression column of the index (issue #10829): numbered 0 in {@code indkey}, written
+ * in {@code indexprs}, and still an attribute of the index, named {@code expr} as PostgreSQL names one, so that {@code relnatts}
+ * counts the {@code pg_attribute} rows of an index as it does those of a table. A unique index with such a key is no constraint,
+ * as a PostgreSQL unique index over an expression is not: a constraint is over columns.
  * <p>
  * <b>Access methods.</b> The LSM tree is a {@code btree}, the hash index a {@code hash}, the full-text index a {@code gin}, the
  * geospatial one a {@code gist} and the vector indexes an {@code hnsw}: the PostgreSQL index families a client knows by those
@@ -104,14 +109,22 @@ final class PostgresCatalogIndexes {
   /**
    * One index of a type, with the OIDs the catalog gives it.
    *
-   * @param constraintOid the OID of the unique constraint of the same name, 0 for an index that is not unique
-   * @param attnums       for each key, the number of its column in the table ({@code pg_attribute.attnum}), 0 for a key that is
-   *                      not a column of the type, which PostgreSQL calls an expression
+   * @param constraintOid  the OID of the unique constraint of the same name, 0 for an index that is not unique or has an expression
+   * @param attnums        for each key, the number of its column in the table ({@code pg_attribute.attnum}), 0 for a key that is
+   *                       not a column of the type, which PostgreSQL calls an expression
+   * @param attributeNames for each key, the name of the index's own attribute: the column's, or {@code expr} for an expression
    */
   record Info(String name, DocumentType type, int tableOid, int oid, int constraintOid, boolean unique, boolean ready,
-              AccessMethod method, String[] columns, int[] attnums) {
+              AccessMethod method, String[] columns, int[] attnums, String[] attributeNames) {
     boolean hasConstraint() {
       return constraintOid != 0;
+    }
+
+    boolean hasExpressions() {
+      for (final int attnum : attnums)
+        if (attnum == 0)
+          return true;
+      return false;
     }
   }
 
@@ -164,7 +177,7 @@ final class PostgresCatalogIndexes {
    * @param typeOids the OIDs the types already have, which an index must not take
    */
   static List<Info> of(final List<DocumentType> types, final ToIntFunction<DocumentType> tableOid,
-      final Function<DocumentType, List<Property>> properties, final Set<Integer> typeOids, final int firstOid, final int oidSpace) {
+      final Function<DocumentType, List<String>> columnNames, final Set<Integer> typeOids, final int firstOid, final int oidSpace) {
     final Set<Integer> used = new HashSet<>(typeOids);
     final List<Info> infos = new ArrayList<>();
 
@@ -176,8 +189,8 @@ final class PostgresCatalogIndexes {
 
       final Map<String, Integer> numbers = new HashMap<>();
       int ordinal = 0;
-      for (final Property property : properties.apply(type))
-        numbers.put(property.getName(), ++ordinal);
+      for (final String column : columnNames.apply(type))
+        numbers.put(column, ++ordinal);
 
       for (final TypeIndex index : indexes) {
         final Info info = describe(index, type, tableOid.applyAsInt(type), numbers, used, firstOid, oidSpace);
@@ -213,9 +226,51 @@ final class PostgresCatalogIndexes {
     for (int k = 0; k < columns.length; k++)
       attnums[k] = numbers.getOrDefault(columns[k], 0);
 
+    boolean expression = false;
+    for (final int attnum : attnums)
+      expression |= attnum == 0;
+
     final int oid = freeOid("index:" + name, used, firstOid, oidSpace);
-    final int constraintOid = unique ? freeOid("constraint:" + name, used, firstOid, oidSpace) : 0;
-    return new Info(name, type, tableOid, oid, constraintOid, unique, ready, method, columns, attnums);
+    // a unique index over an expression enforces uniqueness without being a constraint, which PostgreSQL defines over columns
+    final int constraintOid = unique && !expression ? freeOid("constraint:" + name, used, firstOid, oidSpace) : 0;
+    return new Info(name, type, tableOid, oid, constraintOid, unique, ready, method, columns, attnums,
+        attributeNames(columns, attnums));
+  }
+
+  /**
+   * The names of the attributes of an index, as PostgreSQL's {@code ChooseIndexColumnNames} chooses them: a key over a column takes
+   * the column's name, an expression {@code expr}, and a name already taken in the index gets the first free number appended -
+   * {@code expr}, {@code expr1}, {@code expr2}. An expression's attribute does not carry the name of the property it reads, which
+   * the table does not list as a column.
+   */
+  private static String[] attributeNames(final String[] columns, final int[] attnums) {
+    final String[] names = new String[columns.length];
+    final Set<String> taken = new HashSet<>();
+    for (int k = 0; k < columns.length; k++) {
+      final String base = attnums[k] == 0 ? "expr" : columns[k];
+      String name = base;
+      for (int suffix = 1; !taken.add(name); suffix++)
+        name = base + suffix;
+      names[k] = name;
+    }
+    return names;
+  }
+
+  /**
+   * {@code pg_index.indexprs}: the expressions among the keys of an index, in order, as {@code pg_get_expr} prints a list of them -
+   * separated by a comma - or null for an index of columns only, which is what a client tests to tell the two apart.
+   */
+  static String expressions(final Info index) {
+    if (!index.hasExpressions())
+      return null;
+    final StringBuilder expressions = new StringBuilder();
+    for (int k = 0; k < index.columns().length; k++)
+      if (index.attnums()[k] == 0) {
+        if (!expressions.isEmpty())
+          expressions.append(", ");
+        expressions.append(quoteIdentifier(index.columns()[k]));
+      }
+    return expressions.toString();
   }
 
   private static int freeOid(final String key, final Set<Integer> used, final int firstOid, final int oidSpace) {
@@ -305,8 +360,8 @@ final class PostgresCatalogIndexes {
         Boolean.FALSE, "indisvalid", index.ready(), "indcheckxmin", Boolean.FALSE, "indisready", index.ready(), "indislive",
         Boolean.TRUE, "indisreplident", Boolean.FALSE, "indkey", new Vector(index.attnums()),
         // the collations and operator classes PostgreSQL numbers have no equivalent here
-        "indcollation", new Vector(zeros), "indclass", new Vector(zeros), "indoption", new Vector(zeros), "indexprs", null, "indpred",
-        null };
+        "indcollation", new Vector(zeros), "indclass", new Vector(zeros), "indoption", new Vector(zeros), "indexprs", expressions(index),
+        "indpred", null };
   }
 
   /** The {@code pg_class} columns of the relation an index is, name and value in turn. */
