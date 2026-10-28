@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.postgres.PostgresCatalogSyntax.FromEntry;
 import com.arcadedb.postgres.PostgresCatalogSyntax.Join;
 import com.arcadedb.postgres.PostgresCatalogSyntax.SetOperation;
@@ -48,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.logging.Level;
 
 import static com.arcadedb.postgres.PostgresCatalogRowSets.aggregateOf;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.combine;
@@ -2119,7 +2121,10 @@ public class PostgresCatalog {
     return rows;
   }
 
-  /** The type of an expression column of an index over {@code property}: the property's, which is what the expression reads. */
+  /**
+   * The type of an expression column of an index over {@code property}: the property's, which is what the expression reads. An index
+   * is created over declared properties, so text is only the answer for one whose property a concurrent statement is dropping.
+   */
   private static PostgresType expressionType(final DocumentType type, final String property) {
     final Property declared = type.getPolymorphicPropertyIfExists(property);
     return declared == null ? PostgresType.TEXT : PostgresType.getTypeFromArcade(declared.getType(), declared.getOfType());
@@ -2284,6 +2289,9 @@ public class PostgresCatalog {
         return null;
       select = parsed;
     } catch (final RuntimeException e) {
+      // a view whose query no longer parses - a function or a syntax this version dropped - is described by its backing type
+      LogManager.instance().log(PostgresCatalog.class, Level.FINE, "Columns of the materialized view query '%s' not derived: %s",
+          null, query, e.getMessage());
       return null;
     }
 
