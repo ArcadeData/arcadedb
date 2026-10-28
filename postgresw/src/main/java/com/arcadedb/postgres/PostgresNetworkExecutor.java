@@ -1580,10 +1580,10 @@ public class PostgresNetworkExecutor extends Thread {
    * it just connected to.
    * <p>
    * Two recognisers share the work: {@link PostgresTypeCatalog} for {@code pg_type}, whose element-type
-   * self-join is a shape no plain projection can express, and {@link PostgresCatalog} for the rest. A shape
-   * neither of them will answer gets the empty result set that a pg_catalog query it did not understand has
-   * always been given, rather than being handed to ArcadeDB's SQL engine, which has no such tables and would
-   * answer with a syntax error.
+   * self-join is a shape no plain projection can express, and {@link PostgresCatalog} for the rest. A catalog
+   * query neither of them can answer is refused with {@code feature_not_supported} (issue #10371); a FROM-less
+   * session probe naming pg_catalog is answered by {@link PostgresCatalog#resolveProbe} (issue #10695); anything
+   * else, whatever words its text holds, is executed normally.
    *
    * @param parameters the values bound to the query's placeholders, empty at Parse time and supplied at
    *                   Execute time, when the client has sent them
@@ -1613,11 +1613,13 @@ public class PostgresNetworkExecutor extends Thread {
       return refuseCatalogQuery(query, parameters);
     }
 
-    // The one deliberate compatibility shim: a statement that names pg_catalog or pg_type but reads no emulated relation -
-    // SELECT pg_catalog.set_config(...), the session probes pg_dump and friends send - is given the empty result set it has
-    // always been given, rather than handed to ArcadeDB's SQL engine, which has no such function and would fail the probe
-    if (PostgresCatalog.containsIgnoreCase(query, "pg_catalog") || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
-      return new CatalogAnswer(Collections.emptyList(), Map.of());
+    // The session probes pg_dump and friends send - SELECT pg_catalog.set_config(...), a FROM-less SELECT naming pg_catalog or
+    // pg_type - are answered here rather than handed to ArcadeDB's SQL engine, which reads pg_catalog.f() as a method call. The
+    // test is on the tokens, never on the text: a statement that merely CONTAINS those words - in a string literal, in a column
+    // name, in an INSERT - goes to the engine like any other (issue #10695)
+    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, parameters);
+    if (probe != null)
+      return new CatalogAnswer(toResults(probe.rows), probe.columns);
 
     return null;
   }
