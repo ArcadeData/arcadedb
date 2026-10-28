@@ -156,6 +156,15 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
   }
 
   @Test
+  void aFilterInsideAChildWhoseParentRaisesAnswersAsWithoutTheStrategy() {
+    // THE CHILD'S INPUT COMES FROM ITS PARENT'S PREFIX: WHEN THAT PREFIX IS NOT READ-ONLY, THE INPUT IS UNKNOWN, NOT AN ELEMENT
+    assertSameAnswer(g -> g.withoutStrategies(LazyBarrierStrategy.class).V().math("1/0").union(__.filter(__.limit(0))).count());
+    assertSameAnswer(g -> g.withoutStrategies(LazyBarrierStrategy.class).V().values("s").union(__.filter(__.limit(0)), __.identity()).count());
+    assertSameAnswer(g -> g.withoutStrategies(LazyBarrierStrategy.class).V().values("s").union(__.out().filter(__.limit(0))).count());
+    assertSameAnswer(g -> g.withoutStrategies(LazyBarrierStrategy.class).V().math("_ + 1").local(__.values("s").filter(__.limit(0))).count());
+  }
+
+  @Test
   void aGraphStepIdThatIsNotARidAnswersAsWithoutTheStrategy() {
     // A NUMBER IS SKIPPED BY ArcadeGraph.vertices(), A STRING IS PARSED AS A RID AND A MALFORMED ONE RAISES: BOTH MUST STAY AS THEY ARE
     assertSameAnswer(g -> g.V(1).filter(__.limit(0)).count());
