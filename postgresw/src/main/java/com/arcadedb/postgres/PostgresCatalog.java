@@ -35,7 +35,6 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -57,7 +56,6 @@ import static com.arcadedb.postgres.PostgresCatalogRowSets.compareValues;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.distinctKey;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.MAX_NESTING;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.containsSetOperation;
-import static com.arcadedb.postgres.PostgresCatalogSyntax.isName;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.parseFrom;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.plainSpellings;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.splitConjuncts;
@@ -648,7 +646,7 @@ public class PostgresCatalog {
       if (!nested)
         return namesAnEmulatedRelation(tokens) ? DECLINED : null;
       // A row of literals - an arm of psqlodbc's UNION of relkinds, a sub-select's SELECT 1: one row, no relation.
-      return project(statement, List.of(), List.of(new Row()), context, Map.of(), true, null, outer);
+      return project(statement, List.of(), List.of(new Row()), context, Map.of(), true, outer);
     }
 
     final List<FromEntry> from = parseFrom(statement.from);
@@ -657,7 +655,7 @@ public class PostgresCatalog {
 
     if (shadowedByUserType(from, context))
       return null;
-    if (readsJoinedRelation(statement, from, nested))
+    if (readsJoinedRelation(from, nested))
       return resolveJoined(statement, from, context, outer);
 
     final Map<String, Collection<String>> columnsByRelation = new LinkedHashMap<>();
@@ -729,74 +727,35 @@ public class PostgresCatalog {
 
     context.charge(rows.size());
 
-    final boolean[] secondAliases = secondAliasesRead(statement, from);
-    if (secondAliases == null)
-      return DECLINED;
-
-    return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter, secondAliases, outer);
+    return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter, outer);
   }
 
   /**
-   * Which FROM entries are a second alias the query reads a relation through, a shape this row model can only
-   * partly represent: a {@link Row} carries one map per relation, so both aliases read the same map. The second
-   * alias would answer with the first one's values, and a projection naming a column through both would read
-   * one row where the client asked about two - which is precisely the kind of wrong answer that makes a strict
-   * client (the Arrow ADBC driver among them) abort.
+   * Whether the FROM clause names one relation more than once (the relation names {@code parseFrom} reads are lowercased and
+   * stripped of {@code pg_catalog.}). The one-row-per-entity model cannot represent that shape: a {@link Row} carries one map per
+   * relation, so two aliases of it would read the same map, and
+   * <ul>
+   * <li>a second alias would answer with the first one's values;</li>
+   * <li>one on the right of a LEFT JOIN would read NULL whenever its condition does not hold within that one shared row
+   * ({@code arr.oid = t.typarray} never does), although the relation has the row it asks for (issue #10593);</li>
+   * <li>one nothing reads would not multiply the rows, so {@code count(*)} over a self cross join would count one relation and the
+   * work budget would never see the product.</li>
+   * </ul>
+   * Such a statement is answered by {@link #resolveJoined}, which binds every entry to its own rows, whether the query reads the
+   * alias or not.
    * <p>
-   * The one form of it that IS representable is a second alias on the right of a LEFT JOIN whose condition
-   * does not hold for the row: it then reads NULL, whatever map it shares. psql's {@code \d} is that form -
-   * {@code LEFT JOIN pg_class tc ON (c.reltoastrelid = tc.oid)}, and a type has no TOAST table (issue #10228).
-   * Such an entry is returned flagged, and {@link #project} declines the query if a row matches it after all.
-   * Any other second alias declines the query here, and the caller sends the empty result set that any
-   * unreadable catalog shape gets.
-   * <p>
-   * The self-join that matters in practice - {@code FROM pg_type t, pg_type e WHERE t.oid = N AND t.typelem =
-   * e.oid}, where the projected columns describe a different row from the one the filter selects - is
-   * answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own shape.
-   * <p>
-   * Only aliases the query actually <b>reads through</b> count, and an inner join's condition is a read: it
-   * filters like the WHERE clause. An alias that appears solely in an outer join's condition does not: the JDBC
-   * driver's {@code getColumns()} joins {@code pg_class} and {@code pg_namespace} a
-   * second time purely to look up a comment it then never projects, and declining that would take out the
-   * column list of every JDBC client.
-   *
-   * @return one flag per FROM entry, or null when the query reads a relation through a second alias that is
-   * not the right side of a LEFT JOIN
+   * The self-join that matters most in practice - {@code FROM pg_type t, pg_type e WHERE t.oid = N AND t.typelem = e.oid}, the
+   * JDBC driver's array-element lookup - is answered by {@link PostgresTypeCatalog}, which runs first and recognises it as its own
+   * shape.
    */
-  private static boolean[] secondAliasesRead(final Statement statement, final List<FromEntry> from) {
-    final boolean[] read = new boolean[from.size()];
-
-    final List<List<PostgresCatalogToken>> clauses = new ArrayList<>(Arrays.asList(statement.projection,
-        statement.where, statement.groupBy, statement.orderBy));
-    // An inner join's condition is a filter (see project()), so a name read in it is read as in WHERE.
+  private static boolean readsOneRelationTwice(final List<FromEntry> from) {
+    if (from.size() < 2)
+      return false;
+    final Set<String> relations = new HashSet<>();
     for (final FromEntry entry : from)
-      if (entry.on != null && entry.join != Join.LEFT && entry.join != Join.RIGHT && entry.join != Join.FULL)
-        clauses.add(entry.on);
-
-    for (final List<PostgresCatalogToken> clause : clauses) {
-      if (clause == null)
-        continue;
-
-      for (int i = 0; i + 1 < clause.size(); i++) {
-        if (!isName(clause.get(i)) || !clause.get(i + 1).isSymbol("."))
-          continue;
-
-        final int index = entryIndex(from, clause.get(i).text.toLowerCase(Locale.ENGLISH));
-        if (index >= 0 && from.get(index).derived == null)
-          read[index] = true;
-      }
-    }
-
-    final boolean[] second = new boolean[from.size()];
-    final Map<String, Integer> subjects = new HashMap<>();
-    for (int i = 0; i < from.size(); i++) {
-      if (!read[i] || subjects.putIfAbsent(from.get(i).relation, i) == null)
-        continue;
-      if (from.get(i).join != Join.LEFT || from.get(i).on == null)
-        return null;
-      second[i] = true;
-    }
-    return second;
+      if (entry.derived == null && entry.function == null && !relations.add(entry.relation))
+        return true;
+    return false;
   }
 
   /**
@@ -818,14 +777,14 @@ public class PostgresCatalog {
    * <li>a relation of {@link #JOINED_RELATIONS};</li>
    * <li>a table function ({@code generate_series}, {@code unnest}), or a derived table that is joined to something else or has an
    * alias list for its columns - the shapes a driver's type lookup is written with (issue #10495);</li>
-   * <li>one relation through two aliases that are not the right side of an outer join, which the one-row-per-entity model cannot
-   * represent: {@code pg_type t JOIN pg_type arr ON arr.oid = t.typarray}.</li>
+   * <li>one relation through two aliases, read or not, which the one-row-per-entity model cannot represent:
+   * {@code pg_type t LEFT JOIN pg_type arr ON arr.oid = t.typarray} (see {@link #readsOneRelationTwice}).</li>
    * </ul>
-   * The last two are the statements the other path declines, so what that path answers is answered as it was. A statement that
-   * reads no emulated relation at all is the join path's only when {@code nested}: a derived table or a sub-select of a catalog
-   * query, whose rows come from a table function.
+   * The other path declines the second shape, and answers the third wrongly (issue #10593), so what it answers correctly is answered
+   * as it was. A statement that reads no emulated relation at all is the join path's only when {@code nested}: a derived table or a
+   * sub-select of a catalog query, whose rows come from a table function.
    */
-  private static boolean readsJoinedRelation(final Statement statement, final List<FromEntry> from, final boolean nested) {
+  private static boolean readsJoinedRelation(final List<FromEntry> from, final boolean nested) {
     boolean joined = false;
     boolean modelled = false;
     for (final FromEntry entry : from) {
@@ -841,7 +800,7 @@ public class PostgresCatalog {
       }
     }
     if (!joined)
-      joined = secondAliasesRead(statement, from) == null;
+      joined = readsOneRelationTwice(from);
     return joined && (modelled || nested);
   }
 
@@ -2337,7 +2296,7 @@ public class PostgresCatalog {
 
   private static Answer project(final Statement statement, final List<FromEntry> from, final List<Row> rows,
       final Context context, final Map<String, Collection<String>> columnsByRelation,
-      final boolean toleratesUnreadableFilter, final boolean[] secondAliases, final RowResolver outer) {
+      final boolean toleratesUnreadableFilter, final RowResolver outer) {
     final Projection projection = parseProjection(statement.projection, from, columnsByRelation);
     if (projection == null)
       return DECLINED;
@@ -2362,12 +2321,8 @@ public class PostgresCatalog {
 
       if (entry.join == Join.LEFT) {
         final PostgresCatalogExpression condition = PostgresCatalogExpression.parse(entry.on);
-        if (condition == null) {
-          if (secondAliases != null && secondAliases[i])
-            // Whether the second alias matched cannot be told, and it reads the subject's map if it did.
-            return DECLINED;
+        if (condition == null)
           continue;
-        }
         if (outerJoins == null)
           outerJoins = new PostgresCatalogExpression[from.size()];
         outerJoins[i] = condition;
@@ -2389,12 +2344,6 @@ public class PostgresCatalog {
             if (matched != PostgresCatalogExpression.UNKNOWN && !PostgresCatalogExpression.isTrue(matched))
               nulled[i] = true;
           }
-
-      if (secondAliases != null)
-        for (int i = 0; i < secondAliases.length; i++)
-          if (secondAliases[i] && (nulled == null || !nulled[i]))
-            // The second alias matched a row, and the only row this model can hand it is the subject's own.
-            return DECLINED;
 
       final Object passes = passes(filters, resolver);
       if (passes == PostgresCatalogExpression.UNKNOWN && !toleratesUnreadableFilter)
