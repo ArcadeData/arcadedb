@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ServerException;
 import org.apache.ratis.thirdparty.io.grpc.Attributes;
 import org.apache.ratis.thirdparty.io.grpc.Grpc;
 import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
@@ -815,32 +816,17 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       if (trimmed.isEmpty())
         continue;
 
-      // Parse host from host[:raftPort[:httpPort[:priority[:httpsPort]]]], the object form
-      // host:{raft:..,http:..} or the bracketed IPv6 form.
+      // The host of host[:raftPort[:httpPort[:priority[:httpsPort]]]], of the object form host:{raft:..,http:..} or of
+      // either form with a bracketed IPv6 host, as the one function parsePeerList builds the Raft address on decides it
+      // (issue #10761): two parsers used to give two answers for [::1]:2434:2480. Resolved without its brackets.
       final String host;
-      if (trimmed.startsWith("[")) {
-        // IPv6 bracketed: [::1]:port - extract content between brackets
-        final int closingBracket = trimmed.indexOf(']');
-        if (closingBracket > 1)
-          host = trimmed.substring(1, closingBracket);
-        else
-          host = trimmed; // malformed - pass through as-is
-      } else {
-        // Object form host:{...} - the host is everything before the '{' (its commas were already
-        // protected by splitEntries). Otherwise it is the first colon-delimited token.
-        final int braceIdx = trimmed.indexOf('{');
-        final int colonIdx = trimmed.indexOf(':');
-        if (braceIdx >= 0) {
-          String h = trimmed.substring(0, braceIdx).trim();
-          if (h.endsWith(":"))
-            h = h.substring(0, h.length() - 1).trim();
-          host = h;
-        } else
-          host = colonIdx > 0 ? trimmed.substring(0, colonIdx) : trimmed;
+      try {
+        host = RaftPeerAddressResolver.unbracketed(RaftPeerAddressResolver.entryHost(trimmed));
+      } catch (final ServerException e) {
+        // An entry parsePeerList refuses names no peer, and the server does not start on it: nothing to resolve
+        continue;
       }
-
-      if (!host.isBlank())
-        hosts.add(host);
+      hosts.add(host);
     }
     return hosts;
   }

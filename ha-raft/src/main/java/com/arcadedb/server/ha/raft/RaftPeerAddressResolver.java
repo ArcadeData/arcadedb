@@ -145,6 +145,10 @@ final class RaftPeerAddressResolver {
    *   <li>{@code host:raftPort} - explicit Raft port, no HTTP address stored, priority defaults to 0</li>
    *   <li>{@code host} - Raft port defaults to {@code defaultPort}, no HTTP address, priority defaults to 0</li>
    * </ul>
+   * In both forms an IPv6 host is written in brackets ({@code [fe80::1]:2434:2480}, {@code [fe80::1]:{raft:2434}}) and
+   * keeps them in every address built from it. The host is split off by {@link #entryHost}, the same function the gRPC
+   * allowlist reads, and every port must be a number in [1,65535]: each address built here passes
+   * {@link #validatePeerAddress}, the rule an address relayed by a peer is held to (issue #10761).
    * Both forms may be prefixed with an optional human-readable peer name using the {@code name@} syntax
    * (e.g. {@code frankfurt@host:2434:2480}). Names must be unique within the cluster but are otherwise
    * free-form. Names allow operators to identify nodes in logs and Studio without relying on the
@@ -210,11 +214,15 @@ final class RaftPeerAddressResolver {
       String grpcAddress = null;
       int priority = 0;
 
+      // The host is split off by the one function that decides it (issue #10761), so a bracketed IPv6 literal stays
+      // whole here exactly as it does for the gRPC allowlist, which reads the same function
+      final String writtenHost = entryHost(entry);
+      final String host = applyDnsSuffix(writtenHost, k8sDnsSuffix);
+
       final int braceIdx = entry.indexOf('{');
       if (braceIdx >= 0) {
         // Object form: host:{raft:2434,http:2480,https:2490,bolt:7687,grpc:50051,priority:10}
         final PeerSpec spec = parseObjectForm(entry, braceIdx, defaultPort);
-        final String host = applyDnsSuffix(spec.host, k8sDnsSuffix);
         raftAddress = host + ":" + spec.raftPort;
         if (spec.httpPort != null)
           httpAddress = host + ":" + spec.httpPort;
@@ -226,39 +234,35 @@ final class RaftPeerAddressResolver {
           grpcAddress = host + ":" + spec.grpcPort;
         priority = spec.priority;
       } else {
-        final String[] parts = entry.split(":");
-
-        if (parts.length > 5 || parts.length == 0 || parts[0].isBlank())
+        // Positional form: what follows the host is ":raftPort[:httpPort[:priority[:httpsPort]]]", or nothing. Split with
+        // no limit so an empty field (a trailing ':', or the '::' of an unbracketed IPv6 literal) is reported, not dropped.
+        final String fieldsText = entry.substring(writtenHost.length());
+        final String[] fields = fieldsText.isEmpty() ? new String[0] : fieldsText.substring(1).split(":", -1);
+        if (fields.length > 4)
           throw new ServerException(
               "Invalid peer address format '" + entry
                   + "'. Expected [name@]host[:raftPort[:httpPort[:priority[:httpsPort]]]] "
-                  + "or [name@]host:{raft:..,http:..,https:..,bolt:..,grpc:..,priority:..}");
+                  + "or [name@]host:{raft:..,http:..,https:..,bolt:..,grpc:..,priority:..}"
+                  + " (an IPv6 host is written in brackets, e.g. [fe80::1]:2434:2480)");
 
-        final String host = applyDnsSuffix(parts[0], k8sDnsSuffix);
-
-        if (parts.length == 5) {
-          // host:raftPort:httpPort:priority:httpsPort
-          raftAddress = host + ":" + parts[1];
-          httpAddress = host + ":" + parts[2];
-          priority = parseIntField(parts[3], "priority", entry);
-          httpsAddress = host + ":" + parts[4];
-        } else if (parts.length == 4) {
-          // host:raftPort:httpPort:priority
-          raftAddress = host + ":" + parts[1];
-          httpAddress = host + ":" + parts[2];
-          priority = parseIntField(parts[3], "priority", entry);
-        } else if (parts.length == 3) {
-          // host:raftPort:httpPort
-          raftAddress = host + ":" + parts[1];
-          httpAddress = host + ":" + parts[2];
-        } else if (parts.length == 2) {
-          // host:raftPort
-          raftAddress = host + ":" + parts[1];
-        } else {
-          // host only - use default Raft port
-          raftAddress = host + ":" + defaultPort;
-        }
+        // Each port is checked, then written as the entry spells it: the peer id is derived from the Raft address, so a
+        // normalized spelling ("02434" -> "2434") would hand an existing node a new id. A bare host takes the default port.
+        raftAddress = host + ":" + (fields.length > 0 ? checkedPort(fields[0], "raft", entry) : String.valueOf(defaultPort));
+        if (fields.length > 1)
+          httpAddress = host + ":" + checkedPort(fields[1], "http", entry);
+        if (fields.length > 2)
+          priority = parseIntField(fields[2], "priority", entry);
+        if (fields.length > 3)
+          httpsAddress = host + ":" + checkedPort(fields[3], "https", entry);
       }
+
+      // Every address this node acts on passes the same legal-address rule an address relayed by a peer does
+      // (issue #10761): validatePeerAddress used to guard only the relayed ones.
+      requireLegalAddress(raftAddress, "raft", entry);
+      requireLegalAddress(httpAddress, "http", entry);
+      requireLegalAddress(httpsAddress, "https", entry);
+      requireLegalAddress(boltAddress, "bolt", entry);
+      requireLegalAddress(grpcAddress, "grpc", entry);
 
       final String peerIdStr = peerIdForAddress(raftAddress);
       final RaftPeer peer = RaftPeer.newBuilder()
@@ -314,9 +318,86 @@ final class RaftPeerAddressResolver {
         Collections.unmodifiableMap(grpcAddresses));
   }
 
+  /**
+   * The host of one server-list entry whose {@code name@} prefix is already removed, exactly as written: a bracketed IPv6
+   * literal keeps its brackets, so {@code host + ":" + port} is an address Ratis can dial.
+   * <p>
+   * This is the one function that answers "what is the host of this entry" (issue #10761). {@link #parsePeerList} builds
+   * every peer address on it and {@code PeerAddressAllowlistFilter.extractPeerHosts} resolves the host it returns, so the
+   * inbound gRPC allowlist and the Raft peer cannot derive two hosts from one configuration line. The positional form
+   * used to split on every colon, which tore {@code [::1]:2434:2480} into a peer at {@code [:} while the allowlist
+   * resolved {@code ::1}.
+   * <ul>
+   *   <li>{@code [ipv6]...}: up to and including the closing bracket, which must be followed by {@code ':'} or nothing;</li>
+   *   <li>the object form {@code host:{...}}: what precedes the brace, without its trailing {@code ':'};</li>
+   *   <li>the positional form: what precedes the first {@code ':'}.</li>
+   * </ul>
+   *
+   * @throws ServerException when the host is blank, an IPv6 literal is not terminated, or an object-form host holds a
+   *                         {@code ':'} outside brackets (an unbracketed IPv6 literal, whose port could not be told apart)
+   */
+  static String entryHost(final String entry) {
+    final String host;
+    if (entry.startsWith("[")) {
+      final int closing = entry.indexOf(']');
+      if (closing < 2)
+        throw new ServerException("Invalid peer address '" + entry + "': an IPv6 host must be written as [address]");
+      if (closing + 1 < entry.length() && entry.charAt(closing + 1) != ':')
+        throw new ServerException("Invalid peer address '" + entry + "': expected ':' after the IPv6 host "
+            + entry.substring(0, closing + 1));
+      // Only ':' may separate the host from an object-form brace: "[::1]:2434:{http:2480}" would otherwise drop the
+      // positional 2434 and take the default Raft port, as the unbracketed branch below already refuses to
+      final int brace = entry.indexOf('{');
+      if (brace > closing && !entry.substring(closing + 1, brace).trim().equals(":"))
+        throw new ServerException("Invalid peer address '" + entry
+            + "': only ':' may separate the IPv6 host from '{'; use [fe80::1]:{raft:2434} or the positional form");
+      host = entry.substring(0, closing + 1);
+    } else {
+      final int braceIdx = entry.indexOf('{');
+      if (braceIdx >= 0) {
+        String beforeBrace = entry.substring(0, braceIdx).trim();
+        if (beforeBrace.endsWith(":"))
+          beforeBrace = beforeBrace.substring(0, beforeBrace.length() - 1).trim();
+        if (beforeBrace.indexOf(':') >= 0)
+          throw new ServerException("Invalid peer address '" + entry
+              + "': the host before '{' holds a ':'; an IPv6 host is written in brackets, e.g. [fe80::1]:{raft:2434}");
+        host = beforeBrace;
+      } else {
+        final int colon = entry.indexOf(':');
+        host = colon < 0 ? entry : entry.substring(0, colon);
+      }
+    }
+    if (host.isBlank())
+      throw new ServerException("Invalid peer address '" + entry + "': the host is blank");
+    return host;
+  }
+
+  /** {@link #entryHost} without the brackets of an IPv6 literal: the form a resolver or an IP comparison takes. */
+  static String unbracketed(final String host) {
+    return host.length() > 1 && host.charAt(0) == '[' && host.charAt(host.length() - 1) == ']' ?
+        host.substring(1, host.length() - 1) :
+        host;
+  }
+
+  /**
+   * Holds an address this node built from its own configuration to the rule {@link #validatePeerAddress} applies to an
+   * address a peer relays (issue #10761), reported as the configuration error it is: naming the field and the entry, not
+   * the {@code Host is null} Ratis would raise at dial time. A {@code null} address (a field the entry does not declare)
+   * passes.
+   */
+  private static void requireLegalAddress(final String address, final String fieldName, final String entry) {
+    if (address == null)
+      return;
+    try {
+      validatePeerAddress(address);
+    } catch (final ConfigurationException e) {
+      throw new ServerException("Invalid " + fieldName + " address '" + address + "' in peer address '" + entry + "': "
+          + e.getMessage(), e);
+    }
+  }
+
   /** Resolved ports for a single peer entry, regardless of the syntax it was written in. */
   private static final class PeerSpec {
-    final String  host;
     final int     raftPort;
     final Integer httpPort;  // null when not specified
     final Integer httpsPort; // null when not specified
@@ -324,9 +405,8 @@ final class RaftPeerAddressResolver {
     final Integer grpcPort;  // null when not specified
     final int     priority;
 
-    PeerSpec(final String host, final int raftPort, final Integer httpPort, final Integer httpsPort, final Integer boltPort,
+    PeerSpec(final int raftPort, final Integer httpPort, final Integer httpsPort, final Integer boltPort,
         final Integer grpcPort, final int priority) {
-      this.host = host;
       this.raftPort = raftPort;
       this.httpPort = httpPort;
       this.httpsPort = httpsPort;
@@ -337,19 +417,13 @@ final class RaftPeerAddressResolver {
   }
 
   /**
-   * Parses the object form {@code host:{raft:..,http:..,https:..,bolt:..,grpc:..,priority:..}} into a
-   * {@link PeerSpec}. Fields are unordered and all optional; {@code raft} defaults to {@code defaultPort}.
-   * Unknown or duplicated keys throw {@link ServerException}.
+   * Parses the ports of the object form {@code host:{raft:..,http:..,https:..,bolt:..,grpc:..,priority:..}} into a
+   * {@link PeerSpec}; the host is {@link #entryHost}'s. Fields are unordered and all optional; {@code raft} defaults to
+   * {@code defaultPort}. Unknown or duplicated keys, and a port outside [1,65535], throw {@link ServerException}.
    */
   private static PeerSpec parseObjectForm(final String entry, final int braceIdx, final int defaultPort) {
     if (!entry.endsWith("}"))
       throw new ServerException("Invalid peer address '" + entry + "': missing closing '}'");
-
-    String host = entry.substring(0, braceIdx).trim();
-    if (host.endsWith(":"))
-      host = host.substring(0, host.length() - 1).trim();
-    if (host.isBlank())
-      throw new ServerException("Invalid peer address '" + entry + "': host before '{' is blank");
 
     final String body = entry.substring(braceIdx + 1, entry.length() - 1).trim();
 
@@ -375,11 +449,11 @@ final class RaftPeerAddressResolver {
           throw new ServerException("Duplicate key '" + key + "' in peer address '" + entry + "'");
 
         switch (key) {
-        case "raft" -> raftPort = parseIntField(value, "raft", entry);
-        case "http" -> httpPort = parseIntField(value, "http", entry);
-        case "https" -> httpsPort = parseIntField(value, "https", entry);
-        case "bolt" -> boltPort = parseIntField(value, "bolt", entry);
-        case "grpc" -> grpcPort = parseIntField(value, "grpc", entry);
+        case "raft" -> raftPort = parsePortField(value, "raft", entry);
+        case "http" -> httpPort = parsePortField(value, "http", entry);
+        case "https" -> httpsPort = parsePortField(value, "https", entry);
+        case "bolt" -> boltPort = parsePortField(value, "bolt", entry);
+        case "grpc" -> grpcPort = parsePortField(value, "grpc", entry);
         case "priority" -> priority = parseIntField(value, "priority", entry);
         default -> throw new ServerException(
             "Unknown key '" + key + "' in peer address '" + entry
@@ -387,7 +461,7 @@ final class RaftPeerAddressResolver {
         }
       }
     }
-    return new PeerSpec(host, raftPort, httpPort, httpsPort, boltPort, grpcPort, priority);
+    return new PeerSpec(raftPort, httpPort, httpsPort, boltPort, grpcPort, priority);
   }
 
   /**
@@ -432,6 +506,28 @@ final class RaftPeerAddressResolver {
     } catch (final NumberFormatException e) {
       throw new ServerException("Invalid " + fieldName + " value '" + value + "' in peer address '" + entry + "'");
     }
+  }
+
+  /**
+   * Parses a port field (issue #10761): a number in [1,65535], reported against the field that holds it. Before, only the
+   * priority was parsed, so {@code host:abc}, {@code host:-1:2480} and {@code host:0:99999} became peer addresses and
+   * surfaced at dial time as {@code Host is null in host:abc}, naming the host when the port was wrong.
+   */
+  private static int parsePortField(final String value, final String fieldName, final String entry) {
+    if (value.isBlank())
+      throw new ServerException("Invalid " + fieldName + " port: empty in peer address '" + entry
+          + "' (an IPv6 host is written in brackets, e.g. [fe80::1]:2434:2480)");
+    final int port = parseIntField(value, fieldName + " port", entry);
+    if (port < 1 || port > 65535)
+      throw new ServerException("Invalid " + fieldName + " port " + port + " in peer address '" + entry
+          + "': a port is in [1,65535]");
+    return port;
+  }
+
+  /** {@link #parsePortField}, answering the field as written once it is known to be a legal port. */
+  private static String checkedPort(final String value, final String fieldName, final String entry) {
+    parsePortField(value, fieldName, entry);
+    return value;
   }
 
   /**
