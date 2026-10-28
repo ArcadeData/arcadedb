@@ -117,6 +117,9 @@ public final class ColumnarStats {
   private final LongAdder queryPatchOverflows = new LongAdder();
   private final LongAdder queryFallbackScans  = new LongAdder();
   private final LongAdder queryFilterFallbacks = new LongAdder();
+  // GROUP BY queries answered by a ColumnarGroupByStep (plan 5): database-wide, not keyed by type
+  private final LongAdder groupByAccelerated = new LongAdder();
+  private final LongAdder groupByFallbacks   = new LongAdder();
 
   // ---- writers
 
@@ -181,6 +184,16 @@ public final class ColumnarStats {
   /** One INDEX facet FILTER evaluator that answered from the rows instead of its RID set (index not ready, collation, key type, budget). */
   public void queryFilterFallback() {
     queryFilterFallbacks.increment();
+  }
+
+  /** One execution of an eligible GROUP BY answered from the projection. */
+  public void groupByAccelerated() {
+    groupByAccelerated.increment();
+  }
+
+  /** One execution of an eligible GROUP BY that ran its normal aggregation chain instead (switched off, or the projection declined). */
+  public void groupByFallbacks() {
+    groupByFallbacks.increment();
   }
 
   /** Every slot re-read by an apply pass: the numerator of the re-read amplification. */
@@ -303,6 +316,14 @@ public final class ColumnarStats {
 
   public long queryFilterFallbacksCount() {
     return queryFilterFallbacks.sum();
+  }
+
+  public long groupByAcceleratedCount() {
+    return groupByAccelerated.sum();
+  }
+
+  public long groupByFallbacksCount() {
+    return groupByFallbacks.sum();
   }
 
   public long recordsRereadCount(final String type) {

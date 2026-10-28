@@ -79,9 +79,9 @@ public final class ColumnarMetrics implements AutoCloseable {
       "apply.records.reread", "apply.unreadable", "rebuild.pages.reused", "flush.duration", "merge.duration", "apply.lag.ms",
       "overlay.rows", "segments", "segments.dead.ratio", "files.open" };
 
-  /** The FACETS query counters, database-wide: no type, property or reason. */
+  /** The FACETS and GROUP BY query counters, database-wide: no type, property or reason. */
   private static final String[] QUERY_KINDS = { "query.patched", "query.budget.waits", "query.patch.overflows", "query.fallback.scans",
-      "query.filter.fallbacks" };
+      "query.filter.fallbacks", "groupby.accelerated", "groupby.fallbacks" };
 
   private static final String[] PROPERTY_KINDS = { "dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
       "dictionary.size", "cardinality.exceeded" };
@@ -260,6 +260,12 @@ public final class ColumnarMetrics implements AutoCloseable {
     case "query.filter.fallbacks" ->
         counter(b, name, tags, "INDEX facet FILTER evaluators that answered from the rows instead of their RID set",
             ColumnarStats::queryFilterFallbacksCount);
+    case "groupby.accelerated" ->
+        counter(b, name, tags, "Executions of eligible GROUP BY queries answered from the projection",
+            ColumnarStats::groupByAcceleratedCount);
+    case "groupby.fallbacks" ->
+        counter(b, name, tags, "Executions of eligible GROUP BY queries that ran the normal aggregation instead",
+            ColumnarStats::groupByFallbacksCount);
     case "apply.records.reread" ->
         counter(b, name, tags, "Slots re-read by apply passes; over apply.pages it is the re-read amplification",
             s -> s.recordsRereadCount(type));

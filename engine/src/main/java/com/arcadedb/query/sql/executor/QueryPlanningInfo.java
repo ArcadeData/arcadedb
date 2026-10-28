@@ -92,6 +92,13 @@ public class QueryPlanningInfo {
   List<FacetSpec> facets;
   Skip            deferredSkip;
   Limit           deferredLimit;
+  /**
+   * Whether the statement has no WHERE (an always-true one dropped), and the GROUP BY as the statement wrote it: both read in
+   * {@code SelectExecutionPlanner.init} for {@link ColumnarGroupByPlanner}, before an index search can consume {@link #whereClause} and
+   * before the projection split swaps a GROUP BY key for a generated alias.
+   */
+  boolean        whereless;
+  GroupBy        writtenGroupBy;
   boolean        orderApplied          = false;
   boolean        projectionsCalculated = false;
   AndBlock       ridRangeConditions;
@@ -125,6 +132,8 @@ public class QueryPlanningInfo {
     result.facets = this.facets;
     result.deferredSkip = this.deferredSkip;
     result.deferredLimit = this.deferredLimit;
+    result.whereless = this.whereless;
+    result.writtenGroupBy = this.writtenGroupBy;
     result.orderApplied = this.orderApplied;
     result.projectionsCalculated = this.projectionsCalculated;
     result.ridRangeConditions = this.ridRangeConditions;
