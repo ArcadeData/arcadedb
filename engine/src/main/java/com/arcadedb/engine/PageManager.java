@@ -1383,7 +1383,7 @@ public class PageManager extends LockContext {
         // #10657: TERMINATED BY A LINE SEPARATOR. THE FORMATTER STARTS EVERY RECORD WITH ONE INSTEAD OF ENDING WITH IT,
         // SO THE LAST RECORD BEFORE A HANG STAYS A PARTIAL LINE THAT A CONSOLE READER (SUREFIRE) HOLDS BACK FOREVER
         LogManager.instance().log(this, logged ? Level.FINE : Level.INFO,
-            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup is reading them)%n",
+            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup may still be reading them)%n",
             null, database.getName(), open);
         logged = true;
         final long waited = System.currentTimeMillis() - waitStart;
