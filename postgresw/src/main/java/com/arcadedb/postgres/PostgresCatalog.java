@@ -776,9 +776,8 @@ public class PostgresCatalog {
    * {@code pg_type t LEFT JOIN pg_type arr ON arr.oid = t.typarray} (see {@link #readsOneRelationTwice}).</li>
    * </ul>
    * The other path declines the second shape, and answers the third wrongly (issue #10593), so what it answers correctly is answered
-   * as it was. A statement that
-   * reads no emulated relation at all is the join path's only when {@code nested}: a derived table or a sub-select of a catalog
-   * query, whose rows come from a table function.
+   * as it was. A statement that reads no emulated relation at all is the join path's only when {@code nested}: a derived table or a
+   * sub-select of a catalog query, whose rows come from a table function.
    */
   private static boolean readsJoinedRelation(final List<FromEntry> from, final boolean nested) {
     boolean joined = false;

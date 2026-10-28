@@ -114,11 +114,7 @@ class Issue10593CatalogSelfJoinTest {
         + " left join pg_catalog.pg_type arr on arr.oid = t.typarray").rows;
     final long types = count("select count(*) from pg_catalog.pg_type");
     assertThat(all).hasSize((int) types);
-    int unmatched = 0;
-    for (final Map<String, Object> row : all)
-      if (row.get("arrname") == null)
-        unmatched++;
-    assertThat(unmatched).isEqualTo((int) (types - commaRows.size()));
+    assertThat(all).filteredOn(row -> row.get("arrname") == null).hasSize((int) (types - commaRows.size()));
   }
 
   /** The form the old guard was written for: psql's TOAST lookup, which matches nothing and must still read NULL. */
@@ -147,6 +143,8 @@ class Issue10593CatalogSelfJoinTest {
     final long classes = count("select count(*) from pg_catalog.pg_class");
     assertThat(classes).isGreaterThan(1);
     assertThat(count("select count(*) from pg_class a, pg_class b")).isEqualTo(classes * classes);
+    // the two spellings of one relation are one relation
+    assertThat(count("select count(*) from pg_catalog.pg_class a, pg_class b")).isEqualTo(classes * classes);
     assertThat(count("select count(*) from pg_class a, pg_class b where a.oid > 0 and b.oid > 0")).isEqualTo(classes * classes);
     assertThat(resolve("select a.relname as x, b.relname as y from pg_class a, pg_class b").rows).hasSize((int) (classes * classes));
     assertThat(count("select count(*) from (select a.relname as x, b.relname as y from pg_class a, pg_class b) t"))
