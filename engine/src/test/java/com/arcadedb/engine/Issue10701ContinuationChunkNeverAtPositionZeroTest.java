@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.BucketPageLayoutTestSupport;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10701: position 0 of a bucket (slot 0 of page 0) is also the value a chunk's next-chunk pointer uses for "no
@@ -136,6 +138,19 @@ class Issue10701ContinuationChunkNeverAtPositionZeroTest extends BucketPageLayou
       assertThat(bucket.getSlotOfferedInPageForTesting(0, false)).as("the summary must still offer the hole to a plain record")
           .isZero();
     });
+  }
+
+  /**
+   * The backstop at the two link sites: whatever an allocator hands out, a link whose value would be 0 is refused instead
+   * of written, since writing it truncates the record silently. Every other position links to itself.
+   */
+  @Test
+  void aLinkToPositionZeroIsRefusedNotWritten() {
+    assertThatThrownBy(() -> LocalBucket.nextChunkLink(null, "b", 0, 0, 2048))
+        .isInstanceOf(DatabaseOperationException.class).hasMessageContaining("no next chunk");
+    assertThat(LocalBucket.nextChunkLink(null, "b", 0, 1, 2048)).isEqualTo(1L);
+    assertThat(LocalBucket.nextChunkLink(null, "b", 1, 0, 2048)).isEqualTo(2048L);
+    assertThat(LocalBucket.nextChunkLink(null, "b", 3, 7, 2048)).isEqualTo(3L * 2048 + 7);
   }
 
   /** Page 0 of a single-bucket type holding a few records, with slot 0 freed by a committed delete. */

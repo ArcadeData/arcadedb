@@ -6842,11 +6842,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private void linkNextChunk(final RID originalRID, final MutablePage page, final int offset, final MutablePage nextPage,
                              final int slot, final int coverage) {
-    final long pointer = (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + slot;
+    writeNextChunkPointer(page, offset,
+            nextChunkLink(originalRID, getName(), nextPage.getPageId().getPageNumber(), slot, maxRecordsInPage), coverage);
+  }
+
+  /**
+   * The value of a link to a continuation chunk at {@code slot} of {@code pageNumber}, refusing the one value that reads as
+   * "no next chunk" (#10701): see {@link #linkNextChunk}. Package-private and static so the refusal can be tested without an
+   * allocator that hands out position 0.
+   */
+  static long nextChunkLink(final RID originalRID, final String bucketName, final int pageNumber, final int slot,
+                            final int maxRecordsInPage) {
+    final long pointer = (long) pageNumber * maxRecordsInPage + slot;
     if (pointer == 0L)
       throw new DatabaseOperationException("Cannot link a continuation chunk of record " + originalRID
-              + " at position 0 of bucket '" + getName() + "': that value means 'no next chunk' and would truncate the record");
-    writeNextChunkPointer(page, offset, pointer, coverage);
+              + " at position 0 of bucket '" + bucketName + "': that value means 'no next chunk' and would truncate the record");
+    return pointer;
   }
 
   /**
@@ -7747,6 +7758,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (slot != 0 || pageAnalysis.page.getPageId().getPageNumber() != 0)
       return slot;
 
+    // Rescans from slot 1 rather than resuming where the caller's search stopped: that search stopped AT slot 0, so there is
+    // nothing to resume, and this runs only on page 0 with slot 0 free - once per such allocation, never per slot of a scan.
     final int totalRecords = pageAnalysis.totalRecordsInPage;
     final TransactionContext tx = database.getTransaction();
     final int bucketId = file.getFileId();
@@ -7968,8 +7981,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * The slot the allocator would offer on {@code pageNumber} to a record of one byte, or -1 when it would open a new page
-   * instead (#10701). {@code multiPageRecord} is what every continuation chunk passes. Must run inside a transaction.
-   * Package-private: for tests only.
+   * instead (#10701). {@code multiPageRecord} is what every continuation chunk passes. Must run inside a transaction. Runs the
+   * allocator's real page analysis, side effects included: on a page the transaction already holds for modification it writes
+   * or advances the #10612 record-table summary exactly as an allocation would. Package-private: for tests only.
    */
   int getSlotOfferedInPageForTesting(final int pageNumber, final boolean multiPageRecord) {
     try {
