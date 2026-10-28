@@ -475,7 +475,8 @@ class ColumnarReconcilerTest extends TestHelper {
     final ColumnarSnapshot snapshot = manager().projection(bucketId).acquire();
     try {
       database.command("sql", "DROP INDEX `" + columnarTypeIndex().getName() + "`");
-      assertThat(Files.isDirectory(dir)).isTrue();
+      // round 2 NI2: the snapshot reads the files from the tombstone the drop moved them to
+      assertThat(Files.isDirectory(dir)).isFalse();
       assertThat(snapshot.segments()).isNotEmpty();
     } finally {
       snapshot.close();
@@ -531,11 +532,23 @@ class ColumnarReconcilerTest extends TestHelper {
 
   @Test
   void retypeLeftByACloseIsRebuiltAtOpen() throws Exception {
+    retypeLeftBehindIsRebuiltAtOpen(false);
+  }
+
+  /** Round 3 R3: the same after a crash, whose unclean open also runs the page check: the schema rebuild is not suppressed by it. */
+  @Test
+  void retypeLeftByACrashIsRebuiltAtOpen() throws Exception {
+    retypeLeftBehindIsRebuiltAtOpen(true);
+  }
+
+  private void retypeLeftBehindIsRebuiltAtOpen(final boolean crash) throws Exception {
     createSizedAssets(2_000);
     final int bucketId = bucketIds()[0];
     final Path dir = bucketDir(bucketId);
 
     // what a close leaves when a RETYPE's schema rebuild did not publish: a manifest whose definition differs from the schema's
+    if (crash)
+      ((DatabaseInternal) database).kill();
     database.close();
     final ColumnarManifest published = ColumnarManifest.load(dir);
     final ColumnDefinition[] columns = published.columns().clone();

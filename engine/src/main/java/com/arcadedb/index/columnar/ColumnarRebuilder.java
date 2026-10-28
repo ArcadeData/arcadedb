@@ -84,6 +84,8 @@ final class ColumnarRebuilder {
   static final String CREATE           = "create";
   static final String SNAPSHOT_INSTALL = "snapshot_install";
   static final String UNCLEAN_NO_WAL   = "unclean_no_wal";
+  /** The unclean-open page check found too many pages changed since the segments to re-apply them (final review B-I6). */
+  static final String UNCLEAN_PAGES    = "unclean_pages";
   static final String SCHEMA           = "schema";
   static final String CHECK_FIX        = ColumnarSchemaEvent.CHECK_FIX;
   /** Reached once the scan wrote every segment, before the publish takes the apply lock. */
@@ -657,6 +659,8 @@ final class ColumnarRebuilder {
         final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), maxRecordsInPage, columns,
             segmentEntries, dictionaryEntries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
         final Map<String, GlobalDictionary> published = Map.copyOf(dictionaryMap);
+        // final review B-I3: the scan read committed pages that a no-WAL commit may not have put on disk yet
+        manager.protectRebuildFromNoWalCommits(p);
         ColumnarFlusher.publishManifest(p, manifest, attempt,
             () -> p.rebuildPublished(manifest, readers, published, owners, externalOwners));
         return attempt.published;

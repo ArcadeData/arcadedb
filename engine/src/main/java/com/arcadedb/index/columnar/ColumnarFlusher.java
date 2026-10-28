@@ -524,8 +524,9 @@ final class ColumnarFlusher {
   }
 
   /**
-   * The last step of every publish (flush, merge, rebuild, dictionary compaction): writes the manifest's tmp file outside the publish lock (the published
-   * manifest is untouched until the rename), then under the publish lock renames it and runs {@code swap}, which makes the new state
+   * The last step of every publish (flush, merge, rebuild, dictionary compaction): forces the WAL of the database (B-I4), then writes the
+   * manifest's tmp file outside the publish lock (the published manifest is untouched until the rename), then under the publish lock
+   * renames it and runs {@code swap}, which makes the new state
    * current and answers whether it did. The caller holds the apply lock and has made every file the manifest names durable. A failed
    * rename whose manifest is found on disk is adopted; otherwise the generation is recorded as uncertain and the failure thrown.
    * {@code attempt.published} stays false when the projection was closed or dropped meanwhile.
@@ -534,6 +535,9 @@ final class ColumnarFlusher {
       throws IOException {
     final Path dir = p.bucketDir();
     checkPublishing(p);
+    // final review B-I4: the WAL of every commit the new state holds is durable before the manifest naming it can be (one WAL fsync per
+    // publish), so a power loss never leaves the projection ahead of the data it is derived from
+    p.forceWAL();
     manifest.writeTmp(dir);
     p.publishLock().lock();
     try {

@@ -4130,16 +4130,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (fenceReason != null)
         dataSafeOnDisk = false;
 
-      final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
-
       if (dataSafeOnDisk && !drop)
         // every page, those of the no-WAL commits included, is on disk now: a projection that flushed them all is no older than them
         columnarIndexManager.deleteNoWalMarkersAfterCleanClose();
 
-      if (!drop)
-        // spec 6.5: what the columnar trackers still hold once the pages are flushed and synced, under the write lock so no commit
-        // marks a page past it (one may have landed between the columnar close and this lock): empty after a complete close flush
-        columnarIndexManager.persistRecoverySet();
+      // spec 6.5: what the columnar trackers still hold once the pages are flushed and synced, under the write lock so no commit
+      // marks a page past it (one may have landed between the columnar close and this lock): empty after a complete close flush.
+      // A set that cannot be written makes the close crash-equivalent (final review B-I1): the WAL and the lock file stay, so the
+      // next open replays the commits the projections did not persist and marks their pages again
+      if (!drop && !columnarIndexManager.persistRecoverySet()) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "The columnar recovery set of database '%s' cannot be written on close: its WAL is kept for the next open to recover", null, name);
+        dataSafeOnDisk = false;
+      }
+
+      final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
 
       if (!drop)
         try {

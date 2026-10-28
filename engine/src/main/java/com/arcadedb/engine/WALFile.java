@@ -42,6 +42,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 public class WALFile extends LockContext {
@@ -82,6 +83,10 @@ public class WALFile extends LockContext {
   private          long             statsBytesWritten = 0;
   // #10234: WHEN THIS FILE WAS OPENED OR LAST WRITTEN, SO THE HOUSEKEEPING CAN RELEASE A FILE NOBODY WRITES ANY MORE
   private volatile long             lastWriteTime     = System.currentTimeMillis();
+  /** Appends so far, raised after each one under the file's monitor; {@link #forced} is the value the last successful force covered. */
+  private volatile long             appends;
+  private final    AtomicLong       forced            = new AtomicLong();
+  private volatile boolean          forceFailed;
   // #8139: THROTTLES THE REOPEN DIAGNOSTIC, WHICH A RECOVERY SCAN ON AN INTERRUPTED THREAD HITS ONCE PER READ
   private final    ChannelReopenLog reopenLog         = new ChannelReopenLog();
 
@@ -116,6 +121,14 @@ public class WALFile extends LockContext {
     this.channel = file.getChannel();
     this.open = true;
     this.lock = acquireLock();
+    // round 3 Minor 1: content this process did not append (a replay input) was never forced by it: dirty for forceIfDirty
+    long size;
+    try {
+      size = channel.size();
+    } catch (final IOException e) {
+      size = 1;
+    }
+    this.appends = size > 0 ? 1 : 0;
   }
 
   /**
@@ -325,6 +338,48 @@ public class WALFile extends LockContext {
       throw e;
     }
   }
+
+  /**
+   * {@code fsync} of this file's data for {@link TransactionManager#forceWALFiles()}, skipped when nothing was appended since the last
+   * successful one. NOT under the file's monitor, so a commit appending meanwhile never waits for it: a concurrent {@code force} covers
+   * every append that completed before it started, which the append counter read first describes. A file closed meanwhile is skipped (a
+   * drop synced the data files first, a close happens with the database). A failure is remembered: after a failed {@code fsync} the
+   * kernel may have dropped the dirty pages and report the next one as a success, so this file is never reported durable again.
+   *
+   * @throws IOException when this or an earlier force of this file failed
+   */
+  void forceIfDirty() throws IOException {
+    if (forceFailed)
+      throw new IOException("WAL file '" + filePath + "' failed an earlier fsync: its writes may not be durable");
+    final long target = appends;
+    if (target == forced.get() || !open)
+      return;
+    try {
+      final Runnable hook = beforeForceForTesting;
+      if (hook != null)
+        hook.run();
+      try {
+        channel.force(false);
+      } catch (final ClosedChannelException e) {
+        if (!open)
+          return;
+        // a thread interrupt closed the channel: reopened and retried, as every other channel operation of this class
+        force(false);
+      }
+    } catch (final IOException | RuntimeException e) {
+      forceFailed = true;
+      throw e;
+    }
+    forced.accumulateAndGet(target, Math::max);
+  }
+
+  /** A force of this file failed before its {@code fsync} ran (a test hook): see {@link #forceIfDirty()}. */
+  void markForceFailed() {
+    forceFailed = true;
+  }
+
+  /** Test seam: runs right before the fsync of {@link TransactionManager#forceWALFiles()}; null outside tests. */
+  static volatile Runnable beforeForceForTesting;
 
   public synchronized void close() throws IOException {
     // A group commit may still owe this file's last writes a flush: a closed file is never flushed again. A failed flush
@@ -801,6 +856,8 @@ public class WALFile extends LockContext {
           .log(this, Level.FINE, "Appending WAL for txId=%d (size=%d file=%s threadId=%d)", null, txId, buffer.size(), filePath, Thread.currentThread().threadId());
 
     file.append(buffer.getByteBuffer());
+    // after the append returned, under this file's monitor (the only writer): a force reading it covers the append
+    appends = appends + 1;
 
     // WRITE ALL PAGES SEGMENTS
     for (final MutablePage newPage : pages) {

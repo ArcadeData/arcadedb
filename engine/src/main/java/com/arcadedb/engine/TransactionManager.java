@@ -127,7 +127,7 @@ public class TransactionManager {
   private final ArrayDeque<DeferredWALWrite> deferredWALWrites = new ArrayDeque<>();
   // Writes the queued records one batch at a time, so two batches never interleave in the files
   private final ReentrantLock                deferredWALWriteLock = new ReentrantLock();
-  // Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. Per instance, so tests
+  // Test hook: runs before each file a group-commit pass or forceWALFiles() flushes, so a test can make the flush fail. Per instance, so tests
   // running concurrently in one JVM do not see each other's
   volatile WALSyncFaultInjector              walSyncFaultInjector;
   private final AtomicLong                   statsGroupCommits   = new AtomicLong();
@@ -688,6 +688,75 @@ public class TransactionManager {
   }
 
   /**
+   * Forces every open WAL file of the pool, active and retired, to the disk: once this returns, every transaction appended before the
+   * call is durable whatever {@code arcadedb.txWalFlush} says. The columnar projections call it before each manifest publish (final
+   * review B-I4), so a published projection is never more durable than the commits it holds. Never called on a database without a
+   * COLUMNAR index. The files are listed under {@link #walMaintenanceLock} and {@link #walSlotLock}, which every move of a file from
+   * a slot to the retired pool holds, so none is missed; they are forced after both are released, without any WAL file monitor (a
+   * commit never waits for it), and only when something was appended since their last force ({@link WALFile#forceIfDirty()}).
+   *
+   * @throws IOException when an open file cannot be forced, now or at an earlier call (the failure sticks to the file)
+   */
+  public void forceWALFiles() throws IOException {
+    final List<WALFile> files = new ArrayList<>();
+    walMaintenanceLock.lock();
+    try {
+      synchronized (walSlotLock) {
+        final WALFile[] active = activeWALFilePool;
+        if (active != null)
+          for (final WALFile file : active)
+            if (file != null)
+              files.add(file);
+        files.addAll(Arrays.asList(inactiveWALFilePool.toArray(new WALFile[0])));
+      }
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+    for (final WALFile file : files)
+      forceWALFile(file);
+  }
+
+  private void forceWALFile(final WALFile file) throws IOException {
+    try {
+      final WALSyncFaultInjector injector = walSyncFaultInjector;
+      if (injector != null)
+        injector.beforeSync(file);
+      file.forceIfDirty();
+    } catch (final IOException | RuntimeException e) {
+      file.markForceFailed();
+      retireFailedWALFile(file);
+      throw e;
+    }
+  }
+
+  /**
+   * A WAL file whose force failed (round 3 Minor 2) leaves its slot at once, as an idle one does ({@link #releaseIdleWALFiles}): no
+   * commit appends to it any more, and the housekeeping drops it after its pages are on disk and the data files synced, which is when
+   * the projection publishes it held back can resume. Nothing when the file left its slot meanwhile.
+   */
+  private void retireFailedWALFile(final WALFile file) {
+    walMaintenanceLock.lock();
+    try {
+      synchronized (walSlotLock) {
+        final WALFile[] pool = activeWALFilePool;
+        if (walPoolRetired || pool == null)
+          return;
+        for (int i = 0; i < pool.length; ++i)
+          if (pool[i] == file) {
+            pool[i] = null;
+            file.setActive(false);
+            inactiveWALFilePool.add(file);
+            LogManager.instance().log(this, Level.SEVERE, "WAL file '%s' of database '%s' failed an fsync: retired, no commit appends to it"
+                + " any more", null, file, database.getName());
+            return;
+          }
+      }
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+  }
+
+  /**
    * The WAL rule of a page write under group commit: returns once the WAL writes up to {@code ticket} are durable, counting
    * the page writes that had to wait for them.
    */
@@ -879,8 +948,9 @@ public class TransactionManager {
    * needed. The recovery also runs under {@link #walMaintenanceLock}, so no pass can observe the pool half replaced.
    * <p>
    * Only a replay that has applied every transaction lets its input go. It drops the files once the replayed pages are
-   * fsynced, and when that fsync fails (#8626) it retires them into the inactive pool instead, where the housekeeping
-   * pass drops them after a later fsync succeeds: by then there is nothing left in them to replay.
+   * fsynced and the columnar recovery set names the pages the replay marked (spec 6.5), and when either fails (#8626) it
+   * retires them into the inactive pool instead, where the housekeeping pass drops them after a later fsync and persist
+   * succeed: by then there is nothing left in them to replay.
    */
   public void checkIntegrity() {
     walMaintenanceLock.lock();
@@ -897,6 +967,8 @@ public class TransactionManager {
     // Set once the input is dropped, moved aside as .corrupt or retired into the inactive pool: no longer this replay's.
     boolean inputReleased = false;
     boolean walKeptForFsync = false;
+    // the replay's pages were synced, but the columnar recovery set naming them could not be written (final review B-C1)
+    boolean walKeptForRecoverySet = false;
     WALFile[] recoveryFiles = null;
 
     try {
@@ -1073,7 +1145,11 @@ public class TransactionManager {
           // #8626: THE REPLAY WROTE ITS PAGES STRAIGHT TO THE FILES, SO THEY ARE IN THE OS PAGE CACHE ONLY: FORCE THEM
           // BEFORE THE WAL THAT IS THEIR ONLY DURABLE COPY GOES AWAY, EXACTLY AS A CLEAN CLOSE AND A WAL ROTATION DO.
           // DROPPING IT FIRST LEFT A WINDOW, UP TO THE NEXT CLEAN CLOSE, WHERE A POWER LOSS LOST THE RECOVERED DATA
-          if (syncReplayedDataFiles()) {
+          // SPEC 6.5 (FINAL REVIEW B-C1): THE COLUMNAR RECOVERY SET IS PERSISTED BEFORE THE REPLAYED WAL GOES, AS BEFORE ANY RUNTIME DROP:
+          // THE PAGES THE REPLAY MARKED ARE OTHERWISE KNOWN TO THE TRACKERS IN MEMORY ONLY, AND A SECOND CRASH BEFORE THEIR FLUSH WOULD
+          // LOAD A STALE PROJECTION AS EXACT. A DATABASE WITH NO COLUMNAR INDEX WRITES NOTHING HERE
+          final boolean dataSynced = syncReplayedDataFiles();
+          if (dataSynced && persistColumnarRecoverySet()) {
             // REMOVE ALL WAL FILES
             for (final WALFile file : recoveryFiles) {
               if (file == null)
@@ -1089,9 +1165,16 @@ public class TransactionManager {
             // #4934: THE FSYNC FAILED, SO THE REPLAYED PAGES MAY NEVER REACH THE DISK. KEEP THE WAL: RETIRED INTO THE
             // INACTIVE POOL, IT IS DROPPED BY THE WAL ROTATION ONLY AFTER A LATER FSYNC SUCCEEDS, AND A CLOSE WHOSE FSYNC
             // FAILS TOO PRESERVES IT WITH THE LOCK FILE SO THE NEXT OPEN REPLAYS IT AGAIN
-            LogManager.instance().log(this, Level.SEVERE,
-                "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
-                null, database);
+            // THE SAME WHEN THE COLUMNAR RECOVERY SET CANNOT BE WRITTEN: THE HOUSEKEEPING PASS PERSISTS IT AGAIN BEFORE ITS DROP
+            walKeptForRecoverySet = dataSynced;
+            if (dataSynced)
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Cannot persist the columnar recovery set of database '%s' after recovery: keeping its WAL files until it is written",
+                  null, database);
+            else
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
+                  null, database);
             // Replayed in full, so from here the files belong to the housekeeping pass, which drops them once an fsync
             // succeeds: they stay open and locked like any other retired WAL file.
             for (final WALFile file : recoveryFiles)
@@ -1161,8 +1244,9 @@ public class TransactionManager {
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
       else if (walKeptForFsync)
         LogManager.instance().log(this, Level.WARNING,
-            "Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds", null,
-            database);
+            walKeptForRecoverySet ?
+                "Recovery of database '%s' completed, its WAL files are kept until the columnar recovery set is written" :
+                "Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds", null, database);
       else
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }

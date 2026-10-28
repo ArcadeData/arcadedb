@@ -3655,6 +3655,12 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
+      } else if (embedded != null && !pagesToPublish.isEmpty()) {
+        // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
+        // One volatile read once recorded; nothing more on a database without a COLUMNAR index
+        final ColumnarIndexManager manager = embedded.getColumnarIndexManager();
+        if (manager != null)
+          manager.noWalCommitted();
       }
 
       // Every file lock is held and nothing can refuse this commit any more: this is the order the callbacks that mirror it run in

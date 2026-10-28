@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * epoch and sweeps every entry).
  */
 final class SegmentFile {
-  private final Path          path;
+  private volatile Path       path;
   private final long          cacheFileId;
   private final AtomicInteger references = new AtomicInteger(1);
   private final AtomicBoolean deleted    = new AtomicBoolean();
@@ -48,6 +48,11 @@ final class SegmentFile {
 
   Path path() {
     return path;
+  }
+
+  /** The directory of the file was renamed (a dropped projection's tombstone): readers open it under the new path from now on. */
+  void relocate(final Path directory) {
+    path = directory.resolve(path.getFileName());
   }
 
   long cacheFileId() {
