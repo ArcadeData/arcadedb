@@ -208,9 +208,14 @@ selectStatement
       groupBy?
       orderBy?
       unwind?
+      facets=facetsClause?
       (
-          skip limit?
-        | limit skip?
+        (
+            skip limit?
+          | limit skip?
+        )
+        // only to raise "FACETS must come before SKIP and LIMIT" (SQLASTBuilder): a clear message beats the parser's
+        lateFacets=facetsClause?
       )?
       timeout?
       PARALLEL?
@@ -1240,6 +1245,11 @@ fromClause
     : fromItem
     ;
 
+// The guard on a bare alias: "FROM T FACETS facets: brand TERMS" also reads as the alias FACETS followed by a facet on the
+// parameter :brand. That is the only text both readings accept (with any other facet alias X, "alias FACETS, then X :p" dies
+// on the facet body, and UNWIND is no identifier), so the guard refuses the alias only for FACETS FACETS ':'. The predicate
+// runs whenever the alias alternative is predicted or entered; the decision already used adaptivePredict (WHERE, LIMIT and
+// SKIP are identifiers too) and LA(1) != FACETS settles it at once for every other alias
 fromItem
     : rid (COMMA rid)*                                               # fromRids
     | LBRACKET RBRACKET                                              # fromEmptyArray
@@ -1253,9 +1263,9 @@ fromItem
     | bucketList                                                    # fromBucketList
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema
-    | LPAREN statement RPAREN (modifier)* (AS? identifier)?         # fromSubquery
-    | functionCall (AS? identifier)?                                 # fromFunctionCall
-    | identifier (modifier)* (AS? identifier)?                      # fromIdentifier
+    | LPAREN statement RPAREN (modifier)* ({_input.LA(1) != FACETS || _input.LA(2) != FACETS || _input.LA(3) != COLON}? AS? identifier)?         # fromSubquery
+    | functionCall ({_input.LA(1) != FACETS || _input.LA(2) != FACETS || _input.LA(3) != COLON}? AS? identifier)?                                 # fromFunctionCall
+    | identifier (modifier)* ({_input.LA(1) != FACETS || _input.LA(2) != FACETS || _input.LA(3) != COLON}? AS? identifier)?                      # fromIdentifier
     ;
 
 bucketList
@@ -1360,7 +1370,9 @@ orderDirection
  * UNWIND clause
  */
 unwind
-    : UNWIND expression (AS? identifier)? (COMMA expression (AS? identifier)?)*
+    // the FACETS guard of the FROM aliases, see fromItem
+    : UNWIND expression ({_input.LA(1) != FACETS || _input.LA(2) != FACETS || _input.LA(3) != COLON}? AS? identifier)?
+      (COMMA expression ({_input.LA(1) != FACETS || _input.LA(2) != FACETS || _input.LA(3) != COLON}? AS? identifier)?)*
     ;
 
 /**
@@ -1375,6 +1387,65 @@ skip
  */
 limit
     : LIMIT expression
+    ;
+
+/**
+ * FACETS clause (columnar faceting), on the outermost SELECT only:
+ * FACETS [alias:] expression TERMS|RANGES|HISTOGRAM options [, ...]
+ * facetBody is a labeled-alternative rule so that further facet kinds can be appended as new alternatives.
+ */
+facetsClause
+    : FACETS facetItem (COMMA facetItem)*
+    ;
+
+facetItem
+    : (identifier COLON)? expression facetBody
+    ;
+
+facetBody
+    : TERMS facetTermsOption*                                                                     # termsFacet
+    | RANGES LPAREN facetRange (COMMA facetRange)* RPAREN (DEFAULT STRING_LITERAL)? facetFilter?    # rangesFacet
+    | HISTOGRAM (CALENDAR | FIXED) facetInterval facetHistogramOption*                            # histogramFacet
+    ;
+
+facetTermsOption
+    : TOP pInteger
+    | MIN_COUNT pInteger
+    | ORDER_BY (COUNT | VALUE) (ASC | DESC)?
+    | INCLUDE arrayLiteral
+    | MISSING
+    | facetFilter
+    ;
+
+facetHistogramOption
+    : TIMEZONE STRING_LITERAL
+    | OFFSET STRING_LITERAL
+    | MIN_COUNT pInteger
+    | BOUNDS LBRACKET facetBound COMMA facetBound RBRACKET
+    | facetFilter
+    ;
+
+facetFilter
+    : FILTER whereClause
+    ;
+
+// a half-open range [from, to), with an optional key
+facetRange
+    : LBRACKET facetBound COMMA facetBound RPAREN (AS STRING_LITERAL)?
+    ;
+
+// STAR is an unbounded end
+facetBound
+    : STAR
+    | MINUS? (INTEGER_LITERAL | FLOATING_POINT_LITERAL)
+    | STRING_LITERAL
+    | inputParameter
+    ;
+
+facetInterval
+    : STRING_LITERAL
+    | INTEGER_LITERAL
+    | FLOATING_POINT_LITERAL
     ;
 
 /**
@@ -1845,4 +1916,18 @@ identifier
     | COMPACT
     | THRESHOLD
     | OVERWRITE
+    // FACETS clause keywords (columnar faceting): still valid property names
+    | FACETS
+    | TERMS
+    | TOP
+    | FILTER
+    | INCLUDE
+    | MIN_COUNT
+    | MISSING
+    | RANGES
+    | HISTOGRAM
+    | CALENDAR
+    | FIXED
+    | TIMEZONE
+    | BOUNDS
     ;
