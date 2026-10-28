@@ -191,7 +191,7 @@ public class ConsoleAsyncInsertTest {
         serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
             .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
       }
-      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
       database.async().setParallelLevel(PARALLEL_LEVEL);
       database.async().onError(exception -> {
         System.out.println("database.async() error: " + exception.getMessage());
@@ -266,7 +266,7 @@ public class ConsoleAsyncInsertTest {
         serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
             .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
       }
-      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
       database.async().setParallelLevel(PARALLEL_LEVEL);
       database.async().onError(exception -> {
         System.out.println("database.async() error: " + exception.getMessage());
@@ -338,7 +338,7 @@ public class ConsoleAsyncInsertTest {
     ContextConfiguration configuration = new ContextConfiguration();
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
     database.async().onError(exception -> {
       System.out.println("database.async() error: " + exception.getMessage());
       exception.printStackTrace();

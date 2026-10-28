@@ -229,7 +229,7 @@ public class Issue9875GrpcStreamingLoadsListedIT extends BaseGrpcServerTest {
 
   @Test
   void aTerminatedGraphBatchLoadIsCancelledAndGivesTheBatchBack() throws Exception {
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE VERTEX TYPE Node9875 IF NOT EXISTS");
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE VERTEX TYPE Node9875 IF NOT EXISTS");
     final Outcome<GraphBatchResult> outcome = new Outcome<>();
     final StreamObserver<GraphBatchChunk> stream = asyncStub.graphBatchLoad(outcome);
     stream.onNext(GraphBatchChunk.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
@@ -349,11 +349,11 @@ public class Issue9875GrpcStreamingLoadsListedIT extends BaseGrpcServerTest {
   }
 
   private void createDocumentType(final String name) {
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + name + " IF NOT EXISTS");
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + name + " IF NOT EXISTS");
   }
 
   private long count(final String type) {
-    return getServer(0).getDatabase(getDatabaseName()).query("sql", "SELECT count(*) AS c FROM " + type).next().<Long>getProperty("c");
+    return getServer(0).getDatabaseForOperator(getDatabaseName()).query("sql", "SELECT count(*) AS c FROM " + type).next().<Long>getProperty("c");
   }
 
   private InsertOptions insertOptions(final String type, final InsertOptions.TransactionMode mode) {

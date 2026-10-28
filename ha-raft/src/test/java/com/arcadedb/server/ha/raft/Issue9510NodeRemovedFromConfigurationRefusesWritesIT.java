@@ -108,7 +108,7 @@ class Issue9510NodeRemovedFromConfigurationRefusesWritesIT extends BaseRaftHATes
     final int followerIndex = (leaderIndex + 1) % getServerCount();
     leaveAndAwaitRemoval(followerIndex);
 
-    final HAReplicatedDatabase removedDb = (HAReplicatedDatabase) getServer(followerIndex).getDatabase(getDatabaseName())
+    final HAReplicatedDatabase removedDb = (HAReplicatedDatabase) getServer(followerIndex).getDatabaseForOperator(getDatabaseName())
         .getWrappedDatabaseInstance();
     assertThatThrownBy(removedDb::createInReplicas).isInstanceOf(NeedRetryException.class)
         .hasMessageContaining("not a member");
@@ -122,7 +122,7 @@ class Issue9510NodeRemovedFromConfigurationRefusesWritesIT extends BaseRaftHATes
     final int followerIndex = (leaderIndex + 1) % getServerCount();
     leaveAndAwaitRemoval(followerIndex);
 
-    final HAReplicatedDatabase removedDb = (HAReplicatedDatabase) getServer(followerIndex).getDatabase(getDatabaseName())
+    final HAReplicatedDatabase removedDb = (HAReplicatedDatabase) getServer(followerIndex).getDatabaseForOperator(getDatabaseName())
         .getWrappedDatabaseInstance();
     assertThatThrownBy(removedDb::dropInReplicas).isInstanceOf(NeedRetryException.class)
         .hasMessageContaining("not a member");

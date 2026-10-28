@@ -123,7 +123,13 @@ public class SupportDiagnostics {
   }
 
   private JSONObject buildConfiguration(final SupportRedactor.Session redaction) {
-    return buildConfiguration(server.getConfiguration(), server::getOperatorSettingSource, System::getenv, redaction);
+    return buildConfiguration(server.getConfiguration(), server::getOperatorSettingSource, System::getProperty, System::getenv,
+        redaction);
+  }
+
+  static JSONObject buildConfiguration(final ContextConfiguration configuration, final Function<String, String> operatorSource,
+      final Function<String, String> environment, final SupportRedactor.Session redaction) {
+    return buildConfiguration(configuration, operatorSource, System::getProperty, environment, redaction);
   }
 
   /**
@@ -133,9 +139,15 @@ public class SupportDiagnostics {
    * its own configuration at startup). Without the split a vanilla server looks customised in the portal. The origin is
    * not guessed from the value: the server records the keys the operator supplied (see
    * {@link ArcadeDBServer#getOperatorSettingSource(String)}).
+   * <p>
+   * Whether a system property or an environment variable supplied a setting is asked of the setting itself
+   * ({@link GlobalConfiguration#processSuppliedValue}), which reads the keys the way the engine applies them: a value given under
+   * the key the setting was renamed from is the operator's too (issue #10738), and an environment variable is the setting's own
+   * key, the only spelling the engine reads.
    */
   static JSONObject buildConfiguration(final ContextConfiguration configuration, final Function<String, String> operatorSource,
-      final Function<String, String> environment, final SupportRedactor.Session redaction) {
+      final Function<String, String> systemProperties, final Function<String, String> environment,
+      final SupportRedactor.Session redaction) {
     final JSONArray nonDefault = new JSONArray();
     final JSONArray computed = new JSONArray();
     final JSONArray masked = new JSONArray();
@@ -148,8 +160,9 @@ public class SupportDiagnostics {
       if (effectiveText.equals(defaultText))
         continue;
 
-      final boolean jvm = System.getProperty(cfg.getKey()) != null;
-      final boolean env = environment.apply(cfg.getKey()) != null || environment.apply(cfg.getKey().replace('.', '_').toUpperCase(Locale.ROOT)) != null;
+      final GlobalConfiguration.ProcessSuppliedValue supplied = cfg.processSuppliedValue(systemProperties, environment);
+      final boolean jvm = supplied != null && !supplied.fromEnvironment();
+      final boolean env = supplied != null && supplied.fromEnvironment();
       final String operator = operatorSource.apply(cfg.getKey());
       // A default written as a template ("${arcadedb.server.rootPath}/databases") always differs from its resolved value
       if (defaultText.contains("${") && !jvm && !env && operator == null)

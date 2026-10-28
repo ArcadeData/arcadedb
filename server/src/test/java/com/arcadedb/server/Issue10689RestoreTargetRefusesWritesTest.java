@@ -70,7 +70,7 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
   void dropTarget() {
     server.releaseDatabaseNameReservedForRestore(NAME);
     if (server.existsDatabase(NAME))
-      server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+      server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
     FileUtils.deleteRecursively(new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));
   }
 
@@ -131,7 +131,7 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
    */
   @Test
   void theRestoreWaitsForACommitAlreadyPastTheCheck() throws Exception {
-    final LocalDatabase local = (LocalDatabase) server.getDatabase(NAME).getEmbedded();
+    final LocalDatabase local = (LocalDatabase) server.getDatabaseForOperator(NAME).getEmbedded();
     final CountDownLatch inFlight = new CountDownLatch(1);
     final CountDownLatch finish = new CountDownLatch(1);
     final ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -162,31 +162,31 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
   @Test
   void aSettingChangeIsRefusedWhileTheRestoreHoldsTheTarget() throws Exception {
     final String key = GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH.getKey();
-    final int before = server.getDatabase(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH);
+    final int before = server.getDatabaseForOperator(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH);
 
     server.reserveDatabaseNameForRestore(NAME);
     assertThatThrownBy(() -> new ServerControlPlane(server).setDatabaseSetting(NAME, key, "3"))
         .isInstanceOf(DatabaseNotAvailableException.class);
-    assertThat(server.getDatabase(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH))
+    assertThat(server.getDatabaseForOperator(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH))
         .as("the setting was not applied").isEqualTo(before);
 
     server.releaseDatabaseNameReservedForRestore(NAME);
     new ServerControlPlane(server).setDatabaseSetting(NAME, key, "3");
-    assertThat(server.getDatabase(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH))
+    assertThat(server.getDatabaseForOperator(NAME).getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH))
         .isEqualTo(3);
   }
 
   /** The operator's own step may open the target while the claim stands: what it opens refuses writes as well. */
   @Test
   void aTargetOpenedWhileTheRestoreHoldsItRefusesWrites() {
-    server.getDatabase(NAME).getEmbedded().close();
+    server.getDatabaseForOperator(NAME).getEmbedded().close();
     server.removeDatabase(NAME);
 
     server.reserveDatabaseNameForRestore(NAME);
     assertThatThrownBy(() -> server.getDatabaseForClient(NAME)).as("a client still cannot open it")
         .isInstanceOf(DatabaseNotAvailableException.class);
 
-    final ServerDatabase opened = server.getDatabase(NAME);
+    final ServerDatabase opened = server.getDatabaseForOperator(NAME);
     assertThat(count(opened)).isEqualTo(1L);
     assertThatThrownBy(() -> opened.transaction(() -> opened.command("sql", "INSERT INTO T SET v = 2")))
         .isInstanceOf(DatabaseNotAvailableException.class);
@@ -209,7 +209,7 @@ class Issue10689RestoreTargetRefusesWritesTest extends BaseGraphServerTest {
    */
   @Test
   void theRestoreRefusalAndAnotherOneAreLiftedIndependently() {
-    final LocalDatabase local = (LocalDatabase) server.getDatabase(NAME).getEmbedded();
+    final LocalDatabase local = (LocalDatabase) server.getDatabaseForOperator(NAME).getEmbedded();
     final String other = "another operation refuses writes";
     try {
       local.refuseWrites(other);

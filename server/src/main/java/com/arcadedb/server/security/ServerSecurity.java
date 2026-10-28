@@ -1415,7 +1415,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     for (final String databaseName : server.getDatabaseNames())
       try {
-        updateSchema(server.getDatabase(databaseName));
+        updateSchema(server.getDatabaseForOperator(databaseName));
         ++refreshed;
       } catch (final Exception e) {
         ++failures;

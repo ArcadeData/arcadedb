@@ -140,7 +140,7 @@ class Issue7472ProductionModeConcealsSseErrorsIT extends BaseGraphServerTest {
       release.countDown();
       origin.stop(0);
       if (getServer(0).existsDatabase(databaseName))
-        getServer(0).getDatabase(databaseName).getEmbedded().drop();
+        getServer(0).getDatabaseForOperator(databaseName).getEmbedded().drop();
     }
   }
 

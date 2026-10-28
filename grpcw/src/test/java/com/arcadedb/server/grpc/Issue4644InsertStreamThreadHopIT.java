@@ -65,7 +65,7 @@ public class Issue4644InsertStreamThreadHopIT extends BaseGrpcServerTest {
   void insertStreamPerStreamCommitMustNotDependOnCallbackThread() throws Exception {
     final String typeName = "Issue4644ThreadHopType_" + System.currentTimeMillis();
 
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -125,12 +125,12 @@ public class Issue4644InsertStreamThreadHopIT extends BaseGrpcServerTest {
       assertThat(summary.getErrorsList()).isEmpty();
 
       // The rows must actually be persisted and visible after commit.
-      final long total = getServer(0).getDatabase(getDatabaseName())
+      final long total = getServer(0).getDatabaseForOperator(getDatabaseName())
           .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
       assertThat(total).isEqualTo(150L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 

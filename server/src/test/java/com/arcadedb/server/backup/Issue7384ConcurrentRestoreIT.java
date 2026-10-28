@@ -130,7 +130,7 @@ class Issue7384ConcurrentRestoreIT extends BaseGraphServerTest {
         for (final Operation operation : Operation.values())
           server.getBackupCoordinator().end(database, operation);
         if (server.existsDatabase(database))
-          server.getDatabase(database).getEmbedded().drop();
+          server.getDatabaseForOperator(database).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }

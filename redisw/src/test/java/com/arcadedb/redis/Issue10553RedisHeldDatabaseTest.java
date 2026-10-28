@@ -121,7 +121,7 @@ public class Issue10553RedisHeldDatabaseTest extends BaseRedisServerTest {
     }
 
     // Released and opened again (a database on disk that nothing opened yet is the separate case of issue #10567)
-    server.getDatabase(HELD);
+    server.getDatabaseForOperator(HELD);
     try (final Jedis jedis = connect()) {
       assertThat(jedis.set("k", "v")).as("released, the same configured default takes the write").isEqualTo("OK");
       assertThat(jedis.get(HELD + ".k")).isEqualTo("v");
@@ -151,7 +151,7 @@ public class Issue10553RedisHeldDatabaseTest extends BaseRedisServerTest {
 
   private static void dropIfPresent(final ArcadeDBServer server) {
     if (server.existsDatabase(HELD))
-      server.dropLocalDatabase(server.getDatabase(HELD).getEmbedded(), HELD);
+      server.dropLocalDatabase(server.getDatabaseForOperator(HELD).getEmbedded(), HELD);
     FileUtils.deleteRecursively(
         new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), HELD));
   }

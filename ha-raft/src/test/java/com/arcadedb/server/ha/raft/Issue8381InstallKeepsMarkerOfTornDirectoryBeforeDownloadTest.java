@@ -99,7 +99,7 @@ class Issue8381InstallKeepsMarkerOfTornDirectoryBeforeDownloadTest {
 
     // loadDatabases defers a directory on this file alone, so its presence is what keeps the next start away too.
     assertThat(marker).as("the torn directory keeps the marker that stops it being opened").exists();
-    assertThatThrownBy(() -> server.getDatabase(DB_NAME)).as("the torn directory is still refused")
+    assertThatThrownBy(() -> server.getDatabaseForOperator(DB_NAME)).as("the torn directory is still refused")
         .hasMessageContaining(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
   }
 
@@ -126,7 +126,7 @@ class Issue8381InstallKeepsMarkerOfTornDirectoryBeforeDownloadTest {
 
     assertThat(markerSeenDuringDownload[0]).as("the marker is on disk while the download runs").isTrue();
     assertThat(marker).as("a failed download over a loadable database clears the marker").doesNotExist();
-    final ServerDatabase db = server.getDatabase(DB_NAME);
+    final ServerDatabase db = server.getDatabaseForOperator(DB_NAME);
     assertThat(db.getSchema().existsType(ORIGINAL_TYPE)).isTrue();
   }
 
@@ -135,7 +135,7 @@ class Issue8381InstallKeepsMarkerOfTornDirectoryBeforeDownloadTest {
   private Path registerThenCloseUnderneathTheRegistry(final Path databasesDir) {
     final ServerDatabase live = server.createDatabase(DB_NAME, ComponentFile.MODE.READ_WRITE);
     live.getSchema().createDocumentType(ORIGINAL_TYPE);
-    ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().close();
+    ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().close();
     assertThat(server.existsDatabase(DB_NAME)).as("precondition: still registered").isTrue();
     return databasesDir.resolve(DB_NAME);
   }

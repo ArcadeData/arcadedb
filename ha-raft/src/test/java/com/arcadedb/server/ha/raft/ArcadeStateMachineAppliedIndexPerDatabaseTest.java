@@ -86,9 +86,9 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
     }
 
     @Override
-    public ServerDatabase getDatabase(final String databaseName) {
+    public ServerDatabase getDatabaseForOperator(final String databaseName) {
       getDatabaseInvocations.incrementAndGet();
-      return super.getDatabase(databaseName);
+      return super.getDatabaseForOperator(databaseName);
     }
 
     /** Counted too: since issue #9568 the verification reads an open database without the overload that reopens. */
@@ -143,7 +143,7 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    * Regression: another database advancing the GLOBAL applied index past this database's bootstrap
    * entry index must NOT skip this database's bootstrap verification. Before the fix the skip fired
    * (global 100 &gt;= 50) and {@code applyBootstrapFingerprintEntry} returned before ever consulting
-   * the local database, so {@code server.getDatabase(DB_A)} was never called.
+   * the local database, so {@code server.getDatabaseForOperator(DB_A)} was never called.
    */
   @Test
   void bootstrapSkipNotTriggeredByAnotherDatabasesAppliedIndex() throws Exception {

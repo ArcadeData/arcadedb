@@ -63,7 +63,7 @@ class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -116,7 +116,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -141,7 +141,7 @@ class ServerProfilingIT {
         new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       setCurrentUser("root", database);
       createSchema(database);
@@ -169,7 +169,7 @@ class ServerProfilingIT {
             new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       setCurrentUser("root", database);
       createSchema(database);
@@ -195,7 +195,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -236,7 +236,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "createOnlyGraph" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -271,7 +271,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -307,7 +307,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -348,7 +348,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "deleter" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       final ServerSecurityUser albert = setCurrentUser("albert", database);
       checkJohnUser(albert);
@@ -390,7 +390,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -443,7 +443,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -518,7 +518,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       checkJohnUser(setCurrentUser("albert", database));
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
       setCurrentUser("root", database);

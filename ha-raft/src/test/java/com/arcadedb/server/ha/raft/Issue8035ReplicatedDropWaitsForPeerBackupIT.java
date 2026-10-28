@@ -95,7 +95,7 @@ class Issue8035ReplicatedDropWaitsForPeerBackupIT extends BaseRaftHATest {
       Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
           .until(() -> !getServer(otherFollowerIndex).existsDatabase(DB_NAME));
       assertThat(backingUp.existsDatabase(DB_NAME)).as("the drop must not tear down the follower's backup").isTrue();
-      assertThat(backingUp.getDatabase(DB_NAME).isOpen()).isTrue();
+      assertThat(backingUp.getDatabaseForOperator(DB_NAME).isOpen()).isTrue();
 
       backupSlot.end(DB_NAME);
       backupRunning = false;

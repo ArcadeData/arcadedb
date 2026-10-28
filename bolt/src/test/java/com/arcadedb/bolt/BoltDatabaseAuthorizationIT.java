@@ -81,7 +81,7 @@ public class BoltDatabaseAuthorizationIT extends BaseBoltServerTest {
       security.deleteGroup(getDatabaseName(), READER_GROUP);
       if (server.existsDatabase(OTHER_DATABASE)) {
         // ServerDatabase refuses drop() because the handle is shared: drop the embedded instance, then unregister it
-        server.getDatabase(OTHER_DATABASE).getEmbedded().drop();
+        server.getDatabaseForOperator(OTHER_DATABASE).getEmbedded().drop();
         server.removeDatabase(OTHER_DATABASE);
       }
     }

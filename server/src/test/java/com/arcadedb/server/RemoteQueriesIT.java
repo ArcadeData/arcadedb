@@ -64,7 +64,7 @@ class RemoteQueriesIT {
     arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
 
     //Create FromVtx Type
     database.command("sql", "CREATE VERTEX TYPE FromVtx IF NOT EXISTS");
@@ -116,7 +116,7 @@ class RemoteQueriesIT {
     arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
 
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
 
     // insert 2 records
     String processor = "SIR1LRM-7.1";
@@ -187,7 +187,7 @@ class RemoteQueriesIT {
 
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    Database database = arcadeDBServer.getDatabase("testLocalDateTimeOrderBy");
+    Database database = arcadeDBServer.getDatabaseForOperator("testLocalDateTimeOrderBy");
 
     DateTimeFormatter FILENAME_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
     Result result;

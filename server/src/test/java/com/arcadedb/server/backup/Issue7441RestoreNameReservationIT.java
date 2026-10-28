@@ -130,7 +130,7 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
         for (final Operation operation : Operation.values())
           server.getBackupCoordinator().end(database, operation);
         if (server.existsDatabase(database))
-          server.getDatabase(database).getEmbedded().drop();
+          server.getDatabaseForOperator(database).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }
@@ -187,7 +187,7 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
 
     // THE RESTORE FINISHED AND ITS OWN DATA IS WHAT IS THERE - NOT AN EMPTY DATABASE SOMEBODY ELSE CREATED
     assertThat(getServer(0).existsDatabase(target)).isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(1);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(1);
 
     // AND THE NAME IS FREE AGAIN: THE REFUSAL ABOVE WAS THE GUARD, NOT A PERMANENT CLAIM
     assertThat(getServer(0).isDatabaseNameReservedForRestore(target)).isFalse();
@@ -335,7 +335,7 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
 
     // THE DATABASE THAT WAS THERE IS STILL THERE, AND STILL USABLE - NOT DROPPED AND NOT HALF-SWAPPED
     assertThat(server.existsDatabase(target)).isTrue();
-    assertThat(server.getDatabase(target).isOpen()).isTrue();
+    assertThat(server.getDatabaseForOperator(target).isOpen()).isTrue();
     assertThat(databaseDirectory(target)).exists();
   }
 
@@ -372,7 +372,7 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
         ServerControlPlane.ProgressListener.NOOP);
 
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
-    assertThat(getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(1);
+    assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(1);
   }
 
   // -------------------------------------------------------------------------------------------

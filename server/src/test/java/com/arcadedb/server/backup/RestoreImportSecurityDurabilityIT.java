@@ -111,7 +111,7 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
       try {
         final ArcadeDBServer server = getServer(0);
         if (server.existsDatabase(restoredDatabaseName))
-          server.getDatabase(restoredDatabaseName).getEmbedded().drop();
+          server.getDatabaseForOperator(restoredDatabaseName).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }
@@ -168,13 +168,13 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
     assertThat(backups.length()).isEqualTo(1);
     final String fileName = backups.getJSONObject(0).getString("fileName");
 
-    final long sourceCount = getServer(0).getDatabase(databaseName).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(databaseName).countType(VERTEX1_TYPE_NAME, false);
 
     // 2) Restore the good backup into a fresh target database.
     final HttpResponse<String> restoreResponse = postCommand(
         "restore backup " + databaseName + " " + fileName + " as " + restoredDatabaseName);
     assertThat(restoreResponse.statusCode()).isEqualTo(200);
-    assertThat(getServer(0).getDatabase(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
 
     // 3) Corrupt the backup file on disk so the next restore fails mid-way.
     final File backupFile = new File(new File(backupDir, databaseName), fileName);
@@ -189,7 +189,7 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
 
     // 5) The original target database and its data must still be intact.
     assertThat(getServer(0).existsDatabase(restoredDatabaseName)).as("original database must survive a failed restore").isTrue();
-    assertThat(getServer(0).getDatabase(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   @Test
@@ -200,7 +200,7 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
     postCommand("trigger backup " + databaseName);
     final JSONArray backups = new JSONObject(postCommand("list backups " + databaseName).body()).getJSONArray("backups");
     final String fileName = backups.getJSONObject(0).getString("fileName");
-    final long sourceCount = getServer(0).getDatabase(databaseName).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(databaseName).countType(VERTEX1_TYPE_NAME, false);
 
     // Restore into a fresh target, then overwrite it again with the same good backup: must succeed
     // and keep the data (verifies the temp-restore-then-swap happy path).
@@ -211,7 +211,7 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
             .put("overwrite", true));
     assertThat(overwrite.statusCode()).isEqualTo(200);
     assertThat(getServer(0).existsDatabase(restoredDatabaseName)).isTrue();
-    assertThat(getServer(0).getDatabase(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   @Test
@@ -237,7 +237,7 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
     } finally {
       final ArcadeDBServer server = getServer(0);
       if (server.existsDatabase(target))
-        server.getDatabase(target).getEmbedded().drop();
+        server.getDatabaseForOperator(target).getEmbedded().drop();
     }
   }
 

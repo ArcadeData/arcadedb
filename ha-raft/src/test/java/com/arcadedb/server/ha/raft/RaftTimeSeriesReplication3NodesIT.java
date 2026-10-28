@@ -250,14 +250,14 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
   }
 
   private long countSamples(final int serverIndex) {
-    final Database db = getServer(serverIndex).getDatabase(getDatabaseName());
+    final Database db = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
     try (final ResultSet rs = db.query("sql", "SELECT count(*) AS cnt FROM weather")) {
       return rs.hasNext() ? rs.next().<Number>getProperty("cnt").longValue() : 0L;
     }
   }
 
   private TimeSeriesEngine timeSeriesEngine(final int serverIndex) {
-    final DatabaseInternal db = (DatabaseInternal) getServer(serverIndex).getDatabase(getDatabaseName());
+    final DatabaseInternal db = (DatabaseInternal) getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
     return ((LocalTimeSeriesType) db.getSchema().getType("weather")).getEngine();
   }
 

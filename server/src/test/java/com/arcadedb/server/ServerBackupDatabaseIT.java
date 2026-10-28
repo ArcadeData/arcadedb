@@ -38,7 +38,7 @@ class ServerBackupDatabaseIT extends BaseGraphServerTest {
     if (backupFile.exists())
       backupFile.delete();
 
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     database.command("sql", "backup database file://" + backupFile.getName());
 
     assertThat(backupFile.exists()).isTrue();
@@ -48,7 +48,7 @@ class ServerBackupDatabaseIT extends BaseGraphServerTest {
   @Test
   void backupDatabaseWithoutUrl() {
     // Test BACKUP DATABASE without URL - should use default backup directory
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     var result = database.command("sql", "backup database");
 
     assertThat(result.hasNext()).isTrue();

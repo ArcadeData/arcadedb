@@ -103,7 +103,7 @@ class Issue8281RegisterDatabaseHAWrapTest {
 
     assertThat(wrappedInstances).containsExactly(local);
     assertThat(local.getWriteRefusal()).isNull();
-    assertThat(server.getDatabase(DB).getWrappedDatabaseInstance().getEmbedded()).isSameAs(local);
+    assertThat(server.getDatabaseForOperator(DB).getWrappedDatabaseInstance().getEmbedded()).isSameAs(local);
   }
 
   @Test

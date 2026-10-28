@@ -90,7 +90,7 @@ class Issue7510ReplicatedGroupRefreshTest {
     // submitting Raft entries - exactly the peer applying someone else's entry.
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.databaseNames(DATABASE);
-    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
@@ -201,7 +201,7 @@ class Issue7510ReplicatedGroupRefreshTest {
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.databaseNames(DATABASE);
-    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ServerSecurity counting = new ServerSecurity(server, new ContextConfiguration(), path) {
       @Override
@@ -287,7 +287,7 @@ class Issue7510ReplicatedGroupRefreshTest {
     // A LinkedHashSet so the broken name is iterated FIRST: with the guard around the loop instead of inside it,
     // the healthy database that follows would never be reached.
     server.returns("getDatabaseNames", new LinkedHashSet<>(List.of("dropped-under-the-sweep", DATABASE)));
-    server.on("getDatabase", args -> {
+    server.on("getDatabaseForOperator", args -> {
       if (Objects.equals(args[0], "dropped-under-the-sweep"))
         throw new DatabaseNotAvailableException("Database 'dropped-under-the-sweep' is not available");
       return Objects.equals(args[0], DATABASE) ? healthy : null;

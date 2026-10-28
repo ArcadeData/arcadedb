@@ -171,7 +171,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     if (!server.existsDatabase(databaseName))
       return new ExecutionResponse(404, "{ \"error\" : \"Database '" + databaseName + "' not found\"}");
 
-    final var db = (DatabaseInternal) server.getDatabase(databaseName);
+    final var db = (DatabaseInternal) server.getDatabaseForOperator(databaseName);
 
     // Compute local checksums with file type categorization
     final JSONObject localChecksums = new JSONObject();

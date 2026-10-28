@@ -173,7 +173,7 @@ class RaftReplicationIT {
     assertThat(leader).isNotNull();
 
     // Write 10 vertices on the leader, one per transaction
-    final Database leaderDb = leader.getDatabase(DATABASE_NAME);
+    final Database leaderDb = leader.getDatabaseForOperator(DATABASE_NAME);
     for (int i = 0; i < 10; i++) {
       final int idx = i;
       leaderDb.transaction(() -> {
@@ -195,7 +195,7 @@ class RaftReplicationIT {
         .pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> {
           for (final ArcadeDBServer server : servers) {
-            final Database db = server.getDatabase(DATABASE_NAME);
+            final Database db = server.getDatabaseForOperator(DATABASE_NAME);
             final long count = db.query("sql", "SELECT count(*) as cnt FROM TestVertex")
                 .nextIfAvailable().getProperty("cnt", 0L);
             assertThat(count)
@@ -219,7 +219,7 @@ class RaftReplicationIT {
 
     // Writing on a follower via the local database API forwards the WAL through Raft.
     // The RaftClient transparently routes the write to the current leader.
-    final Database followerDb = follower.getDatabase(DATABASE_NAME);
+    final Database followerDb = follower.getDatabaseForOperator(DATABASE_NAME);
     followerDb.transaction(() -> {
       final MutableVertex v = followerDb.newVertex("TestVertex");
       v.set("id", 100L);

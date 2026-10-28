@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10533: the restore reservation (and the {@code close database} mark) refused only HTTP. Postgres, Bolt, gRPC, Redis and
- * MongoDB resolve their database through {@link ArcadeDBServer#getDatabase(String)}, which is also the entry point of the
+ * MongoDB resolve their database through {@link ArcadeDBServer#getDatabaseForOperator(String)}, which is also the entry point of the
  * operator's own steps ({@code open database}, the restore itself, the snapshot installer) and therefore cannot refuse. A client
  * of one of those protocols could open the copy an {@code overwrite} restore was about to destroy, write to it, be acknowledged,
  * and lose the writes to the swap.
@@ -55,6 +55,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
   private static final String NAME = "Issue10533Held";
 
+  /** The deprecated name of the operator's entry point, {@code getDatabase(name)} with the name alone (issue #10802). */
+  private static final String DEPRECATED_CALL = "getDatabase\\((?:[^,()]|\\([^()]*\\))*\\)";
+
+  /** A call of the deprecated name on a receiver that names the server. */
+  private static final Pattern DEPRECATED_ENTRY_POINT = Pattern.compile(
+      "(?:\\b\\w*[sS]erver|\\bgetServer\\([^()]*\\)|\\bservers\\[[^\\]]*\\])\\s*\\.\\s*" + DEPRECATED_CALL);
+
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
   private static final Path REACTOR_ROOT = Path.of("..");
 
@@ -63,17 +70,17 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
       "<artifactId>arcadedb-server</artifactId>(?:(?!</dependency>).)*?<scope>provided</scope>", Pattern.DOTALL);
 
   /**
-   * A resolution of a database by name through the entry point that sees past the marks: {@code getDatabase(name)} with the name
-   * alone, or {@code getOrCreateDatabase(name)}. The three-argument form is a plugin initialising the database it owns at start.
+   * A resolution of a database by name through the entry point that sees past the marks: {@code getDatabaseForOperator(name)},
+   * whatever the receiver, since no other class declares that name (issue #10802), and the two that still need a receiver to be told
+   * apart from the listeners' own helpers: the deprecated {@code getDatabase(name)} with the name alone, and
+   * {@code getOrCreateDatabase(name)}. The three-argument form is a plugin initialising the database it owns at start.
    * <p>
-   * The limit of a census read from sources: the receiver is an identifier ending in {@code server} or {@code getServer()}, and a
-   * line that starts as a comment is skipped, so a listener that keeps the server in a field named otherwise ({@code srv},
-   * {@code owner}) would pass it. Flagging every one-argument {@code getDatabase(} call instead would also flag the listeners' own
-   * helpers of that name, and an allow-list of them is the kind of list nobody keeps; a new listener is reviewed against the rule
-   * stated on {@code ArcadeDBServer#getDatabase(String)}.
+   * The limit of a census read from sources, for those two: the receiver is an identifier ending in {@code server} or
+   * {@code getServer()}, and a line that starts as a comment is skipped, so a listener that keeps the server in a field named
+   * otherwise ({@code srv}, {@code owner}) would pass it.
    */
   private static final Pattern INTERNAL_ENTRY_POINT = Pattern.compile(
-      "(?:\\b\\w*[sS]erver|\\bgetServer\\(\\))\\s*\\.\\s*(?:getDatabase\\((?:[^,()]|\\([^()]*\\))*\\)|getOrCreateDatabase\\()");
+      "\\bgetDatabaseForOperator\\s*\\(|" + "(?:\\b\\w*[sS]erver|\\bgetServer\\(\\))\\s*\\.\\s*(?:" + DEPRECATED_CALL + "|getOrCreateDatabase\\()");
 
   /**
    * Modules that plug into the server and resolve no database on behalf of a client, with the reason. Everything else that plugs
@@ -92,6 +99,8 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
    * pass by picking the shortest name. Paths are relative to {@code server/src/main/java}.
    */
   private static final Map<String, String> SERVER_OPERATOR_STEPS = Map.of(
+      "com/arcadedb/server/ArcadeDBServer.java",
+      "the registry itself: the entry point, its deprecated alias, the databases opened at startup and the startup restore",
       "com/arcadedb/server/ServerControlPlane.java",
       "the operator's commands: open, close, drop, restore and import database, and the cluster-wide steps they replicate",
       "com/arcadedb/server/security/ServerSecurity.java",
@@ -111,7 +120,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
       assertThat(server.existsDatabase(NAME)).as("the client opened nothing").isFalse();
 
       // The restore itself is the operator's step, and resolves the target it replaces through the entry point that is not refused
-      assertThat(server.getDatabase(NAME).isOpen()).isTrue();
+      assertThat(server.getDatabaseForOperator(NAME).isOpen()).isTrue();
       // Once it is open it is served as before: the reservation takes no live database away from its readers
       assertThat(server.getDatabaseForClient(NAME).isOpen()).isTrue();
     } finally {
@@ -134,7 +143,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
       assertThat(server.existsDatabase(NAME)).as("the client opened nothing").isFalse();
 
       // 'open database' is the operator's step and is not refused; it ends the mark
-      assertThat(server.getDatabase(NAME).isOpen()).isTrue();
+      assertThat(server.getDatabaseForOperator(NAME).isOpen()).isTrue();
       assertThat(server.getDatabaseForClient(NAME).isOpen()).isTrue();
     } finally {
       server.unmarkClosedByCommand(NAME);
@@ -166,7 +175,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
   }
 
   /**
-   * A listener that resolves a database through {@code server.getDatabase(name)} inherits the exemption the operator's own steps
+   * A listener that resolves a database through {@code server.getDatabaseForOperator(name)} inherits the exemption the operator's own steps
    * need. The census reads the sources of every module that plugs into the server: the entry point that sees past the marks is
    * called from the server's operator steps and from the cluster module, and from no listener.
    */
@@ -191,7 +200,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
         collectOffenders(REACTOR_ROOT.resolve(module).resolve("src/main/java"), offenders);
 
     assertThat(offenders).as("a listener must resolve the database a client names through ArcadeDBServer.getDatabaseForClient(), "
-        + "which refuses a name an operator has taken away (a restore in progress, a 'close database'). getDatabase(String) is "
+        + "which refuses a name an operator has taken away (a restore in progress, a 'close database'). getDatabaseForOperator(String) is "
         + "the operator's own entry point and sees past those marks. If the module serves no client, add it to "
         + "NOT_A_CLIENT_SURFACE with the reason").isEmpty();
   }
@@ -221,7 +230,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
 
     assertThat(offenders).as("a server handler or listener must resolve the database a client names through "
         + "ArcadeDBServer.getDatabaseForClient() (or getDatabaseForRequest() for HTTP), which refuses a name an operator has taken "
-        + "away. getDatabase(String) is the operator's own entry point and sees past those marks. A source that holds only the "
+        + "away. getDatabaseForOperator(String) is the operator's own entry point and sees past those marks. A source that holds only the "
         + "operator's own steps goes in SERVER_OPERATOR_STEPS with the reason").isEmpty();
     assertThat(stepsSeen).as("every source named as an operator step still resolves through the operator's entry point: drop "
         + "the ones that no longer do, so the list cannot hide a new client surface").containsExactlyInAnyOrderElementsOf(
@@ -231,19 +240,52 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
   /** The census is only as good as its pattern: the gRPC service names its server field {@code arcadeServer}, not {@code server}. */
   @Test
   void theCensusPatternRecognisesEveryNameAServerFieldGoes() {
-    for (final String call : new String[] { "server.getDatabase(name)", "arcadeServer.getDatabase(databaseName)",
-        "httpServer.getServer().getDatabase(name)", "getServer().getDatabase(name)", "this.server.getDatabase(name)",
-        "server.getOrCreateDatabase(name)", "arcadeServer.getOrCreateDatabase(name)",
-        "(DatabaseInternal) arcadeServer.getDatabase(databaseName)", "server.getDatabase(names.get(0))" })
+    for (final String call : new String[] { "server.getDatabaseForOperator(name)", "arcadeServer.getDatabaseForOperator(databaseName)",
+        "httpServer.getServer().getDatabaseForOperator(name)", "getServer().getDatabaseForOperator(name)",
+        "this.server.getDatabaseForOperator(name)", "srv.getDatabaseForOperator(name)", "owner.getDatabaseForOperator(name)",
+        "getDatabaseForOperator(name)", "(DatabaseInternal) arcadeServer.getDatabaseForOperator(databaseName)",
+        "server.getDatabase(name)", "arcadeServer.getDatabase(databaseName)", "httpServer.getServer().getDatabase(name)",
+        "(DatabaseInternal) arcadeServer.getDatabase(databaseName)", "server.getDatabase(names.get(0))",
+        "server.getOrCreateDatabase(name)", "arcadeServer.getOrCreateDatabase(name)" })
       assertThat(INTERNAL_ENTRY_POINT.matcher(call).find()).as(call).isTrue();
 
     for (final String call : new String[] { "server.getDatabaseForClient(name)", "arcadeServer.getDatabaseForClient(databaseName)",
         "server.getDatabase(name, true, true)", "arcadeServer.getDatabase(name, false, false)", "getDatabase(name, credentials)",
-        "database.getDatabase(name)" })
+        "database.getDatabase(name)", "client.getDatabase(name)" })
       assertThat(INTERNAL_ENTRY_POINT.matcher(call).find()).as(call).isFalse();
+
+    for (final String call : new String[] { "server.getDatabase(name)", "getServer(0).getDatabase(DB)", "servers[i].getDatabase(DB)",
+        "leaderServer.getDatabase(name)" })
+      assertThat(DEPRECATED_ENTRY_POINT.matcher(call).find()).as(call).isTrue();
+    for (final String call : new String[] { "server.getDatabaseForOperator(name)", "client.getDatabase(name)",
+        "server.getDatabase(name, false, true)", "getDatabase(0)" })
+      assertThat(DEPRECATED_ENTRY_POINT.matcher(call).find()).as(call).isFalse();
+  }
+
+  /**
+   * Issue #10802: {@code getDatabase(String)} became {@code getDatabaseForOperator(String)}, a name that says whom it serves, and
+   * the old one is deprecated for removal. Kept only for the embedded servers and plugins outside this repository: no source of the
+   * repository, main or test, calls it, so removing it is a one-line change.
+   */
+  @Test
+  void noSourceOfTheRepositoryCallsTheDeprecatedNameOfTheOperatorsEntryPoint() throws IOException {
+    final List<String> offenders = new ArrayList<>();
+    try (final Stream<Path> modules = Files.list(REACTOR_ROOT)) {
+      for (final Path module : (Iterable<Path>) modules.filter(Files::isDirectory)::iterator)
+        for (final String sources : new String[] { "src/main/java", "src/test/java" })
+          collect(module.resolve(sources), DEPRECATED_ENTRY_POINT, offenders);
+    }
+    offenders.removeIf(offender -> offender.contains(getClass().getSimpleName() + ".java:"));
+
+    assertThat(offenders).as("call ArcadeDBServer.getDatabaseForOperator() for an operator's step, getDatabaseForClient() for a "
+        + "database a client names; getDatabase(String) is deprecated for removal").isEmpty();
   }
 
   private static void collectOffenders(final Path sources, final List<String> offenders) throws IOException {
+    collect(sources, INTERNAL_ENTRY_POINT, offenders);
+  }
+
+  private static void collect(final Path sources, final Pattern pattern, final List<String> offenders) throws IOException {
     if (!Files.isDirectory(sources))
       return;
     try (final Stream<Path> files = Files.walk(sources)) {
@@ -253,7 +295,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
           final String line = lines[i].trim();
           if (line.startsWith("//") || line.startsWith("*") || line.startsWith("/*"))
             continue;
-          final Matcher matcher = INTERNAL_ENTRY_POINT.matcher(line);
+          final Matcher matcher = pattern.matcher(line);
           if (matcher.find())
             offenders.add(file + ":" + (i + 1) + ": " + line);
         }
@@ -271,7 +313,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
 
   private static void dropIfPresent(final ArcadeDBServer server) {
     if (server.existsDatabase(NAME))
-      server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+      server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
     FileUtils.deleteRecursively(
         new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));
   }

@@ -113,7 +113,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     for (final String database : databasesToDrop) {
       try {
         if (getServer(0).existsDatabase(database))
-          getServer(0).getDatabase(database).getEmbedded().drop();
+          getServer(0).getDatabaseForOperator(database).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }
@@ -144,14 +144,14 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     databasesToDrop.add(target);
 
     final String archive = triggerBackupAndGetFileName();
-    final long sourceCount = getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
 
     final List<RestoreProgress> events = new ArrayList<>();
     client.restoreBackup(getDatabaseName(), archive, target, false, events::add);
 
     assertThat(events).isNotEmpty();
-    assertThat(events.get(events.size() - 1).getCompleted()).isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(events.getLast().getCompleted()).isTrue();
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   @Test
@@ -160,7 +160,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     databasesToDrop.add(target);
 
     final Path archive = backupPath(triggerBackupAndGetFileName());
-    final long sourceCount = getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
 
     final List<RestoreProgress> events = new ArrayList<>();
     client.restoreDatabase(target, "file://" + archive.toAbsolutePath(), events::add);
@@ -168,9 +168,9 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     // Progress before the terminator, not only the terminator: this method blocks for the length of
     // the restore, and reporting nothing until it ends would defeat the point of it streaming.
     assertThat(events).hasSizeGreaterThan(1);
-    assertThat(events.get(0).getCompleted()).isFalse();
-    assertThat(events.get(events.size() - 1).getCompleted()).isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(events.getFirst().getCompleted()).isFalse();
+    assertThat(events.getLast().getCompleted()).isTrue();
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   /**
@@ -202,7 +202,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     final JSONObject report = client.importDatabase(target, "file://" + source.getAbsolutePath(), events::add);
 
     assertThat(events).isNotEmpty();
-    assertThat(events.get(events.size() - 1).getCompleted()).isTrue();
+    assertThat(events.getLast().getCompleted()).isTrue();
     // The importer's report is returned rather than left for the caller to dig out of the last
     // message: that is the only piece of the stream a synchronous caller usually wants.
     assertThat(report.toMap()).isNotEmpty();
@@ -248,7 +248,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     client.triggerBackup(getDatabaseName());
     final List<BackupInfo> backups = client.listBackups(getDatabaseName());
     assertThat(backups).isNotEmpty();
-    return backups.get(backups.size() - 1).getFileName();
+    return backups.getLast().getFileName();
   }
 
   private Path backupPath(final String fileName) {

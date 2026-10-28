@@ -137,7 +137,7 @@ public class Issue10794RedisReplacedDatabaseTest extends BaseRedisServerTest {
 
   private void create() {
     controlPlane.createDatabase(NAME);
-    getServer(0).getDatabase(NAME).command("sqlscript", "CREATE DOCUMENT TYPE S; CREATE PROPERTY S.i LONG; CREATE INDEX ON S (i) UNIQUE;");
+    getServer(0).getDatabaseForOperator(NAME).command("sqlscript", "CREATE DOCUMENT TYPE S; CREATE PROPERTY S.i LONG; CREATE INDEX ON S (i) UNIQUE;");
   }
 
   private void insert(final int from, final int rows) {
@@ -160,7 +160,7 @@ public class Issue10794RedisReplacedDatabaseTest extends BaseRedisServerTest {
   private void dropIfPresent() {
     final ArcadeDBServer server = getServer(0);
     if (server.existsDatabase(NAME))
-      server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+      server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
     server.unmarkClosedByCommand(NAME);
     FileUtils.deleteRecursively(
         new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));

@@ -202,7 +202,7 @@ public class Issue10794GrpcReplacedDatabaseIT extends BaseGrpcServerTest {
   private void dropIfPresent() {
     final ArcadeDBServer server = getServer(0);
     if (server.existsDatabase(NAME))
-      server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+      server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
     server.unmarkClosedByCommand(NAME);
     FileUtils.deleteRecursively(
         new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));

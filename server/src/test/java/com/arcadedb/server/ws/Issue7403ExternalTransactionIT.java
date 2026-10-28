@@ -276,7 +276,7 @@ class Issue7403ExternalTransactionIT extends BaseGraphServerTest {
       assertThat(httpTransaction("rollback", transactionId, "root", DEFAULT_PASSWORD_FOR_TESTS, OTHER_DATABASE))
           .isEqualTo(204);
     } finally {
-      getServer(0).getDatabase(OTHER_DATABASE).getEmbedded().drop();
+      getServer(0).getDatabaseForOperator(OTHER_DATABASE).getEmbedded().drop();
     }
   }
 

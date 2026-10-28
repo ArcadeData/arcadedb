@@ -1449,15 +1449,31 @@ public class ArcadeDBServer {
    * the snapshot installer. <b>A listener serving a client must call {@link #getDatabaseForClient(String)} instead</b> (issue
    * #10533): a client that reached the database through this method could open the copy an {@code overwrite} restore is about
    * to destroy and have its writes acknowledged and then discarded.
+   * <p>
+   * Named for whom it serves (issue #10802): as {@code getDatabase(String)}, the shortest of the resolvers, it was the one a new
+   * client handler reached for by default (#10533, #10690 both did).
    */
-  public ServerDatabase getDatabase(final String databaseName) {
+  public ServerDatabase getDatabaseForOperator(final String databaseName) {
     return getDatabase(databaseName, false, true);
   }
 
   /**
+   * The operator's entry point under its former name, kept for one release for the embedded servers and plugins built against
+   * it (issue #10802).
+   *
+   * @deprecated it opens a database past a {@code close database} and a restore in progress. Call
+   * {@link #getDatabaseForOperator(String)} for an operator's own step, {@link #getDatabaseForClient(String)} for a database a
+   * client names
+   */
+  @Deprecated(since = "26.11.1", forRemoval = true)
+  public ServerDatabase getDatabase(final String databaseName) {
+    return getDatabaseForOperator(databaseName);
+  }
+
+  /**
    * The database a client of a wire protocol (Postgres, Bolt, gRPC, Redis, MongoDB, MCP, Gremlin) names, opened from disk when it
-   * is not open (issue #10533). Same as {@link #getDatabase(String)} except that a name an operator has taken away is refused
-   * with {@link DatabaseNotAvailableException}, as {@link #getDatabaseForRequest} does for HTTP: a database a {@code close
+   * is not open (issue #10533). Same as {@link #getDatabaseForOperator(String)} except that a name an operator has taken away is
+   * refused with {@link DatabaseNotAvailableException}, as {@link #getDatabaseForRequest} does for HTTP: a database a {@code close
    * database} command closed stays closed until {@code open database}, and one a restore holds is not opened for a client, whose
    * writes the swap of the restore would discard. A name being dropped is refused to every caller.
    * <p>
@@ -1750,7 +1766,7 @@ public class ArcadeDBServer {
       closedByCommand.remove(databaseName);
     }
 
-    notifyPlugins(databaseName, true);
+    notifyRegistered(databaseName, serverDatabase);
     return serverDatabase;
   }
 
@@ -1928,7 +1944,7 @@ public class ArcadeDBServer {
       closedByCommand.remove(databaseName);
     }
 
-    notifyPlugins(databaseName, true);
+    notifyRegistered(databaseName, serverDatabase);
     return serverDatabase;
   }
 
@@ -1981,8 +1997,8 @@ public class ArcadeDBServer {
    * {@link #databasesLock} as one step.
    * <p>
    * The caller holds {@code embedded} open and registered under {@code databaseName}: the control plane resolves it through
-   * {@link #getDatabase(String)} after taking the maintenance slot of the drop, and the startup restore does the same. That is
-   * what makes the hold safe to take without {@link #databasesLock}, see below.
+   * {@link #getDatabaseForOperator(String)} after taking the maintenance slot of the drop, and the startup restore does the same.
+   * That is what makes the hold safe to take without {@link #databasesLock}, see below.
    *
    * @throws ServerControlPlane.OperationInProgressException when the name is already being dropped, which the maintenance slot
    *                                                         does not allow either: a second drop is refused, never allowed to end
@@ -2029,7 +2045,36 @@ public class ArcadeDBServer {
     }
 
     if (removed != null)
-      notifyPlugins(databaseName, false);
+      notifyUnregistered(databaseName);
+  }
+
+  /**
+   * Tells the plugins, then the {@code /ws} change stream, that {@code database} was registered under {@code databaseName}: the
+   * stream of the name follows the instance registered under it (issue #10801). Same thread and same constraints as
+   * {@link #notifyPlugins}.
+   */
+  private void notifyRegistered(final String databaseName, final ServerDatabase database) {
+    notifyPlugins(databaseName, true);
+    final HttpServer http = httpServer;
+    if (http != null)
+      try {
+        http.getWebSocketEventBus().onDatabaseRegistered(databaseName, database);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on moving the change stream of database '%s' to its new instance", e,
+            databaseName);
+      }
+  }
+
+  /** The counterpart of {@link #notifyRegistered} for a database that left the registry. */
+  private void notifyUnregistered(final String databaseName) {
+    notifyPlugins(databaseName, false);
+    final HttpServer http = httpServer;
+    if (http != null)
+      try {
+        http.getWebSocketEventBus().onDatabaseUnregistered(databaseName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on stopping the change stream of database '%s'", e, databaseName);
+      }
   }
 
   /**
@@ -2377,7 +2422,7 @@ public class ArcadeDBServer {
         // interleave (issues #10234, #10388). A drop is refused to every caller: its files are being deleted, and nobody
         // has a use for the directory. A close and a restore are refused to a client only (HTTP, and every wire protocol
         // through getDatabaseForClient, issue #10533) - 'open database' and the restore itself resolve the name through the
-        // unflagged getDatabase(String).
+        // unflagged getDatabaseForOperator(String).
         if (beingDropped.contains(databaseName))
           throw new DatabaseNotAvailableException(
               "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted");
@@ -2486,7 +2531,7 @@ public class ArcadeDBServer {
     }
 
     if (loaded)
-      notifyPlugins(databaseName, true);
+      notifyRegistered(databaseName, db);
 
     return db;
   }
@@ -2560,7 +2605,7 @@ public class ArcadeDBServer {
                   f.getName());
               continue;
             }
-            getDatabase(f.getName());
+            getDatabaseForOperator(f.getName());
           }
       }
     }
@@ -2623,7 +2668,7 @@ public class ArcadeDBServer {
         if (!credentials.isEmpty())
           parseCredentials(dbName, credentials);
 
-        Database database = existsDatabase(dbName) ? getDatabase(dbName) : null;
+        Database database = existsDatabase(dbName) ? getDatabaseForOperator(dbName) : null;
 
         if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) == '{') {
           // PARSE IMPORTS
@@ -2657,7 +2702,7 @@ public class ArcadeDBServer {
               // The handle read at the top of this iteration names a database that no longer exists: the restore
               // dropped it and rebuilt it. A later command in the same '{...}' list must resolve it again rather
               // than reuse the dropped instance.
-              database = getDatabase(dbName);
+              database = getDatabaseForOperator(dbName);
               break;
 
             case "import":
@@ -2844,7 +2889,7 @@ public class ArcadeDBServer {
       // peers at boot with nothing in the log saying so is the #7389 failure mode. So a replicated database gets a
       // WARNING naming exactly what happened, even though the drop itself stays local.
       if (existsDatabase(databaseName)) {
-        final ServerDatabase existing = getDatabase(databaseName);
+        final ServerDatabase existing = getDatabaseForOperator(databaseName);
         if (existing.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase)
           LogManager.instance().log(this, Level.WARNING,
               "The startup 'restore:' command for database '%s' is dropping this node's copy ONLY: the rest of "
@@ -2878,7 +2923,7 @@ public class ArcadeDBServer {
         clazz.getMethod("restoreDatabase").invoke(restorer);
 
         progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
-        getDatabase(databaseName);
+        getDatabaseForOperator(databaseName);
       } catch (final InvocationTargetException e) {
         throw new CommandExecutionException("Error on restoring database", e.getTargetException());
       } catch (final ReflectiveOperationException e) {

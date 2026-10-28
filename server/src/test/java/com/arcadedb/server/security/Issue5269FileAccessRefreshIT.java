@@ -72,7 +72,7 @@ class Issue5269FileAccessRefreshIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "restrictedReader" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       // 'SecretType' is denied read by the group (empty access list). Its first bucket is registered at type creation.
       database.getSchema().createDocumentType("SecretType");
@@ -93,7 +93,7 @@ class Issue5269FileAccessRefreshIT {
           .as("reader must be denied on a bucket added to the type at runtime once the security map is refreshed")
           .isFalse();
     } finally {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       dropTypeIfExists(database, "SecretType");
       if (database.getSchema().existsBucket("SecretType_extra"))
         database.getSchema().dropBucket("SecretType_extra");
@@ -112,7 +112,7 @@ class Issue5269FileAccessRefreshIT {
 
     final AtomicInteger fallbackLines = new AtomicInteger();
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       database.getSchema().createDocumentType("MappedType");
 
       final ServerSecurityDatabaseUser dbu = SECURITY.getUser("reader2").getDatabaseUser(database);
@@ -130,7 +130,7 @@ class Issue5269FileAccessRefreshIT {
           .isEqualTo(1);
     } finally {
       LogManager.instance().setLogger(new DefaultLogger());
-      dropTypeIfExists(SERVER.getDatabase(DATABASE_NAME), "MappedType");
+      dropTypeIfExists(SERVER.getDatabaseForOperator(DATABASE_NAME), "MappedType");
       SECURITY.dropUser("reader2");
     }
   }

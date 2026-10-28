@@ -55,7 +55,7 @@ public class Issue10567RedisDatabaseOnDiskTest extends BaseRedisServerTest {
     try (final Jedis jedis = connect()) {
       assertThat(jedis.set(ON_DISK + ".k", "v")).isEqualTo("OK");
       assertThat(server.existsDatabase(ON_DISK)).as("the command opened the database").isTrue();
-      assertThat(server.getDatabase(ON_DISK).getGlobalVariableStore().get("k")).as("the value is the database's").isEqualTo("v");
+      assertThat(server.getDatabaseForOperator(ON_DISK).getGlobalVariableStore().get("k")).as("the value is the database's").isEqualTo("v");
       assertThat(jedis.get(ON_DISK + ".k")).isEqualTo("v");
     } finally {
       dropIfPresent(server);
@@ -69,7 +69,7 @@ public class Issue10567RedisDatabaseOnDiskTest extends BaseRedisServerTest {
     try (final Jedis jedis = connect()) {
       assertThat(jedis.sendCommand(Protocol.Command.SELECT, ON_DISK)).isEqualTo("OK".getBytes());
       assertThat(jedis.set("k", "selected")).isEqualTo("OK");
-      assertThat(server.getDatabase(ON_DISK).getGlobalVariableStore().get("k")).isEqualTo("selected");
+      assertThat(server.getDatabaseForOperator(ON_DISK).getGlobalVariableStore().get("k")).isEqualTo("selected");
     } finally {
       dropIfPresent(server);
     }
@@ -115,7 +115,7 @@ public class Issue10567RedisDatabaseOnDiskTest extends BaseRedisServerTest {
     onDiskNotOpen(server);
     try (final Jedis jedis = connect()) {
       assertThat(jedis.set(ON_DISK + ".k", "v")).isEqualTo("OK");
-      server.dropLocalDatabase(server.getDatabase(ON_DISK).getEmbedded(), ON_DISK);
+      server.dropLocalDatabase(server.getDatabaseForOperator(ON_DISK).getEmbedded(), ON_DISK);
       assertThat(jedis.set(ON_DISK + ".k", "plain")).isEqualTo("OK");
       assertThat(server.existsDatabase(ON_DISK)).as("a dropped database is not opened again").isFalse();
       assertThat(jedis.get(ON_DISK + ".k")).isEqualTo("plain");
@@ -162,7 +162,7 @@ public class Issue10567RedisDatabaseOnDiskTest extends BaseRedisServerTest {
 
   private static void dropIfPresent(final ArcadeDBServer server) {
     if (server.existsDatabase(ON_DISK))
-      server.dropLocalDatabase(server.getDatabase(ON_DISK).getEmbedded(), ON_DISK);
+      server.dropLocalDatabase(server.getDatabaseForOperator(ON_DISK).getEmbedded(), ON_DISK);
     FileUtils.deleteRecursively(databaseDirectory(server));
   }
 

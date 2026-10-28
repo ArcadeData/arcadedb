@@ -191,7 +191,7 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       try {
         // Unwraps to the LocalDatabase under the HA wrapper (same pattern as #4144) and fingerprints the SETTLED copy
         // (issue #8843): the same reading the state machine and the election take of their own state.
-        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName),
+        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabaseForOperator(dbName),
             ArcadeStateMachine.settleBudget(settleDeadline));
         if (local == null)
           continue;

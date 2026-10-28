@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -46,6 +47,18 @@ final public class DatabaseEventWatcherThread extends Thread {
         .registerListener((AfterRecordCreateListener) listener)
         .registerListener((AfterRecordUpdateListener) listener)
         .registerListener((AfterRecordDeleteListener) listener);
+  }
+
+  /**
+   * Whether this watcher listens on {@code candidate}: the same embedded instance, whatever wraps it. The HA plugin re-wraps a
+   * registered database without opening a new one, and its listeners stay where they are (issue #10801).
+   */
+  public boolean isWatching(final DatabaseInternal candidate) {
+    return embeddedOf(database) == candidate.getEmbedded();
+  }
+
+  private static Database embeddedOf(final Database database) {
+    return database instanceof DatabaseInternal internal ? internal.getEmbedded() : database;
   }
 
   public void push(final ChangeEvent event) {

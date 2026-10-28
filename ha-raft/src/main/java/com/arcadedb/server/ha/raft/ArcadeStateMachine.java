@@ -3893,7 +3893,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new DatabaseIsClosedException(
             "Database '" + databaseName + "' is closed and this node is shutting down, so it is not reopened to apply a "
                 + "Raft entry; the entry is left for the replay on restart");
-      return server.getDatabase(databaseName);
+      return server.getDatabaseForOperator(databaseName);
     }
   }
 
@@ -5589,7 +5589,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "install and this node is shutting down, so it is not reopened; the entry is left for the replay on "
                 + "restart");
           try {
-            server.getDatabase(dbName);
+            server.getDatabaseForOperator(dbName);
           } catch (final Exception reopenEx) {
             // Deliberate last resort: the database is both unusable and unreopenable, so there is nothing
             // safe to serve. Unlike the transient leader-unavailable case above (local copy intact, retried

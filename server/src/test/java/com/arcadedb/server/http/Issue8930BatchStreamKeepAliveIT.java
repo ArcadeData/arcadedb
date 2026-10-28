@@ -61,7 +61,7 @@ public class Issue8930BatchStreamKeepAliveIT extends BaseGraphServerTest {
   void theSilentFinalizationOfABatchIsCoveredByKeepAliveNewlines() throws Exception {
     // GraphBatch.close() rewrites the head chunk pointers of the vertices after the last progress line: stall exactly
     // there, the way connecting the deferred incoming edges does on a large load
-    getServer(0).getDatabase(getDatabaseName()).getSchema().getType("V8930").getEvents()
+    getServer(0).getDatabaseForOperator(getDatabaseName()).getSchema().getType("V8930").getEvents()
         .registerListener((BeforeRecordUpdateListener) record -> {
           if (armed)
             try {

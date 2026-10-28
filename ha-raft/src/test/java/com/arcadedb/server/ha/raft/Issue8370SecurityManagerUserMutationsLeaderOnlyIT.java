@@ -115,13 +115,13 @@ class Issue8370SecurityManagerUserMutationsLeaderOnlyIT extends BaseRaftHATest {
     final String define = "DEFINE FUNCTION lib8370.mint \"database.getSecurity().createUser('" + user + "', '" + PASSWORD
         + "'); return 1;\" LANGUAGE js";
     // Defined once, on the leader: DEFINE FUNCTION replicates like any other DDL since issue #8404.
-    getServer(leader).getDatabase(getDatabaseName()).command("sql", define);
+    getServer(leader).getDatabaseForOperator(getDatabaseName()).command("sql", define);
     await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).untilAsserted(() ->
-        assertThat(getServer(follower).getDatabase(getDatabaseName()).getSchema().hasFunctionLibrary("lib8370"))
+        assertThat(getServer(follower).getDatabaseForOperator(getDatabaseName()).getSchema().hasFunctionLibrary("lib8370"))
             .as("the function must reach the follower").isTrue());
 
     assertThatThrownBy(() -> {
-      try (final ResultSet rs = getServer(follower).getDatabase(getDatabaseName())
+      try (final ResultSet rs = getServer(follower).getDatabaseForOperator(getDatabaseName())
           .query("sql", "SELECT `lib8370.mint`() AS r")) {
         rs.next();
       }
@@ -133,7 +133,7 @@ class Issue8370SecurityManagerUserMutationsLeaderOnlyIT extends BaseRaftHATest {
           .isFalse();
 
     // Control: the same host code on the leader succeeds and replicates.
-    try (final ResultSet rs = getServer(leader).getDatabase(getDatabaseName())
+    try (final ResultSet rs = getServer(leader).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT `lib8370.mint`() AS r")) {
       rs.next();
     }

@@ -55,7 +55,7 @@ class Issue8363ReplacedDatabaseRefusesClientsIT extends BaseRaftHATest {
     final String query = "/api/v1/query/" + getDatabaseName() + "/sql/select%20count(*)%20from%20V1";
     assertThat(get(follower, query).status).as("precondition: the follower serves the database").isEqualTo(200);
 
-    final Path followerCopy = Path.of(getServer(follower).getDatabase(getDatabaseName()).getDatabasePath());
+    final Path followerCopy = Path.of(getServer(follower).getDatabaseForOperator(getDatabaseName()).getDatabasePath());
     SnapshotInstaller.markInstallInFlightForTesting(followerCopy);
     try {
       final Response refused = get(follower, query);

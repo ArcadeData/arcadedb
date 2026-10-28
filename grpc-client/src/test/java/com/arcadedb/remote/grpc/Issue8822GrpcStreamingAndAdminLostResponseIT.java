@@ -244,7 +244,7 @@ class Issue8822GrpcStreamingAndAdminLostResponseIT extends BaseGrpcClientServerT
       assertThat(getServer(0).existsDatabase(name)).isFalse();
     } finally {
       if (getServer(0).existsDatabase(name))
-        getServer(0).getDatabase(name).getEmbedded().drop();
+        getServer(0).getDatabaseForOperator(name).getEmbedded().drop();
     }
   }
 
@@ -262,7 +262,7 @@ class Issue8822GrpcStreamingAndAdminLostResponseIT extends BaseGrpcClientServerT
       assertThat(getServer(0).existsDatabase(name)).isTrue();
     } finally {
       if (getServer(0).existsDatabase(name))
-        getServer(0).getDatabase(name).getEmbedded().drop();
+        getServer(0).getDatabaseForOperator(name).getEmbedded().drop();
       source.delete();
     }
   }

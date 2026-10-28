@@ -396,7 +396,9 @@ public class ArcadeGraphManager implements GraphManager {
     try {
       // Create ArcadeGraph wrapper for the database.
       // Use openShared so that ArcadeGraph.close() does not close the server-managed database.
-      final ArcadeGraph arcadeGraph = ArcadeGraph.openShared(serverInstance.getDatabase(databaseName));
+      // The graph a Gremlin client names is resolved for the client, like every other protocol (issue #10802): a name an operator
+      // has taken away (a 'close database', a restore in progress) is not opened for it
+      final ArcadeGraph arcadeGraph = ArcadeGraph.openShared(serverInstance.getDatabaseForClient(databaseName));
       graphs.put(databaseName, arcadeGraph);
       traversalSources.put(databaseName, arcadeGraph.traversal());
       syncScriptGlobal(databaseName);

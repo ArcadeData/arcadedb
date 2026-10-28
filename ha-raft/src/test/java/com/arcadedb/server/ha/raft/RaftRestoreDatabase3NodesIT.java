@@ -112,7 +112,7 @@ class RaftRestoreDatabase3NodesIT extends BaseRaftHATest {
     // Step C: take a backup via the SQL `backup database` command on the leader
     final int leader = findLeaderIndex();
     assertThat(leader).isGreaterThanOrEqualTo(0);
-    final Database leaderDb = getServer(leader).getDatabase(DB_NAME);
+    final Database leaderDb = getServer(leader).getDatabaseForOperator(DB_NAME);
     final String backupFileName;
     try (final ResultSet result = leaderDb.command("sql", "backup database")) {
       assertThat(result.hasNext()).isTrue();
@@ -149,7 +149,7 @@ class RaftRestoreDatabase3NodesIT extends BaseRaftHATest {
     // Step G: assert the restored data is present and identical on every peer
     for (int i = 0; i < getServerCount(); i++) {
       waitForReplicationIsCompleted(i);
-      final Database db = getServer(i).getDatabase(DB_NAME);
+      final Database db = getServer(i).getDatabaseForOperator(DB_NAME);
       final long count = db.countType("RaftRestoreVertex", true);
       assertThat(count).as("server %d restored vertex count", i).isEqualTo(50);
     }

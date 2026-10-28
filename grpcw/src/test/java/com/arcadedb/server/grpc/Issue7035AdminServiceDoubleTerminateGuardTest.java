@@ -60,7 +60,7 @@ public class Issue7035AdminServiceDoubleTerminateGuardTest extends BaseGraphServ
   void dropCreatedDatabases() {
     for (final String name : new String[] { CREATED_DATABASE, DROPPED_DATABASE })
       if (getServer(0).existsDatabase(name)) {
-        getServer(0).getDatabase(name).getEmbedded().drop();
+        getServer(0).getDatabaseForOperator(name).getEmbedded().drop();
         getServer(0).removeDatabase(name);
       }
   }

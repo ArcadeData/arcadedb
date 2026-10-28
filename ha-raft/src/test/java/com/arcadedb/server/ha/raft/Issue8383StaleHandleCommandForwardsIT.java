@@ -83,7 +83,7 @@ class Issue8383StaleHandleCommandForwardsIT extends BaseRaftHATest {
     final AtomicReference<ServerDatabase> staleHandle = new AtomicReference<>();
     RaftHAPlugin.TEST_BEFORE_START_HOOK = starting -> {
       if (starting == server)
-        staleHandle.set(starting.getDatabase(getDatabaseName()));
+        staleHandle.set(starting.getDatabaseForOperator(getDatabaseName()));
     };
     try {
       startServer(restarted);
@@ -94,7 +94,7 @@ class Issue8383StaleHandleCommandForwardsIT extends BaseRaftHATest {
     final ServerDatabase handle = staleHandle.get();
     assertThat(handle).as("the handle must have been resolved while node %d was held before the wrap", restarted).isNotNull();
     assertThat(handle).as("the registry must hold a different, wrapped handle by now")
-        .isNotSameAs(server.getDatabase(getDatabaseName()));
+        .isNotSameAs(server.getDatabaseForOperator(getDatabaseName()));
     waitForAllServers();
 
     // The restarted node can win an election on its way back; hand leadership off, since what is tested is a follower.

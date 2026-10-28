@@ -52,7 +52,7 @@ class Issue6795InsertBidirectionalExternalTransactionIT extends BaseGraphServerT
   }
 
   private long countRows(final String typeName) {
-    return getServer(0).getDatabase(getDatabaseName())
+    return getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
   }
 
@@ -64,7 +64,7 @@ class Issue6795InsertBidirectionalExternalTransactionIT extends BaseGraphServerT
   @Test
   void rowsSentViaInsertBidirectionalUnderExternalTransactionDoNotSurviveRollback() throws Exception {
     final String typeName = "Issue6795BidiExtTxRollback_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -118,7 +118,7 @@ class Issue6795InsertBidirectionalExternalTransactionIT extends BaseGraphServerT
           .isZero();
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -129,7 +129,7 @@ class Issue6795InsertBidirectionalExternalTransactionIT extends BaseGraphServerT
   @Test
   void rowsSentViaInsertBidirectionalUnderExternalTransactionPersistOnCommit() throws Exception {
     final String typeName = "Issue6795BidiExtTxCommit_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -177,7 +177,7 @@ class Issue6795InsertBidirectionalExternalTransactionIT extends BaseGraphServerT
       assertThat(countRows(typeName)).isEqualTo(9L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 

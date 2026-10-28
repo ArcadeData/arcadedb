@@ -1121,7 +1121,7 @@ public class ServerControlPlane {
       if (!server.existsDatabase(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
 
-      dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+      dropDatabaseClusterWide(server.getDatabaseForOperator(databaseName), databaseName);
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.DROP);
     }
@@ -1145,7 +1145,7 @@ public class ServerControlPlane {
   public void openDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    server.getDatabase(databaseName);
+    server.getDatabaseForOperator(databaseName);
   }
 
   /**
@@ -1170,7 +1170,7 @@ public class ServerControlPlane {
 
     beginExclusive(databaseName, Operation.CLOSE);
     try {
-      final ServerDatabase database = server.getDatabase(databaseName);
+      final ServerDatabase database = server.getDatabaseForOperator(databaseName);
       // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234). MARKED BEFORE THE CLOSE, SO NO
       // REQUEST REOPENS IT WHILE IT CLOSES, AND DEREGISTERED TOGETHER WITH ITS MARK, SO NONE DOES BETWEEN THE TWO
       server.markClosedByCommand(database.getName());
@@ -1193,7 +1193,7 @@ public class ServerControlPlane {
   public void alignDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    final Database database = server.getDatabase(databaseName);
+    final Database database = server.getDatabaseForOperator(databaseName);
 
 
     try (final var rs = database.command("sql", "align database")) {
@@ -1208,7 +1208,7 @@ public class ServerControlPlane {
   public void setDatabaseSetting(final String databaseName, final String key, final String value) throws IOException {
     requireDatabaseName(databaseName);
 
-    final DatabaseInternal database = server.getDatabase(databaseName);
+    final DatabaseInternal database = server.getDatabaseForOperator(databaseName);
     // Under Raft HA the save replicates the configuration and can be refused or fail to commit: the setting must not
     // then stay in force on this node alone (issue #9763), so the value it replaced is put back. Only that setting, so
     // a change to another one that lands meanwhile is kept. The value replaced is captured and the new one stored in one
@@ -1543,7 +1543,7 @@ public class ServerControlPlane {
     final ServerSecurity security = server.getSecurity();
     for (final String databaseName : server.getDatabaseNames()) {
       if ("*".equals(database) || databaseName.equals(database))
-        security.updateSchema((DatabaseInternal) server.getDatabase(databaseName));
+        security.updateSchema((DatabaseInternal) server.getDatabaseForOperator(databaseName));
     }
   }
 
@@ -1992,7 +1992,7 @@ public class ServerControlPlane {
     final Path dbBackupPath = resolveBackupDirectory().resolve(databaseName);
     try {
       // Perform backup using reflection (same as BackupTask)
-      final Database database = server.getDatabase(databaseName);
+      final Database database = server.getDatabaseForOperator(databaseName);
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
 
       final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
@@ -2644,7 +2644,7 @@ public class ServerControlPlane {
 
       // A no-op outside HA, and minutes inside it: forceSnapshot makes every replica pull the restored files.
       progress.onProgress(RESTORE_STEP_REPLICATE, 3, RESTORE_STEPS, 0, -1);
-      replicateRestoredDatabase(server.getDatabase(databaseName), databaseName);
+      replicateRestoredDatabase(server.getDatabaseForOperator(databaseName), databaseName);
       // Completion is the transport's to announce, not this method's: HTTP writes a 'completed' SSE
       // frame, gRPC a final message with completed=true, and a synchronous caller just returns.
     } finally {
@@ -2745,7 +2745,7 @@ public class ServerControlPlane {
    * every peer including this one, rather than performed locally behind the cluster's back.
    */
   private void dropDatabaseForRestore(final String databaseName) {
-    dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+    dropDatabaseClusterWide(server.getDatabaseForOperator(databaseName), databaseName);
   }
 
   /**

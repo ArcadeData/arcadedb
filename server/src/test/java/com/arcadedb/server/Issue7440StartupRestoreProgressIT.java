@@ -204,7 +204,7 @@ class Issue7440StartupRestoreProgressIT extends BaseGraphServerTest {
     });
 
     // The restore actually happened, and the operation did not outlive it.
-    final Database database = getServer(0).getDatabase(RESTORED_DB);
+    final Database database = getServer(0).getDatabaseForOperator(RESTORED_DB);
     long restored = 0;
     for (int t = 0; t < TYPE_COUNT; t++)
       restored += database.countType(typeName(t), true);

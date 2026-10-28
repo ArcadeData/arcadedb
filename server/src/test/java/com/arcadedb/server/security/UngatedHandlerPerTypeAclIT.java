@@ -101,7 +101,7 @@ class UngatedHandlerPerTypeAclIT extends BaseGraphServerTest {
 
     createScopedUser(0);
     try {
-      getServer(0).getDatabase(getDatabaseName()).getEmbedded().close();
+      getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded().close();
       getServer(0).removeDatabase(getDatabaseName());
       assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
 

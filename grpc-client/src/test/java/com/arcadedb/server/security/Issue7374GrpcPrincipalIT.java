@@ -149,7 +149,7 @@ class Issue7374GrpcPrincipalIT extends BaseGrpcClientServerTest {
    * listening pushes this one up.
    */
   private void sql(final String statement) {
-    getServer(0).getDatabase(getDatabaseName()).command("sql", statement).close();
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", statement).close();
   }
 
   private void connect(final String user, final String password) {

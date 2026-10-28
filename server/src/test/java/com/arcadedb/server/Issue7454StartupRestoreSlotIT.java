@@ -106,7 +106,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     try {
       for (final String databaseName : databasesToDrop)
         if (getServer(0) != null && getServer(0).existsDatabase(databaseName))
-          getServer(0).getDatabase(databaseName).getEmbedded().drop();
+          getServer(0).getDatabaseForOperator(databaseName).getEmbedded().drop();
     } finally {
       databasesToDrop.clear();
       try {
@@ -181,7 +181,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
 
     assertThat(getServer(0).existsDatabase(target))
         .as("the database a refused startup restore would have replaced must still exist").isTrue();
-    final Database database = getServer(0).getDatabase(target);
+    final Database database = getServer(0).getDatabaseForOperator(target);
     assertThat(database.getSchema().existsType("Marker7454"))
         .as("the database must be the untouched original, not a restored one").isTrue();
     assertThat(database.countType("Marker7454", false)).isEqualTo(1);
@@ -287,7 +287,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
         databaseDirectory() + File.separator + target);
 
     assertReservable(target);
-    assertThat(getServer(0).getDatabase(target).countType(RESTORED_TYPE, false)).isEqualTo(DOCUMENT_COUNT);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(RESTORED_TYPE, false)).isEqualTo(DOCUMENT_COUNT);
   }
 
   @Test
@@ -318,7 +318,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     getServer(0).restoreDatabaseFromStartupCommand(target, localArchiveUrl(),
         databaseDirectory() + File.separator + target);
 
-    final Database database = getServer(0).getDatabase(target);
+    final Database database = getServer(0).getDatabaseForOperator(target);
     assertThat(database.getSchema().existsType("Marker7454"))
         .as("the database the startup restore replaced was not dropped").isFalse();
     assertThat(database.countType(RESTORED_TYPE, false)).isEqualTo(DOCUMENT_COUNT);
@@ -369,7 +369,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     assertThat(restorer.isAlive()).as("the startup restore did not return after the backup released").isFalse();
     assertThat(restoreFailure.get()).as("the startup restore must succeed once the backup releases the slot").isNull();
     assertThat(waited).as("the startup restore never waited for the backup holding the slot").isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(RESTORED_TYPE, false)).isEqualTo(DOCUMENT_COUNT);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(RESTORED_TYPE, false)).isEqualTo(DOCUMENT_COUNT);
     assertReservable(target);
   }
 
@@ -402,7 +402,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     stopwatch.assertGaveUpWithin(60_000, "a bounded 300ms slot wait from one that never gives up");
 
     assertThat(getServer(0).existsDatabase(target)).isTrue();
-    assertThat(getServer(0).getDatabase(target).getSchema().existsType("Marker7454"))
+    assertThat(getServer(0).getDatabaseForOperator(target).getSchema().existsType("Marker7454"))
         .as("a startup restore that timed out waiting must leave the original database untouched").isTrue();
     assertThat(OperationProgressRegistry.instance().getOperations(target))
         .as("a startup restore that timed out waiting must not publish an operation").isEmpty();
@@ -453,7 +453,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
         .isInstanceOf(ServerControlPlane.OperationInProgressException.class)
         .hasMessage(MaintenanceCoordinator.refusal(Operation.RESTORE, target, Operation.BACKUP));
     assertThat(interruptFlagKept.get()).as("the interrupt must not be swallowed").isTrue();
-    assertThat(getServer(0).getDatabase(target).getSchema().existsType("Marker7454"))
+    assertThat(getServer(0).getDatabaseForOperator(target).getSchema().existsType("Marker7454"))
         .as("an interrupted startup restore must leave the original database untouched").isTrue();
     // The waiter registration must be gone too: with it leaked, the guard would still refuse this export.
     assertThat(coordinator.begin(target, Operation.EXPORT))

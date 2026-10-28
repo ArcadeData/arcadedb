@@ -65,7 +65,7 @@ class RaftServerDatabaseAlignIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
 
-    final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database database = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     assertThatThrownBy(() -> database.command("sql", "align database"))
         .isInstanceOf(UnsupportedOperationException.class)
         .hasMessageContaining("Align Database not supported");
@@ -77,7 +77,7 @@ class RaftServerDatabaseAlignIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
 
-    final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database database = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     database.transaction(() -> database.iterateType(EDGE2_TYPE_NAME, true).forEachRemaining(record -> {
       // Just iterate - confirm the edge type is visible and readable on the leader
     }));

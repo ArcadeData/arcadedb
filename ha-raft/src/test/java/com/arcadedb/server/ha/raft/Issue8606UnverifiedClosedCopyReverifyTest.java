@@ -172,7 +172,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
       server.setHA(null);
       try {
         if (server.existsDatabase(DB_NAME))
-          ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+          ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }
@@ -190,7 +190,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
     assertThat(Files.exists(marker())).as("the install replaced the copy and its mark").isFalse();
     assertThat(leaderMissing()).isFalse();
-    assertThat(server.getDatabase(DB_NAME).countType("Node", true)).as("the follower serves the leader's copy")
+    assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true)).as("the follower serves the leader's copy")
         .isEqualTo(SNAPSHOT_COUNT);
     assertThat(failures()).isZero();
   }
@@ -464,7 +464,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
   /** The #8589 path that writes the mark: a full resync that finds the leader not holding a closed copy. */
   private void markUnverifiedThroughAResync() {
-    final ServerDatabase database = server.getDatabase(DB_NAME);
+    final ServerDatabase database = server.getDatabaseForOperator(DB_NAME);
     database.getEmbedded().close();
     server.removeDatabase(DB_NAME);
     try {
@@ -519,7 +519,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   }
 
   private void assertRefusedOnThisFollower() {
-    assertThatThrownBy(() -> server.getDatabase(DB_NAME))
+    assertThatThrownBy(() -> server.getDatabaseForOperator(DB_NAME))
         .isInstanceOf(DatabaseNotAvailableException.class)
         .hasMessageContaining("could not verify");
     assertThat(server.existsDatabase(DB_NAME)).isFalse();

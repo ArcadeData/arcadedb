@@ -298,7 +298,7 @@ class Issue7381BatchContractIT extends BaseGraphServerTest {
    * count that went to a different one would answer for a different build.
    */
   private long countVertices(final int fromId, final int toId) {
-    try (final ResultSet rs = getServer(0).getDatabase(getDatabaseName())
+    try (final ResultSet rs = getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) as total FROM V1 WHERE id >= ? AND id < ?", fromId, toId)) {
       return ((Number) rs.next().getProperty("total")).longValue();
     }

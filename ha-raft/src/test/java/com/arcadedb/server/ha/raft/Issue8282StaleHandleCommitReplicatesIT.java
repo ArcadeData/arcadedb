@@ -80,7 +80,7 @@ class Issue8282StaleHandleCommitReplicatesIT extends BaseRaftHATest {
     final AtomicReference<ServerDatabase> staleHandle = new AtomicReference<>();
     RaftHAPlugin.TEST_BEFORE_START_HOOK = starting -> {
       if (starting == server)
-        staleHandle.set(starting.getDatabase(getDatabaseName()));
+        staleHandle.set(starting.getDatabaseForOperator(getDatabaseName()));
     };
     try {
       startServer(restarted);
@@ -91,7 +91,7 @@ class Issue8282StaleHandleCommitReplicatesIT extends BaseRaftHATest {
     final ServerDatabase handle = staleHandle.get();
     assertThat(handle).as("the handle must have been resolved while node %d was held before the wrap", restarted).isNotNull();
     assertThat(handle).as("the registry must hold a different, wrapped handle by now")
-        .isNotSameAs(server.getDatabase(getDatabaseName()));
+        .isNotSameAs(server.getDatabaseForOperator(getDatabaseName()));
     waitForAllServers();
 
     // What a Postgres connection opened in the window does next, on its own thread, for its whole lifetime.
