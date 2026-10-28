@@ -32,6 +32,7 @@ import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
+import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -236,6 +237,13 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
       close();
       fallback = null;
       final DatabaseInternal db = ctx.getDatabase();
+      final ColumnarStats stats = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().getStats();
+      openIndex(ctx, db, stats);
+      if (fallback != null)
+        stats.queryFilterFallback();
+    }
+
+    private void openIndex(final CommandContext ctx, final DatabaseInternal db, final ColumnarStats stats) {
       final TypeIndex index = db.getSchema().existsType(typeName) ? keyIndex(db.getSchema().getType(typeName), property) : null;
       if (index == null || !index.isReadyForQueries()) {
         fallback = "index not ready";
@@ -253,6 +261,7 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
 
       final FacetMemoryBudget budget = FacetMemoryBudget.instance();
       final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
+      final Runnable countWait = () -> stats.queryBudgetWaits(1);
       final RidHashSet found = new RidHashSet();
       long reserved = 0;
       for (final Object key : keys) {
@@ -263,7 +272,7 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
             continue;
           // charged as the set grows, at the set's cost per RID (its free slots included), step by step
           while ((long) found.size() * RidHashSet.BYTES_PER_ENTRY > reserved) {
-            final FacetMemoryBudget.Reservation reservation = budget.reserve(STEP_BYTES, budgetWaitMs);
+            final FacetMemoryBudget.Reservation reservation = budget.reserve(STEP_BYTES, budgetWaitMs, countWait);
             if (reservation == null) {
               // refused: the rows answer (exact, slower), the facets stay available
               releaseReservations();

@@ -65,7 +65,7 @@ public final class FacetMemoryBudget {
       return bytes;
     }
 
-    /** Whether the grant was not immediate (the caller counts it in {@code query.budget.waits}). */
+    /** Whether the grant was not immediate. A caller that counts waits uses the {@code onWait} hook of {@link #reserve(long, long, Runnable)}, which also sees a refusal. */
     public boolean waited() {
       return waited;
     }
@@ -97,6 +97,17 @@ public final class FacetMemoryBudget {
    *     was interrupted (its flag is kept)
    */
   public Reservation reserve(final long bytes, final long maxWaitMs) {
+    return reserve(bytes, maxWaitMs, null);
+  }
+
+  /**
+   * As {@link #reserve(long, long)}, telling the caller about a wait it would otherwise only see when the grant succeeds.
+   *
+   * @param onWait called once when the request was not granted at once and the thread is about to wait, whatever the wait ends in
+   *               (a grant, a timeout or an interrupt): a refusal after a wait is as much a sign of contention as a late grant. Null
+   *               to ignore. Never called for a request refused without waiting.
+   */
+  public Reservation reserve(final long bytes, final long maxWaitMs, final Runnable onWait) {
     final long kib = toKib(bytes);
     if (kib > capacityKib)
       return null;
@@ -105,8 +116,12 @@ public final class FacetMemoryBudget {
       // the timed form honors the fair queue; the untimed tryAcquire would barge past waiters
       if (semaphore.tryAcquire(permits, 0, TimeUnit.MILLISECONDS))
         return new Reservation(permits, bytes, false);
-      if (maxWaitMs > 0 && semaphore.tryAcquire(permits, maxWaitMs, TimeUnit.MILLISECONDS))
-        return new Reservation(permits, bytes, true);
+      if (maxWaitMs > 0) {
+        if (onWait != null)
+          onWait.run();
+        if (semaphore.tryAcquire(permits, maxWaitMs, TimeUnit.MILLISECONDS))
+          return new Reservation(permits, bytes, true);
+      }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }

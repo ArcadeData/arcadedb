@@ -25,8 +25,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * The {@link FacetMemoryBudget} reservations of one collector (D13): every byte a counter holds is reserved here before it is
  * allocated. All the waiting reservations of the collector share one wait window: the first one starts the
- * {@code arcadedb.columnar.queryBudgetWait} deadline, every later one (a top-up) waits only for its remainder, so the facet's latency
- * is bounded by one wait however many times it grows.
+ * {@code arcadedb.columnar.queryBudgetWait} deadline, every later one (a top-up) waits only for its remainder, so the collector's latency
+ * is bounded by one wait however many times it grows. A facet over N declaring types has N collectors, each with its own window.
  * <p>
  * Not thread safe: a collector is driven by one query thread.
  */
@@ -38,6 +38,7 @@ final class CollectorReservations {
   private       boolean                             waitStarted;
   private       long                                bytes;
   private       int                                 waits;
+  private final Runnable                           countWait = () -> waits++;
 
   /** @param budgetWaitMs the longest the collector waits for the budget, all its reservations together */
   CollectorReservations(final long budgetWaitMs) {
@@ -52,12 +53,10 @@ final class CollectorReservations {
    * @return the granted reservation, null when the budget refused
    */
   FacetMemoryBudget.Reservation reserve(final long bytes, final boolean wait) {
-    final FacetMemoryBudget.Reservation granted = FacetMemoryBudget.instance().reserve(bytes, wait ? remainingWaitMs() : 0);
+    final FacetMemoryBudget.Reservation granted = FacetMemoryBudget.instance().reserve(bytes, wait ? remainingWaitMs() : 0, countWait);
     if (granted != null) {
       reservations.add(granted);
       this.bytes += granted.bytes();
-      if (granted.waited())
-        waits++;
     }
     return granted;
   }
@@ -67,7 +66,7 @@ final class CollectorReservations {
     return bytes;
   }
 
-  /** The grants that were not immediate. */
+  /** The reservations that had to wait, whether the wait ended in a grant or a refusal. */
   int waits() {
     return waits;
   }

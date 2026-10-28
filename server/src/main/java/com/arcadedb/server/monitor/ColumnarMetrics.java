@@ -55,7 +55,8 @@ import java.util.logging.Level;
  * <p>
  * Every series a database can ever report exists from the first refresh: the type and property of each COLUMNAR index give the
  * expected series (with all rebuild reasons), and any other cell the stats hold is added too (a subtype of a hierarchy index).
- * A dashboard can alert on {@code increase()} without waiting for the first event to create the series.
+ * A database that never had a COLUMNAR index has no series at all, the query counters included (its FACETS queries still scan and count,
+ * but nothing is bound for it until the first index exists). A dashboard can alert on {@code increase()} without waiting for the first event to create the series.
  * <p>
  * Function meters hold their observed object weakly, so each database's {@code ColumnarStats} is kept strongly here until the
  * database goes away. A refresh every {@value #REFRESH_SECONDS} s (one daemon thread, as {@link HAReplicationMetrics}) registers the
@@ -77,6 +78,10 @@ public final class ColumnarMetrics implements AutoCloseable {
   private static final String[] TYPE_KINDS = { "apply.pages", "apply.placeholders.resolved", "flush.count", "merge.count",
       "apply.records.reread", "apply.unreadable", "rebuild.pages.reused", "flush.duration", "merge.duration", "apply.lag.ms",
       "overlay.rows", "segments", "segments.dead.ratio", "files.open" };
+
+  /** The FACETS query counters, database-wide: no type, property or reason. */
+  private static final String[] QUERY_KINDS = { "query.patched", "query.budget.waits", "query.patch.overflows", "query.fallback.scans",
+      "query.filter.fallbacks" };
 
   private static final String[] PROPERTY_KINDS = { "dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
       "dictionary.size", "cardinality.exceeded" };
@@ -213,6 +218,8 @@ public final class ColumnarMetrics implements AutoCloseable {
         bind(database, b, "rebuilds", type, null, reason);
     }
     bind(database, b, "recovery.pages", null, null, null);
+    for (final String kind : QUERY_KINDS)
+      bind(database, b, kind, null, null, null);
   }
 
   private void bind(final String database, final Bound b, final String kind, final String type, final String property,
@@ -238,6 +245,21 @@ public final class ColumnarMetrics implements AutoCloseable {
     case "flush.count" -> counter(b, name, tags, "Overlay flushes to segments", s -> s.flushCount(type));
     case "merge.count" -> counter(b, name, tags, "Segment merges", s -> s.mergeCount(type));
     case "recovery.pages" -> counter(b, name, tags, "Pages taken back from the recovery set at open", ColumnarStats::recoveryPagesCount);
+    case "query.patched" ->
+        counter(b, name, tags, "Records of FACETS queries read from the record itself to correct a lagging projection",
+            ColumnarStats::queryPatchedCount);
+    case "query.budget.waits" ->
+        counter(b, name, tags, "FACETS memory budget reservations that had to wait, whether granted late or finally refused",
+            ColumnarStats::queryBudgetWaitsCount);
+    case "query.patch.overflows" ->
+        counter(b, name, tags, "FACETS queries whose patch set exceeded the patch budget; the answer can still be exact, "
+            + "when the caller's own transaction wrote the records and the bucket was scanned instead", ColumnarStats::queryPatchOverflowsCount);
+    case "query.fallback.scans" ->
+        counter(b, name, tags, "FACETS queries that scanned records because the projection could not answer a bucket",
+            ColumnarStats::queryFallbackScansCount);
+    case "query.filter.fallbacks" ->
+        counter(b, name, tags, "INDEX facet FILTER evaluators that answered from the rows instead of their RID set",
+            ColumnarStats::queryFilterFallbacksCount);
     case "apply.records.reread" ->
         counter(b, name, tags, "Slots re-read by apply passes; over apply.pages it is the re-read amplification",
             s -> s.recordsRereadCount(type));

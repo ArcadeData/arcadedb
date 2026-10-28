@@ -422,7 +422,8 @@ public enum GlobalConfiguration {
 
   COLUMNAR_QUERY_BUDGET_WAIT("arcadedb.columnar.queryBudgetWait", SCOPE.SERVER,
       "Milliseconds a FACETS query waits for counting memory (see arcadedb.columnar.queryMemoryBudget) before the facet is reported "
-          + "as unavailable. Default is 5000", Long.class, 5000L),
+          + "as unavailable. The window is per collector: a facet that spans N declaring types has N collectors and can wait up to "
+          + "N windows in all. Default is 5000", Long.class, 5000L),
 
   COLUMNAR_TOP_MAX("arcadedb.columnar.topMax", SCOPE.SERVER,
       "Maximum value accepted by the TOP option of a FACETS clause. A larger value is a parse error. Default is 1000",

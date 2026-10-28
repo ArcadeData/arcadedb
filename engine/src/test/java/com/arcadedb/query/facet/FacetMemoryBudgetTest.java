@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,6 +79,26 @@ class FacetMemoryBudgetTest {
   void refusesAboveCapacityWithoutWaiting() {
     // returns at once: a wait of a minute would hit the @Timeout otherwise
     assertThat(new FacetMemoryBudget(1024).reserve(4096, 60_000)).isNull();
+  }
+
+  @Test
+  @Timeout(30)
+  void reportsAWaitEvenWhenItEndsRefused() {
+    final FacetMemoryBudget b = new FacetMemoryBudget(1 << 20);
+    final AtomicInteger waits = new AtomicInteger();
+    try (final FacetMemoryBudget.Reservation immediate = b.reserve(512 * 1024, 0, waits::incrementAndGet)) {
+      assertThat(immediate).isNotNull();
+      assertThat(waits.get()).as("a grant at once is not a wait").isZero();
+    }
+    try (final FacetMemoryBudget.Reservation all = b.reserve(1 << 20, 0, waits::incrementAndGet)) {
+      assertThat(all).isNotNull();
+      assertThat(b.reserve(1024, 0, waits::incrementAndGet)).as("refused without waiting").isNull();
+      assertThat(waits.get()).as("a refusal without a wait is not a wait").isZero();
+      assertThat(b.reserve(1024, 20, waits::incrementAndGet)).as("refused after waiting").isNull();
+      assertThat(waits.get()).as("waited, then refused").isEqualTo(1);
+    }
+    assertThat(b.reserve(1024, 20, waits::incrementAndGet)).isNotNull().satisfies(FacetMemoryBudget.Reservation::close);
+    assertThat(waits.get()).isEqualTo(1);
   }
 
   @Test

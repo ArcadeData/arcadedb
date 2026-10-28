@@ -62,6 +62,10 @@ import java.util.Map;
  * from their records by {@link FacetPatcher}, once per record for every facet. Above {@code arcadedb.columnar.patchBudget} positions
  * in all nothing is patched and the answer is not exact, except for the buckets the caller's transaction wrote: they are scanned for
  * every facet.
+ * <p>
+ * Waiting for counting memory is bounded per collector (one {@code arcadedb.columnar.queryBudgetWait} window, see
+ * {@link CollectorReservations}), and a facet that spans N declaring types has N collectors: it can wait up to N windows in all.
+ * Every reservation that waited, even one refused afterwards, is counted in {@code query.budget.waits}.
  */
 public final class FacetExecutor {
   /** The {@code source} of a facet a bucket of which was read from its records. */
@@ -509,6 +513,12 @@ public final class FacetExecutor {
      *               column of the property's declaring type in it
      */
     private FacetResult finish(final DatabaseInternal db, final ColumnarIndexManager manager, final DocumentType target) {
+      // before any early return and before the merge: a collector that waited and then ended capped or unavailable still waited
+      int waits = 0;
+      for (final FacetCollector collector : collectors)
+        waits += collector.budgetWaits();
+      if (waits > 0)
+        manager.getStats().queryBudgetWaits(waits);
       if (capped) {
         stats.source(FacetResult.UNAVAILABLE);
         return FacetResult.unavailable(kindName(spec), FALLBACK_SCANS_CAPPED);
@@ -529,8 +539,6 @@ public final class FacetExecutor {
         stats.add(collected);
         stats.source(collected.source());
       }
-      if (first.budgetWaits() > 0)
-        manager.getStats().queryBudgetWaits(first.budgetWaits());
       if (scanned && !FacetResult.UNAVAILABLE.equals(result.source())) {
         result = result.withSource(SCAN);
         stats.source(SCAN);

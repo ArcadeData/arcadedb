@@ -139,6 +139,7 @@ public final class MatchSet implements AutoCloseable {
     private       long                                reserved;
     private       long                                size;
     private       int                                 waits;
+    private final Runnable                            countWait = () -> waits++;
     private       boolean                             overBudget;
     private       boolean                             handedOver;
 
@@ -240,7 +241,7 @@ public final class MatchSet implements AutoCloseable {
     private boolean charge(final long bytes) {
       charged += bytes;
       while (charged > reserved) {
-        final FacetMemoryBudget.Reservation reservation = budget.reserve(STEP_BYTES, budgetWaitMs);
+        final FacetMemoryBudget.Reservation reservation = budget.reserve(STEP_BYTES, budgetWaitMs, countWait);
         if (reservation == null) {
           charged -= bytes;
           overBudget = true;
@@ -248,8 +249,6 @@ public final class MatchSet implements AutoCloseable {
         }
         reservations.add(reservation);
         reserved += STEP_BYTES;
-        if (reservation.waited())
-          waits++;
       }
       return true;
     }
@@ -273,7 +272,8 @@ public final class MatchSet implements AutoCloseable {
     long size = 0;
     long charged = 0;
     long reserved = 0;
-    int waits = 0;
+    final int[] waits = new int[1];
+    final Runnable countWait = () -> waits[0]++;
     boolean overBudget = false;
     try {
       for (final int bucketId : bucketIds) {
@@ -306,15 +306,13 @@ public final class MatchSet implements AutoCloseable {
             stripes++;
         charged += stripes * (pending.maxRecordsInPage() / 8);
         while (charged > reserved) {
-          final FacetMemoryBudget.Reservation reservation = budget.reserve(STEP_BYTES, budgetWaitMs);
+          final FacetMemoryBudget.Reservation reservation = budget.reserve(STEP_BYTES, budgetWaitMs, countWait);
           if (reservation == null) {
             overBudget = true;
             break;
           }
           reservations.add(reservation);
           reserved += STEP_BYTES;
-          if (reservation.waited())
-            waits++;
         }
         if (overBudget)
           break;
@@ -336,12 +334,12 @@ public final class MatchSet implements AutoCloseable {
 
     if (overBudget) {
       closeAll(acquired, reservations);
-      return new MatchSet(new BucketMatches[0], 0, true, waits, new ArrayList<>(), null);
+      return new MatchSet(new BucketMatches[0], 0, true, waits[0], new ArrayList<>(), null);
     }
     final ColumnarSnapshot[] snapshots = new ColumnarSnapshot[byBucket.length];
     for (final ColumnarSnapshot snapshot : acquired)
       snapshots[snapshot.bucketId()] = snapshot;
-    return new MatchSet(byBucket, size, false, waits, reservations, snapshots);
+    return new MatchSet(byBucket, size, false, waits[0], reservations, snapshots);
   }
 
   /**
@@ -473,7 +471,7 @@ public final class MatchSet implements AutoCloseable {
     return overBudget;
   }
 
-  /** Number of budget steps that were not granted immediately (the caller adds them to {@code query.budget.waits}). */
+  /** Number of budget steps that had to wait, granted or finally refused (the caller adds them to {@code query.budget.waits}). */
   public int budgetWaits() {
     return waits;
   }
