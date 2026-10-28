@@ -317,3 +317,5 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 ## Plan 5 additions
 
 - `HierarchyBuilder.build(DatabaseInternal, HierarchyDefinition, long generation, String indexName)`: the index name labels the cycle WARNING. `HierarchyView.nullKeys()` (records of the vertex type whose key is null) is part of the view contract (plan 5 Task 4).
+- gRPC `GrpcFacetResult` gains typed `after` (9), `min` (10), `max` (11) and `has_after` (12); a server no longer puts after/min/max in `extensions_json`. The Python client (#10666) must read these fields (plan 5 Task 9).
+- STATS of a property stored as -0.0 reads 0.0 (the projection normalizes it); documented, accepted (plan 5 Task 9).

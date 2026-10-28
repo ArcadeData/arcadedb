@@ -292,7 +292,7 @@ public final class FacetExecutor {
     try {
       boolean wantsScan = false;
       for (int f = 0; f < plans.length; f++) {
-        plans[f] = plan(db, manager, matches, f, facets.get(f), bucketIds, snapshots, scans[f]);
+        plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots, scans[f]);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
       }
       if (wantsScan) {
@@ -758,6 +758,23 @@ public final class FacetExecutor {
       return null;
     final TypeIndex index = target.getPolymorphicColumnarIndex(property);
     return index == null ? null : db.getSchema().getType(index.getTypeName());
+  }
+
+  /**
+   * A terms facet with its AFTER cursor converted once with the property's schema type in the queried type ({@link #declaredType}, the
+   * type its buckets are returned as), so every collector, those of buckets read from their records included (they know no column),
+   * compares it with values of that type: {@code AFTER '2021-01-01 00:00:00'} on a DATETIME, or a cursor a client echoes back as the
+   * formatted string of a returned one. A number on a numeric property stays exact. A cursor that is not a value of the type is refused
+   * here, once, whatever path counts the facet ({@link FacetBounds#cursorConverted}). Any other facet as it is.
+   */
+  private static FacetSpec withConvertedCursor(final DatabaseInternal db, final DocumentType target, final int[] bucketIds,
+      final FacetSpec spec) {
+    if (!(spec instanceof TermsFacetSpec terms) || terms.after() == null)
+      return spec;
+    final Object converted = FacetBounds.cursorConverted(terms.alias(), terms.property(), db,
+        declaredType(db, target, bucketIds, terms.property()), terms.after());
+    return converted == terms.after() ? spec : new TermsFacetSpec(terms.alias(), terms.property(), terms.expression(), terms.filter(),
+        terms.top(), terms.minCount(), terms.order(), terms.include(), terms.missingBucket(), converted);
   }
 
   /**
