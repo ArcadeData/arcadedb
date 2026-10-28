@@ -20,6 +20,9 @@ package com.arcadedb.engine.timeseries.codec;
 
 /**
  * Defines the compression codec types used by TimeSeries columnar storage.
+ * <p>
+ * The codec implementations live in {@code com.arcadedb.engine.codec}. The constant names are persisted in the schema JSON,
+ * so a constant must never be renamed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

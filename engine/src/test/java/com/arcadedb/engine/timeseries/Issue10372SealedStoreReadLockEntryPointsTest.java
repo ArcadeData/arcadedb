@@ -18,9 +18,9 @@
  */
 package com.arcadedb.engine.timeseries;
 
-import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
-import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
-import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
+import com.arcadedb.engine.codec.DeltaOfDeltaCodec;
+import com.arcadedb.engine.codec.DictionaryCodec;
+import com.arcadedb.engine.codec.GorillaXORCodec;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;

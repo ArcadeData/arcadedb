@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.engine.timeseries.codec;
+package com.arcadedb.engine.codec;
 
 /**
  * Gorilla XOR encoding for floating-point values.
