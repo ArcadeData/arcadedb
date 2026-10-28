@@ -4596,14 +4596,14 @@ public class PostgresNetworkExecutor extends Thread {
       readNextByte();
   }
 
-  private void writeCommandComplete(final String queryText, final int resultSetCount) {
+  private void writeCommandComplete(final String queryText, final long resultSetCount) {
     final String upperCaseText = queryText.toUpperCase(Locale.ENGLISH);
     final String tag = getTag(upperCaseText, resultSetCount);
     writeMessage("command complete",
         () -> writeString(tag), 'C', 4 + tag.length() + 1);
   }
 
-  private String getTag(String upperCaseText, int resultSetCount) {
+  private String getTag(String upperCaseText, long resultSetCount) {
     if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO")) {
       return "INSERT 0 " + resultSetCount;
     } else if (upperCaseText.startsWith("COPY")) {
@@ -5178,7 +5178,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (cursor != null)
         cursor.close();
     } catch (final RuntimeException e) {
-      LogManager.instance().log(PostgresNetworkExecutor.class, Level.WARNING, "PSQL: error on closing the cursor of portal '%s'", e,
+      LogManager.instance().log(PostgresNetworkExecutor.class, Level.WARNING, "PSQL: error on closing the cursor of statement '%s'", e,
           portal.query);
     } finally {
       statement.close();
@@ -5332,12 +5332,12 @@ public class PostgresNetworkExecutor extends Thread {
     }
     channel.flush();
 
-    portal.resultCursor += sent;
+    portal.cursorRows += sent;
     if (more)
       portalSuspendedResponse();
     else {
       closePortalCursor(portal);
-      writeCommandComplete(portal.query, portal.resultCursor);
+      writeCommandComplete(portal.query, portal.cursorRows);
     }
     profile.addSerializationNanos(System.nanoTime() - serStart);
   }

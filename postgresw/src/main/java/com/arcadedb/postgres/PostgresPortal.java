@@ -159,6 +159,11 @@ public class PostgresPortal {
   /** True once this portal's rows come from {@link #cursor}, and still once it is drained: a drained portal sends no row again. */
   public boolean                   streamed             = false;
   /**
+   * How many rows {@link #cursor} has sent across every Execute so far, the count its CommandComplete is tagged with. A
+   * long, unlike {@link #resultCursor}: nothing caps a stream at what a list can index.
+   */
+  public long                      cursorRows           = 0;
+  /**
    * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
    * far (issue #6458). The next Execute's slice starts here.
    */

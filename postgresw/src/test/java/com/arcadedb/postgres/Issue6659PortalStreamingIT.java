@@ -211,6 +211,44 @@ class Issue6659PortalStreamingIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
+  @DisplayName("[#6659] a statement described with Describe('S') streams under the promised layout, a property it never named included")
+  void aDescribedStatementStreamsUnderItsPromisedLayout() throws Exception {
+    createRows(ROWS);
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.transaction(() -> database.newDocument(TYPE).set("id", ROWS).set("sparse", "only here").save());
+
+    withConnection((out, in) -> {
+      beginBlock(out, in);
+      // The asyncpg/npgsql shape: the statement is described, its portals are not
+      sendParse(out, "SELECT FROM " + TYPE);
+      sendDescribeStatement(out);
+      sendSync(out);
+      final List<WireMessage> described = readUntilReadyForQuery(in);
+      final int promised = rowDescriptionWidth(described);
+      assertThat(promised).isPositive();
+
+      sendBind(out, "P1");
+      int rows = 0;
+      while (true) {
+        sendExecute(out, "P1", 4);
+        sendSync(out);
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(response)).as("past the cap, not refused").doesNotContain('E');
+        for (final WireMessage message : response)
+          if (message.type() == 'D') {
+            assertThat(new DataInputStream(new ByteArrayInputStream(message.body())).readUnsignedShort())
+                .as("every row has the promised columns, the one carrying an unannounced property included").isEqualTo(promised);
+            ++rows;
+          }
+        if (!messageTypesOf(response).contains('s'))
+          break;
+      }
+      assertThat(rows).isEqualTo(ROWS + 1);
+      endBlock(out, in);
+    });
+  }
+
+  @Test
   @DisplayName("[#6659] the stream is a statement until the portal ends: Close ends it")
   void closingAStreamedPortalEndsItsStatement() throws Exception {
     createRows(ROWS);
@@ -701,6 +739,21 @@ class Issue6659PortalStreamingIT extends PostgresWireProtocolTestBase {
     body.write('P');
     writeCString(body, portalName);
     writeFramed(out, 'D', body);
+  }
+
+  private static void sendDescribeStatement(final DataOutputStream out) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    body.write('S');
+    writeCString(body, ""); // unnamed statement
+    writeFramed(out, 'D', body);
+  }
+
+  /** The number of fields the RowDescription among {@code messages} announces. */
+  private static int rowDescriptionWidth(final List<WireMessage> messages) throws Exception {
+    for (final WireMessage message : messages)
+      if (message.type() == 'T')
+        return new DataInputStream(new ByteArrayInputStream(message.body())).readUnsignedShort();
+    throw new AssertionError("no RowDescription in " + messageTypesOf(messages));
   }
 
   private static void sendClosePortal(final DataOutputStream out, final String portalName) throws Exception {

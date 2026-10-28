@@ -3243,7 +3243,9 @@ public enum GlobalConfiguration {
       error instead of risking an OutOfMemoryError; narrow it with a WHERE or LIMIT clause or raise the limit. \
       An extended-protocol SELECT whose columns are known before its first row - one that projects only declared \
       properties of its type, or one whose statement was already described to the client - is fetched from a live \
-      cursor, each Execute reading only the rows it asks for, and is not subject to this limit. \
+      cursor, each Execute reading only the rows it asks for, and is not subject to this limit. Its \
+      arcadedb.command.timeout (or statement_timeout) runs from when the query starts to its last fetch, the time \
+      the client takes between two fetches included. \
       0 means unlimited. Default is 1000000""", Integer.class, 1_000_000),
 
   // BOLT (Neo4j)
