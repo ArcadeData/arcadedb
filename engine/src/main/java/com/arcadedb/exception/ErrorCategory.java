@@ -33,7 +33,9 @@ import com.arcadedb.index.fulltext.FullTextQueryParseException;
  * <p>
  * The HTTP handler and the Bolt executor predate this enum and keep their own ladders; they encode
  * protocol-specific ordering this enum does not model, and their behaviour is pinned by the regression suites of
- * several shipped issues.
+ * several shipped issues. A ladder of its own is no exemption from a verdict this enum draws, though: HTTP answers
+ * {@link #UNAVAILABLE} and {@link #DATABASE_NOT_FOUND} apart (503 with the state's label, and 404), as every other
+ * protocol does (issue #10872).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -27,6 +27,7 @@ import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -55,6 +56,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * gRPC admin service for server and database administration.
@@ -305,9 +307,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         // The shared ServerDatabase the create returned - don't close it
         db.transaction(() -> {
           final Schema s = db.getSchema();
-          if (!existsVertexType(s, "V"))
+          if (!s.existsType("V"))
             s.createVertexType("V");
-          if (!existsEdgeType(s, "E"))
+          if (!s.existsType("E"))
             s.createEdgeType("E");
         });
       }
@@ -358,40 +360,26 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (db == null)
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
+      // One snapshot of the types answers the classes, the kind and the census of the count, so the three cannot describe two
+      // schemas. Nothing here is caught: a schema that cannot be read fails the call through respond(), which classifies it,
+      // rather than answering zero classes as if the database had none (issue #10877).
       final Schema schema = db.getSchema();
+      final Collection<? extends DocumentType> types = schema.getTypes();
+      final Index[] indexes = schema.getIndexes();
 
-      // Count classes
-      int classes = 0;
-      try {
-        classes = schema.getTypes().size();
-      } catch (Throwable ignore) {
-      }
+      boolean graph = false;
+      for (final DocumentType t : types)
+        if (t instanceof VertexType) {
+          graph = true;
+          break;
+        }
 
-      // Count indexes (Index[] in your build)
-      int indexes = 0;
-      try {
-        Index[] idx = schema.getIndexes();
-        indexes = idx != null ? idx.length : 0;
-      } catch (Throwable ignore) {
-      }
-
-      // Approximate record count (fast-ish; adjust to your needs)
-      final long records = approximateRecordCount(db);
-
-      // Infer db kind: "graph" if any vertex type exists
-      String type = "document";
-      try {
-        final boolean hasVertexTypes = schema.getTypes().stream()
-            .anyMatch(t -> t instanceof VertexType);
-        if (hasVertexTypes)
-          type = "graph";
-      } catch (Exception e) {
-        // Keep default "document" type if schema inspection fails
-      }
+      final RecordCount count = approximateRecordCount(db, types);
 
       return GetDatabaseInfoResponse.newBuilder()
           .setDatabase(name)
-          .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
+          .setClasses(types.size()).setIndexes(indexes.length).setRecords(count.records()).setType(graph ? "graph" : "document")
+          .addAllUncountedTypes(count.uncountedTypes())
           .build();
     });
   }
@@ -1480,40 +1468,37 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
-   * Approximate record count with a quick pass across types.
+   * The records of a database's types and the types whose records could not be counted (issue #10877): the total is the sum
+   * over the counted ones, so a client is told it is short instead of being handed a smaller number as the database's.
    */
-  private long approximateRecordCount(Database db) {
+  private record RecordCount(long records, List<String> uncountedTypes) {
+  }
+
+  /**
+   * Counts the records of every type of {@code types}, the bucket counters rather than a scan ({@code countType(name, false)}).
+   * A type dropped since the snapshot is no type of the database any more and is left out; a type that is there and cannot be
+   * counted - a TimeSeries type whose engine did not open, for one - is named in the answer and logged, never folded into the
+   * total as zero (issue #10877).
+   */
+  private RecordCount approximateRecordCount(final Database db, final Collection<? extends DocumentType> types) {
     long total = 0L;
-    try {
-      for (DocumentType t : db.getSchema().getTypes()) {
-        try {
-          // exact=false when supported; otherwise this counts exactly
-          total += db.countType(t.getName(), false);
-        } catch (Throwable ignore) {
-        }
+    List<String> uncounted = List.of();
+    for (final DocumentType t : types) {
+      final String typeName = t.getName();
+      try {
+        total += db.countType(typeName, false);
+      } catch (final RuntimeException e) {
+        if (!db.getSchema().existsType(typeName))
+          // dropped by a concurrent DDL between the snapshot and the count
+          continue;
+        LogManager.instance().log(this, Level.FINE, "getDatabaseInfo: cannot count the records of type '%s' of database '%s': %s",
+            null, typeName, db.getName(), e.toString());
+        if (uncounted.isEmpty())
+          uncounted = new ArrayList<>();
+        uncounted.add(typeName);
       }
-    } catch (Throwable ignore) {
     }
-    return total;
-  }
-
-  private boolean existsVertexType(Schema s, String name) {
-
-    try {
-      return s.existsType(name);
-    } catch (Throwable t) {
-      return false;
-    }
-  }
-
-  private boolean existsEdgeType(Schema s, String name) {
-
-    try {
-
-      return s.existsType(name);
-    } catch (Throwable t) {
-      return false;
-    }
+    return new RecordCount(total, uncounted);
   }
 
   // ---------- Server info helpers using direct API calls ----------

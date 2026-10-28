@@ -31,12 +31,10 @@ package com.arcadedb.exception;
  * {@link DatabaseOperationException} whose only distinguishing feature was the wording of its message, so no
  * protocol could answer it without matching on prose (issue #7874).
  * <p>
- * One answer does change, deliberately: this throw now reaches {@code AbstractServerHttpHandler}'s
- * {@link DatabaseNotAvailableException} arm and is answered HTTP {@code 404} where it used to fall through to
- * the generic {@code 500}. That is the accurate status - the caller named a database this server does not have,
- * which is not a server fault - and it is the same verdict the handler already gave for the closed and dropped
- * cases. The HTTP paths that resolve a database with {@code allowLoad=false} are untouched: they never reached
- * this throw, raising {@link DatabaseNotAvailableException} itself and answering 404 already (PR #7939 review).
+ * HTTP answers it {@code 404 Database not found}, and its parent {@code 503} with the label of its
+ * {@link DatabaseNotAvailableException.Reason} (issue #10872): the server raises this type for every name that is no
+ * database, the paths that resolve a database with {@code allowLoad=false} included, so the two answers are told apart by
+ * the status and the exception class and not only by a message production mode conceals.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

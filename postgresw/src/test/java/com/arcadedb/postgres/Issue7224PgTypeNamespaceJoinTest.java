@@ -89,11 +89,16 @@ class Issue7224PgTypeNamespaceJoinTest {
     final PostgresCatalog.Answer answer = resolve(
         "SELECT t.typname, n.nspname, n.oid, t.typnamespace FROM pg_type t JOIN pg_namespace n ON (t.typnamespace = n.oid)");
 
-    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size());
+    // the built-in types and the row type of the one relation (issue #10873)
+    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
     assertThat(names(answer.rows, "typname")).doesNotContainNull();
     // The schema a built-in type lives in is pg_catalog, which is also what pg_type.typnamespace already says -
-    // so the column the query joins ON and the row it joins TO have to agree, or the join it wrote is a lie.
-    assertThat(names(answer.rows, "nspname")).containsOnly("pg_catalog");
+    // so the column the query joins ON and the row it joins TO have to agree, or the join it wrote is a lie. A row type is
+    // in the schema of its relation.
+    assertThat(answer.rows).filteredOn(row -> !"Article".equals(row.get("typname"))).extracting(row -> row.get("nspname"))
+        .containsOnly("pg_catalog");
+    assertThat(answer.rows).filteredOn(row -> "Article".equals(row.get("typname"))).extracting(row -> row.get("nspname"))
+        .containsExactly(database.getName());
     assertThat(answer.rows).allSatisfy(row -> assertThat(row.get("oid")).isEqualTo(row.get("typnamespace")));
   }
 
@@ -102,7 +107,7 @@ class Issue7224PgTypeNamespaceJoinTest {
   void theFromOrderDoesNotChangeTheAnswer() {
     final PostgresCatalog.Answer answer = resolve("SELECT t.typname FROM pg_namespace n, pg_type t");
 
-    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size());
+    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
     assertThat(names(answer.rows, "typname")).doesNotContainNull();
   }
 
@@ -132,7 +137,7 @@ class Issue7224PgTypeNamespaceJoinTest {
     final PostgresCatalog.Answer typeFirst = resolve("SELECT t.typname, r.rolname FROM pg_type t, pg_roles r");
     final PostgresCatalog.Answer rolesFirst = resolve("SELECT t.typname, r.rolname FROM pg_roles r, pg_type t");
 
-    assertThat(typeFirst.rows).hasSize(PostgresTypeCatalog.types().size());
+    assertThat(typeFirst.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
     assertThat(names(typeFirst.rows, "typname")).doesNotContainNull();
     // The two orders have to agree on the ROWS, not merely on how many there are: a ranking regression could keep
     // the count and the non-null names while answering about a different relation.
