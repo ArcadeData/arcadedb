@@ -808,7 +808,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(databasePath);
       TransactionContext tx = current.getLastTransaction();
-      if (tx.isActive()) {
+      // NOT ONE WHOSE TRANSACTION IS STILL CONCLUDING EITHER (#10687): ITS COMMIT COUNT IS ABOUT TO BE READ BY THE CALLER OF THE
+      // COMMIT THAT ENDED IT, SEE TransactionContext.isRunningAfterCompletionCallbacks()
+      if (tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
         // CREATE A NESTED TX
         tx = new TransactionContext(getWrappedDatabaseInstance());
         current.pushTransaction(tx);

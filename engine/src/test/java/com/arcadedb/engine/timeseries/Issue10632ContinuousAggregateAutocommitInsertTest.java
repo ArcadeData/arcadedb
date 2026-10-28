@@ -156,6 +156,9 @@ class Issue10632ContinuousAggregateAutocommitInsertTest extends TestHelper {
 
     assertThat(((DatabaseInternal) database).getTransaction()
         .hasCallbackKey(ContinuousAggregateRefresher.refreshCallbackKey("A"))).isFalse();
+    // where a transaction registers it since #10687
+    assertThat(((DatabaseInternal) database).getTransaction()
+        .hasAfterCompletionCallbackKey(ContinuousAggregateRefresher.refreshCallbackKey("A"))).isFalse();
 
     // a commit that touches nothing of S must not refresh the aggregate
     database.transaction(() -> database.newDocument("Other").set("x", 1).save());

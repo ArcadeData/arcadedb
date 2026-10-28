@@ -286,22 +286,18 @@ class Issue10428ContinuousAggregateDeleteTest extends TestHelper {
   // ---- failures
 
   @Test
-  void aDeleteInATransactionThatRollsBackStillRecordsTheRangeForTheNextRefresh() {
+  void aDeleteInATransactionThatRollsBackStillRefreshesTheAggregate() {
     createSourceAndAggregate();
     insert(H0, "a", 10);
     insert(H0 + 2 * HOUR, "a", 20);
     refresh();
 
-    // the samples are not part of the transaction, so the rollback does not bring them back; it does drop the refresh that was to
-    // follow the commit
+    // the samples are not part of the transaction, so the rollback does not bring them back, and the refresh they are owed runs
+    // when the transaction ends however it ends (issue #10687: it was an after-commit callback, which the rollback dropped)
     database.begin();
     delete("ts = " + H0);
+    assertThat(pendingFrom()).as("recorded at once").isEqualTo(H0);
     database.rollback();
-
-    assertThat(buckets()).as("not refreshed yet").containsExactly(new Bucket(H0, "a", 10), new Bucket(H0 + 2 * HOUR, "a", 20));
-    assertThat(pendingFrom()).isEqualTo(H0);
-
-    refresh();
 
     assertThat(buckets()).containsExactly(new Bucket(H0 + 2 * HOUR, "a", 20));
     assertThat(pendingFrom()).isEqualTo(Long.MIN_VALUE);

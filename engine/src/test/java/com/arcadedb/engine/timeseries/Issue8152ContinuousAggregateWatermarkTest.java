@@ -214,15 +214,17 @@ class Issue8152ContinuousAggregateWatermarkTest extends TestHelper {
     ca.setWatermarkTs(0);
     final long watermarkBefore = ca.getWatermarkTs();
 
-    // A database whose transaction() runs the scope and then fails the commit.
+    // A database whose transaction() runs the scope and then fails the commit. The refresh asks for a transaction of its own
+    // (joinCurrentTx=false, #10688), the 2-argument form
     final Database failingCommit = (Database) Proxy.newProxyInstance(getClass().getClassLoader(),
         new Class<?>[] { Database.class }, (proxy, method, args) -> {
-          if ("transaction".equals(method.getName()) && args != null && args.length == 1) {
+          if ("transaction".equals(method.getName()) && args != null && args.length == 2) {
+            assertThat(args[1]).isEqualTo(false);
             database.transaction(() -> {
               ((BasicDatabase.TransactionScope) args[0]).execute();
               throw new TransactionException("simulated commit failure");
-            });
-            return null;
+            }, false);
+            return true;
           }
           return method.invoke(database, args);
         });
