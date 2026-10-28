@@ -4217,7 +4217,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
       if (recordPositionInPage == 0)
         // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -4418,7 +4418,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int bufferSize = buffer.size();
       if (bufferSize > recordSize[0]) {
         // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
-        final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+
+        // #10700: the room a growth (and every rung of the spill below) is judged against is the page's free TAIL. The
+        // bytes a shrink or a delete of this same transaction gave back are not in it: they are holes, packed only by
+        // the compression the commit runs on the page afterwards. A page whose tail is gone (a spill sealed it) then
+        // refused a 9-byte pointer while holding tens of KB of dead bytes, and every retry rebuilt the same page. So a
+        // growth the tail cannot host packs the holes first. Only a page some write left unpacked can have any, which
+        // keeps the walk off every other growth.
+        if (!page.hasOnlyPackedWrites() && !growthFitsFreeTail(page, lastRecordPositionInPage, recordPositionInPage,
+                recordSize, isPlaceHolder, buffer.size()) && packPageHoles(page, recordCountInPage)) {
+          // Every offset past the first hole moved, and no tracked image of this page describes the move: the merges
+          // re-derive a page from its committed image plus what was tracked, which would bring the holes back under
+          // the growth that relied on them being gone.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+          if (slotTx != null)
+            slotTx.poisonEdgeAppendPage(fileId, pageId);
+          recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+          lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        }
 
         // DISJOINT-SLOT MERGE (#5279): growing a record INSIDE its own page changes only this record's content - the
         // records that follow merely move, and their new offsets are recomputed from the page itself - so the write
@@ -7334,8 +7353,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                    final int contentSize) throws IOException {
     final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage, recordSize);
     final int spaceAvailableInCurrentPage = page.getMaxContentSize() - pageOccupiedInBytes;
-    final int contentSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * contentSize : contentSize);
-    final int additionalSpaceNeeded = (int) (contentSize + contentSizeLength - recordSize[0] - recordSize[1]);
+    final int additionalSpaceNeeded = growthAdditionalSpace(recordSize, isPlaceHolder, contentSize);
 
     if (additionalSpaceNeeded >= spaceAvailableInCurrentPage)
       // NOT ENOUGH ROOM LEFT IN THE PAGE
@@ -7359,6 +7377,72 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     updatePageStatistics(page, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
+    return true;
+  }
+
+  /**
+   * Bytes a record stored as {@code recordSize} gains when rewritten with {@code contentSize} bytes of content, size
+   * marker included: what {@link #growRecordInPage} has to take from the page's free tail.
+   */
+  private static int growthAdditionalSpace(final long[] recordSize, final boolean isPlaceHolder, final int contentSize) {
+    final int contentSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * contentSize : contentSize);
+    return (int) (contentSize + contentSizeLength - recordSize[0] - recordSize[1]);
+  }
+
+  /**
+   * Whether {@link #growRecordInPage} would host the growth in the page's free tail as the page stands, by the very
+   * same arithmetic. Reads only.
+   */
+  private boolean growthFitsFreeTail(final MutablePage page, final int lastRecordPositionInPage,
+                                     final int recordPositionInPage, final long[] recordSize, final boolean isPlaceHolder,
+                                     final int contentSize) throws IOException {
+    final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage, recordSize);
+    return growthAdditionalSpace(recordSize, isPlaceHolder, contentSize) < page.getMaxContentSize() - pageOccupiedInBytes;
+  }
+
+  /**
+   * Packs the holes of a page in the middle of a transaction, so a write that needs room is judged against the page
+   * the commit would leave rather than against its free tail alone (#10700). The same layout transformation
+   * {@link #compressPageInternal} runs at commit - the slot-table repair, the defrag, the measured free tail handed to
+   * the statistics - with one difference that matters before the commit and not at it: the slot table keeps its
+   * length. Trimming the trailing freed slots would let an insert of this same transaction (the content record of a
+   * spill, a continuation chunk) be handed a slot it deleted, which the allocator otherwise never does.
+   * <p>
+   * The caller must poison the page for the commit-time merges when this returns true, and re-derive every offset it
+   * holds on it: every record past the first hole moved.
+   *
+   * @return true when the page had holes and they were closed; false when it had none, in which case nothing has been
+   * written.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean packPageHoles(final MutablePage page, final short recordCountInPage) throws IOException {
+    if (packedContentEnd(page, recordCountInPage) > 0)
+      // NO HOLE: THE CHEAP WALK PROVES IT WITHOUT BUILDING THE LIST
+      return false;
+
+    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, page);
+    if (orderedRecordContentInPage.isEmpty())
+      return false;
+
+    final List<int[]> holes = computePageHoles(orderedRecordContentInPage);
+    if (holes.isEmpty())
+      return false;
+
+    if (CHECK_FREE_SPACE_CLAIMS)
+      verifyFreeSpaceClaim(page, freeTailInPage(page, orderedRecordContentInPage), recordCountInPage);
+
+    defragPage(page, holes, recordCountInPage);
+    wipeOutFreeSpace(page, recordCountInPage);
+
+    int contentEndInPage = contentHeaderSize;
+    for (final int[] record : orderedRecordContentInPage)
+      contentEndInPage += record[1];
+    accountCompressedPage(page, contentEndInPage);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE, "Packed %d holes of page %s to make room for a growth (threadId=%d)",
+              holes.size(), page.pageId, Thread.currentThread().threadId());
     return true;
   }
 
