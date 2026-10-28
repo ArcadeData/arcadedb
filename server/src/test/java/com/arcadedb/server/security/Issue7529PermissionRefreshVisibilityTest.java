@@ -80,7 +80,7 @@ class Issue7529PermissionRefreshVisibilityTest {
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.databaseNames(DATABASE);
-    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, RELOAD_EVERY_MS);
@@ -162,7 +162,7 @@ class Issue7529PermissionRefreshVisibilityTest {
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getDatabaseNames", new LinkedHashSet<>(List.of("dropped-under-the-sweep", DATABASE)));
-    server.on("getDatabase", args -> {
+    server.on("getDatabaseForOperator", args -> {
       if (Objects.equals(args[0], "dropped-under-the-sweep"))
         throw new DatabaseNotAvailableException("Database 'dropped-under-the-sweep' is not available");
       return Objects.equals(args[0], DATABASE) ? healthy : null;

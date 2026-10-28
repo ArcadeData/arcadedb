@@ -173,7 +173,7 @@ class Issue7704BinaryIdempotencyKeyBodyIT extends BaseGraphServerTest {
 
   /** Every sample of the named metrics in the database, as {@code metric=value}, read back embedded. */
   private List<String> storedSamples(final String... metrics) {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     final List<String> found = new ArrayList<>();
     for (final String type : metrics) {
       if (!database.getSchema().existsType(type))

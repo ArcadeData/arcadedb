@@ -142,13 +142,14 @@ class Issue7224PgTypeNamespaceJoinTest {
     assertThat(resolve("SELECT rolname FROM pg_roles").rows).hasSize(1);
   }
 
-  /** And pg_namespace alone is still a question about schemas. */
+  /** And pg_namespace alone is still a question about schemas: pg_catalog, which typnamespace names, and the database's (issue #10745). */
   @Test
   void pgNamespaceOnItsOwnIsStillASchemaQuery() {
     final PostgresCatalog.Answer answer = resolve("SELECT nspname FROM pg_catalog.pg_namespace");
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0).get("nspname")).isNotNull();
+    assertThat(answer.rows).hasSize(2);
+    assertThat(answer.rows.get(0).get("nspname")).isEqualTo("pg_catalog");
+    assertThat(answer.rows.get(1).get("nspname")).isNotNull();
   }
 
   /** A three-way join keeps naming the most specific subject: pg_class still wins over both. */

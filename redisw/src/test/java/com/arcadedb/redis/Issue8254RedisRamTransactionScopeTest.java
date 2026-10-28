@@ -218,23 +218,26 @@ public class Issue8254RedisRamTransactionScopeTest extends BaseRedisServerTest {
   }
 
   /**
-   * A reserved variable name can never hold a value: a read of it answers "absent" on this engine as it does on the
-   * RESP wire path ({@code LocalDatabase.getGlobalVariable}), while a write of it is still refused.
+   * A name SQL reserves for its context is an ordinary Redis key on this engine as on the RESP wire path (issue #10790): the
+   * key is the client's, read and written as it is, inside a block as outside one.
    */
   @Test
-  void readOfAReservedNameAnswersAbsentLikeTheWirePath() {
+  void aReservedSqlNameIsAnOrdinaryKeyLikeOnTheWirePath() {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     assertThat(get(database, "parent")).isNull();
+    try (final ResultSet rs = database.command("redis", "SET parent 1")) {
+      assertThat(rs.next().<Object>getProperty("value")).isEqualTo("OK");
+    }
     try (final ResultSet rs = database.command("redis", "EXISTS parent $current")) {
-      assertThat(((Number) rs.next().getProperty("value")).intValue()).isZero();
+      assertThat(((Number) rs.next().getProperty("value")).intValue()).isEqualTo(1);
     }
-    try (final ResultSet rs = database.command("redis", "MULTI\nGET parent\nEXISTS parent\nEXEC")) {
+    try (final ResultSet rs = database.command("redis", "MULTI\nSET $current 2\nGET parent\nEXISTS parent $current\nEXEC")) {
       final List<?> replies = (List<?>) rs.next().getProperty("value");
-      assertThat(replies.get(0)).isNull();
-      assertThat(((Number) replies.get(1)).intValue()).isZero();
+      assertThat(replies.get(1)).isEqualTo("1");
+      assertThat(((Number) replies.get(2)).intValue()).isEqualTo(2);
     }
-    assertThatThrownBy(() -> database.command("redis", "SET parent 1")).hasMessageContaining("reserved");
+    assertThat(get(database, "$current")).isEqualTo("2");
   }
 
   private static Object get(final Database database, final String key) {

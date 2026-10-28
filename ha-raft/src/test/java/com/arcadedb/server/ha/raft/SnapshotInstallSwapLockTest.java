@@ -147,7 +147,7 @@ class SnapshotInstallSwapLockTest {
       final AtomicReference<Throwable> openError = new AtomicReference<>();
       final Thread opener = new Thread(() -> {
         try {
-          observedCount.set(server.getDatabase(DB_NAME).countType("Node", true));
+          observedCount.set(server.getDatabaseForOperator(DB_NAME).countType("Node", true));
         } catch (final Throwable t) {
           openError.set(t);
         }
@@ -176,7 +176,7 @@ class SnapshotInstallSwapLockTest {
       assertThat(snapshotBackup).doesNotExist();
       assertThat(pendingMarker).doesNotExist();
       assertThat(server.existsDatabase(DB_NAME)).isTrue();
-      assertThat(server.getDatabase(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
+      assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
     } finally {
       SnapshotInstaller.swapBarrierForTesting = null;
       // Ensure no thread stays parked if an assertion failed before the release.
@@ -184,7 +184,7 @@ class SnapshotInstallSwapLockTest {
       // Drop the database created by the test, then stop the server.
       try {
         if (server.existsDatabase(DB_NAME))
-          ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+          ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }

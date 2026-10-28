@@ -96,7 +96,7 @@ class RaftHARandomCrashIT extends BaseRaftHATest {
 
         for (int i = 0; i < getServerCount(); ++i) {
           if (getServer(i).isStarted()) {
-            final Database db = getServer(i).getDatabase(getDatabaseName());
+            final Database db = getServer(i).getDatabaseForOperator(getDatabaseName());
             db.begin();
             try {
               final long count = db.countType(VERTEX1_TYPE_NAME, true);

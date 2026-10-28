@@ -317,6 +317,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // one slice per timeout, which is the bound it is held to either way. Guarded by the `freeSpaceInPages` monitor (also read
   // outside it, hence volatile).
   private volatile       int                       gatherPagesLeftInLap             = 0;
+  // #10709: the lowest page whose room the full map turned away since the last gather, -1 for none. That room is known to exist
+  // and known to nothing else, so like a scan cut short by the full map (#8660) it makes the next gather due whatever the clock
+  // says, and the gather starts there. It takes a full map to set it, so it cannot ask for a scan per allocation. Guarded by the
+  // `freeSpaceInPages` monitor (also read outside it, hence volatile).
+  private volatile       int                       unlistedRoomFrom                 = -1;
   // GATHER_STATS_MAX_PAGES_PER_SCAN, changed only by setGatherPagesPerScanForTesting (volatile: from the test's thread)
   private volatile       int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
@@ -612,6 +617,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     gatherTruncated = false;
     gatherResumePage = 0;
     gatherPagesLeftInLap = 0;
+    unlistedRoomFrom = -1;
     insertReservations.clear();
     inFlightNewPages.clear();
     pagesToRelist.clear();
@@ -2961,8 +2967,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
         // Skip the record-image copy on a page that is already poisoned (it would be discarded anyway).
         else if (!slotTx.isSlotRebasePagePoisoned(fileId, slotPageNumber))
-          slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex,
-                  Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
+          // #10661: no copy of the record: the replay reads it back from this page, which already holds it
+          slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex);
       }
 
       return rid;
@@ -3585,6 +3591,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
         // the room it hid is known to nothing else now: a measurement no longer arms a gather by itself (#9575)
         changesFromLastStats.incrementAndGet();
+        roomTurnedAway(pageNumber);
         continue;
       }
       ++measured;
@@ -3669,6 +3676,41 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static boolean isSlotMergeCandidate(final Record record) {
     return record.getRecordType() != EdgeSegment.RECORD_TYPE;
+  }
+
+  /**
+   * Reads the body (no size prefix) of the plain record held by {@code positionInPage}. The disjoint-slot merge uses it
+   * to take the final image of a slot this transaction INSERTED from the page the transaction wrote, instead of
+   * keeping a copy of every inserted record until commit (#10661).
+   *
+   * @return the body, or {@code null} when the slot is free or does not hold a plain record that fits the page (a
+   * placeholder, a chunk, a corrupted entry), which the caller turns into a refusal to merge.
+   */
+  public byte[] readPlainRecordBody(final BasePage page, final int positionInPage) {
+    try {
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (positionInPage >= recordCountInPage)
+        return null;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        return null;
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] <= 0)
+        return null;
+      final long contentPos = recordPositionInPage + recordSize[1];
+      if (contentPos + recordSize[0] > page.getMaxContentSize())
+        return null;
+      // both bounded by the page size checked above
+      final byte[] body = new byte[(int) recordSize[0]];
+      page.readByteArray((int) contentPos, body, 0, body.length);
+      return body;
+    } catch (final IOException e) {
+      // a page that cannot be read back cannot be replayed: the caller refuses the merge and the transaction retries
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot read back the record in slot %d of page %s for the slot merge", e, positionInPage,
+              page.getPageId());
+      return null;
+    }
   }
 
   /**
@@ -4037,9 +4079,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Creates multiple records from pre-serialized Binary buffers in a single operation.
-   * Always appends to new pages to avoid complexity with existing page layouts, deletions,
-   * and multi-page records. This avoids the per-record findAvailableSpace overhead and is
-   * designed for bulk import scenarios where sequential page writes are optimal.
+   * <p>
+   * #10746: a record goes where {@link #createRecord} would put it as long as that is a page that already exists - a free slot
+   * a delete left on an older page, the room left on the last one - and through the same code, so the slot reservation, the
+   * disjoint-slot merge and the free-space statistics see it like any other insert. From the first record that needs a new page
+   * on, the rest is appended sequentially to pages this call opens, without the per-record search: once the allocator found no
+   * room for one record it would find none for the next, so a bulk import into a bucket with no free space pays one search,
+   * not one per record. This used to start on a brand-new page whatever the bucket held, so under an insert/delete churn of
+   * small flushes the bucket grew by one page per flush while the room of the deleted records stayed empty.
+   * <p>
+   * A record larger than a page is written as a chunk chain by {@link #createRecordInternal(Binary, boolean)}: it cannot be
+   * appended in one piece (the writer failed with "Cannot write outside the page space").
    *
    * @param buffers    array of pre-serialized record content (NOT including the size prefix)
    * @param from       start index in buffers array (inclusive)
@@ -4047,52 +4097,68 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @param ridsOut    output array for assigned RIDs (must have length >= to - from)
    */
   public void createRecordsBulk(final Binary[] buffers, final int from, final int to, final RID[] ridsOut) {
-      // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
-      // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
-      // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
-      // grant on this type could still write edges here once the request thread bound the principal
-      // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
-      database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
+    // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
+    // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
+    // grant on this type could still write edges here once the request thread bound the principal
+    // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
-      // Always start from a fresh new page for bulk writes.
-      MutablePage currentPage = addNewPage();
-      int recordPositionInPage = contentHeaderSize;
-      int availablePositionIndex = 0;
-      final int maxContent = currentPage.getMaxContentSize();
+    final TransactionContext tx = database.getTransaction();
+    // the most an empty page holds: a record that needs more is a chunk chain
+    final int maxRecordSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
+    // The page the sequential append writes to: null while the records still go where createRecord puts them
+    MutablePage currentPage = null;
+    int recordPositionInPage = 0;
+    int availablePositionIndex = 0;
+    // where the append started on currentPage: what it took from the page is reported to the statistics once, when it leaves it
+    int appendStartInPage = 0;
 
+    try {
       for (int i = from; i < to; i++) {
         final Binary buffer = buffers[i];
-
-        // Pad to minimum record size
         while (buffer.size() < MINIMUM_RECORD_SIZE)
           buffer.append((byte) 0);
 
         final int actualSize = buffer.size();
         final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
 
-        // Check if current page has room
-        if (availablePositionIndex >= maxRecordsInPage
-            || recordPositionInPage + spaceNeeded > maxContent) {
-          // Finalize current page record count
-          currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+        if (currentPage != null && spaceNeeded > maxRecordSpaceInPage) {
+          // A record no page holds in one piece goes to the allocator, which reads the record count of the page being appended
+          // to (it is the last page of the file): the append writes it only when it leaves the page, so it leaves it first
+          leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
+          currentPage = null;
+        }
 
-          // Create a new page
+        if (currentPage == null) {
+          final int pagesBefore = getTotalPages();
+          final RID rid = createRecordInternal(buffer, false);
+          ridsOut[i - from] = rid;
+
+          final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
+          if (pageNumber >= pagesBefore && spaceNeeded <= maxRecordSpaceInPage && inFlightNewPages.get(pageNumber) == tx) {
+            // THE ALLOCATOR HAD TO OPEN A PAGE: THE REST IS APPENDED, STARTING ON THAT ONE, WHICH NO OTHER TRANSACTION CAN USE
+            currentPage = tx.getPageToModify(new PageId(database, file.getFileId(), pageNumber), pageSize, false);
+            availablePositionIndex = currentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+            recordPositionInPage = findContentInsertionOffset(currentPage, availablePositionIndex);
+            appendStartInPage = recordPositionInPage;
+          }
+          continue;
+        }
+
+        if (availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > currentPage.getMaxContentSize()) {
+          leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
           currentPage = addNewPage();
           recordPositionInPage = contentHeaderSize;
+          appendStartInPage = recordPositionInPage;
           availablePositionIndex = 0;
         }
 
-        // Write the record offset in the record table
-        currentPage.writeUnsignedInt(
-            PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
-            recordPositionInPage);
-
-        // Write record size + content
+        // Write the record offset in the record table, then the record size and content
+        currentPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE, recordPositionInPage);
         final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
-        currentPage.writeByteArray(recordPositionInPage + sizeBytes,
-            buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
+        currentPage.writeByteArray(recordPositionInPage + sizeBytes, buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
 
-        // Assign RID
         ridsOut[i - from] = new RID(file.getFileId(),
             ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
@@ -4100,9 +4166,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         availablePositionIndex++;
       }
 
-    // Finalize last page record count
-    if (availablePositionIndex > 0)
-      currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+      if (currentPage != null)
+        leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
+
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot add new records to the bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * Closes the sequential append of {@link #createRecordsBulk} on a page: writes its record count, and tells the free-space
+   * statistics what the append took from it, as one write that takes space (so it arms no gather, #9575). The room left on the
+   * page is then listed like the room any other insert leaves (#10746): the next flush fills it before it opens a page.
+   */
+  private void leaveAppendedPage(final MutablePage page, final int recordCount, final int appendStart, final int appendEnd) {
+    page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) recordCount);
+    if (appendEnd > appendStart)
+      updatePageStatistics(page, page.getMaxContentSize() - appendStart, appendStart - appendEnd);
   }
 
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
@@ -4137,7 +4217,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
       if (recordPositionInPage == 0)
         // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -4338,7 +4418,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int bufferSize = buffer.size();
       if (bufferSize > recordSize[0]) {
         // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
-        final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+
+        // #10700: the room a growth (and every rung of the spill below) is judged against is the page's free TAIL. The
+        // bytes a shrink or a delete of this same transaction gave back are not in it: they are holes, packed only by
+        // the compression the commit runs on the page afterwards. A page whose tail is gone (a spill sealed it) then
+        // refused a 9-byte pointer while holding tens of KB of dead bytes, and every retry rebuilt the same page. So a
+        // growth the tail cannot host packs the holes first. Only a page some write left unpacked can have any, which
+        // keeps the walk off every other growth.
+        if (!page.hasOnlyPackedWrites() && !growthFitsFreeTail(page, lastRecordPositionInPage, recordPositionInPage,
+                recordSize, isPlaceHolder, buffer.size()) && packPageHoles(page, recordCountInPage)) {
+          // Every offset past the first hole moved, and no tracked image of this page describes the move: the merges
+          // re-derive a page from its committed image plus what was tracked, which would bring the holes back under
+          // the growth that relied on them being gone.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+          if (slotTx != null)
+            slotTx.poisonEdgeAppendPage(fileId, pageId);
+          recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+          lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        }
 
         // DISJOINT-SLOT MERGE (#5279): growing a record INSIDE its own page changes only this record's content - the
         // records that follow merely move, and their new offsets are recomputed from the page itself - so the write
@@ -4378,15 +4477,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (grown) {
           if (slotCandidate) {
             if (growRebasable) {
-              final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
-                      buffer.getContentBeginOffset() + bufferSize);
               if (growBaseBody != null)
-                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody, finalBody,
+                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody,
+                        Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
+                                buffer.getContentBeginOffset() + bufferSize),
                         isPlaceHolder ? TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT : TransactionContext.SLOT_KIND_RECORD);
               else
                 // The slot holds a record CREATED by this transaction: there is no committed pre-image to diff
-                // against, so it stays an insert whose final image the merge re-writes at the same free slot.
-                slotTx.trackRebasableInsert(fileId, pageId, positionInPage, finalBody);
+                // against, so it stays an insert whose final image the merge reads back from this page and re-writes
+                // at the same free slot (#10661: no copy is kept).
+                slotTx.trackRebasableInsert(fileId, pageId, positionInPage);
             } else
               slotTx.poisonSlotRebasePage(fileId, pageId);
           }
@@ -4576,13 +4676,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (slotCandidate) {
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
           if (slotTracked) {
-            final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
-                    buffer.getContentBeginOffset() + bufferSize);
             if (slotInsertedHere)
               // The slot holds a record CREATED by this transaction: it stays an insert (there is no committed
-              // pre-image to diff against), so only refresh its final image - and skip copying one altogether.
-              slotTx.trackRebasableInsert(fileId, pageId, positionInPage, finalBody);
+              // pre-image to diff against), and its final image is the one this write leaves on the page, read back
+              // by the merge only if the page conflicts (#10661) - so no image is copied at all.
+              slotTx.trackRebasableInsert(fileId, pageId, positionInPage);
             else {
+              final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
+                      buffer.getContentBeginOffset() + bufferSize);
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
               slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody, finalBody,
@@ -7252,8 +7353,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                    final int contentSize) throws IOException {
     final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage, recordSize);
     final int spaceAvailableInCurrentPage = page.getMaxContentSize() - pageOccupiedInBytes;
-    final int contentSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * contentSize : contentSize);
-    final int additionalSpaceNeeded = (int) (contentSize + contentSizeLength - recordSize[0] - recordSize[1]);
+    final int additionalSpaceNeeded = growthAdditionalSpace(recordSize, isPlaceHolder, contentSize);
 
     if (additionalSpaceNeeded >= spaceAvailableInCurrentPage)
       // NOT ENOUGH ROOM LEFT IN THE PAGE
@@ -7277,6 +7377,72 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     updatePageStatistics(page, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
+    return true;
+  }
+
+  /**
+   * Bytes a record stored as {@code recordSize} gains when rewritten with {@code contentSize} bytes of content, size
+   * marker included: what {@link #growRecordInPage} has to take from the page's free tail.
+   */
+  private static int growthAdditionalSpace(final long[] recordSize, final boolean isPlaceHolder, final int contentSize) {
+    final int contentSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * contentSize : contentSize);
+    return (int) (contentSize + contentSizeLength - recordSize[0] - recordSize[1]);
+  }
+
+  /**
+   * Whether {@link #growRecordInPage} would host the growth in the page's free tail as the page stands, by the very
+   * same arithmetic. Reads only.
+   */
+  private boolean growthFitsFreeTail(final MutablePage page, final int lastRecordPositionInPage,
+                                     final int recordPositionInPage, final long[] recordSize, final boolean isPlaceHolder,
+                                     final int contentSize) throws IOException {
+    final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage, recordSize);
+    return growthAdditionalSpace(recordSize, isPlaceHolder, contentSize) < page.getMaxContentSize() - pageOccupiedInBytes;
+  }
+
+  /**
+   * Packs the holes of a page in the middle of a transaction, so a write that needs room is judged against the page
+   * the commit would leave rather than against its free tail alone (#10700). The same layout transformation
+   * {@link #compressPageInternal} runs at commit - the slot-table repair, the defrag, the measured free tail handed to
+   * the statistics - with one difference that matters before the commit and not at it: the slot table keeps its
+   * length. Trimming the trailing freed slots would let an insert of this same transaction (the content record of a
+   * spill, a continuation chunk) be handed a slot it deleted, which the allocator otherwise never does.
+   * <p>
+   * The caller must poison the page for the commit-time merges when this returns true, and re-derive every offset it
+   * holds on it: every record past the first hole moved.
+   *
+   * @return true when the page had holes and they were closed; false when it had none, in which case nothing has been
+   * written.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean packPageHoles(final MutablePage page, final short recordCountInPage) throws IOException {
+    if (packedContentEnd(page, recordCountInPage) > 0)
+      // NO HOLE: THE CHEAP WALK PROVES IT WITHOUT BUILDING THE LIST
+      return false;
+
+    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, page);
+    if (orderedRecordContentInPage.isEmpty())
+      return false;
+
+    final List<int[]> holes = computePageHoles(orderedRecordContentInPage);
+    if (holes.isEmpty())
+      return false;
+
+    if (CHECK_FREE_SPACE_CLAIMS)
+      verifyFreeSpaceClaim(page, freeTailInPage(page, orderedRecordContentInPage), recordCountInPage);
+
+    defragPage(page, holes, recordCountInPage);
+    wipeOutFreeSpace(page, recordCountInPage);
+
+    int contentEndInPage = contentHeaderSize;
+    for (final int[] record : orderedRecordContentInPage)
+      contentEndInPage += record[1];
+    accountCompressedPage(page, contentEndInPage);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE, "Packed %d holes of page %s to make room for a growth (threadId=%d)",
+              holes.size(), page.pageId, Thread.currentThread().threadId());
     return true;
   }
 
@@ -7595,9 +7761,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       avoidPageNumber);
           }
 
-          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0)
+          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0 || unlistedRoomFrom >= 0)
               && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS) {
-            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
+            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED (OR #10709, THE FULL MAP
+            // TURNED ROOM AWAY): LOOK THERE BEFORE GROWING
             gatherPageStatistics();
             if (!freeSpaceInPages.isEmpty()) {
               bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord, avoidPageNumber);
@@ -7769,6 +7936,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       timeOfLastStats = 1L;
   }
 
+  /**
+   * The opposite of {@link #expireGatherThrottleForTesting()}: starts the throttle between two gather scans again, as if a scan
+   * had just run, so a test does not depend on how long its own setup took (#10709). A bucket that never scanned keeps its
+   * first-run state. Package-private: for tests only.
+   */
+  void restartGatherThrottleForTesting() {
+    if (timeOfLastStats != 0L)
+      timeOfLastStats = System.currentTimeMillis();
+  }
+
+  /** The lowest page whose room the full free-space map turned away, -1 for none (#10709). Package-private: for tests only. */
+  int getUnlistedRoomFromForTesting() {
+    return unlistedRoomFrom;
+  }
+
+  /** The page the next gather scan starts at (#8660, #10709). Package-private: for tests only. */
+  int getGatherResumePageForTesting() {
+    synchronized (freeSpaceInPages) {
+      return gatherResumePage;
+    }
+  }
+
   /** The pages the free-space map currently lists. Package-private: for tests only. */
   int[] getListedFreeSpacePagesForTesting() {
     synchronized (freeSpaceInPages) {
@@ -7792,7 +7981,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // #8660: a scan cut short by the entry cap left pages unvisited, so the next one is due whatever the clock and the change
     // counter say. It cannot loop on a bucket with nothing to offer: the cursor moves on, and a scan that stops without filling
     // the map (at the end of its lap, or on its page budget) goes back to being throttled.
-    final boolean resuming = gatherTruncated;
+    // #10709: so is one asked after the full map turned room away, which only a scan can list again
+    final boolean resuming = gatherTruncated || unlistedRoomFrom >= 0;
     if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
       return;
 
@@ -7824,6 +8014,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final int pagesThisScan = Math.min(gatherPagesLeftInLap, gatherPagesPerScan);
           gatherTruncated = false;
 
+          // #10709: the scan starts at the room the full map turned away, the room it is asked for. A lap goes round the whole
+          // file wherever it starts, so it still visits every page. The cursor is moved there before anything is read: a scan
+          // that fails backs off like any other (below) and the next one, once the timeout is over, still starts at that room
+          final int roomFrom = unlistedRoomFrom;
+          unlistedRoomFrom = -1;
+          if (roomFrom >= 0 && roomFrom < pagesToScan)
+            gatherResumePage = roomFrom;
           int pageId = gatherResumePage < pagesToScan ? gatherResumePage : 0;
           int scanned = 0;
           while (scanned < pagesThisScan) {
@@ -7973,7 +8170,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (lowestPageId[0] > -1 && lowestPageSpace[0] < newSpace) {
               freeSpaceInPages.remove(lowestPageId[0], -1);
               freeSpaceInPages.put(pageId, newSpace);
-            }
+              roomTurnedAway(lowestPageId[0]);
+            } else
+              roomTurnedAway(pageId);
             // Either the evicted page or this one has room the map no longer lists: only a scan finds it again, whatever the
             // write was. Cheap while the map stays full: a gather stops at the first page then, and the slices of the lap
             // only run once the map has room for what they find (#9575)
@@ -7983,6 +8182,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       }
     }
+  }
+
+  /** Notes that the full free-space map could not list the room of {@code pageNumber} (#10709). Holds the map's monitor. */
+  private void roomTurnedAway(final int pageNumber) {
+    if (unlistedRoomFrom < 0 || pageNumber < unlistedRoomFrom)
+      unlistedRoomFrom = pageNumber;
   }
 
   /**

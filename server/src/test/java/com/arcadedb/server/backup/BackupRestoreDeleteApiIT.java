@@ -107,7 +107,7 @@ class BackupRestoreDeleteApiIT extends BaseGraphServerTest {
       try {
         final ArcadeDBServer server = getServer(0);
         if (server.existsDatabase(restoredDatabaseName))
-          server.getDatabase(restoredDatabaseName).getEmbedded().drop();
+          server.getDatabaseForOperator(restoredDatabaseName).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }
@@ -137,14 +137,14 @@ class BackupRestoreDeleteApiIT extends BaseGraphServerTest {
     final String fileName = backups.getJSONObject(0).getString("fileName");
     assertThat(fileName).contains("-backup-").endsWith(".zip");
 
-    final long sourceCount = getServer(0).getDatabase(databaseName).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(databaseName).countType(VERTEX1_TYPE_NAME, false);
 
     // 3) Restore the backup into a NEW database (no overwrite needed).
     final HttpResponse<String> restoreResponse = postCommand(
         "restore backup " + databaseName + " " + fileName + " as " + restoredDatabaseName);
     assertThat(restoreResponse.statusCode()).isEqualTo(200);
     assertThat(getServer(0).existsDatabase(restoredDatabaseName)).isTrue();
-    assertThat(getServer(0).getDatabase(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
 
     // 4) Restoring again over the existing database WITHOUT overwrite must fail.
     final HttpResponse<String> conflictResponse = postCommand(
@@ -157,7 +157,7 @@ class BackupRestoreDeleteApiIT extends BaseGraphServerTest {
         new JSONObject().put("command", "restore backup " + databaseName + " " + fileName + " as " + restoredDatabaseName)
             .put("overwrite", true));
     assertThat(overwriteResponse.statusCode()).isEqualTo(200);
-    assertThat(getServer(0).getDatabase(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(restoredDatabaseName).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
 
     // 6) Path traversal in the file name must be rejected.
     final HttpResponse<String> traversalResponse = postCommand("delete backup " + databaseName + " ../../evil.zip");

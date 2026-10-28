@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.graph.Vertex;
@@ -118,6 +119,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
     return new ResultSet() {
       private Iterator<Identifiable> iterator = null;
       private ResultSet parallelRows = null;
+      private final VertexRowFilter rows = new VertexRowFilter(variable, filter);
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -166,11 +168,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           final String prunedBucket = PartitionPruning.prunedBucketName(
               context.getDatabase().getSchema().getType(label), patternProperties, context);
           final ParallelRecordScan parallelScan = parallelCandidate && prunedBucket == null ?
-              ParallelRecordScan.plan(context, label, (record, workerContext) -> {
-                final ResultInternal row = new ResultInternal();
-                row.setProperty(variable, record.asVertex());
-                return filter.evaluate(row, workerContext) ? row : null;
-              }) : null;
+              ParallelRecordScan.plan(context, label, () -> new VertexRowFilter(variable, filter)) : null;
           servedInParallel.set(parallelScan != null);
           // THIS EXECUTION'S SCAN, NOT A PREVIOUS ONE'S: THE PARALLEL PATH READS NO ITERATOR OF ITS OWN
           scanShrunkBatches.remove();
@@ -201,27 +199,18 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           return;
         }
 
-        // Fetch up to n vertices
+        // Fetch up to n vertices, each bound to the variable and passed through the inline WHERE filter (predicate pushdown)
         while (buffer.size() < n && iterator.hasNext()) {
           guard.check();
-          final Identifiable identifiable = iterator.next();
-
           // Load the actual record from the identifiable (may be RID)
-          final Vertex vertex = identifiable.asVertex();
-
-          // Create result with vertex bound to variable
-          final ResultInternal result = new ResultInternal();
-          result.setProperty(variable, vertex);
-
-          // Apply inline WHERE filter (predicate pushdown)
-          if (whereFilter != null && !whereFilter.evaluate(result, context))
-            continue;
-
-          buffer.add(result);
+          final Result result = rows.map(iterator.next().asVertex(), context);
+          if (result != null)
+            buffer.add(result);
         }
 
         if (!iterator.hasNext()) {
           finished = true;
+          rows.forgetRejected();
           captureScanPressure();
         }
       }
@@ -240,6 +229,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           parallelRows = null;
         }
         captureScanPressure();
+        rows.forgetRejected();
         // A SCAN STOPPED BEFORE ITS END GIVES ITS READ-AHEAD BACK TO THE POOL NOW
         if (iterator instanceof ScanPressureReporter reporter)
           reporter.releaseReadAhead();
@@ -276,11 +266,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       return null;
 
     final BooleanExpression rowFilter = filter;
-    final ParallelRecordScan scan = ParallelRecordScan.plan(context, label, (record, workerContext) -> {
-      final ResultInternal row = new ResultInternal();
-      row.setProperty(variable, record.asVertex());
-      return rowFilter == null || rowFilter.evaluate(row, workerContext) ? row : null;
-    });
+    final ParallelRecordScan scan = ParallelRecordScan.plan(context, label, () -> new VertexRowFilter(variable, rowFilter));
     servedInParallel.set(scan != null);
     scanShrunkBatches.remove();
     return scan;
@@ -319,5 +305,52 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
   public String getLabel() {
     return label;
+  }
+
+  /**
+   * Binds a scanned vertex to the scan's variable and passes the row through the pushed predicate, reusing the row the
+   * predicate rejected last instead of building a row and its map per vertex (issue #10818): only a row that passes leaves
+   * the scan, so only a match costs an allocation. A row the evaluation wrote anything to besides the one binding is not
+   * reused ({@link ResultInternal#rebindSingleProperty}).
+   * <p>
+   * The reuse relies on the evaluation of a Cypher predicate not keeping the row past its own end, which holds by
+   * construction: functions receive evaluated arguments, never the row, and the expressions that need a row of their own
+   * (list predicates and comprehensions, pattern predicates, subqueries) copy the bindings they read into a new one.
+   * <p>
+   * Called by one thread at a time: the sequential scan has one, and every unit of a parallel scan has its own.
+   */
+  static final class VertexRowFilter implements ParallelRecordScan.RowMapper {
+    private final String            variable;
+    private final BooleanExpression filter;
+    private       ResultInternal    rejected;
+
+    VertexRowFilter(final String variable, final BooleanExpression filter) {
+      this.variable = variable;
+      this.filter = filter;
+    }
+
+    @Override
+    public Result map(final Record record, final CommandContext workerContext) {
+      return map(record.asVertex(), workerContext);
+    }
+
+    /** The row of {@code vertex}, or {@code null} when the predicate rejects it. */
+    Result map(final Vertex vertex, final CommandContext context) {
+      ResultInternal row = rejected;
+      rejected = null;
+      if (row == null || !row.rebindSingleProperty(variable, vertex)) {
+        row = new ResultInternal();
+        row.setProperty(variable, vertex);
+      }
+      if (filter == null || filter.evaluate(row, context))
+        return row;
+      rejected = row;
+      return null;
+    }
+
+    /** A scan that is over does not keep the last vertex it rejected reachable. */
+    void forgetRejected() {
+      rejected = null;
+    }
   }
 }

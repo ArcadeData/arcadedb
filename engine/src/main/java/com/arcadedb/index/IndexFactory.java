@@ -22,6 +22,7 @@ import com.arcadedb.schema.IndexBuilder;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 public class IndexFactory {
   private final Map<String, IndexFactoryHandler> map = new HashMap<>();
@@ -38,5 +39,10 @@ public class IndexFactory {
       throw new IllegalArgumentException("Cannot create index of type '" + indexType + "'");
 
     return handler.create(builder);
+  }
+
+  /** The index kinds a handler is registered for, by their {@code Schema.INDEX_TYPE} name. */
+  public Set<String> getRegisteredTypes() {
+    return Set.copyOf(map.keySet());
   }
 }

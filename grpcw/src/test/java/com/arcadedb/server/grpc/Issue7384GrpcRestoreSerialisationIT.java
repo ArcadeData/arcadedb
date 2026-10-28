@@ -137,7 +137,7 @@ public class Issue7384GrpcRestoreSerialisationIT extends BaseGrpcServerTest {
         for (final Operation operation : Operation.values())
           coordinator.end(database, operation);
         if (getServer(0).existsDatabase(database))
-          getServer(0).getDatabase(database).getEmbedded().drop();
+          getServer(0).getDatabaseForOperator(database).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }

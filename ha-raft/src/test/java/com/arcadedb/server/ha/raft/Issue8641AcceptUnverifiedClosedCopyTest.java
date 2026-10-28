@@ -101,7 +101,7 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
     if (server != null) {
       try {
         if (server.existsDatabase(DB_NAME))
-          ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+          ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }
@@ -148,7 +148,7 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
     final ExecutionResponse response = handler().accept(raft, DB_NAME, "user 'root'");
     assertThat(response.getCode()).isEqualTo(200);
 
-    final ServerDatabase reopened = server.getDatabase(DB_NAME);
+    final ServerDatabase reopened = server.getDatabaseForOperator(DB_NAME);
     assertThat(reopened.isOpen()).isTrue();
     assertThat(reopened.getSchema().existsType("Node")).as("the copy accepted is the one reopened").isTrue();
   }
@@ -221,7 +221,7 @@ class Issue8641AcceptUnverifiedClosedCopyTest {
 
     server.getOrCreateDatabase(DB_NAME);
     assertThat(handler().accept(raft, DB_NAME, "user 'root'").getCode()).isEqualTo(404);
-    assertThat(server.getDatabase(DB_NAME).isOpen()).isTrue();
+    assertThat(server.getDatabaseForOperator(DB_NAME).isOpen()).isTrue();
   }
 
   /** Root only, a valid name only, and only where Raft runs. */
